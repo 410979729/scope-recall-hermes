@@ -214,6 +214,40 @@ def test_a_key_across_the_query_s_input_bound_is_not_sent_in_part(tmp_path):
     assert transport.calls == 0
 
 
+def test_several_queries_go_in_one_request_in_their_order(tmp_path, monkeypatch):
+    """A question recall reads two ways is embedded in one request (``embed_queries``), each text encoded as a query,
+    and a key in either is refused before anything is sent."""
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "test-key")
+    sent = []
+
+    def answer(**kwargs):
+        sent.append(json.loads(kwargs["body"]))
+        values = [{"values": [0.01 * (index + 1)] * 3072} for index in range(len(sent[-1]["requests"]))]
+        return 200, json.dumps({"embeddings": values, "usageMetadata": {"promptTokenCount": 10}}).encode()
+
+    transport = FakeTransport(answer)
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    runtime.query_embedding._transport = FakeTransport(
+        lambda **kwargs: pytest.fail("queries go on the query connection")
+    )
+    first, second = runtime.query_embedding.embed_queries(["Joy 吃辣吗？", "我吃辣吗？"], remaining_seconds=2.0)
+    assert transport.calls == 1
+    texts = [request["content"]["parts"][0]["text"] for request in sent[0]["requests"]]
+    # Normalised as every embedded text is (NFKC): the full-width question mark becomes "?".
+    assert texts == ["task: question answering | query: Joy 吃辣吗?", "task: question answering | query: 我吃辣吗?"]
+    assert (first[0], second[0]) == (0.01, 0.02)
+    with pytest.raises(AuxiliaryModelError) as refused:
+        runtime.query_embedding.embed_queries(["TEST", "sk-ant-api03-" + ("A" * 32)], remaining_seconds=2.0)
+    assert refused.value.error_type == "sensitive_request" and transport.calls == 1
+    # Full-width, the key is one once normalised, as the screen reads every text and as it is sent.
+    with pytest.raises(AuxiliaryModelError) as normalised:
+        runtime.query_embedding.embed_queries(
+            ["TEST", "".join(chr(ord(c) + 0xFEE0) for c in "sk-ant-api03-") + "A" * 32], remaining_seconds=2.0
+        )
+    assert normalised.value.error_type == "sensitive_request" and transport.calls == 1
+
+
 def test_malformed_and_invalid_vectors(tmp_path, monkeypatch):
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "test-key")

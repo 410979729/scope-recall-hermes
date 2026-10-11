@@ -130,6 +130,8 @@ class HermesIdentity:
     owner_private_scope_id: str
     runtime_audience: RuntimeAudience
     read_only: bool
+    #: The user's name as the gateway passes it (Telegram's first and last name); empty where it passes none.
+    user_name: str = ""
 
     @property
     def writable_scope_ids(self) -> frozenset[str]:
@@ -219,12 +221,16 @@ class HermesIdentity:
             task_anchor=resolved_task,
             environment_revision=environment_revision,
             recent_messages=recent_messages,
-            source_principal=self.source_principal(cast(Origin, resolved_origin)),
+            source_principal=self.source_principal(cast(Origin, resolved_origin), named=not mutation),
             entry_id=self.entry_id,
         )
 
-    def source_principal(self, origin: Origin) -> TrustedSourcePrincipal:
-        """Map only host-attested metadata to a source actor."""
+    def source_principal(self, origin: Origin, *, named: bool = False) -> TrustedSourcePrincipal:
+        """Map only host-attested metadata to a source actor.
+
+        ``named`` gives a verified human the name the gateway passes for them, on what reads the store only: recall
+        reads a question that names them as their own (``core/owner_view.py``).  A capture never carries it, so the
+        stored form of a message does not change with the name the person goes by."""
 
         if origin == "human_direct":
             if self.scope.platform in _UNATTESTED_HUMAN_PLATFORMS:
@@ -233,6 +239,7 @@ class HermesIdentity:
                 "human",
                 "verified",
                 principal_ref("human", self.binding.installation_id, self.scope.platform, self.scope.user_id),
+                display_name=(self.user_name or None) if named else None,
             )
         # The owner is one person whichever entry is spoken to; each entry's
         # assistant and host are its own.
@@ -490,7 +497,18 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
         owner_private_scope_id=owner_private_scope_id,
         runtime_audience=runtime_audience,
         read_only=agent_context in _NON_PRIMARY_CONTEXTS or not runtime_audience.writable_scope_ids,
+        user_name=_user_name(kwargs.get("user_name")),
     )
+
+
+def _user_name(value: object) -> str:
+    """The user's name as the gateway passes it, or empty: one the source principal could not carry is no name
+    (``TrustedSourcePrincipal.display_name``).  A host's account id passed in its place is told apart by recall
+    (``core/owner_view.name_forms``)."""
+    if type(value) is not str:
+        return ""
+    name = " ".join(value.split())
+    return name if len(name) <= 120 and name.isprintable() else ""
 
 
 def switch_hermes_identity(
@@ -512,6 +530,11 @@ def switch_hermes_identity(
         values["user_id_alt"] = kwargs.get("user_id_alt")
     elif _normalize_platform(values["platform"]) != current.scope.platform:
         values["user_id"] = ""
+    # The name goes with the person: kept for the same one, given anew with them, dropped for another.
+    if "user_name" in kwargs:
+        values["user_name"] = kwargs["user_name"]
+    elif not any(key in kwargs for key in ("platform", "user_id", "user_id_alt")):
+        values["user_name"] = current.user_name
     fresh = bind_hermes_identity(
         new_session_id,
         hermes_home=current.hermes_home,

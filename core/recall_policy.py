@@ -15,6 +15,7 @@ from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
 from .endpoint_policy import endpoint_url_shape_ok
 from .events import CJK_RUN, lexical_terms, query_terms, version_suffixes
+from .owner_view import OWNER_NAME_LENGTH, OWNER_NAMES_LIMIT
 from .retrieval import CandidateRef, SearchContext
 
 EMBEDDING_SPACE = {
@@ -236,6 +237,9 @@ class RecallPolicy:
     #: space are comparable to it.  The shipped space is the default, so a Core
     #: or an installation that names no embedding route keeps its behavior.
     embedding_space_id: str = SPACE_ID
+    #: Names the store's owner is called by besides the one the host attests for the person asking
+    #: (``core/owner_view.py``); none by default.
+    owner_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         threshold = _finite_score(self.vector_threshold)
@@ -247,6 +251,18 @@ class RecallPolicy:
             raise ContractError("INPUT_INVALID", "rrf_k")
         if type(self.embedding_space_id) is not str or not self.embedding_space_id.strip():
             raise ContractError("INPUT_INVALID", "embedding_space_id")
+        if (
+            type(self.owner_names) is not tuple
+            or len(self.owner_names) > OWNER_NAMES_LIMIT
+            or any(
+                type(name) is not str
+                or name != name.strip()
+                or not 2 <= len(name) <= OWNER_NAME_LENGTH
+                or not name.isprintable()
+                for name in self.owner_names
+            )
+        ):
+            raise ContractError("INPUT_INVALID", "owner_names")
 
     def vector_admission(self, candidate: CandidateRef) -> tuple[bool, str | None]:
         if candidate.source != "vector":
@@ -382,13 +398,13 @@ def query_is_specific(
     return False
 
 
-#: Characters that only ask: 什么, 怎么, 哪个, 多少 and the sentence-final
+#: Characters that only ask: 什么, 怎么, 哪个, 谁, 多少 and the sentence-final
 #: particles.  The index holds overlapping bigrams, so "这个实例当前是什么模型"
 #: searched 是什, 什么 and 么模 too -- terms every earlier question shares and
 #: no answer does -- so "你现在是什么模型呀" came back as the best match.
 #: A bigram holding one of these asks rather than names, so it proves nothing.
 #: The few nouns built on them (酒吧, 哪吒) are the price of that rule.
-_ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥")
+_ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥谁")
 #: Asking words whose characters also appear in naming words (怎 in 怎样 only,
 #: but 多 in 多少 and 多个, 是 in 是否 and 于是).
 _ASKING_WORDS = frozenset({"怎样", "如何", "为何", "多少", "是否", "何时", "几时"})

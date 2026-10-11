@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from ..contracts import ContractError, TrustedContext
 from ..core.deadline import RequestDeadline, using_request_deadline
@@ -584,6 +584,8 @@ class LanceVectorPort:
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._embed_query_method = _embedding_method(query_embedding, "embed_query")
+        many = getattr(query_embedding, "embed_queries", None)
+        self._embed_queries_method = cast("Callable[..., Sequence[Sequence[float]]]", many) if callable(many) else None
         if type(expected_embedding_space) is not str or not expected_embedding_space.strip():
             raise ValueError("expected_embedding_space must be non-empty")
         self._store = store
@@ -624,6 +626,13 @@ class LanceVectorPort:
 
     def _embed_query(self, query: str, remaining_seconds: float) -> Sequence[float]:
         return _embed(self._embed_query_method, query, remaining_seconds)
+
+    def _queries_embedder(self) -> Callable[[tuple[str, ...], float], Sequence[Sequence[float]]] | None:
+        """Several queries in one request, when the embedding route can send them so; ``None`` when it cannot."""
+        many = self._embed_queries_method
+        if many is None:
+            return None
+        return lambda queries, seconds: many(queries, remaining_seconds=seconds)
 
     def _query_vector(
         self,

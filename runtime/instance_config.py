@@ -126,6 +126,9 @@ class RuntimeInstanceConfig:
     auxiliary: AuxiliaryRuntimeConfig | None = None
     vector: VectorRuntimeConfig | None = None
     vector_threshold: float | None = None
+    #: Names the store's owner is called by, beside the name the host attests for the person asking: a question that
+    #: names them is recalled as they would ask it themselves (``core/owner_view.py``).  None by default.
+    owner_names: tuple[str, ...] = ()
     #: Queue items a day may attempt; 0 means no cap.  This is not the spend
     #: guard: money, calls and tokens are governed by the auxiliary ledger
     #: (``runtime/model_budget.py``) before every request.  A cap below the
@@ -215,7 +218,11 @@ class RuntimeInstanceConfig:
         ``embedding_space_id()``.  Admission has to compare against that same
         digest; against the shipped default every hit of a named route is refused.
         """
-        return RecallPolicy(vector_threshold=self.vector_threshold, embedding_space_id=self.embedding_space_id())
+        return RecallPolicy(
+            vector_threshold=self.vector_threshold,
+            embedding_space_id=self.embedding_space_id(),
+            owner_names=self.owner_names,
+        )
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "RuntimeInstanceConfig":
@@ -238,6 +245,8 @@ class RuntimeInstanceConfig:
             for item in fields(cls)
             if item.name not in _COMPOSED_FIELDS
         }
+        if type(plain["owner_names"]) is list:  # JSON has no tuple; anything else is refused by the policy
+            plain["owner_names"] = tuple(plain["owner_names"])
         return cls(
             binding=binding,
             allowed_scope_ids=frozenset(raw.get("allowed_scope_ids") or ()),

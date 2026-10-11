@@ -428,6 +428,59 @@ def test_a_recall_asks_for_its_query_embedding_before_the_sqlite_channels(tmp_pa
         instance.close()
 
 
+class _Embeddings:
+    """Records each request, and answers each text with a vector of its own; ``batched`` routes take several queries
+    in one request."""
+
+    def __init__(self, *, batched: bool):
+        self.requests: list[tuple[str, ...]] = []
+        self.vectors: dict[str, tuple[float, float]] = {}
+        if batched:
+            self.embed_queries = self._embed_queries
+
+    def _vector(self, text):
+        return self.vectors.setdefault(text, (0.1 * (len(self.vectors) + 1), 0.2))
+
+    def embed_query(self, text, *, remaining_seconds):
+        self.requests.append((text,))
+        return self._vector(text)
+
+    def _embed_queries(self, texts, *, remaining_seconds):
+        self.requests.append(tuple(texts))
+        return tuple(self._vector(text) for text in texts)
+
+
+class _VectorsSearched(_ScopedStore):
+    def search_scopes(self, vector, *, scope_ids, limit):
+        self.searches.append(tuple(vector))
+        return []
+
+
+@pytest.mark.parametrize("batched", [True, False], ids=["one-request", "one-at-a-time"])
+def test_a_question_naming_the_owner_is_embedded_both_ways_in_one_request(tmp_path, batched):
+    """A question that names the owner is searched as asked and in their first person (``core/owner_view.py``).
+    Embedded one after the other, the second waited for the first on the one persistent connection, and a recall
+    tool's 2 s left it no time (2026-10-11, a copy of the shared store: 26 of 37 questions without vectors).  A route
+    that takes several queries is asked for both at the start, in one request; one that cannot embeds the second in
+    its own search, as before."""
+    embeddings = _Embeddings(batched=batched)
+    store = _VectorsSearched()
+    instance, binding = _vector_instance(tmp_path, store, embeddings)
+    pipeline = instance.core.recall_pipeline
+    pipeline.policy = replace(pipeline.policy, owner_names=("Joy",))
+    try:
+        result = pipeline.search(replace(_search_context(binding, 5.0), query="Joy 对辣的饮食偏好是什么？"))
+        assert not [gap for gap in result.gaps if gap.startswith("vector")], result.gaps
+        asked, first = "Joy 对辣的饮食偏好是什么？", "我对辣的饮食偏好是什么？"
+        assert store.searches == [embeddings.vectors[asked], embeddings.vectors[first]], "each search its own vector"
+        if batched:
+            assert embeddings.requests == [("Joy 对辣的饮食偏好是什么？", "我对辣的饮食偏好是什么？")]
+        else:
+            assert embeddings.requests == [("Joy 对辣的饮食偏好是什么？",), ("我对辣的饮食偏好是什么？",)]
+    finally:
+        instance.close()
+
+
 def test_a_query_embedding_that_fails_while_the_table_opens_leaves_the_table_open(tmp_path):
     """Raised inside the table's open, the embedding's failure closed the helper too, and the next prompt opened the
     table cold again: the work computer's second prompt after its server restarted (2026-09-29 13:55:34)."""

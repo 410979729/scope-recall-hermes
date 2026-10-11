@@ -13,6 +13,7 @@ from scope_recall.adapters.hermes import (
     install_hermes_scope_recall,
 )
 from scope_recall.adapters.hermes.hooks import unsupported_host_fields
+from scope_recall.adapters.hermes.identity import switch_hermes_identity
 from scope_recall.adapters.hermes.provider import public_signatures_match
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
@@ -172,3 +173,45 @@ def test_unsupported_host_fields_are_documented():
     assert "post_llm_call" not in fields  # read at the end of a turn for what was shown on the way
     assert "png_raw_attachment_bytes" in fields
     assert "turn_cancelled_hook" in fields
+
+
+def _telegram_dm(initialize_kwargs, hermes_home) -> dict:
+    """Initialize kwargs of a Telegram private chat with the installed owner, as a gateway passes them."""
+    install_hermes_scope_recall(
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        platform="telegram",
+        user_id=initialize_kwargs["user_id"],
+        agent_workspace=initialize_kwargs["agent_workspace"],
+        test_mode=False,
+    )
+    return dict(
+        initialize_kwargs,
+        platform="telegram",
+        chat_type="private",
+        chat_id=initialize_kwargs["user_id"],
+        thread_id="main",
+    )
+
+
+def test_the_name_a_gateway_passes_for_the_person_rides_on_reads_only(initialize_kwargs, hermes_home):
+    """Recall reads a question that names the person as their own (``core/owner_view.py``).  A capture never carries
+    the name, so a stored message does not change with the name its sender goes by."""
+    dm = _telegram_dm(initialize_kwargs, hermes_home)
+    identity = bind_hermes_identity("TEST-session-1", **dict(dm, user_name=" Joy\tJoy "))
+    assert identity.user_name == "Joy Joy"
+    assert identity.trusted_context().source_principal.display_name == "Joy Joy"
+    assert identity.trusted_context(mutation=True).source_principal.display_name is None
+    for unreadable in ("x" * 121, "Joy\x00Joy", 7, None):
+        assert bind_hermes_identity("TEST-session-2", **dict(dm, user_name=unreadable)).user_name == "", unreadable
+
+
+def test_a_session_switch_keeps_the_name_while_the_person_is_the_same(initialize_kwargs, hermes_home):
+    """Hermes switches sessions (a compression, /new) with ids alone: the person and their name stay.  A name passed
+    with the switch is the person's now; a person named again without one has none."""
+    identity = bind_hermes_identity(
+        "TEST-session-1", **dict(_telegram_dm(initialize_kwargs, hermes_home), user_name="Joy")
+    )
+    assert switch_hermes_identity(identity, "TEST-session-2").user_name == "Joy"
+    assert switch_hermes_identity(identity, "TEST-session-3", user_name="Joy Joy").user_name == "Joy Joy"
+    assert switch_hermes_identity(identity, "TEST-session-4", user_id=initialize_kwargs["user_id"]).user_name == ""

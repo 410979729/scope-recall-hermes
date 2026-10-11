@@ -213,6 +213,51 @@ configs hold `0.653`, set `0.70` in each entry's runtime config. A store in
 another space, or one whose threshold was calibrated on it, keeps its own.
 `attach` copies the attached instance's value as it is.
 
+## `owner_names`
+
+A top-level list of the names the store's owner goes by, at most eight, each 2 to
+64 printable characters with no space at either end: `"owner_names": ["Joy", "乔伊"]`.
+Optional; no installer writes it.
+
+An agent asks its memory about the owner by name ("Joy 对动画的运镜有什么要求？",
+"What does Joy prefer?"), while the owner's own messages say "I" and never their
+name. Such a question is searched by meaning twice: as asked, which finds what
+names the owner, and as the owner would ask it ("我对动画的运镜有什么要求？",
+"What does I prefer?"), which finds their own words, each search with the vector
+channel's slots. Both are embedded in one request where the embedding route takes
+several texts in one (the Gemini and OpenAI-compatible routes do): measured on the
+shipped route, one text took 420 ms at the median, both together 488 ms, and two
+requests one after the other 818 ms, too long for a recall tool's 2 s. By its
+words, a candidate is admitted by the question as asked or by the question without
+the name, so a short question's other words are enough for an answer in the
+owner's own words. A question that names no listed name, or asks nothing besides
+the name ("Joy 是谁？"), is recalled as asked.
+
+Besides this list, recall reads the name a host attests for the person asking, in
+reads only, never in a capture: a Hermes gateway passes the user's name for a
+verified person (Telegram's first and last name, `Joy Joy`), which gives the whole
+name and, when it has several words, the first: a middle name or a surname is as
+often someone else's. A name that looks like an account id (12 or more letters and
+digits with a digit among them) is not taken. Claude Code, Codex, WorkBuddy, dsh
+and the remote clients attest no name: list it here in each of their runtime
+configs.
+
+A Latin-letter name is matched as a word of its own and with its case, so
+`Joyce`, `joy-hub`, `/opt/Joy`, `C:\Joy` and the word "joy" are not the name, nor
+is the first word of another person's name (`Joy Smith`) unless the next word is a
+listed name too. A Chinese name is matched wherever it stands, since Chinese runs
+words together: list the name as it is written, and know that a longer name it
+begins (`王芳` in `王芳芳`) is read as it; the question as asked is still searched
+beside it. A name of one character is never matched.
+
+Measured on a copy of a shared store of nine entries (2026-10-11, against 3.9.7):
+of 52 questions agents ask about the owner by name, each answered by one of the
+owner's own messages, 16 came back in the top five before and 27 after, none
+lost; asked as the recall tool asks them, 16 and 24 of the 48 that both runs
+searched by meaning; the same questions about a configured Chinese name (`王芳`),
+19 and 24 of 45. The owner's own 173 questions, which name no one, came back
+exactly as before.
+
 ## `auxiliary`
 
 External model routes. Omit the block entirely and it defaults to

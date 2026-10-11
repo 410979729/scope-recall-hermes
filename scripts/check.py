@@ -173,6 +173,7 @@ SUITES = {
         "tests/contract/test_recall_scope.py",
         "tests/contract/test_withheld_outputs_unindexed.py",
         "tests/contract/test_recall_row_crossings.py",
+        "tests/contract/test_owner_view.py",
     ],
     "model_runtime": ["tests/host/test_eval_model_runtime.py"],
     "native": [

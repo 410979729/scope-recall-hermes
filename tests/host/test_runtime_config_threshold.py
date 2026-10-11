@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 from scope_recall.adapters.runtime_wiring import attach_trusted_host_runtime
-from scope_recall.contracts import InstanceBinding
+from scope_recall.contracts import ContractError, InstanceBinding
 from scope_recall.core.recall_policy import EMBEDDING_SPACE, SPACE_ID
 from scope_recall.runtime.instance import build_runtime_instance, default_vector_factory
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
@@ -166,3 +166,28 @@ def test_named_embedding_route_admits_its_own_vector_hits(tmp_path, route_name):
         assert "vector_old_or_mismatched_space" not in packet["gaps"]
     finally:
         host.close()
+
+
+def test_runtime_mapping_wires_the_owner_s_names(tmp_path):
+    """``owner_names`` is a JSON list in the runtime config; recall reads it as the policy's tuple, and a value it
+    could not read refuses the config instead of recalling without it."""
+    raw = {
+        "binding": {
+            "agent_id": "TEST-owner-agent",
+            "installation_id": "TEST-owner-installation",
+            "data_directory": str(tmp_path / "data"),
+            "scope_ids": ["TEST-owner-scope"],
+            "test_mode": True,
+        },
+        "session_id": "TEST-owner-session",
+        "allowed_scope_ids": ["TEST-owner-scope"],
+        "auxiliary": {"external_embedding": False, "external_consolidation": False},
+        "owner_names": ["Joy", "乔伊"],
+    }
+    instance = build_runtime_instance(RuntimeInstanceConfig.from_mapping(raw))
+    try:
+        assert instance.core.recall_pipeline.policy.owner_names == ("Joy", "乔伊")
+    finally:
+        instance.close()
+    with pytest.raises(ContractError):
+        build_runtime_instance(RuntimeInstanceConfig.from_mapping(dict(raw, owner_names="Joy")))

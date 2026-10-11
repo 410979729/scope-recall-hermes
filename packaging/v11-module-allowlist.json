@@ -120,6 +120,7 @@
     "core/lineage.py",
     "core/mutate.py",
     "core/operations.py",
+    "core/owner_view.py",
     "core/read_views.py",
     "core/recall.py",
     "core/recall_budget.py",

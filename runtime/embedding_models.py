@@ -313,6 +313,26 @@ class GeminiEmbeddingAdapter:
         encoded = encode_embedding_text(text, kind="query")
         return self._embed(encoded, remaining_seconds=remaining_seconds, transport=self._query_transport)
 
+    def embed_queries(self, texts: Sequence[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
+        """Several queries in one request on the query connection, answered in the order they were sent.
+
+        A question recall reads two ways (``core/owner_view.py``) is embedded once: asked one after the other, the
+        second waited for the first on the one persistent connection, and a recall tool's 2 s left it no time.
+        """
+        for text in texts:
+            # The whole query, before the input bound cuts it; the screen reads it normalised, as it is sent.
+            reject_secrets(text)
+        encoded = [encode_embedding_text(text, kind="query") for text in texts]
+        if not encoded:
+            return ()
+        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
+        return self._send(
+            self._request_body(encoded),
+            deadline,
+            self._query_transport,
+            partial(_embedding_vectors, dialect=self._dialect, dimensions=self._dimensions, count=len(encoded)),
+        )
+
     def close(self):
         """Release only transports created by this adapter, not injected ports."""
         if self._owns_transport:
