@@ -81,6 +81,8 @@ def test_a_question_that_names_the_owner_is_read_as_their_own(query, names, firs
         ("Find C:\\Joy\\notes", ("Joy",)),
         ("Joy Smith's preferences", ("Joy",)),
         ("Joy SMITH's preferences", ("Joy",)),
+        ("Joy  SMITH's preferences", ("Joy",)),
+        ("王明明的手机号", ("王明",)),
         ("Ann Smith's preferences", ("Mary Ann Lee", "Mary")),
         ("王芳芳喜欢什么颜色", ("王芳",)),
         ("王芳林的手机号", ("王芳",)),

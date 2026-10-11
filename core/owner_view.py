@@ -74,9 +74,9 @@ def _glued(text: str, index: int) -> bool:
     return char in "_./-\\" or (char.isalnum() and not _chinese(char))
 
 
-#: A word in capitals after a Latin name, which makes it someone's longer name (``Joy Smith``, ``Joy SMITH``); ``I``
-#: is no name.
-_NEXT_WORD = re.compile(r" (?!I\b)([A-Z][A-Za-z]+)")
+#: A word in capitals after a Latin name on its line, which makes it someone's longer name (``Joy Smith``,
+#: ``Joy  SMITH``); ``I`` is no name.
+_NEXT_WORD = re.compile(r"[^\S\n]+(?!I\b)([A-Z][A-Za-z]+)")
 #: What may follow a Chinese name in a question about the person: a particle, a preposition, a common verb or adverb,
 #: a time.  Another character runs the name on into someone's longer one (``王芳芳``, ``王芳林``), which is no name
 #: of the owner's.  Not every word is here: a name missed is a question recalled as asked.
@@ -108,8 +108,10 @@ def _spans(query: str, name: str, names: tuple[str, ...]) -> list[tuple[int, int
         start, end = match.span()
         if not chinese and (_glued(query, start - 1) or _glued(query, end)):
             continue
-        if chinese and end < len(query) and _chinese(query[end]) and query[end] not in _AFTER_A_CHINESE_NAME:
-            continue
+        if chinese and end < len(query) and _chinese(query[end]):
+            # 王明明: the name's last character again is more of a name, whatever else it may begin.
+            if query[end] not in _AFTER_A_CHINESE_NAME or query[end] == name[-1]:
+                continue
         following = None if chinese else _NEXT_WORD.match(query, end)
         if following is not None and following.group(1) not in names:
             continue
