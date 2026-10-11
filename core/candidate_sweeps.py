@@ -384,7 +384,7 @@ class CandidateSweeps(CandidateIntake):
                 return None
             return when
 
-        reads = [
+        reads: list[tuple[tuple[str, tuple[str, ...]], bool]] = [
             (("l.updated_at>? AND (l.last_evidence_at>? OR l.updated_at>?)", (floor, floor, changed_floor)), False)
         ]
         if moment is not None:
