@@ -49,6 +49,8 @@ def test_only_the_name_attested_for_a_verified_human_counts_beside_the_configure
         ("Joy的猫叫什么名字", ("Joy",), "我的猫叫什么名字", "猫叫什么名字"),
         ("Joy 的猫叫什么名字", ("Joy",), "我的猫叫什么名字", "猫叫什么名字"),
         ("王芳喜欢什么颜色", ("王芳",), "我喜欢什么颜色", "喜欢什么颜色"),
+        ("王芳对动画有什么要求", ("王芳",), "我对动画有什么要求", "对动画有什么要求"),
+        ("问问王芳", ("王芳",), "问问我", "问问"),
         ("王芳的生日是哪天", ("王芳",), "我的生日是哪天", "生日是哪天"),
         # The longest name is read first: 王芳 here is the start of another name.
         ("王芳芳喜欢什么", ("王芳", "王芳芳"), "我喜欢什么", "喜欢什么"),
@@ -78,7 +80,10 @@ def test_a_question_that_names_the_owner_is_read_as_their_own(query, names, firs
         ("TEST 没有提到名字", ("Joy",)),
         ("Find C:\\Joy\\notes", ("Joy",)),
         ("Joy Smith's preferences", ("Joy",)),
+        ("Joy SMITH's preferences", ("Joy",)),
         ("Ann Smith's preferences", ("Mary Ann Lee", "Mary")),
+        ("王芳芳喜欢什么颜色", ("王芳",)),
+        ("王芳林的手机号", ("王芳",)),
     ],
 )
 def test_a_name_inside_a_word_or_an_identifier_or_of_one_letter_is_no_name(query, names):

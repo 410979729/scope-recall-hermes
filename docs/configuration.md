@@ -244,11 +244,13 @@ configs.
 
 A Latin-letter name is matched as a word of its own and with its case, so
 `Joyce`, `joy-hub`, `/opt/Joy`, `C:\Joy` and the word "joy" are not the name, nor
-is the first word of another person's name (`Joy Smith`) unless the next word is a
-listed name too. A Chinese name is matched wherever it stands, since Chinese runs
-words together: list the name as it is written, and know that a longer name it
-begins (`王芳` in `王芳芳`) is read as it; the question as asked is still searched
-beside it. A name of one character is never matched.
+is the first word of another person's name (`Joy Smith`, `Joy SMITH`) unless the
+next word is a listed name too. Chinese runs words together, so a Chinese name is
+matched where what follows it goes on with a question about the person (a
+particle, a preposition, a common verb or adverb, a time: `王芳对…`, `王芳喜欢…`,
+`王芳的…`), and not where more characters run it on into someone's longer name
+(`王芳芳`, `王芳林`); a name followed by a word outside that list is recalled as
+asked. List the name as it is written. A name of one character is never matched.
 
 Measured on a copy of a shared store of nine entries (2026-10-11, against 3.9.7):
 of 52 questions agents ask about the owner by name, each answered by one of the

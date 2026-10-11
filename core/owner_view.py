@@ -74,8 +74,16 @@ def _glued(text: str, index: int) -> bool:
     return char in "_./-\\" or (char.isalnum() and not _chinese(char))
 
 
-#: A word in capitals after a Latin name, which makes it someone's longer name (``Joy Smith``); ``I`` is no name.
-_NEXT_WORD = re.compile(r" (?!I\b)([A-Z][a-z]+)")
+#: A word in capitals after a Latin name, which makes it someone's longer name (``Joy Smith``, ``Joy SMITH``); ``I``
+#: is no name.
+_NEXT_WORD = re.compile(r" (?!I\b)([A-Z][A-Za-z]+)")
+#: What may follow a Chinese name in a question about the person: a particle, a preposition, a common verb or adverb,
+#: a time.  Another character runs the name on into someone's longer one (``王芳芳``, ``王芳林``), which is no name
+#: of the owner's.  Not every word is here: a name missed is a question recalled as asked.
+_AFTER_A_CHINESE_NAME = frozenset(
+    "的对是在有和跟与及同说讲提问喜爱想要会能可该应得当了吗呢吧啊呀也都还就又再才被把给让叫去来做用最更不没别很太挺"
+    "一怎什为从到向往比像如觉认希期平每经曾正刚已总常今昨明前上下之们自本那这家住生买吃喝穿看听写读玩选定计打准需所"
+)
 
 
 #: The English possessive after a name, and the Chinese one, which may stand a space apart from a Latin name.
@@ -89,8 +97,9 @@ def _spans(query: str, name: str, names: tuple[str, ...]) -> list[tuple[int, int
 
     A Latin name is a word of its own, matched with its case (``joy`` and ``will`` are words before they are names),
     and not the first of a longer name (``Joy Smith``) unless the next word is one of ``names`` too.  A Chinese name
-    runs into the words around it, as Chinese is written (``王芳喜欢什么``), so a longer name it begins (``王芳芳``)
-    is read as it.  A name of one character is too short to tell from a word."""
+    runs into the words around it, as Chinese is written (``王芳喜欢什么``), and is followed by what a question about
+    the person goes on with (``_AFTER_A_CHINESE_NAME``), not by more of a longer name (``王芳芳``).  A name of one
+    character is too short to tell from a word."""
     if len(name) < 2:
         return []
     chinese = _chinese(name)
@@ -98,6 +107,8 @@ def _spans(query: str, name: str, names: tuple[str, ...]) -> list[tuple[int, int
     for match in re.finditer(re.escape(name), query):
         start, end = match.span()
         if not chinese and (_glued(query, start - 1) or _glued(query, end)):
+            continue
+        if chinese and end < len(query) and _chinese(query[end]) and query[end] not in _AFTER_A_CHINESE_NAME:
             continue
         following = None if chinese else _NEXT_WORD.match(query, end)
         if following is not None and following.group(1) not in names:
