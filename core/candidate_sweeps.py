@@ -228,7 +228,7 @@ class CandidateSweeps(CandidateIntake):
             .fetchall()
         )
 
-    def _settling_eligible(self, row, *, now: str, rule_version: str) -> str | None:
+    def _settling_question(self, row, *, now: str, rule_version: str) -> str | None:
         """The settle reason, but only when scheduling would ask a new question."""
         if row["queued"]:
             return None
@@ -248,6 +248,12 @@ class CandidateSweeps(CandidateIntake):
             .fetchone()
         )
         return None if asked else reason
+
+    def _settling_eligible(self, row, *, now: str, rule_version: str) -> str | None:
+        """The settle reason, but only when scheduling would ask a new question now: the slow pace is looked up last,
+        for the few the other rules leave."""
+        reason = self._settling_question(row, now=now, rule_version=rule_version)
+        return None if reason is None or self._slowed(row, now) else reason
 
     def settled_to_schedule(
         self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 16
@@ -363,6 +369,11 @@ class CandidateSweeps(CandidateIntake):
                 )
                 if when is None:
                     continue
+                # One slowed after the questions that did not settle it is ready when its day is over, not when its
+                # evidence settled: woken for that, the sweep would schedule nothing and the plan would wake it again.
+                until = self._slowed_until(row["candidate_ref"], int(row["candidate_revision"]))
+                if until is not None:
+                    when = max(when, until)
                 asked = parse_stamp(row["asked_at"])
                 if asked is not None and asked >= parse_stamp(row["last_evidence_at"]):
                     continue
@@ -419,14 +430,15 @@ class CandidateSweeps(CandidateIntake):
         it) or none of it can be read.  Such a candidate is not work.  It
         waits for new evidence, and counted as pending it made a queue that
         never drains out of a thousand candidates nothing was ever going to
-        evaluate.
+        evaluate.  A fifth, ``slowed``, has something new to ask and waits out
+        its day after questions that did not settle it (``slowed_until``).
         """
-        summary = {"queued": 0, "collecting": 0, "settled_waiting_sweep": 0, "settled_nothing_to_ask": 0}
+        summary = {"queued": 0, "collecting": 0, "settled_waiting_sweep": 0, "slowed": 0, "settled_nothing_to_ask": 0}
         for row in self._settling_rows():
             if row["queued"]:
                 summary["queued"] += 1
-            elif self._settling_eligible(row, now=now, rule_version=RULE_VERSION):
-                summary["settled_waiting_sweep"] += 1
+            elif self._settling_question(row, now=now, rule_version=RULE_VERSION):
+                summary["slowed" if self._slowed(row, now) else "settled_waiting_sweep"] += 1
             elif settled_reason(row, now) is None:
                 summary["collecting"] += 1
             else:

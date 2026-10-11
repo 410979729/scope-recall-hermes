@@ -16,7 +16,7 @@ import json
 from datetime import datetime, timezone
 
 from ..contracts import ContractError
-from .candidate_debounce import settle_reason
+from .candidate_debounce import parse_stamp, settle_reason, slowed_until
 from .candidate_lifecycle import CandidateSnapshot
 from .evidence_question import DERIVATION_ROOT_ORIGINS, question_digest, restates
 
@@ -170,11 +170,38 @@ class CandidateTables:
         )
         return clause, (*scopes, self._tx.context.project_id, self._tx.context.branch_id)
 
+    def _slowed_until(self, ref: str, revision: int):
+        """When this candidate version may be put to the evaluator again, after the questions that did not settle it
+        (``candidate_debounce.slowed_until``); ``None`` when nothing holds it back.  One look-up of its evaluations."""
+        asked, last = (
+            self._read()
+            .execute(
+                """SELECT count(*),max(model_attempted_at) FROM candidate_evaluations
+               WHERE candidate_ref=? AND candidate_revision=? AND model_attempted_at IS NOT NULL""",
+                (ref, revision),
+            )
+            .fetchone()
+        )
+        return slowed_until(int(asked), last)
+
+    def _slowed(self, row, now: str) -> bool:
+        """Whether this candidate waits out its day after the questions that did not settle it."""
+        until = self._slowed_until(row["candidate_ref"], int(row["candidate_revision"]))
+        moment = parse_stamp(now)
+        return until is not None and moment is not None and moment < until
+
+    def _ready_reason(self, row, now: str, *, has_queued_evaluation: bool = False) -> str | None:
+        """Why this candidate may be scheduled now (``settled_reason``), or ``None``: still collecting, or slowed after
+        the questions that did not settle it, until its day is over."""
+        reason = settled_reason(row, now, has_queued_evaluation=has_queued_evaluation)
+        return None if reason is None or self._slowed(row, now) else reason
+
     def _lifecycle_row(self, ref: str, revision: int):
         return (
             self._read()
             .execute(
-                """SELECT processing_state,reason,rule_version,updated_at,last_evidence_at,last_evaluated_at,created_at
+                """SELECT candidate_ref,candidate_revision,processing_state,reason,rule_version,updated_at,
+                      last_evidence_at,last_evaluated_at,created_at
                FROM candidate_lifecycle WHERE candidate_ref=? AND candidate_revision=?""",
                 (ref, revision),
             )

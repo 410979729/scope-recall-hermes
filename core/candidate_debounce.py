@@ -48,6 +48,15 @@ QUIET_SECONDS = 900
 #: Longest a candidate may keep accumulating before being judged anyway.
 MAX_DEFERRAL_SECONDS = 3600
 
+#: Questions put to the evaluator about one candidate version, none of which settled it, after which it is put to the
+#: evaluator at most once a day (``slowed_until``).  A candidate that keeps drawing evidence was asked again each time
+#: some came, about once an hour.  Over the week to 2026-10-10 on the shared store: 26,909 questions, 91% of them
+#: answered "not enough evidence yet" and 112 with a fact; of the 306 candidates ever resolved, 80% were resolved within
+#: their first five questions, while 556 had been asked twenty times or more.  A day's pace after five questions would
+#: have spared 42% of that week's questions and delayed, by at most a day, the fifth of resolutions that needed more.
+SLOW_AFTER_QUESTIONS = 5
+SLOW_INTERVAL_SECONDS = 86400
+
 
 def parse_stamp(value: object) -> datetime | None:
     """A stored time; one written without a zone is UTC, and anything that is not a time is ``None``."""
@@ -118,10 +127,30 @@ def settles_at(
     return max(moment, evidence)
 
 
-# The timer says *when it is worth looking*; it does not decide whether there
-# is anything to ask. That is ``core/evidence_question.py``, and it is a
-# content test, not a rate limit -- a candidate is never made to wait out a
-# clock while it holds evidence nobody has judged.
+def slowed_until(questions: object, last_asked_at: object) -> datetime | None:
+    """When a candidate version put to the evaluator ``questions`` times, the last at ``last_asked_at``, may be put to
+    it again: a day after the last, once ``SLOW_AFTER_QUESTIONS`` questions have not settled it; ``None`` when nothing
+    holds it back.  The evidence that comes meanwhile is kept and asked about together then, so a slowed candidate
+    waits and is never dropped: the settle sweep and a worker's wake plan take it up when its day is over."""
+    if type(questions) is not int or questions < SLOW_AFTER_QUESTIONS:
+        return None
+    last = parse_stamp(last_asked_at)
+    return None if last is None else last + timedelta(seconds=SLOW_INTERVAL_SECONDS)
 
 
-__all__ = ["MAX_DEFERRAL_SECONDS", "QUIET_SECONDS", "parse_stamp", "settle_reason", "settles_at"]
+# The timers say *when it is worth looking*: the quiet window and the deferral
+# when the evidence has settled, the slow pace how often a candidate that keeps
+# not settling is worth another question.  None of them decides whether there is
+# anything to ask; that is ``core/evidence_question.py``, a content test.
+
+
+__all__ = [
+    "MAX_DEFERRAL_SECONDS",
+    "QUIET_SECONDS",
+    "SLOW_AFTER_QUESTIONS",
+    "SLOW_INTERVAL_SECONDS",
+    "parse_stamp",
+    "settle_reason",
+    "settles_at",
+    "slowed_until",
+]

@@ -15,7 +15,11 @@ import pytest
 from scope_recall.core.candidate_debounce import (
     MAX_DEFERRAL_SECONDS,
     QUIET_SECONDS,
+    SLOW_AFTER_QUESTIONS,
+    SLOW_INTERVAL_SECONDS,
+    parse_stamp,
     settle_reason,
+    slowed_until,
 )
 from scope_recall.core.claims import Qualification
 from test_claims import app, capture, draft
@@ -365,3 +369,101 @@ def test_doctor_sweep_share_exact_eligibility(app, excluded):
             assert tx.candidates.settling_summary(now=core.clock.utc_now())["settled_waiting_sweep"] == 1
             assert tx.candidates.schedule_settled_candidates(now=core.clock.utc_now()) == 1
             assert tx.candidates.settling_summary(now=core.clock.utc_now())["settled_waiting_sweep"] == 0
+
+
+# --------------------------------------------------------------------------
+# A candidate asked many times without settling: one question a day
+# --------------------------------------------------------------------------
+
+
+def test_five_questions_that_settled_nothing_hold_a_candidate_a_day_from_the_last():
+    last = NOW - timedelta(seconds=10)
+    assert slowed_until(SLOW_AFTER_QUESTIONS - 1, _at(10)) is None
+    assert slowed_until(SLOW_AFTER_QUESTIONS, _at(10)) == last + timedelta(seconds=SLOW_INTERVAL_SECONDS)
+    for unreadable in (None, "", "not-a-time"):
+        assert slowed_until(SLOW_AFTER_QUESTIONS, unreadable) is None
+    assert slowed_until(float(SLOW_AFTER_QUESTIONS), _at(10)) is None
+
+
+def _asked(core, times: int, *, hours_ago: float) -> datetime:
+    """``times`` questions put to the evaluator about the one candidate, an hour apart and the last ``hours_ago``,
+    none of which settled it; the question it holds now is a new one.  The last question's moment is returned."""
+    frozen = datetime.fromisoformat(core.clock.utc_now().replace("Z", "+00:00"))
+    moments = [frozen - timedelta(hours=hours_ago + times - 1 - index) for index in range(times)]
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(
+            "UPDATE candidate_evaluations SET evidence_fingerprint='TEST-asked-0',model_attempted_at=?",
+            (moments[0].isoformat(),),
+        )
+        for index, moment in enumerate(moments[1:], 1):
+            conn.execute(
+                """INSERT INTO candidate_evaluations(candidate_ref,candidate_revision,evidence_fingerprint,
+                   evidence_refs_json,rule_version,memory_epoch,state,reason,work_id,created_at,completed_at,
+                   model_attempted_at)
+                   SELECT candidate_ref,candidate_revision,?,evidence_refs_json,rule_version,memory_epoch,
+                   'waiting_evidence','insufficient_evidence',NULL,?,?,? FROM candidate_evaluations LIMIT 1""",
+                (f"TEST-asked-{index}", *(moment.isoformat(),) * 3),
+            )
+        conn.commit()
+    return moments[-1]
+
+
+def _restated(core, ctx) -> None:
+    """New evidence no earlier question saw that says the candidate again: past two verdicts nothing else is asked
+    about (``AUTOMATIC_VERDICTS``), and a candidate that keeps drawing it is the one asked about every hour."""
+    capture(core, ctx, "entity0 property0 sharedtoken 值0。", key="TEST-debounce/restated")
+
+
+@pytest.mark.parametrize(("times", "hours_ago", "asked_now"), [(4, 1, True), (5, 1, False), (5, 25, True)])
+def test_the_sweep_asks_a_candidate_asked_many_times_again_only_once_its_day_is_over(app, times, hours_ago, asked_now):
+    """Each question was put when new evidence came, about once an hour for one that kept drawing it.  Five that
+    settled nothing hold it a day from the last; what comes meanwhile is asked about together then, and the doctor
+    tells such a wait from a stuck one."""
+    core, ctx = app
+    _register(core, ctx, 0)
+    _retire_live_evaluations(core)
+    _settle(core)
+    _asked(core, times, hours_ago=hours_ago)
+    _restated(core, ctx)
+    _settle(core)
+    with core.storage.read(ctx) as tx:
+        summary = tx.candidates.settling_summary(now=core.clock.utc_now())
+    assert (summary["settled_waiting_sweep"], summary["slowed"]) == ((1, 0) if asked_now else (0, 1))
+    assert _sweep(core, ctx) == int(asked_now)
+
+
+@pytest.mark.parametrize(("times", "asked_now"), [(4, True), (5, False)])
+def test_evidence_past_the_deferral_limit_asks_a_slowed_candidate_nothing(app, times, asked_now):
+    """New evidence asks at once about a candidate that waited out the deferral limit, unless it is slowed."""
+    core, ctx = app
+    _register(core, ctx, 0)
+    _retire_live_evaluations(core)
+    _asked(core, times, hours_ago=2)
+    two_hours_ago = datetime.fromisoformat(core.clock.utc_now().replace("Z", "+00:00")) - timedelta(hours=2)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(
+            "UPDATE candidate_lifecycle SET last_evaluated_at=?,created_at=?", (two_hours_ago.isoformat(),) * 2
+        )
+        conn.commit()
+    _restated(core, ctx)
+    assert _queued(core) == int(asked_now)
+
+
+@pytest.mark.parametrize(("times", "slowed"), [(4, False), (5, True)])
+def test_a_worker_s_wake_plan_waits_for_a_slowed_candidate_s_day_not_for_its_evidence(app, times, slowed):
+    """Woken when its evidence settled, a pass would schedule nothing for a slowed candidate and the plan would name
+    the same moment again: the worker would spin."""
+    core, ctx = app
+    _register(core, ctx, 0)
+    _retire_live_evaluations(core)
+    _settle(core)
+    last = _asked(core, times, hours_ago=1)
+    _restated(core, ctx)
+    _settle(core)
+    now = core.clock.utc_now()
+    with core.storage.read(ctx) as tx:
+        planned = parse_stamp(tx.candidates.next_settle_at(after=None, now=now))
+    if slowed:
+        assert planned == last + timedelta(seconds=SLOW_INTERVAL_SECONDS)
+    else:
+        assert planned is not None and planned <= parse_stamp(now)

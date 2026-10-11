@@ -27,7 +27,6 @@ from .candidate_tables import (
     is_reachable,
     reachable_sql,
     rule,
-    settled_reason,
     utc,
 )
 from .events import lexical_terms
@@ -373,8 +372,9 @@ class CandidateIntake(CandidateTables):
 
         One schedule per arriving source, each retiring the ones still waiting,
         is where the evaluation pile-up came from; ``core/candidate_debounce.py``
-        holds the window.  The evidence is recorded either way, so nothing is
-        dropped by waiting.
+        holds the window, and the slow pace of one asked many times without
+        settling.  The evidence is recorded either way, so nothing is dropped
+        by waiting.
         """
         row = self._lifecycle_row(candidate.ref, candidate.revision)
         if row is None:
@@ -388,7 +388,7 @@ class CandidateIntake(CandidateTables):
             .fetchone()
             is not None
         )
-        if settled_reason(row, now, has_queued_evaluation=queued) is None:
+        if self._ready_reason(row, now, has_queued_evaluation=queued) is None:
             return None, False
         return self._schedule(candidate, now=now, rule_version=rule_version)
 
