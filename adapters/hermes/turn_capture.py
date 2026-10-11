@@ -409,9 +409,13 @@ class TurnCapture:
         again; meanwhile the observation ledger and the retry buffer keep it from being written twice."""
         adapter = self._adapter
         deadline = steer_deadline() if deadline is None else deadline
-        unread = [
-            (steer, key) for steer in steers if (key := steer_source_key(context, steer)) not in adapter._steers_written
-        ]
+        # One message read by two routes (what post_llm_call kept, the conversation sync_turn is handed) is one.
+        reads: dict[str, tuple[Steer, str]] = {}
+        for steer in steers:
+            key = steer_source_key(context, steer)
+            if key not in adapter._steers_written:
+                reads.setdefault(key, (steer, key))
+        unread = list(reads.values())
         for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
             with adapter._lock, adapter._calls.holding(hook):
                 taken = held
@@ -448,8 +452,8 @@ class TurnCapture:
 
         A message no turn answered may still be a turn's own, stored by ``pre_llm_call`` under the turn's key when the
         gateway stopped before any reply: one of those is looked up by its words and moment in this session as well.
-        Every message of the conversation said with the same words (``Steer.alike``) is looked up with it, once and in
-        the order they were said, each taking its nearest copy: the copy of one a turn answered, or one held already,
+        Every message of the conversation said with the same words (``Steer.alike``) is looked up with it, once, and
+        the store pairs the closest message and copy first: the copy of one a turn answered, or of one held already,
         is not taken for another."""
         if not unread:
             return ()

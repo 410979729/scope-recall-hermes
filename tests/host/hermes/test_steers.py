@@ -762,6 +762,48 @@ def test_a_message_put_back_and_stored_keeps_its_copy_from_a_later_one_said_alik
     assert said.count("TEST 继续") == 2
 
 
+def test_a_message_put_back_does_not_take_the_copy_of_one_said_alike_after_it(telegram, hermes_home, monkeypatch):
+    """A "继续" put back by a restarted gateway, never stored, and half a minute later the same words opened a turn,
+    which pre_llm_call stored.  Looked up in the order said, the first took the second's copy and was never stored."""
+    t0 = time.time() - 600
+    stamp = _iso(t0 + 30)
+    monkeypatch.setattr(telegram, "_utc_now", lambda: stamp)
+    telegram.on_turn_start(40, "TEST 继续", turn_id="turn-40")
+    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-40", user_message="TEST 继续")
+    monkeypatch.undo()
+    history = [
+        {"role": "user", "content": "TEST 继续", "timestamp": t0},
+        {"role": "user", "content": "TEST 继续", "timestamp": t0 + 30},
+        {"role": "assistant", "content": "TEST 好。"},
+        {"role": "user", "content": "TEST 好了吗"},
+        {"role": "assistant", "content": "TEST 好了。"},
+    ]
+    telegram.on_turn_start(41, "TEST 好了吗", turn_id="turn-41")
+    telegram.sync_turn("TEST 好了吗", "TEST 好了。", session_id="TEST-session-tg", messages=history)
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 继续") == 2
+
+
+def test_a_message_put_back_read_by_two_hooks_is_looked_up_once(telegram, hermes_home):
+    """A turn's message pre_llm_call stored before the gateway stopped is in the conversation both post_llm_call and
+    sync_turn read: read twice, only the second read was found stored, and the first was written again."""
+    telegram.on_turn_start(50, "TEST 查一下", turn_id="turn-50")
+    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-50", user_message="TEST 查一下")
+    history = [
+        {"role": "user", "content": "TEST 查一下", "timestamp": time.time()},
+        {"role": "user", "content": "TEST 怎么样"},
+        {"role": "assistant", "content": "TEST 在查。"},
+    ]
+    telegram.on_turn_start(51, "TEST 怎么样", turn_id="turn-51")
+    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-51", user_message="TEST 怎么样")
+    telegram.observe_post_llm_call(
+        session_id="TEST-session-tg", turn_id="turn-51", assistant_response="TEST 在查。", conversation_history=history
+    )
+    telegram.sync_turn("TEST 怎么样", "TEST 在查。", session_id="TEST-session-tg", messages=history)
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 查一下") == 1
+
+
 def test_the_message_the_running_turn_opened_on_is_left_to_the_turn(telegram, hermes_home):
     """The conversation's last message is the one the running turn opened on, which pre_llm_call stores as the turn's:
     a compression before the reply finds nothing after it, and does not take it for one no turn answered."""

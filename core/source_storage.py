@@ -552,8 +552,9 @@ class Sources:
         A host that records one message by two routes -- a hook as it happens, its session record later --
         asks this before the second.  A message the host names is held only under ``host_key``, the key its
         hook wrote, so the same short words said again are a new message.  One it does not name is held by
-        its words said within ``window_seconds`` of that time.  Each copy answers for one message, and a
-        hook's capture still waiting in the inbox counts as held: the inbox stores it later.
+        its words said within ``window_seconds`` of that time.  Each copy answers for one message, the closest
+        message and copy first, and a hook's capture still waiting in the inbox counts as held: the inbox stores
+        it later.
         With ``across_sessions`` a named message is held in any session of the scope: Hermes carries a steer
         into the session a compression continues, where it is the one already stored.
         """
@@ -597,6 +598,7 @@ class Sources:
                     is not None
                 )
         copies: dict[tuple[str, str], list[tuple[object, str]]] = {}
+        unnamed: dict[tuple[str, str], list[tuple[int, str]]] = {}
         for index, (role, content, occurred_at, host_key) in enumerate(items):
             if host_key is not None:
                 continue
@@ -614,15 +616,21 @@ class Sources:
                     )
                     if key not in named
                 ]
-            found = copies[role, digest]
-            near = [
-                (distance, position)
-                for position, (stamp, _key) in enumerate(found)
+            unnamed.setdefault((role, digest), []).append((index, occurred_at))
+        # The closest message and copy are paired first: taken in the order asked, a message with no copy of its own
+        # took the copy of one said alike a moment after it, and that one was stored again.
+        for group, said in unnamed.items():
+            pairs = sorted(
+                (distance, index, position)
+                for index, occurred_at in said
+                for position, (stamp, _key) in enumerate(copies[group])
                 if (distance := _seconds_apart(stamp, occurred_at)) <= window_seconds
-            ]
-            if near:
-                found.pop(min(near)[1])
-            answers[index] = bool(near)
+            )
+            taken: set[int] = set()
+            for _distance, index, position in pairs:
+                if not answers[index] and position not in taken:
+                    answers[index] = True
+                    taken.add(position)
         return tuple(answers)
 
     def _waiting_in_inbox(

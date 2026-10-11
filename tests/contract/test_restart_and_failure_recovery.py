@@ -5,7 +5,7 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1904,6 +1904,19 @@ def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):
         ctx, "TEST-scope", [("user", "TEST 要删掉的一句话。", source.event["occurred_at"], "TEST-named-deleted")]
     )
     assert tuple(said) == (True,)
+
+
+def test_a_message_with_no_copy_of_its_own_does_not_take_one_said_alike_after_it(worker_app):
+    """Two messages with the same words half a minute apart, the later one stored: asked in the order they were said,
+    the earlier one took the later one's copy, and the later one looked unstored.  The closest pair goes first."""
+    core, ctx, _clock = worker_app
+    stored = capture(core, ctx, "TEST 继续", key="TEST-alike-later")
+    later = stored.event["occurred_at"]
+    earlier = (datetime.fromisoformat(later.replace("Z", "+00:00")) - timedelta(seconds=30)).isoformat()
+    said = core.said_in_session(
+        ctx, "TEST-scope", [("user", "TEST 继续", earlier, None), ("user", "TEST 继续", later, None)]
+    )
+    assert tuple(said) == (False, True)
 
 
 def test_a_named_message_stored_in_another_session_is_held_across_sessions(worker_app):
