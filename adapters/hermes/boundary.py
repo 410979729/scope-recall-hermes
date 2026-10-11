@@ -353,7 +353,7 @@ _STEER_NOTICE_HEADS = ("[Background process ", "[IMPORTANT: Background process",
 class Steer(NamedTuple):
     """What the person sent while a turn ran, or what no turn answered (``unanswered_messages``): its name, their
     words, when they were sent, and which of the two it is, the event kind of its source key.  ``alike`` are the times
-    of the messages a turn answered with the same words in that conversation (``unanswered_messages``)."""
+    of the conversation's other messages said with the same words, answered or not (``unanswered_messages``)."""
 
     key: str
     words: str
@@ -482,8 +482,8 @@ def unanswered_messages(messages: object) -> tuple[Steer, ...]:
     them, and the person's next message opens a turn after them.  A message a turn opened on has a reply after it, or
     the note that the turn was interrupted, before the person's next; their last is the turn now running, which
     ``pre_llm_call`` stores.  Named by their time and words, so one read again is the same capture.  Each carries the
-    times of the messages a turn answered with the same words (``alike``): looked up by words and moment, those take
-    their own stored copies first, and a second "继续" is not taken for the first.
+    times of the conversation's other messages said with the same words (``alike``): looked up by words and moment,
+    every one of them takes its own stored copy in turn, and a second "继续" is not taken for the first.
     """
     if not isinstance(messages, list):
         return ()
@@ -492,18 +492,18 @@ def unanswered_messages(messages: object) -> tuple[Steer, ...]:
     ]
     typed = [index for index, row in enumerate(rows) if row["role"] == "user" and _typed_words(row)]
     unanswered: list[int] = []
-    answered: dict[str, list[str | None]] = {}
+    said: dict[str, set[str | None]] = {}
     for position, index in enumerate(typed):
+        said.setdefault(_typed_words(rows[index]), set()).add(_message_time(rows[index]))
         following = typed[position + 1] if position + 1 < len(typed) else len(rows)
-        if any(row["role"] == "assistant" for row in rows[index + 1 : following]):
-            answered.setdefault(_typed_words(rows[index]), []).append(_message_time(rows[index]))
-        elif following < len(rows):
+        if following < len(rows) and not any(row["role"] == "assistant" for row in rows[index + 1 : following]):
             unanswered.append(index)
     found: dict[str, Steer] = {}
     for index in unanswered:
         words, occurred_at = _typed_words(rows[index]), _message_time(rows[index])
         key = "text:" + hashlib.sha256(f"{occurred_at}\x00{words}".encode()).hexdigest()[:32]
-        found.setdefault(key, Steer(key, words, occurred_at, UNANSWERED_KIND, tuple(answered.get(words, ()))))
+        alike = tuple(sorted(said[words] - {occurred_at}, key=lambda moment: (moment is None, moment or "")))
+        found.setdefault(key, Steer(key, words, occurred_at, UNANSWERED_KIND, alike))
     return tuple(found.values())
 
 

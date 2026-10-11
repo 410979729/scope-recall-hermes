@@ -8,6 +8,7 @@ import math
 import sqlite3
 import threading
 import time
+from datetime import UTC, datetime
 
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall, provider
@@ -705,6 +706,58 @@ def test_a_message_put_back_is_not_taken_for_an_earlier_one_said_alike(telegram,
     ]
     telegram.on_turn_start(11, "TEST 好了吗", turn_id="turn-11")
     telegram.sync_turn("TEST 好了吗", "TEST 好了。", session_id="TEST-session-tg", messages=history)
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 继续") == 2
+
+
+def _iso(moment: float) -> str:
+    return datetime.fromtimestamp(moment, UTC).isoformat().replace("+00:00", "Z")
+
+
+def test_messages_said_alike_each_take_their_own_copy(telegram, hermes_home, monkeypatch):
+    """Three "继续" in a row: one a turn answered, two whose turns pre_llm_call stored before the gateway stopped.
+    Looked up one by one, each with the answered one before it, the answered one's copy was looked up again for the
+    third and took its copy, and the third was stored a second time."""
+    t0 = time.time() - 600
+    for offset, turn in ((0, 20), (30, 21), (60, 22)):
+        stamp = _iso(t0 + offset)
+        monkeypatch.setattr(telegram, "_utc_now", lambda moment=stamp: moment)
+        telegram.on_turn_start(turn, "TEST 继续", turn_id=f"turn-{turn}")
+        telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id=f"turn-{turn}", user_message="TEST 继续")
+    monkeypatch.undo()
+    history = [
+        {"role": "user", "content": "TEST 继续", "timestamp": t0},
+        {"role": "assistant", "content": "TEST 好。"},
+        {"role": "user", "content": "TEST 继续", "timestamp": t0 + 30},
+        {"role": "user", "content": "TEST 继续", "timestamp": t0 + 60},
+        {"role": "user", "content": "TEST 好了吗"},
+        {"role": "assistant", "content": "TEST 好了。"},
+    ]
+    telegram.on_turn_start(23, "TEST 好了吗", turn_id="turn-23")
+    telegram.sync_turn("TEST 好了吗", "TEST 好了。", session_id="TEST-session-tg", messages=history)
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 继续") == 3
+
+
+def test_a_message_put_back_and_stored_keeps_its_copy_from_a_later_one_said_alike(telegram, hermes_home):
+    """A "继续" a restarted gateway put back was stored at the next turn; after another restart a second one came back
+    after it.  The first is found by its key, and its copy is not the second's."""
+    t0 = time.time() - 600
+    first = [
+        {"role": "user", "content": "TEST 继续", "timestamp": t0},
+        {"role": "user", "content": "TEST 下一句"},
+        {"role": "assistant", "content": "TEST 收到。"},
+    ]
+    telegram.on_turn_start(30, "TEST 下一句", turn_id="turn-30")
+    telegram.sync_turn("TEST 下一句", "TEST 收到。", session_id="TEST-session-tg", messages=first)
+    second = [
+        *first,
+        {"role": "user", "content": "TEST 继续", "timestamp": t0 + 60},
+        {"role": "user", "content": "TEST 再下一句"},
+        {"role": "assistant", "content": "TEST 收到。"},
+    ]
+    telegram.on_turn_start(31, "TEST 再下一句", turn_id="turn-31")
+    telegram.sync_turn("TEST 再下一句", "TEST 收到。", session_id="TEST-session-tg", messages=second)
     said = [content for _role, content, _origin in _stored(hermes_home)]
     assert said.count("TEST 继续") == 2
 

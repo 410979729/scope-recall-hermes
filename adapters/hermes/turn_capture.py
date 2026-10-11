@@ -447,8 +447,10 @@ class TurnCapture:
         When the store cannot say, none is held: a steer stored twice is better than one lost.
 
         A message no turn answered may still be a turn's own, stored by ``pre_llm_call`` under the turn's key when the
-        gateway stopped before any reply: one of those is looked up by its words and moment in this session as well,
-        after the messages a turn answered with the same words (``Steer.alike``) took their own copies."""
+        gateway stopped before any reply: one of those is looked up by its words and moment in this session as well.
+        Every message of the conversation said with the same words (``Steer.alike``) is looked up with it, once and in
+        the order they were said, each taking its nearest copy: the copy of one a turn answered, or one held already,
+        is not taken for another."""
         if not unread:
             return ()
         core = self._adapter._require_core()
@@ -466,13 +468,12 @@ class TurnCapture:
             loose = [index for index in loose if index < len(held) and not held[index]]
             if loose:
                 items, owners = [], []
-                for index in loose:
-                    steer = unread[index][0]
-                    for moment in steer.alike:
-                        items.append(("user", steer.words, moment or "", None))
-                        owners.append(None)
-                    items.append(("user", steer.words, steer.occurred_at or "", None))
-                    owners.append(index)
+                for words in dict.fromkeys(unread[index][0].words for index in loose):
+                    asked = {unread[index][0].occurred_at: index for index in loose if unread[index][0].words == words}
+                    moments = set(asked).union(*(unread[index][0].alike for index in asked.values()))
+                    for moment in sorted(moments, key=lambda moment: (moment is None, moment or "")):
+                        items.append(("user", words, moment or "", None))
+                        owners.append(asked.get(moment))
                 worded = core.said_in_session(
                     context, identity.local_scope_id, items, remaining_seconds=_budget(deadline)
                 )
