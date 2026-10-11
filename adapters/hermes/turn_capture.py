@@ -447,7 +447,8 @@ class TurnCapture:
         When the store cannot say, none is held: a steer stored twice is better than one lost.
 
         A message no turn answered may still be a turn's own, stored by ``pre_llm_call`` under the turn's key when the
-        gateway stopped before any reply: one of those is looked up by its words and moment in this session as well."""
+        gateway stopped before any reply: one of those is looked up by its words and moment in this session as well,
+        after the messages a turn answered with the same words (``Steer.alike``) took their own copies."""
         if not unread:
             return ()
         core = self._adapter._require_core()
@@ -464,14 +465,20 @@ class TurnCapture:
             loose = [index for index, (steer, _key) in enumerate(unread) if steer.kind == UNANSWERED_KIND]
             loose = [index for index in loose if index < len(held) and not held[index]]
             if loose:
+                items, owners = [], []
+                for index in loose:
+                    steer = unread[index][0]
+                    for moment in steer.alike:
+                        items.append(("user", steer.words, moment or "", None))
+                        owners.append(None)
+                    items.append(("user", steer.words, steer.occurred_at or "", None))
+                    owners.append(index)
                 worded = core.said_in_session(
-                    context,
-                    identity.local_scope_id,
-                    [("user", unread[index][0].words, unread[index][0].occurred_at or "", None) for index in loose],
-                    remaining_seconds=_budget(deadline),
+                    context, identity.local_scope_id, items, remaining_seconds=_budget(deadline)
                 )
-                for index, said in zip(loose, worded, strict=True):
-                    held[index] = said
+                for owner, said in zip(owners, worded, strict=True):
+                    if owner is not None:
+                        held[owner] = said
         except (ContractError, OSError, RuntimeError, sqlite3.Error, ValueError):
             return (False,) * len(unread)
         return tuple(held) if len(held) == len(unread) else (False,) * len(unread)

@@ -645,6 +645,8 @@ def _put_back(now: float) -> list[dict]:
         {"role": "assistant", "content": "Operation interrupted: TEST waiting for the model"},
         {"role": "user", "content": "TEST 游戏里能正确显示中文吗", "timestamp": now},
         {"role": "user", "content": "[ASYNC DELEGATION BATCH COMPLETE] TEST 两个子任务完成", "timestamp": now},
+        {"role": "user", "content": "[ASYNC DELEGATION COMPLETE] TEST 子任务完成：已上传", "timestamp": now},
+        {"role": "user", "content": "[SYSTEM NOTICE — TEST 网关已重启]", "timestamp": now},
         {"role": "user", "content": _NOTICE, "timestamp": now},
         {"role": "user", "content": "TEST 还没做好吗", "timestamp": now},
         {"role": "user", "content": "TEST 继续啊"},
@@ -663,7 +665,7 @@ def test_messages_a_restarted_gateway_put_back_are_stored_once_whichever_hook_re
     said = [(content, origin) for _role, content, origin in _stored(hermes_home)]
     assert said.count(("TEST 游戏里能正确显示中文吗", "human_direct")) == 1
     assert said.count(("TEST 还没做好吗", "human_direct")) == 1
-    assert not any(content.startswith(("[ASYNC", "[IMPORTANT")) for content, _origin in said), "notices are Hermes's"
+    assert not any(content.startswith(("[ASYNC", "[IMPORTANT", "[SYSTEM")) for content, _origin in said), "notices"
     assert not any(content == "TEST 做游戏" for content, _origin in said), "a message a turn answered is its turn's"
     with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
         keys = [
@@ -686,6 +688,25 @@ def test_a_turn_s_own_message_a_stopped_gateway_left_unanswered_is_not_stored_ag
     telegram.sync_turn("TEST 怎么样了", "TEST 还在跑。", session_id="TEST-session-tg", messages=history)
     said = [content for _role, content, _origin in _stored(hermes_home)]
     assert said.count("TEST 查一下进度") == 1
+
+
+def test_a_message_put_back_is_not_taken_for_an_earlier_one_said_alike(telegram, hermes_home):
+    """The person said "继续" and was answered, then said it again while the agent was busy, and a restarted gateway
+    put that back.  Looked up by words and moment, the first one's copy answered for it, and it was never stored."""
+    telegram.on_turn_start(10, "TEST 继续", turn_id="turn-10")
+    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-10", user_message="TEST 继续")
+    now = time.time()
+    history = [
+        {"role": "user", "content": "TEST 继续", "timestamp": now},
+        {"role": "assistant", "content": "TEST 好的，继续。"},
+        {"role": "user", "content": "TEST 继续", "timestamp": now + 30},
+        {"role": "user", "content": "TEST 好了吗"},
+        {"role": "assistant", "content": "TEST 好了。"},
+    ]
+    telegram.on_turn_start(11, "TEST 好了吗", turn_id="turn-11")
+    telegram.sync_turn("TEST 好了吗", "TEST 好了。", session_id="TEST-session-tg", messages=history)
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 继续") == 2
 
 
 def test_the_message_the_running_turn_opened_on_is_left_to_the_turn(telegram, hermes_home):
