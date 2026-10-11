@@ -1021,6 +1021,12 @@ def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch):
     (within the minute of the Stop that sent it), the next prompt was clamped to now, and the reply sorted after it
     and joined the next turn.  Every time a request carries moves back by the same lead."""
     root, homes = store
+    # Without a runtime config a test entry's hooks get 2 s; on a slow runner the Stop spent them on the store and the
+    # reply, and its record read stopped before the middle line this order needs.  A real entry's hooks get 6 s.
+    (homes["claude-code"] / "scope-recall").mkdir(parents=True, exist_ok=True)
+    (homes["claude-code"] / "scope-recall" / "runtime-config.json").write_text(
+        json.dumps({"hook_processing_seconds": 6, "resident_recall_minutes": 0}), "utf-8"
+    )
     remote_server.write_server_config(
         homes["claude-code"], "claude-code", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
     )

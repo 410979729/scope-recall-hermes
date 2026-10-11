@@ -542,26 +542,32 @@ def test_test_dataset_is_rejected_by_production_binding(tmp_path):
 def test_a_long_read_does_not_block_the_writer(store):
     """Under the rollback journal a two-second read left a writer "database is
     locked" after its whole timeout, so any operator query could fail a worker
-    pass.  The store runs in WAL mode, where readers and the writer coexist."""
+    pass.  The store runs in WAL mode, where readers and the writer coexist: the
+    write finishes while the read is still open, which holds until it has.  Timed
+    instead, the check failed on a slow runner whose write alone took 1.3 s."""
     storage, ctx = store
     with sqlite3.connect(storage.path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    holding = threading.Event()
+    holding, written = threading.Event(), threading.Event()
+    held_until_written: list[bool] = []
 
     def long_read():
         with storage.read(ctx) as tx:
             tx.status()
             holding.set()
-            time.sleep(1.5)
+            # A writer this read blocked would fail on its busy timeout, or finish only once the wait gave up.
+            held_until_written.append(written.wait(30))
 
     reader = threading.Thread(target=long_read)
     reader.start()
     assert holding.wait(5)
-    started = time.monotonic()
-    with storage.write(ctx) as tx:
-        put(tx)
-    assert time.monotonic() - started < 1.0
-    reader.join()
+    try:
+        with storage.write(ctx) as tx:
+            put(tx)
+    finally:
+        written.set()
+        reader.join()
+    assert held_until_written == [True], "the write finished while the read was open"
     assert snapshot(storage, ctx).sources == 1
 
 

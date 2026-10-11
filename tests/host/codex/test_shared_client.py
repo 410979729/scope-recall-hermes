@@ -1138,12 +1138,18 @@ def test_a_prompt_blank_for_its_first_8192_characters_is_recalled_by_what_follow
         told.sync_turn("TEST 白鹭项目的负责人是 KZ-42。", "好的。", session_id="TEST-session-1")
     finally:
         told.shutdown()
+    # What attach writes, so the hook has a real entry's 6 s: with no runtime config a test entry's hook gets 2 s,
+    # which a slow runner's first recall from a cold store outlived, and no context came back.
+    (client / "scope-recall" / "runtime-config.json").write_text(
+        json.dumps({"auto_recall_seconds": 5.0}), encoding="utf-8"
+    )
     hook = _hook(client)
     try:
         result = hook.handle_payload(_prompt(" " * 9000 + "白鹭项目的负责人 KZ-42 是谁", prompt_id="TEST-prompt-blank"))
     finally:
         hook.close()
     assert hook.diagnostics.last_reason != "recall_exception", hook.diagnostics.recall_error_detail
+    assert "hookSpecificOutput" in result, (hook.diagnostics.last_reason, hook.diagnostics.recall_error_detail)
     body = result["hookSpecificOutput"]["additionalContext"].partition("\n")[2]
     assert any("KZ-42" in item["content"] for item in json.loads(body)["items"])
 
