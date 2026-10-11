@@ -409,12 +409,19 @@ class TurnCapture:
         again; meanwhile the observation ledger and the retry buffer keep it from being written twice."""
         adapter = self._adapter
         deadline = steer_deadline() if deadline is None else deadline
-        # One message read by two routes (what post_llm_call kept, the conversation sync_turn is handed) is one.
+        # One message read by two routes (what post_llm_call kept, the conversation sync_turn is handed) is one,
+        # with what either read said alike: the two may hold different stretches of the conversation.
         reads: dict[str, tuple[Steer, str]] = {}
         for steer in steers:
             key = steer_source_key(context, steer)
-            if key not in adapter._steers_written:
-                reads.setdefault(key, (steer, key))
+            if key in adapter._steers_written:
+                continue
+            if key in reads:
+                alike = set(reads[key][0].alike) | set(steer.alike)
+                steer = reads[key][0]._replace(
+                    alike=tuple(sorted(alike, key=lambda moment: (moment is None, moment or "")))
+                )
+            reads[key] = (steer, key)
         unread = list(reads.values())
         for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
             with adapter._lock, adapter._calls.holding(hook):

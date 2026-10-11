@@ -804,6 +804,31 @@ def test_a_message_put_back_read_by_two_hooks_is_looked_up_once(telegram, hermes
     assert said.count("TEST 查一下") == 1
 
 
+def test_two_hooks_reading_different_stretches_know_what_either_read_alike(telegram, hermes_home, monkeypatch):
+    """post_llm_call is handed a shorter stretch of the conversation than sync_turn: the answered "继续" before the one
+    put back is in the second only.  Kept as the first read it, the message put back took that one's copy."""
+    t0 = time.time() - 600
+    stamp = _iso(t0)
+    monkeypatch.setattr(telegram, "_utc_now", lambda: stamp)
+    telegram.on_turn_start(60, "TEST 继续", turn_id="turn-60")
+    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-60", user_message="TEST 继续")
+    monkeypatch.undo()
+    later = [
+        {"role": "user", "content": "TEST 继续", "timestamp": t0 + 30},
+        {"role": "user", "content": "TEST 好了吗"},
+        {"role": "assistant", "content": "TEST 好了。"},
+    ]
+    whole = [{"role": "user", "content": "TEST 继续", "timestamp": t0}, {"role": "assistant", "content": "TEST 好。"}]
+    telegram.on_turn_start(61, "TEST 好了吗", turn_id="turn-61")
+    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-61", user_message="TEST 好了吗")
+    telegram.observe_post_llm_call(
+        session_id="TEST-session-tg", turn_id="turn-61", assistant_response="TEST 好了。", conversation_history=later
+    )
+    telegram.sync_turn("TEST 好了吗", "TEST 好了。", session_id="TEST-session-tg", messages=whole + later)
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 继续") == 2
+
+
 def test_the_message_the_running_turn_opened_on_is_left_to_the_turn(telegram, hermes_home):
     """The conversation's last message is the one the running turn opened on, which pre_llm_call stores as the turn's:
     a compression before the reply finds nothing after it, and does not take it for one no turn answered."""

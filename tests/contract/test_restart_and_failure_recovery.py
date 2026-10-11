@@ -1919,6 +1919,19 @@ def test_a_message_with_no_copy_of_its_own_does_not_take_one_said_alike_after_it
     assert tuple(said) == (False, True)
 
 
+def test_a_message_stored_and_waiting_again_in_the_inbox_is_one_copy(worker_app):
+    """A retried capture of a stored message waits in the inbox under the same key: counted as a second copy, it held
+    a later message said alike that was never stored."""
+    core, ctx, clock = worker_app
+    event = source_event(source_event_key="TEST-stored-and-waiting", content="TEST 继续")
+    capture_inbox.durable_record_event(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    assert token is not None
+    later = (datetime.fromisoformat(event["occurred_at"].replace("Z", "+00:00")) + timedelta(seconds=30)).isoformat()
+    items = [("user", "TEST 继续", event["occurred_at"], None), ("user", "TEST 继续", later, None)]
+    assert tuple(core.said_in_session(ctx, "TEST-scope", items)) == (True, False)
+
+
 def test_a_named_message_stored_in_another_session_is_held_across_sessions(worker_app):
     """Hermes carries a steer into the session a compression continues.  Asked across sessions, the message stored in
     the session before is held, and so are one deleted there and one still waiting in the inbox there; asked for this

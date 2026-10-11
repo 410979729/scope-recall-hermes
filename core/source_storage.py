@@ -604,18 +604,19 @@ class Sources:
                 continue
             digest = stored_content_digest(content)
             if (role, digest) not in copies:
-                copies[role, digest] = [
-                    (stamp, key)
-                    for stamp, key in (
-                        *conn.execute(
-                            "SELECT occurred_at,source_group_key FROM source_events "
-                            "WHERE scope_id=? AND role=? AND content_sha256=? AND session_id=?",
-                            (scope_id, role, digest, self._tx.context.session_id),
-                        ).fetchall(),
-                        *waiting.get((role, digest), ()),
-                    )
-                    if key not in named
-                ]
+                # One message is one copy: stored, and again in the inbox while a retried capture of it waits.
+                unique: dict[str, tuple[object, str]] = {}
+                for stamp, key in (
+                    *conn.execute(
+                        "SELECT occurred_at,source_group_key FROM source_events "
+                        "WHERE scope_id=? AND role=? AND content_sha256=? AND session_id=?",
+                        (scope_id, role, digest, self._tx.context.session_id),
+                    ).fetchall(),
+                    *waiting.get((role, digest), ()),
+                ):
+                    if key not in named:
+                        unique.setdefault(key, (stamp, key))
+                copies[role, digest] = list(unique.values())
             unnamed.setdefault((role, digest), []).append((index, occurred_at))
         # The closest message and copy are paired first: taken in the order asked, a message with no copy of its own
         # took the copy of one said alike a moment after it, and that one was stored again.
