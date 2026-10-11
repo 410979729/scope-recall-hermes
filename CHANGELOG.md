@@ -11,7 +11,7 @@ A Hermes gateway that restarts puts the messages that waited for a busy agent ba
 
 A candidate memory the evaluator was asked about five times without settling it is asked again a day after the last time, not each time something new is said about it. In the week to 2026-10-10 the shared store asked 26,909 questions, 91% of them answered "not enough evidence yet"; 80% of the candidates ever resolved were resolved within five questions, while 556 had been asked twenty times or more. The day's pace would have spared 42% of that week's questions and delayed the rest of the resolutions by a day at most; what is said meanwhile is kept and asked about together. The doctor's settling summary counts such candidates as `slowed`.
 
-Three tests that failed on slow Windows runners wait for what they test instead of a time.
+Four tests that failed on slow Windows runners wait for what they test instead of a time.
 
 ### Upgrading from 3.9.7
 

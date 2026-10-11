@@ -633,6 +633,8 @@ def test_native_guard_false_is_bounded_no_commit(worker_app, tmp_path):
     try:
         port = _port(store, ctx)
         prepared = port.prepare_source(source, remaining_seconds=2)
+        # The guard refuses at once; the budget only has to cover the helper's answer.  Half a second did not on a
+        # slow Windows runner, which reported the fence's outcome as unknown instead (CI, 2026-10-11).
         with pytest.raises(ContractError, match="publication_fence"):
             port.publish_source(
                 prepared,
@@ -640,7 +642,7 @@ def test_native_guard_false_is_bounded_no_commit(worker_app, tmp_path):
                 lease_token=item.lease_token,
                 lease_owner=item.lease_owner,
                 lease_guard=lambda: False,
-                remaining_seconds=0.5,
+                remaining_seconds=5.0,
             )
         assert store.count_rows() == 0
     finally:
