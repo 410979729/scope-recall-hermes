@@ -285,20 +285,51 @@ def test_operator_retry_operation_tokens_are_exact_and_bounded(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "front", ["retried:3.10.1|", "derivation_retry:1|", "retried:3.10.1|derivation_retry:1|", "interrupted_retry:1|"]
+    "spent",
+    [
+        f"{front}operator_retry:TEST-p13-b|prior:operator_retry:TEST-p13-a|prior:model_unavailable"
+        for front in (
+            "retried:3.10.1|",
+            "derivation_retry:1|",
+            "retried:3.10.1|derivation_retry:1|",
+            "interrupted_retry:1|",
+        )
+    ]
+    + [
+        "operator_retry:TEST-p13-b|prior:retried:3.10.1|operator_retry:TEST-p13-a|prior:model_unavailable",
+        "retried:3.10.1|operator_retry:TEST-p13-b|operator_retry:TEST-p13-a|auto_retry:1|model_unavailable",
+    ],
 )
-def test_operator_retry_budget_counts_through_marks_put_in_front(tmp_path, front):
+def test_operator_retry_budget_counts_through_marks_put_in_front(tmp_path, spent):
     """A release that re-opened the row, the extra derivation attempt or an interrupted attempt puts its mark in
-    front of an explicit retry's token; hidden there, the token no longer counted and a spent budget began again
-    (audit of 3.10.1)."""
+    front of an explicit retry's token, a later retry keeps it all behind ``prior:``, and a shortened or rebuilt
+    code keeps the tokens side by side; wherever a token was not read, a spent budget began again (audits of
+    3.10.1)."""
     binding, core, context, work_id, _ = _failed_embed(tmp_path)
-    spent = f"{front}operator_retry:TEST-p13-b|prior:operator_retry:TEST-p13-a|prior:model_unavailable"
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET last_error_code=? WHERE work_id=?", (spent, work_id))
         conn.commit()
     with core.storage.write(context) as tx:
         result = tx.work.operator_retry_failed((work_id,), now="2099-09-07T00:00:00Z", operation_id="TEST-p13-c")
     assert result[0].reason == "operator_retry_budget"
+
+
+def test_operator_retry_of_a_long_history_keeps_its_token_and_the_kind(tmp_path):
+    """Past the bound, the requeue's code gives way between its marks and its kind, so its own token and the extra
+    derivation attempt stay readable (audit of 3.10.1)."""
+    from scope_recall.core.work_storage import CODE_BOUND, _operator_retry_ids
+
+    binding, core, context, work_id, _ = _failed_embed(tmp_path)
+    long = "derivation_retry:1|" + "model_unavailable|" * 60 + "model_unavailable"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET last_error_code=? WHERE work_id=?", (long, work_id))
+        conn.commit()
+    with core.storage.write(context) as tx:
+        result = tx.work.operator_retry_failed((work_id,), now="2099-09-07T00:00:00Z", operation_id="TEST-p13-long")
+        code = tx._check().execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()[0]
+    assert result[0].disposition == "requeued" and len(long) > CODE_BOUND
+    assert code == "operator_retry:TEST-p13-long|derivation_retry:1|model_unavailable"
+    assert _operator_retry_ids(code) == ("TEST-p13-long",)
 
 
 def test_operator_retry_preserves_marker_when_failed_item_was_not_attempt_exhausted(tmp_path):

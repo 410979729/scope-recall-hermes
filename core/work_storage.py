@@ -15,10 +15,7 @@ from .failure_retry import (
     RETRY_GENERATION,
     RETRY_MARKER,
     already_retried,
-    bounded,
-    carries_stamp,
     marked,
-    release_stamp,
     validate_page,
     validation_feedback,
     wanted,
@@ -42,14 +39,20 @@ MAX_CLAIM_PAGE = 1000
 INTERRUPTED_RETRY_MARKER = "interrupted_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
 _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
-# Marks a later step puts in front of an explicit retry's token: the stamp of a release that re-opened the row since,
-# the extra derivation attempt, the interrupted attempt's.  The token counts there, or behind a later retry's prior:.
-_LEADING_MARKS = rf"(?:(?:{RETRY_MARKER}:[^|]+|{DERIVATION_RETRY_MARKER}|{INTERRUPTED_RETRY_MARKER})\|)*"
-_OPERATOR_TOKEN = re.compile(
-    rf"(?:^{_LEADING_MARKS}|\|prior:)operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})(?=\||$)"
+#: The longest error code a row keeps.
+CODE_BOUND = 1024
+# A mark is read wherever a later step left it: at the start, after another segment, or behind an explicit retry's
+# ``prior:``, which keeps the code it found.
+_AT_A_MARK = r"(?:^|\|)(?:prior:)?"
+#: Each explicit retry's token; together they are the item's explicit budget.
+_OPERATOR_TOKEN = re.compile(rf"{_AT_A_MARK}operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})(?=\||$)")
+_AUTO_TOKEN = re.compile(rf"{_AT_A_MARK}auto_retry:([0-9]+)(?=\||$)")
+#: The marks a retry budget is read from, but the automatic count: a release's re-look, the extra derivation
+#: attempt, the interrupted attempt's, an explicit retry.
+_BUDGET_MARK = re.compile(
+    rf"{_AT_A_MARK}({RETRY_MARKER}:[^|]+|{DERIVATION_RETRY_MARKER}|{INTERRUPTED_RETRY_MARKER}"
+    rf"|operator_retry:[A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})(?=\||$)"
 )
-_OPERATOR_HEAD = re.compile(rf"{_LEADING_MARKS}operator_retry:")
-_AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
 
 #: Failures that are never about the work item.  A provider declining to serve
 #: anyone says nothing about this payload -- unlike a timeout, which a large
@@ -172,26 +175,30 @@ def _failure_kind(error: str) -> str:
     return error.rsplit("|", 1)[-1]
 
 
+def _budget_marks(error: str, *, counted: bool = True) -> str:
+    """Every mark in ``error`` a retry budget is read from, once each in the order met, and the automatic count
+    unless ``counted`` is off: what a code that is rebuilt or shortened must keep, or a spent budget begins again."""
+    marks = "".join(f"{mark}|" for mark in dict.fromkeys(_BUDGET_MARK.findall(error)))
+    count = _auto_count(error) if counted else 0
+    return marks + (f"auto_retry:{count}|" if count else "")
+
+
+def _within(code: str) -> str:
+    """``code``, a history ending in its failure kind, within ``CODE_BOUND``.  Past it, what lies between its budget
+    marks and its kind gives way: the history is detail, the marks and the kind decide what is done next."""
+    if len(code) <= CODE_BOUND:
+        return code
+    return (_budget_marks(code) + _failure_kind(code))[-CODE_BOUND:]
+
+
 def _preserve_retry_history(error) -> bool:
-    return bool(
-        error
-        and (
-            str(error).startswith(("operator_retry:", "chunk_upgrade:1106|"))
-            or _auto_count(str(error))
-            or "derivation_retry:1" in str(error)
-            or carries_stamp(error)
-        )
-    )
+    """Whether a new failure is added to ``error`` rather than replacing it: it holds a mark a budget is read from."""
+    return bool(error) and (str(error).startswith("chunk_upgrade:1106|") or bool(_budget_marks(str(error))))
 
 
 def _auto_retry_stamp(error: str) -> str:
-    """The error code of a row granted one automatic recovery."""
-    stamp = f"auto_retry:{_auto_count(error) + 1}|{_failure_kind(error)}"
-    if "derivation_retry:1|" in error:
-        stamp = "derivation_retry:1|" + stamp
-    if _OPERATOR_HEAD.match(error):
-        return bounded(f"{error}|{stamp}")
-    return release_stamp(error) + stamp
+    """The error code of a row granted one automatic recovery: its marks, its new count and its failure kind."""
+    return _within(f"{_budget_marks(error, counted=False)}auto_retry:{_auto_count(error) + 1}|{_failure_kind(error)}")
 
 
 def _capacity_count(error: object) -> int:
@@ -509,17 +516,19 @@ class WorkItems:
         visible, params = self._visible_filter()
         base = f"state='leased' AND {visible} AND lease_until IS NOT NULL AND lease_until < ?"
         params = (*params, now)
-        # A history the next retry reads (an explicit or automatic retry's count, the extra derivation attempt, the
-        # release that re-opened the row) is kept; anything else is replaced.
-        failed = conn.execute(
-            f"""UPDATE work_items SET state='failed',lease_owner=NULL,lease_until=NULL,last_error_code=CASE
-                    WHEN last_error_code LIKE 'operator_retry:%' OR last_error_code LIKE 'auto_retry:%'
-                      OR last_error_code LIKE '%derivation_retry:1|%' OR last_error_code LIKE '{RETRY_MARKER}:%'
-                      OR last_error_code LIKE '%|{RETRY_MARKER}:%'
-                    THEN last_error_code || '|lease_exhausted' ELSE 'lease_exhausted' END, available_at=?
-                WHERE {base} AND attempt >= ?""",
-            (now, *params, MAX_RECOVERABLE_ATTEMPTS),
-        ).rowcount
+        # A lost lease is a failure like another: a history a budget is read from is added to, anything else replaced.
+        spent = conn.execute(
+            f"SELECT work_id,last_error_code FROM work_items WHERE {base} AND attempt >= ?",
+            (*params, MAX_RECOVERABLE_ATTEMPTS),
+        ).fetchall()
+        for work_id, prior in spent:
+            code = _within(f"{prior}|lease_exhausted") if _preserve_retry_history(prior) else "lease_exhausted"
+            conn.execute(
+                """UPDATE work_items SET state='failed',lease_owner=NULL,lease_until=NULL,last_error_code=?,
+                   available_at=? WHERE work_id=? AND state='leased'""",
+                (code, now, work_id),
+            )
+        failed = len(spent)
         released = conn.execute(
             f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL
                 WHERE {base} AND attempt < ?""",
@@ -810,7 +819,7 @@ class WorkItems:
             recovered += conn.execute(
                 """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                    lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
-                (now, bounded(f"{INTERRUPTED_RETRY_MARKER}|{row['last_error_code']}"), row["work_id"]),
+                (now, _within(f"{INTERRUPTED_RETRY_MARKER}|{row['last_error_code']}"), row["work_id"]),
             ).rowcount
         return recovered
 
@@ -1156,7 +1165,9 @@ class WorkItems:
                lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
                 (
                     now,
-                    f"{DERIVATION_RETRY_MARKER}|{code}" if automatic else marked(code, generation=RETRY_GENERATION),
+                    _within(
+                        f"{DERIVATION_RETRY_MARKER}|{code}" if automatic else marked(code, generation=RETRY_GENERATION)
+                    ),
                     work_id,
                 ),
             ).rowcount
@@ -1172,7 +1183,7 @@ class WorkItems:
             return WorkMutation(work_id, "stale", self.read_state(work_id) or "stale", lease_token)
         prior = conn.execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()[0]
         if _preserve_retry_history(prior):
-            error_code = bounded(f"{prior}|{error_code}")
+            error_code = _within(f"{prior}|{error_code}")
         conn.execute(
             f"""UPDATE work_items SET state='pending',attempt=MAX(0,attempt-1),
                        lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
@@ -1275,7 +1286,7 @@ class WorkItems:
         # existing bounded error field for audit/idempotence.
         marker = f"operator_retry:{operation_id}"
         prior_error = row["last_error_code"] or ""
-        stamped = marker if not prior_error else bounded(f"{marker}|prior:{prior_error}")
+        stamped = marker if not prior_error else _within(f"{marker}|prior:{prior_error}")
         conn.execute(
             """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                lease_until=NULL,last_error_code=?
@@ -1420,18 +1431,16 @@ class WorkItems:
             # ordinary 60s ceiling in place and 197 items retried without pause
             # for an entire provider outage, which is the silent loop this
             # whole design exists to prevent.
+            # Rebuilt from its count, the code keeps every budget mark it had, so an outage spends no budget.
             refusals = _capacity_count(prior) + 1
-            retry_error = f"capacity:{refusals}|{error_code}"
-            if "derivation_retry:1|" in str(prior or ""):
-                retry_error = "derivation_retry:1|" + retry_error
-            retry_error = bounded(release_stamp(prior) + retry_error)
+            retry_error = _within(f"{_budget_marks(str(prior or ''))}capacity:{refusals}|{error_code}")
             conn.execute(
                 f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,
                    last_error_code=?,available_at=?,attempt=MAX(attempt-1,0) WHERE {_LEASED_ROW}""",
                 (retry_error, _after(now, _capacity_backoff_seconds(refusals)), work_id, lease_token, owner),
             )
             return WorkMutation(work_id, "retry", "pending", lease_token)
-        history = bounded(f"{prior}|{error_code}") if _preserve_retry_history(prior) else error_code
+        history = _within(f"{prior}|{error_code}") if _preserve_retry_history(prior) else error_code
         if recoverable and (invalid or attempt < MAX_RECOVERABLE_ATTEMPTS):
             conn.execute(
                 f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?

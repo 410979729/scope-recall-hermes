@@ -124,30 +124,31 @@ def test_a_new_stamp_replaces_the_earlier_one_and_keeps_the_rest():
 
 def test_a_code_past_the_bound_keeps_its_marks_and_its_kind():
     """A release stamp longer than the schema's pushed a full code past the bound, and the cut took the end of the
-    failure kind (``derivation_inval``: no class, no doctor count; audit of 3.10.1).  The middle gives way, whole
-    segments at a time."""
-    from scope_recall.core.failure_retry import CODE_BOUND, bounded
+    failure kind (``derivation_inval``: no class, no doctor count; audit of 3.10.1).  Past the bound the history
+    between the marks and the kind gives way, and every budget mark stays, the automatic count among them: cut in
+    the middle, a count there was lost and its budget began again (audit of 3.10.1)."""
+    from scope_recall.core.work_storage import CODE_BOUND, _auto_count, _operator_retry_ids, _within
 
     code = "retried:1110|derivation_retry:1|" + "timeout|" * 120 + "network_error|derivation_invalid"
     assert len(code) == CODE_BOUND
-    stamped = marked(code, generation="3.10.1")
-    assert len(stamped) <= CODE_BOUND and failure_kind(stamped) == "derivation_invalid"
-    assert stamped.startswith("retried:3.10.1|derivation_retry:1|timeout|")
-    assert stamped.endswith("|network_error|derivation_invalid")
-    assert set(stamped.split("|")) <= set(code.split("|")) | {"retried:3.10.1"}, "no segment is cut in two"
-    assert bounded("short|code") == "short|code"
+    shortened = _within(marked(code, generation="3.10.1"))
+    assert shortened == "retried:3.10.1|derivation_retry:1|derivation_invalid"
+    deferred = "operator_retry:TEST-op|prior:auto_retry:3|interrupted_retry:1|timeout|" + "http_402|" * 200 + "http_402"
+    assert _within(deferred) == "operator_retry:TEST-op|interrupted_retry:1|auto_retry:3|http_402"
+    assert (_auto_count(_within(deferred)), _operator_retry_ids(_within(deferred))) == (3, ("TEST-op",))
+    assert _within("short|code") == "short|code"
 
 
 def test_a_stamp_kept_behind_an_explicit_retry_still_counts():
     """An explicit retry of one item keeps the code it found behind ``prior:``; the release's stamp there was not
     seen, and a second run of the same release re-opened the row again (audit of 3.10.1)."""
-    from scope_recall.core.failure_retry import carries_stamp, release_stamp
+    from scope_recall.core.work_storage import _budget_marks, _preserve_retry_history
 
     code = "operator_retry:TEST-op|prior:retried:3.10.1|http_400|http_400"
-    assert already_retried(code, generation="3.10.1") and carries_stamp(code)
-    assert not already_retried(code, generation="3.10.2")
-    assert release_stamp(code) == "" and release_stamp("derivation_retry:1|retried:3.10.1|x") == "retried:3.10.1|"
-    assert not carries_stamp("interrupted_retry:1|derivation_retry:1|timeout")
+    assert already_retried(code, generation="3.10.1") and not already_retried(code, generation="3.10.2")
+    assert _budget_marks(code) == "operator_retry:TEST-op|retried:3.10.1|"
+    assert _preserve_retry_history("retried:3.10.1|http_400") and not _preserve_retry_history("http_400")
+    assert _budget_marks("http_400|sretried:3.10.1x|timeout") == "", "a mark inside another segment is no mark"
 
 
 @pytest.mark.parametrize(
@@ -156,17 +157,23 @@ def test_a_stamp_kept_behind_an_explicit_retry_still_counts():
         ("retried:3.10.1|timeout", "retried:3.10.1|auto_retry:1|timeout"),
         (
             "derivation_retry:1|retried:3.10.1|derivation_invalid|timeout",
-            "retried:3.10.1|derivation_retry:1|auto_retry:1|timeout",
+            "derivation_retry:1|retried:3.10.1|auto_retry:1|timeout",
         ),
         (
             "retried:3.10.1|operator_retry:TEST-op|prior:timeout|timeout",
-            "retried:3.10.1|operator_retry:TEST-op|prior:timeout|timeout|auto_retry:1|timeout",
+            "retried:3.10.1|operator_retry:TEST-op|auto_retry:1|timeout",
+        ),
+        (
+            "retried:3.10.1|interrupted_retry:1|candidate_attempt_interrupted|timeout",
+            "retried:3.10.1|interrupted_retry:1|auto_retry:1|timeout",
         ),
         ("auto_retry:1|timeout", "auto_retry:2|timeout"),
+        ("derivation_retry:1|auto_retry:1|timeout", "derivation_retry:1|auto_retry:2|timeout"),
     ],
 )
-def test_an_automatic_recovery_keeps_the_release_stamp(code, rebuilt):
-    """Rebuilt without it, a row the release had re-opened was re-opened by it again (audit of 3.10.1)."""
+def test_an_automatic_recovery_keeps_every_budget_mark(code, rebuilt):
+    """Rebuilt from its count, the code lost the release's stamp, so the release re-opened the row again, and the
+    interrupted attempt's mark, so a second interrupted retry was granted (audits of 3.10.1)."""
     from scope_recall.core.work_storage import _auto_retry_stamp
 
     assert _auto_retry_stamp(code) == rebuilt
@@ -324,33 +331,86 @@ def test_a_row_this_release_re_opened_keeps_its_stamp_through_its_next_failure(a
     assert (again["retried"], again["already_retried"]) == (0, 1)
 
 
-def test_a_provider_refusing_everyone_and_a_lost_lease_keep_the_stamp(app):
-    """A capacity refusal rebuilt the code from its count, and a lease that ran out with the attempts spent replaced
-    it, so the release's stamp went with them; the lost lease also took the automatic retry count (audit of
-    3.10.1)."""
+def _pending_with(core, code):
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(
+            "UPDATE work_items SET state='pending',attempt=0,last_error_code=? WHERE last_error_code IS NOT NULL",
+            (code,),
+        )
+        conn.commit()
+
+
+@pytest.mark.parametrize(
+    "prior,rebuilt",
+    [
+        ("retried:{release}|timeout", "retried:{release}|capacity:1|http_429"),
+        ("capacity:1|http_429", "capacity:2|http_429"),
+        ("derivation_retry:1|capacity:2|http_429", "derivation_retry:1|capacity:3|http_429"),
+        (
+            "operator_retry:TEST-op|prior:retried:{release}|interrupted_retry:1|auto_retry:3|http_400",
+            "operator_retry:TEST-op|retried:{release}|interrupted_retry:1|auto_retry:3|capacity:1|http_429",
+        ),
+    ],
+)
+def test_a_provider_refusing_everyone_keeps_every_budget_mark(app, prior, rebuilt):
+    """A capacity refusal rebuilt the code from its count with the derivation mark alone: the release's stamp, an
+    explicit retry's token, the interrupted attempt's mark and the automatic count went, and each budget began again
+    (audits of 3.10.1).  The count of refusals in a row still replaces the last."""
+    core, ctx = app
+    _fail_one(core, ctx, "timeout")
+    _pending_with(core, prior.format(release=RETRY_GENERATION))
+    assert _claim_and(core, ctx, error_code="http_429", recoverable=True).state == "pending"
+    (code,) = _codes(core).values()
+    assert code == rebuilt.format(release=RETRY_GENERATION)
+
+
+def test_a_failure_and_a_deferral_past_the_bound_keep_the_marks_and_the_new_kind(app):
+    """Added to a long history, a failure or a deferral was cut off the end of the bounded code, so the code kept a
+    stale or broken kind (audits of 3.10.1)."""
+    from scope_recall.core.work_storage import CODE_BOUND
+
     core, ctx = app
     _fail_one(core, ctx, "timeout")
     stamp = f"retried:{RETRY_GENERATION}|"
-    with sqlite3.connect(core.storage.path) as conn:
-        conn.execute(
-            "UPDATE work_items SET state='pending',attempt=0,last_error_code=? WHERE state='failed'",
-            (stamp + "timeout",),
-        )
-        conn.commit()
-    assert _claim_and(core, ctx, error_code="http_429", recoverable=True).state == "pending"
+    long = f"{stamp}auto_retry:2|" + "timeout|" * 130 + "timeout"
+    _pending_with(core, long)
+    assert _claim_and(core, ctx, error_code="http_400", recoverable=False).state == "failed"
     (code,) = _codes(core).values()
-    assert code == f"{stamp}capacity:1|http_429"
-    with sqlite3.connect(core.storage.path) as conn:
-        conn.execute(
-            "UPDATE work_items SET state='leased',attempt=3,lease_owner='TEST-gone',lease_until='2000-01-01T00:00:00Z',"
-            "last_error_code=? WHERE last_error_code IS NOT NULL",
-            (stamp + "auto_retry:3|timeout",),
-        )
-        conn.commit()
+    assert code == f"{stamp}auto_retry:2|http_400"
+    _pending_with(core, long)
     with core.storage.write(ctx, remaining_seconds=10) as tx:
-        assert tx.work.release_stale(core.clock.utc_now()) == 1
+        (item,) = tx.work.claim_next("TEST-owner", core.clock.utc_now(), lease_seconds=30, limit=1)
+        tx.work.defer_without_attempt(
+            item.work_id, item.lease_token, item.lease_owner, now=core.clock.utc_now(), error_code="http_402"
+        )
     (code,) = _codes(core).values()
-    assert code == f"{stamp}auto_retry:3|timeout|lease_exhausted"
+    assert code == f"{stamp}auto_retry:2|http_402" and len(code) <= CODE_BOUND
+
+
+def test_a_lost_lease_keeps_every_budget_mark_within_the_bound(app):
+    """A lease that ran out with the attempts spent replaced a code that led with the release's stamp, taking the
+    stamp and the automatic count with it, and one it kept could pass the bound (audits of 3.10.1)."""
+    from scope_recall.core.work_storage import CODE_BOUND
+
+    core, ctx = app
+    _fail_one(core, ctx, "timeout")
+    stamp = f"retried:{RETRY_GENERATION}|"
+    for prior, after in (
+        (f"{stamp}auto_retry:3|timeout", f"{stamp}auto_retry:3|timeout|lease_exhausted"),
+        (f"{stamp}auto_retry:3|" + "timeout|" * 125 + "timeout", f"{stamp}auto_retry:3|lease_exhausted"),
+        ("timeout", "lease_exhausted"),
+    ):
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute(
+                "UPDATE work_items SET state='leased',attempt=3,lease_owner='TEST-gone',"
+                "lease_until='2000-01-01T00:00:00Z',last_error_code=? WHERE last_error_code IS NOT NULL",
+                (prior,),
+            )
+            conn.commit()
+        with core.storage.write(ctx, remaining_seconds=10) as tx:
+            assert tx.work.release_stale(core.clock.utc_now()) == 1
+        (code,) = _codes(core).values()
+        assert code == after and len(code) <= CODE_BOUND
 
 
 def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(worker_app):

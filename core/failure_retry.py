@@ -147,9 +147,6 @@ NEEDS_REVIEW_COUNT = f"""
     AND lower(last_error_code) LIKE '%|derivation_invalid'
 """
 
-#: The longest error code a row keeps.
-CODE_BOUND = 1024
-
 # A stamp naming a schema generation (``retried:1110|``, as older releases wrote it) names no release, so it never
 # blocks one.  An explicit retry of one item keeps the code it found behind ``prior:``, stamp and all.
 _MARKER_RE = re.compile(rf"(?:^|\|(?:prior:)?){RETRY_MARKER}:([^|]+)\|")
@@ -192,30 +189,6 @@ def already_retried(error_code: object, *, generation: str) -> bool:
     return generation in _MARKER_RE.findall(str(error_code or ""))
 
 
-def carries_stamp(error_code: object) -> bool:
-    """Whether a release re-opened this row: its code is history to keep, not a code to replace."""
-    return bool(_MARKER_RE.search(str(error_code or "")))
-
-
-def release_stamp(error_code: object) -> str:
-    """The release stamp a code carries (``retried:3.10.1|``), at its start or after another mark, or ``""``.  A code
-    rebuilt after the row's next attempt begins with it: lost, the release would re-open the row a second time."""
-    found = _STAMP_RE.search(str(error_code or ""))
-    return found.group(0) if found else ""
-
-
-def bounded(error_code: str) -> str:
-    """``error_code`` within ``CODE_BOUND``, in whole segments, its middle giving way: the marks a code begins with (a
-    release stamp, an explicit retry) and the history it ends with (the last automatic retry, the failure kind)
-    decide what is done with the row next."""
-    if len(error_code) <= CODE_BOUND:
-        return error_code
-    head = error_code[: CODE_BOUND // 2]
-    head = head[: head.rfind("|") + 1] if "|" in head else head
-    tail = error_code[len(head) - CODE_BOUND :]
-    return head + (tail[tail.find("|") + 1 :] if "|" in tail else tail)
-
-
 #: Any other HTTP status a provider answered (``worker_outcomes`` records each as ``http_NNN``): a 4xx not named above
 #: (404, 409, 413, 422, ...), a 5xx the worker does not recover by itself (501, 520-524, ...).  The HTTP worker reports
 #: a redirect as ``http_redirect``, named above.  No automatic retry clears it, but an operator who has fixed the
@@ -235,13 +208,13 @@ def retry_class(error_code: object) -> str | None:
 
 
 def marked(error_code: object, *, generation: str) -> str:
-    """The error code to store on a row being re-opened.
+    """The error code to store on a row being re-opened, before its writer bounds it.
 
-    The stamp replaces an earlier release's: only this release's decides (``already_retried``), and the stamps of
-    every release that re-opened a row, stacked, would push its failure kind off the end of the bounded code.
+    The stamp replaces an earlier release's: only this release's decides (``already_retried``), and a stamp per
+    release that re-opened a row would only lengthen the code.
     """
     history = _STAMP_RE.sub("", str(error_code or "").strip())
-    return bounded(f"{RETRY_MARKER}:{generation}|{history}")
+    return f"{RETRY_MARKER}:{generation}|{history}"
 
 
 def wanted(error_code: object, *, include_terminal: bool) -> bool:
@@ -265,16 +238,12 @@ def validate_page(limit: object) -> int:
 
 __all__ = [
     "ACTIONABLE_FAILURES",
-    "CODE_BOUND",
     "RETRY_GENERATION",
     "RETRY_MARKER",
     "TERMINAL_FAILURES",
     "already_retried",
-    "bounded",
-    "carries_stamp",
     "failure_kind",
     "marked",
-    "release_stamp",
     "retry_class",
     "selects",
     "validate_page",
