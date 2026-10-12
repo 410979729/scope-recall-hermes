@@ -694,7 +694,14 @@ scope-recall retry-failures --config /path/to/instance-root/scope-recall/runtime
 ```
 
 Without `--apply` nothing is written. `--include-terminal` also re-runs failures
-that are terminal by design. The same command returns to the replay the captures
+that are terminal by design. Each release gives a failure one re-look: a row this
+release re-opened that failed again is left by a later run in the same release,
+which counts it (`already_retried`, the first eight ids in
+`already_retried_work_ids`). To re-run such a row within the release, name it:
+`python -I -X utf8 -m scope_recall.runtime.worker_entry --config <file>
+--retry-failed <work id> [...]` takes up to eight ids, at most twice for one item,
+re-queues them and runs one pass (with `--env-file` when its routes need
+credentials). `retry-failures` also returns to the replay the captures
 the inbox gave up after their tries (`inbox_given_up` in its output, and what gave
 them up in `inbox_by_kind`; without `--apply` it only counts them), each with its
 tries counted anew (one given up while it was being given a new key goes back to that

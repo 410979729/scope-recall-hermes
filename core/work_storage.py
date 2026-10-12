@@ -12,16 +12,20 @@ from .delete_storage import purge_work_parts
 from .failure_retry import (
     AUTO_RECOVERABLE_ERRORS,
     DERIVATION_RETRY_MARKER,
+    RETRY_GENERATION,
+    already_retried,
     marked,
-    selects,
     validate_page,
     validation_feedback,
+    wanted,
 )
 from .inbox_rules import deferred_path
 from .schema import SCHEMA_VERSION
 
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
+#: Work items one explicit operator retry may name.
+MAX_OPERATOR_PAGE = 8
 #: Failed rows one pass may reopen.  Reopening a failure is not the same kind of
 #: work as claiming a ready item: each reopened row becomes a model call later,
 #: so it keeps its own page however large a pass of cheap work may be.  It was
@@ -836,8 +840,12 @@ class WorkItems:
         attempt as ``candidate_attempt_interrupted``.  Other work types need
         only the work item.
 
-        Idempotent: every row is stamped with the schema generation that granted
-        it, and a row already carrying this generation's stamp is skipped.
+        Idempotent: every row is stamped with the release that granted it, and
+        a row already carrying this release's stamp is skipped.  Skipped rows the
+        request covers are counted (``already_retried``, the first ids in
+        ``already_retried_work_ids``): each failed again after this release
+        re-opened it, and a run that re-opens nothing says so rather than
+        nothing.
         """
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
@@ -852,13 +860,26 @@ class WorkItems:
             (*params, max(limit * 8, limit)),
         ).fetchall()
 
-        report = {"examined": 0, "retried": 0, "by_kind": {}, "applied": not dry_run}
+        report = {
+            "examined": 0,
+            "retried": 0,
+            "by_kind": {},
+            "applied": not dry_run,
+            "already_retried": 0,
+            "already_retried_work_ids": [],
+        }
         for row in rows:
             if report["retried"] >= limit:
                 break
             report["examined"] += 1
             code = row["last_error_code"]
-            if not selects(code, include_terminal=include_terminal, generation=SCHEMA_VERSION):
+            if not wanted(code, include_terminal=include_terminal):
+                continue
+            if already_retried(code, generation=RETRY_GENERATION):
+                report["already_retried"] += 1
+                # As many as one explicit retry by work id takes (``worker_entry --retry-failed``).
+                if len(report["already_retried_work_ids"]) < MAX_OPERATOR_PAGE:
+                    report["already_retried_work_ids"].append(int(row["work_id"]))
                 continue
             if not dry_run and not self._reopen_failed(row["work_id"], row["work_type"], code, now=now):
                 continue
@@ -879,7 +900,7 @@ class WorkItems:
                     conn.execute(
                         """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                                     lease_until=NULL,last_error_code=? WHERE work_id=? AND state='obsolete'""",
-                        (now, marked("authority_revoked", generation=SCHEMA_VERSION), work_id),
+                        (now, marked("authority_revoked", generation=RETRY_GENERATION), work_id),
                     )
         # Captures a replay gave up after its tries (``inbox_rules.GAVE_UP``) go back to it, their tries counted
         # anew: whatever kept them out has been fixed, or they are given up again, visibly.  Only the partition this
@@ -1120,7 +1141,7 @@ class WorkItems:
                lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
                 (
                     now,
-                    f"{DERIVATION_RETRY_MARKER}|{code}" if automatic else marked(code, generation=SCHEMA_VERSION),
+                    f"{DERIVATION_RETRY_MARKER}|{code}" if automatic else marked(code, generation=RETRY_GENERATION),
                     work_id,
                 ),
             ).rowcount
@@ -1193,7 +1214,7 @@ class WorkItems:
             raise ContractError("ACCESS_DENIED", "operator_origin")
         if not isinstance(work_ids, (tuple, list)) or not work_ids:
             raise ContractError("INPUT_INVALID", "retry_work_ids")
-        if type(max_items) is not int or not 1 <= max_items <= 8 or len(work_ids) > max_items:
+        if type(max_items) is not int or not 1 <= max_items <= MAX_OPERATOR_PAGE or len(work_ids) > max_items:
             raise ContractError("INPUT_INVALID", "retry_budget")
         if any(type(value) is not int or value < 1 for value in work_ids) or len(set(work_ids)) != len(work_ids):
             raise ContractError("INPUT_INVALID", "retry_work_ids")

@@ -1,4 +1,4 @@
-"""One bounded re-look at failed work, granted by an operator, stamped once.
+"""One bounded re-look at failed work per release, granted by an operator, stamped once.
 
 Covers ``core/failure_retry.py``, ``work.retry_failed`` and the terminal count
 the store's status gives the worker and the doctor.  The properties that matter: a fault can
@@ -11,9 +11,11 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
 from scope_recall.core.failure_retry import (
     ACTIONABLE_FAILURES,
+    RETRY_GENERATION,
     RETRY_MARKER,
     TERMINAL_FAILURES,
     already_retried,
@@ -22,9 +24,10 @@ from scope_recall.core.failure_retry import (
     retry_class,
     selects,
 )
-from scope_recall.core.schema import SCHEMA_VERSION
 from test_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
 from test_claims import app
+from test_consolidation_chunks import FIRST, LAST, claims, long_source, proposal, row
+from test_worker import FakeConsolidation, consolidation_payload, worker_app
 
 # --------------------------------------------------------------------------
 # Reading a decorated error code
@@ -50,35 +53,73 @@ def test_the_kind_is_the_last_segment(code, kind):
 @pytest.mark.parametrize("kind", sorted(ACTIONABLE_FAILURES))
 def test_faults_are_retried_by_default(kind):
     assert retry_class(kind) == "actionable"
-    assert selects(kind, include_terminal=False, generation=SCHEMA_VERSION) is True
+    assert selects(kind, include_terminal=False, generation=RETRY_GENERATION) is True
 
 
 @pytest.mark.parametrize("kind", sorted(TERMINAL_FAILURES))
 def test_by_design_outcomes_need_the_explicit_flag(kind):
     assert retry_class(kind) == "terminal"
-    assert selects(kind, include_terminal=False, generation=SCHEMA_VERSION) is False
-    assert selects(kind, include_terminal=True, generation=SCHEMA_VERSION) is True
+    assert selects(kind, include_terminal=False, generation=RETRY_GENERATION) is False
+    assert selects(kind, include_terminal=True, generation=RETRY_GENERATION) is True
 
 
 @pytest.mark.parametrize("code", ["something_else", "capture_error", "", None])
 def test_an_unknown_failure_is_never_retried(code):
     assert retry_class(code) is None
-    assert selects(code, include_terminal=True, generation=SCHEMA_VERSION) is False
+    assert selects(code, include_terminal=True, generation=RETRY_GENERATION) is False
 
 
-def test_a_row_stamped_by_this_generation_is_skipped():
+def test_the_re_look_is_the_release_s():
+    assert RETRY_GENERATION == __version__
+
+
+def test_a_row_stamped_by_this_release_is_skipped():
     """The stamp is what stops a second run from doing the same work again."""
-    stamped = marked("timeout", generation=SCHEMA_VERSION)
-    assert stamped.startswith(f"{RETRY_MARKER}:{SCHEMA_VERSION}|")
-    assert already_retried(stamped, generation=SCHEMA_VERSION) is True
-    assert selects(stamped, include_terminal=True, generation=SCHEMA_VERSION) is False
+    stamped = marked("timeout", generation=RETRY_GENERATION)
+    assert stamped == f"{RETRY_MARKER}:{RETRY_GENERATION}|timeout"
+    assert already_retried(stamped, generation=RETRY_GENERATION) is True
+    assert selects(stamped, include_terminal=True, generation=RETRY_GENERATION) is False
 
 
-def test_a_stamp_from_another_generation_does_not_block():
-    """A later schema is a later decision; it may grant its own re-look."""
-    stamped = marked("timeout", generation=SCHEMA_VERSION - 1)
-    assert already_retried(stamped, generation=SCHEMA_VERSION) is False
-    assert selects(stamped, include_terminal=False, generation=SCHEMA_VERSION) is True
+def test_a_stamp_from_another_release_does_not_block():
+    """A later release is a later decision; it may grant its own re-look."""
+    stamped = marked("timeout", generation="0.0.1")
+    assert already_retried(stamped, generation=RETRY_GENERATION) is False
+    assert selects(stamped, include_terminal=False, generation=RETRY_GENERATION) is True
+    assert already_retried(stamped, generation="0.0.11") is False, "a release is matched whole"
+
+
+def test_a_schema_generation_stamp_never_blocks_a_release():
+    """#233: rows re-opened under schema 1110 before a fix kept a stamp that blocked every later release keeping the
+    schema, the one that fixed their validation included.  The code is one of the two items reported there."""
+    code = (
+        "retried:1110|derivation_retry:1|retried:1109|auto_retry:2|timeout|timeout|"
+        "DERIVATION_INVALID|DERIVATION_INVALID|DERIVATION_INVALID"
+    )
+    assert already_retried(code, generation=RETRY_GENERATION) is False
+    assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is False
+    assert selects(code, include_terminal=True, generation=RETRY_GENERATION) is True
+    assert marked(code, generation=RETRY_GENERATION) == (
+        f"retried:{RETRY_GENERATION}|derivation_retry:1|auto_retry:2|timeout|timeout|"
+        "DERIVATION_INVALID|DERIVATION_INVALID|DERIVATION_INVALID"
+    )
+
+
+def test_a_new_stamp_replaces_the_earlier_one_and_keeps_the_rest():
+    """Only this release's stamp decides; stacked, one per release, the stamps would push the failure kind off the
+    end of the bounded code.  Every other mark, and a stamp kept behind an operator retry's ``prior:``, stays."""
+    again = marked(marked("auto_retry:1|timeout", generation="3.10.0"), generation="3.10.1")
+    assert again == "retried:3.10.1|auto_retry:1|timeout"
+    assert failure_kind(again) == "timeout"
+    behind = "operator_retry:TEST-op|prior:retried:3.10.0|derivation_retry:1|derivation_invalid"
+    assert marked(behind, generation="3.10.1") == f"retried:3.10.1|{behind}"
+    long = "derivation_retry:1|" + "timeout|" * 120 + "derivation_invalid"
+    assert len(long) + 4 * len("retried:3.10.1|") > 1024, "four stamps stacked would cut the kind off"
+    stamped = long
+    for release in ("3.10.1", "3.10.2", "3.11.0", "4.0.0"):
+        stamped = marked(stamped, generation=release)
+    assert stamped == f"retried:4.0.0|{long}"
+    assert retry_class(stamped) == "terminal"
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +197,95 @@ def test_a_terminal_failure_is_left_alone_without_the_flag(app):
     assert _states(core)[0].get("failed")
     assert core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)["retried"] >= 1
     assert not _states(core)[0].get("failed")
+
+
+def _codes(core):
+    with sqlite3.connect(core.storage.path) as conn:
+        return dict(conn.execute("SELECT work_id,last_error_code FROM work_items WHERE last_error_code IS NOT NULL"))
+
+
+def test_a_row_re_opened_under_the_schema_stamp_is_re_opened_by_this_release(app):
+    """#233: its re-look spent before the fix, a row stayed failed through every release that kept the schema."""
+    core, ctx = app
+    _fail_one(core, ctx, "retried:1110|derivation_retry:1|derivation_invalid")
+    report = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)
+    assert (report["retried"], report["already_retried"], report["already_retried_work_ids"]) == (1, 0, [])
+    assert not _states(core)[0].get("failed")
+    (code,) = _codes(core).values()
+    assert code == f"retried:{RETRY_GENERATION}|derivation_retry:1|derivation_invalid"
+
+
+def test_a_row_this_release_re_opened_is_counted_until_the_next_one(app, monkeypatch):
+    """Failed again after this release re-opened it, a row is not re-opened by it twice, but the run says so and names
+    it (for ``worker_entry --retry-failed``); a request that does not cover it does not count it; the next release
+    re-opens it."""
+    from scope_recall.core import work_storage
+
+    core, ctx = app
+    _fail_one(core, ctx, "derivation_retry:1|derivation_invalid")
+    assert core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)["retried"] == 1
+    (work_id,) = _codes(core)
+    with sqlite3.connect(core.storage.path) as conn:
+        # Its next attempt fails as the last did, in all three tables.
+        conn.execute(
+            "UPDATE work_items SET state='failed',last_error_code=last_error_code||'|derivation_invalid' "
+            "WHERE work_id=?",
+            (work_id,),
+        )
+        conn.execute("UPDATE candidate_evaluations SET state='failed' WHERE work_id=?", (work_id,))
+        conn.commit()
+    covered = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=True)
+    assert (covered["retried"], covered["already_retried"], covered["already_retried_work_ids"]) == (0, 1, [work_id])
+    uncovered = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
+    assert (uncovered["retried"], uncovered["already_retried"], uncovered["already_retried_work_ids"]) == (0, 0, [])
+    monkeypatch.setattr(work_storage, "MAX_OPERATOR_PAGE", 0)
+    capped = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=True)
+    assert (capped["already_retried"], capped["already_retried_work_ids"]) == (1, []), "ids beyond one retry's page"
+    monkeypatch.setattr(work_storage, "RETRY_GENERATION", "99.0.0")
+    later = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)
+    assert (later["retried"], later["already_retried"]) == (1, 0)
+    assert _codes(core)[work_id] == "retried:99.0.0|derivation_retry:1|derivation_invalid|derivation_invalid"
+
+
+def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(worker_app):
+    """#233's items: a consolidation refused on its second page, its re-look spent under the schema stamp, resumes on
+    that page when this release re-opens it, keeps the page it had accepted, and finishes."""
+    core, ctx, _clock = worker_app
+    source = long_source(core, ctx, FIRST + "\n" + "这是一段归档资料；" * 700 + "\n" + LAST)
+
+    def drain(model, until):
+        for _ in range(40):
+            if row(core, source)[0] == until:
+                return
+            with sqlite3.connect(core.storage.path) as conn:
+                conn.execute("UPDATE work_items SET available_at=? WHERE state='pending'", (core.clock.utc_now(),))
+            core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
+        raise AssertionError(row(core, source))
+
+    def quoting_the_first(sources, **_):
+        # Right on the first page; on the second, evidence from another page, refused.
+        return consolidation_payload(sources[0], claims=[proposal(sources[0], FIRST)])
+
+    drain(FakeConsolidation(quoting_the_first), "failed")
+    _state, offset, _attempt = row(core, source)
+    assert 0 < offset < len(source.event["content"])
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET last_error_code='retried:1110|'||last_error_code WHERE state='failed'")
+        conn.commit()
+    assert retry_class(next(iter(_codes(core).values()))) == "terminal"
+    report = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)
+    assert (report["retried"], report["by_kind"]) == (1, {"DERIVATION_INVALID": 1})
+
+    def fixed(sources, **_):
+        page = sources[0]
+        found = [proposal(page, FIRST)] if FIRST in page.event["content"] else []
+        if LAST in page.event["content"]:
+            found.append(proposal(page, LAST, value="深色", predicate="主题"))
+        return consolidation_payload(page, claims=found)
+
+    drain(FakeConsolidation(fixed), "done")
+    assert row(core, source)[1] == len(source.event["content"])
+    assert {payload["value_text"] for payload, _state in claims(core)} == {"蓝色", "深色"}
 
 
 @pytest.mark.parametrize("limit", [0, -1, 257, 1.0, True])
@@ -269,7 +399,7 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
 )
 def test_a_transient_model_failure_can_be_cleared(code):
     assert retry_class(code) == "actionable"
-    assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
+    assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is True
 
 
 @pytest.mark.parametrize(
@@ -296,7 +426,7 @@ def test_a_refused_request_can_be_cleared_once_its_cause_is_fixed(code):
     from scope_recall.core.failure_retry import AUTO_RECOVERABLE_ERRORS
 
     assert retry_class(code) == "actionable"
-    assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
+    assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is True
     assert code not in AUTO_RECOVERABLE_ERRORS
 
 
@@ -310,7 +440,7 @@ def test_an_account_refusal_left_behind_can_be_cleared(code):
     """Before the worker parked account refusals it failed their items, and no
     operator command could reopen them once the account was fixed."""
     assert retry_class(code) == "actionable"
-    assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
+    assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is True
 
 
 def test_an_account_refusal_row_reopens_through_real_storage(app):

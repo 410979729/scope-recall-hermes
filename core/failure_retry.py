@@ -17,9 +17,12 @@ because retrying them automatically would be wrong: the same request would fail
 the same way until somebody changed something.
 
 So this is an operator command, and a deliberately blunt one: it re-opens a
-bounded page of failures and stamps each row with a marker naming the schema
-generation that granted the re-look.  A row already carrying this generation's
-marker is skipped, so running it twice does nothing and it cannot loop.
+bounded page of failures and stamps each row with a marker naming the release
+that granted the re-look.  A row already carrying this release's marker is
+skipped, so running it twice does nothing and it cannot loop.  The grant is the
+release's, not the schema's: most fixes that can cure a failure (a validation,
+a route, a bound) ship without a schema change, and keyed to the schema, a row
+re-opened once before such a fix could not be re-opened after it.
 
 Two classes, because they answer different questions:
 
@@ -50,6 +53,7 @@ from __future__ import annotations
 
 import re
 
+from .._version import __version__
 from ..contracts import ContractError
 from .secret_patterns import contains_secret_like_text
 
@@ -131,17 +135,22 @@ TERMINAL_FAILURES = frozenset(
     }
 )
 
-#: Stamped on every row this grants a re-look, so the grant is visible and
-#: cannot be repeated within one schema generation.
+#: Stamped on every row this grants a re-look, with the release that granted
+#: it, so the grant is visible and cannot be repeated within one release.
 RETRY_MARKER = "retried"
-# Per work item, not per schema generation; explicit operator retries remain separate.
+#: The release this code is, the generation whose re-look ``retry-failures`` grants.
+RETRY_GENERATION = __version__
+# Per work item, not per release; explicit operator retries remain separate.
 NEEDS_REVIEW_COUNT = f"""
     SELECT count(*) FROM work_items WHERE state='failed'
     AND last_error_code LIKE '%{DERIVATION_RETRY_MARKER}|%'
     AND lower(last_error_code) LIKE '%|derivation_invalid'
 """
 
-_MARKER_RE = re.compile(rf"(?:^|\|){RETRY_MARKER}:(\d+)\|")
+# A stamp naming a schema generation (``retried:1110|``, as older releases wrote it) names no release, so it never
+# blocks one.
+_MARKER_RE = re.compile(rf"(?:^|\|){RETRY_MARKER}:([^|]+)\|")
+_STAMP_RE = re.compile(rf"(?:^|(?<=\|)){RETRY_MARKER}:[^|]+\|")
 
 
 def validation_feedback(code: object, field: object) -> dict[str, str]:
@@ -175,9 +184,9 @@ def failure_kind(error_code: object) -> str:
     return text.rsplit("|", 1)[-1] if text else ""
 
 
-def already_retried(error_code: object, *, generation: int) -> bool:
-    """Whether this row already had its re-look in this schema generation."""
-    return any(int(found) == generation for found in _MARKER_RE.findall(str(error_code or "")))
+def already_retried(error_code: object, *, generation: str) -> bool:
+    """Whether this row already had its re-look in this release."""
+    return generation in _MARKER_RE.findall(str(error_code or ""))
 
 
 #: Any other HTTP status a provider answered (``worker_outcomes`` records each as ``http_NNN``): a 4xx not named above
@@ -198,19 +207,27 @@ def retry_class(error_code: object) -> str | None:
     return None
 
 
-def marked(error_code: object, *, generation: int) -> str:
-    """The error code to store on a row being re-opened."""
-    return f"{RETRY_MARKER}:{generation}|{str(error_code or '').strip()}"[:1024]
+def marked(error_code: object, *, generation: str) -> str:
+    """The error code to store on a row being re-opened.
+
+    The stamp replaces an earlier release's: only this release's decides (``already_retried``), and the stamps of
+    every release that re-opened a row, stacked, would push its failure kind off the end of the bounded code.
+    """
+    history = _STAMP_RE.sub("", str(error_code or "").strip())
+    return f"{RETRY_MARKER}:{generation}|{history}"[:1024]
 
 
-def selects(error_code: object, *, include_terminal: bool, generation: int) -> bool:
-    """Whether this failure should be granted a re-look now."""
-    if already_retried(error_code, generation=generation):
-        return False
+def wanted(error_code: object, *, include_terminal: bool) -> bool:
+    """Whether a request with or without ``include_terminal`` covers this failure, whatever its stamp."""
     found = retry_class(error_code)
-    if found == "actionable":
-        return True
-    return found == "terminal" and include_terminal
+    return found == "actionable" or (found == "terminal" and include_terminal)
+
+
+def selects(error_code: object, *, include_terminal: bool, generation: str) -> bool:
+    """Whether this failure should be granted a re-look now."""
+    return wanted(error_code, include_terminal=include_terminal) and not already_retried(
+        error_code, generation=generation
+    )
 
 
 def validate_page(limit: object) -> int:
@@ -221,6 +238,7 @@ def validate_page(limit: object) -> int:
 
 __all__ = [
     "ACTIONABLE_FAILURES",
+    "RETRY_GENERATION",
     "RETRY_MARKER",
     "TERMINAL_FAILURES",
     "already_retried",
@@ -229,4 +247,5 @@ __all__ = [
     "retry_class",
     "selects",
     "validate_page",
+    "wanted",
 ]

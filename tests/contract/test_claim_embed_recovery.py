@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from scope_recall.contracts import ContractError
-from scope_recall.core.schema import SCHEMA_VERSION
+from scope_recall.core.failure_retry import RETRY_GENERATION
 from test_claims import app, capture, initial  # noqa: F401  (fixtures)
 from test_deletion import authorize, request
 
@@ -115,7 +115,7 @@ def test_retry_failures_brings_back_the_vector_work_the_recovery_dropped(app):
     assert _embed(core, item.ref, item.revision)[0] == "obsolete", "a preview changes nothing"
     report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["claim_embeds_reopened"] == 1
-    assert _embed(core, item.ref, item.revision) == ("pending", f"retried:{SCHEMA_VERSION}|authority_revoked")
+    assert _embed(core, item.ref, item.revision) == ("pending", f"retried:{RETRY_GENERATION}|authority_revoked")
     again = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert (again["claim_embeds_reopened"], again["claim_embeds_queued"]) == (0, 0)
 
