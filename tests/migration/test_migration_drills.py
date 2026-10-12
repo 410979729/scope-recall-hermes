@@ -718,7 +718,8 @@ def test_a_manifest_rewritten_after_its_store_was_made_is_named(tmp_path: Path, 
 
 def test_old_scopes_mapped_onto_one_target_are_each_named(tmp_path: Path) -> None:
     """Two old scopes onto ``owner_private``, as the workflow once told a Desktop migration to do beside the CLI's own,
-    is refused; the refusal named neither, and dropped the target the destination does not register."""
+    is refused; the refusal named neither, and dropped the target the destination does not register, as a key the
+    old store does not have also did."""
     from scope_recall.adapters.hermes import install_hermes_scope_recall
     from scope_recall.maintenance.upgrade import prepare_upgrade
 
@@ -726,11 +727,16 @@ def test_old_scopes_mapped_onto_one_target_are_each_named(tmp_path: Path) -> Non
     home = tmp_path / "home"
     home.mkdir()
     install_hermes_scope_recall(home, agent_id="default", agent_workspace="hermes", local_platforms=["desktop"])
-    mapping = {_OLD_CLI: "owner_private", _OLD_DESKTOP: "owner_private", _OLD_FEISHU: "TEST-unregistered"}
+    mapping = {
+        _OLD_CLI: "owner_private",
+        _OLD_DESKTOP: "owner_private",
+        _OLD_FEISHU: "TEST-unregistered",
+        "TEST-not-in-the-old-store": "TEST-unregistered-too",
+    }
     report = prepare_upgrade(legacy, tmp_path / "job", installation_manifest=home, scope_map=mapping)
     assert report["state"] == "blocked" and report["blockers"] == ["audience_binding_required"]
     assert report["colliding_scope_ids"] == sorted([_OLD_CLI, _OLD_DESKTOP])
-    assert report["invalid_scope_ids"] == [_OLD_FEISHU, "non_injective_scope_map"]
+    assert report["invalid_scope_ids"] == ["TEST-not-in-the-old-store", _OLD_FEISHU, "non_injective_scope_map"]
     assert report["missing_scope_ids"] == [_OLD_FEISHU_DM]
 
 

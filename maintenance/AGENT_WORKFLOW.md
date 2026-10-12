@@ -149,7 +149,7 @@ rows (`--local-platform` leaves a route declared there as it is). A store keeps 
 scopes it was created with: a manifest naming other scopes, written after
 `apply-install` or anything else made the store, no longer opens it, which
 `migrate prepare` reports. The destination holds nothing before `migrate run`
-(`status` shows no sources), so start again: remove the destination's
+(`doctor` reports `sources: 0`), so start again: remove the destination's
 `scope-recall` folder, never the source's, and create it whole. The installer's command line declares only local surfaces and
 their logins. A gateway route (Telegram, Feishu, ...) is an exact audience row,
 and the person on it is an owner principal only when the old grants show it is

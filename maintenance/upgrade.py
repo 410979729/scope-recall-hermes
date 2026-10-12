@@ -128,7 +128,7 @@ def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=
     missing = [s for s in scopes if s not in mapping]
     unknown = [s for s in mapping if s not in scopes]
     resolved = {s: audiences.get(t, t) for s, t in mapping.items()}
-    invalid = unknown or [s for s, t in resolved.items() if t not in binding.scope_ids]
+    invalid = [*unknown, *(s for s, t in resolved.items() if s not in unknown and t not in binding.scope_ids)]
     # Old scopes that share one target, each named: merging them would give every audience of one the others' memory.
     targets = list(resolved.values())
     colliding = sorted(s for s, t in resolved.items() if targets.count(t) > 1)
