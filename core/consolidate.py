@@ -322,7 +322,9 @@ def candidate_evaluation_messages(
     return messages
 
 
-def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) -> None:
+def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) -> list[str]:
+    """Check a worker's result against its lease and, for one page of a long source, against that page; return what
+    the page proposed that it does not ground, which is dropped."""
     if not tx.work._verify_lease(fence.work_id, fence.lease_token, fence.lease_owner, now=now):
         raise ContractError("ACCESS_DENIED", "lease_stale")
     if tx.source(fence.subject_ref, fence.subject_revision) is None:
@@ -371,13 +373,21 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
 
         page = content[chunk.start : chunk.end]
         resolve_evidence_quotes(value, {(source.ref, source.revision): page})
-        validate_fragment(tx, value, fence, content)
+        dropped = validate_fragment(tx, value, fence, content)
         for proposal in value["claim_proposals"]:
             for span in proposal["evidence_spans"]:
                 if (span["source_ref"], span["source_revision"]) != (source.ref, source.revision) or span[
                     "quote"
                 ] not in content[chunk.start : chunk.end]:
                     raise ContractError("DERIVATION_INVALID", "fragment_evidence")
+        # Named where a dropped whole-message summary is (``apply_summary``), so an operator sees what a page lost.
+        tx._check(write=True).executemany(
+            """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
+               VALUES (?,?,'summary','DERIVATION_INVALID',?,?)""",
+            [(fence.work_id, fence.lease_token, field, now) for field in dropped],
+        )
+        return dropped
+    return []
 
 
 def accept_consolidation(
@@ -386,8 +396,9 @@ def accept_consolidation(
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         now = clock.utc_now()
         mark = 0
+        dropped: list[str] = []
         if work_fence is not None:
-            _fence_consolidation(tx, value, work_fence, now=now)
+            dropped = _fence_consolidation(tx, value, work_fence, now=now)
             mark = claim_versions_mark(tx)
         items, claim_refs = [], set()
         try:
@@ -408,7 +419,7 @@ def accept_consolidation(
         if work_fence is not None and claims_changed(tx, work_fence.dependencies, until=mark, claim_refs=claim_refs):
             raise ContractError("VERSION_CONFLICT", "memory_epoch")
         if work_fence is not None and work_fence.chunk is not None:
-            result = stage_fragment(tx, result, work_fence, now)
+            result = stage_fragment(tx, result, work_fence, now, dropped=dropped)
 
         for proposal in result["reference_proposals"]:
             item = apply_summary(tx, work_fence, "reference", proposal, scope_id, now)

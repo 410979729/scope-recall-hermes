@@ -29,29 +29,49 @@ def resume_seed(tx, work_id):
 
 
 def validate_fragment(tx, value, fence, content):
-    # A goal from an earlier *accepted* page may be carried forward. Every
-    # other proposed item must be grounded in the current page; final Core
-    # qualification still uses the complete original including negations.
+    """Drop what this page proposes but does not ground, and name what was dropped.
+
+    A goal from an earlier *accepted* page may be carried forward.  Every other proposed item must be grounded in the
+    current page; final Core qualification still uses the complete original including negations.  A summary that is
+    not is dropped, as a whole message's summary is when it does not qualify (``apply_summary``): refusing the page
+    for it lost the page's claims, checked on their own, and every page after it.
+    """
     seeds = resume_seed(tx, fence.work_id)
     page = content[fence.chunk.start : fence.chunk.end]
     resolve_fragment_summaries(value, page, seeds)
+    dropped, resumes = [], []
     for proposal in value["resume_proposals"]:
-        if proposal["goal"] not in seeds and proposal["goal"]["text"] not in page:
-            raise ContractError("DERIVATION_INVALID", "fragment_goal")
-        for field in ("decisions", "verified_progress", "open_items", "blockers"):
-            if any(item["text"] not in page for item in proposal[field]):
-                raise ContractError("DERIVATION_INVALID", "fragment_resume")
-        if proposal["next_step"] and proposal["next_step"] not in page:
-            raise ContractError("DERIVATION_INVALID", "fragment_next_step")
-    if any(p["mention"] not in page for p in value["reference_proposals"]):
-        raise ContractError("DERIVATION_INVALID", "fragment_reference")
+        field = _ungrounded(proposal, seeds, page)
+        if field is None:
+            resumes.append(proposal)
+        else:
+            dropped.append(field)
+    references = [p for p in value["reference_proposals"] if p["mention"] in page]
+    if len(references) < len(value["reference_proposals"]):
+        dropped.append("fragment_reference")
+    value["resume_proposals"], value["reference_proposals"] = resumes, references
+    return dropped
 
 
-def stage_fragment(tx, value, fence, now):
-    """Store this page's proposals; on the final page, merge every page into one bounded result."""
+def _ungrounded(proposal, seeds, page):
+    """The field of the first part of a resume proposal the page does not ground, or None."""
+    if proposal["goal"] not in seeds and proposal["goal"]["text"] not in page:
+        return "fragment_goal"
+    for field in ("decisions", "verified_progress", "open_items", "blockers"):
+        if any(item["text"] not in page for item in proposal[field]):
+            return "fragment_resume"
+    if proposal["next_step"] and proposal["next_step"] not in page:
+        return "fragment_next_step"
+    return None
+
+
+def stage_fragment(tx, value, fence, now, *, dropped=()):
+    """Store this page's proposals and what it dropped; on the final page, merge every page into one bounded result,
+    partial when any page dropped a summary."""
     conn = tx._check(write=True)
     chunk = fence.chunk
-    encoded = _json({k: value[k] for k in ("resume_proposals", "reference_proposals")})
+    staged = {k: value[k] for k in ("resume_proposals", "reference_proposals")}
+    encoded = _json({**staged, "dropped": sorted(set(dropped))} if dropped else staged)
     if len(encoded) > 131072:
         raise ContractError("DERIVATION_INVALID", "fragment_summary_budget")
     conn.execute(
@@ -61,8 +81,7 @@ def stage_fragment(tx, value, fence, now):
     result = dict(value, resume_proposals=[], reference_proposals=[])
     if not chunk.final:
         return result
-    resumes, references = _covered_fragments(conn, fence.work_id, chunk.total)
-    gaps = []
+    resumes, references, gaps = _covered_fragments(conn, fence.work_id, chunk.total)
     result["resume_proposals"] = _merge_resumes(resumes, gaps)
     result["reference_proposals"] = _merge_references(references, gaps)
     validate_payload("consolidation_result", result)
@@ -75,11 +94,11 @@ def stage_fragment(tx, value, fence, now):
 
 
 def _covered_fragments(conn, work_id, total):
-    """Every accepted page in order with no gap or overlap, or the coverage is invalid."""
+    """Every accepted page in order with no gap or overlap, or the coverage is invalid; with what the pages dropped."""
     rows = conn.execute(
         "SELECT * FROM consolidation_fragments WHERE work_id=? ORDER BY start_offset", (work_id,)
     ).fetchall()
-    cursor, resumes, references = 0, [], []
+    cursor, resumes, references, dropped = 0, [], [], []
     for row in rows:
         if row["start_offset"] != cursor or row["total"] != total or row["end_offset"] <= cursor:
             raise ContractError("DERIVATION_INVALID", "fragment_coverage")
@@ -87,9 +106,10 @@ def _covered_fragments(conn, work_id, total):
         part = json.loads(row["proposals_json"])
         resumes.extend(part["resume_proposals"])
         references.extend(part["reference_proposals"])
+        dropped.extend(part.get("dropped", ()))
     if cursor != total:
         raise ContractError("DERIVATION_INVALID", "fragment_coverage")
-    return resumes, references
+    return resumes, references, sorted(set(dropped))
 
 
 def _merge_resumes(resumes, gaps):

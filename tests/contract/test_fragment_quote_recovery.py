@@ -6,7 +6,6 @@ from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
-from scope_recall.contracts import ContractError
 from scope_recall.core.consolidation_summary import validate_fragment
 from scope_recall.core.episodes import source_watermark
 from test_consolidation_chunks import claims, long_source, proposal, row
@@ -52,24 +51,50 @@ def test_all_fragment_summary_fields_restore_current_page_literals(text):
     prior = encoded(text) + "\n"
     fence = SimpleNamespace(work_id=1, chunk=SimpleNamespace(start=len(prior), end=len(prior + page)))
     value = summary(dict(goal, text=encoded(goal["text"])), encoded(text))
-    validate_fragment(FragmentTx(), value, fence, prior + page)
+    assert validate_fragment(FragmentTx(), value, fence, prior + page) == []
     assert value == summary(goal, text)
 
 
-def test_prior_page_items_stay_rejected_while_only_an_accepted_goal_can_carry_forward():
+def dropped(value):
+    return dict(value, resume_proposals=[], reference_proposals=[])
+
+
+def test_prior_page_items_are_dropped_while_only_an_accepted_goal_can_carry_forward():
+    """What the page does not ground never enters the result; the page is no longer refused for it, so its claims,
+    checked on their own, stay."""
     goal = {"text": 'TEST 整理 "报告"', "basis": "explicit"}
     prior, page = 'TEST 已完成 "第一项"。', 'TEST 等待 "第二项"。'
     fence = SimpleNamespace(work_id=1, chunk=SimpleNamespace(start=len(prior), end=len(prior + page)))
     tx = FragmentTx([goal])
     value = summary(dict(goal, text=encoded(goal["text"])), encoded(page))
-    validate_fragment(tx, value, fence, prior + page)
+    assert validate_fragment(tx, value, fence, prior + page) == []
     assert value == summary(goal, page)
-    with pytest.raises(ContractError) as rejected:
-        validate_fragment(tx, summary(goal, encoded(prior)), fence, prior + page)
-    assert rejected.value.field == "fragment_resume"
-    with pytest.raises(ContractError) as rejected:
-        validate_fragment(FragmentTx(), summary(goal, page), fence, prior + page)
-    assert rejected.value.field == "fragment_goal"
+    earlier = summary(goal, encoded(prior))
+    assert validate_fragment(tx, earlier, fence, prior + page) == ["fragment_resume", "fragment_reference"]
+    assert earlier == dropped(summary(goal, encoded(prior)))
+    ungrounded_goal = summary(goal, page)
+    assert validate_fragment(FragmentTx(), ungrounded_goal, fence, prior + page) == ["fragment_goal"]
+    assert ungrounded_goal == dict(summary(goal, page), resume_proposals=[])
+
+
+@pytest.mark.parametrize(
+    "part,field",
+    [("decisions", "fragment_resume"), ("blockers", "fragment_resume"), ("next_step", "fragment_next_step")],
+)
+def test_one_ungrounded_part_drops_its_whole_resume_proposal(part, field):
+    """As a whole message's summary that does not qualify is dropped whole (``apply_summary``)."""
+    goal = {"text": "TEST 整理报告", "basis": "explicit"}
+    page = "TEST 整理报告。决定用蓝色。"
+    fence = SimpleNamespace(work_id=1, chunk=SimpleNamespace(start=0, end=len(page)))
+    value = summary(goal, "决定用蓝色")
+    ungrounded = "TEST 改写过的说法"
+    proposal = value["resume_proposals"][0]
+    if part == "next_step":
+        proposal["next_step"] = ungrounded
+    else:
+        proposal[part].append({"text": ungrounded})
+    assert validate_fragment(FragmentTx(), value, fence, page) == [field]
+    assert value["resume_proposals"] == [] and value["reference_proposals"] == [{"mention": "决定用蓝色"}]
 
 
 @pytest.mark.parametrize("encode_again", [False, True])
@@ -83,14 +108,13 @@ def test_current_page_goal_does_not_decode_again_against_an_old_seed(encode_agai
     assert value["resume_proposals"][0]["goal"] == dict(seed, text=page)
 
 
-def test_double_encoded_old_goal_without_current_page_match_stays_rejected():
+def test_double_encoded_old_goal_without_current_page_match_is_dropped():
     seed = {"text": 'TEST 整理 "报告"', "evidence_refs": ["TEST-source@1"]}
     page = "TEST 无关的当前页。"
     value = summary(dict(seed, text=encoded(encoded(seed["text"]))), page)
     fence = SimpleNamespace(work_id=1, chunk=SimpleNamespace(start=0, end=len(page)))
-    with pytest.raises(ContractError) as rejected:
-        validate_fragment(FragmentTx([seed]), value, fence, page)
-    assert rejected.value.field == "fragment_goal"
+    assert validate_fragment(FragmentTx([seed]), value, fence, page) == ["fragment_goal"]
+    assert value["resume_proposals"] == []
 
 
 @pytest.mark.parametrize("encode_again", [False, True])
@@ -139,6 +163,79 @@ def test_worker_preserves_distinct_page_goals_and_finishes_offset(worker_app, en
         assert any(outcome == "partial" and "multiple_goals" in detail.split(",") for outcome, detail in outcomes)
         # Capture creates an empty episode; conflicting goals must not populate its resume.
         assert db.execute("SELECT resume_json,processed_sequence FROM episode_versions").fetchall() == [(None, 0)]
+
+
+def test_a_page_whose_summary_is_not_its_own_words_keeps_its_claims_and_the_rest_of_the_message(worker_app):
+    """Long messages failed for good on a page whose resume proposal put a decision in the model's own words
+    (``fragment_resume``): the page's claims were lost with it and no later page was read.  Re-run on 3.10.1, about
+    half of 24 such items on the shared store failed again the same way.  The summary is dropped, named in the work's
+    details and in its outcome; the claims stay and the message is read to its end."""
+    core, ctx, _clock = worker_app
+    first, last = "TEST-project 配色 蓝色。", "TEST-project 主题 深色。"
+    source = long_source(core, ctx, first + "\n" + "这是一段归档资料；" * 700 + "\n" + last)
+
+    def build(sources, episode_ref=None):
+        page = sources[0]
+        text = page.event["content"]
+        refs = [f"{page.ref}@{page.revision}"]
+        found = [proposal(page, first)] if first in text else []
+        if last in text:
+            found.append(proposal(page, last, value="深色", predicate="主题"))
+        resume = dict(
+            episode_ref=episode_ref,
+            goal=dict(
+                text=last if last in text else first if first in text else "这是一段归档资料", evidence_refs=refs
+            ),
+            decisions=[dict(text="TEST 决定把主题换成深色", evidence_refs=refs)] if last in text else [],
+            verified_progress=[],
+            open_items=[],
+            blockers=[],
+            next_step=None,
+            next_step_basis="unknown",
+            artifact_refs=[],
+            source_watermark=source_watermark(refs),
+            evidence_refs=refs,
+        )
+        return consolidation_payload(page, claims=found, resume_proposals=[resume])
+
+    model = FakeConsolidation(build)
+    for _ in range(30):
+        if row(core, source)[0] == "done":
+            break
+        result = core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
+        assert result.failed == result.retried == 0
+    assert row(core, source)[0:2] == ("done", len(source.event["content"]))
+    assert {payload["value_text"] for payload, _state in claims(core)} == {"蓝色", "深色"}
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        details = db.execute("SELECT stage,error_code,error_field FROM work_error_details").fetchall()
+        outcomes = db.execute("SELECT disposition,detail FROM consolidation_outcomes").fetchall()
+    assert details == [("summary", "DERIVATION_INVALID", "fragment_resume")]
+    assert len(outcomes) == 1 and outcomes[0][0] == "partial" and "fragment_resume" in outcomes[0][1].split(",")
+    assert all(value is None for value in model.feedbacks), "a dropped summary is no failure to feed back"
+
+
+def test_the_retry_is_told_the_refusal_not_a_summary_dropped_after_it(worker_app):
+    """The bounded retry's feedback is the latest refusal's field; a summary dropped beside an accepted page refused
+    nothing, so it is never what the model is told to repair."""
+    core, ctx, _clock = worker_app
+    source = long_source(core, ctx, "TEST 长消息。" + "这是一段归档资料；" * 700)
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        (work_id,) = db.execute(
+            "SELECT work_id FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (source.ref,)
+        ).fetchone()
+        db.execute(
+            "UPDATE work_items SET state='pending',last_error_code='derivation_retry:1|DERIVATION_INVALID' "
+            "WHERE work_id=?",
+            (work_id,),
+        )
+        db.executemany(
+            "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) "
+            "VALUES (?,1,?,'DERIVATION_INVALID',?,'2026-10-11T00:00:00Z')",
+            [(work_id, "accept", "fragment_evidence"), (work_id, "summary", "fragment_resume")],
+        )
+        db.commit()
+    with core.storage.read(ctx) as tx:
+        assert tx.work.derivation_feedback(work_id) == {"code": "DERIVATION_INVALID", "field": "fragment_evidence"}
 
 
 def test_chunk_claim_recovery_uses_the_current_page_even_when_an_older_literal_matches(worker_app):

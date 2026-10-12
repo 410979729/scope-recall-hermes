@@ -433,9 +433,10 @@ class WorkItems:
         outstanding = str(row[0]).lower().rsplit("consolidation_chunk_pending", 1)[-1]
         if not {"derivation_invalid", "input_invalid"}.intersection(outstanding.split("|")):
             return None
+        # A summary dropped beside an accepted result (stage ``summary``) failed nothing; the feedback is the refusal's.
         detail = conn.execute(
             """SELECT error_code,error_field FROM work_error_details WHERE work_id=?
-               AND lower(error_code) IN ('derivation_invalid','input_invalid')
+               AND lower(error_code) IN ('derivation_invalid','input_invalid') AND stage<>'summary'
                ORDER BY detail_id DESC LIMIT 1""",
             (work_id,),
         ).fetchone()
