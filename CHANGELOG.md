@@ -3,6 +3,16 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.10.1] - 2026-10-11
+
+`retry-failures` gives a failed item its one re-look per release, not per schema. Most fixes that can cure a failure (a validation, a route, a bound) ship without a schema change, so an item re-opened before such a fix stayed failed after it: two long consolidations refused on a later page before 3.9.7, which restores escaped text on those pages, could run again on neither 3.9.7 nor 3.10.0 (#233). An item an earlier release re-opened, under the old schema stamp too, is re-opened once by this one. A second run in the same release still re-opens nothing, and now counts what it skipped for that reason and names the first of them (`already_retried`, `already_retried_work_ids`); one of those can still be re-run by its id with `worker_entry --retry-failed`, at most twice for one item.
+
+`migrate prepare` says what blocks it (#231). A destination whose store was made before its manifest was complete (`apply-install` first, the manifest rewritten after) answered only `invalid_or_unavailable_input`. Now it says that a store keeps the scopes it was created with, so the whole manifest comes first. Old scopes mapped onto one target are named (`colliding_scope_ids`), and the targets the destination does not register are no longer dropped from the answer. A contract refusal gives its code and field, and a manifest the installer would refuse is a blocked answer instead of a traceback. The migration workflow now tells how to keep a minted `srdesk_*` Desktop scope beside the CLI's: it maps to itself, while both onto `owner_private` is refused as many-to-one. It also tells how to declare a gateway route (Feishu, Telegram) with the installation API before the store exists.
+
+### Upgrading from 3.10.0
+
+Install the package, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110). `retry-failures --config <file>` then counts the failures this release may re-open; `--apply` re-opens them (`--include-terminal` adds the by-design ones).
+
 ## [3.10.0] - 2026-10-11
 
 An agent that asks its memory about the owner by name ("Joy 对动画的运镜有什么要求？") finds the owner's own words, which say "I" and never the name. Recall searches such a question by meaning both as asked and as the owner would ask it ("我对…"), and by its words also without the name. The names are the one a host attests for the person asking (a Hermes gateway passes the user's name) and an optional `owner_names` list in an entry's runtime config; none is built in. Both readings are embedded in one request. On a copy of the shared store, of 52 questions agents ask about the owner, each answered by one of the owner's own messages, 16 came back in the top five before and 27 after, none lost; the owner's own 173 questions came back exactly as before.
