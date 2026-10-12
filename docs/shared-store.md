@@ -99,7 +99,9 @@ A fact whose slot is already filled is left out, and the receipt under `receipts
 sources are imported. No vector is copied: the embeddings the old store had are queued for the
 shared worker, and until it has made them those memories are found by their words.
 `--dry-run` runs the whole import and rolls it back. A store is imported once per entry; a
-second run is refused, and so is a store that was not this entry's home's.
+second run is refused, and so is a store that was not this entry's home's. It reads a 3.x
+store; a 1.x or 2.x store is migrated into the agent's home first (`scope-recall migrate`,
+[maintenance/AGENT_WORKFLOW.md](../maintenance/AGENT_WORKFLOW.md)).
 
 ## Attach Codex or Claude Code
 

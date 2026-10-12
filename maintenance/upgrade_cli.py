@@ -6,6 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from ..adapters.hermes.audiences import HermesIdentityError
 from ..contracts import ContractError
 from .backup import BackupError
 from .migrate_v2 import MigrationError
@@ -95,17 +96,21 @@ def main(argv=None):
         MigrationError,
         BackupError,
         ContractError,
+        HermesIdentityError,
         ValueError,
         OSError,
         TimeoutError,
         sqlite3.Error,
     ) as exc:
         # Scope/identity mismatches may be acted on, but exception text must not
-        # reveal row content, model credentials or arbitrary filesystem data.
+        # reveal row content, model credentials or arbitrary filesystem data.  A
+        # contract error's text is its code and field, and an identity error's
+        # names what the manifest lacks; anything else is said in general terms.
+        told = (MigrationError, BackupError, ContractError, HermesIdentityError)
         result = dict(
             status="blocked",
             error_type=type(exc).__name__,
-            reason=str(exc) if isinstance(exc, (MigrationError, BackupError)) else "invalid_or_unavailable_input",
+            reason=str(exc) if isinstance(exc, told) else "invalid_or_unavailable_input",
             safe_action="preserve_old_host_and_diagnose",
             user_memory_review_required=False,
         )

@@ -51,11 +51,17 @@ A session that carries a dashboard login (`hermes serve` with
 login, `basic:<name>`, never the local owner, and binds nothing until approved:
 add `--owner-login desktop=basic:<name>` (or `tui=`) only for a login that is
 the owner's own, and ask which one is if you cannot tell.
-A legacy 2.x Desktop installation wrote under a minted `srdesk_*` principal. When
-the old runtime's own settings show that principal is the owner, map its private
-scope to `owner_private` in the migration scope map (section 2) and approve
-`desktop`, so the same person reads the same memory. Never approve anything for
-a scheduled (`cron`) run; the installer refuses it.
+A Desktop installation of 1.9 to 2.x wrote under a minted `srdesk_*` principal. When
+the old runtime's own settings show that principal is the owner, keep its private
+scope as it is: list that scope ID in `allowed_scope_ids` of the owner's rows (the
+CLI row, and a desktop row on the route `--local-platform desktop` writes: chat
+type `private`, chat `local`, thread `main`) when you create the destination
+(section 2), so it maps to itself and the same person reads the same memory on
+both surfaces. Mapping it onto
+`owner_private` instead works only when no other old scope maps there, since the
+scope map is one-to-one. The 3.x host never sends that principal, so it needs no
+owner principal of its own. Never approve anything for a scheduled (`cron`) run;
+the installer refuses it.
 
 ## 1.1 Current package upgrades (D14, including pip-less uv venvs)
 
@@ -135,6 +141,24 @@ history scopes. Exact existing IDs map automatically. Otherwise produce an
 injective old-to-new map from verified grants yourself; this is agent work, not
 user memory review. The target must remain inactive and separate from the source.
 
+Write the manifest whole before anything creates the destination's store:
+`install_hermes_scope_recall(home, agent_id=..., agent_workspace=...,
+owner_principals=[...], audiences=[...], retained_scope_ids=[...])` writes it and
+creates the store together, and `plan-install`/`apply-install` afterwards keep its
+rows (`--local-platform` leaves a route declared there as it is). A store keeps the
+scopes it was created with: a manifest naming other scopes, written after
+`apply-install` or anything else made the store, no longer opens it, which
+`migrate prepare` reports. The destination holds nothing before `migrate run`
+(`status` shows no sources), so start again: remove the destination's
+`scope-recall` folder, never the source's, and create it whole. The installer's command line declares only local surfaces and
+their logins. A gateway route (Telegram, Feishu, ...) is an exact audience row,
+and the person on it is an owner principal only when the old grants show it is
+the owner: `platform`, `user_id`, `chat_type` (`dm` or `private` for a one-to-one
+chat, as the old session key names it), `chat_id`, `thread_id` (empty for an
+unthreaded chat), `gateway_session_key` (empty) and `agent_workspace`, with the
+scopes it may read and write. Retained scopes are kept for history and readable by
+no one: never use them for memory someone should still recall.
+
 The migration preparer reports all missing scopes together. Resolve their runtime
 bindings from the old host's configuration/session routing records, not by dumping
 all old scopes into owner_private. Unsupported routes keep the old host available.
@@ -154,7 +178,8 @@ and out of automatic memory/skill discovery.
 1. Quiesce the host's memory writers through its real controller. When upgrading
    the agent's own host, launch a bounded detached helper before stopping it;
    record restart/rollback commands first. On Windows helpers must be hidden.
-2. Create/finalize the destination installation manifest using the verified grants.
+2. Create/finalize the destination installation manifest using the verified grants,
+   before anything creates its store (section 2).
 3. Run `scope-recall migrate prepare --source <old-db> --job <job-dir>
    --installation-manifest <new-manifest-or-home> [--scope-map <agent-generated-json>]`.
 4. Inspect the structured blockers. `prepared` means the snapshot/catalog/target

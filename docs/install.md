@@ -289,7 +289,11 @@ what an audience row on its route gives it.
 A gateway route (Telegram, WeChat, Feishu, a Desktop login) is granted by an
 audience row in `installation.json`, matched field by field against what the host
 sends: `platform`, `user_id`, `chat_type`, `chat_id`, `thread_id`,
-`gateway_session_key` and `agent_workspace`. A row whose `gateway_session_key` is
+`gateway_session_key` and `agent_workspace`. The command line writes such rows
+only for local surfaces and their logins; a gateway route's row is declared with
+the installation API, in the whole manifest, before anything creates the store,
+as a migration does ([AGENT_WORKFLOW.md](../maintenance/AGENT_WORKFLOW.md),
+section 2). A row whose `gateway_session_key` is
 empty does not pin the host's session key, which is built from the platform, chat
 type and chat the row already matches; a row that names one matches only that key.
 For a plain, unthreaded chat a gateway sends an empty `thread_id`, so the row needs

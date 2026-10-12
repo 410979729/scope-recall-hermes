@@ -15,7 +15,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..contracts import TrustedContext
+from ..contracts import ContractError, TrustedContext
 from ..core.file_lock import advisory_file_lock
 from ..core.storage import SQLiteStorage
 from .backup import atomic_json as _write
@@ -80,6 +80,24 @@ def _load(job: str | Path, *, verify_snapshot: bool = False) -> tuple[Path, dict
     return root, value
 
 
+def _check_destination(binding) -> None:
+    """The destination's store opens under its manifest and holds nothing yet."""
+    context = TrustedContext(binding, "upgrade-preflight", binding.scope_ids, "host_generated")
+    try:
+        with SQLiteStorage(binding).read(context) as tx:
+            if tx.status().sources:
+                raise MigrationError("destination must be a new inactive installation")
+    except ContractError as exc:
+        if (exc.code, exc.field) != ("IDENTITY_UNBOUND", "scope_binding"):
+            raise
+        # A store keeps the scopes it was created with, so a manifest that names others, written after the store
+        # was made, never opens it.
+        raise MigrationError(
+            "destination store holds other scopes than its manifest names: write the complete manifest, every "
+            "audience and preserved scope, before anything creates the store (install_hermes_scope_recall does both)"
+        ) from exc
+
+
 def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=None) -> dict:
     source = safe_path(source, must_exist=True)
     root = safe_path(job)
@@ -93,10 +111,7 @@ def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=
         raise MigrationError("source, job and target must be separate")
     if root.exists():
         raise MigrationError("job already exists; use migrate status or run to resume")
-    context = TrustedContext(binding, "upgrade-preflight", binding.scope_ids, "host_generated")
-    with SQLiteStorage(binding).read(context) as tx:
-        if tx.status().sources:
-            raise MigrationError("destination must be a new inactive installation")
+    _check_destination(binding)
     root.mkdir(parents=True)
     before = _source_stamp(source)
     backup = backup_sqlite(source, root / "source.sqlite3", manifest=root / "backup.json")
@@ -114,8 +129,11 @@ def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=
     unknown = [s for s in mapping if s not in scopes]
     resolved = {s: audiences.get(t, t) for s, t in mapping.items()}
     invalid = unknown or [s for s, t in resolved.items() if t not in binding.scope_ids]
-    if len(set(resolved.values())) != len(resolved):
-        invalid = ["non_injective_scope_map"]
+    # Old scopes that share one target, each named: merging them would give every audience of one the others' memory.
+    targets = list(resolved.values())
+    colliding = sorted(s for s, t in resolved.items() if targets.count(t) > 1)
+    if colliding:
+        invalid = [*invalid, "non_injective_scope_map"]
     reasons = []
     if not catalog["is_supported"]:
         reasons.append("legacy_format_unsupported")
@@ -141,6 +159,7 @@ def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=
         blockers=reasons,
         missing_scope_ids=missing,
         invalid_scope_ids=invalid,
+        colliding_scope_ids=colliding,
         created_at=datetime.now(timezone.utc).isoformat(),
         history_reextraction=False,
         host_validation="agent_required",

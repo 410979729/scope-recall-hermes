@@ -6,6 +6,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -572,6 +573,194 @@ def test_a_store_the_3_1_2_release_wrote_opens_at_1110_with_every_source_its_own
             ("local", 12)
         ]
         assert conn.execute("SELECT count(*) FROM entries").fetchone()[0] == 0
+
+
+# --- A migration's destination is written whole before its store (#231) ---------------------------------------------
+
+_OLD_CLI = "platform:3:cli|workspace:6:hermes|agent:7:default|user:5:local"
+_OLD_DESKTOP = "platform:7:desktop|workspace:6:hermes|agent:7:default|user:11:srdesk_TEST"
+_OLD_FEISHU = "platform:6:feishu|workspace:6:hermes|agent:7:default|user:7:ou_TEST"
+_OLD_FEISHU_DM = f"{_OLD_FEISHU}|session:28:agent:main:feishu:dm:oc_TEST"
+_OLD_SCOPES = (_OLD_CLI, _OLD_DESKTOP, _OLD_FEISHU, _OLD_FEISHU_DM)
+_OWNERS = [
+    {"platform": "cli", "user_id": "local"},
+    {"platform": "desktop", "user_id": "local"},
+    {"platform": "feishu", "user_id": "ou_TEST"},
+]
+
+
+def _four_scope_legacy(tmp_path: Path) -> Path:
+    """A legacy store whose rows lie in a CLI scope, a minted Desktop principal's, a Feishu user's and a Feishu DM's."""
+    path = tmp_path / "old" / "memory.sqlite3"
+    path.parent.mkdir()
+    _legacy(path)
+    conn = sqlite3.connect(path)
+    # The columns a real store of that release has, without which the catalog refuses the format.
+    conn.executescript(
+        "ALTER TABLE journal_entries ADD COLUMN shared_scope_id TEXT;"
+        "ALTER TABLE procedural_playbooks ADD COLUMN created_at TEXT NOT NULL DEFAULT '2026-09-01T00:00:00Z';"
+        "ALTER TABLE procedural_playbooks ADD COLUMN updated_at TEXT NOT NULL DEFAULT '2026-09-01T00:00:00Z';"
+        "ALTER TABLE procedural_playbooks ADD COLUMN task_class TEXT NOT NULL DEFAULT 'general';"
+    )
+    for table in ("journal_entries", "memories", "task_episodes", "procedural_playbooks"):
+        conn.execute(f"UPDATE {table} SET scope_id=? WHERE scope_id='scope-a'", (_OLD_CLI,))
+    conn.executemany(
+        """INSERT INTO journal_entries(id,scope_id,session_id,turn_number,role,content,created_at,metadata)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        [
+            (10 + index, scope, f"s-{10 + index}", 1, "user", "TEST 旧会话里的一句话。", "2026-09-02T00:00:00Z", "{}")
+            for index, scope in enumerate(_OLD_SCOPES[1:])
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _owner_rows() -> list[dict[str, object]]:
+    """The owner reads every old scope at the CLI, on the approved Desktop panel and in their Feishu DM, and each
+    surface writes where its old scope was."""
+
+    def row(platform: str, user_id: str, chat_type: str, chat_id: str, thread_id: str, scope: str) -> dict:
+        return {
+            "platform": platform,
+            "user_id": user_id,
+            "chat_type": chat_type,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "gateway_session_key": "",
+            "agent_workspace": "hermes",
+            "allowed_scope_ids": list(_OLD_SCOPES),
+            "writable_scope_ids": [scope],
+            "capture_scope_id": scope,
+            "kind": "owner_private",
+        }
+
+    return [
+        row("cli", "local", "cli", "local", "main", _OLD_CLI),
+        # The route ``--local-platform desktop`` writes, so a later ``apply-install`` leaves this row as it is.
+        row("desktop", "local", "private", "local", "main", _OLD_DESKTOP),
+        row("feishu", "ou_TEST", "dm", "oc_TEST", "", _OLD_FEISHU_DM),
+    ]
+
+
+def test_a_destination_written_whole_takes_every_old_scope_as_itself(tmp_path: Path) -> None:
+    """#231's migration, done the supported way: the destination's manifest names the gateway owner, its DM and every
+    old scope before its store exists, so each old scope maps to itself and the owner reads all of them on each
+    surface, while another Feishu user reads nothing."""
+    from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
+    from scope_recall.adapters.hermes.installation import approve_local_platforms, load_installation_manifest
+    from scope_recall.maintenance.upgrade import prepare_upgrade
+
+    legacy = _four_scope_legacy(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    _binding, core = install_hermes_scope_recall(
+        home, agent_id="default", agent_workspace="hermes", owner_principals=_OWNERS, audiences=_owner_rows()
+    )
+    manifest = load_installation_manifest(home)
+    assert approve_local_platforms(manifest, ["desktop"], agent_workspace="hermes") == manifest, (
+        "a later apply-install --local-platform desktop finds the surface approved and changes nothing"
+    )
+    report = prepare_upgrade(legacy, tmp_path / "job", installation_manifest=home)
+    assert (report["state"], report["blockers"]) == ("prepared", []), report
+    assert report["scope_map"] == {scope: scope for scope in _OLD_SCOPES}
+    assert report["missing_scope_ids"] == report["invalid_scope_ids"] == report["colliding_scope_ids"] == []
+
+    def readable(**route: str) -> frozenset[str]:
+        provider = ScopeRecallHermesAdapter(core=core)
+        base = dict(hermes_home=str(home), agent_context="primary", agent_identity="default", agent_workspace="hermes")
+        provider.initialize("TEST-231-session", **base, parent_session_id="", **route)
+        try:
+            return provider._identity.runtime_audience.allowed_scope_ids
+        finally:
+            provider.shutdown()
+
+    def feishu_dm(user: str, chat: str) -> dict[str, str]:
+        key = f"agent:main:feishu:dm:{chat}"
+        return dict(
+            platform="feishu", user_id=user, chat_type="dm", chat_id=chat, thread_id="", gateway_session_key=key
+        )
+
+    assert readable(platform="cli") == frozenset(_OLD_SCOPES)
+    assert readable(platform="desktop") == frozenset(_OLD_SCOPES)
+    assert readable(**feishu_dm("ou_TEST", "oc_TEST")) == frozenset(_OLD_SCOPES)
+    assert readable(**feishu_dm("ou_TEST_OTHER", "oc_TEST_OTHER")) == frozenset()
+
+
+def test_a_manifest_rewritten_after_its_store_was_made_is_named(tmp_path: Path, capsys) -> None:
+    """#231: the destination was installed first, its store made with the owner's scope alone, and then given a
+    manifest naming more scopes, which no longer opens that store.  ``migrate prepare`` answered only
+    ``invalid_or_unavailable_input``; it now says what happened and what to do, and writes no job."""
+    from scope_recall.adapters.hermes import install_hermes_scope_recall
+    from scope_recall.adapters.hermes.installation import build_installation_manifest, write_installation_manifest
+    from scope_recall.maintenance import upgrade_cli
+    from scope_recall.maintenance.upgrade import MigrationError, prepare_upgrade
+
+    legacy = _four_scope_legacy(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_hermes_scope_recall(home, agent_id="default", agent_workspace="hermes", local_platforms=["desktop"])
+    write_installation_manifest(
+        build_installation_manifest(
+            home, agent_id="default", agent_workspace="hermes", owner_principals=_OWNERS, audiences=_owner_rows()
+        )
+    )
+    with pytest.raises(MigrationError, match="before anything creates the store"):
+        prepare_upgrade(legacy, tmp_path / "job", installation_manifest=home)
+    assert not (tmp_path / "job").exists()
+    argv = ["migrate", "prepare", "--source", str(legacy), "--job", str(tmp_path / "job")]
+    assert upgrade_cli.main([*argv, "--installation-manifest", str(home)]) == 3
+    told = json.loads(capsys.readouterr().out)
+    assert (told["error_type"], told["status"]) == ("MigrationError", "blocked")
+    assert told["reason"].startswith("destination store holds other scopes than its manifest names")
+
+
+def test_old_scopes_mapped_onto_one_target_are_each_named(tmp_path: Path) -> None:
+    """Two old scopes onto ``owner_private``, as the workflow once told a Desktop migration to do beside the CLI's own,
+    is refused; the refusal named neither, and dropped the target the destination does not register."""
+    from scope_recall.adapters.hermes import install_hermes_scope_recall
+    from scope_recall.maintenance.upgrade import prepare_upgrade
+
+    legacy = _four_scope_legacy(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_hermes_scope_recall(home, agent_id="default", agent_workspace="hermes", local_platforms=["desktop"])
+    mapping = {_OLD_CLI: "owner_private", _OLD_DESKTOP: "owner_private", _OLD_FEISHU: "TEST-unregistered"}
+    report = prepare_upgrade(legacy, tmp_path / "job", installation_manifest=home, scope_map=mapping)
+    assert report["state"] == "blocked" and report["blockers"] == ["audience_binding_required"]
+    assert report["colliding_scope_ids"] == sorted([_OLD_CLI, _OLD_DESKTOP])
+    assert report["invalid_scope_ids"] == [_OLD_FEISHU, "non_injective_scope_map"]
+    assert report["missing_scope_ids"] == [_OLD_FEISHU_DM]
+
+
+def test_a_manifest_the_installer_would_refuse_is_told_not_thrown(tmp_path: Path, capsys) -> None:
+    """A hand-edited manifest ended ``migrate prepare`` in a traceback; it is a blocked answer naming what is
+    missing, and a contract refusal names its code and field."""
+    from scope_recall.adapters.hermes import install_hermes_scope_recall
+    from scope_recall.maintenance import upgrade_cli
+
+    legacy = _four_scope_legacy(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_hermes_scope_recall(home, agent_id="default", agent_workspace="hermes")
+    path = home / "scope-recall" / "installation.json"
+    written = path.read_text(encoding="utf-8")
+    edited = json.loads(written)
+    del edited["audiences"][0]["capture_scope_id"]
+    path.write_text(json.dumps(edited), encoding="utf-8")
+    argv = ["migrate", "prepare", "--source", str(legacy), "--job", str(tmp_path / "job")]
+    assert upgrade_cli.main([*argv, "--installation-manifest", str(home)]) == 3
+    told = json.loads(capsys.readouterr().out)
+    assert told["error_type"] == "HermesIdentityError" and "capture_scope_id" in told["reason"]
+
+    path.write_text(written, encoding="utf-8")
+    with closing(sqlite3.connect(home / "scope-recall" / "memory.sqlite3")) as conn:
+        conn.execute("PRAGMA application_id=0")  # a store that is not one of ours
+    assert upgrade_cli.main([*argv, "--installation-manifest", str(home)]) == 3
+    told = json.loads(capsys.readouterr().out)
+    assert (told["error_type"], told["reason"]) == ("ContractError", "SCHEMA_UNSUPPORTED: invalid payload")
+    assert not (tmp_path / "job").exists()
 
 
 def test_the_cli_runs_from_a_source_checkout():
