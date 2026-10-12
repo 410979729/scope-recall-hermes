@@ -3,6 +3,19 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.10.2] - 2026-10-11
+
+A long message is consolidated a page at a time. A page whose summary of the task did not use the page's own words was refused whole: its goal, decisions, progress, open items, blockers or next step had to be quoted from the page. The claims found on that page were lost with it, and no later page of the message was read. Now such a summary is dropped, as a short message's summary already is when it does not qualify. The page's claims, still checked against the page on their own, are kept, and the message is read to its end. What a page dropped is named in the work item's error details (stage `summary`) and makes the message's outcome `partial`; it is not fed back to the model as a failure.
+
+Measured on two copies of the shared store, the 24 long messages that had failed this way were re-run by 3.10.1 and by this release with the production model:
+- 3.10.1 refused 14 of them on a summary again;
+- this release consolidated 19,148 of their characters against 5,367 and kept about 40 more claims;
+- both completed 3; the rest stopped on other refusals (a model's claims that do not decode, evidence off the page) or on a timeout, once their attempts were spent.
+
+### Upgrading from 3.10.1
+
+Install the package, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110). Messages that failed this way can be re-opened with `retry-failures --include-terminal --apply` (one re-look per release), or by id with `worker_entry --retry-failed`.
+
 ## [3.10.1] - 2026-10-11
 
 `retry-failures` gives a failed item its one re-look per release, not per schema. Most fixes that can cure a failure (a validation, a route, a bound) ship without a schema change, so an item re-opened before such a fix stayed failed after it: two long consolidations refused on a later page before 3.9.7, which restores escaped text on those pages, could run again on neither 3.9.7 nor 3.10.0 (#233). An item an earlier release re-opened, under the old schema stamp too, is re-opened once by this one. A second run in the same release re-opens nothing, and now counts what it skipped for that reason and names the first of them (`already_retried`, `already_retried_work_ids`); one of those can still be re-run by its id with `worker_entry --retry-failed`, at most twice for one item. The stamp now outlives the item's next failure: a failure other than an invalid result, an automatic retry, a provider refusing everyone or a lost lease used to rewrite the code without it, and the same item could then be re-opened again and again. The same rewrites no longer reset the item's other budgets either (its two explicit retries, its automatic recoveries, the single retry of an interrupted evaluation): every mark a budget is read from is read wherever it stands in the code and kept when the code is rebuilt, and a code past its length bound gives way between those marks and its failure kind.
