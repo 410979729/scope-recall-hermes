@@ -137,6 +137,11 @@ def test_a_code_past_the_bound_keeps_its_marks_and_its_kind():
     assert _within(deferred) == "operator_retry:TEST-op|interrupted_retry:1|auto_retry:3|http_402"
     assert (_auto_count(_within(deferred)), _operator_retry_ids(_within(deferred))) == (3, ("TEST-op",))
     assert _within("short|code") == "short|code"
+    # A kind longer than any the worker writes no longer pushes the marks out (audit of 3.10.1).
+    assert _within("operator_retry:TEST-op|prior:" + "x" * CODE_BOUND) == "operator_retry:TEST-op|" + "x" * 128
+    # The one repair of an old oversized consolidation is a budget too: kept, it is not given again.
+    repaired = "chunk_upgrade:1106|INPUT_INVALID|" + "http_402|" * 120 + "http_402"
+    assert _within(repaired) == "chunk_upgrade:1106|http_402"
 
 
 def test_a_stamp_kept_behind_an_explicit_retry_still_counts():
@@ -148,6 +153,9 @@ def test_a_stamp_kept_behind_an_explicit_retry_still_counts():
     assert already_retried(code, generation="3.10.1") and not already_retried(code, generation="3.10.2")
     assert _budget_marks(code) == "operator_retry:TEST-op|retried:3.10.1|"
     assert _preserve_retry_history("retried:3.10.1|http_400") and not _preserve_retry_history("http_400")
+    assert _preserve_retry_history("chunk_upgrade:1106|INPUT_INVALID")
+    assert not _preserve_retry_history("chunk_checked:1106|INPUT_INVALID")
+    assert not _preserve_retry_history("budget_checked:1110|input_invalid")
     assert _budget_marks("http_400|sretried:3.10.1x|timeout") == "", "a mark inside another segment is no mark"
 
 

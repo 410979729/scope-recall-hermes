@@ -37,10 +37,13 @@ MAX_RECOVERY_PAGE = 200
 #: group together claims as much of itself as it is allowed to process.
 MAX_CLAIM_PAGE = 1000
 INTERRUPTED_RETRY_MARKER = "interrupted_retry:1"
+#: What ``recover_oversized_consolidations`` writes on the row it repairs, its one repair.
+CHUNK_UPGRADE_MARKER = "chunk_upgrade:1106"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
 _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
-#: The longest error code a row keeps.
+#: The longest error code a row keeps, and the longest failure kind a shortened one keeps beside its marks.
 CODE_BOUND = 1024
+_KIND_BOUND = 128
 # A mark is read wherever a later step left it: at the start, after another segment, or behind an explicit retry's
 # ``prior:``, which keeps the code it found.
 _AT_A_MARK = r"(?:^|\|)(?:prior:)?"
@@ -48,9 +51,9 @@ _AT_A_MARK = r"(?:^|\|)(?:prior:)?"
 _OPERATOR_TOKEN = re.compile(rf"{_AT_A_MARK}operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})(?=\||$)")
 _AUTO_TOKEN = re.compile(rf"{_AT_A_MARK}auto_retry:([0-9]+)(?=\||$)")
 #: The marks a retry budget is read from, but the automatic count: a release's re-look, the extra derivation
-#: attempt, the interrupted attempt's, an explicit retry.
+#: attempt, the interrupted attempt's, the one repair of an old oversized consolidation, an explicit retry.
 _BUDGET_MARK = re.compile(
-    rf"{_AT_A_MARK}({RETRY_MARKER}:[^|]+|{DERIVATION_RETRY_MARKER}|{INTERRUPTED_RETRY_MARKER}"
+    rf"{_AT_A_MARK}({RETRY_MARKER}:[^|]+|{DERIVATION_RETRY_MARKER}|{INTERRUPTED_RETRY_MARKER}|{CHUNK_UPGRADE_MARKER}"
     rf"|operator_retry:[A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})(?=\||$)"
 )
 
@@ -185,15 +188,16 @@ def _budget_marks(error: str, *, counted: bool = True) -> str:
 
 def _within(code: str) -> str:
     """``code``, a history ending in its failure kind, within ``CODE_BOUND``.  Past it, what lies between its budget
-    marks and its kind gives way: the history is detail, the marks and the kind decide what is done next."""
+    marks and its kind gives way: the history is detail, the marks and the kind decide what is done next.  A kind
+    longer than any the worker writes is cut, so the marks always fit."""
     if len(code) <= CODE_BOUND:
         return code
-    return (_budget_marks(code) + _failure_kind(code))[-CODE_BOUND:]
+    return (_budget_marks(code) + _failure_kind(code)[-_KIND_BOUND:])[:CODE_BOUND]
 
 
 def _preserve_retry_history(error) -> bool:
     """Whether a new failure is added to ``error`` rather than replacing it: it holds a mark a budget is read from."""
-    return bool(error) and (str(error).startswith("chunk_upgrade:1106|") or bool(_budget_marks(str(error))))
+    return bool(error) and bool(_budget_marks(str(error)))
 
 
 def _auto_retry_stamp(error: str) -> str:
@@ -745,10 +749,10 @@ class WorkItems:
                 continue
             recovered += conn.execute(
                 """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,lease_until=NULL,
-                   last_error_code='chunk_upgrade:1106|INPUT_INVALID'
+                   last_error_code=?
                    WHERE work_id=? AND state='failed' AND last_error_code='INPUT_INVALID'
                    AND consolidation_offset=0""",
-                (now, row["work_id"]),
+                (now, f"{CHUNK_UPGRADE_MARKER}|INPUT_INVALID", row["work_id"]),
             ).rowcount
         return recovered
 
