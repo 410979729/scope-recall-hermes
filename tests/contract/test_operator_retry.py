@@ -284,6 +284,23 @@ def test_operator_retry_operation_tokens_are_exact_and_bounded(tmp_path):
             tx.work.operator_retry_failed((work_id,), now="2099-09-06T11:00:00Z", operation_id="operator_retry:forged")
 
 
+@pytest.mark.parametrize(
+    "front", ["retried:3.10.1|", "derivation_retry:1|", "retried:3.10.1|derivation_retry:1|", "interrupted_retry:1|"]
+)
+def test_operator_retry_budget_counts_through_marks_put_in_front(tmp_path, front):
+    """A release that re-opened the row, the extra derivation attempt or an interrupted attempt puts its mark in
+    front of an explicit retry's token; hidden there, the token no longer counted and a spent budget began again
+    (audit of 3.10.1)."""
+    binding, core, context, work_id, _ = _failed_embed(tmp_path)
+    spent = f"{front}operator_retry:TEST-p13-b|prior:operator_retry:TEST-p13-a|prior:model_unavailable"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET last_error_code=? WHERE work_id=?", (spent, work_id))
+        conn.commit()
+    with core.storage.write(context) as tx:
+        result = tx.work.operator_retry_failed((work_id,), now="2099-09-07T00:00:00Z", operation_id="TEST-p13-c")
+    assert result[0].reason == "operator_retry_budget"
+
+
 def test_operator_retry_preserves_marker_when_failed_item_was_not_attempt_exhausted(tmp_path):
     binding = _binding(tmp_path / "data")
     core = MemoryCore(CoreConfig(binding))

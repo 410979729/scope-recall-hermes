@@ -122,6 +122,56 @@ def test_a_new_stamp_replaces_the_earlier_one_and_keeps_the_rest():
     assert retry_class(stamped) == "terminal"
 
 
+def test_a_code_past_the_bound_keeps_its_marks_and_its_kind():
+    """A release stamp longer than the schema's pushed a full code past the bound, and the cut took the end of the
+    failure kind (``derivation_inval``: no class, no doctor count; audit of 3.10.1).  The middle gives way, whole
+    segments at a time."""
+    from scope_recall.core.failure_retry import CODE_BOUND, bounded
+
+    code = "retried:1110|derivation_retry:1|" + "timeout|" * 120 + "network_error|derivation_invalid"
+    assert len(code) == CODE_BOUND
+    stamped = marked(code, generation="3.10.1")
+    assert len(stamped) <= CODE_BOUND and failure_kind(stamped) == "derivation_invalid"
+    assert stamped.startswith("retried:3.10.1|derivation_retry:1|timeout|")
+    assert stamped.endswith("|network_error|derivation_invalid")
+    assert set(stamped.split("|")) <= set(code.split("|")) | {"retried:3.10.1"}, "no segment is cut in two"
+    assert bounded("short|code") == "short|code"
+
+
+def test_a_stamp_kept_behind_an_explicit_retry_still_counts():
+    """An explicit retry of one item keeps the code it found behind ``prior:``; the release's stamp there was not
+    seen, and a second run of the same release re-opened the row again (audit of 3.10.1)."""
+    from scope_recall.core.failure_retry import carries_stamp, release_stamp
+
+    code = "operator_retry:TEST-op|prior:retried:3.10.1|http_400|http_400"
+    assert already_retried(code, generation="3.10.1") and carries_stamp(code)
+    assert not already_retried(code, generation="3.10.2")
+    assert release_stamp(code) == "" and release_stamp("derivation_retry:1|retried:3.10.1|x") == "retried:3.10.1|"
+    assert not carries_stamp("interrupted_retry:1|derivation_retry:1|timeout")
+
+
+@pytest.mark.parametrize(
+    "code,rebuilt",
+    [
+        ("retried:3.10.1|timeout", "retried:3.10.1|auto_retry:1|timeout"),
+        (
+            "derivation_retry:1|retried:3.10.1|derivation_invalid|timeout",
+            "retried:3.10.1|derivation_retry:1|auto_retry:1|timeout",
+        ),
+        (
+            "retried:3.10.1|operator_retry:TEST-op|prior:timeout|timeout",
+            "retried:3.10.1|operator_retry:TEST-op|prior:timeout|timeout|auto_retry:1|timeout",
+        ),
+        ("auto_retry:1|timeout", "auto_retry:2|timeout"),
+    ],
+)
+def test_an_automatic_recovery_keeps_the_release_stamp(code, rebuilt):
+    """Rebuilt without it, a row the release had re-opened was re-opened by it again (audit of 3.10.1)."""
+    from scope_recall.core.work_storage import _auto_retry_stamp
+
+    assert _auto_retry_stamp(code) == rebuilt
+
+
 # --------------------------------------------------------------------------
 # Against real storage
 # --------------------------------------------------------------------------
@@ -245,6 +295,62 @@ def test_a_row_this_release_re_opened_is_counted_until_the_next_one(app, monkeyp
     later = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)
     assert (later["retried"], later["already_retried"]) == (1, 0)
     assert _codes(core)[work_id] == "retried:99.0.0|derivation_retry:1|derivation_invalid|derivation_invalid"
+
+
+def _claim_and(core, ctx, *, error_code, recoverable):
+    """Lease the one pending row and fail it, as a worker would."""
+    with core.storage.write(ctx, remaining_seconds=10) as tx:
+        (item,) = tx.work.claim_next("TEST-owner", core.clock.utc_now(), lease_seconds=30, limit=1)
+        return tx.work.fail(
+            item.work_id,
+            item.lease_token,
+            item.lease_owner,
+            error_code=error_code,
+            now=core.clock.utc_now(),
+            recoverable=recoverable,
+        )
+
+
+def test_a_row_this_release_re_opened_keeps_its_stamp_through_its_next_failure(app):
+    """A re-opened ``http_400`` that failed again had its code replaced, stamp and all, and each later run of the same
+    release re-opened it again, as often as anyone ran it (audit of 3.10.1)."""
+    core, ctx = app
+    _fail_one(core, ctx, "http_400")
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 1
+    assert _claim_and(core, ctx, error_code="http_400", recoverable=False).state == "failed"
+    (code,) = _codes(core).values()
+    assert code == f"retried:{RETRY_GENERATION}|http_400|http_400"
+    again = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
+    assert (again["retried"], again["already_retried"]) == (0, 1)
+
+
+def test_a_provider_refusing_everyone_and_a_lost_lease_keep_the_stamp(app):
+    """A capacity refusal rebuilt the code from its count, and a lease that ran out with the attempts spent replaced
+    it, so the release's stamp went with them; the lost lease also took the automatic retry count (audit of
+    3.10.1)."""
+    core, ctx = app
+    _fail_one(core, ctx, "timeout")
+    stamp = f"retried:{RETRY_GENERATION}|"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(
+            "UPDATE work_items SET state='pending',attempt=0,last_error_code=? WHERE state='failed'",
+            (stamp + "timeout",),
+        )
+        conn.commit()
+    assert _claim_and(core, ctx, error_code="http_429", recoverable=True).state == "pending"
+    (code,) = _codes(core).values()
+    assert code == f"{stamp}capacity:1|http_429"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(
+            "UPDATE work_items SET state='leased',attempt=3,lease_owner='TEST-gone',lease_until='2000-01-01T00:00:00Z',"
+            "last_error_code=? WHERE last_error_code IS NOT NULL",
+            (stamp + "auto_retry:3|timeout",),
+        )
+        conn.commit()
+    with core.storage.write(ctx, remaining_seconds=10) as tx:
+        assert tx.work.release_stale(core.clock.utc_now()) == 1
+    (code,) = _codes(core).values()
+    assert code == f"{stamp}auto_retry:3|timeout|lease_exhausted"
 
 
 def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(worker_app):

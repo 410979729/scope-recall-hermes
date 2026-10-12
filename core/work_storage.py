@@ -13,8 +13,12 @@ from .failure_retry import (
     AUTO_RECOVERABLE_ERRORS,
     DERIVATION_RETRY_MARKER,
     RETRY_GENERATION,
+    RETRY_MARKER,
     already_retried,
+    bounded,
+    carries_stamp,
     marked,
+    release_stamp,
     validate_page,
     validation_feedback,
     wanted,
@@ -38,7 +42,13 @@ MAX_CLAIM_PAGE = 1000
 INTERRUPTED_RETRY_MARKER = "interrupted_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
 _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
-_OPERATOR_TOKEN = re.compile(r"(?:^|\|prior:)operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(?=\||$)")
+# Marks a later step puts in front of an explicit retry's token: the stamp of a release that re-opened the row since,
+# the extra derivation attempt, the interrupted attempt's.  The token counts there, or behind a later retry's prior:.
+_LEADING_MARKS = rf"(?:(?:{RETRY_MARKER}:[^|]+|{DERIVATION_RETRY_MARKER}|{INTERRUPTED_RETRY_MARKER})\|)*"
+_OPERATOR_TOKEN = re.compile(
+    rf"(?:^{_LEADING_MARKS}|\|prior:)operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})(?=\||$)"
+)
+_OPERATOR_HEAD = re.compile(rf"{_LEADING_MARKS}operator_retry:")
 _AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
 
 #: Failures that are never about the work item.  A provider declining to serve
@@ -169,6 +179,7 @@ def _preserve_retry_history(error) -> bool:
             str(error).startswith(("operator_retry:", "chunk_upgrade:1106|"))
             or _auto_count(str(error))
             or "derivation_retry:1" in str(error)
+            or carries_stamp(error)
         )
     )
 
@@ -178,9 +189,9 @@ def _auto_retry_stamp(error: str) -> str:
     stamp = f"auto_retry:{_auto_count(error) + 1}|{_failure_kind(error)}"
     if "derivation_retry:1|" in error:
         stamp = "derivation_retry:1|" + stamp
-    if error.startswith("operator_retry:"):
-        stamp = f"{error}|{stamp}"[-1024:]
-    return stamp
+    if _OPERATOR_HEAD.match(error):
+        return bounded(f"{error}|{stamp}")
+    return release_stamp(error) + stamp
 
 
 def _capacity_count(error: object) -> int:
@@ -498,10 +509,14 @@ class WorkItems:
         visible, params = self._visible_filter()
         base = f"state='leased' AND {visible} AND lease_until IS NOT NULL AND lease_until < ?"
         params = (*params, now)
+        # A history the next retry reads (an explicit or automatic retry's count, the extra derivation attempt, the
+        # release that re-opened the row) is kept; anything else is replaced.
         failed = conn.execute(
             f"""UPDATE work_items SET state='failed',lease_owner=NULL,lease_until=NULL,last_error_code=CASE
-                    WHEN last_error_code LIKE 'operator_retry:%' OR last_error_code LIKE 'auto_retry:%' OR last_error_code LIKE '%derivation_retry:1|%' THEN last_error_code || '|lease_exhausted'
-                    ELSE 'lease_exhausted' END, available_at=?
+                    WHEN last_error_code LIKE 'operator_retry:%' OR last_error_code LIKE 'auto_retry:%'
+                      OR last_error_code LIKE '%derivation_retry:1|%' OR last_error_code LIKE '{RETRY_MARKER}:%'
+                      OR last_error_code LIKE '%|{RETRY_MARKER}:%'
+                    THEN last_error_code || '|lease_exhausted' ELSE 'lease_exhausted' END, available_at=?
                 WHERE {base} AND attempt >= ?""",
             (now, *params, MAX_RECOVERABLE_ATTEMPTS),
         ).rowcount
@@ -795,7 +810,7 @@ class WorkItems:
             recovered += conn.execute(
                 """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                    lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
-                (now, f"{INTERRUPTED_RETRY_MARKER}|{row['last_error_code']}"[:1024], row["work_id"]),
+                (now, bounded(f"{INTERRUPTED_RETRY_MARKER}|{row['last_error_code']}"), row["work_id"]),
             ).rowcount
         return recovered
 
@@ -1157,7 +1172,7 @@ class WorkItems:
             return WorkMutation(work_id, "stale", self.read_state(work_id) or "stale", lease_token)
         prior = conn.execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()[0]
         if _preserve_retry_history(prior):
-            error_code = f"{prior}|{error_code}"[:1024]
+            error_code = bounded(f"{prior}|{error_code}")
         conn.execute(
             f"""UPDATE work_items SET state='pending',attempt=MAX(0,attempt-1),
                        lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
@@ -1260,7 +1275,7 @@ class WorkItems:
         # existing bounded error field for audit/idempotence.
         marker = f"operator_retry:{operation_id}"
         prior_error = row["last_error_code"] or ""
-        stamped = marker if not prior_error else f"{marker}|prior:{prior_error}"[:1024]
+        stamped = marker if not prior_error else bounded(f"{marker}|prior:{prior_error}")
         conn.execute(
             """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                lease_until=NULL,last_error_code=?
@@ -1406,16 +1421,17 @@ class WorkItems:
             # for an entire provider outage, which is the silent loop this
             # whole design exists to prevent.
             refusals = _capacity_count(prior) + 1
-            retry_error = f"capacity:{refusals}|{error_code}"[:1024]
+            retry_error = f"capacity:{refusals}|{error_code}"
             if "derivation_retry:1|" in str(prior or ""):
                 retry_error = "derivation_retry:1|" + retry_error
+            retry_error = bounded(release_stamp(prior) + retry_error)
             conn.execute(
                 f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,
                    last_error_code=?,available_at=?,attempt=MAX(attempt-1,0) WHERE {_LEASED_ROW}""",
                 (retry_error, _after(now, _capacity_backoff_seconds(refusals)), work_id, lease_token, owner),
             )
             return WorkMutation(work_id, "retry", "pending", lease_token)
-        history = f"{prior}|{error_code}"[:1024] if _preserve_retry_history(prior) else error_code
+        history = bounded(f"{prior}|{error_code}") if _preserve_retry_history(prior) else error_code
         if recoverable and (invalid or attempt < MAX_RECOVERABLE_ATTEMPTS):
             conn.execute(
                 f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?

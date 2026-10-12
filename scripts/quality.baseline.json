@@ -715,7 +715,7 @@
    "BLE001": 1
   },
   "core/work_storage.py": {
-   "E501": 9,
+   "E501": 8,
    "PLR0911": {
     "WorkItems._operator_retry_rejection": 10
    },
