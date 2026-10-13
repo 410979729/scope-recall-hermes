@@ -3,6 +3,10 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+### Scope Recall 3.10.3rc1 (unpublished contribution candidate)
+
+An optional `auxiliary.budget.period="monthly"` with an IANA `time_zone` applies API spend, call and token caps to the request's local calendar month. The default remains lifetime accounting. Reservations stay in their original month, the ledger and all historical requests are retained, and anomalous `meter_breach` rows remain blocking across months. Runtime status and doctor report the selected window; doctor also retains lifetime usage. Configure these fields in the existing budget mapping without changing its models, prices or other caps. There is no schema change or reset task. This version only identifies the review branch: no release tag or release artifact is published, and the maintainer chooses the final version.
+
 ## [3.10.2] - 2026-10-11
 
 A long message is consolidated a page at a time. A page whose summary of the task did not use the page's own words was refused whole: its goal, decisions, progress, open items, blockers or next step had to be quoted from the page. The claims found on that page were lost with it, and no later page of the message was read. Now such a summary is dropped, as a short message's summary already is when it does not qualify. The page's claims, still checked against the page on their own, are kept, and the message is read to its end. What a page dropped is named in the work item's error details (stage `summary`) and makes the message's outcome `partial`; it is not fed back to the model as a failure.
