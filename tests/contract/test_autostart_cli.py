@@ -9,10 +9,12 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import struct
+import subprocess
 import sys
 
 import pytest
-from scope_recall.maintenance import autostart
+from scope_recall.maintenance import autostart, windows_wake
 
 
 def _run(monkeypatch, capsys, argv, plan_impl):
@@ -217,3 +219,81 @@ def test_cron_mails_nothing_and_a_backslash_before_a_percent_sign_is_refused():
         autostart._posix_wake(
             "ScopeRecall-TEST", PurePosixPath("/srv/a\\%b/runtime-config.json"), PurePosixPath("/usr/bin/python3")
         )
+
+
+def _pe(path, subsystem):
+    """Minimal PE header fixture: only subsystem selection is under test."""
+    data = bytearray(160)
+    data[:2] = b"MZ"
+    struct.pack_into("<I", data, 60, 64)
+    data[64:68] = b"PE\0\0"
+    struct.pack_into("<H", data, 88, 0x20B)
+    struct.pack_into("<H", data, 156, subsystem)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def test_gui_selection_checks_the_binary_not_the_pythonw_name(tmp_path):
+    gui = _pe(tmp_path / "pythonw.exe", 3)
+    assert not windows_wake.is_gui_executable(gui)
+    _pe(gui, 2)
+    assert windows_wake.is_gui_executable(gui)
+    gui.write_bytes(b"MZ")
+    assert not windows_wake.is_gui_executable(gui)
+    assert not windows_wake.is_gui_executable(tmp_path / "missing.exe")
+
+
+def test_a_real_gui_venv_launcher_needs_no_extra_process(tmp_path, monkeypatch):
+    python = tmp_path / "python.exe"
+    gui = _pe(python.with_name("pythonw.exe"), 2)
+    monkeypatch.setattr(windows_wake.subprocess, "run", lambda *a, **k: pytest.fail("unnecessary probe"))
+    command = windows_wake.wake_command(python, tmp_path / "config.json")
+    assert command == [
+        str(gui),
+        "-I",
+        "-B",
+        "-m",
+        "scope_recall.runtime.resume_entry",
+        "--config",
+        str(tmp_path / "config.json"),
+    ]
+
+
+def test_a_console_redirector_is_hidden_without_losing_the_selected_venv(tmp_path, monkeypatch):
+    python = tmp_path / "venv space" / "python.exe"
+    _pe(python.with_name("pythonw.exe"), 3)
+    base = tmp_path / "base" / "python.exe"
+    gui = _pe(base.with_name("pythonw.exe"), 2)
+    calls = []
+
+    def probe(command, **options):
+        calls.append((command, options))
+        return subprocess.CompletedProcess(command, 0, json.dumps(str(base)))
+
+    monkeypatch.setattr(windows_wake.subprocess, "run", probe)
+    config = tmp_path / "配置 space & name" / "runtime-config.json"
+    command = windows_wake.wake_command(python, config)
+    assert command[:5] == [str(gui), "-I", "-B", "-c", windows_wake._HIDDEN_WAKE]
+    assert command[5:] == [str(python), "-I", "-B", "-m", "scope_recall.runtime.resume_entry", "--config", str(config)]
+    assert calls[0][0][0] == str(python)
+    assert calls[0][1]["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    assert "CREATE_NO_WINDOW" in command[4] and "timeout=50" in command[4]
+
+
+@pytest.mark.parametrize("failure", ["missing_gui", "console_base", "bad_probe", "probe_failed"])
+def test_no_gui_interpreter_fails_closed_instead_of_registering_a_flashing_task(tmp_path, monkeypatch, failure):
+    python = tmp_path / "venv" / "python.exe"
+    _pe(python.with_name("pythonw.exe"), 3)
+    base = tmp_path / "base" / "python.exe"
+    if failure == "console_base":
+        _pe(base.with_name("pythonw.exe"), 3)
+
+    def probe(command, **options):
+        if failure == "probe_failed":
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, "{}" if failure == "bad_probe" else json.dumps(str(base)))
+
+    monkeypatch.setattr(windows_wake.subprocess, "run", probe)
+    with pytest.raises(ValueError, match="^autostart_gui_interpreter_unavailable$"):
+        windows_wake.wake_command(python, tmp_path / "config.json")

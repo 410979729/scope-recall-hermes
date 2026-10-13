@@ -13,6 +13,7 @@ import argparse
 import json
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -31,6 +32,59 @@ class PackageUpgradeError(RuntimeError):
 
 _REASON_CODE = re.compile(r"[a-z][a-z0-9_]{2,79}")
 _LOCKED = "installed_files_locked_or_not_replaceable"
+
+# Only these package-owned codes may be echoed. A code-shaped exception body
+# from a path validator or another dependency is not automatically public.
+_PUBLIC_REASONS = frozenset(
+    {
+        _LOCKED,
+        "installed_distribution_unavailable",
+        "stop_all_target_writers_and_restarters_first",
+        "uv_required_no_pip_bootstrap",
+        "wheel_distribution_ambiguous",
+        "wrong_wheel_distribution",
+        "uv_must_be_external_executable",
+        "uv_must_be_outside_target_venv",
+        "backup_and_wheel_must_be_outside_target_venv",
+        "record_outside_target_venv_or_missing",
+        "backup_verification_failed",
+        "uv_install_failed",
+        "installed_version_mismatch",
+        "installed_import_failed",
+        "package_step_failed_backup_retained",
+    }
+)
+
+
+def _blocked_reason(exc: BaseException) -> str:
+    """Translate known refusals and error types, never private error bodies."""
+    if isinstance(exc, PackageUpgradeError):
+        reason = str(exc)
+        if reason == "symlink or reparse paths are not allowed":
+            return "symlink_or_reparse_path"
+        return reason if reason in _PUBLIC_REASONS else "package_upgrade_failed"
+    reasons = {
+        FileNotFoundError: "path_not_found",
+        FileExistsError: "backup_already_exists",
+        TimeoutError: "package_operation_timed_out",
+        zipfile.BadZipFile: "invalid_wheel_archive",
+        ValueError: "invalid_package_input",
+    }
+    return next((reason for kind, reason in reasons.items() if isinstance(exc, kind)), "package_io_failed")
+
+
+def _external_uv(value: str | Path) -> Path:
+    """Resolve only the helper's ancestors, then execute the checked real file.
+
+    Tool directories may be junctions. The executable itself must be an
+    ordinary file, and its canonical path is later checked against the target
+    prefix. Mutation inputs keep their original strict ``safe_path`` checks.
+    """
+    path = Path(value).expanduser()
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise PackageUpgradeError("uv_must_be_external_executable")
+    return safe_path(path.resolve(strict=True), must_exist=True, error_type=PackageUpgradeError)
 
 
 _PROBE = """import importlib.metadata as m,json,sys
@@ -133,9 +187,7 @@ def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) ->
         if metadata["Name"] != "hermes-scope-recall" or not metadata["Version"]:
             raise PackageUpgradeError("wrong_wheel_distribution")
         target_version = metadata["Version"]
-    helper = safe_path(helper, must_exist=True, error_type=PackageUpgradeError)
-    if not helper.is_file():
-        raise PackageUpgradeError("uv_must_be_external_executable")
+    helper = _external_uv(helper)
     current = _installed(python)
     prefix = safe_path(current["prefix"], must_exist=True, error_type=PackageUpgradeError)
     if helper.is_relative_to(prefix):
@@ -241,14 +293,13 @@ def main(argv=None) -> int:
     try:
         value = replace_package(args.python, args.wheel, args.backup, source_quiesced=args.source_quiesced, uv=args.uv)
     except (PackageUpgradeError, OSError, ValueError, TimeoutError, zipfile.BadZipFile) as exc:
-        blocked = dict(state="blocked", error_type=type(exc).__name__, host_restart_allowed=False)
-        # A reason raised here is a fixed code. Anything else may carry a path; its type says enough.
-        if isinstance(exc, PackageUpgradeError) and _REASON_CODE.fullmatch(str(exc)):
-            blocked["reason"] = str(exc)
-            if blocked["reason"] == _LOCKED:
-                # Nothing was backed up or uninstalled. The usual holder is a background worker
-                # that has not read the operator pause yet; it lets go when it does.
-                blocked["next_action"] = "nothing_changed_wait_for_package_processes_to_exit_then_run_again"
+        blocked = dict(
+            state="blocked", error_type=type(exc).__name__, host_restart_allowed=False, reason=_blocked_reason(exc)
+        )
+        if blocked["reason"] == _LOCKED:
+            # Nothing was backed up or uninstalled. The usual holder is a background worker
+            # that has not read the operator pause yet; it lets go when it does.
+            blocked["next_action"] = "nothing_changed_wait_for_package_processes_to_exit_then_run_again"
         print(json.dumps(blocked))
         return 3
     print(json.dumps({k: v for k, v in value.items() if k != "files"}, ensure_ascii=False))

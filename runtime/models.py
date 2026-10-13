@@ -367,8 +367,6 @@ def _load_json_object(raw: bytes) -> dict[str, Any]:
 _BUDGET_UNAVAILABLE = frozenset(
     {
         "ledger_not_initialized",
-        "unsupported_model",
-        "unsupported_model_or_size",
         "ledger_busy_timeout",
     }
 )
@@ -377,6 +375,10 @@ _BUDGET_UNAVAILABLE = frozenset(
 def _ledger_error(exc: ValueError) -> AuxiliaryModelError:
     """The ledger refuses with a ValueError code; callers see a closed vocabulary."""
     code = str(exc)
+    if code in {"request_too_large", "unsupported_model"}:
+        return AuxiliaryModelError(code)
+    if code == "request_empty":
+        return AuxiliaryModelError("input_invalid", detail="request_empty")
     if code == "budget_exhausted_or_meter_breach":
         return AuxiliaryModelError("budget_exhausted")
     if code in _BUDGET_UNAVAILABLE:

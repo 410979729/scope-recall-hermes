@@ -75,7 +75,8 @@ def vector_failure_label(exc: BaseException) -> str:
     """``<class>``, plus whichever fixed name the exception can be placed under."""
     label = type(exc).__name__
     kind = getattr(exc, "error_type", None)
-    if type(kind) is str and kind.isascii() and kind.replace("_", "").isalnum():
+    # A remote RuntimeError names only the family; keep the native diagnosis.
+    if type(kind) is str and kind != "RuntimeError" and kind.isascii() and kind.replace("_", "").isalnum():
         # A closed vocabulary already names the fault.  One of its names stands
         # for every answer a provider gives, so the status comes with it: a
         # provider refusing every embedding call for hours would otherwise leave

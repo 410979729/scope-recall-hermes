@@ -471,14 +471,6 @@
    "E501": 1,
    "UP035": 1
   },
-  "contracts.py": {
-   "C901": {
-    "validate_proposal_references": 22
-   },
-   "PLR0912": {
-    "validate_proposal_references": 21
-   }
-  },
   "core/admission.py": {
    "E501": 3
   },
@@ -890,13 +882,10 @@
   },
   "maintenance/package_upgrade.py": {
    "C901": {
-    "replace_package": 17
-   },
-   "PLR0912": {
     "replace_package": 16
    },
    "PLR0915": {
-    "replace_package": 73
+    "replace_package": 71
    }
   },
   "maintenance/shared.py": {

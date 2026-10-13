@@ -3,9 +3,11 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
-### Scope Recall 3.10.3rc1 (unpublished contribution candidate)
+## [3.10.3] - Unreleased
 
-An optional `auxiliary.budget.period="monthly"` with an IANA `time_zone` applies API spend, call and token caps to the request's local calendar month. The default remains lifetime accounting. Reservations stay in their original month, the ledger and all historical requests are retained, and anomalous `meter_breach` rows remain blocking across months. Runtime status and doctor report the selected window; doctor also retains lifetime usage. Configure these fields in the existing budget mapping without changing its models, prices or other caps. There is no schema change or reset task. This version only identifies the review branch: no release tag or release artifact is published, and the maintainer chooses the final version.
+Consolidation accepts and promotes long values under the same limits, and checks source references before adding their revision. The default request limit now accommodates a full consolidation batch; a request beyond an explicit limit, or a model the route does not support, fails instead of being postponed as if its budget were spent. Genuine budget pauses still wait without spending an attempt. On Windows, package upgrades accept an external uv tool reached through a directory junction and give a stable reason when blocked, without relaxing checks on the package or backup paths. Scheduled wakes use a verified GUI launcher when a venv's `pythonw.exe` is actually a console redirector, preventing its window flash while retaining the selected venv. Vector failures report a bounded diagnostic rather than the exception's private text.
+
+After upgrading on Windows, run `autostart enable` again with the existing config, interpreter and environment-file arguments to replace the old scheduled action. An explicitly configured request-size cap remains authoritative. The store schema is unchanged (1110).
 
 ## [3.10.2] - 2026-10-11
 

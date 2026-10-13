@@ -47,6 +47,20 @@ def test_each_native_fault_gets_its_own_name(message, expected):
     assert vector_failure_label(RuntimeError(message)) == expected
 
 
+@pytest.mark.parametrize("message,expected", NATIVE_FAULTS)
+def test_remote_runtime_errors_keep_the_specific_native_fault(message, expected):
+    """The helper's generic exception class must not hide a known native fault."""
+    from scope_recall.vector.process_store import _remote_failure
+
+    assert vector_failure_label(_remote_failure("RuntimeError", message)) == expected
+
+
+def test_an_unknown_remote_runtime_error_invents_no_category():
+    from scope_recall.vector.process_store import _remote_failure
+
+    assert vector_failure_label(_remote_failure("RuntimeError", "unknown private detail")) == "RuntimeError"
+
+
 def test_the_faults_an_operator_must_tell_apart_are_told_apart():
     """A helper that is busy, one that is gone, and one that never started need
     three different answers; before this they had one label between them."""

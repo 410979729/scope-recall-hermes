@@ -637,7 +637,9 @@
         "source_ref": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 240
+          "maxLength": 240,
+          "pattern": "^[^@]+$",
+          "description": "Bare source identifier without @revision; put the revision only in source_revision."
         },
         "source_revision": {
           "type": "integer",

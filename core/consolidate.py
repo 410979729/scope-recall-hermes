@@ -199,9 +199,9 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
 #: so the shared 16 KB consolidation ceiling left roughly 3.4 KB for evidence.
 #: Measured against one instance's live database that admitted none of the 115
 #: oversized evaluations: the smallest was already 2,892 characters of evidence.
-#: This ceiling is the request's real bound — the candidate block is counted
-#: inside it, not appended past it — and stays far below the auxiliary model's
-#: context window.
+#: This ceiling counts all message contents, including the candidate block.
+#: The transport's separate byte cap must also allow JSON escaping and its
+#: request envelope; it is not interchangeable with this content-byte bound.
 CANDIDATE_EVALUATION_INPUT_BUDGET = 64000
 
 

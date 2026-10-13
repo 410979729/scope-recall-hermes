@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.10.3rc1",
+  "package_version": "3.10.3",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",
@@ -201,6 +201,7 @@
     "maintenance/shared_run.py",
     "maintenance/upgrade.py",
     "maintenance/upgrade_cli.py",
+    "maintenance/windows_wake.py",
     "runtime/__init__.py",
     "runtime/_http_worker.py",
     "runtime/_worker_bootstrap.py",

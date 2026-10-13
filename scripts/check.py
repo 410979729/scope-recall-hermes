@@ -438,6 +438,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_runtime_cross_component.py",
     "tests/contract/test_claim_acceptance_semantics.py",
     "tests/contract/test_runtime_audit.py",
+    "tests/contract/test_runtime_request_limits.py",
     "tests/contract/test_claim_semantics.py",
     "tests/contract/test_consolidation_chunks.py",
     "tests/contract/test_recall_selection.py",
