@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from scope_recall._version import __version__
 from scope_recall.adapters.clients.config import load_codex_config, load_shared_client
 from scope_recall.adapters.hermes.shared_entries import read_attachment
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
-from scope_recall.runtime.model_budget import pre_request_refusals, provider_refusals
+from scope_recall.runtime.model_budget import budget_totals, budget_window, pre_request_refusals, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
 
 from . import package_health
@@ -123,7 +124,7 @@ def load_binding(host: HostChoice, instance_root: Path):
 
 
 def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
-    """Lifetime usage of each auxiliary-ledger cap, as used/cap plus a ratio.
+    """Selected-period usage of each auxiliary-ledger cap, as used/cap plus a ratio.
 
     Read-only and best-effort: a missing ledger, an unreadable file or a policy
     without caps reports nothing rather than failing the whole doctor run.
@@ -134,25 +135,22 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
         if not Path(ledger_path).is_file():
             return {}
         uri = f"file:{Path(ledger_path).as_posix()}?mode=ro"
+        period = getattr(policy, "period", "lifetime")
+        window = budget_window(policy, time.time_ns()) if period == "monthly" else None
         with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
-            row = db.execute(
-                "SELECT COUNT(*), COALESCE(SUM(charge_micro_usd),0),"
-                " COALESCE(SUM(COALESCE(actual_input,reserved_input)),0),"
-                " COALESCE(SUM(COALESCE(actual_output,reserved_output)),0) FROM requests"
-            ).fetchone()
+            db.execute("BEGIN")
+            totals = budget_totals(db, window)
+            lifetime = budget_totals(db) if window is not None else totals
     except (sqlite3.Error, OSError, ValueError):
         return {}
-    calls, _charge, inputs, outputs = (int(value or 0) for value in row)
-    # Deliberately no money figure. What an instance spent depends on that
-    # operator's own contract, so a currency amount means something different
-    # for every reader, while calls and tokens are the same unit for everybody.
-    # The ledger still meters charges internally for ``meter_breach``, which is
-    # an anomaly check rather than a usage report.
+    calls, inputs, outputs = totals["requests"], totals["input_tokens"], totals["output_tokens"]
     caps = (
         ("calls", calls, getattr(policy, "total_call_cap", 0)),
         ("input_tokens", inputs, getattr(policy, "total_input_cap", 0)),
         ("output_tokens", outputs, getattr(policy, "total_output_cap", 0)),
     )
+    if period == "monthly":
+        caps += (("charge_micro_usd", totals["charge_micro_usd"], policy.cap_micro_usd),)
     headroom: dict[str, Any] = {}
     worst = 0.0
     for name, used, cap in caps:
@@ -166,7 +164,11 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
             worst = max(worst, ratio)
         headroom[name] = entry
     headroom["worst_used_ratio"] = round(worst, 4)
-    headroom["scope"] = "lifetime"
+    headroom["scope"] = period
+    if window is not None:
+        headroom.update(
+            time_zone=policy.time_zone, window_start_ns=window[0], window_end_ns=window[1], lifetime_usage=lifetime
+        )
     return headroom
 
 

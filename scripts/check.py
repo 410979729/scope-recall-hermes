@@ -231,6 +231,7 @@ SUITES = {
         "tests/contract/test_worker_incremental_batch.py",
         "tests/integration/test_guard_git.py",
         "tests/contract/test_runtime_auxiliary.py",
+        "tests/contract/test_monthly_auxiliary_budget.py",
         "tests/contract/test_codex_cli_consolidation.py",
         "tests/contract/test_runtime_worker_entry.py",
         "tests/contract/test_running_code.py",

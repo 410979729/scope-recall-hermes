@@ -167,6 +167,8 @@ def _budget_policy_from_mapping(raw: object) -> BudgetPolicy:
         model_token_caps=MappingProxyType(model_caps or dict(base.model_token_caps)),
         pricing=MappingProxyType(pricing),
         approved_models=approved,
+        period=raw.get("period", base.period),
+        time_zone=raw.get("time_zone", base.time_zone),
     )
 
 
@@ -327,7 +329,9 @@ def build_auxiliary_runtime(
 def auxiliary_runtime_status(config: AuxiliaryRuntimeConfig) -> dict:
     runtime = build_auxiliary_runtime(config)
     budget = (
-        read_auxiliary_budget_status(config.ledger_path)
+        read_auxiliary_budget_status(
+            config.ledger_path, policy=config.budget if config.budget.period == "monthly" else None
+        )
         if config.ledger_path is not None
         else {"ledger_exists": False, "requests": 0, "charge_micro_usd": 0, "meter_breach": False}
     )

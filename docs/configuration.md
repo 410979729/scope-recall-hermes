@@ -292,17 +292,37 @@ Omitted, the policy is deliberately fail-closed: `cap_micro_usd`,
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `batch` | string, non-empty | `"auxiliary"` | Label the ledger records requests under. |
+| `period` | `"lifetime"` or `"monthly"` | `"lifetime"` | Apply all API spend, call and token caps to the whole ledger or the current local calendar month. |
+| `time_zone` | IANA time-zone name | `"UTC"` | Calendar zone for monthly caps, for example `"Asia/Shanghai"`. An invalid or unavailable zone refuses the configuration. |
 | `pricing` | mapping of model to `{"input_usd_per_million", "output_usd_per_million"}` | required | Rates used to charge each request. Each rate is a non-negative amount given as an int or an exact decimal string, for example `"0.15"`. |
 | `approved_models` | array of strings | required | The only models any route may call. Every entry must also appear in `pricing`, or the file is refused with `approved_model_pricing`. |
-| `cap_micro_usd` | int ≥ 0 or `null` | `0` | Lifetime spend cap in micro-USD across the whole ledger. `0` means no spend at all; `null` means uncapped. |
-| `total_input_cap` | int ≥ 0 or `null` | `0` | Lifetime input-token cap. Same `0` versus `null` distinction. |
-| `total_output_cap` | int ≥ 0 or `null` | `0` | Lifetime output-token cap. Same distinction. |
-| `total_call_cap` | int ≥ 0 or `null` | `0` | Lifetime request-count cap. Same distinction. |
+| `cap_micro_usd` | int ≥ 0 or `null` | `0` | Selected-period spend cap in micro-USD. `0` means no spend at all; `null` means uncapped. |
+| `total_input_cap` | int ≥ 0 or `null` | `0` | Selected-period input-token cap. Same `0` versus `null` distinction. |
+| `total_output_cap` | int ≥ 0 or `null` | `0` | Selected-period output-token cap. Same distinction. |
+| `total_call_cap` | int ≥ 0 or `null` | `0` | Selected-period request-count cap. Same distinction. |
 | `max_request_bytes` | int ≥ 1 | `32000` | Largest request body permitted. |
 | `default_reserve_input` | int ≥ 1 | `32768` | Input tokens reserved before usage is known. |
 | `default_reserve_output` | int ≥ 1 | `4096` | Output tokens reserved before usage is known. |
 | `model_reserve_output` | mapping of model to int ≥ 1 | one shipped entry | Per-model override of the output reservation. |
-| `model_token_caps` | mapping of model to `{"input", "output"}` | `{}` | Per-model lifetime token caps. Both sides must be stated; an explicit `null` on a side means uncapped, `0` means no spend. |
+| `model_token_caps` | mapping of model to `{"input", "output"}` | `{}` | Per-model selected-period token caps. Both sides must be stated; an explicit `null` on a side means uncapped, `0` means no spend. |
+
+For a natural-month API budget, add `"period": "monthly"` and optionally
+`"time_zone": "Asia/Shanghai"` to the existing budget mapping. Keep its approved
+models, prices, reservation settings and explicit caps. Missing numeric caps still
+default to `0`; booleans are not numeric caps. CLI subscription budgets are separate.
+
+Each request belongs to the month of its `started_ns`, sampled after acquiring
+the SQLite reservation lock. Outstanding reservations count against that month;
+settling an older request later does not move it into the new month. The next month
+naturally has fresh headroom without deleting history, replacing the ledger,
+adding credit rows, or running a reset task. Historical `meter_breach` records
+remain blocking across months under the existing authorization rules.
+
+The doctor reports the selected month's window, caps and usage alongside lifetime
+usage. `read_auxiliary_budget_status(path)` remains lifetime accounting; callers
+may explicitly pass `policy=cfg.budget` for the configured window. IANA time-zone
+data must be available to Python (`zoneinfo`); if it is missing, configuration
+fails closed rather than silently switching to a different zone.
 
 The ledger file is never created as a side effect of reading it — a missing file
 refuses every request with `ledger_not_initialized`, and no CLI command in this
