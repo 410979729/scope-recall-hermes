@@ -153,4 +153,12 @@ def test_every_reason_the_step_raises_is_a_code_it_will_print():
 )
 def test_a_message_that_may_carry_a_path_is_not_printed(monkeypatch, capsys, error):
     out = _blocked(monkeypatch, capsys, error)
-    assert out == {"state": "blocked", "error_type": type(error).__name__, "host_restart_allowed": False}
+    reason = (
+        "package_upgrade_failed" if isinstance(error, package_upgrade.PackageUpgradeError) else "backup_already_exists"
+    )
+    assert out == {
+        "state": "blocked",
+        "error_type": type(error).__name__,
+        "host_restart_allowed": False,
+        "reason": reason,
+    }

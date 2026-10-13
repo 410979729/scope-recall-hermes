@@ -29,10 +29,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import unicodedata
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from ..contracts import nfkc_letters_and_digits, proposal_value_in_evidence
 from .claims import AUTHORITY_ORIGINS, HUMAN_ONLY_KINDS, VALUE_FREE_KINDS
 from .source_qualification import bound_literal
 
@@ -119,11 +119,6 @@ def evidence_text(source) -> EvidenceText:
     return EvidenceText(origin, complete, str(source.event.get("content") or ""))
 
 
-def nfkc_letters_and_digits(value: object) -> str:
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    return "".join(character for character in text if character.isalnum())
-
-
 def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> str | None:
     """Why no verdict on ``evidence`` could promote this candidate, or ``None``."""
     # The qualification rules own these sets; importing them keeps the two in step.
@@ -135,10 +130,7 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
     needed = ("human_direct",) if kind in HUMAN_ONLY_KINDS else AUTHORITY_ORIGINS
     if not any(item.complete and item.origin in needed for item in items):
         return "no_authoritative_evidence"
-    value = nfkc_letters_and_digits(payload.get("value_text"))
-    if kind in VALUE_FREE_KINDS or not value:
-        return None
-    if not any(value in nfkc_letters_and_digits(item.content) for item in items):
+    if not proposal_value_in_evidence(payload, (item.content for item in items)):
         return "value_not_in_evidence"
     return None
 

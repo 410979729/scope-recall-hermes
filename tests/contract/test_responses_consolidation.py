@@ -716,7 +716,7 @@ def test_responses_route_refuses_an_unapproved_model_without_spending(tmp_path, 
 
     with pytest.raises(AuxiliaryModelError) as exc:
         runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
-    assert exc.value.error_type == "budget_unavailable"
+    assert exc.value.error_type == "unsupported_model"
     assert transport.calls == []
     assert _rows(ledger) == []
 

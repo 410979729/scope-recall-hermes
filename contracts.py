@@ -4,6 +4,8 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -215,6 +217,10 @@ class ClaimProposal(TypedDict):
     procedure: NotRequired[Procedure]
     intention: NotRequired[Intention]
     alias: NotRequired[Alias]
+
+
+#: Kinds proved by something other than the value inside a quote.
+VALUE_FREE_KINDS = frozenset({"procedure", "intention", "alias"})
 
 
 class ResumeState(TypedDict):
@@ -798,6 +804,58 @@ class SourceSnapshot:
             raise ContractError("INPUT_INVALID", "verified_original_origin")
 
 
+def nfkc_letters_and_digits(value: object) -> str:
+    """Comparable letters and digits, ignoring case, width, spacing and punctuation."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in text if character.isalnum())
+
+
+def proposal_value_in_evidence(proposal: Mapping, contents: Iterable[str]) -> bool:
+    """The necessary value condition shared by admission and pre-promotion.
+
+    Compare against supplied source contents, not just a chosen quote, without
+    translating or inferring a value. Value-free kinds and values with no
+    letters or digits keep their existing exemption. This is not authority or
+    qualification: callers still enforce source access, quotes and lifecycle.
+    """
+    value = nfkc_letters_and_digits(proposal.get("value_text"))
+    if proposal.get("kind") in VALUE_FREE_KINDS or not value:
+        return True
+    return any(value in nfkc_letters_and_digits(content) for content in contents)
+
+
+def _validate_claim_evidence(
+    claim: Mapping,
+    declared: set[str],
+    available: Mapping[str, SourceSnapshot],
+) -> None:
+    """Validate a claim against declared, accessible sources without inferring a value.
+
+    The caller has already validated payload shape and that every declared
+    reference is available. Only the claim's cited sources may support its value.
+    """
+    cited_contents = []
+    for span in claim["evidence_spans"]:
+        key = f"{span['source_ref']}@{span['source_revision']}"
+        # Two findings once shared one name, so every rejection read
+        # ``evidence_span`` whether the model had cited a source it never
+        # declared or quoted one it had. Only the second is about the words
+        # it wrote, and only the second is what the quote ladder can repair.
+        if key not in declared:
+            raise ContractError("DERIVATION_INVALID", "evidence_undeclared_source")
+        if span["quote"] not in available[key].content:
+            raise ContractError("DERIVATION_INVALID", "evidence_quote")
+        cited_contents.append(available[key].content)
+    if not proposal_value_in_evidence(claim, cited_contents):
+        raise ContractError("DERIVATION_INVALID", "evidence_value")
+    for ref in claim.get("procedure", {}).get("counterexample_refs", []):
+        if ref not in declared:
+            raise ContractError("SOURCE_MISSING")
+    for ref in claim.get("intention", {}).get("state_evidence_refs", []):
+        if ref not in declared:
+            raise ContractError("SOURCE_MISSING")
+
+
 def validate_proposal_references(
     value: str | bytes | dict,
     sources: tuple[SourceSnapshot, ...],
@@ -817,22 +875,7 @@ def validate_proposal_references(
     if not declared <= available.keys():
         raise ContractError("SOURCE_MISSING")
     for claim in result["claim_proposals"]:
-        for span in claim["evidence_spans"]:
-            key = f"{span['source_ref']}@{span['source_revision']}"
-            # Two findings once shared one name, so every rejection read
-            # ``evidence_span`` whether the model had cited a source it never
-            # declared or quoted one it had.  Only the second is about the words
-            # it wrote, and only the second is what the quote ladder can repair.
-            if key not in declared:
-                raise ContractError("DERIVATION_INVALID", "evidence_undeclared_source")
-            if span["quote"] not in available[key].content:
-                raise ContractError("DERIVATION_INVALID", "evidence_quote")
-        for ref in claim.get("procedure", {}).get("counterexample_refs", []):
-            if ref not in declared:
-                raise ContractError("SOURCE_MISSING")
-        for ref in claim.get("intention", {}).get("state_evidence_refs", []):
-            if ref not in declared:
-                raise ContractError("SOURCE_MISSING")
+        _validate_claim_evidence(claim, declared, available)
     for resume in result["resume_proposals"]:
         refs = list(resume["evidence_refs"]) + resume["goal"]["evidence_refs"]
         for field in ("decisions", "verified_progress", "open_items", "blockers"):

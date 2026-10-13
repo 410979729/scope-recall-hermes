@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..contracts import (
+    VALUE_FREE_KINDS,
     Basis,
     ClaimProposal,
     ContractError,
@@ -356,8 +357,6 @@ _UNASSERTED_STATEMENTS = frozenset({"request", "proposal", "hypothetical", "quot
 HUMAN_ONLY_KINDS = frozenset({"preference", "constraint", "decision", "intention", "alias"})
 #: Origins a cited root may lend authority from; ``_authority`` needs one of them.
 AUTHORITY_ORIGINS = ("human_direct", "tool_observation", "external_document")
-#: Kinds proved by something other than the value inside a quote (``_value_preserved``).
-VALUE_FREE_KINDS = frozenset({"procedure", "intention", "alias"})
 _POLARITY_KINDS = frozenset({"fact", "preference", "constraint", "decision"})
 
 

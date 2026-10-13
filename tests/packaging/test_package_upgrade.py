@@ -50,16 +50,25 @@ def _run(args):
 
 
 @pytest.fixture
+def tmp_path(tmp_path_factory):
+    """Leave room for backup RECORD paths under a task-local Windows home."""
+    return tmp_path_factory.mktemp("pkg")
+
+
+@pytest.fixture
 def target(tmp_path, monkeypatch):
     uv = os.environ.get("SCOPE_RECALL_TEST_UV") or shutil.which("uv")
     if not uv:
         pytest.skip("isolated package fixture requires external uv")
     uv = Path(uv).resolve()
     monkeypatch.setenv("UV_PYTHON_DOWNLOADS", "never")
-    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    # The interpreter cache adds several directory levels; keep it at the
+    # owned gate root rather than the much deeper pytest node path on Windows.
+    cache_root = Path(os.environ.get("SCOPE_RECALL_TEST_BOUNDARY_PARENT", str(tmp_path)))
+    monkeypatch.setenv("UV_CACHE_DIR", str(cache_root / "uv-cache"))
     for key in ("PYTHONHOME", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
-    venv = tmp_path / "TEST-pipless"
+    venv = cache_root / f"TEST-pipless-{tmp_path.name}"
     _run([uv, "venv", "--python", sys.executable, str(venv)])
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     _run([python, "-I", "-c", 'import importlib.util; assert importlib.util.find_spec("pip") is None'])
@@ -147,3 +156,121 @@ def test_locked_package_directory_fails_before_uninstall(target, tmp_path):
 def test_missing_stop_confirmation_and_uv_refuse_before_probe(tmp_path):
     with pytest.raises(upgrade.PackageUpgradeError, match="stop_all_target_writers"):
         upgrade.replace_package(tmp_path / "missing", tmp_path / "missing.whl", tmp_path / "backup")
+
+
+def _directory_alias(link, target):
+    """Use a real junction on Windows and a directory symlink elsewhere."""
+    if os.name == "nt":
+        done = subprocess.run(
+            [os.environ["COMSPEC"], "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            timeout=60,
+        )
+        assert done.returncode == 0
+        assert link.lstat().st_reparse_tag == 0xA0000003
+    else:
+        link.symlink_to(target, target_is_directory=True)
+    return link
+
+
+def _arguments(python, wheel, backup, uv):
+    return [
+        "--python",
+        str(python),
+        "--wheel",
+        str(wheel),
+        "--backup",
+        str(backup),
+        "--uv",
+        str(uv),
+        "--source-quiesced",
+    ]
+
+
+def test_external_helper_under_a_directory_alias_replaces_the_package(target, tmp_path, capsys):
+    python, wheel, uv = target
+    alias = _directory_alias(tmp_path / "helper-alias", uv.parent)
+    linked_helper = alias / uv.name
+    assert linked_helper.samefile(uv)
+    backup = tmp_path / "alias-backup"
+    assert upgrade.main(_arguments(python, wheel, backup, linked_helper)) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["state"] == "package_verified" and out["installer_exit"] == 0
+    assert upgrade._installed(python)["version"] == "0.0.2"
+
+
+def test_helper_alias_into_the_target_is_still_refused(target, tmp_path, capsys):
+    python, wheel, uv = target
+    inside = python.parent / uv.name
+    shutil.copy2(uv, inside)
+    alias = _directory_alias(tmp_path / "inside-helper-alias", python.parent)
+    backup = tmp_path / "inside-backup"
+    before = upgrade._installed(python)
+    assert upgrade.main(_arguments(python, wheel, backup, alias / uv.name)) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason"] == "uv_must_be_outside_target_venv"
+    assert out["host_restart_allowed"] is False and not backup.exists()
+    assert upgrade._installed(python) == before
+
+
+def test_helper_itself_must_not_be_a_redirect(target, tmp_path):
+    python, wheel, uv = target
+    if os.name == "nt":
+        # A directory junction is also a redirected helper leaf, never a file.
+        leaf = _directory_alias(tmp_path / "helper-leaf", uv.parent)
+    else:
+        leaf = tmp_path / "helper-leaf"
+        leaf.symlink_to(uv)
+    with pytest.raises(upgrade.PackageUpgradeError, match="uv_must_be_external_executable"):
+        upgrade.replace_package(python, wheel, tmp_path / "leaf-backup", source_quiesced=True, uv=leaf)
+    assert not (tmp_path / "leaf-backup").exists()
+
+
+@pytest.mark.parametrize("redirected", ["wheel", "backup", "prefix"])
+def test_mutation_paths_keep_rejecting_directory_aliases(target, tmp_path, monkeypatch, capsys, redirected):
+    python, wheel, uv = target
+    backup = tmp_path / "redirect-backup"
+    before = upgrade._installed(python)
+    if redirected == "prefix":
+        alias = _directory_alias(tmp_path / "prefix-alias", python.parents[1])
+        monkeypatch.setattr(upgrade, "_installed", lambda _: {**before, "prefix": str(alias)})
+    else:
+        real = tmp_path / "external-inputs"
+        real.mkdir()
+        alias = _directory_alias(tmp_path / "external-alias", real)
+        if redirected == "wheel":
+            shutil.copy2(wheel, real / wheel.name)
+            wheel = alias / wheel.name
+        else:
+            backup = alias / "backup"
+    assert upgrade.main(_arguments(python, wheel, backup, uv)) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason"] == "symlink_or_reparse_path"
+    assert out["host_restart_allowed"] is False and not backup.exists()
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (FileNotFoundError("TEST private missing file"), "path_not_found"),
+        (FileExistsError("TEST private existing backup"), "backup_already_exists"),
+        (OSError("TEST private IO detail"), "package_io_failed"),
+        (ValueError("TEST private invalid input"), "invalid_package_input"),
+        (zipfile.BadZipFile("TEST private archive detail"), "invalid_wheel_archive"),
+        (TimeoutError("TEST private timeout detail"), "package_operation_timed_out"),
+        (upgrade.PackageUpgradeError("test_private_detail"), "package_upgrade_failed"),
+    ],
+)
+def test_blocked_errors_emit_only_a_stable_public_reason(monkeypatch, capsys, error, reason):
+    def refuse(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(upgrade, "replace_package", refuse)
+    assert upgrade.main(_arguments("p", "w", "b", "u")) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "state": "blocked",
+        "error_type": type(error).__name__,
+        "host_restart_allowed": False,
+        "reason": reason,
+    }

@@ -273,11 +273,47 @@ def test_what_the_rules_cannot_read_is_left_to_the_model(payload):
     assert _unanswerable(payload, [_said("这里没有那个值。")]) is None
 
 
+def test_translated_value_is_not_stored_but_original_words_can_become_active(app):
+    from scope_recall.contracts import ContractError
+    from test_claims import accept, draft
+
+    core, ctx = app
+    source = capture(core, ctx, "库里只有这一句：deepseek-v4-flash 已列为默认模型，用户偏好简洁回复。")
+    claim = draft(
+        source,
+        "deepseek-v4-flash is the default model",
+        quote_override="deepseek-v4-flash 已列为默认模型",
+        kind="fact",
+        subject="deepseek-v4-flash",
+        predicate="已列为",
+        statement_kind="assertion",
+    )
+    with pytest.raises(ContractError) as rejected:
+        accept(core, ctx, claim)
+    assert (rejected.value.code, rejected.value.field) == ("DERIVATION_INVALID", "evidence_value")
+    conn = sqlite3.connect(core.storage.path)
+    try:
+        assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == 0
+    finally:
+        conn.close()
+    claim["value_text"] = "默认模型"
+    item = accept(core, ctx, claim).items[0]
+    assert item.state == "active"
+    current = core.current_claim(ctx, item.ref)
+    assert current.payload["value_text"] == "默认模型"
+    assert current.payload["evidence_spans"] == claim["evidence_spans"]
+
+
 def test_the_rules_are_named_once_in_the_qualification_module():
-    """The shortcut imports its sets from claims.py so it cannot drift from the rules it skips."""
-    from scope_recall.core import claims
+    """Admission and the shortcut share value support; qualification keeps the same kind exemption."""
+    from scope_recall import contracts
+    from scope_recall.core import claims, evidence_question
 
     assert claims.VALUE_FREE_KINDS == frozenset({"procedure", "intention", "alias"})
+    assert claims.VALUE_FREE_KINDS is contracts.VALUE_FREE_KINDS
+    assert evidence_question.VALUE_FREE_KINDS is contracts.VALUE_FREE_KINDS
+    assert evidence_question.proposal_value_in_evidence is contracts.proposal_value_in_evidence
+    assert evidence_question.nfkc_letters_and_digits is contracts.nfkc_letters_and_digits
     assert set(claims.AUTHORITY_ORIGINS) == {"human_direct", "tool_observation", "external_document"}
     assert {"preference", "constraint", "decision"} <= claims.HUMAN_ONLY_KINDS
 

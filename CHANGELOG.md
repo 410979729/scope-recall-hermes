@@ -3,6 +3,12 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.10.3] - Unreleased
+
+Consolidation accepts and promotes long values under the same limits, and checks source references before adding their revision. The default request limit now accommodates a full consolidation batch; a request beyond an explicit limit, or a model the route does not support, fails instead of being postponed as if its budget were spent. Genuine budget pauses still wait without spending an attempt. On Windows, package upgrades accept an external uv tool reached through a directory junction and give a stable reason when blocked, without relaxing checks on the package or backup paths. Scheduled wakes use a verified GUI launcher when a venv's `pythonw.exe` is actually a console redirector, preventing its window flash while retaining the selected venv. Vector failures report a bounded diagnostic rather than the exception's private text.
+
+After upgrading on Windows, run `autostart enable` again with the existing config, interpreter and environment-file arguments to replace the old scheduled action. An explicitly configured request-size cap remains authoritative. The store schema is unchanged (1110).
+
 ## [3.10.2] - 2026-10-11
 
 A long message is consolidated a page at a time. A page whose summary of the task did not use the page's own words was refused whole: its goal, decisions, progress, open items, blockers or next step had to be quoted from the page. The claims found on that page were lost with it, and no later page of the message was read. Now such a summary is dropped, as a short message's summary already is when it does not qualify. The page's claims, still checked against the page on their own, are kept, and the message is read to its end. What a page dropped is named in the work item's error details (stage `summary`) and makes the message's outcome `partial`; it is not fed back to the model as a failure.

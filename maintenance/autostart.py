@@ -18,6 +18,7 @@ from pathlib import Path
 from ..core.storage import SQLiteStorage
 from ..runtime.scheduling import control_path, read_control
 from ..runtime.worker_entry import load_config, write_worker_metadata
+from .windows_wake import wake_command
 
 #: How the wake runs outside Windows: from the operator's timer.  Nothing here registers one.
 OPERATOR_TIMER = "operator_timer"
@@ -124,17 +125,11 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
     ):
         node(settings, key, value)
     action = node(node(task, "Actions", Context="Author"), "Exec")
-    # pythonw plus hidden task avoids console windows after logon.
-    pythonw = python.with_name("pythonw.exe") if os.name == "nt" else python
-    executable = pythonw if pythonw.is_file() else python
-    node(action, "Command", str(executable))
-    node(
-        action,
-        "Arguments",
-        subprocess.list2cmdline(
-            ["-I", "-B", "-m", "scope_recall.runtime.resume_entry", "--config", str(config_path.resolve())]
-        ),
-    )
+    # A uv pythonw redirector can itself be a console binary. Hidden task
+    # metadata does not stop that first process from allocating a window.
+    executable, *arguments = wake_command(python, config_path.resolve())
+    node(action, "Command", executable)
+    node(action, "Arguments", subprocess.list2cmdline(arguments))
     node(action, "WorkingDirectory", str(config.binding.data_directory))
     return dict(
         recorded,

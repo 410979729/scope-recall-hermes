@@ -138,7 +138,10 @@ def default_budget_policy(*, batch: str = "auxiliary") -> BudgetPolicy:
         total_input_cap=0,
         total_output_cap=0,
         total_call_cap=0,
-        max_request_bytes=32_000,
+        # Candidate contents may occupy 64 KB before the transport serializes
+        # the messages again. Allow the JSON escaping and envelope as well;
+        # monetary/token caps remain fail-closed and explicit byte caps win.
+        max_request_bytes=128_000,
         default_reserve_input=32_768,
         default_reserve_output=4_096,
         model_reserve_output={"mimo-v2.5": 131_072},
@@ -292,8 +295,10 @@ class AuxiliaryBudgetLedger:
     def _pricing_for_request(self, model: str, body: bytes, reserved_input: int, reserved_output: int) -> ModelPricing:
         if model not in self.policy.approved_models:
             raise ValueError("unsupported_model")
-        if not 0 < len(body) <= self.policy.max_request_bytes:
-            raise ValueError("unsupported_model_or_size")
+        if not body:
+            raise ValueError("request_empty")
+        if len(body) > self.policy.max_request_bytes:
+            raise ValueError("request_too_large")
         if any(type(value) is not int or value < 0 for value in (reserved_input, reserved_output)):
             raise ValueError("invalid_reservation")
         pricing = self.policy.pricing.get(model)
@@ -638,12 +643,11 @@ def pre_request_refusals(auxiliary) -> list[str]:
 
     ``reserve`` raises before the request leaves the process, so a refused
     reservation writes no row and every ledger-based measurement, including
-    ``provider_refusals``, is blind to it.  ``runtime.models`` folds the
-    refusal into ``budget_unavailable``, the worker defers the item for an hour
-    without burning an attempt, and a deterministic fault (a model missing
-    from ``approved_models``, a ledger file that was moved) therefore stalls
-    forever, spending nothing and saying nothing.  Checking the configuration
-    names the fault, even on an installation that has queued nothing yet.
+    ``provider_refusals``, is blind to it. An unapproved model is a terminal
+    ``unsupported_model`` refusal; an unavailable ledger still parks work
+    without burning an attempt. Checking the configuration names either fault
+    even on an installation that has queued nothing yet, without depending
+    on a reservation row or a worker failure having been recorded.
 
     An approved model with no price is not checked: ``BudgetPolicy`` refuses
     to exist in that state (``approved_model_pricing``).

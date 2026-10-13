@@ -168,6 +168,7 @@ def test_proposals_cannot_assign_authority_or_reverse_valid_time():
 
 def test_evidence_must_quote_exact_accessible_source_revision(tmp_path):
     result = proposal()
+    result["claim_proposals"][0]["value_text"] = "白色"
     source = SourceSnapshot("TEST-event", 1, source_event()["content"], "TEST-scope", "human_direct")
     assert validate_proposal_references(result, (source,), context(tmp_path)) == result
     for bad in (
@@ -186,6 +187,138 @@ def test_evidence_must_quote_exact_accessible_source_revision(tmp_path):
     result["claim_proposals"][0]["evidence_spans"][0]["source_revision"] = 9
     with pytest.raises(ContractError, match="evidence_undeclared_source"):
         validate_proposal_references(result, (source,), context(tmp_path))
+
+
+@pytest.mark.parametrize("suffix", ["@1", "@2", "@1@1", "@latest"])
+def test_evidence_source_ref_requires_the_bare_identifier(tmp_path, suffix):
+    result = proposal()
+    span = result["claim_proposals"][0]["evidence_spans"][0]
+    span["source_ref"] += suffix
+    original_ref = span["source_ref"]
+    source = SourceSnapshot("TEST-event", 1, source_event()["content"], "TEST-scope", "human_direct")
+    for validate in (
+        lambda: validate_payload("consolidation_result", result),
+        lambda: validate_proposal_references(result, (source,), context(tmp_path)),
+    ):
+        with pytest.raises(ContractError) as rejected:
+            validate()
+        assert (rejected.value.code, rejected.value.field) == ("INPUT_INVALID", "source_ref")
+        assert span["source_ref"] == original_ref, "identifiers must not be silently repaired"
+
+
+def test_bare_evidence_ref_with_separate_revision_is_unchanged(tmp_path):
+    result = proposal()
+    result["claim_proposals"][0]["value_text"] = "白色"
+    source = SourceSnapshot("TEST-event", 1, source_event()["content"], "TEST-scope", "human_direct")
+    assert validate_payload("consolidation_result", result) == result
+    assert validate_proposal_references(result, (source,), context(tmp_path)) == result
+    span = result["claim_proposals"][0]["evidence_spans"][0]
+    assert span["source_ref"] == "TEST-event"
+    assert type(span["source_revision"]) is int and span["source_revision"] == 1
+
+
+@pytest.mark.parametrize("revision", ["1", True, 0])
+def test_evidence_revision_shape_names_its_own_field(revision):
+    result = proposal()
+    result["claim_proposals"][0]["evidence_spans"][0]["source_revision"] = revision
+    with pytest.raises(ContractError) as rejected:
+        validate_payload("consolidation_result", result)
+    assert (rejected.value.code, rejected.value.field) == ("INPUT_INVALID", "source_revision")
+
+
+def _value_evidence(content, value, *, kind="fact"):
+    result = proposal()
+    claim = result["claim_proposals"][0]
+    claim.update(kind=kind, value_text=value, conditions=[])
+    claim["evidence_spans"][0]["quote"] = content
+    return result, SourceSnapshot("TEST-event", 1, content, "TEST-scope", "human_direct")
+
+
+@pytest.mark.parametrize("kind", ["fact", "preference", "constraint", "decision"])
+def test_admission_refuses_a_translation_that_cannot_pass_the_value_gate(tmp_path, kind):
+    from scope_recall.core.evidence_question import EvidenceText, unanswerable_reason
+
+    content = "库里只有这一句：deepseek-v4-flash 已列为默认模型，用户偏好简洁回复。"
+    result, source = _value_evidence(content, "deepseek-v4-flash is the default model", kind=kind)
+    claim = result["claim_proposals"][0]
+    claim["evidence_spans"][0]["quote"] = "deepseek-v4-flash 已列为默认模型"
+    assert unanswerable_reason(claim, [EvidenceText("human_direct", True, content)]) == "value_not_in_evidence"
+    with pytest.raises(ContractError) as rejected:
+        validate_proposal_references(result, (source,), context(tmp_path))
+    assert (rejected.value.code, rejected.value.field) == ("DERIVATION_INVALID", "evidence_value")
+    assert claim["value_text"] == "deepseek-v4-flash is the default model"
+
+
+@pytest.mark.parametrize(
+    "content,value",
+    [
+        ("deepseek-v4-flash 已列为默认模型。", "默认模型"),
+        ("默认模型：ＤＥＥＰＳＥＥＫ-v4-flash。", "deepseek v4 flash"),
+        ("上线日期 2026.09.17。", "2026-09-17"),
+        ("这里没有字母值。", "——"),
+    ],
+)
+def test_admission_and_value_gate_preserve_original_matching_rules(tmp_path, content, value):
+    from scope_recall.core.evidence_question import EvidenceText, unanswerable_reason
+
+    result, source = _value_evidence(content, value)
+    assert validate_proposal_references(result, (source,), context(tmp_path)) == result
+    assert unanswerable_reason(result["claim_proposals"][0], [EvidenceText("human_direct", True, content)]) is None
+
+
+def test_a_value_elsewhere_in_the_cited_source_does_not_need_a_wider_quote(tmp_path):
+    result, source = _value_evidence("原文引句。默认模型：deepseek-v4-flash。", "deepseek-v4-flash")
+    result["claim_proposals"][0]["evidence_spans"][0]["quote"] = "原文引句。"
+    assert validate_proposal_references(result, (source,), context(tmp_path)) == result
+
+
+def test_an_uncited_source_cannot_lend_its_value_to_a_claim(tmp_path):
+    result, source = _value_evidence("原文引句。", "deepseek-v4-flash")
+    other = SourceSnapshot("TEST-other", 1, "默认模型：deepseek-v4-flash。", "TEST-scope", "human_direct")
+    result["source_refs"].append("TEST-other@1")
+    with pytest.raises(ContractError) as rejected:
+        validate_proposal_references(result, (source, other), context(tmp_path))
+    assert (rejected.value.code, rejected.value.field) == ("DERIVATION_INVALID", "evidence_value")
+    result["claim_proposals"][0]["evidence_spans"].append(
+        dict(source_ref=other.ref, source_revision=other.revision, quote=other.content)
+    )
+    assert validate_proposal_references(result, (source, other), context(tmp_path)) == result
+
+
+@pytest.mark.parametrize(
+    "kind,structure",
+    [
+        (
+            "procedure",
+            dict(
+                conditions=[],
+                non_applicable=[],
+                method=["原文引句"],
+                verification_basis="unknown",
+                counterexample_refs=[],
+            ),
+        ),
+        (
+            "intention",
+            dict(
+                cue="原文引句",
+                target="TEST-target",
+                conditions=[],
+                state="pending",
+                state_evidence_refs=["TEST-event@1"],
+            ),
+        ),
+        ("alias", dict(name="TEST-name", target_ref="TEST-target", scope_description="TEST-scope")),
+    ],
+)
+def test_admission_keeps_the_value_free_kind_exemption(tmp_path, kind, structure):
+    from scope_recall.core.evidence_question import EvidenceText, unanswerable_reason
+
+    result, source = _value_evidence("原文引句。", "a value not in this source", kind=kind)
+    claim = result["claim_proposals"][0]
+    claim[kind] = structure
+    assert validate_proposal_references(result, (source,), context(tmp_path)) == result
+    assert unanswerable_reason(claim, [EvidenceText("human_direct", True, source.content)]) is None
 
 
 def test_reference_resolution_cannot_invent_candidate_or_collapse_ambiguity():

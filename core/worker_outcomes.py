@@ -19,6 +19,8 @@ _NON_RETRYABLE_MODEL_ERRORS = frozenset(
         "budget_exhausted",
         "meter_breach",
         "input_invalid",
+        "request_too_large",
+        "unsupported_model",
         "budget_unavailable",
         # The request guard refused secret-like text; the payload will not change.
         "sensitive_request",
