@@ -9,6 +9,8 @@ from pathlib import Path
 from ..adapters.hermes.audiences import HermesIdentityError
 from ..contracts import ContractError
 from .backup import BackupError
+from .legacy_episode_membership import MembershipProjectionError
+from .legacy_v2_compat import LegacyCompatibilityError
 from .migrate_v2 import MigrationError
 from .onboarding import inspect_installation, workflow_text
 from .upgrade import (
@@ -105,8 +107,19 @@ def main(argv=None):
         # Scope/identity mismatches may be acted on, but exception text must not
         # reveal row content, model credentials or arbitrary filesystem data.  A
         # contract error's text is its code and field, and an identity error's
-        # names what the manifest lacks; anything else is said in general terms.
-        told = (MigrationError, BackupError, ContractError, HermesIdentityError)
+        # names what the manifest lacks; the legacy converter's refusals are fixed
+        # phrases, and SQLite's own text names a constraint, table or column, never
+        # a stored value (a migration ended "invalid_or_unavailable_input" on a
+        # CHECK it could have named).  Anything else is said in general terms.
+        told = (
+            MigrationError,
+            BackupError,
+            ContractError,
+            HermesIdentityError,
+            LegacyCompatibilityError,
+            MembershipProjectionError,
+            sqlite3.Error,
+        )
         result = dict(
             status="blocked",
             error_type=type(exc).__name__,

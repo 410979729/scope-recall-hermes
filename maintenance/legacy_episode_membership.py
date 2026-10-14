@@ -1,12 +1,14 @@
 """Project legacy M:N journal references onto Core's unique processing owner.
 
-This is an opt-in migration seam, not a patch/monkeypatch of migrate_v2.
-Build ONE plan from the complete resolved episode -> journal source-ref mapping
-before its episode loop. After each episode/version insert, call ``apply`` for
-EACH original resolved ref instead of the episode_events SELECT/INSERT block.
-Keep the subsequent evidence_links INSERT unconditional and keep legacy_fields
-(including the original ordered journal_entry_ids) unchanged. Call ``verify``
-after the entire loop, before committing, and persist its body-free audit result.
+A 2.0 journal entry can belong to several episodes (automatic episodes' windows
+overlap) while a Core source has one processing owner (episode_events is UNIQUE
+on source_ref, source_revision). The converter builds ONE plan from the complete
+resolved episode -> journal source-ref mapping before its episode loop, calls
+``apply`` for EACH resolved ref after the episode/version insert, keeps its
+evidence_links INSERT unconditional and legacy_fields (including the original
+ordered journal_entry_ids) unchanged, and calls ``verify`` after the entire
+loop, before committing, persisting its body-free audit result. Until 3.10.4
+this was opt-in, the migration job never opted in, and a shared entry ended it.
 
 Ownership uses the lexically smallest exact Core episode ID, not arrival order,
 recency, source authority, or a claimed historical owner. Sequences retain the

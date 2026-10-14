@@ -29,6 +29,8 @@ Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际�
    精确保留的 scope ID 自动映射；其余映射由 Agent 根据旧宿主记录生成。
 3. 停止旧写入者，保存配置与附件，运行 `migrate prepare` 创建一致快照和持久任务。
 4. 运行 `migrate run`，复用唯一的旧版转换器；中断后从任务继续，不重复重提炼旧 Journal。
+   超过 65,536 字的旧记录分段保存，一个字不丢；被几个 episode 同时引用的旧日志只归属其中一个，
+   其余 episode 保留证据链接；转换报告逐项写明。
 5. 运行 `migrate verify` 核验报告、SQLite 完整性和数量；以 `migrate queue-index`
    分页恢复现有后台队列中的嵌入任务。排队完成不等于向量索引已完成。
 6. 通过实际宿主控制器切换，并在实际 Agent 上验证旧记忆、纠正、删除和不同会话的访问范围。
@@ -41,10 +43,11 @@ Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际�
 ## 支持与验收
 
 当前转换器支持已验证的官方 578b SQLite 基线及明确实现的兼容扩展。
-阿甲 2.0.1 的特定读取语义需要 Agent 核对后显式选用对应契约。
+2.0.1 旧库的记忆读取语义需要 Agent 核对后显式选用对应契约
+（`--legacy-reader-contract legacy-2.0.1/memories-physical-scope-in-accessible-scopes`）。
 旧向量目录不直接导入；SQLite 是真值，向量由现有 worker 重建。
 未知表、未知列、无法无损表达的事实或权限仍需兼容工作，不能宣称任意旧版都完美迁移。
 
-`3.1.0rc6` 是实现此入口的候选版本。离线迁移通过、wheel 安装成功、
-实际宿主已加载、真实旧记忆可用分别记录；只完成前两项不能报告后两项成功。
+离线迁移通过、wheel 安装成功、实际宿主已加载、真实旧记忆可用分别记录；
+只完成前两项不能报告后两项成功。
 发布或实例升级以对应构建的实际验收记录为准。

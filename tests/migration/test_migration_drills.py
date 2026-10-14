@@ -783,3 +783,241 @@ def test_the_cli_runs_from_a_source_checkout():
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.startswith("usage:")
+
+
+# --- 2.0 stores the migration job ended on (3.10.4) ------------------------------------------------------------------
+
+_SHAPED_SCHEMA = """
+CREATE TABLE journal_entries (id INTEGER PRIMARY KEY, scope_id TEXT NOT NULL, shared_scope_id TEXT,
+    session_id TEXT NOT NULL, turn_number INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+    created_at TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE memories (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, session_id TEXT, source TEXT NOT NULL,
+    target TEXT NOT NULL, content TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE memory_journal_sources (memory_id TEXT NOT NULL, journal_entry_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(memory_id, journal_entry_id));
+CREATE TABLE task_episodes (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, session_id TEXT NOT NULL,
+    task_goal TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT,
+    message_ids TEXT NOT NULL DEFAULT '[]', journal_entry_ids TEXT NOT NULL DEFAULT '[]',
+    tool_names TEXT NOT NULL DEFAULT '[]', evidence TEXT NOT NULL DEFAULT '[]',
+    verification TEXT NOT NULL DEFAULT '[]', environment TEXT NOT NULL DEFAULT '{}',
+    metadata TEXT NOT NULL DEFAULT '{}');
+"""
+_AT = "2026-07-01T00:00:00Z"
+
+
+def _shaped_store(path: Path, *, journals, memories=(), episodes=()) -> Path:
+    """A 2.0 store of these rows: journals (id, scope, text), memories (id, scope, text, metadata) and episodes (id,
+    scope, journal ids)."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(_SHAPED_SCHEMA)
+        conn.executemany(
+            "INSERT INTO journal_entries(id,scope_id,session_id,turn_number,role,content,created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            [(entry, scope, "s-1", entry, "user", text, _AT) for entry, scope, text in journals],
+        )
+        conn.executemany(
+            "INSERT INTO memories(id,scope_id,session_id,source,target,content,summary,created_at,updated_at,metadata)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [
+                (name, scope, "s-1", "legacy", "memory", text, text[:40], _AT, _AT, meta)
+                for name, scope, text, meta in memories
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO task_episodes(id,scope_id,session_id,task_goal,status,started_at,journal_entry_ids)"
+            " VALUES (?,?,?,?,?,?,?)",
+            [
+                (name, scope, "s-1", f"TEST 任务 {name}", "completed", _AT, json.dumps(ids))
+                for name, scope, ids in episodes
+            ],
+        )
+        conn.commit()
+    return path
+
+
+def _read(target: Path, scopes: set[str], allowed: set[str]):
+    """A read of what ``migrate_legacy(source, target)`` wrote, as a reader of ``allowed``."""
+    binding = InstanceBinding("p15-synthetic-agent", "p15-synthetic-installation", target, frozenset(scopes), True)
+    return SQLiteStorage(binding).read(TrustedContext(binding, "TEST-reader", frozenset(allowed), "human_direct"))
+
+
+def test_a_record_longer_than_a_source_is_stored_in_parts_and_read_whole(tmp_path: Path) -> None:
+    """A 2.0 memory merged again and again reached 77,000 characters, and the migration ended on
+    ``CHECK(length(content)<=65536)``.  A record that long is stored as a long message is captured: in parts of at most
+    65,536 characters, every character once and in order, one source group under the record's key and id."""
+    from scope_recall.core import lexical_index
+    from scope_recall.core.events import MAX_SEGMENT_CHARS
+
+    from maintenance.migration_records import sanitized_text
+
+    merged = "".join(f"第{i}次合并：部署检查记录，服务正常。" for i in range(1, 9000))[: 2 * MAX_SEGMENT_CHARS + 1000]
+    merged += " TESTTAILWORD"
+    said = "很长的一次对话。" * 9000
+    assert sanitized_text(merged)[0] == merged and sanitized_text(said)[0] == said
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(1, "scope-a", said), (2, "scope-a", "一句短话。")],
+        memories=[("m-long", "scope-a", merged, "{}"), ("m-1", "scope-a", "短记忆。", "{}")],
+    )
+    target = tmp_path / "target"
+    report = migrate_legacy(legacy, target)
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    assert report["segmented_records"] == [
+        {"record": "legacy:journal_entries:1", "parts": 2},
+        {"record": "legacy:memories:m-long", "parts": 3},
+    ]
+    with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
+
+        def parts(group: str) -> list[tuple]:
+            return conn.execute(
+                "SELECT event_id,source_event_key,segment_index,segment_total,content FROM source_events"
+                " WHERE source_group_key=? ORDER BY segment_index",
+                (group,),
+            ).fetchall()
+
+        memory, journal = parts("legacy:memories:m-long"), parts("legacy:journal_entries:1")
+        assert [row[2:4] for row in memory] == [(0, 3), (1, 3), (2, 3)]
+        assert "".join(row[4] for row in memory) == merged and "".join(row[4] for row in journal) == said
+        assert max(len(row[4]) for row in memory + journal) == MAX_SEGMENT_CHARS
+        # Whatever cites the record finds its first part under the record's own id and key.
+        assert memory[0][:2] == (stable_legacy_id("event", "memories:m-long"), "legacy:memories:m-long")
+        assert "testtailword" in lexical_index.terms_of(conn, lexical_index.source_id(conn, memory[2][0], 1))
+        assert (
+            conn.execute("SELECT count(*) FROM source_events").fetchone()[0] == report["counts"]["source_events"] == 7
+        )
+    with _read(target, {"scope-a"}, {"scope-a"}) as tx:
+        for event_id, *_ in memory + journal:
+            source = tx.source(event_id, 1)
+            assert source is not None and "source_segments_incomplete" not in source.capture_gaps
+    assert migrate_legacy(legacy, target)["counts"] == report["counts"]
+
+
+def test_journal_entries_two_episodes_share_have_one_owner_and_both_links(tmp_path: Path) -> None:
+    """2.0's automatic episodes overlap, and the migration job ended on ``UNIQUE(episode_events.source_ref,
+    source_revision)``: it never used the converter's membership projection.  Each entry now has one processing
+    owner, both episodes keep their evidence links, and the one that lost entries is out of automatic recall."""
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(entry, "scope-a", f"第{entry}句。") for entry in range(1, 7)],
+        episodes=[("episode_auto_a", "scope-a", [1, 2, 3, 4]), ("episode_auto_b", "scope-a", [3, 4, 5, 6])],
+    )
+    report = migrate_legacy(legacy, tmp_path / "target")
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    audit = report["legacy_episode_memberships"]
+    assert (audit["verified"], audit["primary_memberships"], audit["evidence_only_edges"]) == (True, 6, 2)
+    owner, other = sorted(stable_legacy_id("episode", name) for name in ("episode_auto_a", "episode_auto_b"))
+    with closing(sqlite3.connect(tmp_path / "target" / "memory.sqlite3")) as conn:
+        owners = dict(conn.execute("SELECT source_ref,episode_id FROM episode_events").fetchall())
+        assert len(owners) == 6
+        assert {owners[stable_legacy_id("event", f"journal_entries:{entry}")] for entry in (3, 4)} == {owner}
+        links = conn.execute(
+            "SELECT object_ref,count(*) FROM evidence_links WHERE object_kind='episode' GROUP BY object_ref"
+        ).fetchall()
+        assert dict(links) == {owner: 4, other: 4}
+        assert dict(conn.execute("SELECT episode_id,suppressed FROM episodes").fetchall()) == {owner: 0, other: 1}
+
+
+def test_an_episode_entry_under_another_scope_is_reported_and_the_episode_stays_readable(tmp_path: Path) -> None:
+    """A 2.0 store whose scope ids changed while it ran has episodes naming entries of their own session under the old
+    id.  Linked, the episode cited a source its readers cannot open, which hides the whole episode from them; the
+    entry now stays its own source, unlinked, and the report names it."""
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(1, "scope-a", "第一句。"), (2, "scope-a", "第二句。"), (3, "scope-b", "旧身份下的第三句。")],
+        episodes=[("ep-1", "scope-a", [1, 2, 3])],
+    )
+    target = tmp_path / "target"
+    report = migrate_legacy(legacy, target)
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    (row,) = [item for item in report["unmapped"] if item["reason"] == "episode_source_outside_episode_scope"]
+    assert (row["key"], row["journal_entry_ids"]) == ("ep-1", ["3"])
+    with _read(target, {"scope-a", "scope-b"}, {"scope-a"}) as tx:
+        assert tx.episodes.get(stable_legacy_id("episode", "ep-1")) is not None
+    third = stable_legacy_id("event", "journal_entries:3")
+    with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
+        assert conn.execute("SELECT count(*) FROM episode_events").fetchone()[0] == 2
+        assert conn.execute("SELECT count(*) FROM evidence_links WHERE source_ref=?", (third,)).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT scope_id,read_blocked FROM source_events WHERE event_id=?", (third,)
+        ).fetchone() == (
+            "scope-b",
+            0,
+        )
+
+
+def test_more_hidden_memories_than_one_suppression_request_holds(tmp_path: Path) -> None:
+    """Core refuses a suppression whose closure passes 2,000 objects, and a large 2.0 store hides more memories than
+    that (archived, obsolete, ...): the converter asks in parts, each within the budget."""
+    archived = json.dumps({"lifecycle": "archived"})
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(1, "scope-a", "一句话。")],
+        memories=[(f"m-{index}", "scope-a", f"第{index}条旧记忆。", archived) for index in range(2050)],
+    )
+    report = migrate_legacy(legacy, tmp_path / "target")
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    lifecycle = report["legacy_lifecycle_suppression"]
+    assert (lifecycle["target_count"], len(lifecycle["receipts"])) == (2050, 2)
+    with closing(sqlite3.connect(tmp_path / "target" / "memory.sqlite3")) as conn:
+        hidden = conn.execute(
+            "SELECT count(*) FROM object_blocks WHERE object_kind='event' AND suppressed=1"
+        ).fetchone()
+        assert hidden[0] == 2050
+
+
+def test_the_migration_job_takes_a_store_with_a_long_memory_and_shared_entries(tmp_path: Path, capsys) -> None:
+    """The user's run: ``migrate prepare`` and ``migrate run --source-quiesced``, which verifies what it wrote, on a
+    2.0 store holding a memory longer than a source and two automatic episodes sharing entries."""
+    from scope_recall.adapters.hermes import install_hermes_scope_recall
+    from scope_recall.maintenance import upgrade_cli
+
+    (tmp_path / "old").mkdir()
+    legacy = _shaped_store(
+        tmp_path / "old" / "memory.sqlite3",
+        journals=[(entry, _OLD_CLI, f"第{entry}句。") for entry in range(1, 9)],
+        memories=[("m-long", _OLD_CLI, "合并后的长记忆。" * 9000, "{}")],
+        episodes=[("episode_auto_a", _OLD_CLI, [1, 2, 3, 4, 5]), ("episode_auto_b", _OLD_CLI, [4, 5, 6, 7, 8])],
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    cli = {**_owner_rows()[0], "allowed_scope_ids": [_OLD_CLI]}
+    install_hermes_scope_recall(
+        home, agent_id="default", agent_workspace="hermes", owner_principals=_OWNERS[:1], audiences=[cli]
+    )
+    job = str(tmp_path / "job")
+    assert (
+        upgrade_cli.main(
+            ["migrate", "prepare", "--source", str(legacy), "--job", job, "--installation-manifest", str(home)]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert upgrade_cli.main(["migrate", "run", "--job", job, "--source-quiesced"]) == 0
+    done = json.loads(capsys.readouterr().out)
+    assert (done["state"], done["integrity"]) == ("verified", "ok")
+    assert done["target_counts"]["source_events"] == done["counts"]["source_events"] == 8 + 2
+
+
+@pytest.mark.parametrize("kind", ["sqlite", "converter"])
+def test_a_refusal_with_a_safe_text_is_told_not_masked(tmp_path: Path, capsys, monkeypatch, kind) -> None:
+    """The job answered ``invalid_or_unavailable_input`` for a CHECK that SQLite had named.  SQLite's text names a
+    constraint, never a value, and the converter's refusals are fixed phrases, so they are told; and the workflow
+    names the reader contract the converter accepts (it named another one)."""
+    from scope_recall.maintenance import upgrade_cli
+    from scope_recall.maintenance.legacy_v2_compat import MEMORY_READER_CONTRACT, LegacyCompatibilityError
+
+    refusal = {
+        "sqlite": sqlite3.IntegrityError("CHECK constraint failed: length(content)<=65536"),
+        "converter": LegacyCompatibilityError("memory_storage_reader_contract_not_verified"),
+    }[kind]
+
+    def run(*_args, **_kwargs):
+        raise refusal
+
+    monkeypatch.setattr(upgrade_cli, "run_upgrade", run)
+    assert upgrade_cli.main(["migrate", "run", "--job", str(tmp_path / "job"), "--source-quiesced"]) == 3
+    told = json.loads(capsys.readouterr().out)
+    assert (told["error_type"], told["reason"]) == (type(refusal).__name__, str(refusal))
+    workflow = Path(__file__).resolve().parents[2] / "maintenance" / "AGENT_WORKFLOW.md"
+    assert f"--legacy-reader-contract {MEMORY_READER_CONTRACT}" in workflow.read_text(encoding="utf-8")

@@ -33,6 +33,24 @@ def ordinary_lifecycle_visible(row):
     return lifecycle not in HIDDEN or (lifecycle == "scratch" and target == "general")
 
 
+def _requests(scoped, refs):
+    """``refs`` as suppression requests Core accepts, each with its closure.  Core refuses a request whose closure
+    passes 2,000 objects (``dependency_budget``), and a large 2.0 store hides more memories than that: a request it
+    refuses is halved until each half fits.  The same targets, closures and fences, in more requests."""
+    pending = [refs]
+    while pending:
+        batch = pending.pop(0)
+        targets = tuple(scoped.deletions.target(ref) for ref in batch)
+        try:
+            affected = scoped.deletions.closure(targets, delete=False)
+        except ContractError as exc:
+            if exc.field != "dependency_budget" or len(batch) == 1:
+                raise
+            pending[:0] = [batch[: len(batch) // 2], batch[len(batch) // 2 :]]
+            continue
+        yield targets, affected
+
+
 def plan_lifecycle_suppression(tx, memory_rows, *, require_same_scope=False):
     """Read source identities and run the actual Core closure without writes."""
     conn = tx._check()
@@ -71,21 +89,21 @@ def plan_lifecycle_suppression(tx, memory_rows, *, require_same_scope=False):
         context = replace(tx.context, project_id=project, branch_id=branch)
         scoped = Transaction(conn, context, writable=False)
         try:
-            targets = tuple(scoped.deletions.target(ref) for ref in sorted(set(refs)))
             # Core refuses unresolved dependencies, cross-partition dependencies,
             # foreign scope access and overlarge closures. Never omit these edges.
-            affected = scoped.deletions.closure(targets, delete=False)
-            partitions.append(
-                {
-                    "project_id": project,
-                    "branch_id": branch,
-                    "target_refs": [t.ref for t in targets],
-                    "expected_revisions": {t.ref: t.revision for t in targets},
-                    "affected": [
-                        {"kind": t.kind, "ref": t.ref, "revision": t.revision, "scope_id": t.scope_id} for t in affected
-                    ],
-                }
-            )
+            for targets, affected in _requests(scoped, sorted(set(refs))):
+                partitions.append(
+                    {
+                        "project_id": project,
+                        "branch_id": branch,
+                        "target_refs": [t.ref for t in targets],
+                        "expected_revisions": {t.ref: t.revision for t in targets},
+                        "affected": [
+                            {"kind": t.kind, "ref": t.ref, "revision": t.revision, "scope_id": t.scope_id}
+                            for t in affected
+                        ],
+                    }
+                )
         finally:
             scoped._finish()
     return {

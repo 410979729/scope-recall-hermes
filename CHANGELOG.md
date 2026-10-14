@@ -13,6 +13,17 @@ For an entry of a shared store, the doctor now reads the vector checks (this one
 
 The install guide and the agent workflow now say to put back the whole `config.yaml` after a failed Hermes environment sync, which also empties `memory.provider`. They also say to sync before restarting a gateway, which may otherwise rebuild the environment itself. The package summary, the plugin descriptions, the security policy's supported version and the contributors list are brought up to date.
 
+### Migrating a 2.0.1 store
+
+A user's migration from 2.0.1 ended twice in `migrate run`, and both times the job answered only `invalid_or_unavailable_input` (reported by a 2.0.1 user, with thanks). Both failures were the converter's, and the same shapes are in other 2.0 stores:
+
+- **A record longer than a 3.x source.** A memory that 2.0 had merged again and again reached 77,000 characters, and a source holds at most 65,536 (`CHECK constraint failed: length(content)<=65536`). Such a record, whether memory, journal entry or archived row, is now stored as a long message is captured: in parts of at most 65,536 characters, every character once and in order, one source group under the record's key, the first part under the record's own id. The report lists them under `segmented_records`.
+- **A journal entry two episodes share.** 2.0's automatic episodes overlap, while a Core source has one processing owner (`UNIQUE constraint failed: episode_events.source_ref, episode_events.source_revision`). The converter's membership projection handled this only when asked, and the migration job never asked. It now always runs: each entry has one owner, every episode keeps its evidence links, an episode that lost entries to another leaves automatic recall, and the report's `legacy_episode_memberships` says which.
+- **An episode naming an entry under another scope**, in a store whose scope ids changed while it ran. The episode cited a source its own readers cannot open, which hid the whole episode from them. The entry now stays its own source, unlinked, and the report names it (`episode_source_outside_episode_scope`).
+- **More than 2,000 hidden memories** (archived, obsolete and so on). They exceeded what one Core suppression request holds (`dependency_budget`); the converter now asks in parts.
+
+`migrate` now tells SQLite's own text and the converter's refusals, which name a constraint or a fixed reason and never a stored value, and a record SQLite refuses is named by its key. The agent workflow named a `--legacy-reader-contract` value the converter does not accept; it now names `legacy-2.0.1/memories-physical-scope-in-accessible-scopes`, as does the Chinese upgrade guide.
+
 ### Upgrading from 3.10.3
 
 Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. For a Hermes with its own package manager, use `--target-plugin-dir <home>/plugins/scope-recall` and let Hermes sync. The schema is unchanged (1110).

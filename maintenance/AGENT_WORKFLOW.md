@@ -215,7 +215,7 @@ and out of automatic memory/skill discovery.
 4. Inspect the structured blockers. `prepared` means the snapshot/catalog/target
    binding are fixed, not that migration is complete.
 5. Run `scope-recall migrate run --job <job-dir> --source-quiesced`.
-   Supply `--legacy-reader-contract one instance-2.0.1/memories-physical-scope-in-accessible-scopes`
+   Supply `--legacy-reader-contract legacy-2.0.1/memories-physical-scope-in-accessible-scopes`
    only after verifying the matching old runtime/schema. Do not apply it to other
    reader semantics. Completed bridge records are archived without replay.
    Known OpenClaw import ledgers are preserved as verified, non-searchable audit
@@ -224,6 +224,13 @@ and out of automatic memory/skill discovery.
 6. On interruption, run `migrate status`, then `migrate run` on the same job after
    diagnosing the recorded error. No blind retry loop. A changed source requires
    a fresh snapshot before cutover; never discard changes made after preparation.
+
+A record longer than a source holds (65,536 characters) is stored in parts with
+every character kept (`segmented_records` in the conversion report). A journal
+entry several episodes name has one processing owner; the other episodes keep
+its evidence link and leave automatic recall (`legacy_episode_memberships`). An
+entry stored under another scope than its episode stays its own source, unlinked
+(`episode_source_outside_episode_scope`).
 
 The converter preserves original status, evidence/history and deletion closure.
 Do not re-extract the entire old journal or promote every old candidate. The

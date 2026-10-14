@@ -1,4 +1,4 @@
-"""Narrow, opt-in one instance 2.0.1 migration compatibility; no live writes.
+"""Narrow, opt-in 2.0.1 migration compatibility; no live writes.
 
 Reader evidence: old scope.py accessible_scope_ids selects explicit local/shared
 identities; memory_queries.py inspect_memory and recall queries authorize with

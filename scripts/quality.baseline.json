@@ -187,7 +187,7 @@
   },
   "maintenance/legacy_sources.py": {
    "reportArgumentType": 1,
-   "reportOptionalSubscript": 4
+   "reportOptionalSubscript": 2
   },
   "maintenance/legacy_v2_compat.py": {
    "reportArgumentType": 1
@@ -839,10 +839,10 @@
    }
   },
   "maintenance/legacy_conversion.py": {
-   "E501": 10,
+   "E501": 9,
    "PLR0913": {
-    "_prepare": 15,
-    "migrate_legacy": 15
+    "_prepare": 14,
+    "migrate_legacy": 14
    },
    "UP017": 1,
    "UP035": 1

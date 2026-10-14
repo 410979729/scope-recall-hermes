@@ -44,7 +44,6 @@ class Conversion:
     memory_reader_contract: str | None
     bridge_archive_path: str | Path | None
     import_ledger_archive_path: str | Path | None
-    project_memberships: bool
 
     # The frozen legacy snapshot, as dict rows keyed by legacy table name.
     tables: set[str] = field(default_factory=set)
@@ -71,6 +70,8 @@ class Conversion:
 
     # Archived source events and the Core ids legacy identities resolve to.
     sources: list[Row] = field(default_factory=list)
+    # A record stored in parts, by its first part's event id: the parts in order (``legacy_sources.archive``).
+    record_parts: dict[str, list[Row]] = field(default_factory=dict)
     journal_refs: dict[str, str] = field(default_factory=dict)
     memory_refs: dict[str, str] = field(default_factory=dict)
     memory_items: dict[str, Row] = field(default_factory=dict)
