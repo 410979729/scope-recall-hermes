@@ -35,10 +35,12 @@ older database is a separate, explicit operation — see
   core with its vector dependencies, `hermes-scope-recall[lancedb]==<version>`. The package
   manager reads a `pyproject.toml` before `plugin.yaml`'s `pip_dependencies`, and one written
   there by hand without `[lancedb]` builds an environment in which every recall runs without
-  vectors. Hermes checks that environment when it starts but does not build it again: after
-  `apply-install`, rebuild it with Hermes's own sync and restart (section 4), then run `doctor`,
-  which reads the environment Hermes really runs (`hermes_runtime`). A plugin whose core is
-  missing says so when Hermes loads it.
+  vectors. A gateway that starts on an environment older than the declaration may build it
+  again itself, with its own rights and Hermes's whole update tail (one took 13 minutes before it
+  answered), and a failure there turns memory off without a word. So after `apply-install`,
+  rebuild it with Hermes's own sync before the restart (section 4), then run `doctor`, which
+  reads the environment Hermes really runs (`hermes_runtime`). A plugin whose core is missing
+  says so when Hermes loads it.
   A final release is declared, which Hermes resolves from PyPI: a wheel installed before its
   release reaches PyPI declares a requirement Hermes cannot resolve yet, so run `apply-install`
   on such a home once it has. A candidate between releases declares nothing, because a
