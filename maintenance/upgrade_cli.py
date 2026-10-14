@@ -108,9 +108,11 @@ def main(argv=None):
         # reveal row content, model credentials or arbitrary filesystem data.  A
         # contract error's text is its code and field, and an identity error's
         # names what the manifest lacks; the legacy converter's refusals are fixed
-        # phrases, and SQLite's own text names a constraint, table or column, never
-        # a stored value (a migration ended "invalid_or_unavailable_input" on a
-        # CHECK it could have named).  Anything else is said in general terms.
+        # phrases, and a constraint SQLite refuses a row by is named, never the
+        # row (a migration ended "invalid_or_unavailable_input" on a CHECK it
+        # could have named).  Other SQLite errors can quote a cell: one not valid
+        # UTF-8 is read back into the message.  Anything else is said in general
+        # terms.
         told = (
             MigrationError,
             BackupError,
@@ -118,7 +120,7 @@ def main(argv=None):
             HermesIdentityError,
             LegacyCompatibilityError,
             MembershipProjectionError,
-            sqlite3.Error,
+            sqlite3.IntegrityError,
         )
         result = dict(
             status="blocked",

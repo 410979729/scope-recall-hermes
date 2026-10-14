@@ -112,7 +112,8 @@ def plan_lifecycle_suppression(tx, memory_rows, *, require_same_scope=False):
         "lifecycle_counts": dict(lifecycle_counts),
         "hidden_lifecycle_counts": dict(hidden_counts),
         "target_count": sum(hidden_counts.values()),
-        "affected_count": sum(len(p["affected"]) for p in partitions),
+        # Distinct objects: the requests one partition is split into can reach the same dependent.
+        "affected_count": len({(a["kind"], a["ref"]) for p in partitions for a in p["affected"]}),
         "partitions": partitions,
     }
 

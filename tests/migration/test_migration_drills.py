@@ -802,13 +802,27 @@ CREATE TABLE task_episodes (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, session
     tool_names TEXT NOT NULL DEFAULT '[]', evidence TEXT NOT NULL DEFAULT '[]',
     verification TEXT NOT NULL DEFAULT '[]', environment TEXT NOT NULL DEFAULT '{}',
     metadata TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE privacy_purge_operations (operation_id TEXT PRIMARY KEY, request_fingerprint TEXT NOT NULL,
+    scope_set_hash TEXT NOT NULL, target_count INTEGER NOT NULL, source_count INTEGER NOT NULL,
+    vector_intent_count INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    denied_at TEXT NOT NULL, erased_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE privacy_purge_source_tombstones (operation_id TEXT NOT NULL, journal_entry_id INTEGER NOT NULL,
+    source_hash TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(operation_id, journal_entry_id));
+CREATE TABLE fact_claims (claim_id TEXT PRIMARY KEY, memory_id TEXT, scope_id TEXT NOT NULL,
+    subject_key TEXT NOT NULL, predicate_key TEXT NOT NULL, fact_key TEXT NOT NULL, value TEXT NOT NULL,
+    cardinality TEXT NOT NULL, assertion_kind TEXT NOT NULL, recorded_at TEXT NOT NULL, status TEXT NOT NULL);
+CREATE TABLE fact_claim_evidence (evidence_id TEXT PRIMARY KEY, claim_id TEXT NOT NULL, source_type TEXT NOT NULL,
+    source_ref TEXT NOT NULL, evidence_hash TEXT NOT NULL, excerpt TEXT NOT NULL, recorded_at TEXT NOT NULL);
+CREATE TABLE memory_digest_sources (memory_id TEXT NOT NULL, run_id TEXT NOT NULL, session_id TEXT NOT NULL,
+    message_ids TEXT NOT NULL, source_hash TEXT NOT NULL, created_at TEXT NOT NULL);
 """
 _AT = "2026-07-01T00:00:00Z"
 
 
-def _shaped_store(path: Path, *, journals, memories=(), episodes=()) -> Path:
-    """A 2.0 store of these rows: journals (id, scope, text), memories (id, scope, text, metadata) and episodes (id,
-    scope, journal ids)."""
+def _shaped_store(path: Path, *, journals, memories=(), episodes=(), purged=(), facts=(), digests=()) -> Path:
+    """A 2.0 store of these rows: journals (id, scope, text), memories (id, scope, text, metadata), episodes (id,
+    scope, journal ids), the journal ids one completed purge took, current facts (id, scope, each evidence's
+    (source type, source id, excerpt)) and a memory's digest rows (memory id, run id, message ids)."""
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(_SHAPED_SCHEMA)
         conn.executemany(
@@ -831,6 +845,31 @@ def _shaped_store(path: Path, *, journals, memories=(), episodes=()) -> Path:
                 (name, scope, "s-1", f"TEST 任务 {name}", "completed", _AT, json.dumps(ids))
                 for name, scope, ids in episodes
             ],
+        )
+        if purged:
+            conn.execute(
+                "INSERT INTO privacy_purge_operations VALUES ('purge-1','fp','scope',?,?,0,'completed',?,?,'',?)",
+                (len(purged), len(purged), _AT, _AT, _AT),
+            )
+            conn.executemany(
+                "INSERT INTO privacy_purge_source_tombstones VALUES ('purge-1',?,?,?)",
+                [(entry, f"hash-{entry}", _AT) for entry in purged],
+            )
+        for name, scope, evidence in facts:
+            conn.execute(
+                "INSERT INTO fact_claims VALUES (?,NULL,?,'用户','偏好',?,'TEST',?,?,?,?)",
+                (name, scope, f"key-{name}", "single", "direct", _AT, "current"),
+            )
+            conn.executemany(
+                "INSERT INTO fact_claim_evidence VALUES (?,?,?,?,?,?,?)",
+                [
+                    (f"{name}-{index}", name, kind, str(ref), f"eh-{index}", excerpt, _AT)
+                    for index, (kind, ref, excerpt) in enumerate(evidence)
+                ],
+            )
+        conn.executemany(
+            "INSERT INTO memory_digest_sources VALUES (?,?,'s-1',?,?,?)",
+            [(memory, run, ids, f"sh-{run}", _AT) for memory, run, ids in digests],
         )
         conn.commit()
     return path
@@ -948,22 +987,117 @@ def test_an_episode_entry_under_another_scope_is_reported_and_the_episode_stays_
 
 def test_more_hidden_memories_than_one_suppression_request_holds(tmp_path: Path) -> None:
     """Core refuses a suppression whose closure passes 2,000 objects, and a large 2.0 store hides more memories than
-    that (archived, obsolete, ...): the converter asks in parts, each within the budget."""
+    that (archived, obsolete, ...): the converter asks in parts, each within the budget.  A fact two of them support,
+    one in each part, is reached twice and counted once."""
     archived = json.dumps({"lifecycle": "archived"})
     legacy = _shaped_store(
         tmp_path / "old.sqlite3",
         journals=[(1, "scope-a", "一句话。")],
         memories=[(f"m-{index}", "scope-a", f"第{index}条旧记忆。", archived) for index in range(2050)],
+        facts=[("fact-1", "scope-a", [("memory", "m-0", "第0条旧记忆"), ("memory", "m-2049", "第2049条旧记忆")])],
     )
     report = migrate_legacy(legacy, tmp_path / "target")
     assert report["completion_status"] == "complete", report["cutover_block"]
     lifecycle = report["legacy_lifecycle_suppression"]
     assert (lifecycle["target_count"], len(lifecycle["receipts"])) == (2050, 2)
+    assert lifecycle["affected_count"] == 2051, "the 2,050 memories and the fact, once"
     with closing(sqlite3.connect(tmp_path / "target" / "memory.sqlite3")) as conn:
-        hidden = conn.execute(
-            "SELECT count(*) FROM object_blocks WHERE object_kind='event' AND suppressed=1"
-        ).fetchone()
-        assert hidden[0] == 2050
+        hidden = conn.execute("SELECT object_kind,count(*) FROM object_blocks WHERE suppressed=1 GROUP BY object_kind")
+        assert dict(hidden.fetchall()) == {"event": 2050, "claim": 1}
+
+
+def test_a_purged_entry_stored_in_parts_is_purged_whole(tmp_path: Path) -> None:
+    """A purge 2.0 completed is replayed as a Core deletion of its members, and the purge scrubs the members it is
+    given: a deleted entry stored in parts must give it every part, or its tail stays readable."""
+    from maintenance.migration_records import canonical_json
+
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(1, "scope-a", "被删掉的长对话。" * 9000), (2, "scope-a", "留下的一句。")],
+        purged=[1],
+    )
+    target = tmp_path / "target"
+    report = migrate_legacy(legacy, target)
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    parts = [
+        stable_legacy_id("event", "journal_entries:1"),
+        stable_legacy_id("event", canonical_json(["journal_entries", "1", 1])),
+    ]
+    with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
+        rows = conn.execute("SELECT read_blocked,content FROM source_events WHERE event_id IN (?,?)", parts).fetchall()
+    assert rows == [(1, ""), (1, "")]
+    with _read(target, {"scope-a"}, {"scope-a"}) as tx:
+        assert [tx.source(ref, 1) for ref in parts] == [None, None]
+        assert tx.source(stable_legacy_id("event", "journal_entries:2"), 1) is not None
+    assert migrate_legacy(legacy, target)["counts"] == report["counts"]
+
+
+def test_a_quote_running_across_a_part_boundary_keeps_its_evidence(tmp_path: Path) -> None:
+    """A fact's excerpt can sit where a long entry is cut in two.  Each part is linked with its piece of the quote, so
+    the fact keeps live, exact evidence and stays current."""
+    from scope_recall.core.events import MAX_SEGMENT_CHARS
+
+    from maintenance.migration_records import canonical_json
+
+    said = "甲" * (MAX_SEGMENT_CHARS - 3) + "用户确认保留" + "乙" * 10
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(1, "scope-a", said)],
+        facts=[("fact-1", "scope-a", [("journal", 1, "用户确认保留")])],
+    )
+    report = migrate_legacy(legacy, tmp_path / "target")
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    assert report["fact_authority"]["active"] == 1
+    first = stable_legacy_id("event", "journal_entries:1")
+    second = stable_legacy_id("event", canonical_json(["journal_entries", "1", 1]))
+    with closing(sqlite3.connect(tmp_path / "target" / "memory.sqlite3")) as conn:
+        links = conn.execute(
+            "SELECT source_ref,quote FROM evidence_links WHERE object_kind='claim' AND relation='supports'"
+        ).fetchall()
+    assert sorted(links) == sorted([(first, "用户确"), (second, "认保留")])
+
+
+def test_digest_rows_of_a_memory_stored_in_parts_join_its_group_unreadable(tmp_path: Path, capsys) -> None:
+    """A memory's digest rows are kept as unreadable audit archives in the memory's source group, after its parts.  A
+    digest row long enough to be stored in parts itself is so in every part: none is readable, none left outside."""
+    from scope_recall.adapters.hermes import install_hermes_scope_recall
+    from scope_recall.maintenance import upgrade_cli
+
+    (tmp_path / "old").mkdir()
+    long_ids = json.dumps([f"msg-{index:06d}" for index in range(7000)])
+    legacy = _shaped_store(
+        tmp_path / "old" / "memory.sqlite3",
+        journals=[(1, _OLD_CLI, "一句。")],
+        memories=[("m-long", _OLD_CLI, "合并后的长记忆。" * 9000, "{}")],
+        digests=[("m-long", "run-1", "[]"), ("m-long", "run-2", long_ids)],
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    cli = {**_owner_rows()[0], "allowed_scope_ids": [_OLD_CLI]}
+    install_hermes_scope_recall(
+        home,
+        agent_id="default",
+        agent_workspace="hermes",
+        owner_principals=_OWNERS[:1],
+        audiences=[cli],
+        legacy_audit_retention=True,
+    )
+    job = str(tmp_path / "job")
+    prepare = ["migrate", "prepare", "--source", str(legacy), "--job", job, "--installation-manifest", str(home)]
+    assert upgrade_cli.main(prepare) == 0
+    capsys.readouterr()
+    assert upgrade_cli.main(["migrate", "run", "--job", job, "--source-quiesced"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "verified"
+    with closing(sqlite3.connect(home / "scope-recall" / "memory.sqlite3")) as conn:
+        group = conn.execute(
+            "SELECT segment_index,segment_total,read_blocked,json_extract(extra_json,'$.legacy_table')"
+            " FROM source_events WHERE source_group_key='legacy:memories:m-long' ORDER BY segment_index"
+        ).fetchall()
+        readable = conn.execute("SELECT count(*) FROM source_events WHERE read_blocked=0").fetchone()[0]
+    assert group[:2] == [(0, 2, 0, "memories"), (1, 2, 0, "memories")]
+    assert [row[0] for row in group[2:]] == [2, 3, 4]
+    assert all(row[1:] == (None, 1, "memory_digest_sources") for row in group[2:])
+    assert readable == 3, "the entry and the memory's two parts"
 
 
 def test_the_migration_job_takes_a_store_with_a_long_memory_and_shared_entries(tmp_path: Path, capsys) -> None:
@@ -999,17 +1133,21 @@ def test_the_migration_job_takes_a_store_with_a_long_memory_and_shared_entries(t
     assert done["target_counts"]["source_events"] == done["counts"]["source_events"] == 8 + 2
 
 
-@pytest.mark.parametrize("kind", ["sqlite", "converter"])
-def test_a_refusal_with_a_safe_text_is_told_not_masked(tmp_path: Path, capsys, monkeypatch, kind) -> None:
-    """The job answered ``invalid_or_unavailable_input`` for a CHECK that SQLite had named.  SQLite's text names a
-    constraint, never a value, and the converter's refusals are fixed phrases, so they are told; and the workflow
-    names the reader contract the converter accepts (it named another one)."""
+@pytest.mark.parametrize(("kind", "told_as_is"), [("constraint", True), ("converter", True), ("decode", False)])
+def test_a_refusal_is_told_only_when_its_text_cannot_carry_a_row(
+    tmp_path: Path, capsys, monkeypatch, kind, told_as_is
+) -> None:
+    """The job answered ``invalid_or_unavailable_input`` for a CHECK that SQLite had named.  A constraint failure
+    names the constraint, never the row, and the converter's refusals are fixed phrases, so they are told; other
+    SQLite errors stay masked, for one quotes a cell that is not UTF-8.  And the workflow names the reader contract the
+    converter accepts (it named another one)."""
     from scope_recall.maintenance import upgrade_cli
     from scope_recall.maintenance.legacy_v2_compat import MEMORY_READER_CONTRACT, LegacyCompatibilityError
 
     refusal = {
-        "sqlite": sqlite3.IntegrityError("CHECK constraint failed: length(content)<=65536"),
+        "constraint": sqlite3.IntegrityError("CHECK constraint failed: length(content)<=65536"),
         "converter": LegacyCompatibilityError("memory_storage_reader_contract_not_verified"),
+        "decode": sqlite3.OperationalError("Could not decode to UTF-8 column 'content' with text 'TEST-secret=abc'"),
     }[kind]
 
     def run(*_args, **_kwargs):
@@ -1018,6 +1156,7 @@ def test_a_refusal_with_a_safe_text_is_told_not_masked(tmp_path: Path, capsys, m
     monkeypatch.setattr(upgrade_cli, "run_upgrade", run)
     assert upgrade_cli.main(["migrate", "run", "--job", str(tmp_path / "job"), "--source-quiesced"]) == 3
     told = json.loads(capsys.readouterr().out)
-    assert (told["error_type"], told["reason"]) == (type(refusal).__name__, str(refusal))
+    assert told["error_type"] == type(refusal).__name__
+    assert told["reason"] == (str(refusal) if told_as_is else "invalid_or_unavailable_input")
     workflow = Path(__file__).resolve().parents[2] / "maintenance" / "AGENT_WORKFLOW.md"
     assert f"--legacy-reader-contract {MEMORY_READER_CONTRACT}" in workflow.read_text(encoding="utf-8")

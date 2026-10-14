@@ -367,6 +367,8 @@ def _archive_record(
 ) -> Row:
     """Archive a row whose content is its own sanitized canonical JSON."""
     content, changed = sanitized_text(canonical_json(sanitized_value(row)))
+    # A row longer than a source is held whole by its parts; a second copy in its metadata would not fit there.
+    copy = {"legacy_row": sanitized_value(row)} if len(content) <= MAX_SEGMENT_CHARS else {}
     item = archive(
         cv,
         table,
@@ -375,7 +377,7 @@ def _archive_record(
         content,
         kind,
         "origin_unknown",
-        {"legacy_row": sanitized_value(row), **extra},
+        {**copy, **extra},
         scope if scope is not None else scope_descriptor(scope_row),
         changed,
     )
@@ -565,14 +567,17 @@ def archive_digests(cv: Conversion) -> None:
                     extra["legacy_parent_event_id"] = parent_item["event_id"]
             scope = json.loads(parent_item["extra_json"])["scope_authorization"] if attached else None
             item = _archive_record(cv, table, identity, scope_row, row, "legacy_audit", scope, **extra)
-            item["read_blocked"] = 1
-            if attached and parent_item is not None:
-                for key in ("source_group_key", "scope_id", "project_id", "branch_id"):
-                    item[key] = parent_item[key]
-                group = str(parent_item["source_group_key"])
-                # After the memory's own parts, when it is stored in parts.
-                item["segment_index"] = next_segment.get(group, parent_item["segment_total"] or 1)
-                next_segment[group] = item["segment_index"] + 1
+            # Every part of a row stored in parts, as its first.
+            for part in cv.record_parts.get(item["event_id"], [item]):
+                part["read_blocked"] = 1
+                if attached and parent_item is not None:
+                    for key in ("source_group_key", "scope_id", "project_id", "branch_id"):
+                        part[key] = parent_item[key]
+                    group = str(parent_item["source_group_key"])
+                    # After the memory's own parts, when it is stored in parts, and the bridge's own earlier ones.
+                    part["segment_index"] = next_segment.get(group, parent_item["segment_total"] or 1)
+                    part["segment_total"] = None
+                    next_segment[group] = part["segment_index"] + 1
 
 
 def archive_sources(cv: Conversion) -> None:

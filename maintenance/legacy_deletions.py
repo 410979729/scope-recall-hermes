@@ -133,11 +133,14 @@ def plan_deletions(cv: Conversion) -> None:
         ]
         default_scope = sorted(cv.requested)[0]
         scopes = sorted({str(scope_by_journal.get(x, default_scope)) for x in journal_ids})
+        refs = _closure(cv, journal_ids, links, groups)
+        # A record stored in parts is deleted whole: the purge scrubs the members it is given, each part one of them.
+        refs |= {part["event_id"] for ref in refs for part in cv.record_parts.get(ref, ())}
         cv.deletion_specs.append(
             {
                 "operation_id": stable_legacy_id("deletion", op),
                 "legacy_operation_id": op,
-                "refs": sorted(_closure(cv, journal_ids, links, groups)),
+                "refs": sorted(refs),
                 "scopes": scopes or [default_scope],
                 "created_at": recorded_time(row.get("created_at")),
             }
