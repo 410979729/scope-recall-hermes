@@ -27,6 +27,21 @@ class MigrationError(RuntimeError):
     pass
 
 
+#: The forms SQLite gives a constraint failure: they name a constraint, a table or a column from the schema.
+_CONSTRAINT_FAILURE = re.compile(
+    r"(?:CHECK|UNIQUE|NOT NULL|FOREIGN KEY|PRIMARY KEY) constraint failed(?:: [\w .,()<>=!'|*+-]+)?"
+    r"|cannot store [A-Z]+ value in [A-Z]+ column [\w.]+"
+)
+
+
+def constraint_failure(exc: BaseException) -> str | None:
+    """The text of a constraint failure SQLite raised, which carries no stored value, or None.  Other SQLite errors
+    can quote a cell (one that is not valid UTF-8 is read back into the message), so a text in no known form is not
+    told either."""
+    text = str(exc)
+    return text if isinstance(exc, sqlite3.IntegrityError) and _CONSTRAINT_FAILURE.fullmatch(text) else None
+
+
 def write_report(report: dict[str, Any], report_path: str | Path | None) -> None:
     if report_path is None:
         return

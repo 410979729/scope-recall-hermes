@@ -302,6 +302,9 @@ def _source_event(
         "read_blocked": int(bool(scope["gap"])),
         "suppressed": 0,
         "scope_gap": scope["gap"],
+        # The record a source came from, which no later stage changes (a digest row moves to its memory's group).
+        "legacy_table": table,
+        "legacy_record": group,
     }
 
 

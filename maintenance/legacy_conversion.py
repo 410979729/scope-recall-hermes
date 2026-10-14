@@ -65,6 +65,7 @@ from .migration_records import (
     blocked_report,
     canonical_digest,
     canonical_json,
+    constraint_failure,
     materialize_explicit_scope_selection,
     open_immutable,
     recorded_time,
@@ -604,8 +605,11 @@ def _insert_sources(cv: Conversion, conn: sqlite3.Connection) -> None:
                 tuple(item[key] for key in SOURCE_EVENT_FIELDS),
             )
         except sqlite3.IntegrityError as exc:
-            # SQLite names the constraint, never the row; the record's key says which one (``legacy:<table>:<id>``).
-            raise MigrationError(f"{item['source_group_key']} cannot be stored: {exc}") from exc
+            # Named by its table and its event id, never by a legacy id: an id is legacy text, and can hold a path.
+            failure = constraint_failure(exc) or "a constraint failed"
+            raise MigrationError(
+                f"legacy {item['legacy_table']} record {item['event_id']} cannot be stored: {failure}"
+            ) from exc
         current = conn.execute(
             "SELECT source_event_key,content_sha256,scope_id FROM source_events WHERE event_id=?", (item["event_id"],)
         ).fetchone()
@@ -822,7 +826,7 @@ def _report(cv: Conversion, target: dict[str, Any]) -> dict[str, Any]:
         "insert_attempts": dict(cv.inserted),
         # Records longer than a source holds, each stored in parts (``legacy_sources.archive``).
         "segmented_records": [
-            {"record": parts[0]["source_group_key"], "parts": len(parts)} for parts in cv.record_parts.values()
+            {"record": parts[0]["legacy_record"], "parts": len(parts)} for parts in cv.record_parts.values()
         ],
         "schema_inventory": {
             "tables": sorted(cv.tables),

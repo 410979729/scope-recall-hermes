@@ -134,8 +134,10 @@ def plan_deletions(cv: Conversion) -> None:
         default_scope = sorted(cv.requested)[0]
         scopes = sorted({str(scope_by_journal.get(x, default_scope)) for x in journal_ids})
         refs = _closure(cv, journal_ids, links, groups)
-        # A record stored in parts is deleted whole: the purge scrubs the members it is given, each part one of them.
-        refs |= {part["event_id"] for ref in refs for part in cv.record_parts.get(ref, ())}
+        # A deleted source takes its whole group, as Core's own closure takes siblings: a record's later parts and a
+        # memory's digest rows.  The purge scrubs only the members it is given.
+        deleted = {item["source_group_key"] for item in cv.sources if item["event_id"] in refs}
+        refs |= {item["event_id"] for item in cv.sources if item["source_group_key"] in deleted}
         cv.deletion_specs.append(
             {
                 "operation_id": stable_legacy_id("deletion", op),

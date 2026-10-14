@@ -819,10 +819,11 @@ CREATE TABLE memory_digest_sources (memory_id TEXT NOT NULL, run_id TEXT NOT NUL
 _AT = "2026-07-01T00:00:00Z"
 
 
-def _shaped_store(path: Path, *, journals, memories=(), episodes=(), purged=(), facts=(), digests=()) -> Path:
+def _shaped_store(path: Path, *, journals, memories=(), episodes=(), purged=(), facts=(), digests=(), links=()) -> Path:
     """A 2.0 store of these rows: journals (id, scope, text), memories (id, scope, text, metadata), episodes (id,
     scope, journal ids), the journal ids one completed purge took, current facts (id, scope, each evidence's
-    (source type, source id, excerpt)) and a memory's digest rows (memory id, run id, message ids)."""
+    (source type, source id, excerpt)), a memory's digest rows (memory id, run id, message ids) and the entries a
+    memory was made from (memory id, journal id)."""
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(_SHAPED_SCHEMA)
         conn.executemany(
@@ -870,6 +871,10 @@ def _shaped_store(path: Path, *, journals, memories=(), episodes=(), purged=(), 
         conn.executemany(
             "INSERT INTO memory_digest_sources VALUES (?,?,'s-1',?,?,?)",
             [(memory, run, ids, f"sh-{run}", _AT) for memory, run, ids in digests],
+        )
+        conn.executemany(
+            "INSERT INTO memory_journal_sources VALUES (?,?,'run-1',?)",
+            [(memory, entry, _AT) for memory, entry in links],
         )
         conn.commit()
     return path
@@ -926,9 +931,10 @@ def test_a_record_longer_than_a_source_is_stored_in_parts_and_read_whole(tmp_pat
             conn.execute("SELECT count(*) FROM source_events").fetchone()[0] == report["counts"]["source_events"] == 7
         )
     with _read(target, {"scope-a"}, {"scope-a"}) as tx:
-        for event_id, *_ in memory + journal:
+        for event_id, _key, _index, _total, content in memory + journal:
             source = tx.source(event_id, 1)
-            assert source is not None and "source_segments_incomplete" not in source.capture_gaps
+            assert source is not None and source.event["content"] == content
+            assert "source_segments_incomplete" not in source.capture_gaps
     assert migrate_legacy(legacy, target)["counts"] == report["counts"]
 
 
@@ -1133,21 +1139,90 @@ def test_the_migration_job_takes_a_store_with_a_long_memory_and_shared_entries(t
     assert done["target_counts"]["source_events"] == done["counts"]["source_events"] == 8 + 2
 
 
-@pytest.mark.parametrize(("kind", "told_as_is"), [("constraint", True), ("converter", True), ("decode", False)])
+def test_a_purge_takes_the_digest_rows_of_a_memory_it_deletes(tmp_path: Path, capsys) -> None:
+    """A purge 2.0 completed deletes the memories made from the entries it took, each with its whole source group, as
+    Core's own deletion takes siblings: the memory's parts and its digest rows, each scrubbed."""
+    from scope_recall.adapters.hermes import install_hermes_scope_recall
+    from scope_recall.maintenance import upgrade_cli
+
+    (tmp_path / "old").mkdir()
+    kept = "留下的一句。"
+    legacy = _shaped_store(
+        tmp_path / "old" / "memory.sqlite3",
+        journals=[(1, _OLD_CLI, "要删掉的一句。"), (2, _OLD_CLI, kept)],
+        memories=[("m-long", _OLD_CLI, "合并后的长记忆。" * 9000, "{}")],
+        links=[("m-long", 1)],
+        digests=[("m-long", "run-1", "[]"), ("m-long", "run-2", json.dumps([f"msg-{i:06d}" for i in range(7000)]))],
+        purged=[1],
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    cli = {**_owner_rows()[0], "allowed_scope_ids": [_OLD_CLI]}
+    install_hermes_scope_recall(
+        home,
+        agent_id="default",
+        agent_workspace="hermes",
+        owner_principals=_OWNERS[:1],
+        audiences=[cli],
+        legacy_audit_retention=True,
+    )
+    job = str(tmp_path / "job")
+    prepare = ["migrate", "prepare", "--source", str(legacy), "--job", job, "--installation-manifest", str(home)]
+    assert upgrade_cli.main(prepare) == 0
+    capsys.readouterr()
+    assert upgrade_cli.main(["migrate", "run", "--job", job, "--source-quiesced"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "verified"
+    with closing(sqlite3.connect(home / "scope-recall" / "memory.sqlite3")) as conn:
+        rows = conn.execute(
+            "SELECT read_blocked,count(*),max(length(content)) FROM source_events GROUP BY read_blocked"
+        ).fetchall()
+    # Unreadable and empty: the entry, the memory's two parts, one digest row and the two parts of the other.
+    assert rows == [(0, 1, len(kept)), (1, 6, 0)]
+
+
+def test_a_record_sqlite_refuses_is_named_by_its_table_and_event_id(tmp_path: Path) -> None:
+    """A record SQLite refuses is named by its table and event id, never by its legacy id, which is legacy text and
+    can hold a path or a token.  The record here, a memory whose summary is more than a source's metadata holds, is
+    one 2.0 never writes: it keeps a summary to 220 characters."""
+    from maintenance.migration_records import MigrationError
+
+    name = "C:/private/token=TEST-secret"
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3", journals=[(1, "scope-a", "一句。")], memories=[(name, "scope-a", "短", "{}")]
+    )
+    with closing(sqlite3.connect(legacy)) as conn:
+        conn.execute("UPDATE memories SET content='', summary=?", ("长" * 140_000,))
+        conn.commit()
+    with pytest.raises(MigrationError) as refused:
+        migrate_legacy(legacy, tmp_path / "target")
+    assert str(refused.value) == (
+        f"legacy memories record {stable_legacy_id('event', 'memories:' + name)} cannot be stored: "
+        "CHECK constraint failed: length(extra_json)<=131072 AND json_valid(extra_json)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "told_as_is"),
+    [("constraint", True), ("unique", True), ("converter", True), ("decode", False), ("unknown_form", False)],
+)
 def test_a_refusal_is_told_only_when_its_text_cannot_carry_a_row(
     tmp_path: Path, capsys, monkeypatch, kind, told_as_is
 ) -> None:
-    """The job answered ``invalid_or_unavailable_input`` for a CHECK that SQLite had named.  A constraint failure
-    names the constraint, never the row, and the converter's refusals are fixed phrases, so they are told; other
-    SQLite errors stay masked, for one quotes a cell that is not UTF-8.  And the workflow names the reader contract the
-    converter accepts (it named another one)."""
+    """The job answered ``invalid_or_unavailable_input`` for a CHECK that SQLite had named.  A constraint failure in
+    the forms SQLite gives one names a constraint, table or column of the schema, and the converter's refusals are
+    fixed phrases, so they are told; any other text stays masked, whatever its class, for an SQLite error can quote a
+    cell that is not UTF-8.  And the workflow names the reader contract the converter accepts (it named another)."""
     from scope_recall.maintenance import upgrade_cli
     from scope_recall.maintenance.legacy_v2_compat import MEMORY_READER_CONTRACT, LegacyCompatibilityError
 
     refusal = {
         "constraint": sqlite3.IntegrityError("CHECK constraint failed: length(content)<=65536"),
+        "unique": sqlite3.IntegrityError(
+            "UNIQUE constraint failed: episode_events.source_ref, episode_events.source_revision"
+        ),
         "converter": LegacyCompatibilityError("memory_storage_reader_contract_not_verified"),
         "decode": sqlite3.OperationalError("Could not decode to UTF-8 column 'content' with text 'TEST-secret=abc'"),
+        "unknown_form": sqlite3.IntegrityError("TEST-secret=abc"),
     }[kind]
 
     def run(*_args, **_kwargs):
