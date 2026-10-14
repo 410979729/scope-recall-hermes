@@ -147,8 +147,11 @@ recall without vectors for two days, while every check read the venv.
    `<hermes python> -m hermes_cli.venv_sync --project-root <home>\hermes-agent --json`.
    A running gateway keeps the environment it started with. `"state": "synced"` or
    `"current"` is success. A failed sync disables the plugin: Hermes adds
-   `scope-recall` to `plugins.disabled` in `config.yaml`. Fix the cause, remove
-   exactly that entry and sync again before the gateway restarts.
+   `scope-recall` to `plugins.disabled` in `config.yaml` and empties
+   `memory.provider`. Copy `config.yaml` before the sync and put the copy back after
+   a failed one; removing only the `plugins.disabled` entry leaves the gateway
+   without memory (`doctor`: `host_registration_status: "not_selected"`). Then fix
+   the cause and sync again before the gateway restarts.
 3. Restart the gateway through its controller and run `doctor`: `hermes_runtime`
    must name the new version with `vector_dependencies: true`, and no
    `hermes_runtime_*` gap may remain. A Hermes that runs elevated may keep that

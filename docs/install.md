@@ -173,8 +173,11 @@ Remove-Item Env:HERMES_HOME
 
 `"state": "synced"` (or `"current"`) is success. Then restart the gateway and run
 `doctor`. A sync that fails disables the plugin: Hermes adds `scope-recall` to
-`plugins.disabled` in `config.yaml`, and its next start runs without memory. Fix
-the cause, take that entry out, and sync again.
+`plugins.disabled` in `config.yaml` and empties `memory.provider`, so its next
+start runs without memory. Copy `config.yaml` before the sync, and after a failed
+one put the copy back: taking the `plugins.disabled` entry out alone leaves the
+provider unselected, which `doctor` reports as `host_registration_incomplete`
+(`host_registration_status: "not_selected"`). Then fix the cause and sync again.
 
 `--agent-id` must equal the `agent_identity` the host sends on `initialize`: the
 adapter compares them and raises `agent_identity conflict` when they differ
