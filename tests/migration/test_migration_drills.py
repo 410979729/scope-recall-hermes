@@ -1104,6 +1104,12 @@ def test_digest_rows_of_a_memory_stored_in_parts_join_its_group_unreadable(tmp_p
     assert [row[0] for row in group[2:]] == [2, 3, 4]
     assert all(row[1:] == (None, 1, "memory_digest_sources") for row in group[2:])
     assert readable == 3, "the entry and the memory's two parts"
+    # The report names each record by its own key, not by the group a digest row joined.
+    (report,) = (tmp_path / "job").glob("conversion-*.json")
+    assert json.loads(report.read_text(encoding="utf-8"))["segmented_records"] == [
+        {"record": "legacy:memories:m-long", "parts": 2},
+        {"record": "legacy:memory_digest_sources:6:m-long-5:run-2-3:s-1", "parts": 2},
+    ]
 
 
 def test_the_migration_job_takes_a_store_with_a_long_memory_and_shared_entries(tmp_path: Path, capsys) -> None:
