@@ -5,7 +5,9 @@ longer text this file once held is in its history.
 
 ## [3.10.4] - 2026-10-14
 
-The README's install commands still named 3.9.3, without the vector extra. Whoever installed from that first page, on GitHub or on PyPI, got a release four versions old and recall without vector search. The commands now install the current release with `[lancedb]` (`[lancedb,codex]` for an entry with an MCP server). A packaging test keeps them that way: it fails on an install line without the extra, a pinned version other than this one, or a link to an older release.
+The README's install commands still named 3.9.3, without the vector extra. Whoever installed from that first page, on GitHub or on PyPI, got a release four versions old, and recall without vector search, since the default LanceDB store cannot open without the extra. The commands now install or upgrade (`-U`) to the current release with `[lancedb]` (`[lancedb,codex]` for an entry with an MCP server). A packaging test keeps them that way: it fails on an install line without the extra, an unpinned one without `-U`, a pinned version other than this one, or a link to an older release.
+
+For an entry of a shared store, the doctor now reads the vector checks (this one and 3.10.3's check of a Hermes plugin environment) against the entry's own runtime config, beside its pointer. Before, it read the store's, which is the shared worker's.
 
 `doctor` now names an interpreter that lacks the vector extra while the runtime config names a LanceDB store (`vector_dependencies_missing`), on every host. Because the extra is optional, it used to say nothing; only the recall's own gaps said `lance_not_installed`. A Hermes that builds its own plugin environment is still checked in that environment (3.10.3).
 

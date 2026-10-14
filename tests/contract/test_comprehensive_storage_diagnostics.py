@@ -275,6 +275,28 @@ def test_doctor_names_a_lancedb_store_the_interpreter_cannot_open(tmp_path, monk
     assert "vector_dependencies_missing" not in doctor.run_doctor(host="hermes", instance_root=home).capability_gaps
 
 
+def test_an_attached_entry_is_read_against_its_own_runtime_config(tmp_path, monkeypatch):
+    """An entry of a shared store loads the runtime config beside its pointer; the store's directory holds the
+    shared worker's.  An entry with no routes of its own needs no vector extra, whatever the worker uses."""
+    _app, ctx = _doctor_app(tmp_path, monkeypatch)
+    store = ctx.binding.data_directory
+    _write_runtime_config(ctx)  # the shared worker's: a LanceDB store
+    entry = tmp_path / "TEST-entry-home" / "scope-recall"
+    entry.mkdir(parents=True)
+    (entry / "attachment.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: root / "scope-recall")
+    without = {"vector_dependencies": {"lancedb": None, "pyarrow": None}}
+    lexical = doctor.DoctorReport(host="claude-code", status="degraded")
+    doctor._check_vector_dependencies(lexical, without, doctor._entry_runtime_config(entry.parent, store))
+    assert lexical.capability_gaps == []
+    (entry / "runtime-config.json").write_text((store / "runtime-config.json").read_text(encoding="utf-8"), "utf-8")
+    own = doctor.DoctorReport(host="claude-code", status="degraded")
+    doctor._check_vector_dependencies(own, without, doctor._entry_runtime_config(entry.parent, store))
+    assert own.capability_gaps == ["vector_dependencies_missing"]
+    (entry / "attachment.json").unlink()
+    assert doctor._entry_runtime_config(entry.parent, store).vector is not None  # a local install: beside its store
+
+
 def test_the_probe_reads_the_vector_extra_without_importing_it():
     from scope_recall.maintenance import package_health
 

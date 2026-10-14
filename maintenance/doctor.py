@@ -666,6 +666,14 @@ def _runtime_config(data_directory: Path):
         return None
 
 
+def _entry_runtime_config(instance: Path, data_directory: Path):
+    """The runtime config the entry's own processes load, or ``None``: an attached entry's beside its pointer (the
+    store's directory holds the shared worker's, which an entry with routes of its own, or none, does not load),
+    else the one beside its store.  What the entry's interpreter needs is read against this one."""
+    pointer = _hermes_data_dir(instance) / "attachment.json"
+    return _runtime_config(pointer.parent if pointer.is_file() else data_directory)
+
+
 def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
     """Vector recall that is wired but admits nothing, named instead of silent.
 
@@ -748,8 +756,9 @@ def run_doctor(
 
     readable = check_storage(report, binding, data_directory)
     config = _runtime_config(data_directory)
-    _check_hermes_runtime(report, instance, config)
-    _check_vector_dependencies(report, probe, config)
+    entry_config = _entry_runtime_config(instance, data_directory)
+    _check_hermes_runtime(report, instance, entry_config)
+    _check_vector_dependencies(report, probe, entry_config)
     check_footprint(report, data_directory, config)
     if readable:
         _check_worker_status(report, binding, data_directory)

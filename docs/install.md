@@ -65,11 +65,13 @@ From PyPI, into the host's environment, with the vector extra (and `codex` for a
 entry with an MCP server: Codex, Claude Code, WorkBuddy, dsh):
 
 ```text
-python -m pip install "hermes-scope-recall[lancedb]"
-python -m pip install "hermes-scope-recall[lancedb,codex]"
+python -m pip install -U "hermes-scope-recall[lancedb]"
+python -m pip install -U "hermes-scope-recall[lancedb,codex]"
 ```
 
-Without `[lancedb]` there is no vector search; `doctor` names that as
+`-U` also moves an older install to the current release. Without `[lancedb]` the
+default LanceDB vector store cannot open and recall is lexical (the
+`sqlite-bruteforce` backend needs no extra); `doctor` names that as
 `vector_dependencies_missing` while a LanceDB store is configured.
 
 Or build the wheel from a source tree and install that file, which is how a

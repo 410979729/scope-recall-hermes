@@ -49,17 +49,19 @@ only as an entry; its installer adds them to WorkBuddy's own `settings.json` and
 the installer writes and names in dsh's home patch, also only as an entry, with dsh's upload of its
 session logs switched off ([docs/install.md](docs/install.md), section 13).
 
-The package is `hermes-scope-recall` on PyPI. Install it, with its vector extra, into the same
-isolated Python environment the host uses. Without `[lancedb]` there is no vector search, and
-recall finds memories by their words alone:
+The package is `hermes-scope-recall` on PyPI. Install or upgrade it, with its vector extra, into
+the same isolated Python environment the host uses. The default vector store is LanceDB: without
+`[lancedb]` it cannot open, and recall finds memories by their words alone (the
+`sqlite-bruteforce` backend needs no extra):
 
 ```text
-python -m pip install "hermes-scope-recall[lancedb]"
-python -m pip install "hermes-scope-recall[lancedb,codex]"
+python -m pip install -U "hermes-scope-recall[lancedb]"
+python -m pip install -U "hermes-scope-recall[lancedb,codex]"
 ```
 
 The second line is for Codex, Claude Code, WorkBuddy and dsh, whose MCP server needs the `codex`
-extra. Append `==<version>` to pin a release. A Hermes that builds its own plugin environment
+extra. `-U` moves an older install to the current release; write `==<version>` instead to pin
+one. A Hermes that builds its own plugin environment
 installs the core from the declaration the installer writes instead (below). `doctor` names an
 environment that lacks the vector extra while a LanceDB store is configured
 (`vector_dependencies_missing`).

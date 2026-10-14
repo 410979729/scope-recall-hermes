@@ -120,6 +120,9 @@ def test_the_readme_installs_the_vector_extra_and_no_older_release() -> None:
     installs = [line.strip() for line in readme.splitlines() if "pip install" in line and "hermes-scope-recall" in line]
     assert installs, "README.md has no install command"
     assert all("[lancedb" in line for line in installs), f"an install without the vector extra: {installs}"
+    # Unpinned, pip keeps an older install that satisfies the name and only adds the extra.
+    unpinned = [line for line in installs if "==" not in line]
+    assert all(" -U " in line or " --upgrade " in line for line in unpinned), f"no upgrade: {unpinned}"
     pins = re.findall(r"hermes-scope-recall(?:\[[^\]]*\])?==([0-9][^\s\"'`]*)", readme)
     assert all(pin == version for pin in pins), f"README.md pins {pins}; this is {version}"
     # The 3.1.0 notes hold the 2.0.x migration; any other release link must be this one or "latest".
