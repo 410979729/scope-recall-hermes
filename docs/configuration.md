@@ -297,7 +297,7 @@ Omitted, the policy is deliberately fail-closed: `cap_micro_usd`,
 |-----|------|---------|---------|
 | `batch` | string, non-empty | `"auxiliary"` | Label the ledger records requests under. |
 | `period` | `"lifetime"` or `"monthly"` | `"lifetime"` | Apply all API spend, call and token caps to the whole ledger or the current local calendar month. |
-| `time_zone` | IANA time-zone name | `"UTC"` | Calendar zone for monthly caps, for example `"Asia/Shanghai"`. An invalid or unavailable zone refuses the configuration. |
+| `time_zone` | IANA time-zone name | `"UTC"` | Calendar zone for monthly caps, for example `"Asia/Shanghai"`. With `"period": "monthly"`, a zone that is invalid or that the host's time-zone database (the system's, or the `tzdata` package) does not have refuses the configuration; `"UTC"` needs no database, and a lifetime budget does not read the zone. |
 | `pricing` | mapping of model to `{"input_usd_per_million", "output_usd_per_million"}` | required | Rates used to charge each request. Each rate is a non-negative amount given as an int or an exact decimal string, for example `"0.15"`. |
 | `approved_models` | array of strings | required | The only models any route may call. Every entry must also appear in `pricing`, or the file is refused with `approved_model_pricing`. |
 | `cap_micro_usd` | int ≥ 0 or `null` | `0` | Selected-period spend cap in micro-USD. `0` means no spend at all; `null` means uncapped. |

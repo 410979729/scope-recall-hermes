@@ -84,16 +84,31 @@ def _hermes_runtime_environment(instance_root: Path) -> Path | None:
     return None
 
 
-def _installed_version(environment: Path, distribution: str) -> str | None:
-    """A distribution's version from its metadata folder in ``environment``, or None when it is not installed."""
+def _listed(folder: Path) -> list[str]:
+    """The names in ``folder``; none when it does not exist.  One that exists and cannot be listed raises: its
+    contents are unknown, not absent (``Path.glob`` would have read it as empty)."""
+    try:
+        with os.scandir(folder) as entries:
+            return [entry.name for entry in entries]
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
+def _site_packages(environment: Path) -> list[str]:
+    """The names in the environment's site-packages, in the Windows layout or the POSIX one."""
+    names = _listed(environment / "Lib" / "site-packages")
+    for version in _listed(environment / "lib"):
+        if version.startswith("python3"):
+            names += _listed(environment / "lib" / version / "site-packages")
+    return names
+
+
+def _installed_version(names: list[str], distribution: str) -> str | None:
+    """A distribution's version from its metadata folder among ``names``, or None when it is not installed."""
     stem = distribution.replace("-", "_").lower() + "-"
-    folders = [environment / "Lib" / "site-packages", *environment.glob("lib/python3*/site-packages")]
-    for folder in folders:
-        if not folder.is_dir():
-            continue
-        for info in folder.glob("*.dist-info"):
-            if info.name.lower().startswith(stem):
-                return info.name[len(stem) : -len(".dist-info")]
+    for name in names:
+        if name.lower().startswith(stem) and name.lower().endswith(".dist-info"):
+            return name[len(stem) : -len(".dist-info")]
     return None
 
 
@@ -107,13 +122,14 @@ def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeI
     if environment is None:
         return
     try:
-        version = _installed_version(environment, "hermes-scope-recall")
-        vectors = all(_installed_version(environment, name) is not None for name in ("lancedb", "pyarrow"))
+        names = _site_packages(environment)
     except OSError:
         # Not readable to this account: unknown, which is no finding either way.
         report.hermes_runtime = {"environment": str(environment), "readable": False}
         record_check(report, "hermes_runtime", "unreadable")
         return
+    version = _installed_version(names, "hermes-scope-recall")
+    vectors = all(_installed_version(names, name) is not None for name in ("lancedb", "pyarrow"))
     vector = config.vector if config is not None else None
     needs_vectors = vector is not None and vector.backend == "lancedb"
     report.hermes_runtime = {

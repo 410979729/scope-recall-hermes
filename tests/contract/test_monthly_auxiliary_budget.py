@@ -230,6 +230,26 @@ class MonthlyBudgetTests(unittest.TestCase):
                 instant("2026-02-01T00:00:00"),
             )
 
+    def test_a_host_without_a_time_zone_database_still_loads_its_budget(self):
+        """Every policy names a zone, the lifetime default too.  A slim Linux image or a Windows Python without
+        ``tzdata`` has no database to look one up in, and must still load the default, and a monthly budget in UTC;
+        a named zone it cannot look up is refused."""
+        from zoneinfo import ZoneInfoNotFoundError
+
+        def no_database(name):
+            raise ZoneInfoNotFoundError(name)
+
+        with patch("scope_recall.runtime.model_budget.ZoneInfo", no_database):
+            self.assertEqual(default_budget_policy().time_zone, "UTC")
+            AuxiliaryRuntimeConfig.from_mapping({"external_embedding": False, "external_consolidation": False})
+            self.assertEqual(policy(period="lifetime", time_zone="Asia/Shanghai").period, "lifetime")
+            self.assertEqual(
+                budget_window(policy(), instant("2026-02-10T12:00:00")),
+                (instant("2026-02-01T00:00:00"), instant("2026-03-01T00:00:00")),
+            )
+            with self.assertRaises(ValueError):
+                policy(time_zone="Asia/Shanghai")
+
     def test_month_length_follows_iana_zone_including_dst(self):
         budget = policy(time_zone="America/New_York")
         self.assertEqual(

@@ -1,6 +1,7 @@
 """Real SQLite diagnostic and durable replay boundaries; no models or production data."""
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -244,10 +245,17 @@ def test_an_environment_this_account_cannot_read_is_unknown_not_missing(tmp_path
     environment = _pm_environment(home, tmp_path, {})
     _write_runtime_config(ctx)
 
-    def denied(*_args):
-        raise PermissionError("TEST-access-denied")
+    site = environment / "Lib" / "site-packages"
+    scandir = os.scandir
 
-    monkeypatch.setattr(doctor, "_installed_version", denied)
+    def denied(path=".", *args):
+        # The listing itself is refused, as for a folder only an elevated process may read; Path.glob would read
+        # that as empty, and the doctor would report a core and vectors missing that may well be there.
+        if isinstance(path, (str, os.PathLike)) and os.path.normcase(os.fspath(path)) == os.path.normcase(str(site)):
+            raise PermissionError(13, "TEST-access-denied", str(site))
+        return scandir(path, *args)
+
+    monkeypatch.setattr(os, "scandir", denied)
     report = doctor.run_doctor(host="hermes", instance_root=home)
     assert _runtime_gaps(report) == set()
     assert report.hermes_runtime == {"environment": str(environment), "readable": False}

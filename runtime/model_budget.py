@@ -84,6 +84,12 @@ _OPTIONAL_CUMULATIVE_CAPS = ("cap_micro_usd", "total_input_cap", "total_output_c
 _REQUIRED_NONNEG = ("max_request_bytes", "default_reserve_input", "default_reserve_output")
 
 
+def _zone(name: str):
+    """The calendar zone a policy names.  UTC is built in: every policy names a zone, and a host with no time-zone
+    database (a slim Linux image, a Windows Python without ``tzdata``) must still load the default one."""
+    return UTC if name == "UTC" else ZoneInfo(name)
+
+
 @dataclass(frozen=True)
 class BudgetPolicy:
     batch: str
@@ -106,7 +112,10 @@ class BudgetPolicy:
         if self.period not in ("lifetime", "monthly"):
             raise ValueError("budget_period")
         try:
-            ZoneInfo(text("budget_time_zone", self.time_zone))
+            zone = text("budget_time_zone", self.time_zone)
+            # Only a monthly budget reads its zone; a lifetime one must load where no zone can be looked up.
+            if self.period == "monthly":
+                _zone(zone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("budget_time_zone") from exc
         for name in _OPTIONAL_CUMULATIVE_CAPS:
@@ -133,7 +142,7 @@ def budget_window(policy: BudgetPolicy, now_ns: int) -> tuple[int, int] | None:
     """UTC nanosecond bounds of the policy's local calendar month, end exclusive."""
     if policy.period == "lifetime":
         return None
-    zone = ZoneInfo(policy.time_zone)
+    zone = _zone(policy.time_zone)
     now = datetime.fromtimestamp(now_ns // 1_000_000_000, UTC).astimezone(zone)
     start = datetime(now.year, now.month, 1, tzinfo=zone)
     end = datetime(now.year + (now.month == 12), now.month % 12 + 1, 1, tzinfo=zone)
