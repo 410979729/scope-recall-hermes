@@ -2,7 +2,7 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, and for Codex, Claude Code, WorkBuddy and DeepSeek Harness (dsh), which share one adapter of hooks and an MCP server (the MCP tools need the optional `codex` extra; dsh runs the hooks through a plugin). The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.10.4rc1`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
+This checkout is `3.10.4`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that is not
 attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
@@ -20,11 +20,11 @@ adapters instead of the core being shaped around Hermes. Section 9 of the
 migration procedure for a 2.0.1 memory database. SQLite remains the only fact
 authority; host adapters share the same contracts.
 
-**What is not verified.** `scripts/check.py --tier release` runs about 2,300 tests with
+**What is not verified.** `scripts/check.py --tier release` runs about 3,600 tests with
 none failing. They check contracts, storage and the hosts' wiring; none of them
 measures recall quality. Every accuracy figure in the notes was measured by us, on
-our own corpora, by hand, and there is no regression suite you or we can re-run
-automatically -- that is the first item in *What is not finished*.
+copies of our own stores; the question sets hold private conversations, so there is
+no recall-quality suite you can re-run.
 
 ## For agents: install or upgrade on the user's behalf
 
@@ -49,18 +49,25 @@ only as an entry; its installer adds them to WorkBuddy's own `settings.json` and
 the installer writes and names in dsh's home patch, also only as an entry, with dsh's upload of its
 session logs switched off ([docs/install.md](docs/install.md), section 13).
 
-The package is `hermes-scope-recall` on PyPI. Install it into the same isolated Python
-environment the host uses:
+The package is `hermes-scope-recall` on PyPI. Install it, with its vector extra, into the same
+isolated Python environment the host uses. Without `[lancedb]` there is no vector search, and
+recall finds memories by their words alone:
 
 ```text
-python -m pip install hermes-scope-recall==3.9.3
-python -m pip install "hermes-scope-recall[codex]==3.9.3"
+python -m pip install "hermes-scope-recall[lancedb]"
+python -m pip install "hermes-scope-recall[lancedb,codex]"
 ```
 
-The same wheel and sdist are attached to the
-[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.9.3)
+The second line is for Codex, Claude Code, WorkBuddy and dsh, whose MCP server needs the `codex`
+extra. Append `==<version>` to pin a release. A Hermes that builds its own plugin environment
+installs the core from the declaration the installer writes instead (below). `doctor` names an
+environment that lacks the vector extra while a LanceDB store is configured
+(`vector_dependencies_missing`).
+
+The same wheel and sdist are attached to each
+[GitHub release](https://github.com/410979729/scope-recall-hermes/releases/latest)
 alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
-(`python -m pip install "<path-to-wheel>"`). To build it yourself from this checkout instead:
+(`python -m pip install "<path-to-wheel>[lancedb]"`). To build it yourself from this checkout instead:
 
 ```text
 python -m build --wheel
@@ -103,7 +110,7 @@ scope-recall apply-uninstall --instance-root <absolute-instance-root>
 
 SQLite truth lives in the verified Core data directory. Vector indexes are companions and may be rebuilt only through an explicit configured space. The Hermes and Codex adapters bind host identity, installation identity, scopes, and project roots before opening Core. After that binding is verified, an omitted runtime-config argument checks only `<data_directory>/runtime-config.json`; a missing file stays basic plus an explicit capability gap. The file is never generated or discovered from the current directory, parent directories, or credential locations. Optional host wiring must report a capability gap instead of creating or repairing a database.
 
-The `codex` extra adds the MCP SDK. Without that extra, the Core and Hermes paths remain importable. The `lancedb` extra enables the tested LanceDB companion path. PostgreSQL/pgvector is outside this v3 distribution; an explicit configuration error directs operators to retain the old installation and use the migration guide.
+The `codex` extra adds the MCP SDK. Without that extra, the Core and Hermes paths remain importable. The `lancedb` extra adds the LanceDB vector companion, the default `vector.backend`; without it, configure `sqlite-bruteforce` or recall stays lexical. PostgreSQL/pgvector is outside this v3 distribution; an explicit configuration error directs operators to retain the old installation and use the migration guide.
 
 On Windows, choose a short data directory such as `C:\ScopeRecall\my-agent`. LanceDB appends index, table, and temporary file names to that path. If the resulting native path is too long, the worker reports `native_vector_path_too_long` before starting LanceDB or calling the embedding API. Use a short target directory for a new installation or an offline migration.
 

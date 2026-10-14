@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are applied to the latest release line, currently `3.5.x`. The `2.0.x` line and everything before it are no longer maintained and receive no further releases, security fixes included; section 9 of [CHANGELOG.md](CHANGELOG.md) describes the one-time offline migration from 2.0.x to 3.x.
+Security fixes are applied to the [latest release](https://github.com/410979729/scope-recall-hermes/releases/latest) only. The `2.0.x` line and everything before it are no longer maintained and receive no further releases, security fixes included; section 9 of the [3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) describes the one-time offline migration from 2.0.x to 3.x.
 
 ## Reporting a vulnerability
 

@@ -16,6 +16,16 @@ from importlib import metadata
 from pathlib import Path
 
 DISTRIBUTION = "hermes-scope-recall"
+#: What the LanceDB vector store needs in the interpreter that recalls (the ``lancedb`` extra).
+VECTOR_DISTRIBUTIONS = ("lancedb", "pyarrow")
+
+
+def installed_version(name: str) -> str | None:
+    """A distribution's installed version, read from its metadata without importing it; None when absent."""
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
 
 
 def record_integrity(dist) -> dict:
@@ -102,6 +112,8 @@ def package_probe() -> dict:
         "distribution_version": None,
         "hot_patched": {"status": "unavailable"},
         "dependency_drift": {"status": "unavailable"},
+        # Optional, so never drift; the doctor reads it against the runtime config's vector store.
+        "vector_dependencies": {name: installed_version(name) for name in VECTOR_DISTRIBUTIONS},
     }
     try:
         dist = metadata.distribution(DISTRIBUTION)

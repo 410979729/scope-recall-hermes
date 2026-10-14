@@ -1,6 +1,6 @@
 name: scope-recall
-version: 3.10.4rc1
-description: Bounded Hermes adapter over the installed Scope Recall v1.1 core
+version: 3.10.4
+description: Scope Recall long-term memory, local and source-backed, one store shared by your agents
 provider_entry: register:register
 hooks:
   - pre_llm_call

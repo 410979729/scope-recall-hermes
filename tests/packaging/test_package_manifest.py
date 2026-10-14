@@ -110,6 +110,23 @@ def test_the_readme_does_not_still_advertise_an_older_candidate() -> None:
     assert not stale, f"README.md still names an older candidate: {stale}"
 
 
+def test_the_readme_installs_the_vector_extra_and_no_older_release() -> None:
+    """It said ``pip install hermes-scope-recall==3.9.3``, without ``[lancedb]`` and linking v3.9.3, four releases
+    on: whoever followed the first page (PyPI shows it too) got an old release and recall without vectors."""
+    import re
+
+    version = inventory.source_version(REPO_ROOT)
+    readme = _read("README.md")
+    installs = [line.strip() for line in readme.splitlines() if "pip install" in line and "hermes-scope-recall" in line]
+    assert installs, "README.md has no install command"
+    assert all("[lancedb" in line for line in installs), f"an install without the vector extra: {installs}"
+    pins = re.findall(r"hermes-scope-recall(?:\[[^\]]*\])?==([0-9][^\s\"'`]*)", readme)
+    assert all(pin == version for pin in pins), f"README.md pins {pins}; this is {version}"
+    # The 3.1.0 notes hold the 2.0.x migration; any other release link must be this one or "latest".
+    tags = re.findall(r"releases/tag/v([0-9][^\s)\"'`]*)", readme)
+    assert all(tag in {version, "3.1.0"} for tag in tags), f"README.md links releases {tags}"
+
+
 def test_the_changelog_has_an_entry_for_this_version() -> None:
     version = inventory.source_version(REPO_ROOT)
     assert version in _read("CHANGELOG.md"), (

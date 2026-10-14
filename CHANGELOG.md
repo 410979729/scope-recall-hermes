@@ -3,9 +3,17 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
-### Scope Recall 3.10.4rc1 (unreleased)
+## [3.10.4] - 2026-10-14
 
-The install guide and the agent workflow correct two Hermes environment instructions. After a failed sync, put `config.yaml` back from a copy: Hermes's plugin eviction also empties `memory.provider`, so taking the `plugins.disabled` entry out alone leaves the gateway without memory. And sync before restarting a gateway, which may otherwise rebuild the environment itself. Documentation only; nothing to install.
+The README's install commands still named 3.9.3, without the vector extra. Whoever installed from that first page, on GitHub or on PyPI, got a release four versions old and recall without vector search. The commands now install the current release with `[lancedb]` (`[lancedb,codex]` for an entry with an MCP server). A packaging test keeps them that way: it fails on an install line without the extra, a pinned version other than this one, or a link to an older release.
+
+`doctor` now names an interpreter that lacks the vector extra while the runtime config names a LanceDB store (`vector_dependencies_missing`), on every host. Because the extra is optional, it used to say nothing; only the recall's own gaps said `lance_not_installed`. A Hermes that builds its own plugin environment is still checked in that environment (3.10.3).
+
+The install guide and the agent workflow now say to put back the whole `config.yaml` after a failed Hermes environment sync, which also empties `memory.provider`. They also say to sync before restarting a gateway, which may otherwise rebuild the environment itself. The package summary, the plugin descriptions, the security policy's supported version and the contributors list are brought up to date.
+
+### Upgrading from 3.10.3
+
+Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. For a Hermes with its own package manager, use `--target-plugin-dir <home>/plugins/scope-recall` and let Hermes sync. The schema is unchanged (1110).
 
 ## [3.10.3] - 2026-10-14
 

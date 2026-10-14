@@ -61,11 +61,16 @@ tools. You need `build` (or the `dev` extra) to produce the wheel.
 
 ## 2. Install the package
 
-From PyPI, into the host's environment:
+From PyPI, into the host's environment, with the vector extra (and `codex` for an
+entry with an MCP server: Codex, Claude Code, WorkBuddy, dsh):
 
 ```text
 python -m pip install "hermes-scope-recall[lancedb]"
+python -m pip install "hermes-scope-recall[lancedb,codex]"
 ```
+
+Without `[lancedb]` there is no vector search; `doctor` names that as
+`vector_dependencies_missing` while a LanceDB store is configured.
 
 Or build the wheel from a source tree and install that file, which is how a
 candidate between releases is installed. The file name carries the version of the
@@ -590,6 +595,7 @@ Things that look wrong in a healthy report and are not:
 | `hot_patched` | Installed files no longer match the wheel's recorded digests. | Reinstall. Editing installed files is the usual cause. |
 | `dependency_drift` | A declared requirement is missing or outside its pin. Extras you did not install are *not* drift. | Reinstall with the pins, or install the extra properly. |
 | `hermes_runtime_package_missing` / `hermes_runtime_package_mismatch` | A Hermes that builds its own environment runs plugins from it (`hermes_runtime.environment`), and the core there is missing or another version than this one. Installing into the venv `--python` names does not reach it. | Install with `--target-plugin-dir <home>\plugins\scope-recall`, let Hermes sync, restart (section 4). |
+| `vector_dependencies_missing` | The runtime config names a LanceDB vector store, and the interpreter the doctor checked (`--python`, or its own) has no `lancedb` or `pyarrow`: the package was installed without its `lancedb` extra, and every recall finds memories by their words alone. Its recall gaps say `vector_error:RuntimeError:lance_not_installed`. | `pip install "hermes-scope-recall[lancedb]"` into that interpreter (section 2), or configure the `sqlite-bruteforce` backend. |
 | `hermes_runtime_vector_dependencies_missing` | That environment has no `lancedb` or `pyarrow` while the runtime config has a LanceDB vector store: every recall runs without vectors. | The same: the wrapper's `pyproject.toml` declares them. Look for a `pyproject.toml` there written by hand. |
 | `version_mismatch` | Receipt, distribution, imported and running versions disagree. | Stop the old processes, then reinstall. |
 | `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |

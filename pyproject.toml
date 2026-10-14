@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hermes-scope-recall"
 dynamic = ["version"]
-description = "Bounded local memory core with Hermes and Codex adapters, SQLite truth, and rebuildable vector companions."
+description = "Local long-term memory for Hermes, Codex, Claude Code, WorkBuddy and dsh agents: SQLite truth, source-backed recall and rebuildable vector companions."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = "MIT"
@@ -15,7 +15,7 @@ license-files = ["LICENSE"]
 authors = [
   { name = "scope-recall contributors" }
 ]
-keywords = ["hermes", "codex", "mcp", "memory", "sqlite", "lancedb", "vector"]
+keywords = ["hermes", "codex", "claude-code", "mcp", "memory", "sqlite", "lancedb", "vector"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",

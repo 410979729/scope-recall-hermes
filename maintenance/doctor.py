@@ -147,6 +147,28 @@ def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeI
     record_check(report, "hermes_runtime", "ok" if healthy else "mismatch", version or "")
 
 
+def _check_vector_dependencies(
+    report: DoctorReport, probe: dict[str, Any], config: RuntimeInstanceConfig | None
+) -> None:
+    """The runtime config names a LanceDB store, and the interpreter that recalls has no ``lancedb`` or ``pyarrow``.
+
+    The extra is optional, so its absence is no drift; with a LanceDB store configured it is every recall by words
+    alone, said only in the recall's own gaps (``lance_not_installed``) while the doctor named the threshold instead.
+    A Hermes that builds its own environment is read there (``_check_hermes_runtime``); a probe from an older core
+    has no answer, which is no finding.
+    """
+    vector = config.vector if config is not None else None
+    if report.hermes_runtime is not None or vector is None or vector.backend != "lancedb":
+        return
+    found = probe.get("vector_dependencies")
+    if not isinstance(found, dict):
+        return
+    missing = sorted(name for name, version in found.items() if not version)
+    record_check(report, "vector_dependencies", "missing" if missing else "ok", ",".join(missing))
+    if missing:
+        report.capability_gaps.append("vector_dependencies_missing")
+
+
 def _require_absolute(path: Path, name: str) -> Path:
     expanded = path.expanduser()
     if not expanded.is_absolute():
@@ -727,6 +749,7 @@ def run_doctor(
     readable = check_storage(report, binding, data_directory)
     config = _runtime_config(data_directory)
     _check_hermes_runtime(report, instance, config)
+    _check_vector_dependencies(report, probe, config)
     check_footprint(report, data_directory, config)
     if readable:
         _check_worker_status(report, binding, data_directory)

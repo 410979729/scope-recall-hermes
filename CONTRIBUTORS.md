@@ -14,5 +14,23 @@ co-authors for their reproduction and diagnosis work:
 | [yzy806806](https://github.com/yzy806806) | Identified the online candidate-review gap and misleading store lifecycle receipts in [#68](https://github.com/410979729/scope-recall-hermes/issues/68). |
 | [gfpyc](https://github.com/gfpyc) | Supplied Windows desktop Arrow crash evidence, affected configuration, and a working SQLite-backend workaround in [#69](https://github.com/410979729/scope-recall-hermes/issues/69). |
 
+Since 3.x, these contributors' code was merged:
+
+| Contributor | Contribution |
+| --- | --- |
+| [JohnYinl](https://github.com/JohnYinl) | The metered Responses API consolidation route ([#90](https://github.com/410979729/scope-recall-hermes/pull/90)), candidate evaluation windows anchored to saved evidence ([#91](https://github.com/410979729/scope-recall-hermes/pull/91)) and calendar-month auxiliary budgets ([#239](https://github.com/410979729/scope-recall-hermes/pull/239)). |
+| [panxuewen0101](https://github.com/panxuewen0101) | The plain-HTTP endpoint policy for loopback model servers, with an explicit opt-in for other hosts ([#226](https://github.com/410979729/scope-recall-hermes/issues/226), [#227](https://github.com/410979729/scope-recall-hermes/pull/227)). |
+| [Adam13y](https://github.com/Adam13y) | Known-answer tests for three recall invariants ([#213](https://github.com/410979729/scope-recall-hermes/issues/213), [#217](https://github.com/410979729/scope-recall-hermes/pull/217)). |
+
+And these reports, each with its reproduction, led to fixes:
+
+| Contributor | Contribution |
+| --- | --- |
+| [phfqy](https://github.com/phfqy) | Four reports with reproductions and live measurements ([#236](https://github.com/410979729/scope-recall-hermes/issues/236)), and the limits that kept thinking models from consolidation ([#240](https://github.com/410979729/scope-recall-hermes/issues/240)). |
+| [panxuewen0101](https://github.com/panxuewen0101) | The request-size cap that refused candidate evaluations before sending them ([#237](https://github.com/410979729/scope-recall-hermes/issues/237)). |
+| [tutan0558](https://github.com/tutan0558) | Console windows flashing at a worker's teardown ([#222](https://github.com/410979729/scope-recall-hermes/issues/222)) and at every scheduled wake ([#238](https://github.com/410979729/scope-recall-hermes/issues/238)). |
+| [849506054](https://github.com/849506054) | Evidence from the end of a session that waited for the next session ([#214](https://github.com/410979729/scope-recall-hermes/issues/214)). |
+| [momolee-deep](https://github.com/momolee-deep) | A Hermes agent on Gemini that could not use its memory tools ([#216](https://github.com/410979729/scope-recall-hermes/issues/216)). |
+
 See the [commit history](https://github.com/410979729/scope-recall-hermes/commits/main/)
 for implementation authors and additional contributions.

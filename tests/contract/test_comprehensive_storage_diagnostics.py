@@ -176,15 +176,19 @@ def _write_runtime_config(ctx, **changes):
             "external_consolidation": False,
             "embedding": {"credential_env": "TEST_EMBED_KEY"},
         },
-        "vector": {
-            "backend": "lancedb",
-            "storage_dir": str(binding.data_directory / "vectors" / SPACE_ID),
-            "table_name": "TEST_vectors",
-            "dimensions": 3072,
-        },
+        "vector": _vector_block(ctx),
         **changes,
     }
     (binding.data_directory / "runtime-config.json").write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _vector_block(ctx):
+    return {
+        "backend": "lancedb",
+        "storage_dir": str(ctx.binding.data_directory / "vectors" / SPACE_ID),
+        "table_name": "TEST_vectors",
+        "dimensions": 3072,
+    }
 
 
 def _pm_environment(home, tmp_path, packages):
@@ -223,6 +227,8 @@ def test_doctor_reads_the_environment_a_hermes_really_runs_plugins_in(tmp_path, 
     _write_runtime_config(ctx)
     report = doctor.run_doctor(host="hermes", instance_root=home)
     assert _runtime_gaps(report) == gaps
+    # The environment the gateway runs is the one read; the venv --python names would answer for nothing.
+    assert "vector_dependencies_missing" not in report.capability_gaps
     assert report.hermes_runtime["environment"] == str(environment)
     assert report.hermes_runtime["vector_dependencies"] is (not any("vector" in gap for gap in gaps))
     # Lexical recall needs no vector dependencies.
@@ -237,6 +243,45 @@ def test_a_hermes_that_runs_plugins_in_its_venv_has_no_environment_to_read(tmp_p
     _write_runtime_config(ctx)
     report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
     assert _runtime_gaps(report) == set() and report.hermes_runtime is None
+
+
+@pytest.mark.parametrize(
+    ("installed", "missing"),
+    [
+        ({"lancedb": None, "pyarrow": None}, "lancedb,pyarrow"),
+        ({"lancedb": "0.37.1", "pyarrow": None}, "pyarrow"),
+        ({"lancedb": "0.37.1", "pyarrow": "24.0.0"}, ""),
+    ],
+)
+def test_doctor_names_a_lancedb_store_the_interpreter_cannot_open(tmp_path, monkeypatch, installed, missing):
+    """As 3.10.3 shipped it: installed without the ``lancedb`` extra, with a LanceDB store configured, every recall
+    ran by words alone while the doctor named only the threshold."""
+    _app, ctx = _doctor_app(tmp_path, monkeypatch)
+    home = ctx.binding.data_directory
+    _write_runtime_config(ctx)
+    probe = {**doctor.package_health.package_probe(), "vector_dependencies": installed}
+    monkeypatch.setattr(doctor.package_health, "package_probe", lambda: probe)
+    report = doctor.run_doctor(host="hermes", instance_root=home)
+    assert ("vector_dependencies_missing" in report.capability_gaps) is bool(missing)
+    assert {
+        "name": "vector_dependencies",
+        "result": "missing" if missing else "ok",
+        **({"detail": missing} if missing else {}),
+    } in report.checks
+    # A store that needs neither, and no store at all, are no finding.
+    _write_runtime_config(ctx, vector={**_vector_block(ctx), "backend": "sqlite-bruteforce"})
+    assert "vector_dependencies_missing" not in doctor.run_doctor(host="hermes", instance_root=home).capability_gaps
+    _write_runtime_config(ctx, vector=None, auxiliary={"external_embedding": False, "external_consolidation": False})
+    assert "vector_dependencies_missing" not in doctor.run_doctor(host="hermes", instance_root=home).capability_gaps
+
+
+def test_the_probe_reads_the_vector_extra_without_importing_it():
+    from scope_recall.maintenance import package_health
+
+    found = package_health.package_probe()["vector_dependencies"]
+    assert set(found) == {"lancedb", "pyarrow"}
+    assert all(version is None or isinstance(version, str) for version in found.values())
+    assert package_health.installed_version("TEST-not-a-distribution") is None
 
 
 def test_an_environment_this_account_cannot_read_is_unknown_not_missing(tmp_path, monkeypatch):
