@@ -74,10 +74,11 @@ The two console names `scope-recall` and `hermes-scope-recall` invoke the same v
 
 Use explicit absolute paths for installation planning. Hermes `--agent-id` must match the host active profile (`get_active_profile_name()`, commonly `default` on an isolated home). Hermes default `--agent-workspace` is `hermes` to match the host memory-provider init contract; pass the same value on plan and apply if you override it. Codex does not accept `--agent-workspace`.
 
-If you talk to Hermes through the Desktop app or `hermes --tui` rather than the CLI, add `--local-platform desktop` (or `tui`) to both commands. Those surfaces name no user unless a dashboard login exists, and a session that names no user is refused everywhere but the CLI until the installer approves the surface; [docs/install.md](docs/install.md) says what the approval does and does not cover. If you reach the host through a dashboard login instead (`hermes serve` with `dashboard.basic_auth`, the Desktop app on another machine), the session is that login: approve it as yours with `--owner-login desktop=basic:<name>`. Hermes Desktop also builds
-the Python environment it runs plugins in, and builds it again on updates: pass it
-`--target-plugin-dir <home>\plugins\scope-recall`, where Hermes finds the plugin and the core it declares
-even after a rebuild dropped the core (section 1 of [docs/install.md](docs/install.md)).
+If you talk to Hermes through the Desktop app or `hermes --tui` rather than the CLI, add `--local-platform desktop` (or `tui`) to both commands. Those surfaces name no user unless a dashboard login exists, and a session that names no user is refused everywhere but the CLI until the installer approves the surface; [docs/install.md](docs/install.md) says what the approval does and does not cover. If you reach the host through a dashboard login instead (`hermes serve` with `dashboard.basic_auth`, the Desktop app on another machine), the session is that login: approve it as yours with `--owner-login desktop=basic:<name>`. A Hermes with its package
+manager (Hermes Desktop, and gateways on a Hermes that has one) builds the Python environment it runs plugins in, and
+builds it again on updates: pass it `--target-plugin-dir <home>\plugins\scope-recall`, where Hermes finds the plugin
+and the core it declares, vector dependencies included, then let Hermes sync that environment and restart it
+(sections 1 and 4 of [docs/install.md](docs/install.md)).
 
 ```text
 scope-recall plan-install --host hermes --target-plugin-dir <absolute-plugin-dir> --instance-root <absolute-instance-root> --project-root <absolute-project-root> --agent-id <agent-id> --python <absolute-python>

@@ -412,6 +412,99 @@ def test_a_hermes_wrapper_may_sit_where_hermes_looks_a_provider_up(tmp_path):
             )
 
 
+def _hermes_plan(instance_root, target, project_root):
+    return plan_install(
+        host="hermes",
+        target_plugin_dir=target,
+        instance_root=instance_root,
+        project_root=project_root,
+        agent_id="TEST-P14-agent",
+        python_executable=Path(sys.executable),
+    )
+
+
+def _hand_made_wrapper(inside):
+    """What the official Hermes update of 2026-10-11 left in a home: the wrapper copied in, the core pinned
+    without its vector extra, from a local wheel, plus the bytecode Hermes wrote beside it."""
+    inside.mkdir(parents=True, exist_ok=True)
+    (inside / "plugin.yaml").write_text(
+        "name: scope-recall\nversion: 3.10.0\npip_dependencies:\n- hermes-scope-recall==3.10.0\n", encoding="utf-8"
+    )
+    (inside / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-scope-recall-profile-member"\nversion = "0.0.0"\n'
+        'dependencies = ["hermes-scope-recall==3.10.0"]\n[tool.uv]\npackage = false\n'
+        "[tool.uv.sources]\nhermes-scope-recall = "
+        '{ path = "C:/TEST/dist/hermes_scope_recall-3.10.0-py3-none-any.whl" }\n',
+        encoding="utf-8",
+    )
+    (inside / "__init__.py").write_text("# TEST hand-made\n", encoding="utf-8")
+    (inside / "__pycache__").mkdir()
+    (inside / "__pycache__" / "__init__.cpython-314.pyc").write_bytes(b"TEST")
+
+
+def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_path):
+    """Hermes's package manager builds the environment it runs plugins in from the declaration there, and a
+    ``pyproject.toml`` wins over ``plugin.yaml``: both declare the core with ``[lancedb]``, or recall has no vectors."""
+    import tomllib
+
+    import yaml
+
+    instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
+    inside = instance_root / "plugins" / "scope-recall"
+    apply_install(_hermes_plan(instance_root, inside, project_root))
+    wanted = f"hermes-scope-recall[lancedb]=={__version__}"
+    assert tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"] == [wanted]
+    assert yaml.safe_load((inside / "plugin.yaml").read_text(encoding="utf-8"))["pip_dependencies"] == [wanted]
+    apply_uninstall(plan_uninstall(instance_root=instance_root))
+    assert not (inside / "pyproject.toml").exists()
+
+
+def test_an_install_moves_its_wrapper_into_the_home_plugin_directory_over_a_hand_made_one(tmp_path):
+    """As found on 2026-10-13: the receipt named a wrapper outside the home, Hermes read a hand-made one
+    inside it.  The install moves there, replaces that wrapper's own files (backed up first) and leaves the old
+    directory and the bytecode alone."""
+    import tomllib
+
+    instance_root, outside, project_root = _install_paths(tmp_path, host="hermes")
+    apply_install(_hermes_plan(instance_root, outside, project_root))
+    inside = instance_root / "plugins" / "scope-recall"
+    _hand_made_wrapper(inside)
+    plan = _hermes_plan(instance_root, inside, project_root)
+    assert plan.conflicts == []
+    assert [change.action for change in plan.changes if change.action in {"move", "replace"}] == [
+        "move",
+        "replace",
+        "replace",
+        "replace",
+    ]
+    result = apply_install(plan)
+    dependencies = tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    assert dependencies == [f"hermes-scope-recall[lancedb]=={__version__}"]
+    assert any(Path(path).name == "pyproject.toml" for path in result.backups)
+    receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
+    assert Path(receipt["target_plugin_dir"]) == inside
+    assert (outside / "plugin.yaml").is_file(), "the old wrapper directory is left as it is"
+    assert (inside / "__pycache__" / "__init__.cpython-314.pyc").read_bytes() == b"TEST"
+    assert _hermes_plan(instance_root, inside, project_root).conflicts == []
+
+
+def test_anything_else_in_the_home_plugin_directory_still_blocks_the_install(tmp_path):
+    instance_root, outside, project_root = _install_paths(tmp_path, host="hermes")
+    apply_install(_hermes_plan(instance_root, outside, project_root))
+    inside = instance_root / "plugins" / "scope-recall"
+    _hand_made_wrapper(inside)
+    (inside / "TEST-notes.txt").write_text("TEST", encoding="utf-8")
+    assert [c for c in _hermes_plan(instance_root, inside, project_root).conflicts if "TEST-notes" in c]
+    (inside / "TEST-notes.txt").unlink()
+    (inside / "plugin.yaml").write_text("name: another-plugin\n", encoding="utf-8")
+    conflicts = _hermes_plan(instance_root, inside, project_root).conflicts
+    assert any(c.startswith("no-receipt collision") for c in conflicts), conflicts
+    elsewhere = instance_root.parent / "elsewhere" / "scope-recall"
+    elsewhere.mkdir(parents=True)
+    conflicts = _hermes_plan(instance_root, elsewhere, project_root).conflicts
+    assert "existing receipt target_plugin_dir mismatch" in conflicts
+
+
 def test_hermes_wrapper_names_a_missing_core_and_passes_other_import_errors_through(tmp_path):
     """Only a missing core is reported as one.  An older core, or a core missing one of its own
     dependencies, is installed: calling it missing sent the operator to install what was there."""

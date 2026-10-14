@@ -13,7 +13,7 @@ from ..contracts import ContractError
 from .candidate_lifecycle import CandidateSnapshot, candidate_model_subject
 from .claim_storage import parse_source_ref
 from .consolidation_chunks import ChunkedSource, ConsolidationChunk
-from .consolidation_summary import apply_summary, stage_fragment, validate_fragment
+from .consolidation_summary import apply_summary, mark_partial, stage_fragment, validate_fragment
 from .episodes import source_origin, source_watermark
 from .evidence_quote import resolve_evidence_quotes
 from .failure_retry import validation_feedback as safe_feedback
@@ -390,6 +390,20 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
     return []
 
 
+def _drop_claims(tx, fence: ConsolidationWorkFence, count: int, now: str) -> str:
+    """Name each claim a worker's result proposed with a value no cited source carries, which is left out: it could
+    never be promoted.  A page's result carries the name to the message's outcome; a whole message is partial now."""
+    conn = tx._check(write=True)
+    conn.executemany(
+        """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
+           VALUES (?,?,'claim','DERIVATION_INVALID','evidence_value',?)""",
+        [(fence.work_id, fence.lease_token, now)] * count,
+    )
+    if fence.chunk is None:
+        mark_partial(conn, fence.work_id, "evidence_value", now)
+    return "evidence_value"
+
+
 def accept_consolidation(
     storage, clock, context, value, *, scope_id, remaining_seconds=1.0, work_fence: ConsolidationWorkFence | None = None
 ):
@@ -401,8 +415,11 @@ def accept_consolidation(
             dropped = _fence_consolidation(tx, value, work_fence, now=now)
             mark = claim_versions_mark(tx)
         items, claim_refs = [], set()
+        ungrounded: list[int] | None = [] if work_fence is not None else None
         try:
-            result = validate_claims(tx, value, scope_id)
+            result = validate_claims(tx, value, scope_id, ungrounded_values=ungrounded)
+            if ungrounded and work_fence is not None:
+                dropped.append(_drop_claims(tx, work_fence, len(ungrounded), now))
             for proposal in result["claim_proposals"]:
                 applied = apply_claim_frames(tx, proposal, scope_id, now)
                 claim_refs.update(item.ref for item in applied)

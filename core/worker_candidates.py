@@ -94,7 +94,9 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     if len(value["claim_proposals"]) > 1:
         raise ContractError("DERIVATION_INVALID", "candidate_proposal_count")
 
-    validated = validate_claims(tx, value, item.scope_id)
+    # A verdict whose value no source it cites carries is no verdict on this candidate: the evaluation waits for
+    # evidence as when the verdict's value is not in a root's words (``rooted_verdict``), instead of failing.
+    validated = validate_claims(tx, value, item.scope_id, ungrounded_values=[])
     if not validated["claim_proposals"]:
         return None
     proposal = validated["claim_proposals"][0]

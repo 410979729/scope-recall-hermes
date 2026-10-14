@@ -12,6 +12,7 @@ to wait a moment and run it again.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from scope_recall.maintenance import package_upgrade
@@ -141,7 +142,9 @@ def test_every_reason_the_step_raises_is_a_code_it_will_print():
     codes = raised | {package_upgrade._LOCKED}
     assert len(codes) >= 12, codes
     for code in codes:
-        assert package_upgrade._REASON_CODE.fullmatch(code), code
+        # Printed only when listed: a code raised but not listed would reach the operator as a bare failure.
+        assert code in package_upgrade._PUBLIC_REASONS, code
+        assert re.fullmatch(r"[a-z][a-z0-9_]{2,79}", code), code
 
 
 @pytest.mark.parametrize(

@@ -128,6 +128,33 @@ version: pause the store's worker and stop every attached host, upgrade the work
 environment first, then each entry's, then resume. `plan-install`/`apply-install`
 and `doctor` on an attached home work as on any other.
 
+## 1.2 A Hermes that builds its own plugin environment
+
+A Hermes home with `installs\<id>\facts.json` runs plugins in an environment its
+package manager builds (`packages.venv.environment` in that file), not in the venv
+the `hermes` command runs with, and builds it again from each plugin's declaration
+in `<home>\plugins\`. Upgrading the venv with `package-upgrade` does not reach the
+gateway, and pip or uv into the package manager's environment is undone by its next
+build. A declaration written there by hand without the vector extra once left every
+recall without vectors for two days, while every check read the venv.
+
+1. Once the release is on PyPI, run plan-install/apply-install with
+   `--target-plugin-dir <home>\plugins\scope-recall`. A receipt that names another
+   plugin directory is moved (`move` in the plan); a wrapper someone put there by
+   hand is backed up and replaced (`replace`). The wrapper's `pyproject.toml`
+   declares `hermes-scope-recall[lancedb]==<version>`.
+2. Rebuild the environment with Hermes's own sync, `HERMES_HOME` set to the home:
+   `<hermes python> -m hermes_cli.venv_sync --project-root <home>\hermes-agent --json`.
+   A running gateway keeps the environment it started with. `"state": "synced"` or
+   `"current"` is success. A failed sync disables the plugin: Hermes adds
+   `scope-recall` to `plugins.disabled` in `config.yaml`. Fix the cause, remove
+   exactly that entry and sync again before the gateway restarts.
+3. Restart the gateway through its controller and run `doctor`: `hermes_runtime`
+   must name the new version with `vector_dependencies: true`, and no
+   `hermes_runtime_*` gap may remain. A Hermes that runs elevated may keep that
+   environment's interpreter readable only to an elevated process; then run step 2
+   from an elevated shell.
+
 ## 2. Prepare legacy identity and permissions
 
 Use the source catalog and the old runtime's actual audience/identity settings.

@@ -856,11 +856,40 @@ def _validate_claim_evidence(
             raise ContractError("SOURCE_MISSING")
 
 
+def _grounded_claims(
+    claims: list,
+    declared: set[str],
+    available: Mapping[str, SourceSnapshot],
+    ungrounded_values: list[int] | None,
+) -> list:
+    """Each claim checked against the sources it cites; with ``ungrounded_values``, a claim whose value none of them
+    carries is left out and its index recorded there instead of refusing the whole proposal."""
+    kept = []
+    for index, claim in enumerate(claims):
+        try:
+            _validate_claim_evidence(claim, declared, available)
+        except ContractError as exc:
+            # Refused whole, one such claim cost a worker every other claim, summary and reference the result
+            # held (2.0% of one store's results in a week, 119 claims with them); stored, it could never be
+            # promoted (``core/evidence_question.unanswerable_reason``).
+            if ungrounded_values is None or exc.field != "evidence_value":
+                raise
+            ungrounded_values.append(index)
+            continue
+        kept.append(claim)
+    return kept
+
+
 def validate_proposal_references(
     value: str | bytes | dict,
     sources: tuple[SourceSnapshot, ...],
     context: TrustedContext,
+    *,
+    ungrounded_values: list[int] | None = None,
 ) -> ConsolidationResult:
+    """``ungrounded_values``, when given, receives the index of each claim whose value no cited source carries,
+    and the claim is left out of the result instead of refusing it: a worker's result keeps everything else it
+    proposed.  Without it such a claim refuses the whole proposal, as a host's proposal must be."""
     if not isinstance(context, TrustedContext) or not context.allowed_scope_ids:
         raise ContractError("ACCESS_DENIED")
     result = validate_payload("consolidation_result", value)
@@ -874,8 +903,7 @@ def validate_proposal_references(
     declared = set(result["source_refs"])
     if not declared <= available.keys():
         raise ContractError("SOURCE_MISSING")
-    for claim in result["claim_proposals"]:
-        _validate_claim_evidence(claim, declared, available)
+    result["claim_proposals"] = _grounded_claims(result["claim_proposals"], declared, available, ungrounded_values)
     for resume in result["resume_proposals"]:
         refs = list(resume["evidence_refs"]) + resume["goal"]["evidence_refs"]
         for field in ("decisions", "verified_progress", "open_items", "blockers"):

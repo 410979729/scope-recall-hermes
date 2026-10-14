@@ -201,10 +201,25 @@ def _undecorate_claim(claim: dict, source_text: dict) -> None:
     for span in spans:
         if isinstance(span, dict) and span.get("location") is None and "location" in span:
             del span["location"]
+        if isinstance(span, dict):
+            _bare_source_ref(span, source_text)
         if not isinstance(span, dict) or not isinstance(span.get("quote"), str):
             continue
         content = source_text.get((span.get("source_ref"), span.get("source_revision")), "")
         _requote(claim, span, content)
+
+
+def _bare_source_ref(span: dict, source_text: dict) -> None:
+    """A span's ``source_ref`` written in the combined ``ref@revision`` form, with that revision beside it in
+    ``source_revision`` and that version among the sources the model was given, names nothing but that version: the
+    suffix is taken off.  Left on, the pair read ``ref@1@1`` and the result was refused as citing an undeclared source
+    (#236).  Any other ``@`` is left for the schema to refuse by name."""
+    ref, revision = span.get("source_ref"), span.get("source_revision")
+    if type(ref) is not str or type(revision) is not int:
+        return
+    bare, separator, suffix = ref.rpartition("@")
+    if separator and suffix == str(revision) and (bare, revision) in source_text:
+        span["source_ref"] = bare
 
 
 def decode_consolidation_result(raw: str, sources=()) -> dict:

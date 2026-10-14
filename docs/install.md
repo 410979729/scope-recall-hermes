@@ -26,15 +26,19 @@ older database is a separate, explicit operation — see
   3.15 and newer are not supported yet.
 - Install into **the same isolated Python environment the host uses**. Host
   discovery goes through that environment's package metadata.
-- **A Hermes that builds its own environment** (Hermes Desktop builds the environment it runs
-  plugins in, and builds it again on updates, which drops a core installed there by hand): the
-  plugin `apply-install` writes declares the core it runs on,
-  `pip_dependencies: hermes-scope-recall[lancedb]==<version>`, and Hermes installs what a memory
-  provider declares when the provider is set up (in its dashboard, or `hermes memory setup`).
-  Hermes reads that declaration from `<home>\plugins\scope-recall\` or from the installed
-  core's own directory, and once the core is gone only the first is left: give such a Hermes
-  that directory as `--target-plugin-dir` (section 4). A plugin whose core is missing says so
-  when Hermes loads it; setting the provider up again installs the declared release.
+- **A Hermes that builds its own environment** (a home with `installs\<id>\facts.json`: Hermes
+  Desktop, and a gateway on a Hermes with its package manager). Hermes's package manager builds
+  the environment it runs plugins in from the declaration each plugin keeps in
+  `<home>\plugins\<name>\`, and builds it again on updates, which drops a core installed there
+  by hand. Give such a Hermes `<home>\plugins\scope-recall` as `--target-plugin-dir`
+  (section 4): `apply-install` writes the wrapper there, with a `pyproject.toml` that declares the
+  core with its vector dependencies, `hermes-scope-recall[lancedb]==<version>`. The package
+  manager reads a `pyproject.toml` before `plugin.yaml`'s `pip_dependencies`, and one written
+  there by hand without `[lancedb]` builds an environment in which every recall runs without
+  vectors. Hermes checks that environment when it starts but does not build it again: after
+  `apply-install`, rebuild it with Hermes's own sync and restart (section 4), then run `doctor`,
+  which reads the environment Hermes really runs (`hermes_runtime`). A plugin whose core is
+  missing says so when Hermes loads it.
   A final release is declared, which Hermes resolves from PyPI: a wheel installed before its
   release reaches PyPI declares a requirement Hermes cannot resolve yet, so run `apply-install`
   on such a home once it has. A candidate between releases declares nothing, because a
@@ -150,7 +154,27 @@ Hermes itself looks a memory provider up in. Use it for a Hermes that builds its
 own environment (section 1): Hermes then finds the plugin, and the core it
 declares, even after a rebuild dropped the core. Anywhere else the wrapper sits
 outside the home, and discovery comes from the installed package's entry point.
-The directory name itself must match `^[a-z][a-z0-9-]*$`.
+The directory name itself must match `^[a-z][a-z0-9-]*$`. An install whose
+receipt names another plugin directory moves its wrapper there (`move` in the
+plan, the old directory left as it is), and a Scope Recall wrapper someone put
+there by hand is copied to the backups and replaced (`replace`); anything else in
+that directory is still a conflict.
+
+After `apply-install` on such a Hermes, let Hermes build its environment again
+from the new declaration, with its own sync: never pip or uv into that
+environment. Run it with the interpreter the `hermes` command runs with
+(`$HermesPython`), with `HERMES_HOME` set to the home:
+
+```powershell
+$env:HERMES_HOME = $Instance
+& $HermesPython -m hermes_cli.venv_sync --project-root "$Instance\hermes-agent" --json
+Remove-Item Env:HERMES_HOME
+```
+
+`"state": "synced"` (or `"current"`) is success. Then restart the gateway and run
+`doctor`. A sync that fails disables the plugin: Hermes adds `scope-recall` to
+`plugins.disabled` in `config.yaml`, and its next start runs without memory. Fix
+the cause, take that entry out, and sync again.
 
 `--agent-id` must equal the `agent_identity` the host sends on `initialize`: the
 adapter compares them and raises `agent_identity conflict` when they differ
@@ -538,6 +562,8 @@ Things that look wrong in a healthy report and are not:
 - `terminal_failed_work: null` on a clean queue.
 - `pending_error_counts` is the error queued work kept from its last attempt. That
   work is waiting for another attempt, so it is in none of the failure counts.
+- `hermes_runtime: null` means this Hermes runs plugins in its own venv, which
+  the `python_package_*` checks read, and has no environment of its own to check.
 - `embedding_respace: null` means no re-embed run was ever started (see
   section 7). `embedding_health` always counts the embedding queue; its
   `last_day` and `held_until` appear only with an external embedding route,
@@ -558,6 +584,8 @@ Things that look wrong in a healthy report and are not:
 | `python_package_version_mismatch` / `python_package_metadata_mismatch` | The loaded version differs from this tree's, or from the installed distribution metadata. | Reinstall the wheel; do not patch files in place. "It imports" is not "it is installed". |
 | `hot_patched` | Installed files no longer match the wheel's recorded digests. | Reinstall. Editing installed files is the usual cause. |
 | `dependency_drift` | A declared requirement is missing or outside its pin. Extras you did not install are *not* drift. | Reinstall with the pins, or install the extra properly. |
+| `hermes_runtime_package_missing` / `hermes_runtime_package_mismatch` | A Hermes that builds its own environment runs plugins from it (`hermes_runtime.environment`), and the core there is missing or another version than this one. Installing into the venv `--python` names does not reach it. | Install with `--target-plugin-dir <home>\plugins\scope-recall`, let Hermes sync, restart (section 4). |
+| `hermes_runtime_vector_dependencies_missing` | That environment has no `lancedb` or `pyarrow` while the runtime config has a LanceDB vector store: every recall runs without vectors. | The same: the wrapper's `pyproject.toml` declares them. Look for a `pyproject.toml` there written by hand. |
 | `version_mismatch` | Receipt, distribution, imported and running versions disagree. | Stop the old processes, then reinstall. |
 | `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |
 | `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails; on a store above 100 MB, a caller with a minute of budget does (section 9). A step is one way: take a `backup` first if you may want to go back. |
@@ -577,7 +605,7 @@ Things that look wrong in a healthy report and are not:
 | `autostart_registration_missing` | The control file says enabled, but the scheduled task is gone. | Re-run `autostart enable`. |
 | `autostart_configuration_invalid` | `runtime-autostart.json` is unusable, or points at a config that will not load or does not match the binding. | Re-run `autostart enable` with the correct `--config`. |
 | `ledger_missing:<file>` | An external route is approved but its budget ledger file does not exist. | Create the ledger — see [configuration.md](configuration.md). |
-| `model_not_approved:<role>:<model>` | The route's model is not in `budget.approved_models`. | Add it, with pricing. |
+| `model_not_approved:<role>:<model>` | The route's model is not in `budget.approved_models`. Its work waits, spending no attempt (`unsupported_model`). | Add it, with pricing. |
 | `model_refused:<model>:<code>` | Over the last hour, most calls to that model were refused by the provider. | A credential, quota or spend-cap problem at the provider. |
 | `auxiliary_budget_pressure` | A lifetime call or token cap is at 90 % or more. | Raise the cap deliberately, or accept the stop. |
 

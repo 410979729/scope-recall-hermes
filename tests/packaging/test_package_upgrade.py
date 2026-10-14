@@ -187,8 +187,21 @@ def _arguments(python, wheel, backup, uv):
     ]
 
 
+def _helper_copy(uv, tmp_path):
+    """Where the test's alias may point.  A symlink is audited by its target, and one to the hosted uv's own
+    folder is a write outside the test (TEST_BOUNDARY, Linux CI): there it points at a copy inside the test's
+    folder.  A Windows junction is made by ``mklink`` and points at the external uv's folder itself."""
+    if os.name == "nt":
+        return uv
+    real = tmp_path / "helper-real"
+    real.mkdir()
+    shutil.copy2(uv, real / uv.name)
+    return real / uv.name
+
+
 def test_external_helper_under_a_directory_alias_replaces_the_package(target, tmp_path, capsys):
     python, wheel, uv = target
+    uv = _helper_copy(uv, tmp_path)
     alias = _directory_alias(tmp_path / "helper-alias", uv.parent)
     linked_helper = alias / uv.name
     assert linked_helper.samefile(uv)
@@ -215,6 +228,7 @@ def test_helper_alias_into_the_target_is_still_refused(target, tmp_path, capsys)
 
 def test_helper_itself_must_not_be_a_redirect(target, tmp_path):
     python, wheel, uv = target
+    uv = _helper_copy(uv, tmp_path)
     if os.name == "nt":
         # A directory junction is also a redirected helper leaf, never a file.
         leaf = _directory_alias(tmp_path / "helper-leaf", uv.parent)

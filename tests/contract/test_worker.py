@@ -1578,6 +1578,103 @@ def test_model_work_is_claimed_only_while_the_pass_covers_one_bounded_request(wo
     assert embed.calls == 1 and kept_work()["embed"][0] == "done"
 
 
+def test_a_longer_model_ceiling_reserves_only_for_model_work(worker_app):
+    """#240: a consolidation model that reasons first gets its own ceiling.  A pass short of it still embeds, under
+    the ordinary ceiling, and claims consolidation only once it holds the longer request."""
+    from scope_recall.core.worker import FINALIZE_MARGIN_SECONDS, WorkerConfig, drain_worker
+
+    core, ctx, clock = worker_app
+    kept = capture(core, ctx, "TEST 长请求上限。", key="TEST-model-ceiling/kept")
+
+    class Embed:
+        def prepare_source(self, source, *, remaining_seconds=1.0):
+            return source.ref
+
+        def publish_source(self, prepared, *, source, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
+            assert lease_guard()
+
+    model = FakeConsolidation(lambda sources, **_: consolidation_payload(*sources))
+    config = WorkerConfig("TEST-model-ceiling", request_seconds=45.0, model_request_seconds=150.0, lease_seconds=180.0)
+
+    def drain(remaining_seconds):
+        receipt = drain_worker(
+            core.storage,
+            clock,
+            ctx,
+            config=config,
+            consolidation=model,
+            embed=Embed(),
+            remaining_seconds=remaining_seconds,
+        )
+        return [(item.work_type, item.disposition) for item in receipt.items]
+
+    assert drain(45.0 + FINALIZE_MARGIN_SECONDS) == [("embed", "completed")]
+    assert model.calls == 0
+    assert {row[0]: row[3] for row in work_rows(core) if row[1] == kept.ref}["consolidate"] == "pending"
+    assert drain(150.0 + FINALIZE_MARGIN_SECONDS) == [("consolidate", "completed")]
+    assert model.calls == 1
+
+
+def test_the_runtime_gives_consolidation_its_longer_ceiling(worker_app):
+    """#240: requests reach the model with up to ``model_request_seconds``, not the 45-second contract ceiling."""
+    from scope_recall.runtime.instance import RuntimeInstance
+    from scope_recall.runtime.instance_config import RuntimeInstanceConfig
+
+    core, ctx, _clock = worker_app
+    capture(core, ctx, "TEST 运行时长请求。")
+    _mark_embed_done(core)
+    given = []
+
+    class Recording(FakeConsolidation):
+        def propose(self, sources, *, remaining_seconds=1.0, **kwargs):
+            given.append(remaining_seconds)
+            return super().propose(sources, remaining_seconds=remaining_seconds, **kwargs)
+
+    model = Recording(lambda sources, **_: consolidation_payload(*sources))
+    config = RuntimeInstanceConfig(
+        binding=ctx.binding,
+        session_id=ctx.session_id,
+        allowed_scope_ids=ctx.allowed_scope_ids,
+        project_id=ctx.project_id,
+        branch_id=ctx.branch_id,
+        model_request_seconds=150.0,
+        drain_seconds=300.0,
+        lease_seconds=180.0,
+    )
+    runtime = RuntimeInstance(config=config, core=core, auxiliary=None)
+    receipt = runtime.drain(consolidation=model, remaining_seconds=290.0)
+    assert receipt.completed == 1 and model.calls == 1
+    assert 45.0 < given[0] <= 150.0
+
+
+@pytest.mark.parametrize(
+    ("changes", "error"),
+    [
+        ({"model_request_seconds": 150.0, "lease_seconds": 180.0}, "drain_seconds_must_cover_model_request"),
+        ({"drain_seconds": 300.0}, "drain_seconds_above_120_needs_a_longer_model_request"),
+        ({"model_request_seconds": 100.0, "drain_seconds": 300.0, "lease_seconds": 120.0}, "drain_seconds_above_120"),
+        ({"model_request_seconds": 150.0, "drain_seconds": 300.0}, "lease_seconds"),
+        ({"model_request_seconds": 601.0, "drain_seconds": 900.0, "lease_seconds": 900.0}, "model_request_seconds"),
+    ],
+)
+def test_a_longer_model_ceiling_must_fit_the_pass_and_the_lease(worker_app, changes, error):
+    from scope_recall.runtime.instance_config import RuntimeInstanceConfig
+
+    _core, ctx, _clock = worker_app
+    with pytest.raises(ValueError, match=error):
+        RuntimeInstanceConfig(
+            binding=ctx.binding, session_id=ctx.session_id, allowed_scope_ids=ctx.allowed_scope_ids, **changes
+        )
+
+
+def test_the_config_margin_covers_what_a_pass_keeps_back():
+    from scope_recall.core import worker
+    from scope_recall.runtime import worker_entry
+    from scope_recall.runtime.instance_config import MODEL_REQUEST_MARGIN_SECONDS
+
+    assert MODEL_REQUEST_MARGIN_SECONDS >= worker.FINALIZE_MARGIN_SECONDS + worker_entry.FINALIZE_MARGIN_SECONDS
+
+
 def test_runtime_drain_reserves_its_own_request_bound(worker_app):
     from scope_recall.core.worker import FINALIZE_MARGIN_SECONDS
     from scope_recall.runtime.instance import RuntimeInstance

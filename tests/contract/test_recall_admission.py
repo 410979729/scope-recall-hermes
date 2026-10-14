@@ -216,7 +216,8 @@ def _accept_relation_claim(core: MemoryCore, ctx: TrustedContext, root: Any, pee
         "kind": "fact",
         "subject": f"TEST-relation-{index}",
         "predicate": "connected_to",
-        "value_text": peer.ref,
+        # In the peer's own words: a value no cited source carries is refused (#236).
+        "value_text": peer.event["content"].rstrip("."),
         "conditions": [],
         "statement_kind": "assertion",
         "valid_from": root.event["occurred_at"],

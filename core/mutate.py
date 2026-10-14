@@ -56,7 +56,9 @@ class MutationReceipt:
     durability: str = "persisted"
 
 
-def validate_claims(tx, value, scope_id: str):
+def validate_claims(tx, value, scope_id: str, *, ungrounded_values: list[int] | None = None):
+    """``ungrounded_values``: a worker's list to receive the claims left out because no cited source carries
+    their value (``contracts.validate_proposal_references``); omitted, such a claim refuses the proposal."""
     tx._scope(scope_id)
     result = validate_payload("consolidation_result", value)
     if contains_secret_like_text(json.dumps(result, ensure_ascii=False)):
@@ -89,7 +91,7 @@ def validate_claims(tx, value, scope_id: str):
     # anything outside this map are left untouched and the strict checks that
     # follow reject them exactly as before.
     resolve_evidence_quotes(result, {(s.ref, s.revision): s.content for s in snapshots})
-    return validate_proposal_references(result, tuple(snapshots), tx.context)
+    return validate_proposal_references(result, tuple(snapshots), tx.context, ungrounded_values=ungrounded_values)
 
 
 def _alias_verified(tx, proposal: ClaimProposal, roots, scope_id: str, now: str) -> bool:

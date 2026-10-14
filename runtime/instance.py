@@ -558,6 +558,7 @@ class RuntimeInstance:
                 admission_policy=self.core.config.admission_policy,
                 # The bound the model and embedding ports below are clamped to.
                 request_seconds=limit,
+                model_request_seconds=self.config.model_request_seconds,
                 held_work_types=frozenset(self.provider_holds),
             ),
             remaining_seconds=max(0.001, deadline - time.monotonic()),
@@ -652,6 +653,8 @@ class RuntimeInstance:
                 port = port.for_pass()
             model = build_consolidation_model(port)
         limit = self.config.request_seconds
+        if self.config.model_request_seconds is not None:
+            limit = self.config.model_request_seconds
         candidate = _BoundedCandidate(model, limit) if callable(getattr(model, "evaluate_candidate", None)) else None
         return (_BoundedConsolidation(model, limit) if model is not None else None), candidate
 

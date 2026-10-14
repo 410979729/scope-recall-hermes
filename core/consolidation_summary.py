@@ -159,6 +159,17 @@ def _merge_references(references, gaps):
     return merged_all
 
 
+def mark_partial(conn, work_id, detail, now):
+    """A consolidation's outcome is partial, with ``detail`` added to what it already names: each part a result
+    lost (a page's summary, a claim, the whole message's summary) stays named, whichever was recorded first."""
+    row = conn.execute("SELECT detail FROM consolidation_outcomes WHERE work_id=?", (work_id,)).fetchone()
+    details = set(row[0].split(",")) - {"all_fragments_covered"} if row is not None else set()
+    conn.execute(
+        "INSERT OR REPLACE INTO consolidation_outcomes VALUES (?,?,?,?)",
+        (work_id, "partial", ",".join(sorted(details | {detail})), now),
+    )
+
+
 def apply_summary(tx, fence, kind, proposal, scope_id, now):
     apply = tx.episodes.apply_resume if kind == "resume" else tx.references.apply
     if fence is None:
@@ -175,17 +186,7 @@ def apply_summary(tx, fence, kind, proposal, scope_id, now):
         conn.execute("ROLLBACK TO consolidation_summary")
         if exc.code not in {"DERIVATION_INVALID", "INPUT_INVALID"}:
             raise
-        detail = kind + "_qualification_failed"
-        if fence.chunk is None:
-            conn.execute(
-                "INSERT OR REPLACE INTO consolidation_outcomes VALUES (?,?,?,?)",
-                (fence.work_id, "partial", detail, now),
-            )
-        else:
-            conn.execute(
-                "UPDATE consolidation_outcomes SET disposition='partial',detail=? WHERE work_id=?",
-                (detail, fence.work_id),
-            )
+        mark_partial(conn, fence.work_id, kind + "_qualification_failed", now)
         conn.execute(
             "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
             (fence.work_id, fence.lease_token, "summary", exc.code, exc.field, now),

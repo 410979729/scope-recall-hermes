@@ -68,6 +68,69 @@ def _hermes_config_path(instance_root: Path) -> Path:
     return pointer if pointer.is_file() else _hermes_data_dir(instance_root) / "installation.json"
 
 
+def _hermes_runtime_environment(instance_root: Path) -> Path | None:
+    """The environment a Hermes that builds its own runs its plugins in, as its package manager records it
+    (``installs/<id>/facts.json``); None for a Hermes that runs them in its own venv.  Read, never run: the
+    environment's interpreter may be one only an elevated process can start."""
+    for facts in sorted((instance_root / "installs").glob("*/facts.json")):
+        try:
+            if facts.stat().st_size > _CONTROL_FILE_LIMIT:
+                continue
+            environment = json.loads(facts.read_text(encoding="utf-8"))["packages"]["venv"]["environment"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(environment, str) and Path(environment).is_absolute():
+            return Path(environment)
+    return None
+
+
+def _installed_version(environment: Path, distribution: str) -> str | None:
+    """A distribution's version from its metadata folder in ``environment``, or None when it is not installed."""
+    stem = distribution.replace("-", "_").lower() + "-"
+    folders = [environment / "Lib" / "site-packages", *environment.glob("lib/python3*/site-packages")]
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        for info in folder.glob("*.dist-info"):
+            if info.name.lower().startswith(stem):
+                return info.name[len(stem) : -len(".dist-info")]
+    return None
+
+
+def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeInstanceConfig | None) -> None:
+    """What a Hermes that builds its own environment really runs: the core there, and the vector dependencies
+    there.  After the official Hermes update of 2026-10-11 every recall of one installation ran without vectors for
+    two days, on a core two releases old, while the venv every check read held the right ones."""
+    if report.host != "hermes":
+        return
+    environment = _hermes_runtime_environment(instance)
+    if environment is None:
+        return
+    try:
+        version = _installed_version(environment, "hermes-scope-recall")
+        vectors = all(_installed_version(environment, name) is not None for name in ("lancedb", "pyarrow"))
+    except OSError:
+        # Not readable to this account: unknown, which is no finding either way.
+        report.hermes_runtime = {"environment": str(environment), "readable": False}
+        record_check(report, "hermes_runtime", "unreadable")
+        return
+    vector = config.vector if config is not None else None
+    needs_vectors = vector is not None and vector.backend == "lancedb"
+    report.hermes_runtime = {
+        "environment": str(environment),
+        "package_version": version,
+        "vector_dependencies": vectors,
+    }
+    if version is None:
+        report.capability_gaps.append("hermes_runtime_package_missing")
+    elif version != report.expected_package_version:
+        report.capability_gaps.append("hermes_runtime_package_mismatch")
+    if needs_vectors and not vectors:
+        report.capability_gaps.append("hermes_runtime_vector_dependencies_missing")
+    healthy = version == report.expected_package_version and (vectors or not needs_vectors)
+    record_check(report, "hermes_runtime", "ok" if healthy else "mismatch", version or "")
+
+
 def _require_absolute(path: Path, name: str) -> Path:
     expanded = path.expanduser()
     if not expanded.is_absolute():
@@ -647,6 +710,7 @@ def run_doctor(
 
     readable = check_storage(report, binding, data_directory)
     config = _runtime_config(data_directory)
+    _check_hermes_runtime(report, instance, config)
     check_footprint(report, data_directory, config)
     if readable:
         _check_worker_status(report, binding, data_directory)

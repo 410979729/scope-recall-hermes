@@ -146,41 +146,62 @@ def test_unsupported_model_and_empty_body_are_not_size_errors(tmp_path, monkeypa
     assert read_auxiliary_budget_status(ledger.path)["requests"] == 0
 
 
-@pytest.mark.parametrize(
-    ("policy_changes", "error_code"),
-    [
-        ({"max_request_bytes": 32_000}, "request_too_large"),
-        ({"approved_models": frozenset()}, "unsupported_model"),
-    ],
-    ids=["oversize", "unsupported-model"],
-)
-def test_candidate_deterministic_refusal_is_closed_not_deferred_forever(
-    app, monkeypatch, tmp_path, policy_changes, error_code
-):
-    core, ctx = app
-    _candidate(core, ctx)
-    _finish_source_work(core)
-    adapter, ledger, transport = _adapter(tmp_path, monkeypatch, **policy_changes)
-
+def _drain_refused(core, ctx, adapter):
     class RefusedEvaluator:
         def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
             return adapter.propose(_messages("x" * 1500), remaining_seconds=remaining_seconds)
 
-    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=RefusedEvaluator())
+    return core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=RefusedEvaluator())
+
+
+def test_an_oversize_candidate_fails_visibly_and_an_operator_can_reopen_it(app, monkeypatch, tmp_path):
+    """#237: an explicit cap below the request fails the evaluation instead of deferring it forever, and once the cap
+    is raised ``retry-failures`` re-opens it: a failure no command could clear left an installation degraded."""
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    adapter, ledger, transport = _adapter(tmp_path, monkeypatch, max_request_bytes=32_000)
+    receipt = _drain_refused(core, ctx, adapter)
     lifecycle, evaluations, work = _candidate_rows(core)
     assert receipt.failed == 1 and receipt.deferred == 0
     assert work[0]["state"] == "failed" and work[0]["attempt"] == 1
-    assert work[0]["last_error_code"] == error_code
+    assert work[0]["last_error_code"] == "request_too_large"
     assert evaluations[0]["state"] == "failed"
     assert lifecycle[0]["reason"] == "evaluation_failed"
     assert read_auxiliary_budget_status(ledger.path)["requests"] == 0 and transport.bodies == []
+    status = core.status(ctx)
+    assert status.failed_work == 1 and status.terminal_failed_work == 0
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
+    assert report["retried"] == 1 and report["by_kind"] == {"request_too_large": 1}
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert work[0]["state"] == "pending" and evaluations[0]["state"] == "queued"
 
 
-def test_unsupported_model_is_terminal_before_transport(tmp_path, monkeypatch):
+def test_an_unapproved_model_pauses_the_work_without_spending_an_attempt(app, monkeypatch, tmp_path):
+    """A configuration slip parks the queue, named, until the model is approved; it does not fail every item."""
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    adapter, ledger, transport = _adapter(tmp_path, monkeypatch, approved_models=frozenset())
+    receipt = _drain_refused(core, ctx, adapter)
+    _lifecycle, _evaluations, work = _candidate_rows(core)
+    assert receipt.failed == 0 and receipt.deferred == 1
+    assert work[0]["state"] == "pending" and work[0]["attempt"] == 0
+    assert work[0]["last_error_code"] == "unsupported_model"
+    assert read_auxiliary_budget_status(ledger.path)["requests"] == 0 and transport.bodies == []
+
+
+def test_unsupported_model_is_a_pause_before_transport(tmp_path, monkeypatch):
     adapter, ledger, transport = _adapter(tmp_path, monkeypatch, approved_models=frozenset())
     with pytest.raises(AuxiliaryModelError) as failure:
         adapter.propose([{"role": "user", "content": "TEST-small"}], remaining_seconds=10)
     assert failure.value.error_type == "unsupported_model"
-    assert model_exception_outcome(failure.value) == ("failed", "unsupported_model")
-    assert failure.value.error_type not in BUDGET_PAUSE_ERRORS
+    assert failure.value.error_type in BUDGET_PAUSE_ERRORS
     assert read_auxiliary_budget_status(ledger.path)["requests"] == 0 and transport.bodies == []
+
+
+@pytest.mark.parametrize("code", ["request_too_large", "unsupported_model"])
+def test_each_refusal_code_is_one_an_operator_can_clear(code):
+    from scope_recall.core.failure_retry import retry_class
+
+    assert retry_class(code) == "actionable"

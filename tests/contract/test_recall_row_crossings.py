@@ -186,6 +186,7 @@ def test_a_recall_answers_alike_whether_or_not_it_keeps_what_it_loads(app, monke
     core, ctx = app
     item, source = initial(core, ctx)
     sources = _sources(core, ctx, 12)
+    silver = capture(core, ctx, "TEST-project 外壳 银色。")  # the value's own source (#236)
     accept(
         core,
         ctx,
@@ -195,7 +196,8 @@ def test_a_recall_answers_alike_whether_or_not_it_keeps_what_it_loads(app, monke
             subject="TEST-project",
             predicate="外壳",
             evidence_spans=[
-                dict(source_ref=s.ref, source_revision=s.revision, quote=s.event["content"]) for s in sources[:8]
+                dict(source_ref=s.ref, source_revision=s.revision, quote=s.event["content"])
+                for s in (*sources[:7], silver)
             ],
         ),
     )

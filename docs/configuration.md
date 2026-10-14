@@ -119,9 +119,10 @@ defaults a standalone worker pass uses.
 | Key | Type | Default | Bounds | Meaning |
 |-----|------|---------|--------|---------|
 | `max_items` | int | `32` | 1–1000 | Most work items one pass may reserve and claim. Also caps an operator retry, which takes at most `min(8, max_items)`. A pass claims its embedding group in one page of up to this many items: sources and claims each go a hundred to a request and into one commit, and the group is recorded together. What it cannot finish inside `drain_seconds` or its lease, or what the provider refuses for capacity, is handed back unspent and claimed again by a later pass. A value far above the default is for a one-off drain of a large embedding backlog and buys nothing once that is gone: put it back afterwards. |
-| `drain_seconds` | number | `120.0` | 0.001–120.0 | Wall budget for the whole pass. The drain, the lock wait and the finalize share this one deadline, and it is the watchdog's kill budget. |
+| `drain_seconds` | number | `120.0` | 0.001–120.0; up to 900.0 only with a `model_request_seconds` above 110 | Wall budget for the whole pass. The drain, the lock wait and the finalize share this one deadline, and it is the watchdog's kill budget. With `model_request_seconds` set it must be at least that plus 10 seconds, or no consolidation could ever be claimed. |
 | `request_seconds` | number | `45.0` | 0.001–45.0 | Per-call ceiling clamped onto every model and native boundary: consolidation, candidate evaluation, embedding, vector purge, and the vector-open slice. |
-| `lease_seconds` | number | `60.0` | `request_seconds`–3600.0 | How long a claimed item stays leased to `owner_id` before a later pass may reclaim it as stale. Must be at least `request_seconds`. |
+| `model_request_seconds` | number or absent | absent | 0.001–600.0 | The worker's own ceiling for a consolidation or candidate-evaluation request, for a model that needs longer than `request_seconds`, such as one that reasons before it answers. It bounds only those background requests: recall, capture, embedding and every other boundary keep `request_seconds`. Raise `drain_seconds` and `lease_seconds` with it, and give the route a `max_output_tokens` its reasoning cannot use up (`auxiliary.consolidation`). |
+| `lease_seconds` | number | `60.0` | `request_seconds`–3600.0 | How long a claimed item stays leased to `owner_id` before a later pass may reclaim it as stale. Must be at least `request_seconds`, and at least `model_request_seconds` when that is set. |
 | `worker_min_interval_seconds` | number | `30.0` | 1–3600 | Minimum gap between two passes. A supervised window sleeps out the remainder; a host coalesces wake-ups against it. On a drain the passes themselves are short, so this gap is most of what an edit can win back. |
 | `supervisor_enabled` | boolean | `true` | — | When true, a scheduled wake runs a finite supervise loop of several passes. When false, a scheduled wake refuses to launch at all — this is the switch that turns background work off without unregistering it. |
 | `supervisor_seconds` | number | `21600.0` (6 h) | 1–86400 | Total lifetime of one supervised window. On expiry the window suspends. |
@@ -148,6 +149,9 @@ source, so the old default of 256 could never drain one day's own output.
 The maxima above are protections, not recommendations. `request_seconds` at
 45 seconds and `drain_seconds` at 120 seconds are the contract ceilings; a
 shorter value is honoured and is often the better setting on a slow link.
+Only a consolidation model that needs longer moves them, and only for its own
+requests: for example `"model_request_seconds": 150`, `"drain_seconds": 300`,
+`"lease_seconds": 180` for a model measured at up to two minutes a request.
 
 ## `vector`
 
@@ -300,7 +304,7 @@ Omitted, the policy is deliberately fail-closed: `cap_micro_usd`,
 | `total_input_cap` | int ≥ 0 or `null` | `0` | Selected-period input-token cap. Same `0` versus `null` distinction. |
 | `total_output_cap` | int ≥ 0 or `null` | `0` | Selected-period output-token cap. Same distinction. |
 | `total_call_cap` | int ≥ 0 or `null` | `0` | Selected-period request-count cap. Same distinction. |
-| `max_request_bytes` | int ≥ 1 | `32000` | Largest request body permitted. |
+| `max_request_bytes` | int ≥ 1 | `128000` | Largest request body the ledger lets out, counted after JSON encoding. A candidate evaluation's messages may hold 64,000 bytes, and the request escapes their quotes, backslashes and line breaks again: measured at the full budget, about 66,000 bytes for prose and 85,000 for code or JSON, and at most twice the messages. A cap below that refuses such evaluations: the item fails as `request_too_large` (before 3.10.3 it waited forever as `budget_unavailable`) and `retry-failures` re-opens it once the cap is raised. |
 | `default_reserve_input` | int ≥ 1 | `32768` | Input tokens reserved before usage is known. |
 | `default_reserve_output` | int ≥ 1 | `4096` | Output tokens reserved before usage is known. |
 | `model_reserve_output` | mapping of model to int ≥ 1 | one shipped entry | Per-model override of the output reservation. |

@@ -103,6 +103,9 @@ class WorkerConfig:
     #: runtime's ``request_seconds``).  None means the ports are unbounded and
     #: each call gets whatever the pass has left, so no reserve can be known.
     request_seconds: float | None = None
+    #: The bound consolidation and candidate-evaluation requests are clamped to instead, when the runtime gives
+    #: them a longer one (``model_request_seconds``).  None: ``request_seconds``.
+    model_request_seconds: float | None = None
     #: Work types whose provider is on hold (runtime/model_budget.py): not
     #: claimed at all this pass, so no item is leased only to be parked.
     held_work_types: frozenset[str] = frozenset()
@@ -132,14 +135,27 @@ class WorkerConfig:
             raise ValueError("candidate_batch_limit")
         if type(self.embed_batch_limit) is not int or not 1 <= self.embed_batch_limit <= EMBED_BATCH_LIMIT:
             raise ValueError("embed_batch_limit")
-        if self.request_seconds is not None and (
-            type(self.request_seconds) not in (int, float)
-            or not math.isfinite(self.request_seconds)
-            or self.request_seconds <= 0
-        ):
-            raise ValueError("request_seconds must be positive")
+        for name in ("request_seconds", "model_request_seconds"):
+            value = getattr(self, name)
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value <= 0):
+                raise ValueError(f"{name} must be positive")
         if type(self.held_work_types) is not frozenset or not self.held_work_types <= _HOLDABLE_WORK_TYPES:
             raise ValueError("held_work_types")
+
+
+def _request_reserves(config: WorkerConfig, ports) -> dict[str, float]:
+    """The pass time each model-bound work type needs left before one is claimed: its request's ceiling and the
+    margin to record the verdict.  Consolidation and candidate evaluation may have a longer ceiling than embedding
+    (``model_request_seconds``); each waits only for its own."""
+    if config.request_seconds is None:
+        return {}
+    reserve = config.request_seconds + FINALIZE_MARGIN_SECONDS
+    model = reserve if config.model_request_seconds is None else config.model_request_seconds + FINALIZE_MARGIN_SECONDS
+    return {work_type: model if work_type in _MODEL_REQUEST_TYPES else reserve for work_type in ports}
+
+
+#: Work whose port is the consolidation model, bounded by ``model_request_seconds`` when one is set.
+_MODEL_REQUEST_TYPES = frozenset({"consolidate", "evaluate_candidate"})
 
 
 @dataclass(frozen=True)
@@ -460,13 +476,12 @@ def drain_worker(
     # is claimed only while the pass still covers that request and the margin
     # to record the verdict; purge and rebuild_projection are local work and
     # may use the tail of the pass.
-    model_bound = frozenset(ports)
-    reserve = 0.0 if config.request_seconds is None else config.request_seconds + FINALIZE_MARGIN_SECONDS
+    reserves = _request_reserves(config, ports)
     paused: list[str] = []
     candidate_ceiling = min(config.candidate_batch_limit, config.max_items)
     while len(receipts) < config.max_items and budget_left(started, clock, budget) > 0:
-        if budget_left(started, clock, budget) < reserve:
-            allowed = allowed - model_bound
+        left = budget_left(started, clock, budget)
+        allowed = allowed - {work_type for work_type, reserve in reserves.items() if left < reserve}
         # Every second claim prefers fresh conversation over the backlog.  The
         # first claim of a pass stays FIFO, so the lane holds at most half of
         # any pass, a one-claim pass included, and the oldest work keeps moving

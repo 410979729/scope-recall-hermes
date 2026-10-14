@@ -20,7 +20,6 @@ _NON_RETRYABLE_MODEL_ERRORS = frozenset(
         "meter_breach",
         "input_invalid",
         "request_too_large",
-        "unsupported_model",
         "budget_unavailable",
         # The request guard refused secret-like text; the payload will not change.
         "sensitive_request",
@@ -31,7 +30,10 @@ _NON_RETRYABLE_MODEL_ERRORS = frozenset(
 #: or the provider declining the account (``ACCOUNT_REFUSALS``).  The item is
 #: parked for an hour without spending an attempt, and its work type stands down
 #: for the pass.  ``provider_hold`` is the adapter declining to ask a provider
-#: that refused the calls just before (runtime/model_budget.py).
+#: that refused the calls just before (runtime/model_budget.py).  A model the
+#: configuration does not approve is the configuration's fault, named by the
+#: doctor (``pre_request_refusals``) and by this code; failed instead, one
+#: missing line in ``approved_models`` would fail the whole queue in a pass.
 BUDGET_PAUSE_ERRORS = (
     frozenset(
         {
@@ -40,6 +42,7 @@ BUDGET_PAUSE_ERRORS = (
             "credential_missing",
             "credential_shape_invalid",
             "provider_hold",
+            "unsupported_model",
         }
     )
     | ACCOUNT_REFUSALS

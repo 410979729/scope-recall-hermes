@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import stat
 import subprocess
@@ -30,7 +29,6 @@ class PackageUpgradeError(RuntimeError):
     """A package step failed; the reason code contains no subprocess output."""
 
 
-_REASON_CODE = re.compile(r"[a-z][a-z0-9_]{2,79}")
 _LOCKED = "installed_files_locked_or_not_replaceable"
 
 # Only these package-owned codes may be echoed. A code-shaped exception body

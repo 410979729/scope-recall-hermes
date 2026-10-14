@@ -696,11 +696,11 @@ def pre_request_refusals(auxiliary) -> list[str]:
 
     ``reserve`` raises before the request leaves the process, so a refused
     reservation writes no row and every ledger-based measurement, including
-    ``provider_refusals``, is blind to it. An unapproved model is a terminal
-    ``unsupported_model`` refusal; an unavailable ledger still parks work
-    without burning an attempt. Checking the configuration names either fault
-    even on an installation that has queued nothing yet, without depending
-    on a reservation row or a worker failure having been recorded.
+    ``provider_refusals``, is blind to it. An unapproved model
+    (``unsupported_model``) and an unavailable ledger park work without
+    burning an attempt, until the configuration is fixed. Checking the
+    configuration names either fault even on an installation that has queued
+    nothing yet, without depending on a reservation row having been recorded.
 
     An approved model with no price is not checked: ``BudgetPolicy`` refuses
     to exist in that state (``approved_model_pricing``).

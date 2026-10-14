@@ -65,9 +65,70 @@ def _instance_files(host: ModuleType, instance_root: Path) -> tuple[Path, Path]:
 
 
 def _foreign_plugin_entries(target: Path, keep: set[str]) -> list[str]:
+    """Files in the plugin directory the install neither writes nor owns.  The bytecode a host's Python leaves
+    beside an imported wrapper (``__pycache__``) is not one."""
     if not target.exists():
         return []
-    return [str(path) for path in sorted(target.rglob("*")) if not path.is_dir() and normalized_path(path) not in keep]
+    return [
+        str(path)
+        for path in sorted(target.rglob("*"))
+        if not path.is_dir() and "__pycache__" not in path.parts and normalized_path(path) not in keep
+    ]
+
+
+def _moved_wrapper(plan: InstallPlan, receipt: dict, home_plugin: Path | None) -> tuple[dict[str, str], Path] | None:
+    """An install whose wrapper moves into the one plugin directory the host reads inside its home (a Hermes that
+    builds its own environment reads the core to install from there): what the receipt still owns, which is
+    everything outside its old wrapper directory, and that directory, which is left as it is.  None for any other
+    mismatch, which stays a conflict."""
+    if home_plugin is None or normalized_path(plan.target_plugin_dir) != normalized_path(home_plugin):
+        return None
+    old = Path(str(receipt.get("target_plugin_dir") or ""))
+    try:
+        owned = validate_receipt_binding(
+            receipt, host=plan.host, instance_root=plan.instance_root, target_plugin_dir=old
+        )
+    except InstallError:
+        return None
+    old_norm = normalized_path(old)
+    return {norm: digest for norm, digest in owned.items() if not within(norm, old_norm)}, old
+
+
+def _receipt_owned(plan: InstallPlan, receipt: dict | None, home_plugin: Path | None) -> dict[str, str]:
+    """The files an earlier install's receipt owns, each with its digest; a receipt that binds another install is a
+    conflict, unless its wrapper only moves into the host's own plugin directory (``_moved_wrapper``)."""
+    if receipt is None:
+        return {}
+    owned: dict[str, str] = {}
+    try:
+        owned = validate_receipt_binding(
+            receipt, host=plan.host, instance_root=plan.instance_root, target_plugin_dir=plan.target_plugin_dir
+        )
+    except InstallError as exc:
+        moved = _moved_wrapper(plan, receipt, home_plugin)
+        if moved is None:
+            plan.conflicts.append(str(exc))
+        else:
+            owned, old = moved
+            plan.changes.append(
+                PlannedChange(
+                    "move", str(old), f"the wrapper moves to {plan.target_plugin_dir}, where the host reads it"
+                )
+            )
+    stored_workspace = receipt.get("agent_workspace")
+    if type(stored_workspace) is str and stored_workspace.strip():
+        if plan.host != "hermes" or stored_workspace.strip() != plan.agent_workspace:
+            plan.conflicts.append("existing receipt agent_workspace mismatch")
+    return owned
+
+
+def _adoptable(adapter: ModuleType, target: Path, home_plugin: Path | None, planned) -> set[str]:
+    """A wrapper put into the host's own plugin directory by hand: those of its files the install writes itself, which
+    it replaces, each copied to the backups first."""
+    adopt = getattr(adapter, "adoptable_wrapper_files", None)
+    if adopt is None or home_plugin is None or normalized_path(target) != normalized_path(home_plugin):
+        return set()
+    return {normalized_path(path) for path in adopt(target)} & {normalized_path(path) for path in planned}
 
 
 def _written_digest(content: str | bytes) -> str:
@@ -145,21 +206,11 @@ def plan_install(
         owner_logins=logins,
     )
     receipt = load_receipt(instance)
-    owned: dict[str, str] = {}
-    if receipt is not None:
-        try:
-            owned = validate_receipt_binding(
-                receipt, host=host_choice, instance_root=instance, target_plugin_dir=target
-            )
-        except InstallError as exc:
-            plan.conflicts.append(str(exc))
-        stored_workspace = receipt.get("agent_workspace")
-        if type(stored_workspace) is str and stored_workspace.strip():
-            if host_choice != "hermes" or stored_workspace.strip() != workspace:
-                plan.conflicts.append("existing receipt agent_workspace mismatch")
+    owned = _receipt_owned(plan, receipt, home_plugin)
 
     planned = adapter.planned_files(plan)
     target_norm = normalized_path(target)
+    adoptable = _adoptable(adapter, target, home_plugin, planned)
     keep = {normalized_path(path) for path in planned} | {norm for norm in owned if within(norm, target_norm)}
     # A host's own home holds the host's files; only a plugin directory is the installer's alone.
     for path in _foreign_plugin_entries(target, keep) if not host_files else ():
@@ -198,7 +249,9 @@ def plan_install(
     for path in sorted(planned, key=str):
         norm = normalized_path(path)
         if path.is_file():
-            if norm not in owned:
+            if norm in adoptable and norm not in owned:
+                plan.changes.append(PlannedChange("replace", str(path), "a wrapper put here by hand; backed up first"))
+            elif norm not in owned:
                 plan.conflicts.append(f"no-receipt collision: {path}")
             elif sha256(path) != owned[norm]:
                 # A Hermes agent keeps what it learns in its skills, and may edit its memory skill between two

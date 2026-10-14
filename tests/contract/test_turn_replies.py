@@ -88,7 +88,12 @@ def test_the_turn_takes_at_most_half_the_relation_bound(app):
         )
         for n in range(TURN_REPLY_LIMIT)
     ]
-    claim = accept(core, ctx, draft(question, "周五晚上十一点", predicate="发布窗口")).items[0]
+    # Cites the answer it was told as well as the question: a value no cited source carries is refused (#236).
+    told = dict(source_ref=replies[0].ref, source_revision=replies[0].revision, quote=replies[0].event["content"])
+    asked = dict(source_ref=question.ref, source_revision=question.revision, quote=question.event["content"])
+    claim = accept(
+        core, ctx, draft(question, "周五晚上十一点", predicate="发布窗口", evidence_spans=[asked, told])
+    ).items[0]
 
     refs = _expanded(core, ctx, question, relation_objects=3)
     assert claim.ref in refs, "the claim behind the question is still reached"

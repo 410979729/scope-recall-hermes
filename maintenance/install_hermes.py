@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
 from packaging.version import Version
 from scope_recall._version import __version__
 from scope_recall.adapters.hermes.audiences import (
@@ -34,6 +35,7 @@ from .install_common import (
     SKILLS,
     InstallError,
     InstallPlan,
+    normalized_path,
     reject_symlink_chain,
     validate_identifier,
 )
@@ -106,6 +108,37 @@ def validate_owner_logins(values: object) -> tuple[str, ...]:
         raise InstallError(str(exc)) from exc
 
 
+def wrapper_pyproject(version: str = __version__) -> str | None:
+    """The ``pyproject.toml`` beside the wrapper in ``home_plugin_dir``: the same core, vector extra included.
+
+    Hermes's package manager builds the environment it runs plugins in from each plugin's declaration, and a
+    ``pyproject.toml`` there wins over ``plugin.yaml``.  One written there by hand pinned the core without
+    ``[lancedb]``, and every recall of one installation ran without vectors for two days (2026-10-11 to 10-13).
+    Written by the install, it says what the manifest says; a release not on PyPI declares nothing
+    (``wrapper_manifest``).
+    """
+    release = Version(version)
+    if release.is_prerelease or release.is_devrelease or release.local is not None:
+        return None
+    return (
+        '[project]\nname = "hermes-scope-recall-plugin"\nversion = "0.0.0"\nrequires-python = ">=3.11"\n'
+        f'dependencies = ["hermes-scope-recall[lancedb]=={version}"]\n\n[tool.uv]\npackage = false\n'
+    )
+
+
+def adoptable_wrapper_files(target: Path) -> set[Path]:
+    """Files of a Scope Recall wrapper someone put into ``home_plugin_dir`` by hand, which an install there replaces,
+    copied to the backups first: its ``plugin.yaml`` names this plugin, and only the wrapper's own file names count.
+    Anything else in the directory stays a conflict."""
+    try:
+        manifest = yaml.safe_load((target / "plugin.yaml").read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return set()
+    if not isinstance(manifest, dict) or manifest.get("name") != "scope-recall":
+        return set()
+    return {target / name for name in ("plugin.yaml", "__init__.py", "pyproject.toml") if (target / name).is_file()}
+
+
 def wrapper_manifest(template: str, version: str = __version__) -> str:
     """The wrapper's ``plugin.yaml``: the template, plus the core it runs on when that is a release on PyPI.
 
@@ -130,6 +163,11 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
             raise InstallError(f"distribution template missing: {source}")
         text = source.read_text(encoding="utf-8")
         files[plan.target_plugin_dir / name] = wrapper_manifest(text) if name == "plugin.yaml" else text
+    project = wrapper_pyproject()
+    if project is not None and normalized_path(plan.target_plugin_dir) == normalized_path(
+        home_plugin_dir(plan.instance_root)
+    ):
+        files[plan.target_plugin_dir / "pyproject.toml"] = project
     for name, source in SKILLS.items():
         files[plan.instance_root / "skills" / name / "SKILL.md"] = source.read_text(encoding="utf-8")
     return files

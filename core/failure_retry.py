@@ -113,6 +113,12 @@ _OPERATOR_ONLY_FAILURES = (
             "http_redirect",
             "request_limit",
             "response_limit",
+            # The spend ledger refusing a body over ``max_request_bytes`` before it is sent
+            # (``runtime/model_budget.py``), and a model the configuration does not approve.  The first fails its item
+            # outright, the second pauses it; either is cleared by fixing the configuration, so either must be
+            # re-openable: classed as neither, status counted it as a fault while no command could clear it.
+            "request_too_large",
+            "unsupported_model",
         }
     )
     | ACCOUNT_REFUSALS

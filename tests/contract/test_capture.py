@@ -325,6 +325,7 @@ def test_exact_evidence_quotes_are_validated_against_persisted_source_version(co
     saved = app.source(ctx, result.event_refs[0].ref, 1)
     payload = proposal(source_refs=[f"{saved.ref}@1"])
     payload["claim_proposals"][0]["evidence_spans"][0].update(source_ref=saved.ref, source_revision=1)
+    payload["claim_proposals"][0]["value_text"] = "白色"  # a value the source carries (#236)
     sources = (SourceSnapshot(saved.ref, 1, saved.event["content"], saved.scope_id, saved.event["origin"]),)
     validate_proposal_references(payload, sources, ctx)
     payload["claim_proposals"][0]["evidence_spans"][0]["quote"] = "TEST invented unconditional rule"

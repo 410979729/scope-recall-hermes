@@ -715,16 +715,16 @@
   },
   "core/worker.py": {
    "C901": {
-    "drain_worker": 19
+    "drain_worker": 18
    },
    "PLR0912": {
-    "drain_worker": 19
+    "drain_worker": 18
    },
    "PLR0913": {
     "drain_worker": 9
    },
    "PLR0915": {
-    "drain_worker": 77
+    "drain_worker": 76
    }
   },
   "core/worker_candidates.py": {
@@ -802,19 +802,19 @@
    "BLE001": 1,
    "C901": {
     "apply_install": 17,
-    "plan_install": 22
+    "plan_install": 19
    },
    "E501": 1,
    "PLR0912": {
     "apply_install": 17,
-    "plan_install": 23,
+    "plan_install": 20,
     "plan_uninstall": 16
    },
    "PLR0913": {
     "plan_install": 11
    },
    "PLR0915": {
-    "plan_install": 67
+    "plan_install": 61
    }
   },
   "maintenance/install_purge.py": {

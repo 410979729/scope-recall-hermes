@@ -73,7 +73,8 @@ class VectorRuntimeConfig:
 #: Closed bounds per field.  Seconds accept ``int`` or ``float``; counts reject ``bool``.
 _SECONDS_BOUNDS = {
     "request_seconds": (0.001, 45.0),
-    "drain_seconds": (0.001, 120.0),
+    # Above 120 only to fit a ``model_request_seconds`` above 110: a pass must hold one such request and its margin.
+    "drain_seconds": (0.001, 900.0),
     "auto_recall_seconds": (0.001, 5.0),
     "hook_processing_seconds": (0.001, 6.0),
     "auto_retry_cooldown_seconds": (60, 86400),
@@ -106,6 +107,11 @@ _COMPOSED_FIELDS = frozenset({"binding", "allowed_scope_ids", "auxiliary", "vect
 #: ``resident_recall_minutes``: none kept, up to a day.
 RESIDENT_RECALL_MINUTES_BOUNDS = (0, 1440)
 
+#: What a pass keeps back beside one model request: the worker's margin to record a verdict
+#: (``core/worker.FINALIZE_MARGIN_SECONDS``) and the entry's after the drain (``runtime/worker_entry``).
+#: Not imported from them: a process that only loads its configuration does not load the worker.
+MODEL_REQUEST_MARGIN_SECONDS = 10.0
+
 
 @dataclass(frozen=True)
 class RuntimeInstanceConfig:
@@ -118,6 +124,10 @@ class RuntimeInstanceConfig:
     host_adapter: str | None = None
     owner_id: str = "scope-recall-worker"
     request_seconds: float = 45.0
+    #: The worker's own ceiling for a consolidation or candidate-evaluation request, when its model needs longer
+    #: than ``request_seconds``: one that reasons before it answers took 18 to 90 seconds (#240).  It bounds only
+    #: those background requests; recall, capture and embedding keep ``request_seconds``.  None: the same bound.
+    model_request_seconds: float | None = None
     drain_seconds: float = 120.0
     auto_recall_seconds: float = 5.0
     hook_processing_seconds: float = 6.0
@@ -177,7 +187,17 @@ class RuntimeInstanceConfig:
             strict_int("resident_recall_minutes", self.resident_recall_minutes, minimum=low, maximum=high)
         if self.hook_processing_seconds < self.auto_recall_seconds:
             raise ValueError("hook_processing_seconds_must_cover_auto_recall")
-        strict_float("lease_seconds", self.lease_seconds, minimum=self.request_seconds, maximum=3600.0)
+        longest_request = self.request_seconds
+        if self.model_request_seconds is not None:
+            strict_float("model_request_seconds", self.model_request_seconds, minimum=0.001, maximum=600.0)
+            longest_request = max(longest_request, self.model_request_seconds)
+            # A pass claims model work only while it still holds the request and the margin to record its verdict.
+            if self.drain_seconds < self.model_request_seconds + MODEL_REQUEST_MARGIN_SECONDS:
+                raise ValueError("drain_seconds_must_cover_model_request")
+        # 120 stays the ceiling of a pass unless a longer model request needs more.
+        if self.drain_seconds > 120.0 and (self.model_request_seconds or 0) + MODEL_REQUEST_MARGIN_SECONDS <= 120.0:
+            raise ValueError("drain_seconds_above_120_needs_a_longer_model_request")
+        strict_float("lease_seconds", self.lease_seconds, minimum=longest_request, maximum=3600.0)
         # The policy ``build_runtime_instance`` constructs, checked while the
         # config loads: a bad threshold, or an embedding route that describes no
         # valid space, is an invalid configuration rather than a failed build.

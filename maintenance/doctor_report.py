@@ -74,6 +74,9 @@ class DoctorReport:
     ledger_headroom: dict[str, Any] = field(default_factory=dict)
     running_code: dict[str, Any] = field(default_factory=dict)
     package_health: dict[str, Any] = field(default_factory=dict)
+    #: A Hermes that builds its own environment: that environment, the core version there and whether the vector
+    #: dependencies are there (``doctor._check_hermes_runtime``).  None for a Hermes that runs plugins in its venv.
+    hermes_runtime: dict[str, Any] | None = None
     candidate_settling: dict[str, int] = field(default_factory=dict)
     #: The store's re-embed run (``respace-embeddings``), or ``None`` when none was started.
     embedding_respace: dict[str, Any] | None = None
