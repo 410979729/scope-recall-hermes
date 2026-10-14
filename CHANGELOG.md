@@ -3,6 +3,10 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+### Scope Recall 3.10.4rc1 (unreleased)
+
+The install guide and the agent workflow correct two Hermes environment instructions. After a failed sync, put `config.yaml` back from a copy: Hermes's plugin eviction also empties `memory.provider`, so taking the `plugins.disabled` entry out alone leaves the gateway without memory. And sync before restarting a gateway, which may otherwise rebuild the environment itself. Documentation only; nothing to install.
+
 ## [3.10.3] - 2026-10-14
 
 A claim whose value none of the sources it cites carries, such as a value the model translated, was stored and could then never be promoted (#236). Consolidation now leaves such a claim out and keeps the rest of the result: on a copy of the shared store, 57 of a week's 3,083 claims were of this kind, in 51 results that held 119 other claims. The work item's error details name each claim left out (stage `claim`, field `evidence_value`), and the message's outcome is `partial`; a candidate evaluation whose verdict carries such a value waits for evidence. A proposal a host makes directly is still refused whole. A span that names its source as `ref@1` beside `source_revision` 1 is read as that source: it was read as `ref@1@1`, and the whole result refused as citing a source the model never declared (#236).
