@@ -442,7 +442,35 @@ def _hand_made_wrapper(inside):
     (inside / "__pycache__" / "__init__.cpython-314.pyc").write_bytes(b"TEST")
 
 
-def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_path):
+@pytest.fixture
+def released(monkeypatch):
+    """The install as a release builds it, whatever this tree's version: only a release on PyPI declares its core
+    to Hermes, and between releases the tree is a candidate."""
+    from scope_recall.maintenance import install_hermes
+
+    version = "3.10.3"
+    manifest, project = install_hermes.wrapper_manifest, install_hermes.wrapper_pyproject
+    monkeypatch.setattr(
+        install_hermes, "wrapper_manifest", lambda template, version=version: manifest(template, version)
+    )
+    monkeypatch.setattr(install_hermes, "wrapper_pyproject", lambda version=version: project(version))
+    return version
+
+
+def test_a_candidate_declares_no_core_in_the_home_plugin_directory(tmp_path, monkeypatch):
+    """A requirement Hermes cannot resolve fails its whole build, so a candidate writes no ``pyproject.toml``."""
+    from scope_recall.maintenance import install_hermes
+
+    project = install_hermes.wrapper_pyproject
+    monkeypatch.setattr(install_hermes, "wrapper_pyproject", lambda version="3.10.4rc1": project(version))
+    instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
+    inside = instance_root / "plugins" / "scope-recall"
+    planned = install_hermes.planned_files(_hermes_plan(instance_root, inside, project_root))
+    assert inside / "plugin.yaml" in planned and inside / "pyproject.toml" not in planned
+    assert install_hermes.wrapper_pyproject("3.10.4rc1") is None
+
+
+def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_path, released):
     """Hermes's package manager builds the environment it runs plugins in from the declaration there, and a
     ``pyproject.toml`` wins over ``plugin.yaml``: both declare the core with ``[lancedb]``, or recall has no vectors."""
     import tomllib
@@ -452,14 +480,14 @@ def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_p
     instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
     inside = instance_root / "plugins" / "scope-recall"
     apply_install(_hermes_plan(instance_root, inside, project_root))
-    wanted = f"hermes-scope-recall[lancedb]=={__version__}"
+    wanted = f"hermes-scope-recall[lancedb]=={released}"
     assert tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"] == [wanted]
     assert yaml.safe_load((inside / "plugin.yaml").read_text(encoding="utf-8"))["pip_dependencies"] == [wanted]
     apply_uninstall(plan_uninstall(instance_root=instance_root))
     assert not (inside / "pyproject.toml").exists()
 
 
-def test_an_install_moves_its_wrapper_into_the_home_plugin_directory_over_a_hand_made_one(tmp_path):
+def test_an_install_moves_its_wrapper_into_the_home_plugin_directory_over_a_hand_made_one(tmp_path, released):
     """As found on 2026-10-13: the receipt named a wrapper outside the home, Hermes read a hand-made one
     inside it.  The install moves there, replaces that wrapper's own files (backed up first) and leaves the old
     directory and the bytecode alone."""
@@ -479,7 +507,7 @@ def test_an_install_moves_its_wrapper_into_the_home_plugin_directory_over_a_hand
     ]
     result = apply_install(plan)
     dependencies = tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-    assert dependencies == [f"hermes-scope-recall[lancedb]=={__version__}"]
+    assert dependencies == [f"hermes-scope-recall[lancedb]=={released}"]
     assert any(Path(path).name == "pyproject.toml" for path in result.backups)
     receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
     assert Path(receipt["target_plugin_dir"]) == inside
