@@ -16,6 +16,7 @@ from scope_recall.core.secret_patterns import contains_secret_like_text
 from ..runtime_wiring import render_host_recall_context
 from .boundary import (
     TURN_FIELD,
+    claude_code_person_text,
     is_codex_suggestions_prompt,
     is_task_notification,
     is_workbuddy_agent_run,
@@ -167,6 +168,8 @@ class PromptRecall:
             turn_id = kept_turn(self._hook.config, session_id, prompt) or derived_turn(
                 session_id, prompt, self._hook.clock.utc_now()
             )
+        elif self._hook.host == "claude-code" and type(prompt) is str:
+            prompt = claude_code_person_text(prompt)
         # What the hook would have recalled nothing for, or recalled without the vector channel, is not asked here;
         # the server checks again rather than take the hook's word for it.
         if (

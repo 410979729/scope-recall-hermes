@@ -75,6 +75,37 @@ def test_only_entries_marked_as_the_person_s_are_the_person_s():
     )
 
 
+#: What Claude's desktop app puts in the person's first message when a session starts without a project folder,
+#: shortened (#248).  Synthetic.
+APP_REMINDER = (
+    "<system-reminder>\nTEST The user started this session without choosing a project folder, so your working "
+    "directory is a scratch workspace the app created for it.\n</system-reminder>"
+)
+
+
+def test_the_reminders_the_desktop_app_puts_in_a_message_are_not_the_person_s():
+    """#248: the reminder comes ahead of the typed text in one string (seen 09-12, Claude Code 2.1.260), or as a text
+    block of its own, which the record's reader joins with a line break; either way it was stored as the person's."""
+    from scope_recall.adapters.clients.boundary import claude_code_person_text
+
+    typed = "TEST 帮我看看这个仓库。"
+    assert claude_code_person_text(f"{APP_REMINDER}\n\n{typed}") == typed
+    assert claude_code_person_text(f"{APP_REMINDER}\n{typed}") == typed, "two text blocks, joined"
+    assert claude_code_person_text(f"{APP_REMINDER}{typed}") == typed, "no break after it"
+    assert claude_code_person_text(f"{typed}\n{APP_REMINDER}") == typed, "one after the typed text"
+    assert claude_code_person_text(f"  {APP_REMINDER}\n{APP_REMINDER}\n\n{typed}\n") == typed
+    assert claude_code_person_text(f"{typed}\n\n{APP_REMINDER}\n\nTEST 第二段。") == f"{typed}\n\nTEST 第二段。"
+    assert claude_code_person_text(APP_REMINDER) == "" and claude_code_person_text(f"\n{APP_REMINDER}\n ") == ""
+    # The person's words come back exactly as they came, unless a reminder was taken out of them.
+    assert claude_code_person_text(f"  {typed}\n") == f"  {typed}\n"
+    # Their own words about such a block, inside a line, stay theirs; so does a block that never closes.
+    mention = "TEST 为什么 <system-reminder>…</system-reminder> 会被存下来？"
+    assert claude_code_person_text(mention) == mention
+    assert claude_code_person_text(f"TEST 看这个：`{APP_REMINDER}`") == f"TEST 看这个：`{APP_REMINDER}`"
+    unclosed = "<system-reminder>\nTEST 没有结尾"
+    assert claude_code_person_text(unclosed) == unclosed
+
+
 def test_the_model_s_visible_text_is_said_and_nothing_else_of_it():
     said = transcript.said(_model({"type": "text", "text": "TEST 我先看一下。"}))
     assert said is not None and (said.role, said.text) == ("assistant", "TEST 我先看一下。")

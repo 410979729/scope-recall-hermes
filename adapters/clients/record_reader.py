@@ -6,13 +6,13 @@ reading resumes where the last one stopped (``transcript.Cursor``)."""
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import ContractError
 
 from . import transcript
-from .boundary import host_source_key, recorded_source_event
+from .boundary import claude_code_person_text, host_source_key, recorded_source_event
 from .config import SharedClientConfig
 from .session_marks import record_turns, replied_entry
 
@@ -100,6 +100,10 @@ class RecordReader:
             except OSError:
                 self._hook.note("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
                 return
+        if self._hook.host == "claude-code":
+            # Read here or sent by a client on another machine, of any version: the record keeps the reminders
+            # Claude's desktop app puts in a person's message, and they are not the person's (#248).
+            lines = [(end, _person_words(entry)) for end, entry in lines]
         said = [entry for _end, entry in lines if entry is not None]
         # WorkBuddy's record names no turn: a person's message there is the turn its prompt hook kept for the same words,
         # and the model's message after it with the words of the Stop's reply is that Stop's turn: held when the Stop
@@ -176,3 +180,14 @@ class RecordReader:
         diagnostics.capture_disposition = diagnostics.capture_error_code = diagnostics.capture_error_type = None
         self._hook.capture(context, audience, event, deadline=deadline, via_inbox=False)
         return diagnostics.capture_settled
+
+
+def _person_words(entry: "transcript.Said | None") -> "transcript.Said | None":
+    """A Claude Code record message with only the person's words in it (``claude_code_person_text``); None for one that
+    holds nothing else.  The model's messages are as they were."""
+    if entry is None or entry.role != "user":
+        return entry
+    text = claude_code_person_text(entry.text)
+    if text == entry.text:
+        return entry
+    return replace(entry, text=text) if text.strip() else None

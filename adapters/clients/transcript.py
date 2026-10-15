@@ -7,7 +7,9 @@ given.  At the end of a turn the lines added since the last read are read here, 
 handler records what they show being said:
 
 * the person's messages, typed or sent while a turn was running: only entries the record
-  itself marks as the person's (``origin.kind == "human"``);
+  itself marks as the person's (``origin.kind == "human"``), as the record has them; the
+  reminders Claude's desktop app puts in them are taken out where they are stored
+  (``record_reader``), so that a client on another machine is held to the same rule;
 * the model's visible text, block by block, as it was shown.
 
 Nothing else: no tool calls or results, no compaction summaries, task notifications, command

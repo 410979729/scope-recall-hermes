@@ -875,6 +875,115 @@ def test_a_task_notification_is_not_the_owner_s_prompt(store):
     assert [content for _role, _origin, content in _said_in_store(root)] == ["TEST 一句真话。"]
 
 
+#: What Claude's desktop app puts in the person's first message when a session starts without a project folder,
+#: shortened (#248).  Synthetic.
+APP_REMINDER = (
+    "<system-reminder>\nTEST The user started this session without choosing a project folder, so your working "
+    "directory is a scratch workspace the app created for it.\n</system-reminder>"
+)
+
+
+def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(store, monkeypatch):
+    """#248: Claude's desktop app puts a <system-reminder> ahead of what the person typed; it was stored as their words,
+    claims were drawn from it, and it was recalled for.  A prompt that is only reminders stores and recalls nothing,
+    here and on the entry's server; the person's own words about such a block stay."""
+    root, _homes, client, _capture = store
+    asked = []
+    monkeypatch.setattr(
+        "scope_recall.adapters.clients.prompt_recall.PromptRecall.own",
+        lambda self, context, text, *rest: asked.append(text) or {},
+    )
+    mention = "TEST 为什么 <system-reminder>…</system-reminder> 会被存下来？"
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt(f"{APP_REMINDER}\n\nTEST 帮我看看这个仓库。", prompt_id="TEST-prompt-1"))
+        assert hook.handle_payload(_prompt(APP_REMINDER, prompt_id="TEST-prompt-2")) == {}
+        hook.handle_payload(_prompt(mention, prompt_id="TEST-prompt-3"))
+    finally:
+        hook.close()
+    assert asked == ["TEST 帮我看看这个仓库。", mention]
+    assert [content for _role, _origin, content in _said_in_store(root)] == sorted(["TEST 帮我看看这个仓库。", mention])
+    server = _hook(client)
+    try:
+        server.resident_recall_for(_prompt(f"{APP_REMINDER}\nTEST 服务这边的问题。", prompt_id="TEST-prompt-4"), (), (), 5.0)
+        assert server.resident_recall_for(_prompt(APP_REMINDER, prompt_id="TEST-prompt-5"), (), (), 5.0) == {}
+    finally:
+        server.close()
+    assert asked[2:] == ["TEST 服务这边的问题。"]
+
+
+def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(store, tmp_path):
+    """#248, the session record: the reminder is a text block of its own, or ahead of the typed text in one string, in
+    a message the record marks as the person's.  A message that is only reminders is not theirs."""
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(
+        tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+        _person("u1", at(0), [_said(APP_REMINDER), _said("TEST 第一句。")], prompt_id="TEST-prompt-1"),
+        _person("u2", at(1), f"{APP_REMINDER}\n\nTEST 第二句。", prompt_id="TEST-prompt-2"),
+        _person("u3", at(2), [_said(APP_REMINDER)], prompt_id="TEST-prompt-3"),
+        _line(
+            "attachment",
+            "q1",
+            at(3),
+            attachment={
+                "type": "queued_command",
+                "commandMode": "prompt",
+                "origin": {"kind": "human"},
+                "prompt": f"{APP_REMINDER}\nTEST 顺便一句。",
+            },
+        ),
+        _model("a1", at(4), _said("TEST 好的。")),
+    )
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_stop(record, last="TEST 好的。"))
+    finally:
+        hook.close()
+    assert _said_in_store(root) == sorted(
+        [
+            ("user", "human_direct", "TEST 第一句。"),
+            ("user", "human_direct", "TEST 第二句。"),
+            ("user", "human_direct", "TEST 顺便一句。"),
+            ("assistant", "assistant_visible", "TEST 好的。"),
+        ]
+    )
+
+
+def test_the_doctor_names_owner_words_stored_with_a_reminder(store, monkeypatch):
+    """#248: what an earlier release stored with the app's reminder is counted for the entry and named by ref, never
+    by its text, until the owner forgets it.  The owner's own words about such a block are no finding."""
+    from scope_recall.adapters.clients import hook_events
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_client_reminders
+
+    root, _homes, client, _capture = store
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt("TEST 为什么 <system-reminder>…</system-reminder> 会被存下来？", prompt_id="TEST-p1"))
+        hook.handle_payload(_prompt(f"{APP_REMINDER}\n\nTEST 现在的版本。", prompt_id="TEST-p2"))
+        monkeypatch.setattr(hook_events, "claude_code_person_text", lambda text: text)  # as 3.10.4 stored it
+        hook.handle_payload(_prompt(f"{APP_REMINDER}\n\nTEST 以前的版本。", prompt_id="TEST-p3"))
+    finally:
+        hook.close()
+    [(event, revision)] = _rows(
+        root, "SELECT event_id,source_revision FROM source_events WHERE content LIKE '%以前的版本%'"
+    )
+    report = DoctorReport(host="claude-code", status="ok")
+    check_client_reminders(report, root, "claude-code")
+    assert report.capability_gaps == ["owner_words_with_client_reminder"]
+    assert report.checks == [{"name": "owner_words", "result": "client_reminders", "detail": f"1: {event}@{revision}"}]
+    for entry in ("tianshu", None):
+        other = DoctorReport(host="claude-code", status="ok")
+        check_client_reminders(other, root, entry)
+        assert other.capability_gaps == [] and other.checks == [], "another entry's, or another store's"
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as connection, connection:
+        connection.execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (event,))
+    forgotten = DoctorReport(host="claude-code", status="ok")
+    check_client_reminders(forgotten, root, "claude-code")
+    assert forgotten.capability_gaps == []
+
+
 SUGGESTIONS_PROMPT = (
     "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with "
     "Codex in this local project: C:\\TEST\n\nGet an understanding of the user's intent and goals "

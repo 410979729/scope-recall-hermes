@@ -15,6 +15,7 @@ from .boundary import (
     TURN_FIELD,
     assistant_stop_source_event,
     authorized_attachment_refs,
+    claude_code_person_text,
     is_codex_suggestions_prompt,
     is_codex_suggestions_reply,
     is_task_notification,
@@ -183,6 +184,10 @@ class HookEvents:
             if type(prompt) is not str:
                 self._hook.note("missing_prompt", gaps=(*gaps, "capability_gap:missing_prompt"))
                 return None
+            if self._hook.host == "claude-code":
+                # The reminders Claude's desktop app puts in a message are not the person's; one that holds nothing
+                # else stores nothing and is recalled for nothing, as an empty prompt.
+                prompt = claude_code_person_text(prompt)
             notice = self._hook.host == "claude-code" and is_task_notification(prompt)
         if notice:
             # Claude Code's own notice that a background task finished: recorded as the owner's words it

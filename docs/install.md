@@ -475,7 +475,8 @@ by key, and exits `0` only when `status` is `"ok"`.
 | `attention` | 1 | No gap from the actionable set, but at least one from the non-actionable set below, or failed work, pending capture, or partial extractions. Worth a look, not an emergency. |
 | `degraded` | 1 | At least one gap an operator must act on. It is also the fail-safe default when the database cannot be read at all. |
 
-The four gaps that yield `attention` rather than `degraded` are
+The gaps that yield `attention` rather than `degraded` are
+`audience_owner_unverified`, `due_work_unreached`, `owner_words_with_client_reminder`,
 `vector_threshold_unconfigured`, `work_failed_terminal_only`, `work_needs_review`
 and `worker_capability_unavailable`. Everything else forces `degraded`.
 
@@ -606,6 +607,7 @@ Things that look wrong in a healthy report and are not:
 | `schema_header_stale` | The store's tables and its own record say one schema, the SQLite header another: another process stamped the header, typically a 2.0 plugin that opened the store after its migration. Every open is refused. | Stop that process, then run `upgrade-store` with `--backup-dir`: it snapshots the store and puts the recorded schema back into the header. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
 | `audience_owner_unverified` | An `owner_private` audience row names a user who is no owner principal, so it grants nothing and every session on its route captures and recalls nothing. The `audiences` check counts such rows by platform. `attention`. | If the user is the owner's own dashboard login, approve it with `apply-install --owner-login <platform>=<login>` (section 4); otherwise remove the rows. |
+| `owner_words_with_client_reminder` | Claude Code only. Messages stored as the owner's words before 3.10.5 that hold a `<system-reminder>` block Claude's desktop app put in them (#248): claims drawn from them read as things the owner said, and a recall can bring the block back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a session that has `forget` (Codex, a Hermes chat), ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New messages are stored without the block. |
 | `work_failed` | At least one recoverable failure is queued. | Fix the cause, then `scope-recall retry-failures --config <file> --apply`. |
 | `work_failed_terminal_only` / `work_needs_review` | All failures are by design, or were already retried once. `attention`. | Inspect them; `--include-terminal` re-runs them only if you mean to. |
 | `work_backlog_stalled` | Work is pending and the worker has not succeeded for more than twice `supervisor_seconds`. | The worker is not running. See the next section. |

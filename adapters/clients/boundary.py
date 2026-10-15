@@ -68,6 +68,22 @@ def is_task_notification(prompt: str) -> bool:
     return prompt.lstrip().startswith(TASK_NOTIFICATION_PREFIX)
 
 
+#: A reminder Claude's desktop app puts in the person's message, addressed to the model (a session started without a
+#: project folder, and others): a text block of its own, or ahead of what was typed in one string.  Such a block opens
+#: a line; the person's own words about one, inside a line, stay theirs.  The blank lines after one go with it.
+_CLAUDE_CODE_REMINDER = re.compile(
+    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder>(?:[ \t]*\r?\n)*", re.DOTALL | re.MULTILINE
+)
+
+
+def claude_code_person_text(text: str) -> str:
+    """The person's own words in a Claude Code prompt or session-record message: without the ``<system-reminder>``
+    blocks the app put in it, or the text as it came when it holds none.  Stored as theirs, a reminder became things
+    they had said, and claims were drawn from it (#248)."""
+    cleaned = _CLAUDE_CODE_REMINDER.sub("", text)
+    return cleaned.strip() if cleaned != text else text
+
+
 #: How WorkBuddy opens the message it hands its model, and so its prompt hook, when a Stop hook or a goal asks the
 #: turn to go on (its record marks the message ``providerData.isMeta``).
 WORKBUDDY_FEEDBACK_PREFIX = "Stop hook feedback:"

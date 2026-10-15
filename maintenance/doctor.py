@@ -30,6 +30,7 @@ from .doctor_report import DoctorReport, HostChoice, record_check
 from .doctor_store import (
     check_backlog,
     check_candidates,
+    check_client_reminders,
     check_embedding_health,
     check_embedding_respace,
     check_footprint,
@@ -289,6 +290,7 @@ _NON_ACTIONABLE_GAPS = frozenset(
     {
         "audience_owner_unverified",
         "due_work_unreached",
+        "owner_words_with_client_reminder",
         "vector_threshold_unconfigured",
         "work_failed_terminal_only",
         "work_needs_review",
@@ -772,6 +774,8 @@ def run_doctor(
         check_candidates(report)
         check_model_output(report)
         check_ledger(report)
+        if host == "claude-code":
+            check_client_reminders(report, data_directory, report.shared_store.get("entry_id"))
         _classify_status(report)
     check_index(report, data_directory, store_readable=readable, config=config)
     return report
