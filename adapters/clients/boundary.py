@@ -83,7 +83,8 @@ IN_CONTEXT_FIELD = "scope_recall_in_context_since"
 
 
 def in_context_since(payload: dict[str, Any]) -> str | None:
-    """The moment a payload carries in ``IN_CONTEXT_FIELD``, as a UTC timestamp; None when it carries none, or not one."""
+    """The moment a payload carries in ``IN_CONTEXT_FIELD``, as a UTC timestamp; None when it carries none or
+    not one."""
     value = payload.get(IN_CONTEXT_FIELD)
     if type(value) is not str:
         return None

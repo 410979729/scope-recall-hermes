@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -396,7 +396,8 @@ def test_only_a_client_that_names_its_conversation_is_offered_the_tools_that_cha
     server = build_server(load_shared_client(client, host), workspace=None)
     offered = [tool.name for tool in server.server._tool_manager.list_tools()]
     if host == "codex":
-        assert offered == ["recall", "inspect", "profile", "trace", "entity", "propose_memory", "revise", "forget", "status"]
+        writes = ["propose_memory", "revise", "forget"]
+        assert offered == [*READ_TOOLS[:5], *writes, "status"]
     else:
         assert offered == READ_TOOLS
 
@@ -942,7 +943,8 @@ def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(st
     assert [content for _role, _origin, content in _said_in_store(root)] == sorted(["TEST 帮我看看这个仓库。", mention])
     server = _hook(client)
     try:
-        server.resident_recall_for(_prompt(f"{APP_REMINDER}\nTEST 服务这边的问题。", prompt_id="TEST-prompt-4"), (), (), 5.0)
+        asked_there = _prompt(f"{APP_REMINDER}\nTEST 服务这边的问题。", prompt_id="TEST-prompt-4")
+        server.resident_recall_for(asked_there, (), (), 5.0)
         assert server.resident_recall_for(_prompt(APP_REMINDER, prompt_id="TEST-prompt-5"), (), (), 5.0) == {}
     finally:
         server.close()
@@ -1014,7 +1016,7 @@ def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store
         ask("TEST 机器清单：部署机是 KZ-42。", "TEST-p2")
         whole = ask("TEST 机器清单", "TEST-p3")
         time.sleep(0.05)
-        _record(record, *_compaction(datetime.now(timezone.utc).isoformat()))
+        _record(record, *_compaction(datetime.now(UTC).isoformat()))
         time.sleep(0.05)
         ask("TEST 机器清单：备份机是 VX-9。", "TEST-p4")
         compacted = ask("TEST 机器清单", "TEST-p5")
@@ -1036,7 +1038,8 @@ def test_the_doctor_names_owner_words_stored_with_a_reminder(store, monkeypatch)
     root, _homes, client, _capture = store
     hook = _hook(client)
     try:
-        hook.handle_payload(_prompt("TEST 为什么 <system-reminder>…</system-reminder> 会被存下来？", prompt_id="TEST-p1"))
+        mention = "TEST 为什么 <system-reminder>…</system-reminder> 会被存下来？"
+        hook.handle_payload(_prompt(mention, prompt_id="TEST-p1"))
         hook.handle_payload(_prompt(f"{APP_REMINDER}\n\nTEST 现在的版本。", prompt_id="TEST-p2"))
         monkeypatch.setattr(hook_events, "claude_code_person_text", lambda text: text)  # as 3.10.4 stored it
         hook.handle_payload(_prompt(f"{APP_REMINDER}\n\nTEST 以前的版本。", prompt_id="TEST-p3"))

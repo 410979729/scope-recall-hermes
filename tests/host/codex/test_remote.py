@@ -1026,7 +1026,9 @@ def test_an_older_client_s_reminders_are_taken_out_by_the_server(store):
     )
     config = remote_server.load_server_config(homes["claude-code"], "claude-code")
     at = _moments()
-    reminder = "<system-reminder>\nTEST The user started this session without choosing a project folder.\n</system-reminder>"
+    reminder = (
+        "<system-reminder>\nTEST The user started this session without choosing a project folder.\n</system-reminder>"
+    )
     for prompt_id, text in (("TEST-p1", f"{reminder}\n\nTEST 第一问"), ("TEST-p2", reminder)):
         remote_server.handle_request(
             config,

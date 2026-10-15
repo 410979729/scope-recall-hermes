@@ -182,7 +182,7 @@ class RecordReader:
         return diagnostics.capture_settled
 
 
-def _person_words(entry: "transcript.Said | None") -> "transcript.Said | None":
+def _person_words(entry: transcript.Said | None) -> transcript.Said | None:
     """A Claude Code record message with only the person's words in it (``claude_code_person_text``); None for one that
     holds nothing else.  The model's messages are as they were."""
     if entry is None or entry.role != "user":

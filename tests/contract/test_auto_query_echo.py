@@ -221,14 +221,18 @@ def test_an_item_is_left_out_only_when_all_it_stands_on_is_held(app):
 
 def test_what_the_model_holds_still_leads_to_what_is_related_to_it(app):
     """Left out at admission, a message the model holds stopped leading to what is related to it: on the replay of
-    361 prompts, claims and procedures drawn partly from before the session's last compaction.  It is set aside, not
-    delivered, and still a seed; one reached from it that the model holds leads on in turn and is not delivered either."""
-    from scope_recall.core.recall import RetrievalPipeline
+    361 prompts, claims and procedures drawn partly from before the session's last compaction.  It is set aside,
+    not delivered, and still a seed; one reached from it that the model holds leads on in turn and is not delivered
+    either."""
+    from scope_recall.core.recall import RetrievalPipeline, _Aside
     from scope_recall.core.retrieval import CandidateRef, RetrievedObject, SearchContext
 
     core, ctx = app
-    said = {"event-held": (ctx.session_id, "2026-09-01T12:00:00Z"), "event-old": (ctx.session_id, "2026-09-01T10:00:00Z")}
-    said["event-other"] = ("TEST-other-session", "2026-09-01T12:30:00Z")
+    said = {
+        "event-held": (ctx.session_id, "2026-09-01T12:00:00Z"),
+        "event-old": (ctx.session_id, "2026-09-01T10:00:00Z"),
+        "event-other": ("TEST-other-session", "2026-09-01T12:30:00Z"),
+    }
     stands_on = {"event-held": "event-held", "claim-held": "event-held", "claim-old": "event-old"}
     stands_on["claim-other"] = "event-other"
 
@@ -258,15 +262,18 @@ def test_what_the_model_holds_still_leads_to_what_is_related_to_it(app):
 
     pipeline = RetrievalPipeline(None, storage_reader=Reader())
     search = SearchContext.from_request(
-        recall_request(query="P249 链"), ctx, now="2026-09-06T12:00:00Z", deadline=10**9,
+        recall_request(query="P249 链"),
+        ctx,
+        now="2026-09-06T12:00:00Z",
+        deadline=10**9,
         in_context_since="2026-09-01T11:00:00Z",
     )
-    held: list = []
+    aside = _Aside()
     hydrated: list = []
     seed = CandidateRef("event", "event-held", 1, "lexical", fusion_score=0.9)
-    pipeline._hydrate_all(Tx(), hydrated, (seed,), search, [], floor=6, held=held)
-    assert hydrated == [] and held == [seed], "held, not delivered"
-    pipeline._hydrate_related(Tx(), search, hydrated, [], held=tuple(held))
+    pipeline._hydrate_all(Tx(), hydrated, (seed,), search, [], floor=6, aside=aside)
+    assert hydrated == [] and aside.held == [seed], "held, not delivered"
+    pipeline._hydrate_related(Tx(), search, hydrated, [], held=tuple(aside.held))
     assert sorted(candidate.ref for candidate, _obj in hydrated) == ["claim-old", "claim-other"]
 
 
@@ -303,13 +310,22 @@ def test_the_owner_s_background_the_model_holds_is_left_out_too(tmp_path):
         return [entry["ref"] for entry in packet(core, ctx, **changes)["items"]]
 
     assert item.ref in refs(request_id="TEST-bg-0")
-    held = core.recall_packet(ctx, recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-1"),
-                              in_context_since="2026-09-01T11:00:00Z")
+    held = core.recall_packet(
+        ctx,
+        recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-1"),
+        in_context_since="2026-09-01T11:00:00Z",
+    )
     assert item.ref not in [entry["ref"] for entry in held["items"]]
-    later = core.recall_packet(ctx, recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-2"),
-                               in_context_since="2026-09-01T13:00:00Z")
+    later = core.recall_packet(
+        ctx,
+        recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-2"),
+        in_context_since="2026-09-01T13:00:00Z",
+    )
     assert item.ref in [entry["ref"] for entry in later["items"]], "said before the compaction"
     other = replace(ctx, session_id="TEST-other-session")
-    elsewhere = core.recall_packet(other, recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-3"),
-                                   in_context_since="2026-09-01T11:00:00Z")
+    elsewhere = core.recall_packet(
+        other,
+        recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-3"),
+        in_context_since="2026-09-01T11:00:00Z",
+    )
     assert item.ref in [entry["ref"] for entry in elsewhere["items"]], "another session's model does not hold it"

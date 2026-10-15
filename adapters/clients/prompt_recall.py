@@ -222,11 +222,19 @@ class PromptRecall:
             "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
         }
         try:
-            # Named only when there is one (a Claude Code prompt): every other host's recall is asked as before.
-            held = {"in_context_since": since} if since is not None else {}
-            packet = self._hook.core.recall_packet(
-                context, request, current_source_refs=current_refs, deadline_seconds=remaining, **held
-            )
+            if since is None:
+                packet = self._hook.core.recall_packet(
+                    context, request, current_source_refs=current_refs, deadline_seconds=remaining
+                )
+            else:
+                # Named only for a Claude Code prompt: every other host's recall is asked as before.
+                packet = self._hook.core.recall_packet(
+                    context,
+                    request,
+                    current_source_refs=current_refs,
+                    deadline_seconds=remaining,
+                    in_context_since=since,
+                )
             preparation = self._hook.core.prepare_recall_render(context, packet)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             code = getattr(exc, "code", None)

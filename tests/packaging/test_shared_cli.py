@@ -782,7 +782,8 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
 
     code, preview = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit))
     assert (code, preview["status"]) == (0, "preview"), preview
-    assert preview["rows_added"] == ["weixin/TEST-wx-1/dm/TEST-wx-1//" + dm["gateway_session_key"] + "/hermes#owner_private"]
+    route = f"weixin/TEST-wx-1/dm/TEST-wx-1//{dm['gateway_session_key']}/hermes#owner_private"
+    assert preview["rows_added"] == [route]
     assert [(row["route"], row["read_added"], row["write_added"]) for row in preview["rows_changed"]] == [
         (preview["rows_changed"][0]["route"], [elsewhere], [])
     ]

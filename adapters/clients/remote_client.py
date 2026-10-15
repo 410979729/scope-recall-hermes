@@ -43,7 +43,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import transcript
 from .boundary import EMPTY_ANSWER, IN_CONTEXT_FIELD, is_workbuddy_agent_run, without_lone_surrogates
@@ -380,7 +380,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         return {}
     # Half of a broken emoji (a lone surrogate, which JavaScript writes) cannot be sent as UTF-8: the request would fail
     # and the turn have no recall.  It is sent, kept and stored as U+FFFD, as a hook here stores it.
-    payload = without_lone_surrogates(payload)
+    payload = cast(dict[str, Any], without_lone_surrogates(payload))
     event = payload.get("hook_event_name")
     host = config["host"]
     wait = HOOK_TIMEOUTS[host].get(event)

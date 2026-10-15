@@ -184,7 +184,8 @@ def test_the_model_holds_the_session_since_its_last_compaction(tmp_path, monkeyp
     monkeypatch.setattr(transcript, "_CONTEXT_TAIL_BYTES", 600)
     _write(record, [*rows, *[_person("TEST " + "长" * 100) for _ in range(20)]])
     assert transcript.context_since(record) is None, "no compaction in what was read, and not read to its start"
-    _write(record, [*rows, *[_person("TEST " + "长" * 100) for _ in range(20)], *_compaction_rows("2026-09-26T08:00:00Z")])
+    long = [_person("TEST " + "长" * 100) for _ in range(20)]
+    _write(record, [*rows, *long, *_compaction_rows("2026-09-26T08:00:00Z")])
     assert transcript.context_since(record) == "2026-09-26T08:00:00Z", "the end of a long record has one"
     assert transcript.context_since(tmp_path / "TEST-missing.jsonl") is None
 

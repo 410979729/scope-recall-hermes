@@ -402,7 +402,8 @@ def _compaction(row: object) -> str | None:
     """The moment of a record line that is a compaction of the main session (not of a subagent's), or None."""
     if not isinstance(row, dict) or row.get("isSidechain"):
         return None
-    if row.get("isCompactSummary") is True or (row.get("type") == "system" and row.get("subtype") == "compact_boundary"):
+    boundary = row.get("type") == "system" and row.get("subtype") == "compact_boundary"
+    if row.get("isCompactSummary") is True or boundary:
         return _stamp(row.get("timestamp"))
     return None
 

@@ -34,8 +34,7 @@
    "reportOptionalMemberAccess": 1
   },
   "adapters/clients/remote_client.py": {
-   "reportArgumentType": 5,
-   "reportAttributeAccessIssue": 2
+   "reportArgumentType": 1
   },
   "adapters/clients/remote_server.py": {
    "reportAttributeAccessIssue": 2,
@@ -606,7 +605,7 @@
     "RetrievalPipeline._expand": 26
    },
    "PLR0911": {
-    "RetrievalPipeline._expand": 10
+    "RetrievalPipeline._expand": 9
    },
    "PLR0912": {
     "RetrievalPipeline._expand": 24

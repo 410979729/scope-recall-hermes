@@ -529,7 +529,9 @@ def regranted(
         and row["agent_workspace"] == "default"
         for row in rows
     ):
-        raise HermesIdentityError(f"a {record['host']} entry needs its owner row on its own route, with a capture scope")
+        raise HermesIdentityError(
+            f"a {record['host']} entry needs its owner row on its own route, with a capture scope"
+        )
     after = {**record, "scope_ids": mapped, "owner_principals": principals, "audience_scopes": kinds, "audiences": rows}
     entries = [after if entry["entry_id"] == record["entry_id"] else entry for entry in payload["entries"]]
     held = {scope_id for entry in entries for scope_id in entry["scope_ids"]}
@@ -548,9 +550,10 @@ def write_regranted(store: Path, payload: dict[str, Any], updated: dict[str, Any
     """Write what ``regranted`` checked: a scope new to the store registered in it first, then the manifest."""
     before, after = frozenset(payload["scope_ids"]), frozenset(updated["scope_ids"])
     if after - before:
-        storage = SQLiteStorage(
-            InstanceBinding(payload["agent_id"], payload["installation_id"], store, before, payload["test_mode"], "shared")
+        binding = InstanceBinding(
+            payload["agent_id"], payload["installation_id"], store, before, payload["test_mode"], "shared"
         )
+        storage = SQLiteStorage(binding)
         context = TrustedContext(storage.binding, "shared-store-grants", storage.binding.scope_ids, "host_generated")
         with storage.write(context) as tx:
             tx.registry.register_scopes(after)

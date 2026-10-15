@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import sqlite3
 import time
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from itertools import islice
 from typing import Protocol
 
@@ -152,7 +152,6 @@ def _empty_result(context: SearchContext, gap: str) -> RetrievalResult:
     return RetrievalResult((), (), None, (gap,), "unknown", "unknown", 0, 0, request_id=context.request_id)
 
 
-
 def _in_context(tx, obj: RetrievedObject, context: SearchContext) -> bool:
     """Whether everything ``obj`` stands on is this session's own and was said since ``context.in_context_since``,
     so that the asking host's model still holds it word for word.  Anything else is not: an item without evidence,
@@ -169,6 +168,7 @@ def _in_context(tx, obj: RetrievedObject, context: SearchContext) -> bool:
         if source is None or source.session_id != session or said is None or said < context.in_context_since:
             return False
     return True
+
 
 def _says_only_its_state(content: str) -> bool:
     """Whether an episode body is the placeholder a never-consolidated resume leaves."""
@@ -198,6 +198,16 @@ def _said_after(obj: RetrievedObject, moment: str) -> bool:
 
 #: See ``RetrievalPipeline.RELATION_WEIGHT``.
 RELATION_WEIGHT = 0.5
+
+
+@dataclass
+class _Aside:
+    """What hydration sets aside rather than delivers (``RetrievalPipeline._hydrate_admit``): older copies of the
+    current message, which lead to their turn's replies, and what the asking model still holds, which leads on to
+    what is related to it (#249)."""
+
+    echoes: list[CandidateRef] = field(default_factory=list)
+    held: list[CandidateRef] = field(default_factory=list)
 
 
 class RetrievalPipeline:
@@ -456,8 +466,7 @@ class RetrievalPipeline:
         context: SearchContext,
         *,
         original_query: str | None = None,
-        echoes: list[CandidateRef] | None = None,
-        held: list[CandidateRef] | None = None,
+        aside: _Aside | None = None,
     ) -> RetrievedObject | None:
         obj = self.storage_reader.hydrate(tx, candidate, context)
         if obj is None:
@@ -465,12 +474,12 @@ class RetrievalPipeline:
         # The current message already supplies this text. Older copies add no
         # information to automatic context and can crowd out its actual evidence.
         # What such a copy was told in its turn still answers it: the copy is set
-        # aside in ``echoes`` to lead to its turn's replies, never delivered.
+        # aside in ``aside.echoes`` to lead to its turn's replies, never delivered.
         if context.mode == "auto" and obj.kind == "event":
             query = context.query if original_query is None else original_query
             if same_message(obj.content, query):
-                if echoes is not None:
-                    echoes.append(candidate)
+                if aside is not None:
+                    aside.echoes.append(candidate)
                 return None
         # A message of the day a question named was chosen by its day and entry: the entry's name ("pc2") is not an
         # identifier it has to repeat.  Every other candidate still has to.
@@ -485,11 +494,11 @@ class RetrievalPipeline:
             return None
         if context.mode == "auto" and context.in_context_since is not None and _in_context(tx, obj, context):
             # The asking model still holds everything it stands on, word for word: delivered, it was a second copy in
-            # that model's context, and took a slot from what the model does not have (#249).  Set aside in ``held``,
+            # that model's context, and took a slot from what the model does not have (#249).  Set aside in ``aside``,
             # it still leads to what is related to it, as it did delivered: left out of that, a session's own messages
             # stopped leading to the claims and procedures drawn from it before its last compaction.
-            if held is not None:
-                held.append(candidate)
+            if aside is not None:
+                aside.held.append(candidate)
             return None
         return obj
 
@@ -503,8 +512,7 @@ class RetrievalPipeline:
         *,
         floor: int,
         original_query: str | None = None,
-        echoes: list[CandidateRef] | None = None,
-        held: list[CandidateRef] | None = None,
+        aside: _Aside | None = None,
     ) -> None:
         """Hydrate in rank order; once the deadline is gone, only up to ``floor`` items."""
         known = {candidate.key for candidate, _obj in hydrated}
@@ -519,9 +527,7 @@ class RetrievalPipeline:
                 break
             if candidate.key in known:
                 continue
-            obj = self._hydrate_admit(
-                tx, candidate, context, original_query=original_query, echoes=echoes, held=held
-            )
+            obj = self._hydrate_admit(tx, candidate, context, original_query=original_query, aside=aside)
             if obj is not None:
                 hydrated.append((candidate, obj))
                 known.add(candidate.key)
@@ -637,9 +643,9 @@ class RetrievalPipeline:
                         and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs
                     ):
                         continue
-                    aside: list[CandidateRef] = []
-                    admitted = self._hydrate_admit(tx, candidate, context, held=aside) is not None
-                    if admitted or aside:
+                    aside = _Aside()
+                    admitted = self._hydrate_admit(tx, candidate, context, aside=aside) is not None
+                    if admitted or aside.held:
                         own = rrf_score((candidate.rank + 1,), k=self.policy.rrf_k)
                         # A seed built by hand in a test may carry no fusion score; a real one always does.
                         bound = min(own, seed.fusion_score) if seed.fusion_score > 0 else own
@@ -773,14 +779,11 @@ class RetrievalPipeline:
             ) as tx:
                 epoch = self.storage_reader.epoch(tx)
                 working = self._scoped(tx, working, gaps)
-                echoes: list[CandidateRef] = []
-                held: list[CandidateRef] = []
-                hydrated, seed_count = self._collect_rounds(
-                    tx, working, gaps, prefetched=prefetched, echoes=echoes, held=held
-                )
+                aside = _Aside()
+                hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched, aside=aside)
                 if len(meaningful_query_terms(working.query)) < ECHO_TURN_MIN_TERMS:
-                    echoes.clear()
-                self._hydrate_related(tx, working, hydrated, gaps, echoes=tuple(echoes), held=tuple(held))
+                    aside.echoes.clear()
+                self._hydrate_related(tx, working, hydrated, gaps, echoes=tuple(aside.echoes), held=tuple(aside.held))
                 ranked, query_items = self._select(tx, working, hydrated, gaps)
                 return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated))
         except ContractError as exc:
@@ -822,11 +825,10 @@ class RetrievalPipeline:
         gaps: list[str],
         *,
         prefetched=None,
-        echoes: list[CandidateRef] | None = None,
-        held: list[CandidateRef] | None = None,
+        aside: _Aside | None = None,
     ) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
-        """The first round plus at most one directed follow-up for an open need; older copies of the current
-        message found on the way go to ``echoes``, what the asking model still holds to ``held``."""
+        """The first round plus at most one directed follow-up for an open need; what hydration sets aside on the
+        way goes to ``aside``."""
         hydrated: list[tuple[CandidateRef, RetrievedObject]] = []
         seen: set[tuple[str, str, int]] = set()
         seed_count = 0
@@ -853,8 +855,7 @@ class RetrievalPipeline:
                 gaps,
                 floor=floor,
                 original_query=working.query,
-                echoes=echoes,
-                held=held,
+                aside=aside,
             )
             if round_index + 1 >= max_rounds:
                 break
