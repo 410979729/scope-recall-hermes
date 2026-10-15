@@ -127,3 +127,177 @@ def test_real_loopback_worker_never_sends_a_query_credential_or_header():
         server.server_close()
         thread.join(timeout=3)
         assert not thread.is_alive()
+
+
+LOCAL_MODEL = "TEST-local-model"
+LOCAL_KEY_ENV = "SCOPE_RECALL_TEST_LOCAL_KEY"
+
+
+def _local_config(folder, **route):
+    """A runtime config whose only route is consolidation through ``route``, to a model priced and approved here."""
+    from decimal import Decimal
+
+    from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
+    from scope_recall.runtime.model_budget import BudgetPolicy, ModelPricing, initialize_auxiliary_budget_ledger
+
+    pricing = {LOCAL_MODEL: ModelPricing(Decimal("0.01"), Decimal("0.01"))}
+    budget = BudgetPolicy(
+        batch="TEST-LOCAL-CONSOLIDATION",
+        cap_micro_usd=2_000_000,
+        total_input_cap=64_000_000,
+        total_output_cap=8_000_000,
+        total_call_cap=8,
+        max_request_bytes=32_000,
+        default_reserve_input=32_768,
+        default_reserve_output=4_096,
+        model_reserve_output={},
+        model_token_caps={},
+        pricing=pricing,
+        approved_models=frozenset(pricing),
+    )
+    folder.mkdir(parents=True, exist_ok=True)
+    ledger = folder / "auxiliary-budget.sqlite3"
+    initialize_auxiliary_budget_ledger(ledger, budget)
+    return AuxiliaryRuntimeConfig.from_mapping(
+        {
+            "external_embedding": False,
+            "external_consolidation": True,
+            "ledger_path": str(ledger),
+            "budget": {
+                "batch": budget.batch,
+                "cap_micro_usd": budget.cap_micro_usd,
+                "total_input_cap": budget.total_input_cap,
+                "total_output_cap": budget.total_output_cap,
+                "total_call_cap": budget.total_call_cap,
+                "max_request_bytes": budget.max_request_bytes,
+                "approved_models": sorted(budget.approved_models),
+                "pricing": {
+                    model: {
+                        "input_usd_per_million": str(rates.input_usd_per_million),
+                        "output_usd_per_million": str(rates.output_usd_per_million),
+                    }
+                    for model, rates in pricing.items()
+                },
+            },
+            "consolidation": {"model": LOCAL_MODEL, "credential_env": LOCAL_KEY_ENV, **route},
+        }
+    )
+
+
+def _chat(endpoint, **more):
+    return {"endpoint": endpoint, "output_limit_field": "max_tokens", "max_output_tokens": 256, **more}
+
+
+def _responses(endpoint, **more):
+    return {"kind": "openai_responses", "endpoint": endpoint, "max_output_tokens": 256, **more}
+
+
+def test_a_consolidation_route_reaches_a_model_server_on_this_machine(tmp_path, monkeypatch):
+    """#244: the embedding route has reached a model server on this machine over plain HTTP since 3.9.7, but the
+    consolidation route still required https://, so a local-first setup could embed against its loopback server and
+    not consolidate against the same one.  Both chat dialects now go there through the real worker, and the key still
+    never leaves over plain HTTP."""
+    from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+
+    replies = {
+        "/v1/chat/completions": {
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            "choices": [{"message": {"role": "assistant", "content": '{"TEST": "chat"}'}, "finish_reason": "stop"}],
+        },
+        "/v1/responses": {
+            "id": "resp_1",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": '{"TEST": "responses"}', "annotations": []}],
+                }
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        },
+    }
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append((self.path, dict(self.headers), body.get("model")))
+            reply = json.dumps(replies[self.path]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv(LOCAL_KEY_ENV, "TEST-key-canary")
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        for index, (route, answer) in enumerate(
+            (
+                (_chat(f"{base}/v1/chat/completions"), '{"TEST": "chat"}'),
+                (_responses(f"{base}/v1/responses"), '{"TEST": "responses"}'),
+            )
+        ):
+            runtime = build_auxiliary_runtime(_local_config(tmp_path / f"TEST-{index}", **route))
+            assert runtime.consolidation is not None, runtime
+            messages = [{"role": "user", "content": "TEST 本机整理。"}]
+            assert runtime.consolidation.propose(messages, remaining_seconds=10.0) == answer
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+    assert [(path, model) for path, _headers, model in seen] == [
+        ("/v1/chat/completions", LOCAL_MODEL),
+        ("/v1/responses", LOCAL_MODEL),
+    ]
+    assert all("TEST-key-canary" not in str(headers) for _path, headers, _model in seen), "plain HTTP carries no key"
+
+
+@pytest.mark.parametrize("shape", [_chat, _responses])
+def test_the_consolidation_route_holds_the_embedding_route_s_endpoint_rule(tmp_path, shape):
+    """#244: plain HTTP to a model server on this machine needs no opt-in, every spelling of it; another host needs
+    the literal ``allow_insecure_endpoint``, as the embedding route's, and the transport that sends holds it.  What the
+    sending boundary refused anyway (a credential in the URL, user-info, another scheme) is refused at load now."""
+    from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+
+    folder = iter(tmp_path / f"TEST-{index}" for index in range(100))
+    for endpoint in (
+        "http://127.0.0.1:8080/v1/x",
+        "http://localhost:8080/v1/x",
+        "http://[::1]:8080/v1/x",
+        "https://api.example.test/v1/x?api-version=1",
+    ):
+        transport = build_auxiliary_runtime(_local_config(next(folder), **shape(endpoint))).consolidation._transport
+        assert transport._allow_insecure_endpoint is False, endpoint
+    for endpoint in ("http://172.17.0.1:8080/v1/x", "http://192.0.2.1/v1/x", "http://api.example.test/v1/x"):
+        with pytest.raises(ValueError) as refused:
+            _local_config(next(folder), **shape(endpoint))
+        assert str(refused.value) == "endpoint"
+        config = _local_config(next(folder), **shape(endpoint, allow_insecure_endpoint=True))
+        assert build_auxiliary_runtime(config).consolidation._transport._allow_insecure_endpoint is True
+    for endpoint in (
+        "ftp://api.example.test/v1/x",
+        "http://user@127.0.0.1/v1/x",
+        "https://api.example.test/v1/x?api_key=TEST-canary",
+        "https://api.example.test/v1/x#TEST",
+        "api.example.test/v1/x",
+    ):
+        for opt_in in (False, True):
+            with pytest.raises(ValueError) as refused:
+                _local_config(next(folder), **shape(endpoint, allow_insecure_endpoint=opt_in))
+            assert str(refused.value) == "endpoint", endpoint
+    for not_a_boolean in ("true", 1, "yes", None):
+        with pytest.raises(ValueError) as refused:
+            _local_config(next(folder), **shape("http://192.0.2.1/v1/x", allow_insecure_endpoint=not_a_boolean))
+        assert str(refused.value) == "consolidation_allow_insecure_endpoint"

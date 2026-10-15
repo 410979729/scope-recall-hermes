@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Any
 
 from ..contracts import ContractError
+from ..core.endpoint_policy import endpoint_scheme_allowed
 from .model_budget import AuxiliaryBudgetLedger, BudgetPolicy
 from .models import (
     MAX_CHAT_RESPONSE_BYTES,
@@ -287,9 +288,11 @@ class ConsolidationRouteConfig:
     stream: bool = False
     n: int = 1
     headers: Mapping[str, str] | None = None
+    #: Permission for plaintext HTTP beyond this machine, as the embedding route has it (#244).
+    allow_insecure_endpoint: bool = False
 
     def __post_init__(self) -> None:
-        _validate_route_target(self.model, self.endpoint, self.credential_env)
+        _validate_route_target(self.model, self.endpoint, self.credential_env, self.allow_insecure_endpoint)
         if self.output_limit_field not in {"max_tokens", "max_completion_tokens"}:
             raise ValueError("output_limit_field")
         if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 131_072:
@@ -311,11 +314,20 @@ class ConsolidationRouteConfig:
         object.__setattr__(self, "headers", _validate_consolidation_headers(self.headers))
 
 
-def _validate_route_target(model: object, endpoint: object, credential_env: object) -> None:
-    """A consolidation route names a model, an https endpoint and the environment variable holding its key."""
+def _validate_route_target(
+    model: object, endpoint: object, credential_env: object, allow_insecure_endpoint: object
+) -> None:
+    """A consolidation route names a model, an endpoint and the environment variable holding its key.
+
+    The endpoint follows the embedding route's rule (``core.endpoint_policy``), the one the transport that sends holds
+    too: HTTPS to any host, plain HTTP to a model server on this machine, and to another host only with the literal
+    opt-in.  Plain HTTP never carries the key.  Required HTTPS here alone, a local model server could embed and not
+    consolidate (#244)."""
     if type(model) is not str or not model:
         raise ValueError("model")
-    if type(endpoint) is not str or not endpoint.startswith("https://"):
+    if type(allow_insecure_endpoint) is not bool:
+        raise ValueError("allow_insecure_endpoint")
+    if type(endpoint) is not str or not endpoint_scheme_allowed(endpoint, allow_insecure=allow_insecure_endpoint):
         raise ValueError("endpoint")
     validate_credential_env_name(credential_env)
 
@@ -356,9 +368,10 @@ class ResponsesRouteConfig:
     text_format: Mapping[str, str] | None = None
     stream: bool = False
     kind: str = RESPONSES_KIND
+    allow_insecure_endpoint: bool = False
 
     def __post_init__(self) -> None:
-        _validate_route_target(self.model, self.endpoint, self.credential_env)
+        _validate_route_target(self.model, self.endpoint, self.credential_env, self.allow_insecure_endpoint)
         if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 131_072:
             raise ValueError("max_output_tokens")
         if self.reasoning_effort is not None and (
@@ -386,7 +399,11 @@ class _ConsolidationAdapter:
         self._route = route
         self._ledger = ledger
         self._reserve_input = reserve_input
-        self._transport = transport if transport is not None else HttpsTransport()
+        self._transport = (
+            transport
+            if transport is not None
+            else HttpsTransport(allow_insecure_endpoint=route.allow_insecure_endpoint)
+        )
 
     def _send(self, body: bytes, deadline: float, *, headers, read_usage, read_result) -> str:
         """One proposal request, metered; refused when its time is up or the provider is holding calls.  ``headers``

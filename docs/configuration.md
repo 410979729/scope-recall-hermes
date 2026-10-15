@@ -368,7 +368,7 @@ The default kind is an OpenAI-compatible chat-completions route
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `model` | string, non-empty | required | Model name. It must also be in `budget.approved_models` and `budget.pricing`. |
-| `endpoint` | `https://` URL | required | Full chat-completions URL. |
+| `endpoint` | URL | required | Full chat-completions URL. `https://` to any host; `http://` to a model server on this machine (a loopback host), or to another host only with `allow_insecure_endpoint`: the embedding route's rule. User-info, fragments and credential-bearing query keys are refused. Over plain HTTP the key is not sent, so a local server that needs none still names a `credential_env` holding any value. |
 | `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | Name of the environment variable holding the API key. |
 | `output_limit_field` | `"max_tokens"` or `"max_completion_tokens"` | required | Which field this provider expects the output limit in. |
 | `max_output_tokens` | int, 1–131072 | required | Value sent in that field. |
@@ -378,6 +378,7 @@ The default kind is an OpenAI-compatible chat-completions route
 | `stream` | boolean | `false` | Must stay `false`; streaming is refused. |
 | `n` | int | `1` | Must stay `1`. |
 | `headers` | mapping or absent | absent | Extra request headers, validated before use. A second `Authorization` cannot be smuggled in this way. |
+| `allow_insecure_endpoint` | literal `true` or `false` | `false` | Permits plaintext `http://` to a host that is not loopback, as in `auxiliary.embedding`. **What is consolidated, your memory, then crosses the network unencrypted: turn it on only for a server on a network you trust.** A model server on a loopback host needs no opt-in, and a quoted `"true"` is refused. |
 
 Setting `"kind": "openai_responses"` selects a Responses-API route instead of
 chat completions. It targets the documented contract of DeepSeek
@@ -387,13 +388,14 @@ another provider, and streaming is not implemented:
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `model` | string, non-empty | required | Model name, for example `deepseek-flash`. It must also be in `budget.approved_models` and `budget.pricing`. |
-| `endpoint` | `https://` URL | required | Full Responses URL. Not a base URL: no path is appended. |
+| `endpoint` | URL | required | Full Responses URL. Not a base URL: no path is appended. `https://` to any host; `http://` to a model server on this machine (a loopback host), or to another host only with `allow_insecure_endpoint`: the embedding route's rule. User-info, fragments and credential-bearing query keys are refused. Over plain HTTP the key is not sent, so a local server that needs none still names a `credential_env` holding any value. |
 | `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | Name of the environment variable holding the API key. It is read per request and never written to the ledger; the key travels only in the `Authorization` header, as a `Bearer` token that extra `headers` cannot override. |
 | `max_output_tokens` | int, 1–131072 | required | Sent as `max_output_tokens`. On a thinking route this bounds the visible answer **and** the reasoning tokens. |
 | `reasoning_effort` | `"none"`/`"low"`/`"high"`/`"max"`, or absent | absent | Sent as `reasoning.effort`; absent leaves the provider's own default. |
 | `text_format` | `{"type": "json_object"}` or absent | absent | Sent as `text.format`. Plain text is the default and is expressed by omitting the key; a JSON schema is refused rather than forwarded unvalidated. |
 | `stream` | boolean | `false` | Must stay `false`; streaming is refused. |
 | `kind` | `"openai_responses"` | required | Selects this route. |
+| `allow_insecure_endpoint` | literal `true` or `false` | `false` | Permits plaintext `http://` to a host that is not loopback, as in `auxiliary.embedding`. **What is consolidated, your memory, then crosses the network unencrypted: turn it on only for a server on a network you trust.** A model server on a loopback host needs no opt-in, and a quoted `"true"` is refused. |
 Unknown keys in this block are rejected (`consolidation_unknown_config`) rather
 than ignored, the way the `codex_cli` block already behaves: this dialect is new
 and has no legacy key to stay compatible with.
