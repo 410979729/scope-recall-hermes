@@ -3,6 +3,24 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.10.5] - 2026-10-15
+
+Five reports, each reproduced on 3.10.4 first; thanks to everyone who sent them.
+
+**Claude Code: the desktop app's reminders were stored as the owner's words** (#248). Claude's desktop app puts a `<system-reminder>` block in the person's message (a session started without a project folder, and others), as a text block of its own or ahead of the typed text. The prompt hook and the reader of the session record stored it as something the owner said, claims were drawn from it, and recall brought it back. A reminder block that opens a line is now taken out wherever a Claude Code message is stored or recalled for, including what a client on another machine still on 3.10.4 sends; a message that holds nothing else is not the owner's. The owner's own words about such a block, inside a line, stay. `doctor --host claude-code` names messages an earlier release stored with one (`owner_words_with_client_reminder`, by ref, never their text); the install guide says how to forget them.
+
+**Claude Code: automatic recall brought back what the model still had** (#249). Until it compacts, Claude Code keeps the whole session in its model's context, and the prompt's recall returned the session's own recent turns as a second copy. The hook now reads the session record's last compaction, and an automatic recall leaves out an item that stands only on this session's messages since then, so other memories take its slots; what was said before a compaction reaches the model only as its summary and is still recalled. Replayed on a copy of a store, 361 prompts: 298 of 1,189 items (25 %) were turns the model held; none now, with 216 other memories in their place and the recall no slower. An automatic recall whose every hit was larger than any packet also came back empty, the owner's standing preferences cut with it; one such hit now stays as the hint and the preferences take the other slots. Codex, WorkBuddy, dsh and Hermes recall as before.
+
+**The consolidation route refused a model server on this machine** (#244). Since 3.9.7 the embedding route reaches a local model server over plain HTTP, and one on another host with the literal opt-in `allow_insecure_endpoint`; the consolidation route still required `https://`. Both consolidation kinds now follow the embedding route's rule and take the same opt-in. Plain HTTP still carries no key.
+
+**dsh, Claude Code and WorkBuddy were offered tools that always failed** (#245). `propose_memory`, `revise` and `forget` act only on the word of the person's latest message in the same conversation, and only Codex tells the MCP server which conversation a call comes from; elsewhere each call was refused (`ACCESS_DENIED codex_thread_id`). Those clients are now offered the six tools that read; the memory skill and the guides say to correct or delete through Codex or a Hermes chat on the same store.
+
+**An attached entry's grants could not change** (#246). `scope-recall grants --instance-root <home>` prints an entry's grants; edited and given back with `--grants-from`, it shows the change and, with `--apply`, writes it with copies, a receipt and the grants as they were, which applied the same way put them back. An owner route on a gateway, or a row that reads another scope, is added this way; rows stay exact and memories keep their scopes. A second run of a shared-store command within the same second no longer keeps its copies over the first's.
+
+### Upgrading from 3.10.4
+
+Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. Upgrade the package on a client on another machine as well ([remote-entries.md](docs/remote-entries.md)): until it is upgraded, its Claude Code prompts are recalled for as before, and its server takes the reminders out. Claude Code, WorkBuddy and dsh sessions see the three tools that change memory go away once their MCP server restarts. The schema is unchanged (1110).
+
 ## [3.10.4] - 2026-10-14
 
 The README's install commands still named 3.9.3, without the vector extra. Whoever installed from that first page, on GitHub or on PyPI, got a release four versions old, and recall without vector search, since the default LanceDB store cannot open without the extra. The commands now install or upgrade (`-U`) to the current release with `[lancedb]` (`[lancedb,codex]` for an entry with an MCP server). A packaging test keeps them that way: it fails on an install line without the extra, an unpinned one without `-U`, a pinned version other than this one, or a link to an older release.
