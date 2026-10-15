@@ -104,6 +104,25 @@ def test_the_reminders_the_desktop_app_puts_in_a_message_are_not_the_person_s():
     assert claude_code_person_text(f"TEST 看这个：`{APP_REMINDER}`") == f"TEST 看这个：`{APP_REMINDER}`"
     unclosed = "<system-reminder>\nTEST 没有结尾"
     assert claude_code_person_text(unclosed) == unclosed
+    assert claude_code_person_text(f"{unclosed}\n{APP_REMINDER}\n{typed}") == typed, "the first closing ends it"
+
+
+def test_many_unclosed_reminders_cost_one_pass():
+    """A lazy match retried from every opening made a text of many unclosed openings quadratic: 3.5 s for 144 KB
+    (review of 3.10.5)."""
+    import time
+
+    from scope_recall.adapters.clients.boundary import claude_code_person_text
+
+    text = "<system-reminder>\n" * 40_000
+    started = time.monotonic()
+    assert claude_code_person_text(text) == text
+    assert claude_code_person_text(text + "TEST</system-reminder>\nTEST 后面") == "TEST 后面"
+    assert time.monotonic() - started < 1.0
+    lone = "<system-reminder" * 40_000
+    started = time.monotonic()
+    assert claude_code_person_text(lone) == lone
+    assert time.monotonic() - started < 1.0
 
 
 def test_the_model_s_visible_text_is_said_and_nothing_else_of_it():
@@ -181,6 +200,19 @@ def test_the_model_holds_the_session_since_its_last_compaction(tmp_path, monkeyp
     # The person's own words naming a compaction are not one.
     _write(record, [*rows, _person('TEST "isCompactSummary":true "compact_boundary"')])
     assert transcript.context_since(record) == "2026-09-25T12:30:00.500000Z"
+    # A summary alone, written with spaces, as another writer may (review of 3.10.5).
+    spaced = (
+        json.dumps(first)
+        + "\n"
+        + json.dumps(
+            {**_person("TEST summary"), "timestamp": "2026-09-25T11:00:00Z", "isCompactSummary": True},
+            separators=(", ", ": "),
+        )
+        + "\n"
+    )
+    record.write_text(spaced, encoding="utf-8")
+    assert transcript.context_since(record) == "2026-09-25T11:00:00Z"
+    _write(record, rows)
     monkeypatch.setattr(transcript, "_CONTEXT_TAIL_BYTES", 600)
     _write(record, [*rows, *[_person("TEST " + "长" * 100) for _ in range(20)]])
     assert transcript.context_since(record) is None, "no compaction in what was read, and not read to its start"

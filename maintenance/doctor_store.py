@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from contextlib import closing, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -599,28 +600,40 @@ def check_ledger(report: DoctorReport) -> None:
 
 #: How many of the owner's messages holding a client's reminder the doctor names by ref.
 _REMINDER_REFS = 20
+#: How long the doctor reads the owner's stored messages for them, before it says it did not finish.
+_REMINDER_SCAN_S = 10.0
 
 
 def check_client_reminders(report: DoctorReport, data_directory: Path, entry_id: str | None) -> None:
     """Claude Code messages stored as the owner's words with a reminder the desktop app had put in them, before 3.10.5
     took such reminders out (#248): claims drawn from them read as things the owner said.  Counted for this entry (its
     own store's messages when it has one), with the first refs named and never their text; the owner forgets them by
-    ref, and what was drawn from them goes with them."""
-    found: list[str] = []
+    ref, and what was drawn from them goes with them.  The read stops after ``_REMINDER_SCAN_S``; one that did not
+    finish says so with what it found, never that there is nothing."""
+    count, refs, finished = 0, [], False
+    deadline = time.monotonic() + _REMINDER_SCAN_S
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(
             sqlite3.connect(f"file:{(data_directory / 'memory.sqlite3').as_posix()}?mode=ro", uri=True, timeout=5)
         ) as db:
+            db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
             rows = db.execute(
                 """SELECT event_id,source_revision,content FROM source_events WHERE origin='human_direct'
                 AND read_blocked=0 AND entry_id IS ? AND instr(content,'<system-reminder')>0 ORDER BY rowid""",
                 (entry_id,),
             )
-            found = [
-                f"{event_id}@{revision}"
-                for event_id, revision, content in rows
-                if type(content) is str and claude_code_person_text(content) != content
-            ]
-    if found:
+            for event_id, revision, content in rows:
+                if time.monotonic() > deadline:
+                    break
+                if type(content) is str and claude_code_person_text(content) != content:
+                    count += 1
+                    if len(refs) < _REMINDER_REFS:
+                        refs.append(f"{event_id}@{revision}")
+            else:
+                finished = True
+    if count:
         report.capability_gaps.append("owner_words_with_client_reminder")
-        record_check(report, "owner_words", "client_reminders", f"{len(found)}: {','.join(found[:_REMINDER_REFS])}")
+    if not finished:
+        record_check(report, "owner_words", "unfinished", f"{count} found before the read stopped: {','.join(refs)}")
+    elif count:
+        record_check(report, "owner_words", "client_reminders", f"{count}: {','.join(refs)}")

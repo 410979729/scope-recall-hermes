@@ -459,9 +459,9 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
 #
 # An entry keeps the grants it was attached with until the operator changes them here (#246): its record's
 # owner principals, the capture scope of each audience kind, and its exact audience rows.  ``entry_grants`` gives
-# them as a document to edit, ``regranted`` checks an edited one as attach checks a record, and
-# ``write_regranted`` writes what it checked.  What the store holds keeps its scopes; only who reads and writes
-# them changes.
+# them as a document to edit, ``regranted`` checks an edited one as attach checks a record, and the
+# command writes the manifest it returns (``maintenance/shared.py``).  What the store holds keeps its scopes; only
+# who reads and writes them changes.
 
 GRANTS_SCHEMA = "scope-recall.entry-grants/1"
 _GRANT_FIELDS = ("owner_principals", "audience_scopes", "audiences")
@@ -497,9 +497,11 @@ def regranted(
     its own, checked as a whole as ``attach_shared_record`` checks a record: (store, manifest now, record now,
     record after, manifest after).  Nothing is written.
 
-    Rows stay exact (``audience_entry``).  An owner row must name an owner principal, or it grants nothing.  A scope
-    no entry would hold any more is refused: what is in it would leave every binding, the worker's included
-    (``detach`` keeps an entry's scopes on record).  A client's own route must still read and capture."""
+    Rows stay exact (``audience_entry``).  An owner row must name an owner principal, or it grants nothing.  Only
+    scopes the store holds are named, and none is left held by no entry (what is in it would leave every binding, the
+    worker's included; ``detach`` keeps an entry's scopes on record): the store's own scopes never change here, so
+    the worker's binding stays and the grants before a change can always be applied back.  A client's own route must
+    still read and capture."""
     store, payload, record = _attached(hermes_home)
     if not isinstance(grants, dict) or grants.get("schema") != GRANTS_SCHEMA:
         raise HermesIdentityError(f"not an entry grants document ({GRANTS_SCHEMA}): start from the entry's own")
@@ -521,6 +523,12 @@ def regranted(
     mapped = sorted({scope_id for row in rows for scope_id in row["allowed_scope_ids"]})
     if not set(kinds.values()) <= set(mapped):
         raise HermesIdentityError("audience_scopes names a scope no row of the entry reads")
+    unknown = set(mapped) - set(payload["scope_ids"])
+    if unknown:
+        raise HermesIdentityError(
+            f"{len(unknown)} scope(s) the store does not hold: grants change who reads and writes the store's scopes, "
+            "and a scope comes into the store with an entry that holds it (attach)"
+        )
     if record["host"] in CLIENT_HOSTS and not any(
         row["kind"] == "owner_private"
         and row["capture_scope_id"]
@@ -544,17 +552,3 @@ def regranted(
     updated = _checked_shared_payload({**payload, "entries": entries, "scope_ids": sorted(held)})
     _entry_view(store, updated, after)
     return store, payload, record, after, updated
-
-
-def write_regranted(store: Path, payload: dict[str, Any], updated: dict[str, Any]) -> None:
-    """Write what ``regranted`` checked: a scope new to the store registered in it first, then the manifest."""
-    before, after = frozenset(payload["scope_ids"]), frozenset(updated["scope_ids"])
-    if after - before:
-        binding = InstanceBinding(
-            payload["agent_id"], payload["installation_id"], store, before, payload["test_mode"], "shared"
-        )
-        storage = SQLiteStorage(binding)
-        context = TrustedContext(storage.binding, "shared-store-grants", storage.binding.scope_ids, "host_generated")
-        with storage.write(context) as tx:
-            tx.registry.register_scopes(after)
-    write_shared_payload(store, updated)

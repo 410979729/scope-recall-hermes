@@ -70,10 +70,12 @@ def is_task_notification(prompt: str) -> bool:
 
 #: A reminder Claude's desktop app puts in the person's message, addressed to the model (a session started without a
 #: project folder, and others): a text block of its own, or ahead of what was typed in one string.  Such a block opens
-#: a line; the person's own words about one, inside a line, stay theirs.  The blank lines after one go with it.
-_CLAUDE_CODE_REMINDER = re.compile(
-    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder>(?:[ \t]*\r?\n)*", re.DOTALL | re.MULTILINE
-)
+#: a line; the person's own words about one, inside a line, stay theirs.  The blank lines after one go with it.  The
+#: opening tag is matched within its line, and its end found by a plain search, so a text of many unclosed openings
+#: costs one pass, not one pass per opening.
+_CLAUDE_CODE_REMINDER_OPEN = re.compile(r"^[ \t]*<system-reminder\b[^>\n]*>", re.MULTILINE)
+_CLAUDE_CODE_REMINDER_CLOSE = "</system-reminder>"
+_BLANK_LINES = re.compile(r"(?:[ \t]*\r?\n)*")
 
 
 #: Where a prompt's payload carries since when the host's model still holds the session's own turns
@@ -97,9 +99,21 @@ def in_context_since(payload: dict[str, Any]) -> str | None:
 def claude_code_person_text(text: str) -> str:
     """The person's own words in a Claude Code prompt or session-record message: without the ``<system-reminder>``
     blocks the app put in it, or the text as it came when it holds none.  Stored as theirs, a reminder became things
-    they had said, and claims were drawn from it (#248)."""
-    cleaned = _CLAUDE_CODE_REMINDER.sub("", text)
-    return cleaned.strip() if cleaned != text else text
+    they had said, and claims were drawn from it (#248).  A block that never closes, and what follows it, stay."""
+    kept: list[str] = []
+    position = 0
+    while (opening := _CLAUDE_CODE_REMINDER_OPEN.search(text, position)) is not None:
+        closing = text.find(_CLAUDE_CODE_REMINDER_CLOSE, opening.end())
+        if closing < 0:
+            break
+        kept.append(text[position : opening.start()])
+        position = closing + len(_CLAUDE_CODE_REMINDER_CLOSE)
+        blank = _BLANK_LINES.match(text, position)
+        position = blank.end() if blank is not None else position
+    if not kept:
+        return text
+    kept.append(text[position:])
+    return "".join(kept).strip()
 
 
 #: How WorkBuddy opens the message it hands its model, and so its prompt hook, when a Stop hook or a goal asks the

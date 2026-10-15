@@ -39,7 +39,7 @@ from typing import Any, Callable
 from ..._version import __version__
 from ...runtime.worker_entry import host_process_credential_environment
 from . import transcript
-from .boundary import without_lone_surrogates
+from .boundary import IN_CONTEXT_FIELD, in_context_since, without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, SystemHookClock
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
@@ -192,6 +192,12 @@ def client_times(body: dict[str, Any]) -> tuple[str | None, RecordLines | None]:
     Clamped one at a time, a fast client's turn fell out of order: a reply said early in the turn kept its time,
     the prompt after it was clamped to now, and the reply was joined to the next turn.
     """
+    observed_at, record, _lead = client_times_and_lead(body)
+    return observed_at, record
+
+
+def client_times_and_lead(body: dict[str, Any]) -> tuple[str | None, RecordLines | None, timedelta]:
+    """``client_times``, and how far everything was moved back (nothing when the client's clock is not ahead)."""
     observed = _observed_at(body.get("observed_at"))
     record = record_from_wire(body.get("record"))
     times = [observed] if observed is not None else []
@@ -199,7 +205,7 @@ def client_times(body: dict[str, Any]) -> tuple[str | None, RecordLines | None]:
         times.extend(_moment(said.occurred_at) for _offset, said in record.lines if said is not None)
     lead = max(times) - _now() if times else timedelta(0)
     if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
-        return (_stamp(observed) if observed is not None else None), record
+        return (_stamp(observed) if observed is not None else None), record, timedelta(0)
     if record is not None:
         record = replace(
             record,
@@ -211,7 +217,16 @@ def client_times(body: dict[str, Any]) -> tuple[str | None, RecordLines | None]:
                 for offset, said in record.lines
             ],
         )
-    return (_stamp(observed - lead) if observed is not None else None), record
+    return (_stamp(observed - lead) if observed is not None else None), record, lead
+
+
+def _context_since_moved(payload: dict[str, Any], lead: timedelta) -> dict[str, Any]:
+    """A Claude Code prompt's in-context moment, moved back by the client's lead as its stored times are: left as
+    the client's clock said, it fell after the messages it was the boundary of (#249)."""
+    since = in_context_since(payload)
+    if since is None or lead <= timedelta(0):
+        return payload
+    return {**payload, IN_CONTEXT_FIELD: _stamp(_moment(since) - lead)}
 
 
 def record_from_wire(value: object) -> RecordLines | None:
@@ -276,7 +291,8 @@ def handle_request(
     # The hook's own times are the client's (moved back if more than a minute ahead, see CLOCK_AHEAD_SECONDS), so a
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
     # now are this machine's: a client clock a day fast held back a message's embedding by a day.
-    observed_at, record = client_times(body)
+    observed_at, record, lead = client_times_and_lead(body)
+    payload = _context_since_moved(payload, lead)
     building = time.monotonic()
     handler = CodexHookHandler.from_home(
         str(config.home),

@@ -1056,6 +1056,10 @@ def test_the_doctor_names_owner_words_stored_with_a_reminder(store, monkeypatch)
         other = DoctorReport(host="claude-code", status="ok")
         check_client_reminders(other, root, entry)
         assert other.capability_gaps == [] and other.checks == [], "another entry's, or another store's"
+    monkeypatch.setattr("scope_recall.maintenance.doctor_store._REMINDER_SCAN_S", -1.0)  # already over
+    stopped = DoctorReport(host="claude-code", status="ok")
+    check_client_reminders(stopped, root, "claude-code")
+    assert [check["result"] for check in stopped.checks] == ["unfinished"], "a read cut short never reads as clean"
     with closing(sqlite3.connect(root / "memory.sqlite3")) as connection, connection:
         connection.execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (event,))
     forgotten = DoctorReport(host="claude-code", status="ok")

@@ -394,8 +394,9 @@ def said_from_wire(value: object) -> Said | None:
 #: How much of a session record's end ``context_since`` reads for the last compaction.  At every prompt of the 24 local
 #: sessions measured for 3.10.5 the last one lay at most 12.2 MB back (median 5.4 MB).
 _CONTEXT_TAIL_BYTES = 16 * 1024 * 1024
-#: How the record's own lines name a compaction: the summary that replaces what came before, and its boundary.
-_COMPACTION_MARKS = (b'"isCompactSummary":true', b'"compact_boundary"')
+#: What a record line naming a compaction holds: the summary that replaces what came before, or its boundary.  Only
+#: the names: a line is parsed and its values checked (``_compaction``) whatever spacing its JSON has.
+_COMPACTION_MARKS = (b'"isCompactSummary"', b'"compact_boundary"')
 
 
 def _compaction(row: object) -> str | None:

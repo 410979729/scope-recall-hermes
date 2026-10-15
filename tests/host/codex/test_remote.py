@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1014,6 +1014,24 @@ def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_wo
         {"record": {"start": 0, "lines": [[10, transcript.said_to_wire(said)]]}}
     )
     assert parse(lines.lines[0][1].occurred_at) <= latest
+
+
+def test_a_fast_client_s_context_moment_moves_back_with_its_times():
+    """A client whose clock runs ahead has its times moved back; the in-context moment it sends was left as its
+    clock said, after the messages it bounds, so they were recalled again (review of 3.10.5)."""
+    from scope_recall.adapters.clients.boundary import IN_CONTEXT_FIELD
+
+    ahead = datetime.now(UTC) + timedelta(hours=1)
+    stamp = lambda moment: moment.isoformat().replace("+00:00", "Z")  # noqa: E731
+    _observed, _record, lead = remote_server.client_times_and_lead({"observed_at": stamp(ahead)})
+    assert timedelta(minutes=59) < lead < timedelta(minutes=61)
+    since = ahead - timedelta(minutes=10)
+    moved = remote_server._context_since_moved({IN_CONTEXT_FIELD: stamp(since)}, lead)
+    assert abs(datetime.fromisoformat(moved[IN_CONTEXT_FIELD]) - (since - lead)) < timedelta(seconds=1)
+    assert remote_server._context_since_moved({"TEST": 1}, lead) == {"TEST": 1}
+    assert remote_server._context_since_moved({IN_CONTEXT_FIELD: stamp(since)}, timedelta(0)) == {
+        IN_CONTEXT_FIELD: stamp(since)
+    }
 
 
 def test_an_older_client_s_reminders_are_taken_out_by_the_server(store):

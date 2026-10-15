@@ -788,13 +788,15 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
         (preview["rows_changed"][0]["route"], [elsewhere], [])
     ]
     assert preview["principals_added"] == ["weixin/TEST-wx-1"] and preview["entry_scopes_added"] == [elsewhere]
-    assert preview["store_scopes_new"] == [] and preview["rows_removed"] == []
+    assert preview["rows_removed"] == [] and preview["entry_runtime_config_rebound"]
     assert json.loads(manifest.read_text(encoding="utf-8")) == original, "a preview writes nothing"
 
     code, applied = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
     assert (code, applied["status"]) == (0, "applied"), applied
     assert Path(applied["receipt"]).is_file() and Path(applied["rollback"]).is_file()
-    assert applied["entry_runtime_config_written"] and not applied["worker_runtime_config_written"]
+    assert applied["entry_runtime_config_rebound"]
+    worker = root / "runtime-config.json"
+    assert json.loads(worker.read_text(encoding="utf-8"))["binding"]["scope_ids"] == original["scope_ids"]
     dm_identity = _weixin(first)
     assert dm_identity.runtime_audience.includes_owner_private and not dm_identity.runtime_audience.capability_gaps
     assert elsewhere in dm_identity.runtime_audience.allowed_scope_ids
@@ -810,6 +812,60 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
     assert restored == record and _weixin(first).runtime_audience.capability_gaps
     code, same = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", applied["rollback"])
     assert (code, same["status"]) == (0, "unchanged"), same
+
+
+def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_finishes(
+    tmp_path, capsys, root, monkeypatch
+):
+    """A write that fails after the manifest changed left the entry bound to its old scopes, and running the command
+    again said unchanged (review of 3.10.5).  The copies go back on a failure; and a run that finds the manifest done
+    but the entry's runtime config not rebinds it."""
+    from scope_recall.maintenance import shared
+
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
+    before_manifest, before_entry = manifest.read_bytes(), entry.read_bytes()
+    elsewhere = read_shared_payload(root)["entries"][1]["scope_ids"][0]
+
+    def read_more(document):
+        for row in document["audiences"]:
+            if row["kind"] == "owner_private":
+                row["allowed_scope_ids"].append(elsewhere)
+
+    real = shared.write_json
+
+    def failing(path, value):
+        if Path(path) == entry:
+            raise OSError("TEST disk full")
+        return real(path, value)
+
+    monkeypatch.setattr(shared, "write_json", failing)
+    code, failed = _granted(capsys, tmp_path, first, read_more)
+    assert code == 2 and "disk full" in failed["error"]
+    assert (manifest.read_bytes(), entry.read_bytes()) == (before_manifest, before_entry), "both put back"
+    monkeypatch.setattr(shared, "write_json", real)
+
+    code, applied = _granted(capsys, tmp_path, first, read_more)
+    assert (code, applied["status"]) == (0, "applied")
+    copy = Path(applied["receipt"]).with_suffix("") / f"entry-{entry.name}"
+    entry.write_bytes(copy.read_bytes())  # as a run that died between the two writes left it
+    document = tmp_path / "TEST-grants-tianshu.json"
+    code, again = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(document))
+    assert (code, again["status"], again["entry_runtime_config_rebound"]) == (0, "preview", True), again
+    code, again = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(document), "--apply")
+    assert (code, again["status"], again["rollback"]) == (0, "applied", None), again
+    assert load_config(entry).binding == _bind(first).binding
+
+
+def test_two_runs_of_one_command_in_one_second_keep_apart(tmp_path):
+    from scope_recall.maintenance.shared_run import Run
+
+    at = "2026-10-15T12:00:00Z"
+    one, two = Run(tmp_path, "grants-TEST", at), Run(tmp_path, "grants-TEST", at)
+    assert one.folder != two.folder and one.folder.is_dir() and two.folder.is_dir()
+    assert Path(one.receipt({"status": "TEST"})).is_file()
+    assert not one.folder.exists(), "a run that kept nothing leaves its receipt only"
+    assert Run(tmp_path, "grants-TEST", at).folder not in (one.folder, two.folder)
 
 
 def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, capsys, root):
@@ -838,6 +894,12 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
     only_other = dict(owner, allowed_scope_ids=[other], writable_scope_ids=[], capture_scope_id="")
     refused(lambda d: d.update(audiences=[only_other]), "no row of the entry reads")
     refused(lambda d: d.update(audiences=[only_other], audience_scopes={"owner_private": other}), "held by no entry")
+    refused(
+        lambda d: next(r for r in d["audiences"] if r["kind"] == "owner_private")["allowed_scope_ids"].append(
+            "TEST-new-scope"
+        ),
+        "does not hold",
+    )
     code, result = _run(capsys, "grants", "--instance-root", str(first), "--apply")
     assert code == 2 and "--grants-from" in result["error"]
     code, result = _run(capsys, "grants", "--instance-root", str(tmp_path / "TEST-not-attached"))

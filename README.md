@@ -35,7 +35,8 @@ New users go directly to installation; only detected legacy databases go through
 `scope-recall-setup` skill makes this routing discoverable in Hermes and Codex.
 A second installed skill, `scope-recall-memory`, which Claude Code gets too, is for the owner's everyday questions:
 what is remembered about me, did I say it or was it worked out, does it still hold, and
-what correcting, muting or deleting one memory does before it is done.
+what correcting, muting or deleting one memory does before it is done. Claude Code, WorkBuddy and dsh only read
+memory through their tools; the change is made in Codex or a Hermes chat on the same store.
 Perform path discovery, backup, audience binding, migration, indexing and host
 checks yourself; do not ask the user to execute commands or govern old memories.
 

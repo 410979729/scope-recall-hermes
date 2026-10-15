@@ -296,18 +296,22 @@ rem start it again, then doctor
 
 The first command writes the entry's grants to a new file. The second checks the edited copy and
 shows the change (rows added, removed and changed by route, with the scopes each reads, writes
-and captures into; owner principals; scopes the entry and the store gain) and writes nothing.
-With `--apply` it writes the store's manifest, and the entry's and the shared worker's runtime
-configs when the scopes they bind change, keeping a copy of each file under `receipts\`, with
-`grants-before.json`, the grants as they were: applied the same way, it puts them back.
+and captures into; owner principals; scopes the entry gains or gives up) and writes nothing.
+With `--apply` it writes the store's manifest, and the entry's runtime config when the scopes it
+binds change, keeping a copy of each file under `receipts\`, with `grants-before.json`, the
+grants as they were: applied the same way, it puts them back. A write that fails puts the copies
+back; run again, the command also rebinds an entry config that a failed run left behind.
 
 A row matches a session field by field, as at attach: `platform`, `user_id`, `chat_type`,
 `chat_id`, `thread_id`, `gateway_session_key` (empty does not pin the host's session key) and
 `agent_workspace`; there is no wildcard. An `owner_private` row is refused unless its platform
 and user are among the owner principals (it would grant nothing), so add the principal with the
-row. Write and capture scopes must be among the row's read scopes. A change that would leave a
-scope held by no entry is refused: what is in it would leave every binding, the worker's
-included; keep it on a row that only reads, or `detach` the entry. A client's (Codex, Claude
+row. Write and capture scopes must be among the row's read scopes. Only scopes the store already
+holds are named: a scope comes into the store with an entry that holds it. A change that would
+leave a scope held by no entry is refused: what is in it would leave every binding, the worker's
+included; keep it on a row that only reads, or `detach` the entry. So the store's own scopes,
+and the shared worker's config, never change here, and the grants before a change always apply
+back. A client's (Codex, Claude
 Code, WorkBuddy, dsh) owner row stays on its own route with a capture scope. Memories keep their
 scopes and their entry; only who reads and writes them changes. Whoever can run this can grant
 any route the store's memory, as whoever can write the manifest always could: it is an operator

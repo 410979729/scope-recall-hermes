@@ -27,6 +27,7 @@ import os
 import shutil
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,7 +53,6 @@ from ..adapters.hermes.shared_entries import (
     read_shared_payload,
     regranted,
     shared_entry_record,
-    write_regranted,
     write_shared_payload,
 )
 from ..contracts import ContractError, InstanceBinding, TrustedContext
@@ -516,11 +516,9 @@ def _owners(record: dict[str, Any]) -> set[tuple[str, str]]:
     return {(item["platform"], item["user_id"]) for item in record["owner_principals"]}
 
 
-def _grants_change(
-    before: dict[str, Any], after: dict[str, Any], store_before: dict[str, Any], store_after: dict[str, Any]
-) -> dict[str, Any]:
+def _grants_change(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     """What a grants change does: rows by route, the scopes each reads, writes and captures into, the owner
-    principals, and the scopes the entry and the store hold.  Routes and scope ids only."""
+    principals, and the scopes the entry holds.  Routes and scope ids only."""
     old = {_route(row): row for row in before["audiences"]}
     new = {_route(row): row for row in after["audiences"]}
     changed = []
@@ -545,7 +543,6 @@ def _grants_change(
         "audience_scopes_changed": before["audience_scopes"] != after["audience_scopes"],
         "entry_scopes_added": sorted(set(after["scope_ids"]) - set(before["scope_ids"])),
         "entry_scopes_removed": sorted(set(before["scope_ids"]) - set(after["scope_ids"])),
-        "store_scopes_new": sorted(set(store_after["scope_ids"]) - set(store_before["scope_ids"])),
     }
     change["unchanged"] = not any(value for key, value in change.items() if key != "entry_id")
     return change
@@ -563,72 +560,118 @@ def grants(
 
     Without ``grants_from`` the entry's grants come back as a document, written to ``out`` when one is named.  With
     it the edited document is checked as attach checks a record and the change is shown; with ``apply`` as well it
-    is written: the store's manifest, and the entry's and the worker's runtime configs when the scopes they bind
-    change.  A copy of each file replaced and the entry's grants before the change (``grants-before.json``, which
-    applied the same way puts them back) go with the receipt.  Memories keep their scopes; nothing else is written.
+    is written: the store's manifest, and the entry's runtime config when the scopes it binds are not the entry's.
+    The store's own scopes never change (``regranted``), so the shared worker's config does not either.  A copy of
+    each file replaced and the entry's grants before the change (``grants-before.json``, which applied the same way
+    puts them back) go with the receipt.  A write that fails puts the copies back; run again, the command also
+    rebinds an entry config a failed run left behind.  Memories keep their scopes; nothing else is written.
     """
     if grants_from is None:
         if apply:
             raise SharedStoreError("--apply needs --grants-from, the entry's grants as edited")
-        document = entry_grants(instance_root)
-        if out is not None:
-            if os.path.lexists(out):
-                raise SharedStoreError(f"{out} exists; name a new file")
-            write_json(out, document)
+        return _shown_grants(instance_root, out)
+    plan = _planned_grants(instance_root, grants_from)
+    if not plan.manifest_changes and plan.entry_config is None:
+        return {"status": "unchanged", **plan.change}
+    if not apply:
         return {
-            "status": "shown",
-            "entry_id": document["entry_id"],
-            "grants": document,
-            "written": str(out) if out is not None else None,
+            "status": "preview",
+            **plan.change,
+            "next": "nothing is written: stop this entry's host, run again with --apply, then start it again",
         }
+    return _applied_grants(plan, now or _now())
+
+
+def _shown_grants(instance_root: Path, out: Path | None) -> dict[str, Any]:
+    document = entry_grants(instance_root)
+    if out is not None:
+        if os.path.lexists(out):
+            raise SharedStoreError(f"{out} exists; name a new file")
+        write_json(out, document)
+    return {
+        "status": "shown",
+        "entry_id": document["entry_id"],
+        "grants": document,
+        "written": str(out) if out is not None else None,
+    }
+
+
+@dataclass(frozen=True)
+class _GrantsPlan:
+    """A checked grants change: the store's manifest after it, and the entry's runtime config when it must follow."""
+
+    store: Path
+    before: dict[str, Any]
+    updated: dict[str, Any]
+    change: dict[str, Any]
+    entry_path: Path
+    entry_config: dict[str, Any] | None
+
+    @property
+    def manifest_changes(self) -> bool:
+        return not self.change["unchanged"]
+
+
+def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
     if not grants_from.is_file() or grants_from.stat().st_size > _GRANTS_LIMIT:
         raise SharedStoreError(f"{grants_from} is missing or too large")
     try:
         document = json.loads(grants_from.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SharedStoreError(f"{grants_from} is not readable JSON") from exc
-    store, payload, before, after, updated = regranted(instance_root, document)
-    change = _grants_change(before, after, payload, updated)
-    if change["unchanged"]:
-        return {"status": "unchanged", **change}
-    if not apply:
-        return {
-            "status": "preview",
-            **change,
-            "next": "nothing is written: stop this entry's host, run again with --apply, then start it again",
-        }
-    now = now or _now()
+    store, _payload, before, after, updated = regranted(instance_root, document)
+    change = _grants_change(before, after)
+    # The entry's runtime config binds the entry's scopes; compared with the file itself, so a run that failed after
+    # the manifest was written is finished by the next one.
     entry_path = attachment_path(instance_root).parent / RUNTIME_CONFIG_FILENAME
-    worker_path = store / RUNTIME_CONFIG_FILENAME
-    entry_config = worker_config = None
-    # A runtime config binds the scopes it serves: the entry's own, the worker every scope of the store.
-    if set(before["scope_ids"]) != set(after["scope_ids"]) and entry_path.is_file():
-        entry_config = _bound(_read_json(entry_path), _store_binding(updated, store, frozenset(after["scope_ids"])))
-    if set(payload["scope_ids"]) != set(updated["scope_ids"]) and worker_path.is_file():
-        worker_config = _bound(_read_json(worker_path), _store_binding(updated, store, frozenset(updated["scope_ids"])))
+    entry_config = None
+    if entry_path.is_file():
+        now_config = _read_json(entry_path)
+        entry_config = _bound(now_config, _store_binding(updated, store, frozenset(after["scope_ids"])))
+        if entry_config == now_config:
+            entry_config = None
+    change["entry_runtime_config_rebound"] = entry_config is not None
     _fits(entry_config, "entry's")
-    _fits(worker_config, "shared worker's")
-    run = Run(store, f"grants-{before['entry_id']}", now)
-    run.keep(store / MANIFEST_FILENAME, "store")
-    run.keep(entry_path, "entry")
-    run.keep(worker_path, "worker")
-    rollback = run.folder / "grants-before.json"
-    kept = {name: before[name] for name in ("owner_principals", "audience_scopes", "audiences")}
-    write_json(rollback, {"schema": GRANTS_SCHEMA, "entry_id": before["entry_id"], **kept})
-    write_regranted(store, payload, updated)
-    for path, config in ((entry_path, entry_config), (worker_path, worker_config)):
-        if config is not None:
-            write_json(path, config)
+    return _GrantsPlan(store, before, updated, change, entry_path, entry_config)
+
+
+def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
+    run = Run(plan.store, f"grants-{plan.before['entry_id']}", now)
+    replaced = {plan.store / MANIFEST_FILENAME: "store", plan.entry_path: "entry"}
+    for path, label in replaced.items():
+        run.keep(path, label)
+    rollback = None
+    if plan.manifest_changes:
+        rollback = run.folder / "grants-before.json"
+        kept = {name: plan.before[name] for name in ("owner_principals", "audience_scopes", "audiences")}
+        write_json(rollback, {"schema": GRANTS_SCHEMA, "entry_id": plan.before["entry_id"], **kept})
+    try:
+        if plan.manifest_changes:
+            write_shared_payload(plan.store, plan.updated)
+        if plan.entry_config is not None:
+            write_json(plan.entry_path, plan.entry_config)
+    except BaseException:
+        # Half a change binds the entry to scopes its grants do not name, or the other way round.
+        _put_back(run, replaced)
+        raise
     result = {
         "status": "applied",
-        **change,
-        "entry_runtime_config_written": entry_config is not None,
-        "worker_runtime_config_written": worker_config is not None,
-        "rollback": str(rollback),
+        **plan.change,
+        "rollback": str(rollback) if rollback is not None else None,
         "next": "start this entry's host again: it binds the new grants when it starts (doctor checks them)",
     }
     result["receipt"] = run.receipt(result)
     return result
+
+
+def _put_back(run: Run, replaced: dict[Path, str]) -> None:
+    """Each file a run kept a copy of, as the copy has it, replaced in one step."""
+    for path, label in replaced.items():
+        kept = run.folder / f"{label}-{path.name}"
+        if kept.is_file():
+            staged = path.with_name(f".{path.name}.restore")
+            shutil.copy2(kept, staged)
+            os.replace(staged, path)
 
 
 def entries(*, root: Path) -> dict[str, Any]:
