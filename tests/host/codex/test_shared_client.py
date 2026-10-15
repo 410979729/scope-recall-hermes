@@ -364,6 +364,42 @@ def test_the_client_s_tools_read_the_store_and_refuse_to_change_it(store):
     assert _rows(root, "SELECT count(*) FROM source_events WHERE entry_id='claude-code'") == [(0,)]
 
 
+READ_TOOLS = ["recall", "inspect", "profile", "trace", "entity", "status"]
+
+
+@pytest.mark.parametrize("host", ["claude-code", "workbuddy", "dsh", "codex"])
+def test_only_a_client_that_names_its_conversation_is_offered_the_tools_that_change_the_store(store, tmp_path, host):
+    """#245: the store takes a change only on the word of the person's latest message in the same conversation, and
+    Claude Code, WorkBuddy and dsh name no conversation with a tool call: offered there, propose_memory, revise and
+    forget were refused on every call (ACCESS_DENIED codex_thread_id).  Codex names its thread and keeps all nine."""
+    root, _homes, client, _capture = store
+    if host != "claude-code":
+        owner = next(
+            row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private"
+        )
+        client = tmp_path / f"TEST-{host}-home"
+        attach_shared_record(
+            root,
+            client_entry_record(
+                host=host,
+                home=client,
+                entry_id=host,
+                display_name=f"TEST {host}",
+                attached_at=NOW,
+                allowed_scope_ids=owner["allowed_scope_ids"],
+                writable_scope_ids=owner["writable_scope_ids"],
+                capture_scope_id=owner["capture_scope_id"],
+            ),
+            now=NOW,
+        )
+    server = build_server(load_shared_client(client, host), workspace=None)
+    offered = [tool.name for tool in server.server._tool_manager.list_tools()]
+    if host == "codex":
+        assert offered == ["recall", "inspect", "profile", "trace", "entity", "propose_memory", "revise", "forget", "status"]
+    else:
+        assert offered == READ_TOOLS
+
+
 # -- the session record ------------------------------------------------------
 # Claude Code's hooks carry a turn's prompt and last message; what the model says while it works, and
 # anything a hook could not write, is read from the session record at the end of the turn.

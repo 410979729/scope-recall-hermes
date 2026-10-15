@@ -61,6 +61,9 @@ _RECALL_BUDGET_GUIDANCE = (
 _BUDGET_CAP_GAPS = ("budget_token_cap", "budget_packet_cap")
 #: The request metadata a client binds a tool call to its conversation with.
 _THREAD_META = {"codex": "threadId"}
+#: The tools that change the store.  Core takes one only on the word of the person's latest message in the same
+#: conversation, so they are served only to a client that names its conversation on every call (``_THREAD_META``).
+_MUTATIONS = frozenset({"propose_memory", "revise", "forget"})
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 #: The public tool surface in registration order.  Each entry names the
@@ -224,6 +227,10 @@ class CodexMCPServer:
 
     def _register_tools(self) -> None:
         for name, description, hints in _TOOLS:
+            if name in _MUTATIONS and self.host not in _THREAD_META:
+                # Claude Code, WorkBuddy and dsh name no conversation with a tool call, so each of these was refused
+                # on every call (#245).  The person makes such a change through an agent that names its conversation.
+                continue
             self.server.tool(name=name, description=description, annotations=hints, structured_output=True)(
                 _refusals_said(getattr(self, name))
             )

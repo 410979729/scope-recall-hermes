@@ -285,7 +285,9 @@ def test_dsh_remote_install_and_mcp(remote, tmp_path, capsys):
     tools = _request(
         mcp["url"], data=json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).encode(), headers=headers
     )
-    assert {"recall", "status"} <= {tool["name"] for tool in tools["result"]["tools"]}
+    offered = {tool["name"] for tool in tools["result"]["tools"]}
+    assert {"recall", "status"} <= offered
+    assert not offered & {"propose_memory", "revise", "forget"}, "dsh names no conversation with a call (#245)"
     with pytest.raises(urllib.error.HTTPError) as denied:
         _request(mcp["url"], data=json.dumps(initialize).encode(), headers={"Content-Type": "application/json"})
     assert denied.value.code == 401

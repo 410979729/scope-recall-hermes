@@ -1022,7 +1022,9 @@ where the last read stopped, for the text shown between tool calls and the owner
 prompt hook could not store; `SessionEnd` reads the rest and forgets the session's turns. A turn
 is named by the prompt's `generation_id` when it is new to the session, else by one derived from
 the session, the words and the moment, kept in `<instance-root>\scope-recall\turns\` until the
-session ends (a day at most). The MCP server serves the tools.
+session ends (a day at most). The MCP server serves the tools that read the store, not
+`propose_memory`, `revise` or `forget`: WorkBuddy names no conversation with a call
+([shared-store.md](shared-store.md)).
 
 The prompt's recall comes from a resident recall server (from 3.6.0), which keeps the entry's
 vector search and embedding connection warm. WorkBuddy 5.6.2 runs its MCP servers inside a
@@ -1130,7 +1132,10 @@ and its session log is compressed, so a hook alone cannot record a turn: a dsh p
 installer writes, runs the entry's hooks instead. Before the first step of each turn it runs the
 prompt hook with the person's message and adds what is remembered to that step; it keeps the
 turn's messages as dsh commits them and stores them when the turn ends. dsh's own MCP client runs
-the MCP server, which serves the tools (`mcp__scope-recall__recall` and the rest).
+the MCP server, which serves the tools that read the store (`mcp__scope-recall__recall` and the
+rest). It does not offer `propose_memory`, `revise` or `forget`: dsh's MCP client names no
+conversation with a call, and the store takes such a change only on the word of the person's latest
+message in the same conversation ([shared-store.md](shared-store.md)).
 
 Attach dsh's entry first ([shared-store.md](shared-store.md)), from an environment with the
 `codex` extra, then install:

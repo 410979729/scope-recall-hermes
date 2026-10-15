@@ -139,9 +139,14 @@ by its words and moment) and not stored twice; one that cannot be written now is
 read stopped is kept in `<home>\scope-recall\transcripts`; deleting it only makes the next read
 start from the top. Claude Code runs a hook command through a shell (Git Bash, or
 PowerShell without it), so keep the interpreter, the home and the env file on ASCII paths without
-spaces; `apply-install` refuses others. Its MCP tools read the store. Changing a memory through
-them is refused, because the tools cannot tell which conversation asks: correct or delete through
-a Hermes agent or Codex.
+spaces; `apply-install` refuses others. Its MCP tools read the store. The three that would change
+it (`propose_memory`, `revise`, `forget`) are not offered: the store takes such a change only on the
+word of the person's latest message in the same conversation, and Claude Code does not tell the tools
+which conversation a call comes from, so each was refused (#245). Correct or delete through a Hermes
+agent or Codex; the store is one, so the change holds for every entry. Each answer of the tools that
+are offered names the gap `mcp_session_is_not_claude_code_conversation_id` (`..._workbuddy_...`,
+`..._dsh_...` on those entries): the call is tied to no conversation. It is expected and needs
+nothing.
 
 Each hook is a process of its own, and a prompt hook that starts LanceDB for its recall was often
 not ready before the recall's budget ran out (6 of 8 cold Claude Code prompts on the pilot recalled
@@ -204,7 +209,7 @@ Every process on the store, its worker included, must run 3.5.0 or later before 
 attaches: an older one does not know the host, and cannot replay a capture this entry queued.
 
 WorkBuddy attaches the same way, as the owner at this machine, and runs the same hooks and MCP
-server; its installer adds them to WorkBuddy's own `settings.json` and `mcp.json` rather than
+server, which offers it the same tools as Claude Code, none that changes the store; its installer adds them to WorkBuddy's own `settings.json` and `mcp.json` rather than
 writing a plugin ([install.md](install.md), section 12, which also says what is not recorded):
 
 ```text
@@ -235,7 +240,7 @@ queued.
 
 dsh attaches the same way, as the owner at this machine. A plugin the installer writes runs the
 same hooks (dsh's own hooks name no turn and no reply), and dsh's MCP client runs the same MCP
-server; the installer adds both as rows of dsh's home patch, `cordis.patch.yml`, and switches off
+server, with the same tools as Claude Code's, none that changes the store; the installer adds both as rows of dsh's home patch, `cordis.patch.yml`, and switches off
 dsh's upload of its session logs to its model API ([install.md](install.md), section 13, which
 also says what is not recorded):
 
