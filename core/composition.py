@@ -268,6 +268,7 @@ class MemoryCore:
         deadline_seconds: float | None,
         background_without_evidence: bool,
         zone: tzinfo | None,
+        in_context_since: str | None = None,
     ) -> tuple[SearchContext, float]:
         """A recall request's search context, and the seconds it was given: the caller's, else the core's for an
         automatic recall and 2 for any other; an automatic recall never gets more than the core's."""
@@ -292,6 +293,7 @@ class MemoryCore:
             current_source_refs=tuple(current_source_refs),
             background_without_evidence=background_without_evidence,
             zone=zone,
+            in_context_since=in_context_since,
         )
         return search_context, effective_deadline
 
@@ -324,15 +326,18 @@ class MemoryCore:
         deadline_seconds: float | None = None,
         background_without_evidence: bool = True,
         zone: tzinfo | None = None,
+        in_context_since: str | None = None,
     ):
         """Retrieve once, compile once, and return the public RecallPacket contract.
 
         Explicit tool lookups pass ``background_without_evidence=False``: a
         query that finds nothing then compiles to ``no_match`` rather than to
-        ambient preferences a caller could read as the answer.
+        ambient preferences a caller could read as the answer.  A host whose
+        model still holds this session's turns says since when
+        (``in_context_since``, see :class:`SearchContext`).
         """
         search_context, effective_deadline = self._search_context(
-            context, request, current_source_refs, deadline_seconds, background_without_evidence, zone
+            context, request, current_source_refs, deadline_seconds, background_without_evidence, zone, in_context_since
         )
         # Candidate collection is optional work. Reserve part of the original
         # deadline for the mandatory fresh SQLite release checks and rendering.

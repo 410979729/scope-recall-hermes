@@ -12,10 +12,12 @@ from scope_recall.core.secret_patterns import contains_secret_like_text
 
 from . import transcript
 from .boundary import (
+    IN_CONTEXT_FIELD,
     TURN_FIELD,
     assistant_stop_source_event,
     authorized_attachment_refs,
     claude_code_person_text,
+    in_context_since,
     is_codex_suggestions_prompt,
     is_codex_suggestions_reply,
     is_task_notification,
@@ -151,11 +153,28 @@ class HookEvents:
         # out.  One refused (a credential) attached no runtime above, so its recall has no vector channel and
         # nothing of it goes to an embedding provider.
         request_id = f"{self._hook.host}-auto:{session_id}:{turn_id}"
+        since = None
+        if self._hook.host == "claude-code":
+            payload = self._with_context_since(session_id, payload)
+            since = in_context_since(payload)
         if vectors and self._hook.resident_recall is not None:
             return self._hook.prompt_recall.answer(
-                payload, context, prompt, request_id, current_refs, deadline, capture_gaps
+                payload, context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
             )
-        return self._hook.prompt_recall.own(context, prompt, request_id, current_refs, deadline, capture_gaps)
+        return self._hook.prompt_recall.own(
+            context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
+        )
+
+    def _with_context_since(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """The payload with since when Claude Code's model still holds this session's own turns
+        (``transcript.context_since``), read from the session record here, for this recall and the entry's server's.
+        A client on another machine read its own record and sent it (the server opens no path a request names)."""
+        if not self._hook.call.local_record:
+            return payload
+        record = transcript.record_path(payload.get("transcript_path"), session_id)
+        since = transcript.context_since(record) if record is not None else None
+        kept = {key: value for key, value in payload.items() if key != IN_CONTEXT_FIELD}
+        return kept if since is None else {**kept, IN_CONTEXT_FIELD: since}
 
     def _prompt_turn(self, session_id: str, payload: dict[str, Any]) -> tuple[str, str, tuple[str, ...]] | None:
         """The turn and the words of a prompt this hook stores and recalls for, with its gaps; or None, said why: a

@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from scope_recall.contracts import SourceEvent
+from scope_recall.contracts import ContractError, SourceEvent, utc_timestamp
 
 _SCOPE_RECALL_TOOL = re.compile(r"(?:^|__)(?:scope[-_]?recall)", re.IGNORECASE)
 _MAX_TOOL_CHARS = 65536
@@ -74,6 +74,23 @@ def is_task_notification(prompt: str) -> bool:
 _CLAUDE_CODE_REMINDER = re.compile(
     r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder>(?:[ \t]*\r?\n)*", re.DOTALL | re.MULTILINE
 )
+
+
+#: Where a prompt's payload carries since when the host's model still holds the session's own turns
+#: (``transcript.context_since``) to a recall that runs where the session record cannot be opened: the entry's resident
+#: server, or the server of a client on another machine.  Only this package's own hook and client write it (#249).
+IN_CONTEXT_FIELD = "scope_recall_in_context_since"
+
+
+def in_context_since(payload: dict[str, Any]) -> str | None:
+    """The moment a payload carries in ``IN_CONTEXT_FIELD``, as a UTC timestamp; None when it carries none, or not one."""
+    value = payload.get(IN_CONTEXT_FIELD)
+    if type(value) is not str:
+        return None
+    try:
+        return utc_timestamp(value)
+    except ContractError:
+        return None
 
 
 def claude_code_person_text(text: str) -> str:

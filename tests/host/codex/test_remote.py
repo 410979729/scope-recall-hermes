@@ -1070,6 +1070,52 @@ def test_an_older_client_s_reminders_are_taken_out_by_the_server(store):
     )
 
 
+def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds(store, tmp_path):
+    """#249: the server opens no path a request names, so a Claude Code client reads since when its model holds the
+    session's turns from its own record and sends it with the prompt; the server's recall leaves those turns out.  A
+    client that cannot read its record sends nothing, and keeps nothing a payload carried of its own."""
+    from scope_recall.adapters.clients.boundary import IN_CONTEXT_FIELD
+
+    root, homes = store
+    remote_server.write_server_config(
+        homes["claude-code"], "claude-code", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
+    )
+    config = remote_server.load_server_config(homes["claude-code"], "claude-code")
+    record = tmp_path / "TEST-work-session.jsonl"
+    record.write_text("", encoding="utf-8")
+    at = _moments()
+
+    def prompt(text, prompt_id, seconds, **extra):
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "TEST-work-session",
+            "prompt_id": prompt_id,
+            "prompt": text,
+            "cwd": "C:/work",
+            "transcript_path": str(record),
+            **extra,
+        }
+        answer = remote_server.handle_request(config, {"payload": payload, "observed_at": at(seconds)})
+        return answer["result"].get("hookSpecificOutput", {}).get("additionalContext", "")
+
+    prompt("TEST 机器清单：构建机是 QX-17。", "TEST-p1", 0)
+    prompt("TEST 机器清单：部署机是 KZ-42。", "TEST-p2", 10)
+    question = "TEST 机器清单"
+    unknown = prompt(question, "TEST-p3", 20)
+    assert "QX-17。" in unknown and "KZ-42。" in unknown, "a prompt that carries nothing is recalled for as before"
+    since = remote_client._with_context_since(
+        {"session_id": "TEST-work-session", "transcript_path": str(record), IN_CONTEXT_FIELD: "TEST-forged"}
+    )
+    assert IN_CONTEXT_FIELD not in since, "an empty record says nothing, and what the payload carried is dropped"
+    record.write_text(
+        json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": at(5)}) + "\n", encoding="utf-8"
+    )
+    since = remote_client._with_context_since({"session_id": "TEST-work-session", "transcript_path": str(record)})
+    assert since[IN_CONTEXT_FIELD] == at(5).replace("+00:00", "Z")
+    held = prompt(question, "TEST-p4", 30, **{IN_CONTEXT_FIELD: since[IN_CONTEXT_FIELD]})
+    assert "QX-17。" in held and "KZ-42。" not in held, held
+
+
 def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch):
     """Clamped one time at a time, a client 90 s fast lost its order: a reply said 10 s into the turn kept its time
     (within the minute of the Stop that sent it), the next prompt was clamped to now, and the reply sorted after it

@@ -6,6 +6,7 @@ import itertools
 from dataclasses import replace
 
 import pytest
+from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 
 from tests.contract.test_claims import Clock, capture
@@ -134,3 +135,181 @@ def test_closing_marks_are_read_from_the_end_once():
     assert same_message(text, text + "。") is True
     assert same_message(text, "P12") is False
     assert time.monotonic() - started < 1.0
+
+
+# -- what the asking model still holds (#249) ---------------------------------------------------------------------
+# A host that keeps the whole session in its model's context (Claude Code until it compacts) says since when; an
+# automatic recall then leaves out what stands only on this session's turns since that moment, and other memories
+# take the slots.
+
+
+def _session_facts(core, ctx):
+    """This session's fact before and after the moment, and another session's after it."""
+    before = capture(core, ctx, "P249 构建机是 QX-17。", key="TEST-p249/before", when="2026-09-01T10:00:00Z")
+    after = capture(core, ctx, "P249 部署机是 KZ-42。", key="TEST-p249/after", when="2026-09-01T12:00:00Z")
+    other = replace(ctx, session_id="TEST-other-session")
+    elsewhere = capture(core, other, "P249 备份机是 VX-9。", key="TEST-p249/elsewhere", when="2026-09-01T12:30:00Z")
+    return before, after, elsewhere
+
+
+def test_automatic_recall_leaves_out_what_the_model_still_holds(app):
+    core, ctx = app
+    before, after, elsewhere = _session_facts(core, ctx)
+    query = "P249 QX-17 KZ-42 VX-9 都是哪台机器？"
+    said = {source.event["content"] for source in (before, after, elsewhere)}
+
+    unknown = core.recall_packet(ctx, recall_request(query=query, request_id="TEST-p249-0"), deadline_seconds=5)
+    assert _contents(unknown) >= said, "without the host's word every one is recalled, as before"
+    compacted = core.recall_packet(
+        ctx,
+        recall_request(query=query, request_id="TEST-p249-1"),
+        deadline_seconds=5,
+        in_context_since="2026-09-01T11:00:00+00:00",
+    )
+    assert _contents(compacted) >= said - {after.event["content"]}, compacted
+    assert after.event["content"] not in _contents(compacted), "said since the compaction: the model has it"
+    whole = core.recall_packet(
+        ctx,
+        recall_request(query=query, request_id="TEST-p249-2"),
+        deadline_seconds=5,
+        in_context_since="2026-09-01T09:00:00Z",
+    )
+    assert elsewhere.event["content"] in _contents(whole), "another session's is never the model's"
+    assert not _contents(whole) & {before.event["content"], after.event["content"]}, whole
+    # Asked for, it is answered: only automatic recall leaves anything out.
+    for mode in ("current", "history"):
+        explicit = core.recall_packet(
+            ctx,
+            recall_request(query=query, mode=mode, budget_tokens=8000, request_id=f"TEST-p249-{mode}"),
+            deadline_seconds=5,
+            in_context_since="2026-09-01T09:00:00Z",
+        )
+        assert after.event["content"] in _contents(explicit), (mode, explicit)
+
+
+def test_an_item_is_left_out_only_when_all_it_stands_on_is_held(app):
+    """A claim or an episode stands on several messages: one of another session, from before the moment, or that cannot
+    be read keeps it in.  An item without evidence is kept too."""
+    from scope_recall.core.recall import _in_context
+    from scope_recall.core.retrieval import RetrievedObject, SearchContext
+
+    core, ctx = app
+    before, after, elsewhere = _session_facts(core, ctx)
+    search = SearchContext.from_request(
+        recall_request(query="P249"),
+        ctx,
+        now="2026-09-06T12:00:00Z",
+        deadline=10**9,
+        in_context_since="2026-09-01T11:00:00Z",
+    )
+
+    def item(*sources, refs=()):
+        evidence = tuple(f"{source.ref}@{source.revision}" for source in sources) + tuple(refs)
+        return RetrievedObject("TEST-item", 1, "claim", "P249", "human_direct", "current", "", evidence, "x", True)
+
+    with core.storage.read(ctx, remaining_seconds=5) as tx:
+        assert _in_context(tx, item(after), search)
+        assert not _in_context(tx, item(after, elsewhere), search), "one of another session"
+        assert not _in_context(tx, item(after, before), search), "one from before the compaction"
+        assert not _in_context(tx, item(after, refs=("TEST-missing@1",)), search), "one that cannot be read"
+        assert not _in_context(tx, item(after, refs=("not a ref",)), search)
+        assert not _in_context(tx, item(), search), "no evidence"
+        assert not _in_context(tx, item(after), replace(search, in_context_since=None)), "the host said nothing"
+    with pytest.raises(ContractError):
+        replace(search, in_context_since="yesterday")
+
+
+def test_what_the_model_holds_still_leads_to_what_is_related_to_it(app):
+    """Left out at admission, a message the model holds stopped leading to what is related to it: on the replay of
+    361 prompts, claims and procedures drawn partly from before the session's last compaction.  It is set aside, not
+    delivered, and still a seed; one reached from it that the model holds leads on in turn and is not delivered either."""
+    from scope_recall.core.recall import RetrievalPipeline
+    from scope_recall.core.retrieval import CandidateRef, RetrievedObject, SearchContext
+
+    core, ctx = app
+    said = {"event-held": (ctx.session_id, "2026-09-01T12:00:00Z"), "event-old": (ctx.session_id, "2026-09-01T10:00:00Z")}
+    said["event-other"] = ("TEST-other-session", "2026-09-01T12:30:00Z")
+    stands_on = {"event-held": "event-held", "claim-held": "event-held", "claim-old": "event-old"}
+    stands_on["claim-other"] = "event-other"
+
+    class Source:
+        def __init__(self, ref):
+            self.session_id, moment = said[ref]
+            self.event = {"occurred_at": moment}
+
+    class Tx:
+        def source(self, ref, revision):
+            return Source(ref) if ref in said else None
+
+    class Reader:
+        links = {"event-held": ["claim-old", "claim-held"], "claim-held": ["claim-other"]}
+
+        def hydrate(self, tx, candidate, context):
+            kind = "event" if candidate.ref.startswith("event") else "claim"
+            evidence = (f"{stands_on[candidate.ref]}@1",)
+            content = f"P249 链：{candidate.ref}"
+            return RetrievedObject(candidate.ref, 1, kind, content, "human_direct", "current", "", evidence, "x", True)
+
+        def related(self, tx, candidate, *, limit):
+            return tuple(
+                CandidateRef("claim", ref, 1, "relation", rank=index)
+                for index, ref in enumerate(self.links.get(candidate.ref, ()), 1)
+            )
+
+    pipeline = RetrievalPipeline(None, storage_reader=Reader())
+    search = SearchContext.from_request(
+        recall_request(query="P249 链"), ctx, now="2026-09-06T12:00:00Z", deadline=10**9,
+        in_context_since="2026-09-01T11:00:00Z",
+    )
+    held: list = []
+    hydrated: list = []
+    seed = CandidateRef("event", "event-held", 1, "lexical", fusion_score=0.9)
+    pipeline._hydrate_all(Tx(), hydrated, (seed,), search, [], floor=6, held=held)
+    assert hydrated == [] and held == [seed], "held, not delivered"
+    pipeline._hydrate_related(Tx(), search, hydrated, [], held=tuple(held))
+    assert sorted(candidate.ref for candidate, _obj in hydrated) == ["claim-old", "claim-other"]
+
+
+def test_hits_too_large_for_any_packet_leave_the_owner_s_background_room(tmp_path):
+    """An automatic recall whose every hit is larger than any packet kept six of them, the compiler refused each, and
+    the packet came back empty; the owner's background was cut with them.  One stays as the hint that it can be
+    expanded.  Leaving out what the model holds made this likelier (#249)."""
+    from tests.contract.test_autonomous_context import packet, preference
+
+    ctx = replace(context(tmp_path / "TEST-p249-oversized"), project_id="TEST-project", branch_id="TEST-main")
+    core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
+    core.initialize()
+    core.test_sequence = itertools.count(1)
+    item, _source = preference(core, ctx)
+    for index in range(7):
+        capture(core, ctx, f"火星咖啡采购报价 第{index}份：" + "价" * 9000, key=f"TEST-p249/huge/{index}")
+    result = packet(core, ctx, request_id="TEST-p249-oversized")
+    assert [entry["ref"] for entry in result["items"]] == [item.ref], result["gaps"]
+    assert any(need.startswith("expandable") for need in result["unmet_needs"]), "the hint that it can be expanded"
+
+
+def test_the_owner_s_background_the_model_holds_is_left_out_too(tmp_path):
+    """A standing preference the owner stated in this session since its last compaction is in the model's context
+    already; background is not admitted like a hit, and it was delivered again (the replay's last ten copies)."""
+    from tests.contract.test_autonomous_context import packet, preference
+
+    ctx = replace(context(tmp_path / "TEST-p249-background"), project_id="TEST-project", branch_id="TEST-main")
+    core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
+    core.initialize()
+    core.test_sequence = itertools.count(1)
+    item, source = preference(core, ctx)  # said at 2026-09-01T12:00:00Z, in this session
+
+    def refs(**changes):
+        return [entry["ref"] for entry in packet(core, ctx, **changes)["items"]]
+
+    assert item.ref in refs(request_id="TEST-bg-0")
+    held = core.recall_packet(ctx, recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-1"),
+                              in_context_since="2026-09-01T11:00:00Z")
+    assert item.ref not in [entry["ref"] for entry in held["items"]]
+    later = core.recall_packet(ctx, recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-2"),
+                               in_context_since="2026-09-01T13:00:00Z")
+    assert item.ref in [entry["ref"] for entry in later["items"]], "said before the compaction"
+    other = replace(ctx, session_id="TEST-other-session")
+    elsewhere = core.recall_packet(other, recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-3"),
+                                   in_context_since="2026-09-01T11:00:00Z")
+    assert item.ref in [entry["ref"] for entry in elsewhere["items"]], "another session's model does not hold it"

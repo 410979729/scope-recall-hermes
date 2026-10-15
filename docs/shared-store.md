@@ -126,7 +126,13 @@ scope-recall apply-install --host claude-code --target-plugin-dir %USERPROFILE%\
 The plugin under `~/.claude/skills/` loads in every new Claude Code session of that user, the
 desktop app's included; `claude plugin disable scope-recall@skills-dir` stops it. Its hooks record
 each prompt as the owner's and each final reply as Claude Code's, and put what is remembered in
-front of the prompt. A turn is recorded under its prompt id, which Claude Code sends from 2.1.196.
+front of the prompt. What the model still has word for word is not put there again: an item that
+stands only on this session's messages since its last compaction (the session record names it; with
+none, since the session began) is left out, and other memories take its place. What was said before
+a compaction reaches the model only as the compaction's summary, and is recalled (#249). The
+reminders Claude's desktop app puts in a message (a `<system-reminder>` block that opens a line) are
+not the owner's words: they are neither recorded nor recalled for (#248).
+A turn is recorded under its prompt id, which Claude Code sends from 2.1.196.
 At the end of each turn the Stop hook also reads the session record Claude Code keeps (the hook's
 `transcript_path`) from where the last read stopped, and records what it shows being said: the
 owner's messages, those sent while a turn was running included, and the text Claude Code shows

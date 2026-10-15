@@ -391,6 +391,57 @@ def said_from_wire(value: object) -> Said | None:
     return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
 
 
+#: How much of a session record's end ``context_since`` reads for the last compaction.  At every prompt of the 24 local
+#: sessions measured for 3.10.5 the last one lay at most 12.2 MB back (median 5.4 MB).
+_CONTEXT_TAIL_BYTES = 16 * 1024 * 1024
+#: How the record's own lines name a compaction: the summary that replaces what came before, and its boundary.
+_COMPACTION_MARKS = (b'"isCompactSummary":true', b'"compact_boundary"')
+
+
+def _compaction(row: object) -> str | None:
+    """The moment of a record line that is a compaction of the main session (not of a subagent's), or None."""
+    if not isinstance(row, dict) or row.get("isSidechain"):
+        return None
+    if row.get("isCompactSummary") is True or (row.get("type") == "system" and row.get("subtype") == "compact_boundary"):
+        return _stamp(row.get("timestamp"))
+    return None
+
+
+def _line(raw: bytes) -> object:
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+
+
+def context_since(path: Path) -> str | None:
+    """Since when Claude Code's model still holds the session's own turns word for word: the session record's last
+    compaction, or its first line when it has had none.  None when that cannot be told: a record that cannot be read,
+    or one longer than ``_CONTEXT_TAIL_BYTES`` with no compaction in that much of its end.
+
+    What was said before a compaction reaches the model only as the compaction's summary, so an automatic recall may
+    bring it back; what was said after it is still there, and recalled it would be a second copy (#249)."""
+    try:
+        with path.open("rb") as handle:
+            start = max(0, handle.seek(0, os.SEEK_END) - _CONTEXT_TAIL_BYTES)
+            handle.seek(start)
+            lines = handle.read().split(b"\n")
+    except OSError:
+        return None
+    if start > 0:
+        lines = lines[1:]  # cut by where the read began
+    for raw in reversed(lines):
+        if any(mark in raw for mark in _COMPACTION_MARKS) and (moment := _compaction(_line(raw))) is not None:
+            return moment
+    if start > 0:
+        return None
+    for raw in lines:
+        row = _line(raw)
+        if isinstance(row, dict) and not row.get("isSidechain") and (moment := _stamp(row.get("timestamp"))):
+            return moment
+    return None
+
+
 def record_path(value: object, session_id: str) -> Path | None:
     """The session's own record: an absolute path to an existing ``<session id>.jsonl``, or None."""
     if type(value) is not str or not value.strip():

@@ -151,6 +151,44 @@ def test_a_read_takes_complete_lines_and_says_where_it_stopped(tmp_path):
     assert len(transcript.read(record, 0, limit=1)) == 1, "a read stops once it has gone through its limit"
 
 
+def _compaction_rows(stamp, **fields):
+    """A compaction as Claude Code records it: its boundary, then the summary that replaces what came before."""
+    return [
+        {"type": "system", "subtype": "compact_boundary", "timestamp": stamp, "compactMetadata": {"trigger": "auto"}},
+        {**_person("TEST summary", isCompactSummary=True), "timestamp": stamp, **fields},
+    ]
+
+
+def _write(path, rows):
+    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    return path
+
+
+def test_the_model_holds_the_session_since_its_last_compaction(tmp_path, monkeypatch):
+    """#249: what was said since the last compaction is still in the model's context, word for word; with none, the
+    whole session is.  A subagent's compaction is its own, and a record too long to read to its start without finding
+    one says nothing."""
+    record = tmp_path / "TEST-session.jsonl"
+    first = {**_person("TEST 一"), "timestamp": "2026-09-25T10:00:00.000Z"}
+    _write(record, [{"type": "summary", "summary": "TEST"}, first, _model({"type": "text", "text": "TEST"})])
+    assert transcript.context_since(record) == "2026-09-25T10:00:00Z", "no compaction: since the first line"
+    rows = [first, *_compaction_rows("2026-09-25T11:00:00.000Z"), _person("TEST 二")]
+    rows += [*_compaction_rows("2026-09-25T12:30:00.500Z"), _person("TEST 三")]
+    _write(record, rows)
+    assert transcript.context_since(record) == "2026-09-25T12:30:00.500000Z", "the last compaction"
+    _write(record, [*rows, {**_compaction_rows("2026-09-25T13:00:00Z")[1], "isSidechain": True}])
+    assert transcript.context_since(record) == "2026-09-25T12:30:00.500000Z", "a subagent's is not the session's"
+    # The person's own words naming a compaction are not one.
+    _write(record, [*rows, _person('TEST "isCompactSummary":true "compact_boundary"')])
+    assert transcript.context_since(record) == "2026-09-25T12:30:00.500000Z"
+    monkeypatch.setattr(transcript, "_CONTEXT_TAIL_BYTES", 600)
+    _write(record, [*rows, *[_person("TEST " + "长" * 100) for _ in range(20)]])
+    assert transcript.context_since(record) is None, "no compaction in what was read, and not read to its start"
+    _write(record, [*rows, *[_person("TEST " + "长" * 100) for _ in range(20)], *_compaction_rows("2026-09-26T08:00:00Z")])
+    assert transcript.context_since(record) == "2026-09-26T08:00:00Z", "the end of a long record has one"
+    assert transcript.context_since(tmp_path / "TEST-missing.jsonl") is None
+
+
 def test_only_the_session_s_own_record_is_read(tmp_path):
     record = tmp_path / "TEST-session.jsonl"
     record.write_text("", encoding="utf-8")

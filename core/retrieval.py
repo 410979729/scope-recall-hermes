@@ -111,6 +111,10 @@ class SearchContext:
     zone: tzinfo | None = None
     #: The days and entries the question names, read once the store's entries are known (``RetrievalPipeline``).
     scope: QueryScope | None = None
+    #: Since when the asking host's model still holds this session's own turns word for word: its last compaction,
+    #: or the session's start when it has had none.  An automatic recall leaves out what stands only on those turns
+    #: (``RetrievalPipeline._in_context``).  A trusted caller's word, never a request field; None when unknown.
+    in_context_since: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.query) is not str or not self.query.strip() or len(self.query) > 8192:
@@ -123,6 +127,8 @@ class SearchContext:
             raise ContractError("INPUT_INVALID", "zone")
         if self.scope is not None and not isinstance(self.scope, QueryScope):
             raise ContractError("INPUT_INVALID", "scope")
+        if self.in_context_since is not None:
+            object.__setattr__(self, "in_context_since", utc_timestamp(self.in_context_since))
         if self.mode not in {"auto", "current", "history", "as_of", "method"}:
             raise ContractError("INPUT_INVALID", "mode")
         if self.mode == "as_of" and self.as_of is None:
@@ -150,6 +156,7 @@ class SearchContext:
         current_source_refs: tuple[str, ...] = (),
         background_without_evidence: bool = True,
         zone: tzinfo | None = None,
+        in_context_since: str | None = None,
     ) -> "SearchContext":
         payload = validate_model_request(
             "recall_request", dict(request) if isinstance(request, dict) else request, trusted_context
@@ -168,6 +175,7 @@ class SearchContext:
             request_id=payload["request_id"],
             background_without_evidence=background_without_evidence,
             zone=zone,
+            in_context_since=in_context_since,
         )
 
 

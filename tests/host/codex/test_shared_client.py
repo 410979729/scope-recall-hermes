@@ -13,6 +13,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -927,7 +928,7 @@ def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(st
     asked = []
     monkeypatch.setattr(
         "scope_recall.adapters.clients.prompt_recall.PromptRecall.own",
-        lambda self, context, text, *rest: asked.append(text) or {},
+        lambda self, context, text, *rest, **_kw: asked.append(text) or {},
     )
     mention = "TEST 为什么 <system-reminder>…</system-reminder> 会被存下来？"
     hook = _hook(client)
@@ -984,6 +985,45 @@ def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(
             ("assistant", "assistant_visible", "TEST 好的。"),
         ]
     )
+
+
+def _compaction(stamp):
+    """A compaction as Claude Code records it: its boundary, then the summary that replaces what came before."""
+    return [
+        _line("system", "c0", stamp, subtype="compact_boundary", compactMetadata={"trigger": "auto"}),
+        _line("user", "c1", stamp, isCompactSummary=True, message={"role": "user", "content": "TEST summary"}),
+    ]
+
+
+def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store, tmp_path):
+    """#249: a message of this session the model still has (said since its last compaction, or in a session that has
+    had none) came back in a later prompt's recall, a second copy in the context.  One said before the compaction
+    reaches the model only as the compaction's summary, and is still recalled."""
+    root, _homes, client, _capture = store
+    record = tmp_path / "TEST-projects" / "TEST-cc-session.jsonl"
+    record.parent.mkdir(parents=True)
+    _record(record, _person("u0", _moments()(0), "TEST 开始。"))
+    hook = _hook(client)
+
+    def ask(text, prompt_id):
+        answer = hook.handle_payload({**_prompt(text, prompt_id=prompt_id), "transcript_path": str(record)})
+        return answer.get("hookSpecificOutput", {}).get("additionalContext", "")
+
+    try:
+        ask("TEST 机器清单：构建机是 QX-17。", "TEST-p1")
+        ask("TEST 机器清单：部署机是 KZ-42。", "TEST-p2")
+        whole = ask("TEST 机器清单", "TEST-p3")
+        time.sleep(0.05)
+        _record(record, *_compaction(datetime.now(timezone.utc).isoformat()))
+        time.sleep(0.05)
+        ask("TEST 机器清单：备份机是 VX-9。", "TEST-p4")
+        compacted = ask("TEST 机器清单", "TEST-p5")
+    finally:
+        hook.close()
+    assert "QX-17。" not in whole and "KZ-42。" not in whole, f"no compaction yet: the model has it all: {whole}"
+    assert "QX-17。" in compacted and "KZ-42。" in compacted, "said before the compaction: recalled"
+    assert "VX-9。" not in compacted, "said since the compaction: the model has it"
+    assert len(_said_in_store(root)) == 5, "every prompt was stored"
 
 
 def test_the_doctor_names_owner_words_stored_with_a_reminder(store, monkeypatch):
@@ -3530,7 +3570,7 @@ def test_the_entry_s_server_recalls_a_workbuddy_prompt_for_the_person_s_words_un
     asked = []
     monkeypatch.setattr(
         "scope_recall.adapters.clients.prompt_recall.PromptRecall.own",
-        lambda self, context, text, request_id, *rest: asked.append((text, request_id)) or {},
+        lambda self, context, text, request_id, *rest, **_kw: asked.append((text, request_id)) or {},
     )
     server = CodexHookHandler.from_home(str(home), "workbuddy")
     try:
