@@ -290,7 +290,7 @@ def unbound_session_hint(scope: HermesRuntimeScope) -> str:
     else:
         hint = "a route is granted by an exact audience row in installation.json (docs/install.md)"
     if scope.entry_id:
-        hint += "; a shared store entry keeps the grants it was attached with"
+        hint += "; a shared store entry's rows are changed with scope-recall grants"
     return hint
 
 

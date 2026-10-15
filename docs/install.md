@@ -314,9 +314,10 @@ names no user, with the same backup, and approves nothing else: not that login o
 `tui`, not another login, not a session that names no user. Whoever holds that
 login then reads and writes the owner's private memory there, from any machine
 that reaches the host, so approve only a login that is the owner's own; `revise`
-and `forget` stay with the CLI. A shared store entry keeps the grants it was
-attached with: approve a login in the home's own installation before attaching
-it. `doctor` reports an owner row whose user is no owner principal as
+and `forget` stay with the CLI. An entry of a shared store keeps its grants in
+the store's manifest, which this command does not write: add the login's owner
+row there with `scope-recall grants` ([shared-store.md](shared-store.md)).
+`doctor` reports an owner row whose user is no owner principal as
 `audience_owner_unverified`.
 
 A login that is not the owner's is a user like any gateway user and gets only
@@ -329,7 +330,8 @@ sends: `platform`, `user_id`, `chat_type`, `chat_id`, `thread_id`,
 only for local surfaces and their logins; a gateway route's row is declared with
 the installation API, in the whole manifest, before anything creates the store,
 as a migration does ([AGENT_WORKFLOW.md](../maintenance/AGENT_WORKFLOW.md),
-section 2). A row whose `gateway_session_key` is
+section 2). An entry of a shared store changes its rows with `scope-recall grants`
+([shared-store.md](shared-store.md)). A row whose `gateway_session_key` is
 empty does not pin the host's session key, which is built from the platform, chat
 type and chat the row already matches; a row that names one matches only that key.
 For a plain, unthreaded chat a gateway sends an empty `thread_id`, so the row needs

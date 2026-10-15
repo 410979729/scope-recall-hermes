@@ -3,7 +3,8 @@
 ``init-shared`` makes the store's directory and manifest.  ``attach`` makes a
 host's home an entry of it, carrying over the grants the home's own
 installation had, and writes the runtime configs: the entry's, and the shared
-worker's.  ``detach`` undoes that for one home.  ``adopt`` records the store's
+worker's.  ``grants`` shows an attached entry's grants and changes them from
+an edited copy.  ``detach`` undoes ``attach`` for one home.  ``adopt`` records the store's
 new directory after the directory was copied elsewhere.  ``entries`` lists who
 is attached and when each was last heard from.  ``import-entry`` copies what
 an entry's own store held, moved aside at attach, into the shared store
@@ -40,14 +41,18 @@ from ..adapters.hermes.installation import (
 from ..adapters.hermes.shared_entries import (
     CLIENT_HOSTS,
     ENTRY_HOSTS,
+    GRANTS_SCHEMA,
     attach_shared_entry,
     attach_shared_record,
     attachment_path,
     client_entry_record,
+    entry_grants,
     new_shared_payload,
     read_attachment,
     read_shared_payload,
+    regranted,
     shared_entry_record,
+    write_regranted,
     write_shared_payload,
 )
 from ..contracts import ContractError, InstanceBinding, TrustedContext
@@ -497,6 +502,135 @@ def adopt(*, root: Path, now: str | None = None) -> dict[str, Any]:
     return result
 
 
+#: What an entry grants document these commands read may weigh: an entry migrated from 2.x has about a hundred rows.
+_GRANTS_LIMIT = 4 * 1024 * 1024
+
+
+def _route(row: dict[str, Any]) -> str:
+    """A row's exact route and kind, as the change names it."""
+    fields = ("platform", "user_id", "chat_type", "chat_id", "thread_id", "gateway_session_key", "agent_workspace")
+    return "/".join(row[field] for field in fields) + f"#{row['kind']}"
+
+
+def _owners(record: dict[str, Any]) -> set[tuple[str, str]]:
+    return {(item["platform"], item["user_id"]) for item in record["owner_principals"]}
+
+
+def _grants_change(
+    before: dict[str, Any], after: dict[str, Any], store_before: dict[str, Any], store_after: dict[str, Any]
+) -> dict[str, Any]:
+    """What a grants change does: rows by route, the scopes each reads, writes and captures into, the owner
+    principals, and the scopes the entry and the store hold.  Routes and scope ids only."""
+    old = {_route(row): row for row in before["audiences"]}
+    new = {_route(row): row for row in after["audiences"]}
+    changed = []
+    for route in sorted(old.keys() & new.keys()):
+        was, now = old[route], new[route]
+        if was == now:
+            continue
+        item: dict[str, Any] = {"route": route}
+        for name, field in (("read", "allowed_scope_ids"), ("write", "writable_scope_ids")):
+            item[f"{name}_added"] = sorted(set(now[field]) - set(was[field]))
+            item[f"{name}_removed"] = sorted(set(was[field]) - set(now[field]))
+        if was["capture_scope_id"] != now["capture_scope_id"]:
+            item["capture"] = [was["capture_scope_id"], now["capture_scope_id"]]
+        changed.append(item)
+    change = {
+        "entry_id": before["entry_id"],
+        "rows_added": sorted(new.keys() - old.keys()),
+        "rows_removed": sorted(old.keys() - new.keys()),
+        "rows_changed": changed,
+        "principals_added": sorted("/".join(item) for item in _owners(after) - _owners(before)),
+        "principals_removed": sorted("/".join(item) for item in _owners(before) - _owners(after)),
+        "audience_scopes_changed": before["audience_scopes"] != after["audience_scopes"],
+        "entry_scopes_added": sorted(set(after["scope_ids"]) - set(before["scope_ids"])),
+        "entry_scopes_removed": sorted(set(before["scope_ids"]) - set(after["scope_ids"])),
+        "store_scopes_new": sorted(set(store_after["scope_ids"]) - set(store_before["scope_ids"])),
+    }
+    change["unchanged"] = not any(value for key, value in change.items() if key != "entry_id")
+    return change
+
+
+def grants(
+    *,
+    instance_root: Path,
+    grants_from: Path | None = None,
+    out: Path | None = None,
+    apply: bool = False,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Show an attached entry's grants, or change them from an edited copy (#246).
+
+    Without ``grants_from`` the entry's grants come back as a document, written to ``out`` when one is named.  With
+    it the edited document is checked as attach checks a record and the change is shown; with ``apply`` as well it
+    is written: the store's manifest, and the entry's and the worker's runtime configs when the scopes they bind
+    change.  A copy of each file replaced and the entry's grants before the change (``grants-before.json``, which
+    applied the same way puts them back) go with the receipt.  Memories keep their scopes; nothing else is written.
+    """
+    if grants_from is None:
+        if apply:
+            raise SharedStoreError("--apply needs --grants-from, the entry's grants as edited")
+        document = entry_grants(instance_root)
+        if out is not None:
+            if os.path.lexists(out):
+                raise SharedStoreError(f"{out} exists; name a new file")
+            write_json(out, document)
+        return {
+            "status": "shown",
+            "entry_id": document["entry_id"],
+            "grants": document,
+            "written": str(out) if out is not None else None,
+        }
+    if not grants_from.is_file() or grants_from.stat().st_size > _GRANTS_LIMIT:
+        raise SharedStoreError(f"{grants_from} is missing or too large")
+    try:
+        document = json.loads(grants_from.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SharedStoreError(f"{grants_from} is not readable JSON") from exc
+    store, payload, before, after, updated = regranted(instance_root, document)
+    change = _grants_change(before, after, payload, updated)
+    if change["unchanged"]:
+        return {"status": "unchanged", **change}
+    if not apply:
+        return {
+            "status": "preview",
+            **change,
+            "next": "nothing is written: stop this entry's host, run again with --apply, then start it again",
+        }
+    now = now or _now()
+    entry_path = attachment_path(instance_root).parent / RUNTIME_CONFIG_FILENAME
+    worker_path = store / RUNTIME_CONFIG_FILENAME
+    entry_config = worker_config = None
+    # A runtime config binds the scopes it serves: the entry's own, the worker every scope of the store.
+    if set(before["scope_ids"]) != set(after["scope_ids"]) and entry_path.is_file():
+        entry_config = _bound(_read_json(entry_path), _store_binding(updated, store, frozenset(after["scope_ids"])))
+    if set(payload["scope_ids"]) != set(updated["scope_ids"]) and worker_path.is_file():
+        worker_config = _bound(_read_json(worker_path), _store_binding(updated, store, frozenset(updated["scope_ids"])))
+    _fits(entry_config, "entry's")
+    _fits(worker_config, "shared worker's")
+    run = Run(store, f"grants-{before['entry_id']}", now)
+    run.keep(store / MANIFEST_FILENAME, "store")
+    run.keep(entry_path, "entry")
+    run.keep(worker_path, "worker")
+    rollback = run.folder / "grants-before.json"
+    kept = {name: before[name] for name in ("owner_principals", "audience_scopes", "audiences")}
+    write_json(rollback, {"schema": GRANTS_SCHEMA, "entry_id": before["entry_id"], **kept})
+    write_regranted(store, payload, updated)
+    for path, config in ((entry_path, entry_config), (worker_path, worker_config)):
+        if config is not None:
+            write_json(path, config)
+    result = {
+        "status": "applied",
+        **change,
+        "entry_runtime_config_written": entry_config is not None,
+        "worker_runtime_config_written": worker_config is not None,
+        "rollback": str(rollback),
+        "next": "start this entry's host again: it binds the new grants when it starts (doctor checks them)",
+    }
+    result["receipt"] = run.receipt(result)
+    return result
+
+
 def entries(*, root: Path) -> dict[str, Any]:
     payload = read_shared_payload(root)
     seen: dict[str, dict[str, str]] = {}
@@ -571,6 +705,11 @@ def main(argv: list[str]) -> int:
     join.add_argument("--python", help="the interpreter this home's host runs, recorded for the operator")
     leave = sub.add_parser("detach", help="stop a home being an entry; its memories stay in the store")
     leave.add_argument("--instance-root", required=True)
+    grant = sub.add_parser("grants", help="show an attached entry's grants, or change them from an edited copy")
+    grant.add_argument("--instance-root", required=True)
+    grant.add_argument("--out", help="write the entry's grants to this new file, to edit")
+    grant.add_argument("--grants-from", help="the entry's grants as edited; without --apply the change is only shown")
+    grant.add_argument("--apply", action="store_true", help="write the change (stop the entry's host first)")
     take = sub.add_parser("adopt", help="record the directory a copied shared store now lives in")
     take.add_argument("--root", required=True)
     listing = sub.add_parser("entries", help="list a shared store's entries and when each was last heard from")
@@ -608,6 +747,13 @@ def main(argv: list[str]) -> int:
             )
         elif args.command == "detach":
             result = detach(instance_root=_absolute(args.instance_root, "instance_root"))
+        elif args.command == "grants":
+            result = grants(
+                instance_root=_absolute(args.instance_root, "instance_root"),
+                grants_from=_absolute(args.grants_from, "grants_from") if args.grants_from else None,
+                out=_absolute(args.out, "out") if args.out else None,
+                apply=args.apply,
+            )
         elif args.command == "adopt":
             result = adopt(root=_absolute(args.root, "root"))
         elif args.command == "import-entry":

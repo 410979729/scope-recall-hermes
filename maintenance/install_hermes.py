@@ -256,8 +256,8 @@ def validate_reuse(plan: InstallPlan) -> None:
     ):
         # Its grants live in the shared store's manifest, which this installer does not write.
         raise InstallError(
-            "a shared store entry keeps the grants it was attached with; approve a local "
-            "surface or an owner login in the home's own installation before attaching it"
+            "a shared store entry's grants are in the store's manifest, which this installer does not write: "
+            "add the surface's or the login's owner row with scope-recall grants"
         )
 
 

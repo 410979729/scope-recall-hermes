@@ -48,7 +48,14 @@ class Run:
     def __init__(self, root: Path, command: str, now: str) -> None:
         self.root, self.command, self.now = root, command, now
         stamp = now.replace("-", "").replace(":", "")
-        self.folder = root / RECEIPTS_DIRNAME / f"{stamp}-{command}"
+        base = root / RECEIPTS_DIRNAME / f"{stamp}-{command}"
+        # Named to the second, a second run of the command in that second kept its copies over the first's, and
+        # the first's receipt then named copies of files the second replaced.
+        folder, count = base, 1
+        while folder.exists() or folder.with_suffix(".json").exists():
+            count += 1
+            folder = base.with_name(f"{base.name}-{count}")
+        self.folder = folder
         self.backups: list[str] = []
 
     def keep(self, path: Path, label: str) -> None:

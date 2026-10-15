@@ -734,6 +734,159 @@ def test_a_workbuddy_file_is_written_back_in_its_own_line_endings_and_byte_order
     assert install_workbuddy.encode_config(value, None).endswith(b"}\n"), "a new file ends with a newline"
 
 
+def _weixin(home, user="TEST-wx-1"):
+    """The owner's Weixin DM on the gateway of ``home``, as Hermes passes it."""
+    return bind_hermes_identity(
+        "TEST-wx-session",
+        hermes_home=str(home),
+        platform="weixin",
+        user_id=user,
+        chat_type="dm",
+        chat_id=user,
+        thread_id="",
+        gateway_session_key=f"agent:main:weixin:dm:{user}",
+        agent_identity=AGENT,
+        agent_workspace="hermes",
+        agent_context="primary",
+    )
+
+
+def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path, capsys, root):
+    """#246: an attached entry kept the grants it was attached with; a gateway owner route or a read of another
+    scope could not be added.  The operator prints the entry's grants, edits them, sees the change, applies it with a
+    backup and a receipt, and puts the old grants back the same way.  Rows stay exact; what the store holds keeps
+    its scopes."""
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    manifest = root / "installation.json"
+    original = json.loads(manifest.read_text(encoding="utf-8"))
+    edit = tmp_path / "TEST-grants.json"
+    code, shown = _run(capsys, "grants", "--instance-root", str(first), "--out", str(edit))
+    assert (code, shown["status"], shown["entry_id"]) == (0, "shown", "tianshu"), shown
+    document = json.loads(edit.read_text(encoding="utf-8"))
+    record = next(entry for entry in original["entries"] if entry["entry_id"] == "tianshu")
+    assert {key: document[key] for key in ("owner_principals", "audience_scopes", "audiences")} == {
+        key: record[key] for key in ("owner_principals", "audience_scopes", "audiences")
+    }
+    code, again = _run(capsys, "grants", "--instance-root", str(first), "--out", str(edit))
+    assert code == 2 and "exists" in again["error"], "an edit is never overwritten"
+    assert _weixin(first).runtime_audience.capability_gaps, "the gateway DM binds no owner scope yet"
+
+    owner = next(row for row in document["audiences"] if row["kind"] == "owner_private" and row["platform"] == "cli")
+    elsewhere = next(entry for entry in original["entries"] if entry["entry_id"] == "tianquan")["scope_ids"][0]
+    assert elsewhere not in owner["allowed_scope_ids"]
+    document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
+    owner["allowed_scope_ids"].append(elsewhere)  # the owner reads what tianquan's chats hold, writes as before
+    dm = dict(owner, platform="weixin", user_id="TEST-wx-1", chat_type="dm", chat_id="TEST-wx-1", thread_id="")
+    document["audiences"].append(dm)
+    edit.write_text(json.dumps(document), encoding="utf-8")
+
+    code, preview = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit))
+    assert (code, preview["status"]) == (0, "preview"), preview
+    assert preview["rows_added"] == ["weixin/TEST-wx-1/dm/TEST-wx-1//" + dm["gateway_session_key"] + "/hermes#owner_private"]
+    assert [(row["route"], row["read_added"], row["write_added"]) for row in preview["rows_changed"]] == [
+        (preview["rows_changed"][0]["route"], [elsewhere], [])
+    ]
+    assert preview["principals_added"] == ["weixin/TEST-wx-1"] and preview["entry_scopes_added"] == [elsewhere]
+    assert preview["store_scopes_new"] == [] and preview["rows_removed"] == []
+    assert json.loads(manifest.read_text(encoding="utf-8")) == original, "a preview writes nothing"
+
+    code, applied = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
+    assert (code, applied["status"]) == (0, "applied"), applied
+    assert Path(applied["receipt"]).is_file() and Path(applied["rollback"]).is_file()
+    assert applied["entry_runtime_config_written"] and not applied["worker_runtime_config_written"]
+    dm_identity = _weixin(first)
+    assert dm_identity.runtime_audience.includes_owner_private and not dm_identity.runtime_audience.capability_gaps
+    assert elsewhere in dm_identity.runtime_audience.allowed_scope_ids
+    assert elsewhere in _bind(first).runtime_audience.allowed_scope_ids, "the CLI reads it too"
+    entry = load_config(first / "scope-recall" / "runtime-config.json")
+    assert entry.binding == _bind(first).binding, "the entry's runtime config binds its new scopes"
+    assert not _weixin(first, "TEST-wx-2").runtime_audience.includes_owner_private, "exact: another user is not it"
+    assert read_shared_payload(root)["scope_ids"] == original["scope_ids"], "no scope moved"
+
+    code, back = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", applied["rollback"], "--apply")
+    assert (code, back["status"]) == (0, "applied"), back
+    restored = next(entry for entry in read_shared_payload(root)["entries"] if entry["entry_id"] == "tianshu")
+    assert restored == record and _weixin(first).runtime_audience.capability_gaps
+    code, same = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", applied["rollback"])
+    assert (code, same["status"]) == (0, "unchanged"), same
+
+
+def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, capsys, root):
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    manifest = root / "installation.json"
+    before = manifest.read_bytes()
+    code, shown = _run(capsys, "grants", "--instance-root", str(first))
+    document = shown["grants"]
+    owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+    edit = tmp_path / "TEST-grants.json"
+
+    def refused(change, needle):
+        candidate = json.loads(json.dumps(document))
+        change(candidate)
+        edit.write_text(json.dumps(candidate), encoding="utf-8")
+        code, result = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
+        assert code == 2 and needle in result["error"], result
+        assert manifest.read_bytes() == before, "nothing is written"
+
+    refused(lambda d: d.update(entry_id="tianquan"), "another entry")
+    refused(lambda d: d.update(extra=1), "holds schema")
+    refused(lambda d: d["audiences"].append(dict(owner, platform="weixin", user_id="TEST-wx-1")), "no owner principal")
+    refused(lambda d: d["audiences"].append(dict(owner, platform="weixin", user_id="unknown")), "explicit exact")
+    refused(lambda d: d["audiences"].append(dict(owner, writable_scope_ids=["TEST-not-read"])), "subset")
+    other = json.loads(manifest.read_text(encoding="utf-8"))["entries"][1]["scope_ids"][0]
+    only_other = dict(owner, allowed_scope_ids=[other], writable_scope_ids=[], capture_scope_id="")
+    refused(lambda d: d.update(audiences=[only_other]), "no row of the entry reads")
+    refused(lambda d: d.update(audiences=[only_other], audience_scopes={"owner_private": other}), "held by no entry")
+    code, result = _run(capsys, "grants", "--instance-root", str(first), "--apply")
+    assert code == 2 and "--grants-from" in result["error"]
+    code, result = _run(capsys, "grants", "--instance-root", str(tmp_path / "TEST-not-attached"))
+    assert code == 2 and "not attached" in result["error"]
+
+
+def _granted(capsys, tmp_path, home, change):
+    code, shown = _run(capsys, "grants", "--instance-root", str(home))
+    document = shown["grants"]
+    change(document)
+    edit = tmp_path / f"TEST-grants-{shown['entry_id']}.json"
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    return _run(capsys, "grants", "--instance-root", str(home), "--grants-from", str(edit), "--apply")
+
+
+def test_a_client_entry_s_grants_change_and_keep_its_own_route(tmp_path, capsys, root):
+    """A client writes only where every owner row reads: with two Hermes entries whose chats keep apart, the one
+    has to read the other's owner scope first, which is a grants change too.  Then the client's own row reads more."""
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    payload = read_shared_payload(root)
+    mine = next(e for e in payload["entries"] if e["entry_id"] == "tianshu")["audience_scopes"]["owner_private"]
+    elsewhere = next(e for e in payload["entries"] if e["entry_id"] == "tianquan")["audience_scopes"]["owner_private"]
+    client = (tmp_path / "TEST-claude-code-home").resolve()
+    code, result = _attach_client(capsys, root, client, like="tianshu", capture="tianshu")
+    assert code == 2, "tianquan's owner rows do not read tianshu's scope"
+
+    def read_mine(document):
+        for row in document["audiences"]:
+            if row["kind"] == "owner_private":
+                row["allowed_scope_ids"].append(mine)
+
+    code, applied = _granted(capsys, tmp_path, second, read_mine)
+    assert (code, applied["status"]) == (0, "applied"), applied
+    code, result = _attach_client(capsys, root, client, like="tianshu", capture="tianshu")
+    assert code == 0, result
+    assert elsewhere not in load_shared_client(client, "claude-code").audience.allowed_scope_ids
+    code, shown = _run(capsys, "grants", "--instance-root", str(client))
+    document = shown["grants"]
+    document["audiences"][0]["allowed_scope_ids"].append(elsewhere)
+    edit = tmp_path / "TEST-client-grants.json"
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    code, applied = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit), "--apply")
+    assert (code, applied["status"]) == (0, "applied"), applied
+    assert elsewhere in load_shared_client(client, "claude-code").audience.allowed_scope_ids
+    document["audiences"][0]["chat_id"] = "TEST-someone"
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    code, refused = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
+    assert code == 2 and "its own route" in refused["error"], refused
+
+
 def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root):
     _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-other-workspace")
     client = (tmp_path / "TEST-claude-code-home").resolve()
