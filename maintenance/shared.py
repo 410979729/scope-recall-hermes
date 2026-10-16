@@ -533,16 +533,52 @@ def _owners(record: dict[str, Any]) -> set[tuple[str, str]]:
     return {(item["platform"], item["user_id"]) for item in record["owner_principals"]}
 
 
-def _grants_change(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+def _in_order(rows: list[str], common: Counter[str]) -> list[str]:
+    """``rows`` in their order, keeping only those both sides hold, as many times as both do."""
+    left, kept = Counter(common), []
+    for row in rows:
+        if left[row] > 0:
+            left[row] -= 1
+            kept.append(row)
+    return kept
+
+
+def _captures_changed(before: InstallationManifest, after: InstallationManifest) -> list[dict[str, Any]]:
+    """Each route a row names, before or after, whose messages the change captures elsewhere.  Of the rows a session
+    matches, the first that captures into a scope it may write decides, so the order of rows is a grant too: two rows
+    on one route, swapped, moved a chat's captures with nothing else shown (review of 3.10.5).  A route resolved with
+    its own session key stands for every session it matches, unpinned rows included."""
+    routes = {tuple(row[field] for field in _ROUTE_FIELDS) for row in (*before.audiences, *after.audiences)}
+    moved = []
+    for route in sorted(routes):
+        scope = HermesRuntimeScope(
+            **dict(zip(_ROUTE_FIELDS, route, strict=True)),
+            agent_identity=after.agent_id,
+            agent_context="primary",
+            entry_id=str(after.entry_id),
+        )
+        was, now = (resolve_runtime_audience(view, scope).capture_scope_id for view in (before, after))
+        if was != now:
+            moved.append({"route": "/".join(route), "before": was, "after": now})
+    return moved
+
+
+def _grants_change(
+    before: dict[str, Any], after: dict[str, Any], views: tuple[InstallationManifest, InstallationManifest]
+) -> dict[str, Any]:
     """What a grants change does: the rows that go and the rows that come, each whole (two rows may share a route,
-    and both count), the owner principals, the scopes the entry holds, and the owner rows that grant nothing.  Routes
-    and scope ids only.  Whether anything changes is read from the whole records, not from this summary."""
-    old, new = Counter(map(_row_shown, before["audiences"])), Counter(map(_row_shown, after["audiences"]))
+    and both count), whether the rows both hold changed order, each route whose captures move, the owner principals,
+    the scopes the entry holds, and the owner rows that grant nothing.  Routes and scope ids only.  Whether anything
+    changes is read from the whole records, not from this summary."""
+    shown = [list(map(_row_shown, record["audiences"])) for record in (before, after)]
+    old, new = Counter(shown[0]), Counter(shown[1])
     owners = _owners(after)
     return {
         "entry_id": before["entry_id"],
         "rows_added": [json.loads(row) for row in sorted((new - old).elements())],
         "rows_removed": [json.loads(row) for row in sorted((old - new).elements())],
+        "rows_reordered": _in_order(shown[0], old & new) != _in_order(shown[1], old & new),
+        "captures_changed": _captures_changed(*views),
         "principals_added": sorted("/".join(item) for item in owners - _owners(before)),
         "principals_removed": sorted("/".join(item) for item in _owners(before) - owners),
         "audience_scopes_changed": before["audience_scopes"] != after["audience_scopes"],
@@ -634,12 +670,12 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
         raise SharedStoreError(f"{grants_from} is not readable JSON") from exc
     attachment = read_attachment(instance_root)
     digest = _manifest_digest(attachment.root) if attachment is not None else ""
-    store, _payload, before, after, updated, view = regranted(instance_root, document)
+    store, view_before, before, after, updated, view = regranted(instance_root, document)
     if _manifest_digest(store) != digest:
         raise SharedStoreError("the store's manifest changed while it was read: run the command again")
     if view.entry_host in CLIENT_HOSTS:
         _client_route_holds(view)
-    change = _grants_change(before, after)
+    change = _grants_change(before, after, (view_before, view))
     # The entry's runtime config binds the entry's scopes; compared with the file itself, so a run that failed after
     # the manifest was written is finished by the next one.
     entry_path = attachment_path(instance_root).parent / RUNTIME_CONFIG_FILENAME

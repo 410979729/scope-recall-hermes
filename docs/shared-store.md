@@ -296,8 +296,11 @@ rem start it again, then doctor
 
 The first command writes the entry's grants to a new file. The second checks the edited copy and
 shows the change and writes nothing: the rows that go and the rows that come, each whole, with
-the scopes it reads, writes and captures into (two rows may share a route, and each counts); the
-owner principals; the scopes the entry gains or gives up; and any owner row that grants nothing.
+the scopes it reads, writes and captures into (two rows may share a route, and each counts);
+whether the rows kept changed order (`rows_reordered`); each route whose messages would be captured
+into another scope (`captures_changed`, before and after: of the rows a session matches, the first
+that captures into a scope it may write decides, so the order of rows counts); the owner
+principals; the scopes the entry gains or gives up; and any owner row that grants nothing.
 With `--apply` it writes the store's manifest, and the entry's runtime config when the scopes it
 binds change, keeping a copy of each file under `receipts\`, with `grants-before.json`, the
 grants as they were: applied the same way, it puts them back. A write that fails, the receipt's

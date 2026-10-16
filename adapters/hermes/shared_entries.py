@@ -492,10 +492,10 @@ def entry_grants(hermes_home: Path | str) -> dict[str, Any]:
 
 def regranted(
     hermes_home: Path | str, grants: object
-) -> tuple[Path, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], InstallationManifest]:
+) -> tuple[Path, InstallationManifest, dict[str, Any], dict[str, Any], dict[str, Any], InstallationManifest]:
     """The shared store with the entry of ``hermes_home`` holding ``grants`` (an edited ``entry_grants``) in place of
-    its own, checked as a whole as ``attach_shared_record`` checks a record: (store, manifest now, record now,
-    record after, manifest after, the entry's view after).  Nothing is written.
+    its own, checked as a whole as ``attach_shared_record`` checks a record: (store, the entry's view now, record
+    now, record after, manifest after, the entry's view after).  Nothing is written.
 
     Rows stay exact (``audience_entry``).  An owner row whose user is no owner principal grants nothing; it is
     allowed, as an installation may hold one (``doctor``'s ``audience_owner_unverified``), so that the grants before a
@@ -535,5 +535,4 @@ def regranted(
             "each on a row of some entry (one that only reads will do), or detach the entry instead"
         )
     updated = _checked_shared_payload({**payload, "entries": entries, "scope_ids": sorted(held)})
-    view = _entry_view(store, updated, after)
-    return store, payload, record, after, updated, view
+    return store, _entry_view(store, payload, record), record, after, updated, _entry_view(store, updated, after)

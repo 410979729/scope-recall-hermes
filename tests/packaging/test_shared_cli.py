@@ -998,6 +998,48 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
     assert code == 2 and "not attached" in result["error"]
 
 
+def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_order(tmp_path, capsys, root):
+    """Of the rows a session matches, the first that captures into a scope it may write decides where its messages
+    go.  Two owner rows on one route, swapped, moved the owner's captures into another scope with every row, scope
+    and principal list of the preview empty (review of 3.10.5).  The preview names the route, before and after."""
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    payload = read_shared_payload(root)
+    mine = payload["entries"][0]["audience_scopes"]["owner_private"]
+    elsewhere = payload["entries"][1]["scope_ids"][0]
+
+    def cli_owner_rows(document):
+        return [row for row in document["audiences"] if row["kind"] == "owner_private" and row["platform"] == "cli"]
+
+    def second_owner_row(document):
+        [owner] = cli_owner_rows(document)
+        document["audiences"].append(
+            dict(owner, allowed_scope_ids=[elsewhere], writable_scope_ids=[elsewhere], capture_scope_id=elsewhere)
+        )
+
+    code, applied = _granted(capsys, tmp_path, first, second_owner_row)
+    assert (code, applied["status"], applied["captures_changed"], applied["rows_reordered"]) == (
+        0,
+        "applied",
+        [],
+        False,
+    ), applied
+    assert _bind(first).runtime_audience.capture_scope_id == mine, "the first row still decides"
+    code, shown = _run(capsys, "grants", "--instance-root", str(first))
+    document = shown["grants"]
+    one, two = (document["audiences"].index(row) for row in cli_owner_rows(document))
+    document["audiences"][one], document["audiences"][two] = document["audiences"][two], document["audiences"][one]
+    edit = tmp_path / "TEST-swapped.json"
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    code, preview = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit))
+    assert (code, preview["status"]) == (0, "preview"), preview
+    assert preview["rows_added"] == preview["rows_removed"] == [] and preview["rows_reordered"], preview
+    [moved] = preview["captures_changed"]
+    assert moved["route"].startswith("cli/") and (moved["before"], moved["after"]) == (mine, elsewhere), moved
+    code, swapped = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
+    assert (code, swapped["status"]) == (0, "applied"), swapped
+    assert _bind(first).runtime_audience.capture_scope_id == elsewhere, "the preview said what binding does"
+
+
 def test_a_grants_apply_whose_receipt_fails_puts_back_what_it_replaced(tmp_path, capsys, root, monkeypatch):
     """The receipt was written after the change, outside what a failure puts back: a full disk at that moment left
     the grants changed and the command failed, with no word of the grants as they were (review of 3.10.5)."""
