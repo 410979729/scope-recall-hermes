@@ -993,6 +993,38 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
     assert code == 2 and "not attached" in result["error"]
 
 
+def test_a_grants_apply_whose_receipt_fails_puts_back_what_it_replaced(tmp_path, capsys, root, monkeypatch):
+    """The receipt was written after the change, outside what a failure puts back: a full disk at that moment left
+    the grants changed and the command failed, with no word of the grants as they were (review of 3.10.5)."""
+    from scope_recall.maintenance import shared_run
+
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
+    before = (manifest.read_bytes(), entry.read_bytes())
+    elsewhere = read_shared_payload(root)["entries"][1]["scope_ids"][0]
+
+    def read_more(document):
+        for row in document["audiences"]:
+            if row["kind"] == "owner_private":
+                row["allowed_scope_ids"].append(elsewhere)
+
+    real = shared_run.Run.receipt
+
+    def failing(self, body):
+        if body.get("status") == "applied":
+            raise OSError("TEST disk full")
+        return real(self, body)
+
+    monkeypatch.setattr(shared_run.Run, "receipt", failing)
+    code, failed = _granted(capsys, tmp_path, first, read_more)
+    assert code == 2 and "disk full" in failed["error"], failed
+    assert (manifest.read_bytes(), entry.read_bytes()) == before, "both put back"
+    monkeypatch.setattr(shared_run.Run, "receipt", real)
+    code, applied = _granted(capsys, tmp_path, first, read_more)
+    assert (code, applied["status"], applied["entry_runtime_config_rebound"]) == (0, "applied", True), applied
+    assert Path(applied["receipt"]).is_file() and Path(applied["rollback"]).is_file()
+
+
 def _granted(capsys, tmp_path, home, change):
     code, shown = _run(capsys, "grants", "--instance-root", str(home))
     document = shown["grants"]
@@ -1037,6 +1069,27 @@ def test_a_client_entry_s_grants_change_and_keep_its_own_route(tmp_path, capsys,
         edit.write_text(json.dumps(moved), encoding="utf-8")
         code, refused = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
         assert code == 2 and "its own route" in refused["error"], (field, refused)
+    # A conversation row in the owner row's place still read and captured, so it passed, the owner principal replaced
+    # too (review of 3.10.5): the client takes whoever types into it for the owner, so its route keeps an owner row.
+    someone = {"platform": "weixin", "user_id": "TEST-wx-1"}
+    for name, kind, principals in (
+        ("conversation", "conversation", document["owner_principals"]),
+        ("another owner", "owner_private", [someone]),
+        ("both", "conversation", [someone]),
+    ):
+        demoted = json.loads(json.dumps(document))
+        demoted["audiences"][0]["kind"] = kind
+        demoted["owner_principals"] = principals
+        edit.write_text(json.dumps(demoted), encoding="utf-8")
+        code, refused = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
+        assert code == 2 and "its own route, of an owner principal" in refused["error"], (name, refused)
+    beside = json.loads(json.dumps(document))
+    beside["audiences"].append(
+        dict(beside["audiences"][0], kind="conversation", writable_scope_ids=[], capture_scope_id="")
+    )
+    edit.write_text(json.dumps(beside), encoding="utf-8")
+    code, preview = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
+    assert (code, preview["status"]) == (0, "preview"), "a conversation row beside the owner row is a grant"
 
 
 def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root):

@@ -29,7 +29,7 @@ import shutil
 import sqlite3
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -661,7 +661,9 @@ def _manifest_digest(store: Path) -> str:
 
 def _client_route_holds(view: InstallationManifest) -> None:
     """Refuse grants under which a client entry's own route, bound as the client binds it (``load_shared_client``),
-    reads nothing or captures nowhere: the client would not start."""
+    has no owner row of an owner principal that reads and captures.  The client takes whoever types into it for the
+    owner: with a conversation row in its owner row's place, or its owner principal replaced, it still bound, as no
+    owner (review of 3.10.5).  So only the owner rows are counted."""
     scope = HermesRuntimeScope(
         platform=view.entry_host,
         user_id=LOCAL_USER_ID,
@@ -673,11 +675,12 @@ def _client_route_holds(view: InstallationManifest) -> None:
         agent_context="primary",
         entry_id=str(view.entry_id),
     )
-    audience = resolve_runtime_audience(view, scope)
-    if not audience.allowed_scope_ids or audience.capture_scope_id is None:
+    owner_rows = tuple(row for row in view.audiences if str(row.get("kind") or "conversation") == "owner_private")
+    audience = resolve_runtime_audience(replace(view, audiences=owner_rows), scope)
+    if not audience.includes_owner_private or not audience.allowed_scope_ids or audience.capture_scope_id is None:
         raise SharedStoreError(
-            f"a {view.entry_host} entry needs an owner row on its own route that reads and captures: under these "
-            "grants the client would bind nothing"
+            f"a {view.entry_host} entry needs an owner row on its own route, of an owner principal, that reads and "
+            "captures: under these grants the client would not bind as the owner"
         )
 
 
@@ -705,17 +708,19 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
             write_shared_payload(plan.store, plan.updated)
         if plan.entry_config is not None:
             write_json(plan.entry_path, plan.entry_config)
+        result = {
+            "status": "applied",
+            **plan.change,
+            "rollback": str(rollback) if rollback is not None else None,
+            "next": "start this entry's host again: it binds the new grants when it starts (doctor checks them)",
+        }
+        # The receipt is part of the change: written after it, a receipt that failed left the grants changed and
+        # the command failed, with no word of the grants as they were (review of 3.10.5).
+        result["receipt"] = run.receipt(result)
     except BaseException:
         # Half a change binds the entry to scopes its grants do not name, or the other way round.
         _put_back(run, replaced)
         raise
-    result = {
-        "status": "applied",
-        **plan.change,
-        "rollback": str(rollback) if rollback is not None else None,
-        "next": "start this entry's host again: it binds the new grants when it starts (doctor checks them)",
-    }
-    result["receipt"] = run.receipt(result)
     return result
 
 

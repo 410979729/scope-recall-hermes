@@ -300,10 +300,10 @@ the scopes it reads, writes and captures into (two rows may share a route, and e
 owner principals; the scopes the entry gains or gives up; and any owner row that grants nothing.
 With `--apply` it writes the store's manifest, and the entry's runtime config when the scopes it
 binds change, keeping a copy of each file under `receipts\`, with `grants-before.json`, the
-grants as they were: applied the same way, it puts them back. A write that fails puts the copies
-back; run again, the command also rebinds an entry config that a failed run left behind. If the
-store's manifest changed after the command read it (another command wrote it), it writes nothing
-and says so: run it again. Run one shared-store command at a time.
+grants as they were: applied the same way, it puts them back. A write that fails, the receipt's
+included, puts the copies back; run again, the command also rebinds an entry config that a failed
+run left behind. If the store's manifest changed after the command read it (another command wrote
+it), it writes nothing and says so: run it again. Run one shared-store command at a time.
 
 A row matches a session field by field, as at attach: `platform`, `user_id`, `chat_type`,
 `chat_id`, `thread_id`, `gateway_session_key` (empty does not pin the host's session key) and
@@ -315,11 +315,12 @@ read scopes. Only scopes the store already holds are named: a scope comes into t
 entry that holds it. A change that would leave a scope held by no entry is refused: what is in it
 would leave every binding, the worker's included; keep it on a row that only reads, or `detach`
 the entry. So the store's own scopes, and the shared worker's config, never change here, and the
-grants before a change apply back. A client's (Codex, Claude Code, WorkBuddy, dsh) owner row
-must still read and capture on the client's own route. Memories keep their scopes and their
-entry; only who reads and writes them changes. Whoever can run this can grant any route the
-store's memory, as whoever can write the manifest always could: it is an operator command, never
-a host's.
+grants before a change apply back. A client (Codex, Claude Code, WorkBuddy, dsh) takes whoever
+types into it for the owner, so its own route keeps an owner row, of an owner principal, that
+reads and captures; a conversation row beside it is a grant like any other. Memories keep their
+scopes and their entry; only who reads and writes them changes. Whoever can run this can grant
+any route the store's memory, as whoever can write the manifest always could: it is an operator
+command, never a host's.
 
 ## Detach, and going back
 
