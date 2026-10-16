@@ -497,10 +497,12 @@ def regranted(
     its own, checked as a whole as ``attach_shared_record`` checks a record: (store, manifest now, record now,
     record after, manifest after, the entry's view after).  Nothing is written.
 
-    Rows stay exact (``audience_entry``).  An owner row must name an owner principal, or it grants nothing.  Only
-    scopes the store holds are named, and none is left held by no entry (what is in it would leave every binding, the
-    worker's included; ``detach`` keeps an entry's scopes on record): the store's own scopes never change here, so
-    the worker's binding stays and the grants before a change can always be applied back.  A client's own route must
+    Rows stay exact (``audience_entry``).  An owner row whose user is no owner principal grants nothing; it is
+    allowed, as an installation may hold one (``doctor``'s ``audience_owner_unverified``), so that the grants before a
+    change always apply back, and the command names it.  Only scopes the store holds are named, and none is left
+    held by no entry (what is in it would leave every binding, the worker's included; ``detach`` keeps an entry's
+    scopes on record): the store's own scopes never change here, so the worker's binding stays and the grants before
+    a change can always be applied back.  A client's own route must
     still read and capture: the caller checks that against the route the client binds with
     (``maintenance/shared.py``), which this module cannot import."""
     store, payload, record = _attached(hermes_home)
@@ -514,13 +516,6 @@ def regranted(
     rows = [dict(row) for row in check["audiences"](grants["audiences"])]
     principals = [dict(item) for item in check["owner_principals"](grants["owner_principals"])]
     kinds = check["audience_scopes"](grants["audience_scopes"])
-    owners = {(item["platform"], item["user_id"]) for item in principals}
-    for row in rows:
-        if row["kind"] == "owner_private" and (row["platform"], row["user_id"]) not in owners:
-            raise HermesIdentityError(
-                f"an owner row on {row['platform']} names a user who is no owner principal, so it would grant "
-                "nothing: add the principal, or make it another kind of row"
-            )
     mapped = sorted({scope_id for row in rows for scope_id in row["allowed_scope_ids"]})
     if not set(kinds.values()) <= set(mapped):
         raise HermesIdentityError("audience_scopes names a scope no row of the entry reads")

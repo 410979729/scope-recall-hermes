@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -509,10 +511,22 @@ def adopt(*, root: Path, now: str | None = None) -> dict[str, Any]:
 _GRANTS_LIMIT = 4 * 1024 * 1024
 
 
-def _route(row: dict[str, Any]) -> str:
-    """A row's exact route and kind, as the change names it."""
-    fields = ("platform", "user_id", "chat_type", "chat_id", "thread_id", "gateway_session_key", "agent_workspace")
-    return "/".join(row[field] for field in fields) + f"#{row['kind']}"
+#: What names a row's route, in the order the change shows it.
+_ROUTE_FIELDS = ("platform", "user_id", "chat_type", "chat_id", "thread_id", "gateway_session_key", "agent_workspace")
+#: What an entry's record holds of its grants (``shared_entries.entry_grants``).
+_GRANT_FIELDS = ("owner_principals", "audience_scopes", "audiences")
+
+
+def _row_shown(row: dict[str, Any]) -> str:
+    """One row as the change shows it: its route, its kind and the scopes it reads, writes and captures into."""
+    shown = {field: row[field] for field in _ROUTE_FIELDS}
+    shown.update(
+        kind=row["kind"],
+        read=sorted(row["allowed_scope_ids"]),
+        write=sorted(row["writable_scope_ids"]),
+        capture=row["capture_scope_id"],
+    )
+    return encoded(shown)
 
 
 def _owners(record: dict[str, Any]) -> set[tuple[str, str]]:
@@ -520,35 +534,27 @@ def _owners(record: dict[str, Any]) -> set[tuple[str, str]]:
 
 
 def _grants_change(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    """What a grants change does: rows by route, the scopes each reads, writes and captures into, the owner
-    principals, and the scopes the entry holds.  Routes and scope ids only."""
-    old = {_route(row): row for row in before["audiences"]}
-    new = {_route(row): row for row in after["audiences"]}
-    changed = []
-    for route in sorted(old.keys() & new.keys()):
-        was, now = old[route], new[route]
-        if was == now:
-            continue
-        item: dict[str, Any] = {"route": route}
-        for name, field in (("read", "allowed_scope_ids"), ("write", "writable_scope_ids")):
-            item[f"{name}_added"] = sorted(set(now[field]) - set(was[field]))
-            item[f"{name}_removed"] = sorted(set(was[field]) - set(now[field]))
-        if was["capture_scope_id"] != now["capture_scope_id"]:
-            item["capture"] = [was["capture_scope_id"], now["capture_scope_id"]]
-        changed.append(item)
-    change = {
+    """What a grants change does: the rows that go and the rows that come, each whole (two rows may share a route,
+    and both count), the owner principals, the scopes the entry holds, and the owner rows that grant nothing.  Routes
+    and scope ids only.  Whether anything changes is read from the whole records, not from this summary."""
+    old, new = Counter(map(_row_shown, before["audiences"])), Counter(map(_row_shown, after["audiences"]))
+    owners = _owners(after)
+    return {
         "entry_id": before["entry_id"],
-        "rows_added": sorted(new.keys() - old.keys()),
-        "rows_removed": sorted(old.keys() - new.keys()),
-        "rows_changed": changed,
-        "principals_added": sorted("/".join(item) for item in _owners(after) - _owners(before)),
-        "principals_removed": sorted("/".join(item) for item in _owners(before) - _owners(after)),
+        "rows_added": [json.loads(row) for row in sorted((new - old).elements())],
+        "rows_removed": [json.loads(row) for row in sorted((old - new).elements())],
+        "principals_added": sorted("/".join(item) for item in owners - _owners(before)),
+        "principals_removed": sorted("/".join(item) for item in _owners(before) - owners),
         "audience_scopes_changed": before["audience_scopes"] != after["audience_scopes"],
         "entry_scopes_added": sorted(set(after["scope_ids"]) - set(before["scope_ids"])),
         "entry_scopes_removed": sorted(set(before["scope_ids"]) - set(after["scope_ids"])),
+        "owner_rows_granting_nothing": sorted(
+            "/".join(row[field] for field in _ROUTE_FIELDS)
+            for row in after["audiences"]
+            if row["kind"] == "owner_private" and (row["platform"], row["user_id"]) not in owners
+        ),
+        "unchanged": all(encoded({"value": before[name]}) == encoded({"value": after[name]}) for name in _GRANT_FIELDS),
     }
-    change["unchanged"] = not any(value for key, value in change.items() if key != "entry_id")
-    return change
 
 
 def grants(
@@ -601,7 +607,8 @@ def _shown_grants(instance_root: Path, out: Path | None) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _GrantsPlan:
-    """A checked grants change: the store's manifest after it, and the entry's runtime config when it must follow."""
+    """A checked grants change: the store's manifest after it, and the entry's runtime config when it must follow.
+    ``manifest_digest`` is the manifest it was checked against."""
 
     store: Path
     before: dict[str, Any]
@@ -609,6 +616,7 @@ class _GrantsPlan:
     change: dict[str, Any]
     entry_path: Path
     entry_config: dict[str, Any] | None
+    manifest_digest: str
 
     @property
     def manifest_changes(self) -> bool:
@@ -622,7 +630,11 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
         document = json.loads(grants_from.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SharedStoreError(f"{grants_from} is not readable JSON") from exc
+    attachment = read_attachment(instance_root)
+    digest = _manifest_digest(attachment.root) if attachment is not None else ""
     store, _payload, before, after, updated, view = regranted(instance_root, document)
+    if _manifest_digest(store) != digest:
+        raise SharedStoreError("the store's manifest changed while it was read: run the command again")
     if view.entry_host in CLIENT_HOSTS:
         _client_route_holds(view)
     change = _grants_change(before, after)
@@ -637,7 +649,14 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
             entry_config = None
     change["entry_runtime_config_rebound"] = entry_config is not None
     _fits(entry_config, "entry's")
-    return _GrantsPlan(store, before, updated, change, entry_path, entry_config)
+    return _GrantsPlan(store, before, updated, change, entry_path, entry_config, digest)
+
+
+def _manifest_digest(store: Path) -> str:
+    try:
+        return hashlib.sha256((store / MANIFEST_FILENAME).read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _client_route_holds(view: InstallationManifest) -> None:
@@ -667,11 +686,20 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
     replaced = {plan.store / MANIFEST_FILENAME: "store", plan.entry_path: "entry"}
     for path, label in replaced.items():
         run.keep(path, label)
+    # Planned from one manifest, a change written over another undid what the other command had written (two runs at
+    # once: a revoked route came back).  The copy just kept is the manifest this run would replace.  A writer that
+    # lands between here and the replace is not seen; shared-store commands run one at a time.
+    kept = run.folder / f"store-{MANIFEST_FILENAME}"
+    if not kept.is_file() or hashlib.sha256(kept.read_bytes()).hexdigest() != plan.manifest_digest:
+        run.receipt({"status": "refused", "entry_id": plan.before["entry_id"], "reason": "manifest_changed"})
+        raise SharedStoreError(
+            "the store's manifest changed after this change was checked: nothing was written; run the command again"
+        )
     rollback = None
     if plan.manifest_changes:
         rollback = run.folder / "grants-before.json"
-        kept = {name: plan.before[name] for name in ("owner_principals", "audience_scopes", "audiences")}
-        write_json(rollback, {"schema": GRANTS_SCHEMA, "entry_id": plan.before["entry_id"], **kept})
+        previous = {name: plan.before[name] for name in _GRANT_FIELDS}
+        write_json(rollback, {"schema": GRANTS_SCHEMA, "entry_id": plan.before["entry_id"], **previous})
     try:
         if plan.manifest_changes:
             write_shared_payload(plan.store, plan.updated)

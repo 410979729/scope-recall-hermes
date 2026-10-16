@@ -782,13 +782,14 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
 
     code, preview = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit))
     assert (code, preview["status"]) == (0, "preview"), preview
-    route = f"weixin/TEST-wx-1/dm/TEST-wx-1//{dm['gateway_session_key']}/hermes#owner_private"
-    assert preview["rows_added"] == [route]
-    assert [(row["route"], row["read_added"], row["write_added"]) for row in preview["rows_changed"]] == [
-        (preview["rows_changed"][0]["route"], [elsewhere], [])
-    ]
+    added = {(row["platform"], row["user_id"], row["kind"]): row for row in preview["rows_added"]}
+    assert set(added) == {("weixin", "TEST-wx-1", "owner_private"), ("cli", owner["user_id"], "owner_private")}
+    assert elsewhere in added[("weixin", "TEST-wx-1", "owner_private")]["read"]
+    assert elsewhere in added[("cli", owner["user_id"], "owner_private")]["read"]
+    [removed] = preview["rows_removed"]
+    assert (removed["platform"], elsewhere in removed["read"]) == ("cli", False), "the owner row as it was"
     assert preview["principals_added"] == ["weixin/TEST-wx-1"] and preview["entry_scopes_added"] == [elsewhere]
-    assert preview["rows_removed"] == [] and preview["entry_runtime_config_rebound"]
+    assert preview["owner_rows_granting_nothing"] == [] and preview["entry_runtime_config_rebound"]
     assert json.loads(manifest.read_text(encoding="utf-8")) == original, "a preview writes nothing"
 
     code, applied = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
@@ -857,6 +858,87 @@ def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_f
     assert load_config(entry).binding == _bind(first).binding
 
 
+def test_two_grants_changes_planned_from_one_manifest_cannot_both_be_written(tmp_path, capsys, root):
+    """Each change carries the whole manifest: written over the other, the second undid the first (a revoked route
+    came back; review of 3.10.5).  The second is refused and writes nothing."""
+    from scope_recall.maintenance import shared
+
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    mine = read_shared_payload(root)["entries"][0]["audience_scopes"]["owner_private"]
+    plans = []
+    for home, name in ((first, "one"), (second, "two")):
+        code, shown = _run(capsys, "grants", "--instance-root", str(home))
+        document = shown["grants"]
+        if home == second:
+            document["audiences"][0]["allowed_scope_ids"].append(mine)
+        else:
+            document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
+        edit = tmp_path / f"TEST-plan-{name}.json"
+        edit.write_text(json.dumps(document), encoding="utf-8")
+        plans.append(shared._planned_grants(home, edit))
+    shared._applied_grants(plans[0], "2026-10-15T12:00:00Z")
+    written = (root / "installation.json").read_bytes()
+    with pytest.raises(shared.SharedStoreError, match="changed after this change was checked"):
+        shared._applied_grants(plans[1], "2026-10-15T12:00:01Z")
+    assert (root / "installation.json").read_bytes() == written, "the second wrote nothing"
+
+
+def test_two_rows_on_one_route_are_each_a_grant(tmp_path, capsys, root):
+    """Rows were compared by route, so of two rows on one route one was lost, and taking away the one that read more
+    read as no change and was never written (review of 3.10.5).  An owner row whose user is no owner principal grants
+    nothing and is named, and the grants before a change put such a row back as it was."""
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    elsewhere = read_shared_payload(root)["entries"][1]["scope_ids"][0]
+
+    def doubled(document):
+        owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+        document["audiences"].append(dict(owner, allowed_scope_ids=[*owner["allowed_scope_ids"], elsewhere]))
+        document["audiences"].append(
+            dict(owner, kind="conversation", allowed_scope_ids=[elsewhere], writable_scope_ids=[], capture_scope_id="")
+        )
+
+    code, applied = _granted(capsys, tmp_path, first, doubled)
+    assert (code, applied["status"]) == (0, "applied"), applied
+    code, shown = _run(capsys, "grants", "--instance-root", str(first))
+    document = shown["grants"]
+    wider = next(
+        row for row in document["audiences"] if elsewhere in row["allowed_scope_ids"] and row["kind"] == "owner_private"
+    )
+    document["audiences"].remove(wider)
+    edit = tmp_path / "TEST-narrower.json"
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    code, preview = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit))
+    assert (code, preview["status"]) == (0, "preview"), preview
+    assert len(preview["rows_removed"]) == 1 and preview["entry_scopes_removed"] == [], "the scope stays the entry's"
+    code, narrowed = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
+    assert (code, narrowed["status"]) == (0, "applied"), narrowed
+
+    code, shown = _run(capsys, "grants", "--instance-root", str(first))
+    document = shown["grants"]
+    owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+    document["audiences"].append(
+        dict(
+            owner,
+            platform="desktop",
+            user_id="basic:TEST-guest",
+            chat_type="private",
+            chat_id="basic:TEST-guest",
+            thread_id="main",
+        )
+    )
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    code, inert = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
+    assert (code, inert["status"]) == (0, "applied"), inert
+    assert inert["owner_rows_granting_nothing"] == ["desktop/basic:TEST-guest/private/basic:TEST-guest/main//hermes"]
+    document["owner_principals"].append({"platform": "desktop", "user_id": "basic:TEST-guest"})
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    code, active = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
+    assert (code, active["status"], active["owner_rows_granting_nothing"]) == (0, "applied", []), active
+    code, back = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", active["rollback"], "--apply")
+    assert (code, back["status"]) == (0, "applied"), back
+    assert back["owner_rows_granting_nothing"] == ["desktop/basic:TEST-guest/private/basic:TEST-guest/main//hermes"]
+
+
 def test_two_runs_of_one_command_in_one_second_keep_apart(tmp_path):
     from scope_recall.maintenance.shared_run import Run
 
@@ -893,7 +975,6 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
 
     refused(lambda d: d.update(entry_id="tianquan"), "another entry")
     refused(lambda d: d.update(extra=1), "holds schema")
-    refused(lambda d: d["audiences"].append(dict(owner, platform="weixin", user_id="TEST-wx-1")), "no owner principal")
     refused(lambda d: d["audiences"].append(dict(owner, platform="weixin", user_id="unknown")), "explicit exact")
     refused(lambda d: d["audiences"].append(dict(owner, writable_scope_ids=["TEST-not-read"])), "subset")
     other = json.loads(manifest.read_text(encoding="utf-8"))["entries"][1]["scope_ids"][0]
