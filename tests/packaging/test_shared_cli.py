@@ -795,6 +795,11 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
     assert (removed["platform"], elsewhere in removed["read"]) == ("cli", False), "the owner row as it was"
     assert preview["principals_added"] == ["weixin/TEST-wx-1"] and preview["entry_scopes_added"] == [elsewhere]
     assert preview["owner_rows_granting_nothing"] == [] and preview["entry_runtime_config_rebound"]
+    bound = {change["route"].split("/")[0]: change for change in preview["routes_changed"]}
+    assert set(bound) == {"cli", "weixin"}, "the routes that bind otherwise, as they bind"
+    assert bound["weixin"]["before"] == {"read": [], "write": [], "capture": None}
+    assert elsewhere in bound["weixin"]["after"]["read"] and bound["weixin"]["after"]["capture"] is not None
+    assert elsewhere in bound["cli"]["after"]["read"] and elsewhere not in bound["cli"]["before"]["read"]
     assert json.loads(manifest.read_text(encoding="utf-8")) == original, "a preview writes nothing"
 
     code, applied = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
@@ -1001,7 +1006,8 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
 def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_order(tmp_path, capsys, root):
     """Of the rows a session matches, the first that captures into a scope it may write decides where its messages
     go.  Two owner rows on one route, swapped, moved the owner's captures into another scope with every row, scope
-    and principal list of the preview empty (review of 3.10.5).  The preview names the route, before and after."""
+    and principal list of the preview empty (review of 3.10.5).  The preview names the route as it binds, before and
+    after."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     payload = read_shared_payload(root)
     mine = payload["entries"][0]["audience_scopes"]["owner_private"]
@@ -1017,12 +1023,10 @@ def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_ord
         )
 
     code, applied = _granted(capsys, tmp_path, first, second_owner_row)
-    assert (code, applied["status"], applied["captures_changed"], applied["rows_reordered"]) == (
-        0,
-        "applied",
-        [],
-        False,
-    ), applied
+    assert (code, applied["status"], applied["rows_reordered"]) == (0, "applied", False), applied
+    [wider] = applied["routes_changed"]
+    assert wider["route"].startswith("cli/") and wider["before"]["capture"] == wider["after"]["capture"] == mine
+    assert set(wider["after"]["read"]) - set(wider["before"]["read"]) == {elsewhere}, wider
     assert _bind(first).runtime_audience.capture_scope_id == mine, "the first row still decides"
     code, shown = _run(capsys, "grants", "--instance-root", str(first))
     document = shown["grants"]
@@ -1033,8 +1037,12 @@ def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_ord
     code, preview = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit))
     assert (code, preview["status"]) == (0, "preview"), preview
     assert preview["rows_added"] == preview["rows_removed"] == [] and preview["rows_reordered"], preview
-    [moved] = preview["captures_changed"]
-    assert moved["route"].startswith("cli/") and (moved["before"], moved["after"]) == (mine, elsewhere), moved
+    [moved] = preview["routes_changed"]
+    assert moved["route"].startswith("cli/") and (moved["before"]["capture"], moved["after"]["capture"]) == (
+        mine,
+        elsewhere,
+    ), moved
+    assert (moved["before"]["read"], moved["before"]["write"]) == (moved["after"]["read"], moved["after"]["write"])
     code, swapped = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--apply")
     assert (code, swapped["status"]) == (0, "applied"), swapped
     assert _bind(first).runtime_audience.capture_scope_id == elsewhere, "the preview said what binding does"

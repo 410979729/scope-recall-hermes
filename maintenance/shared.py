@@ -543,13 +543,14 @@ def _in_order(rows: list[str], common: Counter[str]) -> list[str]:
     return kept
 
 
-def _captures_changed(before: InstallationManifest, after: InstallationManifest) -> list[dict[str, Any]]:
-    """Each route a row names, before or after, whose messages the change captures elsewhere.  Of the rows a session
-    matches, the first that captures into a scope it may write decides, so the order of rows is a grant too: two rows
-    on one route, swapped, moved a chat's captures with nothing else shown (review of 3.10.5).  A route resolved with
-    its own session key stands for every session it matches, unpinned rows included."""
+def _routes_changed(before: InstallationManifest, after: InstallationManifest) -> list[dict[str, Any]]:
+    """Each route a row names, before or after, that the change lets read, write or capture otherwise, as its
+    session binds (``resolve_runtime_audience``) before and after.  Rows alone did not say it: of the rows a session
+    matches, the first that captures into a scope it may write decides, so two rows on one route, swapped, moved a
+    chat's captures with nothing else shown (review of 3.10.5); an owner principal wakes or silences owner rows.  A
+    route resolved with its own session key stands for every session it matches, unpinned rows included."""
     routes = {tuple(row[field] for field in _ROUTE_FIELDS) for row in (*before.audiences, *after.audiences)}
-    moved = []
+    changed = []
     for route in sorted(routes):
         scope = HermesRuntimeScope(
             **dict(zip(_ROUTE_FIELDS, route, strict=True)),
@@ -557,17 +558,25 @@ def _captures_changed(before: InstallationManifest, after: InstallationManifest)
             agent_context="primary",
             entry_id=str(after.entry_id),
         )
-        was, now = (resolve_runtime_audience(view, scope).capture_scope_id for view in (before, after))
-        if was != now:
-            moved.append({"route": "/".join(route), "before": was, "after": now})
-    return moved
+        was, now = (resolve_runtime_audience(view, scope) for view in (before, after))
+        shown = [
+            {
+                "read": sorted(audience.allowed_scope_ids),
+                "write": sorted(audience.writable_scope_ids),
+                "capture": audience.capture_scope_id,
+            }
+            for audience in (was, now)
+        ]
+        if shown[0] != shown[1]:
+            changed.append({"route": "/".join(route), "before": shown[0], "after": shown[1]})
+    return changed
 
 
 def _grants_change(
     before: dict[str, Any], after: dict[str, Any], views: tuple[InstallationManifest, InstallationManifest]
 ) -> dict[str, Any]:
     """What a grants change does: the rows that go and the rows that come, each whole (two rows may share a route,
-    and both count), whether the rows both hold changed order, each route whose captures move, the owner principals,
+    and both count), whether the rows both hold changed order, each route that binds otherwise, the owner principals,
     the scopes the entry holds, and the owner rows that grant nothing.  Routes and scope ids only.  Whether anything
     changes is read from the whole records, not from this summary."""
     shown = [list(map(_row_shown, record["audiences"])) for record in (before, after)]
@@ -578,7 +587,7 @@ def _grants_change(
         "rows_added": [json.loads(row) for row in sorted((new - old).elements())],
         "rows_removed": [json.loads(row) for row in sorted((old - new).elements())],
         "rows_reordered": _in_order(shown[0], old & new) != _in_order(shown[1], old & new),
-        "captures_changed": _captures_changed(*views),
+        "routes_changed": _routes_changed(*views),
         "principals_added": sorted("/".join(item) for item in owners - _owners(before)),
         "principals_removed": sorted("/".join(item) for item in _owners(before) - owners),
         "audience_scopes_changed": before["audience_scopes"] != after["audience_scopes"],
