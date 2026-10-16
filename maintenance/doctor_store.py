@@ -634,6 +634,7 @@ def check_client_reminders(report: DoctorReport, data_directory: Path, entry_id:
     if count:
         report.capability_gaps.append("owner_words_with_client_reminder")
     if not finished:
+        report.capability_gaps.append("owner_words_unchecked")
         record_check(report, "owner_words", "unfinished", f"{count} found before the read stopped: {','.join(refs)}")
     elif count:
         record_check(report, "owner_words", "client_reminders", f"{count}: {','.join(refs)}")

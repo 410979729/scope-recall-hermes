@@ -290,6 +290,7 @@ _NON_ACTIONABLE_GAPS = frozenset(
     {
         "audience_owner_unverified",
         "due_work_unreached",
+        "owner_words_unchecked",
         "owner_words_with_client_reminder",
         "vector_threshold_unconfigured",
         "work_failed_terminal_only",

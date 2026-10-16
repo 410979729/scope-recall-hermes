@@ -33,9 +33,12 @@ from pathlib import Path
 from typing import Any
 
 from ..adapters.clients.config import CONFIG_FILENAME as CODEX_CONFIG_FILENAME
+from ..adapters.hermes.audiences import LOCAL_USER_ID
+from ..adapters.hermes.identity import HermesRuntimeScope, resolve_runtime_audience
 from ..adapters.hermes.installation import (
     MANIFEST_FILENAME,
     HermesIdentityError,
+    InstallationManifest,
     build_installation_manifest,
     load_archived_installation,
 )
@@ -619,7 +622,9 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
         document = json.loads(grants_from.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SharedStoreError(f"{grants_from} is not readable JSON") from exc
-    store, _payload, before, after, updated = regranted(instance_root, document)
+    store, _payload, before, after, updated, view = regranted(instance_root, document)
+    if view.entry_host in CLIENT_HOSTS:
+        _client_route_holds(view)
     change = _grants_change(before, after)
     # The entry's runtime config binds the entry's scopes; compared with the file itself, so a run that failed after
     # the manifest was written is finished by the next one.
@@ -633,6 +638,28 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
     change["entry_runtime_config_rebound"] = entry_config is not None
     _fits(entry_config, "entry's")
     return _GrantsPlan(store, before, updated, change, entry_path, entry_config)
+
+
+def _client_route_holds(view: InstallationManifest) -> None:
+    """Refuse grants under which a client entry's own route, bound as the client binds it (``load_shared_client``),
+    reads nothing or captures nowhere: the client would not start."""
+    scope = HermesRuntimeScope(
+        platform=view.entry_host,
+        user_id=LOCAL_USER_ID,
+        chat_type="private",
+        chat_id=LOCAL_USER_ID,
+        thread_id="main",
+        agent_identity=view.agent_id,
+        agent_workspace="default",
+        agent_context="primary",
+        entry_id=str(view.entry_id),
+    )
+    audience = resolve_runtime_audience(view, scope)
+    if not audience.allowed_scope_ids or audience.capture_scope_id is None:
+        raise SharedStoreError(
+            f"a {view.entry_host} entry needs an owner row on its own route that reads and captures: under these "
+            "grants the client would bind nothing"
+        )
 
 
 def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:

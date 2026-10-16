@@ -863,9 +863,15 @@ def test_two_runs_of_one_command_in_one_second_keep_apart(tmp_path):
     at = "2026-10-15T12:00:00Z"
     one, two = Run(tmp_path, "grants-TEST", at), Run(tmp_path, "grants-TEST", at)
     assert one.folder != two.folder and one.folder.is_dir() and two.folder.is_dir()
-    assert Path(one.receipt({"status": "TEST"})).is_file()
-    assert not one.folder.exists(), "a run that kept nothing leaves its receipt only"
+    receipt = Path(one.receipt({"status": "TEST"}))
+    assert receipt == one.folder.with_name(one.folder.name + ".json") and one.folder.is_dir(), "kept, though empty"
     assert Run(tmp_path, "grants-TEST", at).folder not in (one.folder, two.folder)
+    # import-entry's moments have fractions of a second: a receipt named by replacing a suffix lost the fraction and
+    # the command, and the second run of one second looked for a free name forever (review of 3.10.5).
+    fine = "2026-10-15T12:00:00.123456+00:00"
+    three, four = Run(tmp_path, "import-TEST", fine), Run(tmp_path, "import-TEST", fine)
+    receipts = {Path(run.receipt({"status": "TEST"})).name for run in (three, four)}
+    assert len(receipts) == 2 and all("import-TEST" in name for name in receipts), receipts
 
 
 def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, capsys, root):
@@ -944,10 +950,12 @@ def test_a_client_entry_s_grants_change_and_keep_its_own_route(tmp_path, capsys,
     code, applied = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit), "--apply")
     assert (code, applied["status"]) == (0, "applied"), applied
     assert elsewhere in load_shared_client(client, "claude-code").audience.allowed_scope_ids
-    document["audiences"][0]["chat_id"] = "TEST-someone"
-    edit.write_text(json.dumps(document), encoding="utf-8")
-    code, refused = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
-    assert code == 2 and "its own route" in refused["error"], refused
+    for field, value in (("chat_id", "TEST-someone"), ("gateway_session_key", "TEST-key")):
+        moved = json.loads(json.dumps(document))
+        moved["audiences"][0][field] = value
+        edit.write_text(json.dumps(moved), encoding="utf-8")
+        code, refused = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
+        assert code == 2 and "its own route" in refused["error"], (field, refused)
 
 
 def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root):

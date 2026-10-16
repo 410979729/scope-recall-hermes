@@ -39,7 +39,7 @@ from typing import Any, Callable
 from ..._version import __version__
 from ...runtime.worker_entry import host_process_credential_environment
 from . import transcript
-from .boundary import IN_CONTEXT_FIELD, in_context_since, without_lone_surrogates
+from .boundary import IN_CONTEXT_FIELD, without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, SystemHookClock
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
@@ -220,13 +220,14 @@ def client_times_and_lead(body: dict[str, Any]) -> tuple[str | None, RecordLines
     return (_stamp(observed - lead) if observed is not None else None), record, lead
 
 
-def _context_since_moved(payload: dict[str, Any], lead: timedelta) -> dict[str, Any]:
-    """A Claude Code prompt's in-context moment, moved back by the client's lead as its stored times are: left as
-    the client's clock said, it fell after the messages it was the boundary of (#249)."""
-    since = in_context_since(payload)
-    if since is None or lead <= timedelta(0):
+def _context_since_kept(payload: dict[str, Any], lead: timedelta) -> dict[str, Any]:
+    """A Claude Code prompt's in-context moment, kept only from a client whose times are stored as it sent them.
+    Moved back with this request's lead, it was compared with messages earlier requests moved back by theirs, which
+    differ with the network's delay, and a message from before the compaction could read as held (#249); such a
+    client's recall leaves nothing out, as before 3.10.5."""
+    if lead <= timedelta(0) or IN_CONTEXT_FIELD not in payload:
         return payload
-    return {**payload, IN_CONTEXT_FIELD: _stamp(_moment(since) - lead)}
+    return {key: value for key, value in payload.items() if key != IN_CONTEXT_FIELD}
 
 
 def record_from_wire(value: object) -> RecordLines | None:
@@ -292,7 +293,7 @@ def handle_request(
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
     # now are this machine's: a client clock a day fast held back a message's embedding by a day.
     observed_at, record, lead = client_times_and_lead(body)
-    payload = _context_since_moved(payload, lead)
+    payload = _context_since_kept(payload, lead)
     building = time.monotonic()
     handler = CodexHookHandler.from_home(
         str(config.home),

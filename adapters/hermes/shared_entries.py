@@ -492,16 +492,17 @@ def entry_grants(hermes_home: Path | str) -> dict[str, Any]:
 
 def regranted(
     hermes_home: Path | str, grants: object
-) -> tuple[Path, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[Path, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], InstallationManifest]:
     """The shared store with the entry of ``hermes_home`` holding ``grants`` (an edited ``entry_grants``) in place of
     its own, checked as a whole as ``attach_shared_record`` checks a record: (store, manifest now, record now,
-    record after, manifest after).  Nothing is written.
+    record after, manifest after, the entry's view after).  Nothing is written.
 
     Rows stay exact (``audience_entry``).  An owner row must name an owner principal, or it grants nothing.  Only
     scopes the store holds are named, and none is left held by no entry (what is in it would leave every binding, the
     worker's included; ``detach`` keeps an entry's scopes on record): the store's own scopes never change here, so
     the worker's binding stays and the grants before a change can always be applied back.  A client's own route must
-    still read and capture."""
+    still read and capture: the caller checks that against the route the client binds with
+    (``maintenance/shared.py``), which this module cannot import."""
     store, payload, record = _attached(hermes_home)
     if not isinstance(grants, dict) or grants.get("schema") != GRANTS_SCHEMA:
         raise HermesIdentityError(f"not an entry grants document ({GRANTS_SCHEMA}): start from the entry's own")
@@ -529,17 +530,6 @@ def regranted(
             f"{len(unknown)} scope(s) the store does not hold: grants change who reads and writes the store's scopes, "
             "and a scope comes into the store with an entry that holds it (attach)"
         )
-    if record["host"] in CLIENT_HOSTS and not any(
-        row["kind"] == "owner_private"
-        and row["capture_scope_id"]
-        and (row["platform"], row["user_id"], row["chat_type"], row["chat_id"], row["thread_id"])
-        == (record["host"], LOCAL_USER_ID, "private", LOCAL_USER_ID, "main")
-        and row["agent_workspace"] == "default"
-        for row in rows
-    ):
-        raise HermesIdentityError(
-            f"a {record['host']} entry needs its owner row on its own route, with a capture scope"
-        )
     after = {**record, "scope_ids": mapped, "owner_principals": principals, "audience_scopes": kinds, "audiences": rows}
     entries = [after if entry["entry_id"] == record["entry_id"] else entry for entry in payload["entries"]]
     held = {scope_id for entry in entries for scope_id in entry["scope_ids"]}
@@ -550,5 +540,5 @@ def regranted(
             "each on a row of some entry (one that only reads will do), or detach the entry instead"
         )
     updated = _checked_shared_payload({**payload, "entries": entries, "scope_ids": sorted(held)})
-    _entry_view(store, updated, after)
-    return store, payload, record, after, updated
+    view = _entry_view(store, updated, after)
+    return store, payload, record, after, updated, view

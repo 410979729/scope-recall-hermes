@@ -50,13 +50,11 @@ class Run:
         stamp = now.replace("-", "").replace(":", "")
         base = root / RECEIPTS_DIRNAME / f"{stamp}-{command}"
         # Named to the second, a second run of the command in that second kept its copies over the first's, and
-        # the first's receipt then named copies of files the second replaced.  The folder is taken by making it, so
-        # two runs at once cannot both take one name; one that keeps nothing is removed with its receipt.
+        # the first's receipt then named copies of files the second replaced.  The folder is taken by making it, and
+        # kept even when it stays empty, so no later run takes its name: two runs at once cannot share one.
         folder, count = base, 1
         while True:
             try:
-                if folder.with_suffix(".json").exists():
-                    raise FileExistsError(folder)
                 folder.mkdir(parents=True)
                 break
             except FileExistsError:
@@ -73,8 +71,8 @@ class Run:
             self.backups.append(str(target))
 
     def receipt(self, body: dict[str, Any]) -> str:
-        path = self.folder.with_suffix(".json")
+        # Beside its folder, named after it whole: a moment with fractions of a second has a dot in it, and the
+        # receipt named by replacing a suffix lost the fraction and the command.
+        path = self.folder.with_name(f"{self.folder.name}.json")
         write_json(path, {"command": self.command, "at": self.now, "backups": self.backups, **body})
-        if self.folder.is_dir() and not any(self.folder.iterdir()):
-            self.folder.rmdir()
         return str(path)
