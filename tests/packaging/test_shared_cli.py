@@ -769,6 +769,11 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
     }
     code, again = _run(capsys, "grants", "--instance-root", str(first), "--out", str(edit))
     assert code == 2 and "exists" in again["error"], "an edit is never overwritten"
+    elsewhere_out = tmp_path / "TEST-grants-unused.json"
+    code, both = _run(
+        capsys, "grants", "--instance-root", str(first), "--grants-from", str(edit), "--out", str(elsewhere_out)
+    )
+    assert code == 2 and "--out" in both["error"] and not elsewhere_out.exists(), "not silently ignored"
     assert _weixin(first).runtime_audience.capability_gaps, "the gateway DM binds no owner scope yet"
 
     owner = next(row for row in document["audiences"] if row["kind"] == "owner_private" and row["platform"] == "cli")
@@ -1023,6 +1028,51 @@ def test_a_grants_apply_whose_receipt_fails_puts_back_what_it_replaced(tmp_path,
     code, applied = _granted(capsys, tmp_path, first, read_more)
     assert (code, applied["status"], applied["entry_runtime_config_rebound"]) == (0, "applied", True), applied
     assert Path(applied["receipt"]).is_file() and Path(applied["rollback"]).is_file()
+
+
+def test_a_grants_apply_puts_back_past_a_reader_and_names_what_it_could_not(tmp_path, capsys, root, monkeypatch):
+    """Putting the copies back was a single try: a worker reading the manifest at that moment, which Windows refuses
+    a replace for, left the change half undone (review of 3.10.5).  It is tried again as every write is, and a file
+    it still could not put back is named with its copy."""
+    import os
+
+    from scope_recall.maintenance import shared
+
+    first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
+    manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
+    before = (manifest.read_bytes(), entry.read_bytes())
+    elsewhere = read_shared_payload(root)["entries"][1]["scope_ids"][0]
+
+    def read_more(document):
+        for row in document["audiences"]:
+            if row["kind"] == "owner_private":
+                row["allowed_scope_ids"].append(elsewhere)
+
+    real_write, real_replace = shared.write_json, os.replace
+    refusals = {"left": 3}
+
+    def failing(path, value):
+        if Path(path) == entry:
+            raise OSError("TEST disk full")
+        return real_write(path, value)
+
+    def held(source, target):
+        if Path(target) == manifest and Path(source).name.endswith(".restore") and refusals["left"]:
+            refusals["left"] -= 1
+            raise PermissionError("TEST a reader holds the manifest")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(shared, "write_json", failing)
+    monkeypatch.setattr(os, "replace", held)
+    code, failed = _granted(capsys, tmp_path, first, read_more)
+    assert code == 2 and "disk full" in failed["error"] and refusals["left"] == 0, failed
+    assert (manifest.read_bytes(), entry.read_bytes()) == before, "put back once the reader let go"
+
+    refusals["left"] = 10_000
+    code, failed = _granted(capsys, tmp_path, first, read_more)
+    assert code == 2 and "disk full" in failed["error"] and "could not be undone" in failed["error"], failed
+    assert f"store-installation.json -> {manifest}" in failed["error"], "the file left changed, with its copy"
+    assert entry.read_bytes() == before[1], "the other file is still put back"
 
 
 def _granted(capsys, tmp_path, home, change):

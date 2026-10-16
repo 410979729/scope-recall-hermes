@@ -69,7 +69,7 @@ from ..runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .install_common import RUNTIME_CONFIG_LIMIT
 from .install_hermes import DEFAULT_AGENT_WORKSPACE
 from .shared_import import import_entry
-from .shared_run import Run, SharedStoreError, encoded, write_json
+from .shared_run import Run, SharedStoreError, encoded, replace_file, write_json
 
 #: The shared worker's own names in its runtime config.  Hosts replace the
 #: session with theirs; the worker keeps these.
@@ -579,6 +579,8 @@ def grants(
         if apply:
             raise SharedStoreError("--apply needs --grants-from, the entry's grants as edited")
         return _shown_grants(instance_root, out)
+    if out is not None:
+        raise SharedStoreError("--out writes the entry's grants to edit; with --grants-from nothing is written there")
     plan = _planned_grants(instance_root, grants_from)
     if not plan.manifest_changes and plan.entry_config is None:
         return {"status": "unchanged", **plan.change}
@@ -717,21 +719,30 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
         # The receipt is part of the change: written after it, a receipt that failed left the grants changed and
         # the command failed, with no word of the grants as they were (review of 3.10.5).
         result["receipt"] = run.receipt(result)
-    except BaseException:
+    except BaseException as exc:
         # Half a change binds the entry to scopes its grants do not name, or the other way round.
-        _put_back(run, replaced)
+        left = _put_back(run, replaced)
+        if left and isinstance(exc, Exception):
+            raise SharedStoreError(f"{exc}; and the change could not be undone: copy back {'; '.join(left)}") from exc
         raise
     return result
 
 
-def _put_back(run: Run, replaced: dict[Path, str]) -> None:
-    """Each file a run kept a copy of, as the copy has it, replaced in one step."""
+def _put_back(run: Run, replaced: dict[Path, str]) -> list[str]:
+    """Each file a run kept a copy of, as the copy has it, replaced in one step, and retried while a reader holds it
+    (a single try left a change half undone while the worker read the manifest; review of 3.10.5).  Each file is
+    tried; what could not be put back comes back as ``copy -> file``, to copy by hand."""
+    left = []
     for path, label in replaced.items():
         kept = run.folder / f"{label}-{path.name}"
         if kept.is_file():
             staged = path.with_name(f".{path.name}.restore")
-            shutil.copy2(kept, staged)
-            os.replace(staged, path)
+            try:
+                shutil.copy2(kept, staged)
+                replace_file(staged, path)
+            except OSError:
+                left.append(f"{kept} -> {path}")
+    return left
 
 
 def entries(*, root: Path) -> dict[str, Any]:

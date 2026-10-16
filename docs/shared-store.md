@@ -301,9 +301,10 @@ owner principals; the scopes the entry gains or gives up; and any owner row that
 With `--apply` it writes the store's manifest, and the entry's runtime config when the scopes it
 binds change, keeping a copy of each file under `receipts\`, with `grants-before.json`, the
 grants as they were: applied the same way, it puts them back. A write that fails, the receipt's
-included, puts the copies back; run again, the command also rebinds an entry config that a failed
-run left behind. If the store's manifest changed after the command read it (another command wrote
-it), it writes nothing and says so: run it again. Run one shared-store command at a time.
+included, puts the copies back (a file it could not put back is named with its copy, to copy by
+hand); run again, the command also rebinds an entry config that a failed run left behind. If the
+store's manifest changed after the command read it (another command wrote it), it writes nothing
+and says so: run it again. Run one shared-store command at a time.
 
 A row matches a session field by field, as at attach: `platform`, `user_id`, `chat_type`,
 `chat_id`, `thread_id`, `gateway_session_key` (empty does not pin the host's session key) and

@@ -23,6 +23,20 @@ def encoded(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
+def replace_file(staged: Path, path: Path) -> None:
+    """``staged`` moved over ``path`` in one step.  Windows refuses while a worker or host reads ``path`` for a moment,
+    so the move is tried again for two seconds; then ``staged`` goes and the refusal is raised."""
+    for attempt in range(40):
+        try:
+            os.replace(staged, path)
+            return
+        except PermissionError:
+            if attempt == 39:
+                staged.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
+
+
 def write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
@@ -30,16 +44,7 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     )
     with handle:
         handle.write(encoded(value))
-    for attempt in range(40):
-        try:
-            os.replace(handle.name, path)
-            return
-        except PermissionError:
-            # Windows refuses while a worker or host reads the file for a moment.
-            if attempt == 39:
-                Path(handle.name).unlink(missing_ok=True)
-                raise
-            time.sleep(0.05)
+    replace_file(Path(handle.name), path)
 
 
 class Run:
