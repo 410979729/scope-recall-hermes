@@ -41,6 +41,9 @@ Put the store outside every agent's home, on a short path.
 scope-recall init-shared --root D:\ScopeRecall\shared
 ```
 
+The first agent may be a Hermes instance, as below, or a client, so that clients share the store
+with no Hermes at all ([A store of clients alone](#a-store-of-clients-alone)).
+
 To attach a Hermes instance that has its own store today, stop its gateway first (and its
 worker: `autostart pause`), then move its `scope-recall` directory aside and attach:
 
@@ -106,12 +109,14 @@ store; a 1.x or 2.x store is migrated into the agent's home first (`scope-recall
 ## Attach Codex or Claude Code
 
 A local coding assistant brings no grants of its own: whoever types into it on this machine is
-the owner, as at the Hermes CLI. `attach` gives it the owner grants of Hermes entries already
-attached (`--grants-like`, their ids comma separated, or `all`): it reads every scope their owner
-rows read and may write where they may. What the owner types into it is captured into the scope
-another entry's owner captures into (`--capture-like`), which must be one every owner row of
-every attached Hermes entry reads, so that every agent hears it; otherwise `attach` refuses and
-names the rows that would not. No other entry's grants change and the worker keeps running.
+the owner, as at the Hermes CLI. `attach` gives it the owner grants of entries already attached,
+Hermes homes and other clients alike (`--grants-like`, their ids comma separated, or `all`): it
+reads every scope their owner rows read and may write where they may. What the owner types into
+it is captured into the scope another entry's owner captures into (`--capture-like`), which must
+be one every owner row of every attached entry reads, so that every agent hears it; otherwise
+`attach` refuses and names the rows that would not. No other entry's grants change and the
+worker keeps running. On a store no other entry is attached to, leave both options out: the
+client brings the owner's scope ([A store of clients alone](#a-store-of-clients-alone)).
 
 ```text
 scope-recall attach --host claude-code --instance-root D:\ScopeRecall\claude-code ^
@@ -266,6 +271,48 @@ resident recall server, as WorkBuddy's does, which outlives a dsh process and en
 `apply-uninstall` before `detach`; `detach` alone leaves dsh's patch file as it is. For dsh on
 another machine, attach its entry on the store machine and use the
 [remote client installer](remote-entries.md#dsh-on-the-client-machine), not a local `apply-install`.
+
+## A store of clients alone
+
+Clients can share a store that no Hermes home is attached to. The first client attached to a new
+store has no entry to take grants like, so it is given neither `--grants-like` nor
+`--capture-like`: it gets the owner grants of a fresh installation, the ones a Hermes home
+attached without `--grants-from` gets, and brings their owner scope into the store
+(`new_scopes: 1`). It reads, writes and captures there as the owner at this machine. Each client
+attached after it names it, or any entry attached since, as above. Codex, Claude Code, WorkBuddy
+and dsh can each be the first:
+
+```text
+scope-recall init-shared --root D:\ScopeRecall\shared
+scope-recall attach --host workbuddy --instance-root D:\ScopeRecall\workbuddy ^
+    --root D:\ScopeRecall\shared --entry workbuddy --display-name WorkBuddy ^
+    --runtime-config-from D:\ScopeRecall\routes.json
+scope-recall attach --host dsh --instance-root D:\ScopeRecall\dsh ^
+    --root D:\ScopeRecall\shared --entry dsh --display-name "DeepSeek Harness" ^
+    --grants-like all --capture-like workbuddy ^
+    --runtime-config-from D:\ScopeRecall\routes.json
+```
+
+With no attached home to take routes from, `--runtime-config-from` names a runtime config you
+wrote with the model routes ([configuration.md](configuration.md)); `attach` binds what it writes
+to the store whatever that file's `binding` block names, and the first client attached with one
+gives the shared worker its routes. Then install each client as its section says, and give the
+shared worker its credentials and register it as for a Hermes entry
+([above](#make-a-store-and-attach-the-first-agent)). A first client given `--grants-like` or
+`--capture-like` is refused, and so is a later one without them. The first client's `attach` run
+again repeats it.
+
+A Hermes home attached to such a store later meets the clients in that scope when it is attached
+without `--grants-from`, or with the grants of an installation made with the default
+`--agent-workspace` (`hermes`): its owner rows read, write and capture into the clients' scope, so
+it brings no scope of its own (`new_scopes: 0`), reads what the clients were told, and they read
+what it is told, with nothing to change. An installation whose owner rows read and capture
+elsewhere (one made with another `--agent-workspace`, say) keeps its scopes: its owner and the
+clients do not hear each other, and `attach` refuses a later client that captures where the
+clients do, naming that entry's owner rows. Change the grants on both sides
+([Changing an entry's grants](#changing-an-entrys-grants)): let each owner row of the Hermes entry
+read the clients' scope, and each client's owner row read the Hermes entry's owner scope. A client
+attached after that with `--grants-like all` reads both.
 
 ## Check
 
