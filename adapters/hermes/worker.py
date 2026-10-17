@@ -107,8 +107,3 @@ class AdapterWorker:
                 pending_wakeups=pending,
             )
             return dict(self.drain_state)
-
-    @property
-    def shutting_down(self) -> bool:
-        with self._lock:
-            return self._shutting_down
