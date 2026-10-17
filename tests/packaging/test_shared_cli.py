@@ -1370,6 +1370,37 @@ def test_an_empty_hermes_home_a_store_began_with_detaches_and_its_clients_keep_t
         assert (audience.allowed_scope_ids, audience.capture_scope_id) == (frozenset({scope}), scope), name
 
 
+def test_a_client_captures_only_where_every_attached_owner_row_reads_a_client_s_included(tmp_path, capsys, root):
+    """The scope a later client captures into must be read by the owner rows of every attached entry: here every
+    Hermes owner row reads it and only the first client's does not, and that alone refuses.  An entry whose owner rows
+    capture into two scopes names none to capture like."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    clients = load_shared_client(homes["workbuddy"], "workbuddy").audience.capture_scope_id
+    apart, _options = _installed(tmp_path, "apart", workspace="TEST-elsewhere")
+    code, result = _attach(capsys, apart, root, _moved_aside(apart, _routes(apart)), "apart", "Apart")
+    assert code == 0, result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="apart")
+    assert (code, result.get("error")) == (
+        2,
+        "apart's capture scope is not read by these owner rows: workbuddy:workbuddy; "
+        "what the owner says in the client would not reach them",
+    ), result
+
+    def a_dm_capturing_where_the_clients_do(document):
+        document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
+        owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+        dm = dict(owner, platform="weixin", user_id="TEST-wx-1", chat_type="dm", chat_id="TEST-wx-1", thread_id="")
+        dm.update(allowed_scope_ids=[clients], writable_scope_ids=[clients], capture_scope_id=clients)
+        document["audiences"].append(dm)
+
+    code, applied = _granted(capsys, tmp_path, apart, a_dm_capturing_where_the_clients_do)
+    assert (code, applied["status"]) == (0, "applied"), applied
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="apart")
+    assert (code, result.get("error")) == (2, "apart's owner rows capture into 2 scopes; name an entry with one")
+
+
 def _meanwhile(monkeypatch, capsys, *argv):
     """Run the operator command ``argv`` once the next client attach has taken its grants, before it writes anything:
     a command that lands in between.  The grants that attach took come back in the list returned."""
