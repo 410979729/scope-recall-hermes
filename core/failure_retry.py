@@ -98,11 +98,15 @@ ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
 #: By-design outcomes, as ``failure_kind`` reads them.  Re-running them asserts
 #: that something upstream changed.  ``sensitive_request`` is the request guard
 #: refusing to send secret-like text to a model; the payload is what it is, so a
-#: retry can only refuse again.  Every failure not named here is actionable.
+#: retry can only refuse again.  ``model_refused`` is the provider's policy
+#: refusing or stopping the answer (a content filter, a refusal): the request
+#: is not asked again, and a run re-opens it once the model, the route or the
+#: provider's policy has changed.  Every failure not named here is actionable.
 TERMINAL_FAILURES = frozenset(
     {
         "derivation_invalid",
         "input_invalid",
+        "model_refused",
         "sensitive_request",
     }
 )

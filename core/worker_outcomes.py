@@ -23,6 +23,8 @@ _NON_RETRYABLE_MODEL_ERRORS = frozenset(
         "budget_unavailable",
         # The request guard refused secret-like text; the payload will not change.
         "sensitive_request",
+        # The provider's policy refused or stopped the answer; asking again sends the same request to the same policy.
+        "model_refused",
     }
 )
 

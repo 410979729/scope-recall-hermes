@@ -279,6 +279,29 @@ def test_a_terminal_failure_is_left_alone_without_the_flag(app):
     assert not _states(core)[0].get("failed")
 
 
+def test_a_refusal_by_the_providers_policy_is_asked_once_and_re_run_only_on_request(worker_app):
+    """Asking again would send the same request to the same policy: the item fails on its first refusal, the status
+    counts it as by design, and only a run that includes the terminal failures re-opens it."""
+    core, ctx, clock = worker_app
+    source = long_source(core, ctx, "TEST 内容策略拒绝了这一条。")
+    asked = []
+
+    class Refusing:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
+            asked.append(sources)
+            raise AuxiliaryModelError("model_refused")
+
+    for minute in range(1, 5):
+        clock.advance(seconds=65.0, iso=f"2026-09-06T12:{minute:02d}:30Z")
+        core.drain_worker(ctx, consolidation=Refusing(), max_items=2, remaining_seconds=5)
+    assert len(asked) == 1 and row(core, source) == ("failed", 0, 1)
+    status = core.status(ctx)
+    assert (status.failed_work, status.terminal_failed_work) == (1, 1)
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=True)["retried"] == 0
+    every = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=True)
+    assert (every["retried"], every["by_kind"]) == (1, {"model_refused": 1})
+
+
 def _codes(core):
     with sqlite3.connect(core.storage.path) as conn:
         return dict(conn.execute("SELECT work_id,last_error_code FROM work_items WHERE last_error_code IS NOT NULL"))
