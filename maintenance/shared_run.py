@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
-from ..core.file_lock import advisory_file_lock
+from scope_recall.core.file_lock import advisory_file_lock
 
 RECEIPTS_DIRNAME = "receipts"
 #: Beside the store's manifest: held by each shared-store command that writes, from its first read to its last write.
