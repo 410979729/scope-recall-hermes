@@ -147,6 +147,7 @@ SUITES = {
     ],
     "storage": [
         "tests/contract/test_storage.py",
+        "tests/contract/test_writable_store_connections.py",
         "tests/contract/test_shared_store.py",
         "tests/contract/test_embedding_respace.py",
         "tests/known_answer/test_recall_invariants_check.py",

@@ -27,6 +27,8 @@ from scope_recall.adapters.hermes.installation import (
     write_installation_manifest,
 )
 from scope_recall.contracts import InstanceBinding
+from scope_recall.core.truth_connection import connect_truth_database
+from scope_recall.core.writer_lease import TruthWriterBusyError
 
 from .backup import safe_path
 from .legacy_catalog import build_legacy_catalog
@@ -199,7 +201,10 @@ def _checkpoint_existing_memory_db(data_dir: Path) -> None:
     db = data_dir / "memory.sqlite3"
     if not db.is_file():
         raise MigrationError("resulting database is missing")
-    conn = sqlite3.connect(db.as_posix())
+    try:
+        conn = connect_truth_database(db, mode="rw", isolation_level=None)
+    except TruthWriterBusyError as exc:
+        raise MigrationError("resulting database is held by another writer") from exc
     try:
         mode_row = conn.execute("PRAGMA journal_mode").fetchone()
         if mode_row is None or type(mode_row[0]) is not str:
