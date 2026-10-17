@@ -276,6 +276,33 @@ def test_malformed_and_invalid_vectors(tmp_path, monkeypatch):
         validate_embedding_vector([0.0] * 3072)
 
 
+def test_an_openai_answer_is_read_with_its_usage_and_a_wrong_width_is_refused(tmp_path, monkeypatch):
+    """The openai dialect carries the vector in ``data`` and the prompt tokens in ``usage``.  A provider that ignores
+    the width the route asks for is refused: the space digest commits to it, so such a vector is unusable."""
+    embedding = {
+        "credential_env": "SCOPE_RECALL_TEST_EMBED_KEY",
+        "model": EMBEDDING_SPACE["model"],
+        "endpoint": "https://example.test/v1/embeddings",
+        "dimensions": 64,
+        "dialect": "openai",
+    }
+    config, ledger, _ = _runtime_config(tmp_path, embedding=embedding)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "test-key")
+
+    def answer(vector):
+        body = json.dumps({"data": [{"embedding": vector}], "usage": {"prompt_tokens": 7}}).encode()
+        return lambda **kwargs: (200, body)
+
+    transport = FakeTransport(answer(_vector(64)))
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    assert len(runtime.query_embedding.embed_query("hello", remaining_seconds=2.0)) == 64
+    assert [(row["status"], row["actual_input"]) for row in _ledger_rows(ledger)] == [("http_200", 7)]
+    transport.handler = answer(_vector(length=63))
+    with pytest.raises(AuxiliaryModelError) as wrong_width:
+        runtime.query_embedding.embed_query("hello", remaining_seconds=2.0)
+    assert wrong_width.value.error_type == "vector_dimension_mismatch"
+
+
 def test_consolidation_returns_raw_content_without_json_repair(tmp_path, monkeypatch):
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
