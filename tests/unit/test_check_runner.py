@@ -118,6 +118,19 @@ def test_watchdog_seconds_are_bounded_and_release_is_600() -> None:
     assert check.pytest_watchdog_seconds("integration", 0) == check.INTEGRATION_WATCHDOG_SECONDS
 
 
+def test_the_retrieval_tier_s_watchdog_carries_the_recall_bench_s_own_allowance() -> None:
+    """The recall bench builds a whole synthetic store before its tests run, more work on a slow runner than the
+    20s a file its tier gives: with it the retrieval tier gets the release budget, without it 20s a file."""
+    bench = "tests/recall_bench/test_recall_bench.py"
+    selected = list(check.SUITES["retrieval"])
+    rest = [path for path in selected if path != bench]
+    assert bench in selected
+    assert check.pytest_watchdog_seconds("retrieval", len(selected), selected) == 600
+    assert check.pytest_watchdog_seconds("retrieval", len(rest), rest) == 400
+    # Alone, it still has a bound short of the release budget.
+    assert check.pytest_watchdog_seconds("retrieval", 1, [bench]) == 440
+
+
 def test_release_wrapper_records_actual_600s_watchdog(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
     (tmp_path / "tests" / "unit").mkdir(parents=True)

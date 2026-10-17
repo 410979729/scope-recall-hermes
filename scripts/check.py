@@ -39,16 +39,28 @@ INTEGRATION_WATCHDOG_SECONDS = 2700
 #: Twenty seconds a file leaves such a runner room and still bounds a hang at
 #: the release budget.
 WATCHDOG_SECONDS_PER_FILE = 20
+#: Test files that build a whole store before their first test, and the
+#: seconds each adds to its tier's watchdog on top of the twenty a file.  The
+#: recall bench captures weeks of a synthetic shared store through the public
+#: core and asks it every question twice, then builds a smaller world twice
+#: more to compare a slow clock with a steady one: about a minute of work on a
+#: Linux runner, and minutes on GitHub's Windows runner, ten times the twenty
+#: seconds a file is given.  Its four minutes are more than that work takes
+#: there; the release budget still caps the sum, so a hang stays bounded.
+HEAVY_FILE_SECONDS = {"tests/recall_bench/test_recall_bench.py": 240}
 
 
-def pytest_watchdog_seconds(tier: str, selected_files: int = 0) -> int:
+def pytest_watchdog_seconds(
+    tier: str, selected_files: int = 0, selected_paths: list[str] | tuple[str, ...] = ()
+) -> int:
     """Bounded suite watchdog, scaled to how much this run selected.
 
     Release and integration keep their own fixed budgets: release's 600s,
     integration's 2700s sized to the GitHub Windows runner's measured need for
     the 118-file baseline. Every other tier keeps 180s as a floor and adds room
-    for what it actually runs, capped at the release budget so no run -- hung
-    or merely large -- waits forever.
+    for what it actually runs -- twenty seconds a file, and what
+    ``HEAVY_FILE_SECONDS`` gives each of ``selected_paths`` it names -- capped
+    at the release budget so no run -- hung or merely large -- waits forever.
     """
 
     if tier == "release":
@@ -61,7 +73,9 @@ def pytest_watchdog_seconds(tier: str, selected_files: int = 0) -> int:
         # suite 25% done and still printing progress.  The tier carries its own
         # fixed budget, sized to that run, the way release carries 600s.
         return INTEGRATION_WATCHDOG_SECONDS
-    scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
+    paths = selected_paths if isinstance(selected_paths, (list, tuple)) else ()
+    heavy = sum(HEAVY_FILE_SECONDS.get(path, 0) for path in {str(path).replace("\\", "/") for path in paths})
+    scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files + heavy
     return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS)
 
 
@@ -922,7 +936,7 @@ def _execute(args, selected: list[str], selection: dict) -> int:
     cleanup_error = None
     transitions = ["prepared"]
     directory = None
-    watchdog_seconds = pytest_watchdog_seconds(args.tier, len(selected))
+    watchdog_seconds = pytest_watchdog_seconds(args.tier, len(selected), selected)
     try:
         directory = TestDirectory(prefix="TEST-v11-", dir=parent)
         isolated = Path(directory.name if hasattr(directory, "name") else directory)
