@@ -123,7 +123,7 @@ The installer writes `scope-recall/dsh-plugin/index.mjs` and merges two native r
 `@deepseek-ai/dsh-mcp-client`, `transport: streamable-http`, `<url>/mcp` and the token's Authorization header.
 The plugin's `home` is the client's `state_dir` (status and pending messages only); no local store attachment,
 model key or `envFile` is needed. Without `remoteConfig` the plugin still uses the same-machine hook entry.
-Recall and Stop retain bounded waits (9 and 20 s by default); a failed recall does not block the turn indefinitely.
+Recall and Stop wait a bounded time (9 and 20 s by default); a failed recall does not block the turn indefinitely.
 
 Other rows and user overrides are preserved; changed existing files are copied under `state_dir/backups/`.
 Reinstall is idempotent and refreshes the MCP token after token rotation. Another entry's managed block or an
@@ -149,9 +149,9 @@ rather than kept, since it would be refused again and would stop every later flu
 and drops its oldest past that. What did not get through, what the spool sent and what it dropped is logged in
 the client's `state_dir\remote-client.log`.
 
-dsh does **not** use the Codex forwarder's spool. Its native plugin already keeps unacknowledged messages in
+dsh does **not** use the Codex forwarder's spool. Its native plugin keeps unacknowledged messages in
 `state_dir/scope-recall/dsh-spool`; failed/empty responses do not advance its acknowledgement cursor. The next
-Stop or the plugin's bounded background sweep can replay them. The existing retention limit still applies
+Stop or the plugin's bounded background sweep can replay them. The plugin's retention limit applies
 (5,000 messages per session or 14 days); this is not unlimited delivery or a second remote queue. Check
 `state_dir/scope-recall/dsh-plugin-status.json` and the forwarder's log when capture stays pending.
 
@@ -162,7 +162,7 @@ dated after its now, so a message dated a day ahead would have stayed hidden for
 sends twice may then be stored twice). When it was stored, when its work falls due and a recall's now are
 this machine's clock, so a client clock that runs fast or slow does not hold back the work on its messages.
 That request-time adjustment covers the forwarder's hook time and file-record envelope; dsh's nested message
-timestamps retain the existing dsh transcript handling. Keep the two machines' clocks synchronized.
+timestamps follow dsh's own transcript handling. Keep the two machines' clocks synchronized.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP
@@ -179,8 +179,8 @@ needs the new one.
 
 ## Limits
 
-Over a relayed path a request takes one to three round trips of the network: 0.4-1.2 s through a Tailscale relay
-on 2026-09-27, about 50 ms direct. A prompt's hook waits at most 15 s, as a local one does, and the server's
+Over a relayed path a request takes one to three round trips of the network: 0.4-1.2 s through a Tailscale relay,
+about 50 ms direct. A prompt's hook waits at most 15 s, as a local one does, and the server's
 work on it at most the entry's `hook_processing_seconds` (6 s unless set lower); both are ceilings, and the
 prompt goes on as soon as recall is done. Codex allows SessionEnd and Interrupt at most 3 s, so on a slow path
 those may time out; the hook is already in the spool then, and is sent from there.
