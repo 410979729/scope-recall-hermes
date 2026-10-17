@@ -1,0 +1,127 @@
+{
+  "about": "The dev split at scale 1, measured by recall_bench.py; recall_bench.py --update rewrites it.",
+  "split": "dev",
+  "scale": 1,
+  "world": "a3f84aea9ddab0460658282e598c7522b9550d80b768853bc23ac35ef4d5a890",
+  "tolerance": 0.02,
+  "metrics": {
+    "auto": {
+      "all": {
+        "recall@1": 0.3411,
+        "recall@3": 0.6935,
+        "recall@6": 0.7476,
+        "recall@10": 0.7476,
+        "mrr": 0.5648,
+        "ndcg@10": 0.6037,
+        "outdated_above_current": 0.3667,
+        "abstention_balanced_accuracy": 0.4965
+      },
+      "single_fact": {
+        "recall@1": 0.4444,
+        "recall@3": 0.8611,
+        "recall@6": 0.9167,
+        "recall@10": 0.9167,
+        "mrr": 0.6481,
+        "ndcg@10": 0.7167
+      },
+      "preference": {
+        "recall@1": 0.4167,
+        "recall@3": 0.5833,
+        "recall@6": 0.5833,
+        "recall@10": 0.5833,
+        "mrr": 0.4861,
+        "ndcg@10": 0.5109
+      },
+      "temporal": {
+        "recall@1": 0.2389,
+        "recall@3": 0.7722,
+        "recall@6": 0.7833,
+        "recall@10": 0.7833,
+        "mrr": 0.5667,
+        "ndcg@10": 0.6143
+      },
+      "knowledge_update": {
+        "recall@1": 0.4,
+        "recall@3": 0.6667,
+        "recall@6": 0.7333,
+        "recall@10": 0.7333,
+        "mrr": 0.5411,
+        "ndcg@10": 0.5897,
+        "outdated_above_current": 0.3667
+      },
+      "aggregation": {
+        "recall@1": 0.1292,
+        "recall@3": 0.4458,
+        "recall@6": 0.6083,
+        "recall@10": 0.6083,
+        "mrr": 0.5417,
+        "ndcg@10": 0.517
+      },
+      "abstention": {
+        "abstention_balanced_accuracy": 0.4965
+      },
+      "cross_scope": {
+        "abstention_balanced_accuracy": 0.4965
+      }
+    },
+    "explicit": {
+      "all": {
+        "recall@1": 0.3446,
+        "recall@3": 0.6863,
+        "recall@6": 0.7405,
+        "recall@10": 0.7405,
+        "mrr": 0.5627,
+        "ndcg@10": 0.6015,
+        "outdated_above_current": 0.3,
+        "abstention_balanced_accuracy": 0.4965
+      },
+      "single_fact": {
+        "recall@1": 0.4167,
+        "recall@3": 0.8611,
+        "recall@6": 0.9167,
+        "recall@10": 0.9167,
+        "mrr": 0.6296,
+        "ndcg@10": 0.7028
+      },
+      "preference": {
+        "recall@1": 0.4583,
+        "recall@3": 0.5417,
+        "recall@6": 0.5417,
+        "recall@10": 0.5417,
+        "mrr": 0.4931,
+        "ndcg@10": 0.5055
+      },
+      "temporal": {
+        "recall@1": 0.2222,
+        "recall@3": 0.7722,
+        "recall@6": 0.7833,
+        "recall@10": 0.7833,
+        "mrr": 0.55,
+        "ndcg@10": 0.6067
+      },
+      "knowledge_update": {
+        "recall@1": 0.4333,
+        "recall@3": 0.6667,
+        "recall@6": 0.7333,
+        "recall@10": 0.7333,
+        "mrr": 0.565,
+        "ndcg@10": 0.6078,
+        "outdated_above_current": 0.3
+      },
+      "aggregation": {
+        "recall@1": 0.1292,
+        "recall@3": 0.4458,
+        "recall@6": 0.6083,
+        "recall@10": 0.6083,
+        "mrr": 0.5417,
+        "ndcg@10": 0.517
+      },
+      "abstention": {
+        "abstention_balanced_accuracy": 0.4965
+      },
+      "cross_scope": {
+        "abstention_balanced_accuracy": 0.4965
+      }
+    }
+  }
+}
