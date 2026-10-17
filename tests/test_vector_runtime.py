@@ -23,8 +23,8 @@ def test_vector_store_factory_builds_sqlite_bruteforce_protocol_adapter(tmp_path
                 scope_id="scope-a",
                 source="unit-test",
                 target="memory",
-                content="alpha",
-                summary="alpha summary",
+                content="",
+                summary="",
                 updated_at="2026-01-01T00:00:00+00:00",
                 vector=[1.0, 0.0],
             )
