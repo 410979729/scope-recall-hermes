@@ -43,3 +43,35 @@ in `scripts/check.py`.
 A new module enters the wheel only by being imported from an entry point named
 in `packaging_hooks/module_inventory.py`; the packaging tier fails when the
 committed allowlist and that computation disagree.
+
+## The recall benchmark
+
+`tests/recall_bench/` measures recall on a synthetic shared store: three owners,
+four entries and five scopes, four weeks of sessions in English and Chinese, and
+questions with known answers in seven tasks (single facts, preferences, time,
+knowledge updates, lists said across sessions, abstention, cross-scope
+isolation), each beside hard negatives. Every question is asked as the
+automatic packet and as an explicit lookup. An item answers when it is the
+answer's message, or a claim from it that states the same value. The report
+gives recall@1/3/6/10, MRR, nDCG@10, how often a replaced value outranks the
+current one, the share of answerable questions answered and of the others met
+with `unknown`, items from scopes the asking entry does not read, how many hard
+negatives of each kind became facts, packet size, latency, and the channel that
+found the first answer. Recall runs on a clock that counts the work done, so
+the numbers do not depend on the machine; latency comes from a second pass on
+the real clock (`--no-latency` skips it).
+
+    python -X utf8 tests/recall_bench/recall_bench.py                   # dev split, CI size
+    python -X utf8 tests/recall_bench/recall_bench.py --split heldout   # held-out split
+    python -X utf8 tests/recall_bench/recall_bench.py --scale 2 --json report.json
+
+The retrieval tier runs the dev split (`test_recall_bench.py`, about a minute)
+and fails on any item from another scope, on a metric that moved further than
+the recorded tolerance to the wrong side of `tests/recall_bench/baseline.json`,
+or on more active claims standing on hard negatives of a kind than it records.
+A change meant to move the numbers records them in the same commit with
+`--update` (a drop also needs `--allow-worse`); so does a change to the templates
+or the generator, which makes another world. Judge a change on the held-out
+split too: its templates were written apart from the dev ones. The vector
+channel there hashes words, not meaning, so a paraphrased question measures
+what the store finds without a model.

@@ -100,7 +100,7 @@ class MemoryCore:
         self.storage = (
             storage
             if storage is not None
-            else SQLiteStorage(config.binding, timeout_seconds=config.write_timeout_seconds)
+            else SQLiteStorage(config.binding, timeout_seconds=config.write_timeout_seconds, clock=self.clock.monotonic)
         )
         if self.storage.binding != config.binding:
             raise ValueError("storage binding differs from core binding")

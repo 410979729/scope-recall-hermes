@@ -1,0 +1,839 @@
+{
+  "about": "Hand-written templates for the dev split of the recall benchmark (bench_world.py). Every owner, entry, project and value is invented. {project}, {value}, {item}, {topic}, {date} and the like are filled in by the generator. A denial template marks with [...] the span a careful extractor quotes for it: the negation with the value.",
+  "now": "2026-09-28T09:00:00",
+  "zone_hours": 8,
+  "cast": {
+    "owners": [
+      {"id": "mira", "name": "Mira", "home": "mira-home", "languages": {"en": 3, "zh": 1}},
+      {"id": "siyuan", "name": "思远", "home": "siyuan-home", "languages": {"en": 1, "zh": 3}},
+      {"id": "ines", "name": "Ines", "home": "ines-home", "languages": {"en": 1, "zh": 1}}
+    ],
+    "entries": [
+      {"id": "desk", "name": "Desk", "host": "hermes", "owner": "mira", "reads": ["mira-home", "team-orbit"]},
+      {"id": "laptop", "name": "Laptop", "host": "codex", "owner": "mira", "reads": ["mira-home", "mira-repo"]},
+      {"id": "xiaoyun", "name": "小云", "host": "hermes", "owner": "siyuan", "reads": ["siyuan-home", "team-orbit"]},
+      {"id": "pocket", "name": "Pocket", "host": "hermes", "owner": "ines", "reads": ["ines-home", "team-orbit"]}
+    ]
+  },
+  "projects": [
+    "Orchard", "Lantern", "Basalt", "Juniper", "Meridian", "Quill", "Saffron", "Tundra", "Harbor", "Pebble",
+    "Falcon", "Cobalt", "Willow", "Ember", "Nimbus", "Granite", "Thistle", "Marlin", "Sorrel", "Vesper",
+    "Alder", "Bramble", "Cinder", "Dovetail", "Fennel", "Gossamer", "Hollow", "Isthmus", "Kestrel", "Lodestar",
+    "Maple", "Nettle", "Osprey", "Plover", "Quartz", "Rookery", "Sable", "Teasel", "Upland", "Verbena"
+  ],
+  "facts": [
+    {
+      "predicate": {"en": "staging database port", "zh": "预发数据库端口"},
+      "values": ["6543", "7012", "5544", "6210", "7433", "6380", "5871", "6022"],
+      "en": {
+        "say": ["For {project} the staging database port is {value}.", "The {project} staging database port is {value}."],
+        "change": ["We moved the {project} staging database port to {value}.", "The {project} staging database port changed to {value} after the cluster move."],
+        "ask": ["What is the staging database port for {project}?", "Which port does the {project} staging database listen on?"],
+        "hypothetical": ["If we ever split the {project} staging cluster, the staging database port would become {value}."],
+        "quoted": ["Ravi's old runbook says \"{project} staging database port: {value}\", but that page is years out of date."],
+        "negated": ["The {project} staging database port is [not {value}]; that one belongs to the old cluster."],
+        "assistant": ["I believe the {project} staging database port is {value}, though I haven't verified it."],
+        "tool": ["$ grep STAGING_DB_PORT deploy/{project}/legacy.env\nSTAGING_DB_PORT={value}"]
+      },
+      "zh": {
+        "say": ["{project} 的预发数据库端口是 {value}。", "{project} 预发数据库端口定为 {value}。"],
+        "change": ["{project} 的预发数据库端口改成 {value} 了。", "集群迁移之后，{project} 的预发数据库端口换成了 {value}。"],
+        "ask": ["{project} 的预发数据库端口是多少？", "{project} 预发数据库用的是哪个端口？"],
+        "hypothetical": ["假如以后把 {project} 的预发集群拆开，预发数据库端口就会变成 {value}。"],
+        "quoted": ["老运维手册上写着“{project} 预发数据库端口：{value}”，不过那页早就过时了。"],
+        "negated": ["{project} 的预发数据库端口[不是 {value}]，那是旧集群的。"],
+        "assistant": ["我记得 {project} 的预发数据库端口好像是 {value}，不过我没核实过。"],
+        "tool": ["$ grep STAGING_DB_PORT deploy/{project}/legacy.env\nSTAGING_DB_PORT={value}"]
+      }
+    },
+    {
+      "predicate": {"en": "release manager", "zh": "发布负责人"},
+      "values": {
+        "en": ["Dana Whitfield", "Priya Raman", "Tomasz Nowak", "Lena Okoro", "Felix Haddad", "Grace Mbeki", "Owen Castillo"],
+        "zh": ["周敏", "赵一鸣", "林嘉怡", "孙浩然", "陈静", "王子豪", "刘欣然"]
+      },
+      "en": {
+        "say": ["The release manager for {project} is {value}.", "{value} is the {project} release manager."],
+        "change": ["{value} took over as the {project} release manager.", "The {project} release manager is {value} from this cycle on."],
+        "ask": ["Who is the release manager for {project}?", "Who manages releases for {project}?"],
+        "hypothetical": ["If the current lead goes on leave, {value} would become the {project} release manager."],
+        "quoted": ["The onboarding deck still says \"{project} release manager: {value}\", but nobody updated it."],
+        "negated": ["The {project} release manager is [not {value}] anymore."],
+        "assistant": ["I think {value} is the release manager for {project}, but you may want to confirm."],
+        "tool": ["$ cat {project}/OWNERS.old\nrelease-manager: {value}"]
+      },
+      "zh": {
+        "say": ["{project} 的发布负责人是{value}。", "{value}是 {project} 的发布负责人。"],
+        "change": ["{project} 的发布负责人换成{value}了。", "从这个版本开始，{project} 的发布负责人是{value}。"],
+        "ask": ["{project} 的发布负责人是谁？", "谁负责 {project} 的发布？"],
+        "hypothetical": ["如果现在的负责人休假，{project} 的发布负责人就会是{value}。"],
+        "quoted": ["入职文档里还写着“{project} 发布负责人：{value}”，但一直没人更新。"],
+        "negated": ["{project} 的发布负责人已经[不是{value}]了。"],
+        "assistant": ["我印象中 {project} 的发布负责人是{value}，你最好再确认一下。"],
+        "tool": ["$ cat {project}/OWNERS.old\nrelease-manager: {value}"]
+      }
+    },
+    {
+      "predicate": {"en": "CI service", "zh": "CI 服务"},
+      "values": ["GitHub Actions", "Buildkite", "Jenkins", "GitLab CI", "CircleCI", "Drone", "TeamCity"],
+      "en": {
+        "say": ["The CI service for {project} is {value}.", "{project} runs its builds on the {value} CI service."],
+        "change": ["We migrated the {project} CI service to {value}.", "{project} switched its CI service to {value}."],
+        "ask": ["Which CI service does {project} use?", "Where does {project} run its CI?"],
+        "hypothetical": ["If the budget gets cut, {project} would have to move its CI service to {value}."],
+        "quoted": ["The vendor's case study claims \"{project} builds on {value}\", which was never true."],
+        "negated": ["The {project} CI service is [not {value}]; that was the old setup."],
+        "assistant": ["Judging by the config names, {project} probably uses {value} as its CI service."],
+        "tool": ["$ grep -i provider {project}/ci/legacy.toml\nprovider = \"{value}\""]
+      },
+      "zh": {
+        "say": ["{project} 用的 CI 服务是 {value}。", "{project} 的 CI 服务是 {value}。"],
+        "change": ["{project} 的 CI 服务已经迁到 {value} 了。", "{project} 把 CI 服务换成了 {value}。"],
+        "ask": ["{project} 用的是哪个 CI 服务？", "{project} 的 CI 跑在哪里？"],
+        "hypothetical": ["如果预算被砍，{project} 的 CI 服务就得搬到 {value} 上。"],
+        "quoted": ["供应商的案例里写着“{project} 在 {value} 上构建”，其实从来没有过。"],
+        "negated": ["{project} 的 CI 服务[不是 {value}]，那是以前的配置。"],
+        "assistant": ["看配置文件的名字，{project} 的 CI 服务大概是 {value}。"],
+        "tool": ["$ grep -i provider {project}/ci/legacy.toml\nprovider = \"{value}\""]
+      }
+    },
+    {
+      "predicate": {"en": "deploy region", "zh": "部署区域"},
+      "values": ["eu-west-1", "ap-southeast-1", "us-east-2", "ap-northeast-1", "eu-central-1", "us-west-2", "sa-east-1"],
+      "en": {
+        "say": ["The deploy region for {project} is {value}.", "{project} is deployed in the {value} region."],
+        "change": ["We moved the {project} deploy region to {value}.", "The {project} deploy region is {value} since the migration."],
+        "ask": ["Which region is {project} deployed in?", "What is the deploy region for {project}?"],
+        "hypothetical": ["If latency in Asia becomes a problem, we would move the {project} deploy region to {value}."],
+        "quoted": ["An old architecture diagram labels {project} \"deploy region {value}\", but it predates the move."],
+        "negated": ["The {project} deploy region is [not {value}]."],
+        "assistant": ["My guess is that the {project} deploy region is {value}."],
+        "tool": ["$ terraform output -state=archive/{project}.tfstate region\n\"{value}\""]
+      },
+      "zh": {
+        "say": ["{project} 的部署区域是 {value}。", "{project} 部署在 {value} 区域。"],
+        "change": ["{project} 的部署区域已经迁到 {value} 了。", "迁移之后 {project} 的部署区域变成了 {value}。"],
+        "ask": ["{project} 部署在哪个区域？", "{project} 的部署区域是哪里？"],
+        "hypothetical": ["假如亚洲的延迟成了问题，我们会把 {project} 的部署区域改到 {value}。"],
+        "quoted": ["旧架构图上把 {project} 标成“部署区域 {value}”，但那张图是迁移之前画的。"],
+        "negated": ["{project} 的部署区域[并不是 {value}]。"],
+        "assistant": ["我猜 {project} 的部署区域是 {value}。"],
+        "tool": ["$ terraform output -state=archive/{project}.tfstate region\n\"{value}\""]
+      }
+    },
+    {
+      "predicate": {"en": "log retention", "zh": "日志保留时间"},
+      "values": {
+        "en": ["14 days", "30 days", "45 days", "90 days", "180 days", "7 days", "60 days"],
+        "zh": ["14 天", "30 天", "45 天", "90 天", "180 天", "7 天", "60 天"]
+      },
+      "en": {
+        "say": ["The log retention for {project} is {value}.", "{project} has a log retention of {value}."],
+        "change": ["We changed the {project} log retention to {value}.", "The {project} log retention is {value} after the cost review."],
+        "ask": ["How long does {project} keep its logs?", "What is the log retention for {project}?"],
+        "hypothetical": ["If compliance asks for it, the {project} log retention would go up to {value}."],
+        "quoted": ["The audit template reads \"{project} log retention: {value}\", copied from another team."],
+        "negated": ["The {project} log retention is [not {value}]."],
+        "assistant": ["I'd assume the {project} log retention is {value}, since that's the usual default."],
+        "tool": ["$ grep retention {project}/logging.yaml.orig\nretention: {value}"]
+      },
+      "zh": {
+        "say": ["{project} 的日志保留时间是 {value}。", "{project} 日志保留时间定为 {value}。"],
+        "change": ["{project} 的日志保留时间改成 {value} 了。", "成本评审之后，{project} 的日志保留时间调整为 {value}。"],
+        "ask": ["{project} 的日志保留多久？", "{project} 的日志保留时间是多少？"],
+        "hypothetical": ["如果合规有要求，{project} 的日志保留时间会提高到 {value}。"],
+        "quoted": ["审计模板里写的是“{project} 日志保留时间：{value}”，是从别的团队抄来的。"],
+        "negated": ["{project} 的日志保留时间[不是 {value}]。"],
+        "assistant": ["一般默认是这样，{project} 的日志保留时间应该是 {value} 吧。"],
+        "tool": ["$ grep retention {project}/logging.yaml.orig\nretention: {value}"]
+      }
+    },
+    {
+      "predicate": {"en": "alert channel", "zh": "告警频道"},
+      "values": ["#ops-pager", "#sre-oncall", "#infra-alerts", "#prod-watch", "#night-shift", "#incident-desk"],
+      "en": {
+        "say": ["The alert channel for {project} is {value}.", "{project} posts to the {value} alert channel."],
+        "change": ["We moved the {project} alert channel to {value}.", "The {project} alert channel is {value} after the reorg."],
+        "ask": ["Which channel do {project} alerts go to?", "Where are the {project} alerts posted?"],
+        "hypothetical": ["If the pager rotation changes, the {project} alert channel would be {value}."],
+        "quoted": ["Someone's wiki note says \"{project} alert channel: {value}\", but that note is stale."],
+        "negated": ["The {project} alert channel is [not {value}]."],
+        "assistant": ["I suspect the {project} alert channel is {value}."],
+        "tool": ["$ grep channel alerting/{project}.rules.bak\n  channel: \"{value}\""]
+      },
+      "zh": {
+        "say": ["{project} 的告警频道是 {value}。", "{project} 的告警都发到 {value} 这个告警频道。"],
+        "change": ["{project} 的告警频道换成 {value} 了。", "组织调整之后，{project} 的告警频道改成了 {value}。"],
+        "ask": ["{project} 的告警发到哪个频道？", "{project} 的告警频道是哪个？"],
+        "hypothetical": ["要是值班表调整，{project} 的告警频道就会改成 {value}。"],
+        "quoted": ["有人的维基笔记里写着“{project} 告警频道：{value}”，但那条笔记早就不准了。"],
+        "negated": ["{project} 的告警频道[不是 {value}]。"],
+        "assistant": ["我怀疑 {project} 的告警频道是 {value}。"],
+        "tool": ["$ grep channel alerting/{project}.rules.bak\n  channel: \"{value}\""]
+      }
+    },
+    {
+      "predicate": {"en": "code freeze day", "zh": "代码冻结日"},
+      "values": {
+        "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "zh": ["周一", "周二", "周三", "周四", "周五"]
+      },
+      "en": {
+        "say": ["The {project} code freeze day is {value}.", "{value} is the code freeze day for {project}."],
+        "change": ["We moved the {project} code freeze day to {value}.", "The {project} code freeze day is {value} from the next sprint on."],
+        "ask": ["What day is the {project} code freeze?", "On which day does {project} freeze its code?"],
+        "hypothetical": ["If QA gets another engineer, the {project} code freeze day could move to {value}."],
+        "quoted": ["The sprint template says \"{project} code freeze day: {value}\", but it's last year's copy."],
+        "negated": ["The {project} code freeze day is [not {value}]."],
+        "assistant": ["I think the {project} code freeze day is {value}, but I'm not certain."],
+        "tool": ["$ grep FREEZE_DAY {project}/release.cfg.old\nFREEZE_DAY={value}"]
+      },
+      "zh": {
+        "say": ["{project} 的代码冻结日是{value}。", "{project} 每个迭代的代码冻结日定在{value}。"],
+        "change": ["{project} 的代码冻结日改到{value}了。", "从下个迭代开始，{project} 的代码冻结日是{value}。"],
+        "ask": ["{project} 哪天代码冻结？", "{project} 的代码冻结日是哪天？"],
+        "hypothetical": ["假如测试那边再加一个人，{project} 的代码冻结日可以挪到{value}。"],
+        "quoted": ["迭代模板里写着“{project} 代码冻结日：{value}”，那是去年的模板。"],
+        "negated": ["{project} 的代码冻结日[不是{value}]。"],
+        "assistant": ["我觉得 {project} 的代码冻结日是{value}，但不太确定。"],
+        "tool": ["$ grep FREEZE_DAY {project}/release.cfg.old\nFREEZE_DAY={value}"]
+      }
+    },
+    {
+      "predicate": {"en": "backup bucket", "zh": "备份桶"},
+      "values": ["cold-archive-7", "vault-east-2", "snapshot-lake-3", "deep-store-9", "backup-tier-4", "glacier-west-5"],
+      "en": {
+        "say": ["The {project} backup bucket is {value}.", "The backup bucket for {project} is {value}."],
+        "change": ["We moved the {project} backup bucket to {value}.", "The {project} backup bucket is {value} after the storage migration."],
+        "ask": ["What is the backup bucket for {project}?", "Which bucket holds the {project} backups?"],
+        "hypothetical": ["If storage costs keep rising, the {project} backup bucket would move to {value}."],
+        "quoted": ["The DR checklist still says \"{project} backup bucket: {value}\", from before the migration."],
+        "negated": ["The {project} backup bucket is [not {value}]."],
+        "assistant": ["The {project} backup bucket is probably {value}."],
+        "tool": ["$ aws s3 ls | grep {project}\n2024-03-02 11:20:41 {value}-{project}-old"]
+      },
+      "zh": {
+        "say": ["{project} 的备份桶是 {value}。", "{project} 用的备份桶是 {value}。"],
+        "change": ["{project} 的备份桶迁到 {value} 了。", "存储迁移之后，{project} 的备份桶变成了 {value}。"],
+        "ask": ["{project} 的备份桶是哪个？", "{project} 的备份存在哪个桶里？"],
+        "hypothetical": ["如果存储费用继续上涨，{project} 的备份桶就会换成 {value}。"],
+        "quoted": ["容灾清单上还写着“{project} 备份桶：{value}”，那是迁移之前的。"],
+        "negated": ["{project} 的备份桶[不是 {value}]。"],
+        "assistant": ["{project} 的备份桶大概是 {value} 吧。"],
+        "tool": ["$ aws s3 ls | grep {project}\n2024-03-02 11:20:41 {value}-{project}-old"]
+      }
+    }
+  ],
+  "preferences": [
+    {
+      "predicate": {"en": "afternoon drink", "zh": "下午的饮品"},
+      "values": [
+        {"en": "oolong tea", "zh": "乌龙茶"}, {"en": "flat white", "zh": "馥芮白"}, {"en": "sparkling water", "zh": "气泡水"},
+        {"en": "hot chocolate", "zh": "热可可"}, {"en": "jasmine tea", "zh": "茉莉花茶"}, {"en": "iced americano", "zh": "冰美式"}
+      ],
+      "en": {
+        "say": ["I prefer {value} in the afternoon."],
+        "change": ["These days I prefer {value} in the afternoon."],
+        "ask": ["What do I like to drink in the afternoon?", "What should you get me as an afternoon drink?"],
+        "hypothetical": ["If the café downstairs closes, I might try {value} in the afternoon."],
+        "assistant": ["You might enjoy {value} in the afternoon."],
+        "negated": ["I [don't like {value}] at all."]
+      },
+      "zh": {
+        "say": ["我下午喜欢喝{value}。"],
+        "change": ["我现在下午更喜欢喝{value}。"],
+        "ask": ["我下午喜欢喝什么？", "下午给我带什么饮品好？"],
+        "hypothetical": ["如果楼下咖啡店关了，我下午可能会改喝{value}。"],
+        "assistant": ["你下午也许可以试试{value}。"],
+        "negated": ["我一点也[不喜欢喝{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "flight seat", "zh": "飞机座位"},
+      "values": [
+        {"en": "an aisle seat", "zh": "靠过道的座位"}, {"en": "a window seat", "zh": "靠窗的座位"},
+        {"en": "an exit row seat", "zh": "紧急出口那排的座位"}, {"en": "a front row seat", "zh": "前排的座位"}
+      ],
+      "en": {
+        "say": ["I prefer {value} on flights."],
+        "change": ["These days I prefer {value} on flights."],
+        "ask": ["Which seat should you book for me on flights?", "What kind of seat do I like on a plane?"],
+        "hypothetical": ["If the flight is long, I might take {value}."],
+        "assistant": ["You might be more comfortable in {value}."],
+        "negated": ["I [don't want {value}] on flights."]
+      },
+      "zh": {
+        "say": ["坐飞机我喜欢选{value}。"],
+        "change": ["现在坐飞机我更喜欢选{value}。"],
+        "ask": ["给我订机票时选什么座位？", "我坐飞机喜欢什么座位？"],
+        "hypothetical": ["如果是长途航班，我可能会选{value}。"],
+        "assistant": ["您坐{value}也许会更舒服。"],
+        "negated": ["坐飞机我[不喜欢{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "meeting time", "zh": "开会时间"},
+      "values": [
+        {"en": "early in the morning", "zh": "一大早"}, {"en": "late in the morning", "zh": "上午晚些时候"},
+        {"en": "right after lunch", "zh": "午饭后"}, {"en": "late in the afternoon", "zh": "傍晚"}
+      ],
+      "en": {
+        "say": ["I prefer to have meetings {value}."],
+        "change": ["These days I prefer to have meetings {value}."],
+        "ask": ["When do I like to have meetings?", "What time should you schedule my meetings?"],
+        "hypothetical": ["If the team moves to another time zone, I might take meetings {value}."],
+        "assistant": ["Meetings {value} might suit you better."],
+        "negated": ["I [don't like having meetings {value}]."]
+      },
+      "zh": {
+        "say": ["我喜欢把会议安排在{value}。"],
+        "change": ["我现在更喜欢把会议安排在{value}。"],
+        "ask": ["我喜欢什么时候开会？", "我的会议安排在什么时间比较好？"],
+        "hypothetical": ["如果团队换了时区，我可能会把会议挪到{value}。"],
+        "assistant": ["会议放在{value}也许更适合你。"],
+        "negated": ["我[不喜欢在{value}开会]。"]
+      }
+    },
+    {
+      "predicate": {"en": "code editor", "zh": "代码编辑器"},
+      "values": [
+        {"en": "Neovim", "zh": "Neovim"}, {"en": "VS Code", "zh": "VS Code"}, {"en": "Helix", "zh": "Helix"},
+        {"en": "Zed", "zh": "Zed"}, {"en": "Emacs", "zh": "Emacs"}, {"en": "Sublime Text", "zh": "Sublime Text"}
+      ],
+      "en": {
+        "say": ["I prefer {value} for writing code."],
+        "change": ["These days I prefer {value} for writing code."],
+        "ask": ["Which editor do I use for writing code?", "What is my preferred code editor?"],
+        "hypothetical": ["If I had to pair on Windows all day, I might use {value}."],
+        "assistant": ["You might like {value} for writing code."],
+        "negated": ["I [don't like {value}] for writing code."]
+      },
+      "zh": {
+        "say": ["我写代码喜欢用 {value}。"],
+        "change": ["我现在写代码更喜欢用 {value}。"],
+        "ask": ["我写代码用什么编辑器？", "我常用的代码编辑器是哪个？"],
+        "hypothetical": ["要是整天在 Windows 上结对，我可能会用 {value}。"],
+        "assistant": ["你写代码也许会喜欢 {value}。"],
+        "negated": ["我写代码[不喜欢用 {value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "focus music", "zh": "工作时听的音乐"},
+      "values": [
+        {"en": "lo-fi beats", "zh": "轻音乐"}, {"en": "jazz", "zh": "爵士乐"}, {"en": "film scores", "zh": "电影原声"},
+        {"en": "white noise", "zh": "白噪音"}, {"en": "classical piano", "zh": "古典钢琴曲"}
+      ],
+      "en": {
+        "say": ["I prefer {value} while I work."],
+        "change": ["These days I prefer {value} while I work."],
+        "ask": ["What do I like to listen to while I work?", "What music should you put on when I'm working?"],
+        "hypothetical": ["If the office gets noisy, I might put on {value}."],
+        "assistant": ["You might focus better with {value}."],
+        "negated": ["I [don't like {value}] while I work."]
+      },
+      "zh": {
+        "say": ["我工作的时候喜欢听{value}。"],
+        "change": ["我现在工作时更喜欢听{value}。"],
+        "ask": ["我工作时喜欢听什么？", "我工作的时候给我放什么音乐？"],
+        "hypothetical": ["如果办公室太吵，我可能会听{value}。"],
+        "assistant": ["你工作时听{value}也许更专注。"],
+        "negated": ["我工作时[不喜欢听{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "shell", "zh": "shell"},
+      "values": [
+        {"en": "fish", "zh": "fish"}, {"en": "zsh", "zh": "zsh"}, {"en": "bash", "zh": "bash"},
+        {"en": "nushell", "zh": "nushell"}, {"en": "PowerShell", "zh": "PowerShell"}
+      ],
+      "en": {
+        "say": ["I prefer {value} as my shell."],
+        "change": ["These days I prefer {value} as my shell."],
+        "ask": ["Which shell do I use?", "What is my preferred shell?"],
+        "hypothetical": ["If I worked on the build servers all day, I might switch to {value}."],
+        "assistant": ["You might like {value} as a shell."],
+        "negated": ["I [don't like {value}] as a shell."]
+      },
+      "zh": {
+        "say": ["我喜欢用 {value} 当 shell。"],
+        "change": ["我现在更喜欢用 {value} 当 shell。"],
+        "ask": ["我用的是哪个 shell？", "我习惯用什么 shell？"],
+        "hypothetical": ["要是整天在构建服务器上干活，我可能会换成 {value}。"],
+        "assistant": ["你也许会喜欢 {value} 这个 shell。"],
+        "negated": ["我[不喜欢用 {value}] 当 shell。"]
+      }
+    },
+    {
+      "predicate": {"en": "lunch", "zh": "午饭"},
+      "values": [
+        {"en": "ramen", "zh": "拉面"}, {"en": "salad bowls", "zh": "沙拉"}, {"en": "dumplings", "zh": "饺子"},
+        {"en": "curry rice", "zh": "咖喱饭"}, {"en": "pho", "zh": "越南河粉"}, {"en": "bibimbap", "zh": "石锅拌饭"}
+      ],
+      "en": {
+        "say": ["I prefer {value} for lunch."],
+        "change": ["These days I prefer {value} for lunch."],
+        "ask": ["What do I like for lunch?", "What should you order me for lunch?"],
+        "hypothetical": ["If the canteen closes, I might get {value} for lunch."],
+        "assistant": ["You might enjoy {value} for lunch."],
+        "negated": ["I [don't like {value}] for lunch."]
+      },
+      "zh": {
+        "say": ["我午饭喜欢吃{value}。"],
+        "change": ["我现在午饭更喜欢吃{value}。"],
+        "ask": ["我午饭喜欢吃什么？", "中午给我点什么外卖？"],
+        "hypothetical": ["如果食堂关门，我午饭可能会吃{value}。"],
+        "assistant": ["你午饭也许可以试试{value}。"],
+        "negated": ["我午饭[不喜欢吃{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "urgent notifications", "zh": "紧急通知方式"},
+      "values": [
+        {"en": "email", "zh": "邮件"}, {"en": "Telegram", "zh": "Telegram"}, {"en": "text message", "zh": "短信"},
+        {"en": "Slack DM", "zh": "Slack 私信"}, {"en": "phone call", "zh": "电话"}
+      ],
+      "en": {
+        "say": ["I prefer to get urgent notifications by {value}."],
+        "change": ["These days I prefer to get urgent notifications by {value}."],
+        "ask": ["How do I want to get urgent notifications?", "How should you reach me for something urgent?"],
+        "hypothetical": ["If I'm traveling, I might want urgent notifications by {value}."],
+        "assistant": ["Maybe {value} would work better for urgent notifications."],
+        "negated": ["I [don't want urgent notifications by {value}]."]
+      },
+      "zh": {
+        "say": ["紧急通知我喜欢用{value}收。"],
+        "change": ["现在紧急通知我更喜欢用{value}收。"],
+        "ask": ["紧急通知我想通过什么方式收到？", "有急事应该怎么联系我？"],
+        "hypothetical": ["要是出差，我可能想用{value}收紧急通知。"],
+        "assistant": ["紧急通知也许用{value}更好。"],
+        "negated": ["紧急通知我[不想用{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "keyboard layout", "zh": "键盘布局"},
+      "values": [
+        {"en": "Colemak", "zh": "Colemak"}, {"en": "Dvorak", "zh": "Dvorak"}, {"en": "QWERTY", "zh": "QWERTY"},
+        {"en": "Workman", "zh": "Workman"}
+      ],
+      "en": {
+        "say": ["I prefer the {value} keyboard layout."],
+        "change": ["These days I prefer the {value} keyboard layout."],
+        "ask": ["Which keyboard layout do I type on?", "What keyboard layout should you set up for me?"],
+        "hypothetical": ["If my wrists act up again, I might try the {value} layout."],
+        "assistant": ["You might type faster on {value}."],
+        "negated": ["I [don't like the {value} keyboard layout]."]
+      },
+      "zh": {
+        "say": ["我喜欢用 {value} 键盘布局。"],
+        "change": ["我现在更喜欢用 {value} 键盘布局。"],
+        "ask": ["我打字用哪种键盘布局？", "给我配键盘时设成什么布局？"],
+        "hypothetical": ["要是手腕又疼，我可能会试试 {value} 布局。"],
+        "assistant": ["你用 {value} 也许打字更快。"],
+        "negated": ["我[不喜欢 {value} 键盘布局]。"]
+      }
+    },
+    {
+      "predicate": {"en": "reading format", "zh": "读书方式"},
+      "values": [
+        {"en": "e-books", "zh": "电子书"}, {"en": "paperbacks", "zh": "纸质书"}, {"en": "audiobooks", "zh": "有声书"}
+      ],
+      "en": {
+        "say": ["I prefer {value} for reading."],
+        "change": ["These days I prefer {value} for reading."],
+        "ask": ["How do I like to read books?", "Should you get me books as e-books, paperbacks or audiobooks?"],
+        "hypothetical": ["If my commute gets longer, I might switch to {value}."],
+        "assistant": ["You might enjoy {value} more."],
+        "negated": ["I [don't like {value}]."]
+      },
+      "zh": {
+        "say": ["我读书更喜欢{value}。"],
+        "change": ["我现在读书更喜欢{value}。"],
+        "ask": ["我喜欢用什么方式读书？", "给我买书买电子书、纸质书还是有声书？"],
+        "hypothetical": ["要是通勤时间变长，我可能会改听{value}。"],
+        "assistant": ["你也许会更喜欢{value}。"],
+        "negated": ["我[不喜欢{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "exercise", "zh": "运动"},
+      "values": [
+        {"en": "swimming", "zh": "游泳"}, {"en": "cycling", "zh": "骑行"}, {"en": "climbing", "zh": "攀岩"},
+        {"en": "running", "zh": "跑步"}, {"en": "yoga", "zh": "瑜伽"}
+      ],
+      "en": {
+        "say": ["I prefer {value} for exercise."],
+        "change": ["These days I prefer {value} for exercise."],
+        "ask": ["What kind of exercise do I like?", "Which workout should you plan for me?"],
+        "hypothetical": ["If my knee gets better, I might take up {value}."],
+        "assistant": ["You might enjoy {value} as exercise."],
+        "negated": ["I [don't like {value}]."]
+      },
+      "zh": {
+        "say": ["我运动喜欢{value}。"],
+        "change": ["我现在运动更喜欢{value}。"],
+        "ask": ["我喜欢什么运动？", "给我安排什么锻炼比较好？"],
+        "hypothetical": ["如果膝盖好了，我可能会去{value}。"],
+        "assistant": ["你也许会喜欢{value}这种运动。"],
+        "negated": ["我[不喜欢{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "hotel room", "zh": "酒店房间"},
+      "values": [
+        {"en": "a quiet room away from the elevator", "zh": "远离电梯的安静房间"},
+        {"en": "a room on a high floor", "zh": "高楼层的房间"},
+        {"en": "a room with a bathtub", "zh": "带浴缸的房间"},
+        {"en": "a room facing the courtyard", "zh": "朝向内院的房间"}
+      ],
+      "en": {
+        "say": ["I prefer {value} when I travel."],
+        "change": ["These days I prefer {value} when I travel."],
+        "ask": ["What kind of hotel room do I like?", "Which room should you ask the hotel for?"],
+        "hypothetical": ["If the trip runs over a weekend, I might want {value}."],
+        "assistant": ["You might sleep better in {value}."],
+        "negated": ["I [don't want {value}]."]
+      },
+      "zh": {
+        "say": ["出差住酒店我喜欢{value}。"],
+        "change": ["现在出差住酒店我更喜欢{value}。"],
+        "ask": ["我住酒店喜欢什么样的房间？", "订酒店时要跟酒店要什么房间？"],
+        "hypothetical": ["如果行程跨周末，我可能会想要{value}。"],
+        "assistant": ["你住{value}也许会睡得更好。"],
+        "negated": ["我[不想要{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "ride home", "zh": "下班回家的方式"},
+      "values": [{"en": "cycling", "zh": "骑车"}, {"en": "taking the subway", "zh": "坐地铁"}, {"en": "walking", "zh": "走路"}, {"en": "a taxi", "zh": "打车"}],
+      "en": {
+        "say": ["I prefer {value} home after work."],
+        "change": ["These days I prefer {value} home after work."],
+        "ask": ["How do I like to get home after work?", "How should you plan my trip home tonight?"],
+        "hypothetical": ["If it rains all week, I might go with {value} home."],
+        "assistant": ["You might enjoy {value} home after work."],
+        "negated": ["I [don't like {value}] home after work."]
+      },
+      "zh": {
+        "say": ["下班回家我喜欢{value}。"],
+        "change": ["现在下班回家我更喜欢{value}。"],
+        "ask": ["我下班怎么回家？", "今晚回家帮我安排什么方式？"],
+        "hypothetical": ["如果这周一直下雨，我可能会{value}回家。"],
+        "assistant": ["你下班也许可以试试{value}回家。"],
+        "negated": ["下班回家我[不喜欢{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "work laptop", "zh": "工作用的笔记本电脑"},
+      "values": [{"en": "a ThinkPad", "zh": "ThinkPad"}, {"en": "a MacBook Air", "zh": "MacBook Air"}, {"en": "a Framework laptop", "zh": "Framework 笔记本"}, {"en": "a Dell XPS", "zh": "Dell XPS"}],
+      "en": {
+        "say": ["I prefer {value} for work."],
+        "change": ["These days I prefer {value} for work."],
+        "ask": ["Which laptop should you order for me?", "What laptop do I like to work on?"],
+        "hypothetical": ["If I travel more next year, I might switch to {value}."],
+        "assistant": ["You might like {value} for work."],
+        "negated": ["I [don't want {value}] for work."]
+      },
+      "zh": {
+        "say": ["我工作喜欢用{value}。"],
+        "change": ["我现在工作更喜欢用{value}。"],
+        "ask": ["给我采购什么笔记本电脑？", "我工作喜欢用哪种笔记本？"],
+        "hypothetical": ["如果明年出差更多，我可能会换成{value}。"],
+        "assistant": ["你工作也许会喜欢{value}。"],
+        "negated": ["我工作[不想用{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "chat app", "zh": "聊天软件"},
+      "values": [{"en": "Signal", "zh": "Signal"}, {"en": "WhatsApp", "zh": "WhatsApp"}, {"en": "WeChat", "zh": "微信"}, {"en": "Telegram", "zh": "Telegram"}],
+      "en": {
+        "say": ["I prefer {value} for chatting with friends."],
+        "change": ["These days I prefer {value} for chatting with friends."],
+        "ask": ["Which app do I use to chat with friends?", "Where should you send me personal messages?"],
+        "hypothetical": ["If my friends all moved, I might use {value}."],
+        "assistant": ["You might try {value} for chatting with friends."],
+        "negated": ["I [don't like {value}] for chatting."]
+      },
+      "zh": {
+        "say": ["我和朋友聊天喜欢用{value}。"],
+        "change": ["我现在和朋友聊天更喜欢用{value}。"],
+        "ask": ["我和朋友聊天用什么软件？", "私人消息应该发到哪个软件上？"],
+        "hypothetical": ["如果朋友们都搬过去了，我可能会用{value}。"],
+        "assistant": ["你和朋友聊天也许可以试试{value}。"],
+        "negated": ["我聊天[不喜欢用{value}]。"]
+      }
+    },
+    {
+      "predicate": {"en": "sketching pen", "zh": "画草图用的笔"},
+      "values": [{"en": "a fountain pen", "zh": "钢笔"}, {"en": "a gel pen", "zh": "中性笔"}, {"en": "a pencil", "zh": "铅笔"}, {"en": "a fineliner", "zh": "针管笔"}],
+      "en": {
+        "say": ["I prefer {value} for sketching ideas."],
+        "change": ["These days I prefer {value} for sketching ideas."],
+        "ask": ["What do I like to sketch with?", "Which pen should you put in my bag?"],
+        "hypothetical": ["If the whiteboard breaks, I might sketch with {value}."],
+        "assistant": ["You might like {value} for sketching."],
+        "negated": ["I [don't like {value}] for sketching."]
+      },
+      "zh": {
+        "say": ["我画草图喜欢用{value}。"],
+        "change": ["我现在画草图更喜欢用{value}。"],
+        "ask": ["我画草图喜欢用什么笔？", "我包里该放哪种笔？"],
+        "hypothetical": ["如果白板坏了，我可能会用{value}画。"],
+        "assistant": ["你画草图也许会喜欢{value}。"],
+        "negated": ["我画草图[不喜欢用{value}]。"]
+      }
+    }
+  ],
+  "implied": {
+    "en": [
+      {"say": "Please stop booking me on red-eye flights; I land wrecked every single time.", "ask": "Which flights should you avoid booking for me?", "predicate": "flights to avoid", "value": "red-eye flights"},
+      {"say": "Cilantro ruins every dish for me, so leave it off my orders.", "ask": "Which ingredient should you leave off my food orders?", "predicate": "ingredient to avoid", "value": "Cilantro"},
+      {"say": "Whenever a meeting runs late I lose the whole evening, so keep my calendar clear after 6pm.", "ask": "After what time should my calendar stay free?", "predicate": "calendar cutoff", "value": "after 6pm"},
+      {"say": "Dark mode or nothing; bright screens give me headaches.", "ask": "Which display theme should you set up for me?", "predicate": "display theme", "value": "Dark mode"},
+      {"say": "Even to the ninth floor I end up taking the stairs; the lift is always packed.", "ask": "Do I take the lift or walk up?", "predicate": "lift or stairs", "value": "taking the stairs"},
+      {"say": "Voice notes drive me up the wall; just write it down.", "ask": "How should people send me messages?", "predicate": "message format", "value": "write it down"},
+      {"say": "Open-plan seating kills my focus, so book me a quiet room for deep work.", "ask": "Where should you book me when I need to concentrate?", "predicate": "deep work room", "value": "a quiet room"},
+      {"say": "Spicy food and I have never gotten along.", "ask": "Can I handle a hot curry?", "predicate": "spicy food", "value": "Spicy food"},
+      {"say": "Ping me on weekends only when production is down.", "ask": "When is it OK to contact me on a Saturday?", "predicate": "weekend contact", "value": "when production is down"},
+      {"say": "A cold shower in the morning is the only thing that wakes me up.", "ask": "How do I wake myself up in the morning?", "predicate": "morning routine", "value": "A cold shower"},
+      {"say": "Window desks are wasted on me; the glare makes my monitor unreadable.", "ask": "Should you seat me next to the window?", "predicate": "desk position", "value": "Window desks"},
+      {"say": "Podcasts at 1.5x speed, or I can't sit through them.", "ask": "At what speed do I listen to podcasts?", "predicate": "podcast speed", "value": "1.5x speed"}
+    ],
+    "zh": [
+      {"say": "以后别给我订红眼航班了，每次落地都像被掏空一样。", "ask": "订机票时哪种航班要避开？", "predicate": "要避开的航班", "value": "红眼航班"},
+      {"say": "香菜一放，整碗我都吃不下，点餐记得去掉。", "ask": "给我点餐时要去掉什么配料？", "predicate": "不吃的配料", "value": "香菜"},
+      {"say": "晚上的会一拖，我整晚就废了，六点以后别给我排会。", "ask": "我几点以后不想开会？", "predicate": "会议截止时间", "value": "六点以后"},
+      {"say": "亮色主题看久了我就头疼，界面一律给我用深色模式。", "ask": "给我设置界面主题用哪种？", "predicate": "界面主题", "value": "深色模式"},
+      {"say": "去九楼我也宁可走楼梯，电梯太挤了。", "ask": "我坐电梯还是爬上去？", "predicate": "电梯还是楼梯", "value": "走楼梯"},
+      {"say": "语音消息我听着就烦，有事直接打字发我。", "ask": "别人给我发消息应该用什么方式？", "predicate": "消息方式", "value": "打字"},
+      {"say": "开放工位太吵，我写方案的时候给我订个安静的小会议室。", "ask": "我需要专注的时候应该给我订什么地方？", "predicate": "专注工作的地方", "value": "安静的小会议室"},
+      {"say": "我和辣的东西从来合不来。", "ask": "我能吃麻辣火锅吗？", "predicate": "吃辣", "value": "辣的东西"},
+      {"say": "周末除非线上出故障，别找我。", "ask": "周六什么情况下可以联系我？", "predicate": "周末联系", "value": "线上出故障"},
+      {"say": "早上不冲个冷水澡我根本醒不过来。", "ask": "我早上靠什么提神？", "predicate": "早晨习惯", "value": "冷水澡"},
+      {"say": "靠窗的工位对我没用，反光太厉害，屏幕根本看不清。", "ask": "要不要把我的座位安排在窗边？", "predicate": "工位位置", "value": "靠窗的工位"},
+      {"say": "播客不开 1.5 倍速我根本听不下去。", "ask": "我听播客用多少倍速？", "predicate": "播客倍速", "value": "1.5 倍速"}
+    ]
+  },
+  "topics": [
+    {
+      "en": {"name": "the {project} release", "notes": [
+        "The {project} release slipped to Thursday because QA found a login bug.",
+        "QA signed off on the {project} release candidate.",
+        "We cut the {project} release branch and froze the schema.",
+        "The {project} release went out to ten percent of users.",
+        "We rolled back the {project} release after error rates spiked."
+      ]},
+      "zh": {"name": "{project} 的发布", "notes": [
+        "{project} 的发布推迟到周四，测试发现了一个登录问题。",
+        "{project} 的发布候选版本测试已经签字通过。",
+        "{project} 的发布分支切好了，数据库结构也冻结了。",
+        "{project} 的新版本已经灰度到一成用户。",
+        "错误率飙升，{project} 的发布回滚了。"
+      ]}
+    },
+    {
+      "en": {"name": "the {project} database migration", "notes": [
+        "Started the {project} database migration with the orders table.",
+        "The {project} database migration hit a lock timeout on the audit table.",
+        "Half of the {project} database migration is done; the reporting tables are next.",
+        "We paused the {project} database migration until the weekend window.",
+        "Finished the {project} database migration and dropped the old replicas."
+      ]},
+      "zh": {"name": "{project} 的数据库迁移", "notes": [
+        "{project} 的数据库迁移从订单表开始了。",
+        "{project} 的数据库迁移在审计表上遇到了锁超时。",
+        "{project} 的数据库迁移完成了一半，下一步是报表相关的表。",
+        "{project} 的数据库迁移先暂停，等周末的窗口再继续。",
+        "{project} 的数据库迁移完成了，旧的副本也下线了。"
+      ]}
+    },
+    {
+      "en": {"name": "the {project} load test", "notes": [
+        "The {project} load test topped out at 4,000 requests per second.",
+        "The {project} load test found a memory leak in the session cache.",
+        "We reran the {project} load test with the new connection pool.",
+        "The {project} load test met the latency target at peak traffic.",
+        "We postponed the {project} load test because the staging cluster was down."
+      ]},
+      "zh": {"name": "{project} 的压测", "notes": [
+        "{project} 的压测最高跑到每秒 4000 个请求。",
+        "{project} 的压测发现会话缓存有内存泄漏。",
+        "换了新的连接池之后又跑了一遍 {project} 的压测。",
+        "{project} 的压测在峰值流量下达到了延迟目标。",
+        "预发集群挂了，{project} 的压测往后推了。"
+      ]}
+    },
+    {
+      "en": {"name": "the {project} security review", "notes": [
+        "The {project} security review flagged two outdated TLS settings.",
+        "We fixed the token expiry issue from the {project} security review.",
+        "The {project} security review is waiting on the pen-test report.",
+        "The {project} security review closed with no open findings.",
+        "Booked the external auditor for the {project} security review."
+      ]},
+      "zh": {"name": "{project} 的安全评审", "notes": [
+        "{project} 的安全评审指出了两处过时的 TLS 配置。",
+        "{project} 安全评审里提到的令牌过期问题修好了。",
+        "{project} 的安全评审在等渗透测试报告。",
+        "{project} 的安全评审结束了，没有遗留问题。",
+        "{project} 的安全评审约好了外部审计。"
+      ]}
+    }
+  ],
+  "actions": [
+    {"en": {"say": "Upgraded the {project} CI runners to the new image.", "as": "upgrade the {project} CI runners"},
+     "zh": {"say": "{project} 的 CI 机器升级到新镜像了。", "as": "升级 {project} 的 CI 机器"}},
+    {"en": {"say": "Rotated the {project} API keys.", "as": "rotate the {project} API keys"},
+     "zh": {"say": "{project} 的 API 密钥轮换完了。", "as": "轮换 {project} 的 API 密钥"}},
+    {"en": {"say": "Moved the {project} docs to the new site.", "as": "move the {project} docs to the new site"},
+     "zh": {"say": "{project} 的文档搬到新站点了。", "as": "把 {project} 的文档搬到新站点"}},
+    {"en": {"say": "Turned on two-factor login for the {project} admin panel.", "as": "turn on two-factor login for the {project} admin panel"},
+     "zh": {"say": "{project} 管理后台开启了两步验证登录。", "as": "给 {project} 管理后台开两步验证"}},
+    {"en": {"say": "Archived the old {project} feature flags.", "as": "archive the old {project} feature flags"},
+     "zh": {"say": "{project} 旧的功能开关都归档了。", "as": "归档 {project} 的旧功能开关"}},
+    {"en": {"say": "Split the {project} monorepo into two packages.", "as": "split the {project} monorepo"},
+     "zh": {"say": "{project} 的单体仓库拆成了两个包。", "as": "拆分 {project} 的单体仓库"}},
+    {"en": {"say": "Renewed the {project} TLS certificates.", "as": "renew the {project} TLS certificates"},
+     "zh": {"say": "{project} 的 TLS 证书续期了。", "as": "续期 {project} 的 TLS 证书"}},
+    {"en": {"say": "Switched the {project} logs to structured JSON.", "as": "switch the {project} logs to JSON"},
+     "zh": {"say": "{project} 的日志改成了结构化 JSON。", "as": "把 {project} 的日志改成 JSON"}}
+  ],
+  "collections": [
+    {
+      "items": ["Plotly", "Vega-Lite", "ECharts", "Chart.js", "uPlot", "Recharts", "Highcharts"],
+      "en": {
+        "say": ["Tried {item} for the {project} dashboards; the bundle got too heavy.", "{item} handled the {project} dashboards fine in the spike.", "We looked at {item} for the {project} dashboards, but its SVG export is weak."],
+        "ask": ["Which charting libraries did we try for the {project} dashboards?", "List the charting libraries we evaluated for {project}."],
+        "hypothetical": ["Someday we could also look at {item} for the {project} dashboards."]
+      },
+      "zh": {
+        "say": ["{project} 的看板试了 {item}，打包体积太大了。", "{item} 在 {project} 看板的试验里表现还可以。", "{project} 的看板评估过 {item}，但它导出 SVG 不太行。"],
+        "ask": ["{project} 的看板一共试过哪些图表库？", "我们给 {project} 评估过哪些图表库？"],
+        "hypothetical": ["以后也可以考虑给 {project} 的看板试试 {item}。"]
+      }
+    },
+    {
+      "items": ["k6", "Locust", "Gatling", "JMeter", "Vegeta", "wrk", "Artillery"],
+      "en": {
+        "say": ["Ran a quick {project} benchmark with {item}; the scripting was painless.", "{item} could not generate enough load for {project}.", "Compared {item} against what the {project} load tests need."],
+        "ask": ["Which load-testing tools did we try for {project}?", "What load-testing tools have we used on {project}?"],
+        "hypothetical": ["Maybe next quarter we try {item} for the {project} load tests."]
+      },
+      "zh": {
+        "say": ["用 {item} 给 {project} 跑了个快速压测，写脚本很顺手。", "{item} 给 {project} 打不出足够的压力。", "拿 {item} 对照了一下 {project} 压测的需求。"],
+        "ask": ["{project} 的压测试过哪些工具？", "我们在 {project} 上用过哪些压测工具？"],
+        "hypothetical": ["下个季度也许可以给 {project} 的压测试试 {item}。"]
+      }
+    },
+    {
+      "items": ["Datadog", "Grafana Cloud", "New Relic", "Honeycomb", "Sentry", "Dynatrace"],
+      "en": {
+        "say": ["Got a quote from {item} for {project} monitoring.", "{item} was too expensive for {project} monitoring.", "Had a demo call with {item} about {project} monitoring."],
+        "ask": ["Which monitoring vendors did we talk to for {project}?", "Who did we get monitoring quotes from for {project}?"],
+        "hypothetical": ["If the budget grows, we could ask {item} about {project} monitoring too."]
+      },
+      "zh": {
+        "say": ["{item} 给 {project} 的监控报了价。", "{item} 做 {project} 的监控太贵了。", "和 {item} 开了个演示会，聊了 {project} 的监控。"],
+        "ask": ["{project} 的监控我们联系过哪些厂商？", "{project} 的监控问过哪几家的报价？"],
+        "hypothetical": ["如果预算多了，也可以问问 {item} 做 {project} 监控的事。"]
+      }
+    },
+    {
+      "items": ["Inter", "IBM Plex Sans", "Source Serif", "JetBrains Mono", "Atkinson Hyperlegible", "Noto Sans"],
+      "en": {
+        "say": ["Tried {item} on the {project} docs site; the headings looked cramped.", "{item} reads nicely on the {project} docs site.", "Mocked up the {project} docs site in {item}."],
+        "ask": ["Which fonts did we try for the {project} docs site?", "What typefaces have we tested on the {project} docs?"],
+        "hypothetical": ["We might test {item} on the {project} docs site later."]
+      },
+      "zh": {
+        "say": ["{project} 文档站试了 {item}，标题显得有点挤。", "{item} 用在 {project} 文档站上读起来很舒服。", "用 {item} 做了一版 {project} 文档站的样稿。"],
+        "ask": ["{project} 的文档站试过哪些字体？", "我们在 {project} 文档上测试过哪些字体？"],
+        "hypothetical": ["之后也许可以在 {project} 文档站上试试 {item}。"]
+      }
+    },
+    {
+      "items": ["Kafka", "RabbitMQ", "NATS", "Redis Streams", "Pulsar", "SQS"],
+      "en": {
+        "say": ["Prototyped the {project} event bus on {item}.", "{item} dropped messages in the {project} soak test.", "Benchmarked {item} for the {project} event bus."],
+        "ask": ["Which message queues did we evaluate for the {project} event bus?", "What queues have we tried for {project}'s event bus?"],
+        "hypothetical": ["If we outgrow it, {item} could be an option for the {project} event bus."]
+      },
+      "zh": {
+        "say": ["用 {item} 给 {project} 的事件总线做了原型。", "{item} 在 {project} 的长稳测试里丢了消息。", "给 {project} 的事件总线测了一下 {item} 的性能。"],
+        "ask": ["{project} 的事件总线评估过哪些消息队列？", "{project} 的事件总线试过哪些队列？"],
+        "hypothetical": ["要是以后规模上去了，{project} 的事件总线也可以考虑 {item}。"]
+      }
+    }
+  ],
+  "questions": {
+    "en": {
+      "named_day": ["What did I say about {topic} on {date}?", "What was the news on {topic} on {date}?"],
+      "last_week": ["What did I say about {topic} last week?", "Any news on {topic} last week?"],
+      "range": ["What happened with {topic} between {start} and {end}?"],
+      "day_summary": ["What did we talk about {day}?", "What did we discuss {day}?"],
+      "ordering": ["Did we {first} before or after we {second}?", "Remind me: did we {first} first, or {second} first?"]
+    },
+    "zh": {
+      "named_day": ["{date}我说了{topic}的什么情况？", "{date}那天，{topic}有什么消息？"],
+      "last_week": ["上周{topic}有什么进展？", "上周我说了{topic}的什么？"],
+      "range": ["{start}到{end}之间，{topic}有什么进展？"],
+      "day_summary": ["{day}聊了什么？", "{day}我们都聊了些什么？"],
+      "ordering": ["我们是先{first}，还是先{second}？", "{first}和{second}，哪个先做的？"]
+    }
+  },
+  "filler": {
+    "en": {
+      "user": [
+        "Can you look at the flaky test in the {project} pipeline again?",
+        "Let's rename the config helper in {project} to something clearer.",
+        "I pushed a branch for {project}; review it when you have a minute.",
+        "The {project} dashboard felt slow this morning.",
+        "Draft a short status note for the {project} standup.",
+        "Remind me to reply to the {project} design review comments.",
+        "What's a good name for the new {project} cleanup script?",
+        "Can you summarize the open pull requests on {project}?",
+        "The {project} build logs are full of deprecation warnings.",
+        "Let's write a test for the {project} retry logic.",
+        "I'm heading into meetings for an hour.",
+        "Thanks, that worked.",
+        "Can you make the {project} README a bit friendlier?",
+        "Check whether the {project} nightly job finished.",
+        "Write a quick changelog entry for the {project} fix.",
+        "Is there a cleaner way to parse these {project} timestamps?",
+        "Let's clean up the unused imports in {project}.",
+        "Book a slot with the {project} team for a demo."
+      ],
+      "assistant": ["Got it.", "Noted.", "Sure, on it.", "Done.", "Okay, I'll keep that in mind.", "Thanks for letting me know.", "Understood.", "I'll take a look.", "Sounds good.", "All set."],
+      "request": ["Check the {project} deploy settings for me.", "Show me what's in the {project} config folder.", "Look up the old {project} settings."]
+    },
+    "zh": {
+      "user": [
+        "帮我再看一下 {project} 流水线里那个不稳定的测试。",
+        "{project} 的配置工具函数改个更清楚的名字吧。",
+        "{project} 的分支我推上去了，有空帮我看看。",
+        "今天早上 {project} 的看板有点慢。",
+        "帮我写一段 {project} 站会用的进度说明。",
+        "提醒我回复 {project} 设计评审里的评论。",
+        "新的 {project} 清理脚本起个什么名字好？",
+        "帮我汇总一下 {project} 还没合并的请求。",
+        "{project} 的构建日志里全是弃用警告。",
+        "给 {project} 的重试逻辑补个测试。",
+        "我去开一个小时的会。",
+        "谢谢，可以了。",
+        "把 {project} 的 README 写得友好一点。",
+        "看看 {project} 的夜间任务跑完没有。",
+        "给 {project} 这次修复写一条变更记录。",
+        "{project} 的时间戳有没有更干净的解析方法？",
+        "把 {project} 里没用的导入清理掉。",
+        "约一下 {project} 团队，安排个演示。"
+      ],
+      "assistant": ["好的。", "收到。", "明白了。", "已经处理好了。", "好的，我记下了。", "了解。", "我来看看。", "没问题。", "好，马上办。", "搞定了。"],
+      "request": ["帮我查一下 {project} 的部署配置。", "看看 {project} 配置目录里有什么。", "翻一下 {project} 以前的配置。"]
+    },
+    "tool": [
+      "$ git status --short\n M {project}/README.md",
+      "$ make test\n132 passed in 41.2s",
+      "$ du -sh {project}/build\n312M\t{project}/build",
+      "$ kubectl get pods -n {project}\nNAME        READY   STATUS\napi-7d9f    1/1     Running"
+    ]
+  }
+}
