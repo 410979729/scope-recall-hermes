@@ -170,11 +170,12 @@ def test_started_transport_failure_is_not_masked(tmp_path, monkeypatch: pytest.M
 def test_an_entry_holding_a_hundred_scopes_searches_them_all_in_one_request(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A request per partition, in sorted order, until the budget ran out.
+    """An entry searches its scopes in one request, not a request per partition in sorted order until the budget
+    runs out.
 
-    On the pilot an entry held 110 scopes and searched seven of them before its budget ran out;
-    the owner's own scope sorted 105th and was never searched, so what the owner had just told
-    another agent was not found by meaning.  The whole trusted list is now one request.
+    An entry holding 110 scopes would search seven of them before its budget ran out; the owner's own scope
+    sorted 105th would never be searched, so what the owner had just told another agent would not be found by
+    meaning.  The whole trusted list is one request.
     """
     from scope_recall.contracts import InstanceBinding, TrustedContext
     from scope_recall.runtime.lance_port import physical_partition_scope_id
