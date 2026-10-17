@@ -66,7 +66,7 @@ the real clock (`--no-latency` skips it).
 The retrieval tier runs the dev split (`test_recall_bench.py`, about a minute)
 and fails on any item from another scope, on a metric that moved further than
 the recorded tolerance to the wrong side of `tests/recall_bench/baseline.json`,
-or on more hard negatives of a kind becoming facts than it records.
+or on more active claims standing on hard negatives of a kind than it records.
 A change meant to move the numbers records them in the same commit with
 `--update` (a drop also needs `--allow-worse`); so does a change to the templates
 or the generator, which makes another world. Judge a change on the held-out
