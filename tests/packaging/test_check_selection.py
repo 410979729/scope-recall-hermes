@@ -172,6 +172,7 @@ CHANGES = {
     "hermes": ["adapters/hermes/identity.py"],
     "runtime": ["runtime/worker_entry.py"],
     "vector": ["runtime/lance_port.py"],
+    "lance store": ["vector/process_store.py"],
     "store": ["core/delete_storage.py", "core/visibility.py"],
     "claim": ["core/claims.py"],
     "recall": ["core/recall.py"],
@@ -200,6 +201,7 @@ PROCESS_ADDITIONS = {
         _PROCESS,
     ),
     "vector": (CHANGES["vector"], [*check.SUITES["native"], *check.I_CORE_BASELINE], ["native"], _PROCESS),
+    "lance store": (CHANGES["lance store"], [*check.SUITES["native"], *check.I_CORE_BASELINE], ["native"], _PROCESS),
     "packaging": (
         CHANGES["packaging"],
         [*check.SUITES["integration"], *check.SUITES["packaging"]],
@@ -310,6 +312,45 @@ def test_a_packaging_change_leaves_the_build_to_a_tier_that_has_the_packaging_he
     assert "tests/packaging/test_source_manifest.py" in selected
     assert GIT_TEST in selected
     assert "packaging" in details["required_tiers"]
+
+
+#: The files and directories the native suite is about: the Lance store and its helper process, and the runtime modules
+#: that start and feed them.
+NATIVE_PATHS = [
+    *sorted(path.relative_to(ROOT).as_posix() for path in (ROOT / "vector").glob("*.py")),
+    "_lance_worker.py",
+    "runtime/lance_port.py",
+    "runtime/vector_upkeep.py",
+    "runtime/instance.py",
+    "runtime/instance_config.py",
+]
+
+
+@pytest.mark.parametrize("path", [*NATIVE_PATHS, "vector/a_store_that_is_not_there_yet.py"])
+def test_a_change_to_the_native_boundary_calls_for_the_native_tier(path) -> None:
+    selected, details = check.select_tests("unit", changed=[path])
+
+    assert "native" in details["impacts"]
+    assert "native" in details["required_tiers"]
+    assert details["unknown_files"] == []
+    assert not set(check.SUITES["native"]) & set(selected)
+    assert set(check.SUITES["native"]) <= set(check.select_tests("native", changed=[path])[0])
+
+
+@pytest.mark.parametrize("name", ["lance_process_store.py", "vector_store.py", "setup.py", "manifests.in"])
+def test_a_file_the_checkout_does_not_have_calls_for_nothing_by_its_name(name) -> None:
+    _, details = check.select_tests("unit", changed=[name])
+
+    assert details["impacts"] == []
+    assert details["unknown_files"] == [name]
+
+
+def test_every_path_an_impact_names_exists_in_the_checkout() -> None:
+    for kind, entries in check.IMPACT_PATHS.items():
+        for entry in entries:
+            path = ROOT / entry
+            assert path.is_dir() if entry.endswith("/") else path.is_file(), (kind, entry)
+    assert list((ROOT / "adapters").rglob("runtime_wiring.py")), "no runtime wiring module for the impact to name"
 
 
 @pytest.mark.parametrize("path", RUNTIME_PROCESS_TESTS)

@@ -498,6 +498,29 @@ HERMES_HOST_TESTS = [path for path in SUITES["host"] if "/hermes/" in path]
 CODEX_HOST_TESTS = [path for path in SUITES["host"] if "/codex/" in path]
 INTEGRATION_STABLE_BASELINE = _dedupe(list(SUITES["native"]) + list(SUITES["host"]) + list(SUITES["migration"]))
 
+#: The directories and files that decide an impact by where they are rather than by what their names hold.  A directory
+#: ends in ``/``.  Every entry is in the checkout, which tests/packaging/test_check_selection.py holds them to.  The
+#: native entries are the Lance store and its helper process and the runtime modules that start and feed them: what the
+#: native suite is about.
+IMPACT_PATHS = {
+    "quiet": ("verification/", "docs/", "fixtures/"),
+    "tests": ("tests/",),
+    "selector": ("scripts/check.py",),
+    "packaging": ("pyproject.toml", "MANIFEST.in", "packaging/", "packaging_hooks/"),
+    "host": ("adapters/", "runtime/"),
+    "runtime": ("runtime/",),
+    "hermes": ("adapters/hermes/",),
+    "clients": ("adapters/clients/", "adapters/codex/"),
+    "native": (
+        "vector/",
+        "_lance_worker.py",
+        "runtime/lance_port.py",
+        "runtime/vector_upkeep.py",
+        "runtime/instance.py",
+        "runtime/instance_config.py",
+    ),
+}
+
 _IMPACT_PATTERNS = {
     "scope": ("scope", "identity", "path", "binding", "visibility"),
     "write": ("capture", "mutate", "storage", "schema", "claim", "episode", "artifact", "reference", "worker", "queue"),
@@ -581,23 +604,30 @@ def _source_inputs_sha256(manifest: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
 
 
+def _at(path: str, where: str) -> bool:
+    """Whether the lowercased ``path`` is an entry of ``IMPACT_PATHS[where]`` or inside one of its directories."""
+    return any(
+        path.startswith(entry.lower()) if entry.endswith("/") else path == entry.lower()
+        for entry in IMPACT_PATHS[where]
+    )
+
+
 def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
     impacts: set[str] = set()
     unknown: list[str] = []
     for raw in changed:
         path = raw.replace("\\", "/").lower()
-        if path.startswith(("verification/", ".execution/", "docs/", "fixtures/")):
+        # ``.execution/`` is local scratch the repository ignores, so it is not an entry that must exist.
+        if _at(path, "quiet") or path.startswith(".execution/"):
             continue
-        if path.startswith("tests/"):
+        if _at(path, "tests"):
             # Test-only edits should run that test directly when it exists;
             # their production impact is not inferred from the filename.
             continue
-        if path == "scripts/check.py":
+        if _at(path, "selector"):
             impacts.add("selector")
             continue
-        if path in {"pyproject.toml", "setup.py", "manifest.in", "manifests.in"} or path.startswith(
-            ("packaging/", "packaging_hooks/")
-        ):
+        if _at(path, "packaging"):
             impacts.update({"packaging", "unknown_config"})
             continue
         path_impacts: set[str] = set()
@@ -605,22 +635,22 @@ def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
             if any(fragment in path for fragment in fragments):
                 impacts.add(label)
                 path_impacts.add(label)
-        if path.startswith(("adapters/", "runtime/")):
+        if _at(path, "host"):
             impacts.update({"scope", "write", "host"})
             path_impacts.update({"scope", "write", "host"})
-            if path.startswith("adapters/hermes/"):
+            if _at(path, "hermes"):
                 impacts.add("hermes_host")
                 path_impacts.add("hermes_host")
-            elif path.startswith(("adapters/clients/", "adapters/codex/")):
+            elif _at(path, "clients"):
                 impacts.add("codex_host")
                 path_impacts.add("codex_host")
             else:
                 impacts.add("host_both")
                 path_impacts.add("host_both")
-            if path.startswith("runtime/") or path.endswith("runtime_wiring.py"):
+            if _at(path, "runtime") or path.endswith("runtime_wiring.py"):
                 impacts.add("runtime_boundary")
                 path_impacts.add("runtime_boundary")
-        if path in {"runtime/lance_port.py", "lance_process_store.py", "_lance_worker.py", "vector_store.py"}:
+        if _at(path, "native"):
             impacts.add("native")
             path_impacts.add("native")
         if not path_impacts.intersection(
