@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, TypeVar
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,22 @@ class VectorRecord:
     summary: str
     updated_at: str
     vector: list[float]
+
+
+_Row = TypeVar("_Row", bound=Mapping[str, Any])
+
+
+def require_no_text(rows: Iterable[_Row]) -> list[_Row]:
+    """``rows`` as a list, once none of them carries text; ``ValueError`` when one does.
+
+    A companion row is a vector and opaque identities: SQLite holds the only answerable text.  Words a row carried
+    in ``content`` or ``summary`` would outlive a forget in the companion's own files, which a purge only deletes
+    the row from: the SQLite companion's free space and write-ahead log, Lance's older versions.
+    """
+    payload = list(rows)
+    if any(row.get("content") or row.get("summary") for row in payload):
+        raise ValueError("a vector companion row carries no text: content and summary must be empty")
+    return payload
 
 
 class VectorStoreCompatibilityError(RuntimeError):
@@ -116,4 +132,4 @@ class VectorStore(ABC):
         }
 
 
-__all__ = ["VectorRecord", "VectorStore", "VectorStoreCompatibilityError"]
+__all__ = ["VectorRecord", "VectorStore", "VectorStoreCompatibilityError", "require_no_text"]

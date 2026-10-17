@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import VectorStore, VectorStoreCompatibilityError
+from . import VectorStore, VectorStoreCompatibilityError, require_no_text
 from .purge import governed_row_ids, purge_request
 
 _ROW_COLUMNS = "id, scope_id, source, target, content, summary, updated_at, vector_json"
@@ -248,7 +248,7 @@ class SQLiteBruteForceVectorStore(VectorStore):
             return self._require_conn().execute(sql, params).fetchall()
 
     def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None:
-        payload = list(rows)
+        payload = require_no_text(rows)
         if not payload:
             return
         with self._lock:
@@ -307,7 +307,7 @@ class SQLiteBruteForceVectorStore(VectorStore):
             or remaining_seconds <= 0
         ):
             raise RuntimeError("vector fence deadline exhausted")
-        payload = list(rows)
+        payload = require_no_text(rows)
         if not payload:
             return True
         with self._lock:

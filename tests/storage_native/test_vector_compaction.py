@@ -211,8 +211,8 @@ def _row(index: int) -> dict:
         "scope_id": "TEST-scope",
         "source": "TEST-source",
         "target": "TEST-target",
-        "content": f"TEST content {index}",
-        "summary": "TEST summary",
+        "content": "",
+        "summary": "",
         "updated_at": "2026-09-14T00:00:00+00:00",
         "vector": [float(index), 0.0, 0.0, 1.0],
     }
@@ -412,8 +412,8 @@ def _spread_rows(count: int, dimensions: int = 8) -> list[dict]:
             "scope_id": "TEST-scope",
             "source": "TEST-source",
             "target": "TEST-target",
-            "content": f"TEST content {index}",
-            "summary": "TEST summary",
+            "content": "",
+            "summary": "",
             "updated_at": "2026-09-28T00:00:00+00:00",
             "vector": [generator.uniform(-1.0, 1.0) for _ in range(dimensions)],
         }
