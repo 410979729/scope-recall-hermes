@@ -376,7 +376,6 @@ CLAIMS_TIME_CONTRACT_CLOSURE = [
     "tests/contract/test_recall_admission.py",
     "tests/contract/test_consolidation_input.py",
 ]
-CLAIMS_TIME_CLOSURE = CLAIMS_TIME_CONTRACT_CLOSURE + ["tests/migration/test_migration_drills.py"]
 CORE_RELEASE_CONTRACTS = [
     "tests/contract/test_retrieval_history_state.py",
     "tests/contract/test_synthetic_inputs.py",
