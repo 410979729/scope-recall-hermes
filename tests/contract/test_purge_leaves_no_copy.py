@@ -3,7 +3,9 @@
 import sqlite3
 from contextlib import closing
 
-from test_claims import app
+from scope_recall.core.claims import Qualification
+from test_claims import app, capture, draft
+from test_deletion import authorize, request
 from v11_support import source_event
 
 #: A message only these tests send.
@@ -32,6 +34,12 @@ def copies(directory, needle):
     return found
 
 
+def first_column(core, sql):
+    """The first column of the rows ``sql`` reads from the store, as a set."""
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        return {row[0] for row in conn.execute(sql)}
+
+
 def test_a_stored_capture_leaves_no_copy_of_its_inbox_row(app):
     """A host's capture waits in the inbox until it is stored, and its row goes when it is: what the row held is
     overwritten with it, so the store's files hold the words once, in the stored message."""
@@ -40,3 +48,36 @@ def test_a_stored_capture_leaves_no_copy_of_its_inbox_row(app):
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
     assert copies(ctx.binding.data_directory, SECRET) == {"memory.sqlite3": 1}
+
+
+def test_a_purge_takes_the_terms_only_the_forgotten_message_held(app):
+    """The lexical index's dictionary and a candidate's trigger terms hold words of the message they came from: a
+    purge removes the terms nothing else holds and keeps one another message still holds."""
+    core, ctx = app
+    capture(core, ctx, "TEST 钥匙在门口。", key="TEST-terms/kept")
+    source = capture(core, ctx, SECRET, key="TEST-terms/secret")
+    proposal = draft(
+        source,
+        "violet-key-under-brick-seven",
+        subject="entity-said",
+        predicate="property-said",
+        kind="fact",
+        statement_kind="fact",
+    )
+    with core.storage.write(ctx) as tx:
+        candidate = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
+        tx.candidates.register(candidate.ref, candidate.revision, observed_at=core.clock.utc_now())
+    triggers = "SELECT term FROM candidate_trigger_terms"
+    assert first_column(core, triggers) == {"entity-said", "property-said", "violet-key-under-brick-seven"}
+    authorize(core, ctx, source)
+    deleted = core.forget(ctx, request(source), remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+    terms = first_column(core, "SELECT term FROM lexical_terms")
+    assert first_column(core, triggers) == set()
+    assert not {"紫色", "violet-key-under-brick-seven"} & terms
+    assert {"钥匙", "test"} <= terms

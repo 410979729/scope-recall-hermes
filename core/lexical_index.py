@@ -69,11 +69,17 @@ def terms_of(conn, source: int) -> tuple[str, ...]:
 
 
 def forget(conn, event_id: str) -> None:
-    """Drop the postings of every version of the source (deletion)."""
+    """Drop the postings of every version of the source (deletion), and the terms no other source holds: left in the
+    dictionary, they would keep the deleted words, an identifier whole."""
+    versions = "SELECT source_id FROM source_events WHERE event_id=?"
     conn.execute(
-        "DELETE FROM lexical_postings WHERE source_id IN (SELECT source_id FROM source_events WHERE event_id=?)",
-        (event_id,),
+        f"""DELETE FROM lexical_terms WHERE term_id IN
+            (SELECT term_id FROM lexical_postings WHERE source_id IN ({versions}))
+            AND NOT EXISTS (SELECT 1 FROM lexical_postings p WHERE p.term_id=lexical_terms.term_id
+                AND p.source_id NOT IN ({versions}))""",
+        (event_id, event_id),
     )
+    conn.execute(f"DELETE FROM lexical_postings WHERE source_id IN ({versions})", (event_id,))
 
 
 def unindex(conn, sources: Iterable[int]) -> int:

@@ -536,6 +536,9 @@ class Deletions:
             elif kind == "claim":
                 conn.execute("UPDATE claims SET subject='',predicate='' WHERE claim_id=?", (ref,))
                 conn.execute("UPDATE claim_versions SET payload_json='{}' WHERE claim_id=?", (ref,))
+                # A candidate's trigger terms are words of its subject, predicate and value, and a blocked
+                # candidate is never woken by them.
+                conn.execute("DELETE FROM candidate_trigger_terms WHERE candidate_ref=?", (ref,))
             elif kind == "episode":
                 conn.execute(
                     "UPDATE episode_versions SET resume_json=NULL,environment_revision=NULL WHERE episode_id=?", (ref,)
