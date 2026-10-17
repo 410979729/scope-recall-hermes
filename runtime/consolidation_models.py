@@ -89,6 +89,21 @@ def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_RO
         reject_secrets(message["content"])
 
 
+#: ``finish_reason`` values with which a provider ends a generation it did not finish, for lack of capacity or by
+#: interruption: DeepSeek documents both, and the chat completions of OpenAI and Azure document none of this kind.  A
+#: tuple, so a ``finish_reason`` that is not a string can be compared with it.
+_CHAT_INTERRUPTIONS = ("insufficient_system_resource", "aborted")
+
+
+def _answer_text(content: object) -> str:
+    """The text a chat message's ``content`` holds: a string, or the ``text`` of each part of a list of parts."""
+    if type(content) is str:
+        return content
+    if isinstance(content, list):
+        return "".join(part["text"] for part in content if isinstance(part, dict) and type(part.get("text")) is str)
+    return ""
+
+
 def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     choices = payload.get("choices")
     if not isinstance(choices, list) or len(choices) != 1:
@@ -96,12 +111,18 @@ def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     choice = choices[0]
     if not isinstance(choice, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
+    finish_reason = choice.get("finish_reason")
     # "content_filter" means the provider's policy ended the answer, whatever
     # the message still holds: the text left, if any, is incomplete.  It is
     # named as a refusal instead of reaching the decoder as anonymous invalid
     # JSON.
-    if choice.get("finish_reason") == "content_filter":
+    if finish_reason == "content_filter":
         raise AuxiliaryModelError("model_refused")
+    # An interrupted generation is the provider's transient fault, whatever
+    # the message still holds: the text left, if any, is incomplete.  It is
+    # not an invalid derivation, which is a failure by design.
+    if finish_reason in _CHAT_INTERRUPTIONS:
+        raise AuxiliaryModelError("model_output_interrupted")
     message = choice.get("message")
     if not isinstance(message, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
@@ -114,17 +135,18 @@ def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     if message.get("tool_calls") or message.get("function_call"):
         raise AuxiliaryModelError("unsupported_response_shape")
     content = message.get("content")
-    # A model that declines puts its refusal where the answer belongs, so the
-    # message holds no answer text.
+    # A model that declines puts its refusal where the answer belongs, so no
+    # answer text stands beside it: none in a blank string, and none in a list
+    # of parts without a text part.
     refusal = message.get("refusal")
-    if not content and type(refusal) is str and refusal:
+    if type(refusal) is str and refusal.strip() and not _answer_text(content).strip():
         raise AuxiliaryModelError("model_refused")
     if type(content) is not str:
         raise AuxiliaryModelError("unsupported_response_shape")
     # "length" means the provider stopped at the output limit: the text is a
     # prefix, not an answer.  Otherwise it reaches the decoder as anonymous
     # invalid JSON and the one guided retry cannot tell the model what failed.
-    if choice.get("finish_reason") == "length":
+    if finish_reason == "length":
         raise ContractError("DERIVATION_INVALID", "model_output_truncated")
     return content
 

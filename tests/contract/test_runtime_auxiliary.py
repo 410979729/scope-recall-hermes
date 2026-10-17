@@ -526,6 +526,67 @@ def test_a_refusal_field_beside_answer_text_is_metadata(tmp_path, monkeypatch, r
     assert answer == '{"protocol_version":"1.1"}'
 
 
+@pytest.mark.parametrize(
+    "content",
+    [" \n\t ", [], [{"type": "text", "text": "  "}], [{"type": "annotation", "note": "n"}]],
+    ids=["blank_text", "empty_list", "blank_text_part", "part_without_text"],
+)
+def test_a_refusal_beside_content_without_answer_text_is_a_refusal(tmp_path, monkeypatch, content):
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    message = {"role": "assistant", "content": content, "refusal": "I can't help with that."}
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "stop")))
+    )
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "model_refused"
+
+
+def test_a_refusal_beside_a_list_that_holds_text_is_not_a_refusal(tmp_path, monkeypatch):
+    """Parts that hold text are answer content, whatever else the message carries; a list of parts is not a shape this
+    route reads."""
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": '{"protocol_version":"1.1"}'}],
+        "refusal": "kept as metadata by a gateway",
+    }
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "stop")))
+    )
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "unsupported_response_shape"
+
+
+@pytest.mark.parametrize("finish_reason", ["insufficient_system_resource", "aborted"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'},
+        {"role": "assistant", "content": None},
+    ],
+    ids=["partial_text", "null_text"],
+)
+def test_a_reply_the_provider_interrupted_is_a_transient_failure_whatever_the_message_holds(
+    tmp_path, monkeypatch, message, finish_reason
+):
+    """The provider ended the generation itself, so the text left, if any, is incomplete and no invalid derivation;
+    the call is still settled with the usage the provider reported."""
+    config, ledger, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, finish_reason)))
+    )
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "model_output_interrupted"
+    with sqlite3.connect(ledger) as db:
+        assert db.execute("SELECT status,actual_output FROM requests").fetchall() == [("http_200", 512)]
+
+
 def test_consolidation_route_options_are_explicit(tmp_path, monkeypatch):
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")

@@ -371,11 +371,17 @@ A chat answer is the text of the one choice's assistant message. One cut off at
 the output limit (`finish_reason: "length"`) fails as `DERIVATION_INVALID` on
 `model_output_truncated`. One the provider's policy stopped
 (`finish_reason: "content_filter"`, whatever text the message holds), or that
-the model refused (a `refusal` where the answer belongs), fails as
-`model_refused`: no output limit is involved, so the item is not asked again.
-It is a terminal failure (`retry-failures` in [install.md](install.md)), and
-`--include-terminal` runs it again once the model, the route or the provider's
-policy has changed.
+the model refused (a `refusal` beside a `content` with no answer text: absent,
+blank, or a list of parts without text), fails as `model_refused`: no output
+limit is involved, so the item is not asked again. It is a terminal failure
+(`retry-failures` in [install.md](install.md)), and `--include-terminal` runs
+it again once the model, the route or the provider's policy has changed. One
+the provider ended without finishing
+(`finish_reason: "insufficient_system_resource"` or `"aborted"`, whatever text
+the message holds) fails as `model_output_interrupted`: a transient fault, not
+a failure by design. The worker asks again as after a timeout, the automatic
+recovery (`max_auto_recoveries`) re-opens it after its attempts, and a plain
+`retry-failures` run re-opens what is left.
 
 Setting `"kind": "openai_responses"` selects a Responses-API route instead of
 chat completions. It targets the documented contract of DeepSeek

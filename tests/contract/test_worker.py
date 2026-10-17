@@ -363,6 +363,52 @@ def test_reply_the_providers_policy_stopped_fails_the_item_at_once_as_a_terminal
     ]
 
 
+def test_reply_the_provider_interrupted_is_asked_again_and_is_a_fault_while_it_lasts(worker_app, tmp_path, monkeypatch):
+    from scope_recall.core.worker import build_consolidation_model
+    from scope_recall.maintenance import doctor
+    from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+    from scope_recall.runtime.instance import _BoundedConsolidation
+    from test_runtime_auxiliary import FakeTransport, _chat_reply, _runtime_config
+
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST 输出被提供方中断。")
+    _mark_embed_done(core)
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    cut = {"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'}
+    transport = FakeTransport(lambda **kwargs: (200, _chat_reply(cut, "insufficient_system_resource")))
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    model = _BoundedConsolidation(build_consolidation_model(runtime.consolidation), 3)
+
+    def consolidate():
+        return next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
+
+    clock.advance(iso="2026-09-06T12:00:00Z")
+    core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
+    assert (consolidate()[3], consolidate()[4], consolidate()[6]) == ("pending", 1, "model_output_interrupted")
+    assert core.status(ctx).pending_error_counts == (("model_output_interrupted", 1),)
+    for iso in ("12:00:03", "12:00:10", "12:00:20"):
+        clock.advance(iso=f"2026-09-06T{iso}Z")
+        core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
+    assert transport.calls == 3
+    assert (consolidate()[3], consolidate()[4], consolidate()[6]) == ("failed", 3, "model_output_interrupted")
+    with sqlite3.connect(core.storage.path) as db:
+        assert (
+            db.execute("SELECT error_code,error_field FROM work_error_details").fetchall()
+            == [("model_output_interrupted", None)] * 3
+        )
+    (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(doctor, "load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
+    report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    # A fault, not a failure by design: the instance is degraded until the item is worked again.
+    assert report.status == "degraded" and "work_failed" in report.capability_gaps
+    assert "work_failed_terminal_only" not in report.capability_gaps and report.terminal_failed_work == 0
+    assert report.work_error_counts == {"model_output_interrupted": 1}
+    plain = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
+    assert (plain["retried"], plain["by_kind"]) == (1, {"model_output_interrupted": 1})
+
+
 def test_consolidation_accepts_only_transport_fence_and_null_optional_location(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 的公开代号是 TEST-ARCHIVE-V12-FLARE。")
