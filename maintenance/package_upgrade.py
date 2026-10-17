@@ -195,8 +195,8 @@ def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) ->
     files = sorted({safe_path(f, must_exist=True, error_type=PackageUpgradeError) for f in current["files"]})
     if not files or any(not f.is_file() or not f.is_relative_to(prefix) for f in files):
         raise PackageUpgradeError("record_outside_target_venv_or_missing")
-    # Include package directory handles, not only files listed in RECORD: the
-    # D14 incident involved a directory handle held by the running gateway.
+    # Include package directory handles, not only files listed in RECORD: a
+    # running gateway can hold a handle on a package directory.
     paths = set(files)
     for path in files:
         paths.update(p for p in path.parents if p != prefix and p.is_relative_to(prefix))

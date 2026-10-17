@@ -54,9 +54,9 @@ class Run:
         self.root, self.command, self.now = root, command, now
         stamp = now.replace("-", "").replace(":", "")
         base = root / RECEIPTS_DIRNAME / f"{stamp}-{command}"
-        # Named to the second, a second run of the command in that second kept its copies over the first's, and
-        # the first's receipt then named copies of files the second replaced.  The folder is taken by making it, and
-        # kept even when it stays empty, so no later run takes its name: two runs at once cannot share one.
+        # Named to the second, a second run of the command in that second would keep its copies over the first's, and
+        # the first's receipt would then name copies of files the second replaced.  The folder is taken by making it,
+        # and kept even when it stays empty, so no later run takes its name: two runs at once cannot share one.
         folder, count = base, 1
         while True:
             try:
@@ -77,7 +77,7 @@ class Run:
 
     def receipt(self, body: dict[str, Any]) -> str:
         # Beside its folder, named after it whole: a moment with fractions of a second has a dot in it, and the
-        # receipt named by replacing a suffix lost the fraction and the command.
+        # receipt named by replacing a suffix would lose the fraction and the command.
         path = self.folder.with_name(f"{self.folder.name}.json")
         write_json(path, {"command": self.command, "at": self.now, "backups": self.backups, **body})
         return str(path)
