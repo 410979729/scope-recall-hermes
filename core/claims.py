@@ -318,7 +318,7 @@ def assertion_clause(content: str, quote: str) -> str:
     with zero real newlines and 14 to 46 escaped ones, so the context ran 155 to
     1,581 characters and one ``?`` anywhere inside vetoed the claim.  Twelve of
     the sixteen had no question marker in the quoted text at all -- the rejected
-    statements were lines like ``Version: 3.1.0.dev2+one instance.2``.
+    statements were version lines such as ``Version: 3.1.0.dev2``.
 
     This is for tests that must judge *this* assertion rather than everything
     the source happens to mention.  Splitting on ``\\n`` also splits a literal

@@ -31,8 +31,8 @@ from .shared_entries import load_binding_for_home
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
 
-#: The adapter's log name, the provider module's, which every part of the adapter logs under: a host writes it into
-#: each line, and a logging configuration may name it.
+#: The adapter's log name, the provider module's, which this module logs under as well: a host writes it into each
+#: line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 
 #: What the retry thread's pass may spend, off any hook's time and off Hermes' single memory worker.  At a capture's

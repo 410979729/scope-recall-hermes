@@ -24,8 +24,8 @@ from .identity import HermesIdentity, HermesRuntimeScope, host_scope_payload, tr
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
 
-#: The adapter's log name, the provider module's, which every part of the adapter logs under: a host writes it into
-#: each line, and a logging configuration may name it.
+#: The adapter's log name, the provider module's, which this module logs under as well: a host writes it into each
+#: line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 
 #: How long one capture waits for the store's writer lease.
