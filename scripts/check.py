@@ -14,12 +14,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from test_directories import TestDirectory
+from tier_allows import TIER_ALLOWS
 
 ROOT = Path(__file__).resolve().parents[1]
 #: No default path: a machine without uv says so, rather than asserting that
 #: one operator's directory exists on it.
 _DEFAULT_PACKAGING_UV = ""
-_PACKAGING_HELPER_TIERS = frozenset({"packaging", "release"})
 DEFAULT_WATCHDOG_SECONDS = 180
 RELEASE_WATCHDOG_SECONDS = 600
 #: GitHub's Windows runner executes the integration baseline roughly an order
@@ -91,9 +91,9 @@ def distribution_is_installed(python_executable: str | None = None) -> bool:
 
 
 def packaging_helper_env(tier: str) -> dict[str, str]:
-    """Authorize the same declared uv helper root for packaging and release."""
+    """Authorize the same declared uv helper root for every tier whose runs may drive the packaging helpers."""
 
-    if tier not in _PACKAGING_HELPER_TIERS:
+    if "build" not in TIER_ALLOWS.get(tier, frozenset()):
         return {}
     packaging_uv = os.environ.get("SCOPE_RECALL_UV") or shutil.which("uv") or _DEFAULT_PACKAGING_UV
     if not packaging_uv:
@@ -104,7 +104,7 @@ def packaging_helper_env(tier: str) -> dict[str, str]:
 def node_helper_env(tier: str) -> dict[str, str]:
     """The node executable the host tier's dsh plugin tests run; none where node is not installed (they skip)."""
 
-    if tier != "host":
+    if "node" not in TIER_ALLOWS.get(tier, frozenset()):
         return {}
     node = shutil.which("node")
     return {"SCOPE_RECALL_TEST_NODE": str(Path(node).resolve())} if node else {}
@@ -283,9 +283,10 @@ TIER_METADATA = {
     "model_runtime": {"level": "T4", "requires": ["model"], "model_calls": True},
 }
 
-#: The tiers whose runs allow child processes and loopback sockets.  ``tests/v11_guard.py`` refuses both to every other
-#: tier, so a test that starts a process or opens a socket can only pass in one of these.
-PROCESS_TIERS = frozenset({"native", "host", "integration", "migration", "packaging", "release"})
+#: The tiers whose runs allow child processes and loopback sockets: the tiers of ``TIER_ALLOWS``.
+#: ``tests/v11_guard.py`` reads the same table and refuses both to every other tier, so a test that starts a process or
+#: opens a socket can only pass in one of these.
+PROCESS_TIERS = frozenset(TIER_ALLOWS)
 
 # These are the deterministic checks that protect the authority and privacy
 # boundary when a change affects writes, identity, deletion, or time.  They are
