@@ -32,6 +32,10 @@ syntax, not values: a call through another function or a called lambda while a m
 named like ``import_module``, and code that changes ``typing.TYPE_CHECKING`` are beyond it.  For the named lazy
 imports, ``tests/packaging/test_clean_v11_wheel.py`` loads the runtime from the built wheel and finds no adapter
 module loaded.
+
+Comments, docstrings and Markdown are held, with no baseline, to verified behaviour: none of them may carry a word
+that leaves work undone or undecided (``MARKERS``).  Other string literals are data and are not read, and evidence
+kept as written (``verification/``, ``fixtures/``) is left out.
 """
 
 from __future__ import annotations
@@ -40,14 +44,16 @@ import argparse
 import ast
 import importlib.metadata
 import importlib.util
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tokenize
 import tomllib
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -736,6 +742,44 @@ def _upward(edges: list[Edge], graph: dict[str, set[str]]) -> list[str]:
     return problems
 
 
+#: Words that leave work undone or undecided.  Whole words in their case, so a host's "to-do list" is no finding.
+MARKERS = re.compile(r"\b(?:TODO|FIXME|TBD)\b|待定|暂定|待确认")
+#: Trees kept as they were written: evidence and data.
+_KEPT_AS_WRITTEN = ("verification/", "fixtures/")
+
+
+def tracked(root: Path, *patterns: str) -> list[str]:
+    """The files git tracks under ``root`` that match ``patterns``, as posix paths relative to it."""
+    done = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *patterns], capture_output=True, check=True)
+    return [name for name in done.stdout.decode("utf-8").split("\0") if name]
+
+
+def _prose(source: str) -> Iterator[tuple[int, str]]:
+    """A module's comments and docstrings, each with the line it starts on."""
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            yield token.start[0], token.string
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            docstring = ast.get_docstring(node, clean=False)
+            if docstring is not None:
+                yield node.body[0].lineno, docstring
+
+
+def marker_problems(root: Path, files: Iterable[str]) -> list[str]:
+    """Each place in a comment, a docstring or a Markdown file where one of ``MARKERS`` stands, by file and line."""
+    problems = []
+    for name in sorted(files):
+        if name.startswith(_KEPT_AS_WRITTEN) or not name.endswith((".py", ".md")):
+            continue
+        text = (root / name).read_text(encoding="utf-8")
+        pieces = _prose(text) if name.endswith(".py") else [(1, text)]
+        for first, piece in pieces:
+            for found in MARKERS.finditer(piece):
+                problems.append(f"{name}:{first + piece.count(chr(10), 0, found.start())}: {found.group()}")
+    return sorted(problems, key=lambda problem: (problem.rsplit(":", 2)[0], int(problem.rsplit(":", 2)[1])))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--update", action="store_true", help="record the current findings as the baseline")
@@ -762,6 +806,11 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(problems))
         print("the package's imports may form no cycle and may not reach a layer above their own (LAYERS in this file)")
         failed = True
+    markers = marker_problems(ROOT, tracked(ROOT, "*.py", "*.md"))
+    if markers:
+        print("\n".join(markers))
+        print("code and docs state verified behaviour: do the work or say what holds, and track the rest as an issue")
+        failed = True
     done = _run("ruff", "format", "--check", "--output-format", "concise", ".")
     if done.returncode != 0:
         print(done.stdout.strip() or done.stderr.strip())
@@ -785,8 +834,8 @@ def main(argv: list[str] | None = None) -> int:
         failed = True
     if not failed:
         print(
-            f"quality: formatted, imports along the layers, and nothing above the baseline ({len(findings)} findings"
-            " recorded)"
+            f"quality: formatted, imports along the layers, no open markers, and nothing above the baseline"
+            f" ({len(findings)} findings recorded)"
         )
     return 1 if failed else 0
 

@@ -486,3 +486,21 @@ def test_star_imports_dynamic_imports_and_a_named_lazy_import_run_at_load(tmp_pa
         "    core/pkg/leaf.py:1 imports core/a.py",
         "upward import: core/a.py:2 imports runtime/b.py in a function",
     ]
+
+
+def test_a_marker_in_prose_is_found_by_its_line_and_data_is_not(tmp_path):
+    """A comment, a docstring or a document that leaves work undone or undecided is found where it stands; a string
+    literal is data, a word that only holds the letters is no marker, and evidence kept as written is not read."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "verification").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text(
+        '"""A module."""\n\nPATTERN = "TODO"  # TBD\n\n\n'
+        'def step():\n    """Run it.\n\n    待定: the order.\n    """\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "guide.md").write_text("# Guide\n\nKeep the to-do list, and the TODOS.\n\nFIXME\n", encoding="utf-8")
+    (tmp_path / "verification" / "notes.md").write_text("TODO\n", encoding="utf-8")
+    (tmp_path / "data.json").write_text('{"note": "TODO"}\n', encoding="utf-8")
+    files = ["pkg/mod.py", "guide.md", "verification/notes.md", "data.json"]
+    found = quality.marker_problems(tmp_path, files)
+    assert found == ["guide.md:5: FIXME", "pkg/mod.py:3: TBD", "pkg/mod.py:9: 待定"]
