@@ -490,7 +490,8 @@ def test_the_page_is_bounded(app, limit):
 
 #: Codes of every kind a writer records on a failed row: the worker's transient set; by-design outcomes in the case and
 #: with the history their writers leave; refusals of a route, a size or an account; an interrupted attempt; an
-#: embedding route's unusable answers; the HTTP helper's own code; codes no list names; an empty and a missing code.
+#: embedding route's unusable answers and requests; a consolidation route's refusal and empty answer; the HTTP
+#: helper's own code; codes no list names; an empty and a missing code.
 _WRITTEN_CODES = (
     *sorted(AUTO_RECOVERABLE_ERRORS),
     "derivation_invalid",
@@ -507,6 +508,9 @@ _WRITTEN_CODES = (
     "vector_dimension_mismatch",
     "retried:0.0.1|auto_retry:2|vector_zero",
     "unsupported_response_shape",
+    "unsupported_request_shape",
+    "model_refused",
+    "empty_output",
     "transport_worker_protocol",
     "a_code_no_release_has_written",
     "",
