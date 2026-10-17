@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from ..contracts import ContractError, validate_model_request
-from .source_qualification import AUTHORITY_QUESTION
+from .source_qualification import AUTHORITY_QUESTION, CONDITIONAL
 from .visibility import allowed
 
 _DELETE = re.compile(r"删除|删掉|忘掉|忘记|清除|\b(?:delete|erase|forget)\b", re.I)
@@ -14,9 +14,9 @@ _NEGATED = re.compile(
     r"(?:不要|别|不许|暂不|不能|不必|不得|不准)[^。！？!?;；\n]{0,4096}(?:删除|删掉|忘掉|忘记|清除)|\b(?:do not|don't|don’t|never|must not)\s+(?:delete|erase|forget)\b",
     re.I,
 )
+#: A condition or supposition (``CONDITIONAL``), an example or someone else's words: no deletion is asked for.
 _NON_COMMAND = re.compile(
-    r"如果|假如|假设|倘若|举例|例如|原文|转述|引用|客户说|他说|她说|\b(?:if|unless|suppose|example|quoted?|said)\b",
-    re.I,
+    CONDITIONAL.pattern + r"|举例|例如|原文|转述|引用|客户说|他说|她说|\b(?:example|quoted?|said)\b", re.I
 )
 
 

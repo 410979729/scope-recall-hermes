@@ -8,15 +8,13 @@ import re
 
 from ..contracts import ContractError
 from .claims import canonical_time
-from .source_qualification import AUTHORITY_QUESTION, preserves_qualifiers
+from .source_qualification import AUTHORITY_QUESTION, CONDITIONAL, preserves_qualifiers
 
 TOPIC_BREAK = re.compile(r"换个话题|另一个话题|转去|转到|接下来讨论|switch (?:topic|to)|new topic", re.I)
-#: English markers beside ``如果``/``假如``/``假设``: without them an English
-#: conditional reads as an assertion, and "If a tool failed because of setup
-#: state, capture the FIX" would be taken as a report that the episode failed.
-UNSETTLED = re.compile(
-    r"假设|假如|如果|也许|可能|引用|据说|他说|她说|suppose|hypothetical|perhaps|maybe|quoted|\bif\b|\bin case\b", re.I
-)
+#: A condition or supposition (``CONDITIONAL``), uncertainty or someone else's words: a source that says what would
+#: hold or what was said, so "要是周五前做完，整个任务完成" or "If a tool failed because of setup state, capture the
+#: FIX" reports no finished or failed episode.
+UNSETTLED = re.compile(CONDITIONAL.pattern + r"|也许|可能|引用|据说|他说|她说|hypothetical|perhaps|maybe|quoted", re.I)
 UNFINISHED = re.compile(
     r"尚未|还没|未完成|没有完成|没通过|未通过|not (?:yet |been )?(?:done|complete|passed)|will |going to|计划|打算",
     re.I,

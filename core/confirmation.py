@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import re
 
-from .source_qualification import CLAUSE_BREAK, POLARITY
+from .source_qualification import CLAUSE_BREAK, CONDITIONAL, POLARITY
 
 #: Explicit adoption.  Deliberately narrow: these are phrases that name an act
 #: of keeping something, not general agreement.  "好的" and "ok" are absent on
@@ -66,14 +66,15 @@ CONFIRMATION = re.compile(
 )
 
 #: Phrases that look like confirmation but are not this person adopting it.
-#: A reported, hypothetical or interrogative "remember" belongs to somebody
-#: else's sentence, or to a question -- "should I remember this?" asks, it does
-#: not adopt, so any question mark disqualifies the whole utterance.
+#: A reported or interrogative "remember" belongs to somebody else's sentence,
+#: or to a question -- "should I remember this?" asks, it does not adopt, so any
+#: question mark disqualifies the whole utterance.  So does a condition or a
+#: supposition (``CONDITIONAL``): "要是测完了就记住这条" adopts nothing yet.
 NOT_CONFIRMATION = re.compile(
     r"不要记住|别记|不用记|先别记|不要保存|"
-    r"如果|假如|假设|除非|要不要|是否|吗[。.!?？！]?$|[?？]|"
+    r"要不要|是否|吗[。.!?？！]?$|[?？]|"
     r"他说|她说|他们说|客户说|同事说|引用|原文|举例|示例|"
-    r"\b(?:do\s*not|don[’']t|never)\s+remember\b|\b(?:if|unless|suppose|whether)\b|"
+    r"\b(?:do\s*not|don[’']t|never)\s+remember\b|\bwhether\b|"
     r"\b(?:he|she|they|someone|customer|colleague)\s+said\b|\bfor example\b",
     re.I,
 )
@@ -112,7 +113,7 @@ def adoption_clause(text: object) -> str | None:
     """
     if type(text) is not str or not text.strip():
         return None
-    if NOT_CONFIRMATION.search(text) or SELF_REPORT.search(text):
+    if NOT_CONFIRMATION.search(text) or CONDITIONAL.search(text) or SELF_REPORT.search(text):
         return None
     for clause in _clauses(text):
         if not CONFIRMATION.search(clause):

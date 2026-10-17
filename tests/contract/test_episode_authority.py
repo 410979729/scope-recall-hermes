@@ -26,6 +26,8 @@ def test_question_and_negated_failure_do_not_close_or_fail_episode(app):
         ("TEST 并非任务已经完成", "open"),
         ("TEST 不要再取消整个任务", "open"),
         ("TEST 没有任何失败", "open"),
+        ("TEST 要是周五前做完，整个任务完成", "open"),
+        ("TEST 万一来不及的话，整个任务取消", "open"),
         ("TEST 整个任务已经完成", "completed"),
     ],
 )

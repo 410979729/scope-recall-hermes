@@ -645,6 +645,29 @@ def test_M40_reminder_does_not_complete_intention(app, origin, text):
     assert attempt.state == "proposed" and core.current_claim(ctx, item.ref).payload["intention"]["state"] == "pending"
 
 
+def test_a_cancellation_or_an_acceptance_said_under_a_condition_proves_nothing(app):
+    core, ctx = app
+    item = accept(core, ctx, intention(capture(core, ctx, "TEST-project 验收前提醒检查散热。"))).items[0]
+    cancel = capture(core, ctx, "要是验收提前，TEST-project 散热检查约定就取消。", when="2026-09-03T12:00:00Z")
+    assert accept(core, ctx, intention(cancel, "cancelled")).items[0].state == "proposed"
+    assert core.current_claim(ctx, item.ref).payload["intention"]["state"] == "pending"
+    source = capture(core, ctx, "要是复测通过，TEST-project 验收前检查方法就认可，先检查温度，再验收。")
+    procedure = draft(
+        source,
+        "检查方法",
+        kind="procedure",
+        predicate="验收方法",
+        procedure=dict(
+            conditions=["验收前"],
+            non_applicable=[],
+            method=["先检查温度", "再验收"],
+            verification_basis="user_accepted",
+            counterexample_refs=[],
+        ),
+    )
+    assert accept(core, ctx, procedure).items[0].state == "proposed"
+
+
 def test_intention_actual_human_completion_and_procedure_evidence_are_qualified(app):
     core, ctx = app
     completed = capture(core, ctx, "TEST-project 散热检查已完成。")

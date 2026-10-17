@@ -437,6 +437,8 @@ def preserves_qualifiers(content, text, *, conditions=(), polarity_only=False):
 
 
 def asserted_marker(pattern, content):
-    return not AUTHORITY_QUESTION.search(content) and any(
+    """Whether ``content`` asserts one of ``pattern``'s markers: not asked, not under a condition or a supposition,
+    and with the marker's qualifiers kept."""
+    return not (AUTHORITY_QUESTION.search(content) or CONDITIONAL.search(content)) and any(
         preserves_qualifiers(content, match.group()) for match in pattern.finditer(content)
     )
