@@ -296,10 +296,17 @@ class RetrievalStorage(RetrievalHydration):
     # -- candidate channels ---------------------------------------------------
 
     def lexical(
-        self, tx, context: SearchContext, *, limit: int, within: tuple[tuple[str, str], ...] = ()
+        self,
+        tx,
+        context: SearchContext,
+        *,
+        limit: int,
+        within: tuple[tuple[str, str], ...] = (),
+        among: frozenset[str] | None = None,
     ) -> tuple[CandidateRef, ...]:
-        """Sources holding the query's terms, those holding most first; with ``within``, only those said within one of
-        its UTC ``[start, end)`` windows (``dated``)."""
+        """Sources holding the query's terms, those holding most first.  With ``within``, only those said within one
+        of its UTC ``[start, end)`` windows; with ``among``, only the terms it holds of those the plain statement
+        searches (``dated``), so no posting it would not group."""
         terms = meaningful_query_terms(context.query)
         if not terms:
             return ()
@@ -311,6 +318,12 @@ class RetrievalStorage(RetrievalHydration):
         requested = hard_identifiers(context.query)
         identifiers = tuple(term for term in terms if requested.intersection(hard_identifiers(term)))
         terms, cut = _searched_terms(tx, terms, keep=identifiers)
+        if among is not None:
+            terms, cut, identifiers = (
+                tuple(term for term in group if term in among) for group in (terms, cut, identifiers)
+            )
+            if not terms:
+                return ()
         # A synonym term matches as the query term it stands in for, so hits
         # and matched terms still count the query's own terms, once each.
         # Without a synonym the statement and its parameters are unchanged.
@@ -389,17 +402,22 @@ class RetrievalStorage(RetrievalHydration):
 
     def dated(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
         """Sources said within the time the question names (``context.time``) that hold enough of what else it asks
-        (``shares_enough``): the lexical statement for the question without its time, kept to that time.
+        (``shares_enough``): the lexical statement for the question, on the words of what else it asks alone, kept to
+        that time.  It searches none of the terms the plain statement leaves out, so it groups no posting that one
+        would not, and its windows drop the others before they are grouped.
 
         Weighed against the whole question, a note said on the day asked about is short of the words that name the
         day, which it never repeats ("September", "11"), and below the notes on its subject that hold more words; on
         a long-lived store the newest of those fill the lexical pool before it.
         """
         named = context.time
-        terms = frozenset(meaningful_query_terms(named.rest)) if named is not None else frozenset()
-        if named is None or not terms or limit <= 0:
+        # A question about what was said on its day is read in that day already (``scoped``).
+        if named is None or context.scope is not None or limit <= 0:
             return ()
-        found = self.lexical(tx, replace(context, query=named.rest), limit=limit, within=named.windows)
+        terms = frozenset(meaningful_query_terms(named.rest))
+        if not terms:
+            return ()
+        found = self.lexical(tx, context, limit=limit, within=named.windows, among=terms)
         held = [
             candidate
             for candidate in found

@@ -138,6 +138,49 @@ def test_a_note_of_the_time_asked_about_is_found_by_what_else_the_question_asks(
     assert lunch.ref not in refs and signed.ref not in refs
 
 
+def _steps(conn, call) -> tuple[int, tuple]:
+    """The SQLite virtual-machine steps ``call`` takes on ``conn``, and what it returns."""
+    steps = [0]
+
+    def count() -> int:
+        steps[0] += 1
+        return 0
+
+    conn.set_progress_handler(count, 1)
+    try:
+        found = call()
+    finally:
+        conn.set_progress_handler(None, 0)
+    return steps[0], found
+
+
+def test_the_dated_channel_does_no_more_work_than_the_plain_search(app):
+    """For the same question it searches only terms the plain lexical statement searches, kept to the time: over four
+    weeks of daily notes on one subject, asked about one day, it takes fewer SQLite steps, and what it finds matched
+    none of the words that name the day."""
+    core, ctx = app
+    for day in range(1, 29):
+        _note(
+            core,
+            ctx,
+            f"Orchard release status: build {day} passed its checks.",
+            f"2026-08-{day:02d}T10:00:00Z",
+            f"TEST-time/build-{day}",
+        )
+    query = "Orchard release status on August 3?"
+    context = SearchContext.from_request(
+        recall_request(query=query, mode="auto"), ctx, now=core.clock.utc_now(), deadline=time.monotonic() + 30
+    )
+    timed = replace(context, time=query_time(query, now=context.now, zone=UTC))
+    reader = core.recall_pipeline.storage_reader
+    with core.storage.read(ctx) as tx:
+        plain, everything = _steps(tx._check(), lambda: reader.lexical(tx, timed, limit=48))
+        dated, of_the_day = _steps(tx._check(), lambda: reader.dated(tx, timed, limit=12))
+    assert len(everything) == 28 and len(of_the_day) == 1
+    assert dated < plain
+    assert {"august"}.isdisjoint(of_the_day[0].matched_query_terms)
+
+
 def test_the_identifier_a_day_is_written_with_is_not_asked_of_its_notes(app):
     """ "on the 2nd" holds an identifier ("2nd") that every other candidate has to repeat; a note found within the
     time it names does not, since its time is what the identifier says."""
