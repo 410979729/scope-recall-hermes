@@ -1381,9 +1381,8 @@ def test_an_empty_hermes_home_a_store_began_with_detaches_and_its_clients_keep_t
 
 
 def test_a_client_captures_only_where_every_attached_owner_row_reads_a_client_s_included(tmp_path, capsys, root):
-    """The scope a later client captures into must be read by the owner rows of every attached entry: here every
-    Hermes owner row reads it and only the first client's does not, and that alone refuses.  An entry whose owner rows
-    capture into two scopes names none to capture like."""
+    """A later client's capture scope is refused when an attached client's owner row does not read it, though every
+    Hermes owner row does, and so is an entry to capture like whose owner rows capture into two scopes."""
     homes = _client_homes(tmp_path, "workbuddy", "dsh")
     code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
     assert code == 0, result
