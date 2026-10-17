@@ -54,16 +54,34 @@ not. An epoch move alone refuses nothing, since every capture moves it; it is no
 count of visible items either.
 Text already delivered to the host lies outside a later local transaction.
 
-Physical SQLite cleanup runs separately after online blocking, under the store's
-writer boundary. It clears active raw content, source keys/extras, Claim payloads,
-evidence quotations/locations and lexical rows. Minimal opaque dependency IDs and
-governance records remain, with digests of the deleted words (as stored, without
-whitespace, and their letters and digits) by which a later copy under the message's
-key is refused. A cleanup failure rolls back physical changes while the
-earlier read block remains effective. SQLite history, vector active/history files,
+Physical SQLite cleanup runs separately after online blocking, in the worker's purge
+work, under the store's writer boundary. It clears active raw content, source
+keys/extras, Claim payloads, evidence quotations/locations and lexical rows: the
+source's postings, the index terms no other source holds and a deleted candidate's
+trigger terms. Minimal opaque dependency IDs and governance records remain, with
+digests of the deleted words (as stored, without whitespace, and their letters and
+digits) by which a later copy under the message's key is refused. A cleanup failure
+rolls back physical changes while the earlier read block remains effective.
+
+Every write to the store overwrites with zeros what it deletes or replaces (SQLite's
+`secure_delete`), so the free space of a page keeps no copy: neither what the cleanup
+replaced nor the inbox row a stored capture leaves. Once the cleanup has committed,
+the purge copies the write-ahead log into the store and truncates it to zero bytes
+(`wal_checkpoint(TRUNCATE)`): no page image from before the cleanup is then left in
+`memory.sqlite3` or `memory.sqlite3-wal` (`memory.sqlite3-shm` holds no page), and
+the receipt's `sqlite_history` layer reads `removed`. A reader still on an older
+snapshot holds the truncation back; the purge waits for it no longer than the
+store's timeout, leaves `sqlite_history` at `pending` and stays queued for a later
+worker pass, and is done once every layer it removes is removed. The vector
+companions hold vectors and opaque identities, no text. Vector active/history files,
 attachments, backup inventory and host-owned sources each retain their actual
-pending, unknown or external state. No SSD erasure or complete physical removal is
-claimed: the cleanup runs no checkpoint or VACUUM and takes no file inventory.
+pending, unknown or external state.
+
+A purge does not remove what lies outside the store's files: backups and their
+copies, text already delivered to a host, and what a storage device keeps of blocks
+that were overwritten or released; no SSD erasure is claimed. Nor does it reach what
+an earlier release's writes left in free space without overwriting it, such as the
+inbox row of a capture that release stored.
 
 Restore admission is an explicit installation maintenance capability, separate
 from an ordinary `TrustedContext`, even when that context contains all scopes.
