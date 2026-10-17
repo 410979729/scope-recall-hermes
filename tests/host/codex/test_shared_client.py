@@ -1579,8 +1579,9 @@ def test_a_late_answer_leaves_the_prompt_stored_once(resident, small_reserve, mo
 
     from scope_recall.adapters.clients import handler as handler_module
 
-    # A real entry's 6 s: on the 2 s default, a slow runner's write of the prompt left no time to ask the server.
-    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 6.0)
+    # Room for the slowest write of a prompt seen on a Windows runner (6.5 s) before the hook asks the held server:
+    # what is under test is a server that answers after the hook stopped waiting, not a real entry's budget.
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 20.0)
     root, client, endpoint = resident
     release, finished = threading.Event(), []
     calls = _counted(endpoint, monkeypatch, hold=release, finished=finished)
@@ -3935,8 +3936,9 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_rese
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
-    # A real entry's 6 s: on the 2 s default, a slow runner's write of the prompt left no time to ask the server.
-    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 6.0)
+    # Room for the slowest write of a prompt seen on a Windows runner (6.5 s) before the hook asks the held server:
+    # what is under test is a server that answers after the hook stopped waiting, not a real entry's budget.
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 20.0)
     root, home, _projects = workbuddy
     endpoint = local_endpoint.serve(home, "workbuddy", warm=False)
     assert endpoint is not None
@@ -3956,7 +3958,7 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_rese
         elapsed = time.monotonic() - started
         captured = capsys.readouterr()
         # No runtime config names a budget here: the hook's own (``_TOTAL_BUDGET_S``).
-        assert elapsed < 6.0 + 1.0, f"the hook took {elapsed:.1f} s of its 6 s"
+        assert elapsed < 20.0 + 1.0, f"the hook took {elapsed:.1f} s of its 20 s"
         assert not captured.out or "additionalContext" in json.loads(captured.out)["hookSpecificOutput"]
         assert "CODEX_RECALL_RESIDENT:late" in captured.err
         assert len(calls) == 1
