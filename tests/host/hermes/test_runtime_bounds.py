@@ -1205,14 +1205,20 @@ def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_e
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "slow-call", "TEST tool output slow")
     real = provider._core.record_host_event
-    entered, release, writers = threading.Event(), threading.Event(), []
+    entered, release, written, writers = threading.Event(), threading.Event(), threading.Event(), []
 
     def record_host_event(context, event, **kwargs):
-        if "slow-call" in event["source_event_key"]:
-            writers.append(threading.current_thread().name)
-            entered.set()
-            release.wait(10)
-        return real(context, event, **kwargs)
+        if "slow-call" not in event["source_event_key"]:
+            return real(context, event, **kwargs)
+        writers.append(threading.current_thread().name)
+        entered.set()
+        release.wait(10)
+        # Released, the replay's write has the time it takes on this store, whatever that is: given only the retry's
+        # second, a slow store leaves it queued or lost.  What is tested is who writes it and that its end is said.
+        try:
+            return real(context, event, **{**kwargs, "remaining_seconds": 60.0})
+        finally:
+            written.set()
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.02)
@@ -1222,6 +1228,7 @@ def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_e
     assert shut.wait(_PROMPTLY), "the shutdown waited out the replay"
     release.set()
     shut_thread.join(_PROMPTLY)
+    assert written.wait(60), "the replay's write did not end"
     assert _until(lambda: any("stored on retry" in record.getMessage() for record in caplog.records))
     assert writers == ["scope-recall-capture-retry"], writers
     assert _tool_rows(hermes_home) == 1
