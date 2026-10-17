@@ -788,6 +788,11 @@ def test_a_prompt_still_in_the_inbox_is_not_stored_again_from_the_record(store, 
 
 
 def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch):
+    from scope_recall.adapters.clients import handler as handler_module
+
+    # Room for every message of the record to be written in one hook however slow the runner: what is written and
+    # when, not the budget, is under test.  On the 2 s default a slow runner left the last ones for a later stop.
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 30.0)
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
