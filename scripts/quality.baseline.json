@@ -348,7 +348,6 @@
    "C901": {
     "ensure_resident": 16
    },
-   "E501": 1,
    "PLR0911": {
     "Recaller._exchange": 11,
     "ensure_resident": 12
