@@ -46,8 +46,9 @@ CAPTURE_TIMEOUT_S = 1.0
 #: The owner's own message may wait longer for the writer lease: another agent's long reply can hold it 1-2 s
 #: while it is matched against the candidates, and on one machine's first day 12 of its 55 prompts
 #: waited their one second and were not stored.  It takes at most half of what the hook has left, and never
-#: less than the one second every other capture waits, so a 6 s budget waits 2 s and a 2 s one still 1 s.
-_PROMPT_CAPTURE_TIMEOUT_S = 2.0
+#: less than the one second every other capture waits, so a 6 s budget waits 2 s and a 2 s one still 1 s.  The
+#: core a hook writes through lets a write wait this long (``handler``).
+PROMPT_CAPTURE_TIMEOUT_S = 2.0
 #: Attaching the trusted runtime after a capture needs this much budget left.
 RUNTIME_ATTACH_MIN_S = 0.3
 
@@ -124,7 +125,7 @@ class HookEvents:
         if event is not None and attachment_refs:
             event["artifact_refs"] = attachment_refs
         context = self._hook.context(audience, session_id, "human_direct")
-        wait = min(_PROMPT_CAPTURE_TIMEOUT_S, max(CAPTURE_TIMEOUT_S, self._hook.remaining(deadline) / 2))
+        wait = min(PROMPT_CAPTURE_TIMEOUT_S, max(CAPTURE_TIMEOUT_S, self._hook.remaining(deadline) / 2))
         current_refs, capture_gaps = self._hook.capture(
             context, audience, event, deadline=deadline, gaps=gaps, wait=wait
         )

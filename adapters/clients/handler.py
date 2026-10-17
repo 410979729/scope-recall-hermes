@@ -26,7 +26,7 @@ from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfi
 from .hook_answer import (
     HookDiagnostics,
 )
-from .hook_events import CAPTURE_TIMEOUT_S, RUNTIME_ATTACH_MIN_S, HookEvents
+from .hook_events import CAPTURE_TIMEOUT_S, PROMPT_CAPTURE_TIMEOUT_S, RUNTIME_ATTACH_MIN_S, HookEvents
 from .identity import resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
 from .record_reader import RecordLines, RecordReader
@@ -93,6 +93,14 @@ class HookCall:
         return self.persisted or self.queued
 
 
+def _hook_core(config: CodexInstallationConfig | SharedClientConfig, clock: HookClock | None) -> MemoryCore:
+    """The core a hook captures through until its trusted runtime attaches: its writes may wait for the writer lease as
+    long as the owner's prompt asks (``PROMPT_CAPTURE_TIMEOUT_S``); every other capture asks for its 1 s.  A store waits
+    no longer than its core's write timeout, whatever a capture asks, and at the default 1 s a prompt that met a lease
+    held longer would not be stored."""
+    return MemoryCore(CoreConfig(config.to_binding(), write_timeout_seconds=PROMPT_CAPTURE_TIMEOUT_S), clock=clock)
+
+
 class CodexHookHandler:
     """Stateless per-process handler; durable idempotence lives in core SQLite."""
 
@@ -113,7 +121,7 @@ class CodexHookHandler:
                 raise CodexConfigError("injected core mismatch")
             self.core = host_runtime.core
         elif core is None:
-            self.core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+            self.core = _hook_core(config, clock)
         else:
             if core.config.binding != config.to_binding():
                 raise CodexConfigError("injected core binding mismatch")
@@ -157,7 +165,7 @@ class CodexHookHandler:
         if host_runtime is None and core is None:
             # Capture uses a basic Core first.  Trusted runtime attach
             # (Lance/aux/worker) waits until after a durable Source commit.
-            core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+            core = _hook_core(config, clock)
             handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
             handler._pending_runtime_config_path = trusted_runtime_config_path
             return handler
@@ -189,7 +197,7 @@ class CodexHookHandler:
         ``clock``'s time for when it stored them.
         """
         config = load_shared_client(home, host)
-        core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+        core = _hook_core(config, clock)
         handler = cls(
             config, core=core, clock=event_clock if event_clock is not None else clock, hook_started_at=hook_started_at
         )

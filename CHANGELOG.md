@@ -19,6 +19,8 @@ longer text this file once held is in its history.
 
 **dsh: a turn's reply sent again was stored twice.** dsh's plugin sends a turn's reply with each `Stop` that carries the reply's line, so it goes again with the next `Stop` when one ran out of time before all of the turn's lines were stored, and with a later pass over what a failed store left. The reply was dated by each hook's moment, and the store took the one sent again for another message under the turn's key: it was refused (`VERSION_CONFLICT`) at the cost of that `Stop`'s time, which on a busy store left none for the turn's lines and sent the plugin into its longer waits, and it stayed in the capture inbox until the store's worker stored it a second time under a key of its own. The reply is now dated by its own line, and one sent again is the reply already stored.
 
+**The owner's prompt gave up on a busy store after 1 s.** Another agent's long reply can hold the store's writer lease for a second or two, so a prompt's hook waits up to 2 s for it, where every other capture waits 1 s. The store's own wait of 1 s ended it first, and a prompt that met a lease held longer was not stored by its hook: Claude Code, WorkBuddy and dsh stored it from the turn's record at its end, a Codex client on another machine sent it again, and a Codex client on this machine lost it. A hook's writes now wait as long as its capture asks.
+
 ### Upgrading from 3.10.6
 
 Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110).

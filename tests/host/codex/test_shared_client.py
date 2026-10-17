@@ -1373,6 +1373,54 @@ def test_a_prompt_the_store_could_not_take_is_still_recalled_by_meaning(store, m
         refused.close()
 
 
+#: Another process of the store's: it holds the store's writer lease until a line comes on its stdin.
+_LEASE_HOLDER = """
+import sys
+
+from scope_recall.core.writer_lease import TruthWriterLease
+
+lease = TruthWriterLease(sys.argv[1], role="provider")
+assert lease.acquire()["status"] == "acquired"
+print("holding", flush=True)
+sys.stdin.readline()
+lease.release()
+"""
+
+
+def test_the_owner_s_prompt_waits_out_a_writer_lease_another_process_holds_past_a_second(store):
+    """Another agent's long reply can hold the writer lease 1-2 s, so the owner's prompt waits up to 2 s for it on a
+    6 s budget, where every other capture waits 1 s.  The store's own 1 s ended that wait first: a prompt that met a
+    lease held 1.3 s was not stored."""
+    import threading
+
+    root, _homes, client, _capture = store
+    # A runtime config that names no budget: the entry's 6 s, as a real entry's hooks run.
+    (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"resident_recall_minutes": 0}), "utf-8")
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+
+    def release():
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+
+    try:
+        assert holder.stdout.readline().strip() == "holding"
+        hook = _hook(client)
+        # Let go 1.3 s after the hook starts: past the 1 s, within the prompt's 2 s, however late its capture begins.
+        timer = threading.Timer(1.3, release)
+        timer.start()
+        try:
+            hook.handle_payload(_prompt("TEST 等写锁让开的一句。", prompt_id="TEST-prompt-lease"))
+        finally:
+            timer.join()
+            hook.close()
+    finally:
+        holder.communicate(timeout=30)
+    assert (hook.diagnostics.capture_stage, hook.diagnostics.capture_error_type) == ("source_committed", None)
+    assert _user_rows(root) == [("TEST 等写锁让开的一句。",)]
+
+
 def test_a_prompt_whose_capture_failed_before_the_secret_screen_still_keeps_a_credential_from_the_vectors(
     store, monkeypatch
 ):
