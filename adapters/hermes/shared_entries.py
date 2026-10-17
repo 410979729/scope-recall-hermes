@@ -341,8 +341,9 @@ def client_entry_record(
     A client names no user, like the Hermes CLI, so attaching it is the operator's
     statement that whoever types into it here is the owner: the owner principal
     ``(host, "local")`` and one owner row on that route.  The scopes are ones the store
-    already registers (``maintenance/shared.py`` takes them from the Hermes entries'
-    owner rows), so no other entry's binding changes.
+    already registers (``maintenance/shared.py`` takes them from the owner rows of the
+    entries already attached), so no other entry's binding changes; the store's first
+    client brings the owner scope of a fresh installation, as a Hermes home does its own.
     """
     if host not in CLIENT_HOSTS:
         raise HermesIdentityError(f"a client entry's host is one of {', '.join(CLIENT_HOSTS)}")
@@ -405,6 +406,11 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
     store = Path(str(root)).expanduser().resolve()
     payload = read_shared_payload(store)
     home = Path(record["home"])
+    # Another home's pointer is read here without that home's lock.  A pointer is written to name this store only by
+    # an attach to it, which holds the store's lock as this one does (``maintenance/shared.py``), and is removed from it
+    # only by a detach holding that lock too: while this one runs, another command can only point such a home away from
+    # this store.  Read before that, the pointer refuses this attach, which a run again lets through; two homes never
+    # come to hold one entry.
     for entry in payload["entries"]:
         if (
             entry["entry_id"] == record["entry_id"]
@@ -457,7 +463,7 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
 
 # -- an attached entry's grants ---------------------------------------------------------
 #
-# An entry keeps the grants it was attached with until the operator changes them here (#246): its record's
+# An entry keeps the grants it was attached with until the operator changes them here: its record's
 # owner principals, the capture scope of each audience kind, and its exact audience rows.  ``entry_grants`` gives
 # them as a document to edit, ``regranted`` checks an edited one as attach checks a record, and the
 # command writes the manifest it returns (``maintenance/shared.py``).  What the store holds keeps its scopes; only
@@ -465,6 +471,39 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
 
 GRANTS_SCHEMA = "scope-recall.entry-grants/1"
 _GRANT_FIELDS = ("owner_principals", "audience_scopes", "audiences")
+
+
+def attached_again(
+    payload: dict[str, Any],
+    *,
+    entry_id: str,
+    host: str,
+    home: Path,
+    display_name: str,
+    attached_at: str,
+    python_executable: str | None = None,
+) -> dict[str, Any] | None:
+    """The record an attach writes for ``home`` when the store whose manifest ``payload`` is holds it attached as
+    ``entry_id`` already, for ``host``; ``None`` when it does not.
+
+    The entry keeps the grants it holds: an attach run again finishes or repeats the first, or points the home at a
+    store moved elsewhere, and grants taken anew, from an installation or like other entries, would undo a change made
+    since (``regranted``).  Its name, moment and interpreter are this attach's.
+    """
+    for entry in payload["entries"]:
+        if (
+            entry["entry_id"] == entry_id
+            and entry["host"] == host
+            and not entry.get("detached_at")
+            and _same_path(entry["home"], home)
+        ):
+            record = {name: value for name, value in entry.items() if name != "python_executable"}
+            record["display_name"] = _display_name(display_name)
+            record["attached_at"] = bounded_text(attached_at, field="attached_at")
+            if python_executable is not None:
+                record["python_executable"] = bounded_text(python_executable, field="python_executable")
+            return record
+    return None
 
 
 def _attached(hermes_home: Path | str) -> tuple[Path, dict[str, Any], dict[str, Any]]:
