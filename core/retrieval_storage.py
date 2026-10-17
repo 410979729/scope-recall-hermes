@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Iterable, cast
 
@@ -27,6 +27,7 @@ from .recall_policy import (
     hard_identifiers,
     meaningful_query_terms,
     query_is_relevant,
+    shares_enough,
     synonym_expansions,
 )
 from .recall_scope import says_something
@@ -294,7 +295,11 @@ class RetrievalStorage(RetrievalHydration):
 
     # -- candidate channels ---------------------------------------------------
 
-    def lexical(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
+    def lexical(
+        self, tx, context: SearchContext, *, limit: int, within: tuple[tuple[str, str], ...] = ()
+    ) -> tuple[CandidateRef, ...]:
+        """Sources holding the query's terms, those holding most first; with ``within``, only those said within one of
+        its UTC ``[start, end)`` windows (``dated``)."""
         terms = meaningful_query_terms(context.query)
         if not terms:
             return ()
@@ -331,6 +336,8 @@ class RetrievalStorage(RetrievalHydration):
         if context.as_of is not None:
             as_of = " AND (e.occurred_at IS NULL OR e.occurred_at<=?)"
             params.append(context.as_of)
+        said = " AND (" + " OR ".join("(e.occurred_at>=? AND e.occurred_at<?)" for _ in within) + ")" if within else ""
+        params.extend(bound for window in within for bound in window)
         # The statement starts from the query's terms.  A store keeps no planner statistics, so SQLite weighs the terms
         # against the scopes by rule of thumb, and with a long enough query it started from the scope index instead:
         # every event of the audience read one by one, 21 s for a Telegram message of 72 characters on the shared
@@ -346,7 +353,7 @@ class RetrievalStorage(RetrievalHydration):
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.event_id AND b.read_blocked=1)
-                  {current}{as_of}
+                  {current}{as_of}{said}
                 GROUP BY e.event_id,e.source_revision
                 ORDER BY CASE
                     WHEN e.role='tool' AND (
@@ -379,6 +386,26 @@ class RetrievalStorage(RetrievalHydration):
                 )
             )
         return tuple(candidates)
+
+    def dated(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
+        """Sources said within the time the question names (``context.time``) that hold enough of what else it asks
+        (``shares_enough``): the lexical statement for the question without its time, kept to that time.
+
+        Weighed against the whole question, a note said on the day asked about is short of the words that name the
+        day, which it never repeats ("September", "11"), and below the notes on its subject that hold more words; on
+        a long-lived store the newest of those fill the lexical pool before it.
+        """
+        named = context.time
+        terms = frozenset(meaningful_query_terms(named.rest)) if named is not None else frozenset()
+        if named is None or not terms or limit <= 0:
+            return ()
+        found = self.lexical(tx, replace(context, query=named.rest), limit=limit, within=named.windows)
+        held = [
+            candidate
+            for candidate in found
+            if shares_enough(len(terms.intersection(candidate.matched_query_terms or ())), len(terms))
+        ]
+        return tuple(replace(candidate, source="dated", rank=index) for index, candidate in enumerate(held, 1))
 
     def claims(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
         """Claims whose own statement answers the query.

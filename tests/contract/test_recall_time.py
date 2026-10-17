@@ -1,5 +1,5 @@
-"""A question that names a time ranks what was said then first (core/recall_scope.py ``query_time``,
-``RetrievalPipeline._rank_hydrated``).
+"""A question that names a time ranks what was said then first, and searches that time for its other words
+(core/recall_scope.py ``query_time``, ``RetrievalPipeline._rank_hydrated``, ``RetrievalStorage.dated``).
 
 Notes on one subject said on several days share every word of a question about one of those days, and by words alone
 the newest came first.  What was said within the time goes first; what was said at other times is still delivered,
@@ -101,3 +101,29 @@ def test_the_answer_said_on_another_day_is_still_delivered(app):
     _note(core, ctx, "Lunch at noon with the design team.", "2026-09-03T12:00:00Z", "TEST-time/lunch")
     assert _refs(core, ctx, "Orchard release status on September 3?") == _refs(core, ctx, "Orchard release status?")
     assert {note.ref for note in notes} <= set(_refs(core, ctx, "Orchard release status on September 3?"))
+
+
+def test_a_note_of_the_time_asked_about_is_found_by_what_else_the_question_asks(app):
+    """ "What did I say about the Orchard release on September 2?" holds four words a note can answer by, and the
+    note of that day holds two of them: searched by words, the question would need three.  Within the time it names,
+    two of what else it asks find it; a note of another day that holds the same two does not come, nor does a note
+    of the day that shares one word."""
+    core, ctx = app
+    cut = _note(
+        core, ctx, "We cut the Orchard release branch and froze the schema.", "2026-09-02T10:00:00Z", "TEST-time/cut"
+    )
+    lunch = _note(core, ctx, "Lunch with the Orchard team.", "2026-09-02T12:00:00Z", "TEST-time/lunch")
+    signed = _note(core, ctx, "QA signed off on the Orchard release candidate.", "2026-09-05T10:00:00Z", "TEST-time/qa")
+    assert cut.ref not in _refs(core, ctx, "What did I say about the Orchard release?")
+    refs = _refs(core, ctx, "What did I say about the Orchard release on September 2?")
+    assert refs[:1] == [cut.ref]
+    assert lunch.ref not in refs and signed.ref not in refs
+
+
+def test_the_identifier_a_day_is_written_with_is_not_asked_of_its_notes(app):
+    """ "on the 2nd" holds an identifier ("2nd") that every other candidate has to repeat; a note found within the
+    time it names does not, since its time is what the identifier says."""
+    core, ctx = app
+    plan = _note(core, ctx, "Orchard release plan: ship on Thursday.", "2026-09-02T10:00:00Z", "TEST-time/plan")
+    _note(core, ctx, "Orchard release plan: wait for QA.", "2026-09-04T10:00:00Z", "TEST-time/later-plan")
+    assert _refs(core, ctx, "What was the Orchard release plan on the 2nd?")[:1] == [plan.ref]

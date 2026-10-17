@@ -348,9 +348,16 @@ def query_is_relevant(query: str, content: str) -> bool:
     overlap = len(q.intersection(lexical_terms(content)))
     if hard_identifiers(query).intersection(hard_identifiers(content)):
         return True
-    if len(q) == 1:
+    return shares_enough(overlap, len(q))
+
+
+def shares_enough(overlap: int, terms: int) -> bool:
+    """Whether ``overlap`` of a query's ``terms`` meaningful terms is enough for a source something else already
+    narrowed down, as the session for its recent messages or the time a question names: one of one, else two and
+    three in ten."""
+    if terms == 1:
         return overlap == 1
-    return overlap >= max(2, math.ceil(len(q) * 0.30))
+    return overlap >= max(2, math.ceil(terms * 0.30))
 
 
 def _specificity_required(term_count: int) -> int:

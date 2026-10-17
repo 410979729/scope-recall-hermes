@@ -1,12 +1,13 @@
 """What a question names of when, and of which entry: the time recall ranks by, and a scope it can read directly.
 
 "What did I say about the Orchard release on September 18?" names a subject and a day, and every note on the subject
-holds its words: by words alone the newest note comes first.  The time a question names (``query_time``) is a day, a
-range of days, a month, last or this week, the last few days, or the days before or since one of them, each a run of
-whole days up to today.  It is read for any question, and it only ranks: what was said in it goes before what was said
-at other times (``RetrievalPipeline._rank_hydrated``), none of which is left out, since it often answers.  It is read
-by rule and only from what a question plainly writes, since a time misread moves the answer down; a question that
-names no time has none, and is recalled as if this reading did not exist.
+holds its words: by words alone the newest note comes first, and one of that day holding fewer of them may not come at
+all.  The time a question names (``query_time``) is a day, a range of days, a month, last or this week, the last few
+days, or the days before or since one of them, each a run of whole days up to today.  It is read for any question, and
+it only adds: the time is searched for what else the question asks (``RetrievalStorage.dated``), and what was said in
+it goes before what was said at other times (``RetrievalPipeline._rank_hydrated``), none of which is left out, since
+it often answers.  It is read by rule and only from what a question plainly writes, since a time misread moves the
+answer down; a question that names no time has none, and is recalled as if this reading did not exist.
 
 "9月29日工作机 Claude Code 聊了什么" asks for one entry's conversation on one day.  Searched by its words, the date and
 the entry's name match nothing useful ("聊了", "工作", "29") and the recall answers from other days and other entries:

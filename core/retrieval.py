@@ -19,7 +19,7 @@ from .recall_scope import QueryScope, QueryTime
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
 CandidateChannel = Literal[
-    "lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background", "scoped"
+    "lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background", "scoped", "dated"
 ]
 RecallMode = Literal["auto", "current", "history", "as_of", "method"]
 Coverage = Literal["complete_for_query", "partial", "unknown"]
@@ -112,7 +112,7 @@ class SearchContext:
     #: The days and entries the question names, read once the store's entries are known (``RetrievalPipeline``).
     scope: QueryScope | None = None
     #: The time the question names (``recall_scope.query_time``), read once (``RetrievalPipeline``): what was said
-    #: then ranks first.
+    #: then ranks first, and is searched for the question's other words (``RetrievalStorage.dated``).
     time: QueryTime | None = None
     #: Since when the asking host's model still holds this session's own turns word for word: its last compaction,
     #: or the session's start when it has had none.  An automatic recall leaves out what stands only on those turns
@@ -230,6 +230,7 @@ class CandidateRef:
             "relation",
             "background",
             "scoped",
+            "dated",
         }:
             raise ContractError("INPUT_INVALID", "candidate_source")
         if type(self.rank) is not int or self.rank < 1:
