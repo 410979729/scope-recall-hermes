@@ -57,14 +57,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+CHECKOUT = HERE.parents[1]
 for _folder in (HERE, HERE.parent / "known_answer", HERE.parent / "contract"):
     if str(_folder) not in sys.path:
         sys.path.insert(0, str(_folder))
+# The package is the checkout this file sits in, bound as tests/conftest.py binds it for the suite: what a run
+# measures and records is never an installed copy, which may be older.  One bound already elsewhere -- imported
+# before this file loaded -- is refused, not measured.
 if "scope_recall" not in sys.modules:
-    # The package is the checkout this file sits in, bound as tests/conftest.py binds it for the suite: what a run
-    # measures and records is never an installed copy, which may be older.
     sys.modules["scope_recall"] = types.ModuleType("scope_recall")
-    sys.modules["scope_recall"].__path__ = [str(HERE.parents[1])]
+    sys.modules["scope_recall"].__path__ = [str(CHECKOUT)]
+_BOUND = [Path(entry).resolve() for entry in getattr(sys.modules["scope_recall"], "__path__", ())]
+if _BOUND != [CHECKOUT]:
+    raise ImportError(
+        f"scope_recall is bound to {[str(entry) for entry in _BOUND]}, not this checkout ({CHECKOUT}): the bench"
+        " measures and records only the code beside it"
+    )
 
 from bench_world import TASKS, Question, World, build_world, local_day  # noqa: E402
 from recall_invariants_check import DIMS, VECTOR_THRESHOLD  # noqa: E402

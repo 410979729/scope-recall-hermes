@@ -20,7 +20,7 @@ import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -260,6 +260,19 @@ def test_a_claim_walk_the_collection_may_have_cut_short_fails_the_run(bench) -> 
         cut_short.active_claims_on()
     resumed = _history_store(bench, [[_version("claim-a")], [_version("claim-b")], [_version("claim-c")]], slow={1})
     assert resumed.active_claims_on() == {"answer": 0, "negated": 3}
+
+
+def test_the_runner_measures_no_package_but_the_checkout_it_sits_in(monkeypatch) -> None:
+    """A ``scope_recall`` already bound elsewhere when the runner loads (an installed copy, imported first) would be
+    what it measures and records: it refuses to load."""
+    elsewhere = ModuleType("scope_recall")
+    elsewhere.__path__ = [str(HERE / "site-packages" / "scope_recall")]
+    monkeypatch.setitem(sys.modules, "scope_recall", elsewhere)
+    spec = importlib.util.spec_from_file_location("recall_bench_elsewhere", HERE / "recall_bench.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    with pytest.raises(ImportError, match="not this checkout"):
+        spec.loader.exec_module(module)
 
 
 def test_ndcg_weighs_each_delivered_item_once(bench) -> None:
