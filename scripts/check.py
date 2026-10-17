@@ -105,14 +105,22 @@ def distribution_is_installed(python_executable: str | None = None) -> bool:
 
 
 def packaging_helper_env(tier: str) -> dict[str, str]:
-    """Authorize the same declared uv helper root for every tier whose runs may drive the packaging helpers."""
+    """Authorize the same declared uv helper root for every tier whose runs may drive the packaging helpers.
+
+    A uv named by ``SCOPE_RECALL_UV`` goes into the run too: the tests take that one before they search ``PATH``, and
+    a ``PATH`` with another uv first would hand them one outside the root authorized here.
+    """
 
     if "build" not in TIER_ALLOWS.get(tier, frozenset()):
         return {}
-    packaging_uv = os.environ.get("SCOPE_RECALL_UV") or shutil.which("uv") or _DEFAULT_PACKAGING_UV
+    declared = os.environ.get("SCOPE_RECALL_UV")
+    packaging_uv = declared or shutil.which("uv") or _DEFAULT_PACKAGING_UV
     if not packaging_uv:
         return {}
-    return {"SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS": str(Path(packaging_uv).resolve().parent)}
+    env = {"SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS": str(Path(packaging_uv).resolve().parent)}
+    if declared:
+        env["SCOPE_RECALL_UV"] = declared
+    return env
 
 
 def node_helper_env(tier: str) -> dict[str, str]:

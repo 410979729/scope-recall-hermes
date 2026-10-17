@@ -212,6 +212,34 @@ def test_a_tier_gets_the_helpers_the_table_lets_it_use(tier) -> None:
     assert (check.node_helper_env(tier) != {}) <= ("node" in allows)
 
 
+def test_a_declared_uv_goes_into_the_runs_that_drive_it(monkeypatch, tmp_path: Path) -> None:
+    """The packaging tests take the uv ``SCOPE_RECALL_UV`` names before they search ``PATH``, and the run authorizes
+    the directory of that uv; a run handed only ``PATH`` would find another uv first, outside that directory."""
+    uv = tmp_path / "declared" / "uv"
+    uv.parent.mkdir()
+    uv.write_bytes(b"")
+    monkeypatch.setenv("SCOPE_RECALL_UV", str(uv))
+
+    for tier in ("packaging", "release"):
+        env = check.packaging_helper_env(tier)
+        assert env["SCOPE_RECALL_UV"] == str(uv)
+        assert env["SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS"] == str(uv.parent.resolve())
+    for tier in ("unit", "native", "host"):
+        assert check.packaging_helper_env(tier) == {}
+    run = tmp_path / "run"
+    run.mkdir()
+    assert check._test_environment("packaging", run)["SCOPE_RECALL_UV"] == str(uv)
+
+
+def test_a_run_without_a_declared_uv_is_handed_none(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("SCOPE_RECALL_UV", raising=False)
+    run = tmp_path / "run"
+    run.mkdir()
+
+    assert "SCOPE_RECALL_UV" not in check.packaging_helper_env("packaging")
+    assert "SCOPE_RECALL_UV" not in check._test_environment("packaging", run)
+
+
 def test_the_guard_takes_what_a_tier_may_do_from_the_table() -> None:
     """A second copy of the table in the guard would let the runner select what the guard then refuses."""
     tree = ast.parse((ROOT / "tests" / "v11_guard.py").read_text(encoding="utf-8"))
