@@ -88,7 +88,7 @@ without a restart. A command that writes the store (`init-shared`, `attach`, `de
 to its last write, so no other writes in between. One that finds it held waits up to 10 s, then
 writes nothing and names the command that holds it: run it again once that one has finished. An
 `attach` run again from a home already attached (one that stopped, or after `adopt`) keeps the
-entry's grants as they are
+entry's grants as they are and needs no grant options
 ([Changing an entry's grants](#changing-an-entrys-grants)).
 
 ## Bringing an agent's memories along
@@ -335,10 +335,11 @@ and the shared worker's registration.
 
 An entry keeps the grants it was attached with: its owner principals, the capture scope of each
 audience kind, and its exact audience rows. An `attach` run again from the entry's home keeps them
-too, a change made here included, and uses none of the grants it was given (`--grants-from`,
-`--grants-like`); when those differ from the entry's, its result says so (`grants_kept`). To add a
-route (a gateway DM of the owner), let a row read another scope (a conversation another route
-captured into, or an older scope), or take a row away, change them from an edited copy:
+too, a change made here included, with or without other entries attached, and needs none of the
+options grants are taken from (`--grants-from`, `--grants-like`, `--capture-like`); given, they are
+not used, and its result says so (`grants_kept`). To add a route (a gateway DM of the owner), let a
+row read another scope (a conversation another route captured into, or an older scope), or take a
+row away, change them from an edited copy:
 
 ```text
 scope-recall grants --instance-root <home> --out D:\grants-desk.json

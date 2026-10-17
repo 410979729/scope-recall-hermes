@@ -1554,42 +1554,66 @@ def test_each_command_that_writes_the_store_waits_for_its_lock_and_changes_nothi
     assert ((root / "installation.json").read_bytes(), read_attachment(home)) == (manifest, pointer)
 
 
+def _a_group_row(document):
+    """A grants change: a group chat on the owner row's route, reading what it reads."""
+    owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+    group = dict(owner, kind="conversation", chat_type="group", chat_id="TEST-group")
+    document["audiences"].append(dict(group, writable_scope_ids=[], capture_scope_id=""))
+
+
+def _kept(result):
+    return any(note.startswith("grants_kept:") for note in result.get("notes", ()))
+
+
 def test_a_home_attached_again_as_its_entry_keeps_the_grants_it_was_given_since(tmp_path, capsys, root):
     """An attach run again for a home already attached as its entry, a store's only client or a Hermes home, repeats
-    the first: the entry keeps its grants, a route added with ``grants --apply`` included, and the result says the
-    grants this attach took were not used.  So does one that points the home at the store copied elsewhere and
+    the first: the entry keeps its grants, a route added with ``grants --apply`` included, and grant options given
+    again are not used, which the result says.  So does one that points the home at the store copied elsewhere and
     adopted."""
 
-    def a_group_row(document):
-        owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
-        group = dict(owner, kind="conversation", chat_type="group", chat_id="TEST-group")
-        document["audiences"].append(dict(group, writable_scope_ids=[], capture_scope_id=""))
-
-    def attached_again(home, attach):
+    def attached_again(home, attach, *, options):
         code, result = attach()
         assert code == 0, result
-        code, applied = _granted(capsys, tmp_path, home, a_group_row)
+        code, applied = _granted(capsys, tmp_path, home, _a_group_row)
         assert (code, applied["status"]) == (0, "applied"), applied
         edited = read_shared_payload(root)["entries"][-1]["audiences"]
         code, result = attach()
         assert code == 0, result
         assert read_shared_payload(root)["entries"][-1]["audiences"] == edited and len(edited) == 2
-        assert any(note.startswith("grants_kept:") for note in result["notes"]), result
+        assert _kept(result) == options, result
 
     [client] = _client_homes(tmp_path, "workbuddy").values()
-    attached_again(client, lambda: _attach_client(capsys, root, client, host="workbuddy", like=None, capture=None))
+    attached_again(
+        client, lambda: _attach_client(capsys, root, client, host="workbuddy", like=None, capture=None), options=False
+    )
     desk, _options = _installed(tmp_path, "desk")
     archive = _moved_aside(desk, _routes(desk))
-    attached_again(desk, lambda: _attach(capsys, desk, root, archive, "desk", "Desk"))
+    attached_again(desk, lambda: _attach(capsys, desk, root, archive, "desk", "Desk"), options=True)
     held = {entry["entry_id"]: entry["audiences"] for entry in read_shared_payload(root)["entries"]}
     moved = (tmp_path / "TEST-moved").resolve()
     shutil.copytree(root, moved)
     code, result = _run(capsys, "adopt", "--root", str(moved))
     assert code == 0, result
     code, result = _attach_client(capsys, moved, client, host="workbuddy", like="desk", capture="desk")
-    assert code == 0 and any(note.startswith("grants_kept:") for note in result["notes"]), result
+    assert code == 0 and _kept(result), result
     assert {entry["entry_id"]: entry["audiences"] for entry in read_shared_payload(moved)["entries"]} == held
     assert read_attachment(client).root == moved
+
+
+def test_a_client_attached_again_beside_other_entries_needs_no_grant_options(tmp_path, capsys, root):
+    """With another entry attached, a client's first attach names an entry to take grants like; attached again from
+    its home it needs none, and keeps the grants it holds, an edited route included."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="workbuddy", capture="workbuddy")
+    assert code == 0, result
+    code, applied = _granted(capsys, tmp_path, homes["dsh"], _a_group_row)
+    assert (code, applied["status"]) == (0, "applied"), applied
+    edited = read_shared_payload(root)["entries"][-1]["audiences"]
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like=None, capture=None)
+    assert code == 0 and not _kept(result), result
+    assert read_shared_payload(root)["entries"][-1]["audiences"] == edited and len(edited) == 2
 
 
 def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):

@@ -401,12 +401,10 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
     Everything is checked before anything is written.  Then the store (its
     scopes, then the entry), the store's manifest, and last the pointer: stopped
     anywhere, running it again finishes the job, and until the pointer exists
-    the home binds nothing new.  A home attached as the entry already keeps the
-    grants the entry holds (``attached_record``).  Returns the entry's view.
+    the home binds nothing new.  Returns the entry's view.
     """
     store = Path(str(root)).expanduser().resolve()
     payload = read_shared_payload(store)
-    record = attached_record(payload, record)
     home = Path(record["home"])
     for entry in payload["entries"]:
         if (
@@ -470,23 +468,37 @@ GRANTS_SCHEMA = "scope-recall.entry-grants/1"
 _GRANT_FIELDS = ("owner_principals", "audience_scopes", "audiences")
 
 
-def attached_record(payload: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
-    """``record`` as an attach writes it into the store whose manifest ``payload`` is.
+def attached_again(
+    payload: dict[str, Any],
+    *,
+    entry_id: str,
+    host: str,
+    home: Path,
+    display_name: str,
+    attached_at: str,
+    python_executable: str | None = None,
+) -> dict[str, Any] | None:
+    """The record an attach writes for ``home`` when the store whose manifest ``payload`` is holds it attached as
+    ``entry_id`` already, for ``host``; ``None`` when it does not.
 
-    When the store holds ``record``'s home attached as that entry already, for the same host, the record keeps the
-    grants the entry holds.  An attach run again finishes or repeats the first, or points the home at a store moved
-    elsewhere; the grants it took anew, from an installation or like other entries, would undo a change made since
-    (``regranted``).  Its name, interpreter and moment are the attach's own.
+    The entry keeps the grants it holds: an attach run again finishes or repeats the first, or points the home at a
+    store moved elsewhere, and grants taken anew, from an installation or like other entries, would undo a change made
+    since (``regranted``).  Its name, moment and interpreter are this attach's.
     """
     for entry in payload["entries"]:
         if (
-            entry["entry_id"] == record["entry_id"]
-            and entry["host"] == record["host"]
+            entry["entry_id"] == entry_id
+            and entry["host"] == host
             and not entry.get("detached_at")
-            and _same_path(entry["home"], record["home"])
+            and _same_path(entry["home"], home)
         ):
-            return {**record, **{name: entry[name] for name in ("scope_ids", *_GRANT_FIELDS)}}
-    return record
+            record = {name: value for name, value in entry.items() if name != "python_executable"}
+            record["display_name"] = _display_name(display_name)
+            record["attached_at"] = bounded_text(attached_at, field="attached_at")
+            if python_executable is not None:
+                record["python_executable"] = bounded_text(python_executable, field="python_executable")
+            return record
+    return None
 
 
 def _attached(hermes_home: Path | str) -> tuple[Path, dict[str, Any], dict[str, Any]]:

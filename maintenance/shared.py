@@ -50,7 +50,7 @@ from ..adapters.hermes.shared_entries import (
     GRANTS_SCHEMA,
     attach_shared_entry,
     attach_shared_record,
-    attached_record,
+    attached_again,
     attachment_path,
     client_entry_record,
     entry_grants,
@@ -257,18 +257,6 @@ def _client_grants(
     return allowed | {capture}, writable | {capture}, capture
 
 
-def _kept_grants(payload: dict[str, Any], record: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """``record`` as the store will hold it (``attached_record``), and a note when that keeps other grants than this
-    attach took: the home is attached as the entry already, and its grants were changed since, or the options differ."""
-    held = attached_record(payload, record)
-    if all(encoded({"value": held[name]}) == encoded({"value": record[name]}) for name in _GRANT_FIELDS):
-        return held, []
-    return held, [
-        f"grants_kept: {record['entry_id']} is attached from this home already and keeps the grants it holds; "
-        "scope-recall grants changes them"
-    ]
-
-
 def _ledger_made(raw: dict[str, Any]) -> list[str]:
     """Create the spend ledger a written config names, when it does not exist yet.
 
@@ -316,6 +304,81 @@ def init_shared(
     }
 
 
+def _refuse_misfit(
+    host: str, home: Path, grants_from: Path | None, grants_like: tuple[str, ...], capture_like: str | None
+) -> None:
+    """Refuse a host this command does not attach, grant options ``host`` takes none of, and a home whose own store is
+    still in place."""
+    if host == "hermes":
+        if grants_like or capture_like:
+            raise SharedStoreError(
+                "--grants-like and --capture-like are for a client's entry; a Hermes home carries its own grants over"
+            )
+        if (home / "scope-recall" / MANIFEST_FILENAME).exists():
+            raise SharedStoreError(
+                "this home still has its own store: move its scope-recall directory aside (for "
+                "example to scope-recall.local-<date>) and pass that installation.json as --grants-from"
+            )
+    elif host in CLIENT_HOSTS:
+        if grants_from is not None:
+            raise SharedStoreError(
+                "a client has no installation to carry grants over from: it takes them like entries already "
+                "attached (--grants-like), or as a store's first entry brings the owner's"
+            )
+        if (home / CODEX_CONFIG_FILENAME).exists() or (home / "data" / "memory.sqlite3").exists():
+            raise SharedStoreError(
+                f"this home still has its own store: move {CODEX_CONFIG_FILENAME} and data aside "
+                "(for example into local-<date>); the client's memory is then the store's"
+            )
+    else:
+        raise SharedStoreError(f"host must be one of {', '.join(ENTRY_HOSTS)}")
+
+
+def _runtime_configs(
+    routes_from: Path | None, payload: dict[str, Any], root: Path, record: dict[str, Any], home: Path
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    """What an attach of ``record`` writes of runtime configs, built and checked before anything is written: the
+    entry's, from ``routes_from`` bound to its scopes, and the shared worker's, from the same routes when the store has
+    none, else its own bound to every scope of the store with the entry's (``None`` when that leaves it as it is);
+    then the worker's as it stands, and notes on what is not configured."""
+    scopes = frozenset(record["scope_ids"])
+    union = frozenset(payload["scope_ids"]) | scopes
+    worker_path = root / RUNTIME_CONFIG_FILENAME
+    worker_now = _read_json(worker_path) if worker_path.is_file() else None
+    entry_config = worker_config = None
+    notes = []
+    if routes_from is not None:
+        routes = _read_json(routes_from)
+        entry_config = _entry_config(
+            routes,
+            _store_binding(payload, root, scopes),
+            home=home,
+            host=record["host"],
+            entry_id=record["entry_id"],
+            worker=worker_now,
+        )
+        if worker_now is None:
+            worker_config = _worker_config(routes, _store_binding(payload, root, union))
+        elif _space(worker_now) != _space(routes):
+            # A query vector from another model searches a directory the worker never fills.
+            raise SharedStoreError(
+                "embedding_space_differs: this entry's embedding route addresses another space "
+                "than the shared worker's; give both the same embedding model"
+            )
+    else:
+        notes.append("vector_recall_unavailable: no runtime config for this entry; its recall is lexical only")
+    if worker_config is None and worker_now is not None:
+        worker_config = _bound(worker_now, _store_binding(payload, root, union))
+        if worker_config == worker_now:
+            # Rewriting it unchanged would still restart the running worker (supervisor_config_changed).
+            worker_config = None
+    if worker_config is None and worker_now is None:
+        notes.append("worker_unconfigured: pass --runtime-config-from to give the shared worker its routes")
+    _fits(entry_config, "entry's")
+    _fits(worker_config, "shared worker's")
+    return entry_config, worker_config, worker_now, notes
+
+
 def attach(
     *,
     host: str,
@@ -331,39 +394,37 @@ def attach(
     now: str | None = None,
 ) -> dict[str, Any]:
     now = now or _now()
+    python = str(python_executable) if python_executable else None
     # The entry's grants are taken from this manifest and checked against it, and written over it: no other command
     # writes the store in between.
     with store_lock(root, f"attach --host {host} --entry {entry_id}", now):
         payload = read_shared_payload(root)
-        python = str(python_executable) if python_executable else None
-        if host == "hermes":
-            if grants_like or capture_like:
-                raise SharedStoreError(
-                    "--grants-like and --capture-like are for a client's entry; "
-                    "a Hermes home carries its own grants over"
+        _refuse_misfit(host, instance_root, grants_from, grants_like, capture_like)
+        source, notes = None, []
+        # A home attached as the entry already keeps the grants the entry holds, and takes none of the options.
+        record = attached_again(
+            payload,
+            entry_id=entry_id,
+            host=host,
+            home=instance_root,
+            display_name=display_name,
+            attached_at=now,
+            python_executable=python,
+        )
+        if record is not None:
+            if grants_from is not None or grants_like or capture_like:
+                notes.append(
+                    f"grants_kept: {entry_id} is attached from this home already and keeps the grants it holds; "
+                    "the grant options given are not used (scope-recall grants changes grants)"
                 )
-            if (instance_root / "scope-recall" / MANIFEST_FILENAME).exists():
-                raise SharedStoreError(
-                    "this home still has its own store: move its scope-recall directory aside (for "
-                    "example to scope-recall.local-<date>) and pass that installation.json as --grants-from"
-                )
+        elif host == "hermes":
             source = (
                 load_archived_installation(grants_from, instance_root)
                 if grants_from is not None
                 else _fresh_installation(instance_root, payload)
             )
             record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now)
-        elif host in CLIENT_HOSTS:
-            if grants_from is not None:
-                raise SharedStoreError(
-                    "a client has no installation to carry grants over from: it takes them like entries already "
-                    "attached (--grants-like), or as a store's first entry brings the owner's"
-                )
-            if (instance_root / CODEX_CONFIG_FILENAME).exists() or (instance_root / "data" / "memory.sqlite3").exists():
-                raise SharedStoreError(
-                    f"this home still has its own store: move {CODEX_CONFIG_FILENAME} and data aside "
-                    "(for example into local-<date>); the client's memory is then the store's"
-                )
+        else:
             allowed, writable, capture = _client_grants(payload, instance_root, entry_id, grants_like, capture_like)
             record = client_entry_record(
                 host=host,
@@ -376,52 +437,21 @@ def attach(
                 capture_scope_id=capture,
                 python_executable=python,
             )
-        else:
-            raise SharedStoreError(f"host must be one of {', '.join(ENTRY_HOSTS)}")
-        record, notes = _kept_grants(payload, record)
         scopes = frozenset(record["scope_ids"])
         union = frozenset(payload["scope_ids"]) | scopes
         worker_path = root / RUNTIME_CONFIG_FILENAME
         entry_path = attachment_path(instance_root).parent / RUNTIME_CONFIG_FILENAME
-        worker_now = _read_json(worker_path) if worker_path.is_file() else None
-        entry_config = worker_config = None
-        # Everything written below is built and checked first.
-        if runtime_config_from is not None:
-            routes = _read_json(runtime_config_from)
-            entry_config = _entry_config(
-                routes,
-                _store_binding(payload, root, scopes),
-                home=instance_root,
-                host=host,
-                entry_id=record["entry_id"],
-                worker=worker_now,
-            )
-            if worker_now is None:
-                worker_config = _worker_config(routes, _store_binding(payload, root, union))
-            elif _space(worker_now) != _space(routes):
-                # A query vector from another model searches a directory the worker never fills.
-                raise SharedStoreError(
-                    "embedding_space_differs: this entry's embedding route addresses another space "
-                    "than the shared worker's; give both the same embedding model"
-                )
-        else:
-            notes.append("vector_recall_unavailable: no runtime config for this entry; its recall is lexical only")
-        if worker_config is None and worker_now is not None:
-            worker_config = _bound(worker_now, _store_binding(payload, root, union))
-            if worker_config == worker_now:
-                # Rewriting it unchanged would still restart the running worker (supervisor_config_changed).
-                worker_config = None
-        if worker_config is None and worker_now is None:
-            notes.append("worker_unconfigured: pass --runtime-config-from to give the shared worker its routes")
-        _fits(entry_config, "entry's")
-        _fits(worker_config, "shared worker's")
+        entry_config, worker_config, worker_now, configured = _runtime_configs(
+            runtime_config_from, payload, root, record, instance_root
+        )
+        notes += configured
 
         run = Run(root, f"attach-{record['entry_id']}", now)
         run.keep(root / MANIFEST_FILENAME, "store")
         run.keep(worker_path, "worker")
         run.keep(attachment_path(instance_root), "entry")
         run.keep(entry_path, "entry")
-        if host == "hermes":
+        if source is not None:
             view = attach_shared_entry(
                 root, source, entry_id=entry_id, display_name=display_name, now=now, python_executable=python
             )
