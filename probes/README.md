@@ -15,8 +15,4 @@ repository root:
   request, within the shared ledger's caps and this batch's;
 - `p11_stop_a2a_test.py --wait` stops what the starter started.
 
-`probes/eval_model_runtime.py` backs the `model_runtime` tier
-(`tests/host/test_eval_model_runtime.py`), which only runs with
-`--allow-model-calls`.
-
 Nothing under `probes/` ships in the wheel.

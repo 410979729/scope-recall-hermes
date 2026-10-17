@@ -1192,9 +1192,6 @@
   "tests/host/hermes/test_runtime_bounds.py": {
    "BLE001": 1
   },
-  "tests/host/test_eval_model_runtime.py": {
-   "E501": 1
-  },
   "tests/host/test_runtime_wiring_common.py": {
    "E501": 1,
    "UP017": 1

@@ -193,7 +193,6 @@ SUITES = {
         "tests/contract/test_owner_view.py",
         "tests/recall_bench/test_recall_bench.py",
     ],
-    "model_runtime": ["tests/host/test_eval_model_runtime.py"],
     "native": [
         "tests/contract/test_lance_embed_fence.py",
         "tests/contract/test_retained_lock_deadline.py",
@@ -297,7 +296,6 @@ TIER_METADATA = {
         "model_calls": False,
     },
     "eval": {"level": "T4", "requires": ["model"], "model_calls": True},
-    "model_runtime": {"level": "T4", "requires": ["model"], "model_calls": True},
 }
 
 #: The tiers whose runs allow child processes and loopback sockets: the tiers of ``TIER_ALLOWS``.
