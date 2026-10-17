@@ -412,8 +412,8 @@ def _busy_for(monkeypatch, attempts):
 
 
 class _StoreClock:
-    """The store module's clock in a test: only its sleeps move it, each by what it asked, so a writer's waits for the
-    lease are counted and timed exactly, on a machine slow or fast."""
+    """A clock a test gives the store: only the store's sleeps move it, each by what it asked, so a writer's waits for
+    the lease are counted and timed exactly, on a machine slow or fast."""
 
     def __init__(self) -> None:
         self.now = 1000.0
@@ -427,12 +427,13 @@ class _StoreClock:
         self.now += seconds
 
 
-def _store_clock(monkeypatch) -> _StoreClock:
+def _on_a_stepped_clock(monkeypatch, binding) -> tuple[SQLiteStorage, _StoreClock]:
+    """The shared store opened on a ``_StoreClock``, and that clock."""
     from scope_recall.core import storage as module
 
     clock = _StoreClock()
-    monkeypatch.setattr(module, "time", clock)
-    return clock
+    monkeypatch.setattr(module.time, "sleep", clock.sleep)
+    return SQLiteStorage(binding, clock=clock.monotonic), clock
 
 
 def test_a_writer_waits_for_another_process_s_turn_to_end(monkeypatch, shared):
@@ -441,8 +442,8 @@ def test_a_writer_waits_for_another_process_s_turn_to_end(monkeypatch, shared):
     lease's polls, 10 ms each, not the open's one-second timeout."""
     from scope_recall.core import storage as module
 
-    storage, binding = shared
-    clock = _store_clock(monkeypatch)
+    _storage, binding = shared
+    storage, clock = _on_a_stepped_clock(monkeypatch, binding)
     calls = _busy_for(monkeypatch, 3)
     saved = put(storage, shared_context(binding, "tianshu"), "TEST-turns/1")
     assert saved.disposition == "inserted" and len(calls) == 4
@@ -455,8 +456,8 @@ def test_a_writer_gives_up_when_the_turn_outlasts_its_deadline(monkeypatch, shar
     from scope_recall.core import storage as module
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
-    storage, binding = shared
-    clock = _store_clock(monkeypatch)
+    _storage, binding = shared
+    storage, clock = _on_a_stepped_clock(monkeypatch, binding)
     _busy_for(monkeypatch, None)
     with pytest.raises(TruthWriterBusyError):
         with storage.write(shared_context(binding, "tianshu"), remaining_seconds=0.1):
