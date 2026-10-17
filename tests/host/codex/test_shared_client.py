@@ -3966,16 +3966,23 @@ def test_a_workbuddy_prompt_runs_the_entry_s_budget(workbuddy):
         hook.close()
 
 
-def test_a_workbuddy_prompt_hook_answers_within_its_budget(
+def _wb_hook_reads(monkeypatch, text):
+    """The prompt hook's stdin for the next ``hook_entry.main``: WorkBuddy sending ``text``."""
+    import io
+
+    from scope_recall.adapters.clients import hook_entry
+
+    raw = json.dumps({"session_id": WB_SESSION, "cwd": "C:/TEST/work", **_wb_prompt(text)}).encode()
+    monkeypatch.setattr(hook_entry.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(raw)})())
+
+
+def test_a_workbuddy_prompt_whose_server_answers_too_late_is_stored_once(
     workbuddy, small_reserve, storing_takes_no_hook_time, monkeypatch, capsys
 ):
-    """A WorkBuddy prompt hook that runs past its wait blocks the prompt.  With the entry's server slower than the
-    hook's whole budget, the hook still answers inside the budget, with the prompt stored."""
-    import io
+    """With the entry's server slower than the hook's whole budget, the hook answers without it, says it came late,
+    and has stored the prompt, once: the server's late recall writes nothing."""
     import threading
-    import time
 
-    from scope_recall.adapters.clients import handler as handler_module
     from scope_recall.adapters.clients import hook_entry, local_endpoint
     from scope_recall.vector import process_store
 
@@ -3986,22 +3993,9 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
     release, finished = threading.Event(), []
     try:
         calls = _counted(endpoint, monkeypatch, hold=release, finished=finished)
-        raw = json.dumps(
-            {
-                "session_id": WB_SESSION,
-                "cwd": "C:/TEST/work",
-                **_wb_prompt("<user_query>TEST 服务答得太慢。</user_query>"),
-            }
-        ).encode()
-        monkeypatch.setattr(hook_entry.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(raw)})())
-        started = time.monotonic()
+        _wb_hook_reads(monkeypatch, "<user_query>TEST 服务答得太慢。</user_query>")
         assert hook_entry.main(["--home", str(home), "--host", "workbuddy"]) == 0
-        # No runtime config names a budget here: the hook's own (``_TOTAL_BUDGET_S``), which storing the prompt takes
-        # none of (``storing_takes_no_hook_time``).
-        elapsed = time.monotonic() - started - storing_takes_no_hook_time[0]
-        budget = handler_module._TOTAL_BUDGET_S
         captured = capsys.readouterr()
-        assert elapsed < budget + 1.0, f"the hook took {elapsed:.1f} s of its {budget} s besides storing the prompt"
         assert not captured.out or "additionalContext" in json.loads(captured.out)["hookSpecificOutput"]
         assert "CODEX_RECALL_RESIDENT:late" in captured.err
         assert len(calls) == 1
@@ -4012,6 +4006,73 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
         release.set()
         endpoint.stop()
     assert _wb_said(root, "user") == [("user", "human_direct", "TEST 服务答得太慢。")]
+
+
+@pytest.fixture
+def busy_store(monkeypatch):
+    """Another process holds the store's writer lease and the store is slow to read: each write a hook makes waits all
+    it may (what it asks, up to its core's write timeout) and fails as a busy store does, and each recall takes all the
+    time it is given.  Nothing reaches the store, so a hook takes as long on a slow machine as on a fast one: a test of
+    its budget reads the time a host waits for it."""
+    from scope_recall.core import MemoryCore
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+
+    def busy(self, context, value, *, remaining_seconds=None, **kwargs):
+        timeout = self.config.write_timeout_seconds
+        time.sleep(timeout if remaining_seconds is None else min(timeout, remaining_seconds))
+        raise TruthWriterBusyError(role="truth_connection", scope="other_process")
+
+    def slow(self, context, request, *, deadline_seconds, **kwargs):
+        time.sleep(deadline_seconds)
+        raise ContractError("DEADLINE_EXCEEDED")
+
+    monkeypatch.setattr(MemoryCore, "record_host_event", busy)
+    monkeypatch.setattr(MemoryCore, "record_event", busy)
+    monkeypatch.setattr(MemoryCore, "recall_packet", slow)
+
+
+@pytest.mark.parametrize("configured", [None, 6])
+def test_a_workbuddy_prompt_hook_answers_within_its_budget(
+    workbuddy, small_reserve, busy_store, monkeypatch, capsys, configured
+):
+    """A WorkBuddy prompt hook that runs past its wait blocks the prompt, and what counts is the time the host waits.
+    The prompt's capture waits out a busy store as long as it may (2 s of the 6 s an entry's runtime config may give,
+    1 s of the 2 s default), and the entry's server and the hook's own recall need more than is left: the hook still
+    answers within its budget."""
+    import threading
+
+    from scope_recall.adapters.clients import handler as handler_module
+    from scope_recall.adapters.clients import hook_entry, local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    _root, home, _projects = workbuddy
+    if configured is not None:
+        (home / "scope-recall" / "runtime-config.json").write_text(
+            json.dumps({"hook_processing_seconds": configured, "resident_recall_minutes": 0}), encoding="utf-8"
+        )
+    budget = configured or handler_module._TOTAL_BUDGET_S
+    endpoint = local_endpoint.serve(home, "workbuddy", warm=False)
+    assert endpoint is not None
+    release, asked = threading.Event(), []
+
+    def held(request, **kwargs):
+        asked.append(request["payload"].get("prompt"))
+        release.wait(60.0)
+        return {"result": {}, "diagnostics": {}}, (lambda: None)
+
+    monkeypatch.setattr(endpoint, "recall", held)
+    _wb_hook_reads(monkeypatch, "<user_query>TEST 服务答得太慢。</user_query>")
+    try:
+        started = time.monotonic()
+        assert hook_entry.main(["--home", str(home), "--host", "workbuddy"]) == 0
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        endpoint.stop()
+    err = capsys.readouterr().err
+    assert '"error_type":"TruthWriterBusyError"' in err and "CODEX_RECALL_RESIDENT:late" in err and len(asked) == 1
+    assert elapsed < budget + 0.5, f"the host waited {elapsed:.2f} s for a hook whose budget is {budget} s"
 
 
 def test_a_workbuddy_hook_with_nothing_to_add_writes_nothing(workbuddy, tmp_path, monkeypatch, capsys):

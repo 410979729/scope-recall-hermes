@@ -47,9 +47,10 @@ class FixedClock:
         return self._mono
 
 
-# A hook's budget runs on its clock (``SystemHookClock`` unless a test gives it another), and one write on a busy
-# Windows runner can take seconds: a prompt's capture that took 6.5 s left a 6 s hook no time to ask its server.  These
-# keep a test's outcome from depending on how long the runner's store takes.
+# A hook's budget runs on its clock (``SystemHookClock`` unless a test gives it another), and a write to a real store
+# has no bound in time: on a slow disk one can take a hook's whole budget.  These keep a test's outcome from depending
+# on how long the store takes.  A test of the budget itself stores nothing and injects its delays, and reads the time a
+# host would wait (``test_shared_client.busy_store``).
 
 
 @pytest.fixture
@@ -63,8 +64,8 @@ def still_clocks(monkeypatch):
 
 @pytest.fixture
 def storing_takes_no_hook_time(monkeypatch):
-    """A hook's clock stands still while the hook stores what it was sent, and runs otherwise: for a test of how a hook
-    spends its budget on the entry's server.  Returns a list of one item, the seconds the hooks have spent storing."""
+    """A hook's clock stands still while the hook stores what it was sent, and runs otherwise: for a test of what a
+    hook does with the entry's server once it has stored, not of how long a host waits for it."""
     stored = [0.0]
     capture = CodexHookHandler.capture
 
@@ -77,7 +78,6 @@ def storing_takes_no_hook_time(monkeypatch):
 
     monkeypatch.setattr(CodexHookHandler, "capture", timed)
     monkeypatch.setattr(SystemHookClock, "monotonic", lambda _clock: time.monotonic() - stored[0])
-    return stored
 
 
 @pytest.fixture
