@@ -1,12 +1,11 @@
 """A group of embeddings is asked for, written and recorded as a group, claims included.
 
-The pilot's rebuild of 32,000 imported embeddings measured where a pass spent its time.
-Sources went a hundred to a request and one commit per group, yet a pass of five hundred
-took thirty seconds and a pass of a thousand outlived its sixty-second lease: each member
-was then recorded on its own in three transactions.  Claims were never grouped at all --
-one request each, one after another, about two seconds a claim.  And members left to ask
-for themselves were still asked after the lease they were claimed with had run out, their
-vectors paid for and dropped as stale.
+Sources go a hundred to a request and one commit per group, and each member is recorded
+with the group, not on its own in three transactions: otherwise a pass of five hundred
+takes thirty seconds and a pass of a thousand outlives its sixty-second lease.  Claims are
+grouped too, not asked for one request each, one after another, at about two seconds a
+claim.  And members left to ask for themselves are not asked after the lease they were
+claimed with has run out, their vectors paid for and dropped as stale.
 """
 
 from __future__ import annotations
@@ -146,9 +145,9 @@ class SupersedingPort:
 
 @pytest.mark.parametrize("count", [1, 3])
 def test_a_vector_written_before_its_claim_was_superseded_is_still_on_the_ledger(app, count):
-    """Every vector a pass writes ends as a done embed.  A supersede made the old revision's work obsolete, the
-    embed holding the lease included, after its vector had landed: the point stayed in the store and no ledger
-    expected it, one per claim corrected mid-write (#205).  One claim takes the single path, three the group's."""
+    """Every vector a pass writes ends as a done embed.  A supersede that makes the old revision's work obsolete, the
+    embed holding the lease included, after its vector has landed must not leave the point in the store with no
+    ledger expecting it, one per claim corrected mid-write.  One claim takes the single path, three the group's."""
     core, ctx = app
     target = _claims(core, ctx, count)[0]
     correction = capture(core, ctx, "Please correct TEST-project 属性0: 新值0。", key="TEST-correction/0")
@@ -185,8 +184,8 @@ class WritesThenStalls(SupersedingPort):
 
 
 def test_a_vector_written_before_its_embed_was_sent_back_to_wait_is_still_on_the_ledger(app):
-    """A dependency or a deadline can send an embed back to wait after its vector landed; a supersede then made it
-    obsolete as one never leased, and the point went unaccounted for (review of 3.7.4)."""
+    """A dependency or a deadline can send an embed back to wait after its vector landed; a supersede then must not
+    make it obsolete as one never leased, which would leave the point unaccounted for."""
     core, ctx = app
     target = _claims(core, ctx, 1)[0]
     correction = capture(core, ctx, "Please correct TEST-project 属性0: 新值0。", key="TEST-correction/0")

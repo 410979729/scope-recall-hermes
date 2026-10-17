@@ -1,10 +1,10 @@
 """The sqlite companion is published to through the same fenced write as the native store.
 
 The worker's embed path writes every embedding through ``LanceIndexWriter``'s
-fenced form, which asks the store for ``fenced_upsert_records``.  Only the
-LanceDB driver had it, so on ``sqlite-bruteforce`` -- the documented no-extra
+fenced form, which asks the store for ``fenced_upsert_records``.  Every store
+must have it: without it, on ``sqlite-bruteforce`` -- the documented no-extra
 fallback and the automatic one where LanceDB cannot load -- every embed item
-failed with a bare ``storage_unavailable`` and the companion stayed empty (#85).
+fails with a bare ``storage_unavailable`` and the companion stays empty.
 These cases pin the contract the writer relies on: the guard is evaluated under
 the store's own lock, an approving guard writes the whole group once, a
 refusing guard writes nothing, and a spent deadline or a non-callable guard is

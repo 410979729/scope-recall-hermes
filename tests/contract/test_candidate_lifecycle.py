@@ -170,12 +170,11 @@ def test_r1_candidate_registration_separates_fact_state_and_dedupes(app):
 
 
 def test_r1_candidate_new_evidence_wakes_once_and_duplicate_capture_does_not_expand_work(app):
-    """Arriving evidence is recorded; it no longer mints an evaluation each time.
+    """Arriving evidence is recorded; it does not mint an evaluation each time.
 
-    Scheduling per arrival is what produced 7,802 retired-before-judged
-    evaluations on alpha.  The evidence is still collected the moment it
-    arrives -- nothing is lost by waiting -- and one evaluation is scheduled
-    once the candidate settles.
+    Scheduling per arrival would retire evaluations before anyone judged them.
+    The evidence is still collected the moment it arrives -- nothing is lost by
+    waiting -- and one evaluation is scheduled once the candidate settles.
     """
     core, ctx = app
     _candidate(core, ctx)
@@ -236,12 +235,11 @@ def test_candidate_queued_before_unrelated_write_uses_current_attempt_epoch(app)
 
 
 def test_candidate_unrelated_capture_during_attempt_still_applies_verdict(app):
-    """An unrelated capture during the attempt no longer voids the paid verdict.
+    """An unrelated capture during the attempt does not void the paid verdict.
 
-    This was ``test_candidate_epoch_change_during_attempt_still_blocks_publication``:
-    the capture moved ``memory_epoch`` and the evaluation was made obsolete
-    with ``memory_epoch_changed`` although neither its evidence nor its
-    candidate head changed.  The verdict is now applied.
+    The capture moves ``memory_epoch``, but neither the evaluation's evidence
+    nor its candidate head changes, so the evaluation is not made obsolete with
+    ``memory_epoch_changed`` and the verdict is applied.
     """
     core, ctx = app
     saved, _source, proposal, _registration = _candidate(core, ctx)
@@ -461,7 +459,7 @@ def test_r1_candidate_source_matching_is_capped_at_sixteen(app):
                WHERE source_ref=? AND source_revision=1""",
             (trigger.ref,),
         ).fetchone()
-    # matched and truncated are the cap under test.  scheduled is now zero for
+    # matched and truncated are the cap under test.  scheduled is zero for
     # two independent reasons -- the evidence has only just arrived, and each of
     # these candidates already carries the evaluation it was registered with --
     # and either one alone is enough to keep the queue from multiplying.
@@ -496,10 +494,10 @@ def test_r1_candidate_budget_pause_is_explicit_and_does_not_spend_attempt(app):
 
 @pytest.mark.parametrize("status", ["401", "402", "403"])
 def test_an_account_refusal_parks_candidates_instead_of_failing_them(app, status):
-    """A DeepSeek balance that ran out answered 402 for fifteen minutes and
-    failed 100 evaluations outright on alpha.  The provider refused the
-    account, not the question: park it, hand the attempt back, and stop asking
-    for the rest of the pass."""
+    """A DeepSeek balance that has run out answers 402 for as long as it lasts, and
+    would fail every evaluation outright.  The provider refused the account, not
+    the question: park it, hand the attempt back, and stop asking for the rest of
+    the pass."""
     from scope_recall.runtime.models import AuxiliaryModelError
 
     core, ctx = app
@@ -760,15 +758,13 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
 
 
 def test_r1_one_candidate_never_accumulates_a_queue_of_stale_evaluations(app):
-    """The invariant is unchanged; the way it is kept is stronger.
+    """One candidate never accumulates a queue of stale evaluations.
 
     The dedup key is (candidate, revision, evidence_fingerprint, rule_version)
     and the fingerprint covers the evidence set, so scheduling on every arrival
-    minted a fresh evaluation and retired the ones still waiting -- on alpha
-    7,802 of 11,158 were retired before anyone judged them, and exactly two ever
-    reached a verdict.
+    would mint a fresh evaluation and retire the ones still waiting.
 
-    Now a second one is never created while the first is queued, so there is
+    A second one is never created while the first is queued, so there is
     nothing to retire.  The supersede path stays for the repair routes that
     schedule a candidate directly; the next test covers those.
     """
@@ -847,8 +843,8 @@ def _register_candidate(core, ctx, source, value, *, slug):
 
 
 def test_a_value_absent_from_every_source_is_not_sent_to_the_model(app):
-    """On alpha 2,019 evaluations in a day promoted 7 facts; 46% of them asked
-    about a value none of the supplied sources contained."""
+    """A value absent from every supplied source is not put to the model: asking
+    about it spends a model call that can promote nothing."""
     core, ctx = app
     source = capture(core, ctx, "entity-violet property-violet 还没有定下来。", key="TEST-r1/violet")
     _saved, registration = _register_candidate(core, ctx, source, "紫色", slug="violet")
@@ -899,7 +895,7 @@ def test_a_fact_without_any_authority_is_not_sent_to_the_model(app):
 
 
 def test_a_person_only_kind_proposed_from_a_tool_is_not_a_candidate(app):
-    """2,034 evaluations of such candidates on alpha promoted nothing: only the
+    """Evaluating a candidate of such a kind would promote nothing: only the
     person's own words can, and their consolidation proposes it with that authority."""
     core, ctx = app
     source = capture(core, ctx, "entity-tool property-tool 灰色", origin="tool_observation", key="TEST-r1/tool")
@@ -955,8 +951,8 @@ def test_a_person_only_kind_queued_before_the_rule_is_archived_without_the_model
 
 
 def test_an_evaluation_queued_before_the_check_is_settled_without_the_model(app):
-    """The live backlog was queued before this check existed; the worker applies
-    it too, spends no attempt, and leaves the at-most-once fence untouched."""
+    """An evaluation queued before this check existed is settled too: the worker
+    applies it, spends no attempt, and leaves the at-most-once fence untouched."""
     core, ctx = app
     _candidate(core, ctx)
     unrelated = capture(core, ctx, "entity-blue property-blue 今天先不讨论。", key="TEST-r1/unrelated")
@@ -1068,8 +1064,8 @@ def _new_first_hand_evidence(core, ctx, text, key):
 
 
 def test_a_candidate_gets_two_verdicts_then_only_a_restatement_reopens_it(app):
-    """On alpha 307 candidates were asked ten times or more.  Of 27 promotions,
-    19 came from the first verdict and 4 from the second."""
+    """Two verdicts are enough: promotions come almost entirely from the first and
+    the second, so only a restatement reopens a candidate after them."""
     core, ctx = app
     _candidate(core, ctx)
     _finish_source_work(core)
@@ -1147,8 +1143,8 @@ def _first_verdict_then_two_sources(core, ctx):
 
 def test_a_verdict_that_leaves_out_or_miscopies_a_supplied_source_still_counts(app):
     """Which sources a question carried is the evaluation's record, not something the model must repeat.  Asked to
-    echo every supplied ref, it left one out or miscopied a 70-character id in 5.2% of the pilot's evaluations with
-    nine or more sources, and each such verdict failed for good as ``candidate_source_refs``."""
+    echo every supplied ref, a model leaves one out or miscopies a 70-character id in a share of evaluations with
+    nine or more sources, and each such verdict would fail for good as ``candidate_source_refs``."""
     core, ctx = app
     saved, _source, proposal, _registration = _candidate(core, ctx)
     _finish_source_work(core)
@@ -1196,9 +1192,9 @@ def test_a_verdict_citing_a_source_it_was_not_given_is_still_refused(app):
 
 
 def test_evidence_that_cannot_pose_a_new_question_does_not_wake_a_candidate(app):
-    """Only first-hand testimony changes what a candidate is asked.  Any other evidence marked it pending and reset
-    its clock: 2,045 candidates on the pilot waited for an evaluation nothing would schedule, and a tool output
-    every few days kept them from going dormant."""
+    """Only first-hand testimony changes what a candidate is asked.  Any other evidence would mark it pending and
+    reset its clock, leaving it to wait for an evaluation nothing would schedule, and a tool output every few days
+    would keep it from going dormant."""
     core, ctx = app
     _candidate(core, ctx)
     _finish_source_work(core)
@@ -1223,8 +1219,8 @@ def test_evidence_that_cannot_pose_a_new_question_does_not_wake_a_candidate(app)
 
 
 def test_a_tool_output_does_not_keep_a_quiet_candidate_from_going_dormant(app):
-    """A candidate with no first-hand evidence after its evaluation goes dormant by ``updated_at``, which in
-    3.4.0rc10 a tool output still set: one every few weeks kept it from ever going dormant."""
+    """A candidate with no first-hand evidence after its evaluation goes dormant by ``updated_at``, which a tool
+    output does not set: one every few weeks would keep it from ever going dormant."""
     from datetime import datetime, timedelta
 
     core, ctx = app
@@ -1253,7 +1249,7 @@ def test_a_tool_output_does_not_keep_a_quiet_candidate_from_going_dormant(app):
 
 
 def test_a_pass_returns_a_candidate_left_pending_with_nothing_to_ask_to_waiting(app):
-    """What releases before 3.4.0rc10 left: pending on a question already asked, with nothing to schedule it."""
+    """What earlier releases left: pending on a question already asked, with nothing to schedule it."""
     core, ctx = app
     _candidate(core, ctx)
     _finish_source_work(core)

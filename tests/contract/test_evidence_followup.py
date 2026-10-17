@@ -149,7 +149,7 @@ def test_comparison_counts_a_suffixed_version_and_its_suffix_as_one_side():
     """A release named 3.1.0rc28 also yields the identifier rc28.
 
     Counted as two sides, a report naming 3.1.0rc28 and a note naming rc28
-    passed for both sides of 3.1.0rc28 versus 3.1.0rc29.
+    would pass for both sides of 3.1.0rc28 versus 3.1.0rc29.
     """
 
     def event(ref: str, content: str) -> RetrievedObject:

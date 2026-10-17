@@ -1,12 +1,10 @@
 """A pass that runs out of time hands back what it claimed and never touched, unspent.
 
-Found on a live instance on 2026-09-21.  Its ``max_items`` had been raised to 1000 for a one-off drain
-and never put back, so a pass claimed its whole embedding backlog as one group.  Every claim spends one
-of an item's three attempts.  The worker does hand the rest of a group back unspent when a group is cut
-short, but not when the reason was that the pass had no time left, which is the usual reason: the
-items at the tail were leased, never looked at, and released by lease expiry with the attempt gone.
-Three passes later they were failed as ``lease_exhausted``; the automatic recovery re-opened them into
-the same oversized group four times; 888 embeddings ended ``auto_retry:4|lease_exhausted`` in an hour
+A pass can claim its whole embedding backlog as one group (``max_items`` raised high), and every claim spends
+one of an item's three attempts.  When a group is cut short the worker hands the rest of it back unspent, and
+that includes the usual reason, that the pass has no time left.  Otherwise the items at the tail would be
+leased, never looked at, and released by lease expiry with the attempt gone; three passes later they would
+fail as ``lease_exhausted``, and the automatic recovery would re-open them into the same oversized group,
 without one of them ever having been sent to the provider.
 """
 

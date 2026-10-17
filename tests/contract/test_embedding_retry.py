@@ -3,7 +3,7 @@
 Covers ``runtime/embedding_retry.py``.  The query embedding is one network call
 with no second chance: when it fails, ``_vector_candidates`` records
 ``vector_unavailable`` and the packet is assembled from the lexical and recent
-channels alone.  A live instance recorded that twice in one day.
+channels alone.
 """
 
 from __future__ import annotations

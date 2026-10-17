@@ -95,9 +95,9 @@ def test_anything_short_of_adoption_is_not(text):
     assert is_confirmation(text) is False
 
 
-#: Reported by review.  Every one of these read as adoption under the first
-#: version of the rule, and the first one would have promoted the very claim the
-#: person was rejecting by name.
+#: Each of these carries an adoption marker without adopting a claim; read as
+#: adoption, the first would promote the very claim the person is rejecting by
+#: name.
 @pytest.mark.parametrize(
     "text",
     [

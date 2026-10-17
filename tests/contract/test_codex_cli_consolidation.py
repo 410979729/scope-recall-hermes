@@ -374,7 +374,7 @@ def test_native_cli_wire_has_zero_tools(tmp_path, monkeypatch):
 @pytest.mark.skipif(os.name != "nt", reason="the taskkill fallback runs on Windows only")
 def test_the_fallback_kill_starts_taskkill_without_a_console_window(monkeypatch):
     """Without a job object the Codex route ends a timed-out call's tree with ``taskkill``, from a windowless worker:
-    it must not get a console window of its own (#222)."""
+    it must not get a console window of its own."""
 
     class _Running:
         pid = 4321

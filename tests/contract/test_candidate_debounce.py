@@ -1,9 +1,9 @@
 """Candidate evaluations are scheduled once a candidate settles, not per source.
 
-Covers ``core/candidate_debounce.py`` and the sweep that replaced per-arrival
-scheduling.  The property that matters is the one measured on alpha: 7,802 of
-11,158 evaluations were retired before anyone judged them, because each new
-piece of evidence minted a fresh evaluation and superseded the ones waiting.
+Covers ``core/candidate_debounce.py`` and the sweep that schedules a settled
+candidate.  The property that matters is that new evidence does not mint a fresh
+evaluation per arrival and supersede the ones waiting, which would retire most
+evaluations before anyone judged them.
 """
 
 from __future__ import annotations
@@ -180,8 +180,8 @@ def test_the_sweep_pages_and_finishes_across_passes(app):
 def test_settled_candidates_are_found_by_reading_and_queued_by_name(app):
     """The worker finds the settled candidates with reads only, then queues just those under the writer lease.
 
-    Walking every settling candidate inside the write held the lease for 7.6 s of each pass on the shared store
-    (2026-09-27), and captures waiting for it failed.
+    Walking every settling candidate inside the write would hold the lease for seconds of each pass on the shared
+    store, and captures waiting for it would fail.
     """
     core, ctx = app
     for index in range(6):
@@ -283,8 +283,7 @@ def _evidence_rows(core, candidate_ref=None):
 
 def test_reinjected_memory_is_refused_as_candidate_evidence(app):
     """It is this system's own output coming back: it adds nothing the store
-    did not already hold, and it stops a candidate ever going quiet. On
-    Alpha it was 594 of 3,669 evidence rows behind the re-judgement churn."""
+    did not already hold, and it stops a candidate ever going quiet."""
     core, ctx = app
     _register(core, ctx, 1)
     echo = capture(core, ctx, "entity1 property1 sharedtoken 值1。", origin="memory_reinjection", key="TEST-echo/1")
@@ -308,8 +307,8 @@ def test_an_ordinary_source_matching_the_same_candidate_is_still_admitted(app):
 
 def test_a_settled_candidate_with_nothing_new_to_ask_is_counted_as_waiting_not_as_work(app):
     """Its evidence was already put to the evaluator, so the sweep schedules nothing for it and it
-    keeps ``pending_evaluation`` until new evidence arrives.  On one live store that was 1,031 of
-    1,032 candidates, and the doctor's bare "pending 1032" read as a queue that never drains."""
+    keeps ``pending_evaluation`` until new evidence arrives.  That can be nearly every candidate, and the
+    doctor's bare "pending 1032" would read as a queue that never drains."""
     from scope_recall.maintenance.doctor_report import DoctorReport
     from scope_recall.maintenance.doctor_store import check_candidates
 

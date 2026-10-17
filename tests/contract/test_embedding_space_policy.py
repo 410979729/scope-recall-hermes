@@ -132,10 +132,10 @@ def test_P08_gem2_vector_rejects_scores_outside_cosine_domain():
 def test_P08_embedding_model_is_configuration_not_a_constant():
     """Another provider can be addressed, and the store moves when it is.
 
-    The embedding model used to be a module constant that
-    `canonical_embedding_space` enforced field by field, so a deployment could
-    not choose its own provider. The digest-keyed vector directory already made
-    swapping safe; only the hardcoded descriptor stopped anyone using it.
+    The embedding model is configuration, not a module constant that
+    `canonical_embedding_space` enforces field by field, so a deployment can
+    choose its own provider. The digest-keyed vector directory makes swapping
+    safe.
     """
     from scope_recall.core.recall_policy import build_embedding_space
     from scope_recall.runtime.embedding_models import EmbeddingRouteConfig
@@ -326,7 +326,7 @@ def test_P08_embedding_wire_dialects_round_trip_both_shapes():
 
 def test_P08_an_openai_route_may_name_the_field_that_carries_the_width():
     """Voyage's /v1/embeddings is OpenAI-shaped but calls the width
-    output_dimension and refuses dimensions outright (#88); a request that
+    output_dimension and refuses dimensions outright; a request that
     omits the width silently gets the model's default geometry, so the field
     name is the only lever.  It is a wire detail: the digest does not move."""
     from scope_recall.runtime.auxiliary import _embedding_route_from_mapping

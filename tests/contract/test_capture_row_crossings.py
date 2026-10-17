@@ -1,11 +1,10 @@
 """What one capture's write hands across the Python/SQLite boundary: a count that does not grow with the text, the
 session's episode or the store's scopes.
 
-Every statement and every row read in Python hands the GIL over and back.  In a Hermes gateway whose other threads were
-busy, each handoff waited out their switch interval: a tool output of 51,283 characters (9,348 terms) held the shared
-store's writer lease 42 s, every other entry's write failed meanwhile, and Hermes skipped the tool hook for a minute
-(yuheng and tianshu, 2026-10-05).  The same write beside one busy thread took 408 s before and 7.9 s after.  The
-counts are what a regression raises; the time itself depends on the machine.
+Every statement and every row read in Python hands the GIL over and back.  In a Hermes gateway whose other threads are
+busy, each handoff waits out their switch interval: a tool output of 51,283 characters (9,348 terms) would hold the
+shared store's writer lease for tens of seconds, every other entry's write would fail meanwhile, and Hermes would skip
+the tool hook for a minute.  The counts are what a regression raises; the time itself depends on the machine.
 """
 
 import sqlite3
@@ -168,8 +167,8 @@ def _assistant(core, ctx, text: str, key: str):
 
 
 def test_what_the_assistant_said_reads_the_candidates_it_shares_a_word_with_in_one_row(app, monkeypatch):
-    """A source that is not first-hand had every reachable candidate sharing one of its words read row by row, until
-    sixteen of them were restated: none is, here (review of 3.7.6)."""
+    """A source that is not first-hand does not have every reachable candidate sharing one of its words read row by
+    row, as it would until sixteen of them are restated: none is, here."""
     core, ctx = app
     for index in range(5):
         _candidate(core, ctx, value=f"蓝色{index}", key=f"TEST-c/{index}")
@@ -182,9 +181,9 @@ def test_what_the_assistant_said_reads_the_candidates_it_shares_a_word_with_in_o
 
 
 def test_a_capture_s_words_never_take_a_parameter_each(app, monkeypatch):
-    """Matching a source to the candidates bound one parameter per term: a part of 64,000 characters held more distinct
-    terms than SQLite takes parameters (32,766 by default), and the whole capture failed as the store being unavailable,
-    to be kept and retried for good (review of 3.7.6).  The limit is lowered here, whatever the build's is."""
+    """Matching a source to the candidates binds no parameter per term: a part of 64,000 characters holds more distinct
+    terms than SQLite takes parameters (32,766 by default), and one per term would fail the whole capture as the store
+    being unavailable, to be kept and retried for good.  The limit is lowered here, whatever the build's is."""
     core, ctx = app
     opened = SQLiteStorage._open
 

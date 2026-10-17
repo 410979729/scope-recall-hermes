@@ -1,12 +1,11 @@
 """A wake that starts under an operator pause leaves at once, and a refused package step says why.
 
-Found upgrading a live instance on 2026-09-21.  The operator pause was set and every supervisor had
-left; then the gateway was stopped, and on its way out it launched one last detached wake with the
-usual start delay (``worker_min_interval_seconds``, 120 s there).  A supervisor read the pause only
-after that delay, and it runs from the package folder, so for two minutes a sleeping process held the
-folder the upgrade was about to replace.  The package step refused, correctly, and printed
-``{"state": "blocked", "error_type": "PackageUpgradeError"}``: no reason, for a refusal whose remedy is
-to wait a moment and run it again.
+With the operator pause set and every supervisor gone, a gateway that is stopped launches one last detached
+wake on its way out, with the usual start delay (``worker_min_interval_seconds``).  A supervisor that read the
+pause only after that delay would hold the package folder it runs from for that long, while the upgrade is
+about to replace the folder.  The package step then refuses, correctly, and must say why rather than print
+only ``{"state": "blocked", "error_type": "PackageUpgradeError"}``: the remedy is to wait a moment and run it
+again.
 """
 
 from __future__ import annotations

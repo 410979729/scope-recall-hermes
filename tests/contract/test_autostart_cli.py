@@ -1,7 +1,7 @@
 """The autostart CLI fills in the interpreter and principal an operator would otherwise
 have to spell out, and reports contract failures as JSON instead of a traceback.
 
-Regression for 2026-09-15: ``autostart plan --config ...`` without ``--python`` died with
+``autostart plan --config ...`` without ``--python`` must not die with
 ``TypeError: expected str, bytes or os.PathLike object, not NoneType`` inside pathlib."""
 
 from __future__ import annotations

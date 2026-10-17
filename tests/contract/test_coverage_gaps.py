@@ -1,6 +1,6 @@
 """A bounded read must say what it did not look at.
 
-Covers ``core/coverage.py`` and the three places background selection used to
+Covers ``core/coverage.py`` and the three places background selection could
 truncate in silence: the reserved profile windows, the request deadline, and
 the two background slots.
 """
@@ -221,10 +221,10 @@ def test_a_vector_failure_without_a_kind_is_still_named(app):
 
 
 def test_an_optional_channel_that_overruns_does_not_empty_the_packet(app):
-    """Measured: a vector port that respects its allowance and then fails still
-    returns a full packet, while one that overruns it by a second returned
-    *zero* items -- the lexical and recent candidates were all in hand and the
-    hydrate loop abandoned every one of them because the clock was gone."""
+    """A vector port that respects its allowance and then fails still
+    returns a full packet, while one that overruns it by a second must not return
+    *zero* items -- the lexical and recent candidates are all in hand and the
+    hydrate loop must not abandon every one of them because the clock is gone."""
     import time
 
     from scope_recall.runtime.models import AuxiliaryModelError

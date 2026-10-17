@@ -44,8 +44,8 @@ def capture(app, ctx, key, text, **changes):
 
 
 def test_nothing_deferred_takes_no_writer_lease(tmp_path, monkeypatch):
-    """Finding that nothing is deferred scans every source; under the writer lease that held every worker pass on
-    the shared store for 9.8 s (2026-09-27) with nothing deferred, and captures waiting for the lease failed."""
+    """Finding that nothing is deferred scans every source, so it takes no writer lease: under the lease it would hold
+    every worker pass on the shared store with nothing deferred, and captures waiting for the lease would fail."""
     app, ctx = app_at(tmp_path)
     capture(app, ctx, "TEST-plain", "TEST an ordinary source that is not deferred")
     writes = []
@@ -240,7 +240,7 @@ def test_memory_reinjection_is_source_only_at_capture_refill_and_on_demand(tmp_p
         work = conn.execute("SELECT subject_ref,work_type FROM work_items ORDER BY work_id").fetchall()
     finally:
         conn.close()
-    # A tool output is embedded, not consolidated: it is no derivation root (3.2.0rc6).
+    # A tool output is embedded, not consolidated: it is no derivation root.
     assert work == [(observed.event_refs[0].ref, "embed")]
     assert ref in {source.ref for source in app.search_sources(ctx, "TEST-ECHO-ANCHOR")}
     # An explicit request creates no work either, and writes nothing.
@@ -517,9 +517,10 @@ def test_unavailable_embedding_never_starves_consolidation_or_its_deferred_refil
 
 
 def test_a_repeated_tool_output_is_kept_as_a_source_only(tmp_path):
-    """77% of one instance's 132,000 tool outputs were byte-identical to an
-    earlier one, and each was embedded again.  The earlier copy carries the
-    vector and the lexical index lists both; a person saying it again is new."""
+    """A tool output byte-identical to an earlier one is kept as a source only:
+    embedding each repeat again would spend a vector on every copy.  The earlier
+    copy carries the vector and the lexical index lists both; a person saying it
+    again is new."""
     app, ctx = app_at(tmp_path)
     tool = replace(ctx, actor_origin="tool_observation")
     first = capture(app, tool, "TEST-tool/1", "TEST build log line 42", origin="tool_observation", role="tool")
@@ -527,7 +528,7 @@ def test_a_repeated_tool_output_is_kept_as_a_source_only(tmp_path):
     assert first.semantic_state == "pending" and first.admission == ()
     assert second.semantic_state == "not_scheduled"
     assert second.admission == ("admission_source_only:tool_output_repeat",)
-    # The first copy is embedded; a tool output is not consolidated (3.2.0rc6).
+    # The first copy is embedded; a tool output is not consolidated.
     assert counts(app)["source_events"] == 2 and counts(app)["work_items"] == 1
     assert len(app.search_sources(ctx, "build log line")) == 2
     human = capture(app, ctx, "TEST-user/1", "TEST build log line 42")
@@ -555,9 +556,9 @@ def test_a_withheld_tool_output_summary_is_kept_as_a_source_only(tmp_path, text)
 
 
 def test_a_tool_output_waiting_for_an_embedding_slot_never_holds_the_refill_page(tmp_path):
-    """A deferred tool output matched the refill's consolidation clause, work it is no longer owed
-    (3.2.0rc6).  With the embedding queue full it could not be scheduled either, so it came first
-    on every pass and a person's message deferred behind it was never refilled."""
+    """A deferred tool output does not match the refill's consolidation clause, work it is not owed.
+    With the embedding queue full it could not be scheduled either, so it would come first
+    on every pass and a person's message deferred behind it would never be refilled."""
     app, ctx, clock, _ = clocked_app(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
     tool = replace(ctx, actor_origin="tool_observation")
     capture(app, ctx, "TEST-fill", "TEST occupies the only consolidation and embedding slots")
@@ -579,8 +580,8 @@ def test_a_tool_output_waiting_for_an_embedding_slot_never_holds_the_refill_page
 
 
 def test_refill_counts_the_queue_once_however_many_scopes_the_worker_binds(tmp_path, monkeypatch):
-    """A shared store's worker binds every entry's scopes.  After an import queued 32,000 embeddings,
-    counting the queue once per scope and type took 90 s of a 120 s pass, and every pass ended
+    """A shared store's worker binds every entry's scopes.  After an import queued tens of thousands of embeddings,
+    counting the queue once per scope and type would take most of a pass, and every pass would end
     before it embedded anything."""
     import scope_recall.core.admission as admission
     from scope_recall.contracts import InstanceBinding, TrustedContext
