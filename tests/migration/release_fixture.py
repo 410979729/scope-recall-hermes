@@ -5,8 +5,8 @@ anything of the current package, exactly as ``legacy_fixture`` does for the
 2.0 baseline, so the fixture carries what that release really wrote: ``v3.1.0``
 wrote schema 1108, one copied lineage row per episode revision, its work queue;
 ``v3.1.2``, the release 3.2 users come from, wrote schema 1109.
-Every fixture the older upgrade tests used was a fresh store downgraded by
-hand, which is how a wrong version stamp in the 1107 step went unnoticed.
+A fresh store downgraded by hand can carry a wrong version stamp without anyone
+noticing; a store the release itself wrote cannot.
 """
 
 from __future__ import annotations
