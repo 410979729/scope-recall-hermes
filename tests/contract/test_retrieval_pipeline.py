@@ -326,24 +326,29 @@ def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(
 def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeypatch):
     """A statement cannot see the recall's deadline: the lexical one can run 18-21 s for a long Telegram message on a
     large shared store, and the recall would come back empty long after its deadline.  Past the deadline a candidate
-    statement is interrupted and the recall returns, saying so."""
-    import time as _time
+    statement is interrupted, before its end, and the recall returns, saying so."""
+    import sqlite3
 
     from scope_recall.core import retrieval_storage
 
     core, ctx = app
     capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/interrupt")
+    ended = []
 
     def slow(self, tx, context, *, limit):
-        tx._check().execute(
-            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) SELECT count(*) FROM n"
-        ).fetchone()
+        try:
+            tx._check().execute(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) SELECT count(*) FROM n"
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            ended.append(exc.sqlite_errorcode)
+            raise
+        ended.append("ran to its end")
         return ()
 
     monkeypatch.setattr(retrieval_storage.RetrievalStorage, "lexical", slow)
-    started = _time.monotonic()
     result = core.recall(ctx, recall_request(query="TEST 值班表", mode="current"), deadline_seconds=0.5)
-    assert _time.monotonic() - started < 2.5
+    assert ended == [sqlite3.SQLITE_INTERRUPT]
     assert "deadline_exceeded_collect" in result.gaps
     assert not [gap for gap in result.gaps if gap.startswith("sqlite_candidate_error")], result.gaps
     # The interrupt ends with the statement: the next recall's statements run as before.

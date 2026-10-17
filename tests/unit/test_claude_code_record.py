@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 from scope_recall.adapters.clients import transcript
+from v11_support import slowdown
 
 AT = "2026-09-25T11:16:54.627Z"
 
@@ -109,20 +110,18 @@ def test_the_reminders_the_desktop_app_puts_in_a_message_are_not_the_person_s():
 
 def test_many_unclosed_reminders_cost_one_pass():
     """A text of many unclosed openings is read in one pass, not by a lazy match retried from every opening, which is
-    quadratic."""
-    import time
-
+    quadratic: four times the openings take about four times as long (``slowdown``)."""
     from scope_recall.adapters.clients.boundary import claude_code_person_text
 
+    def read(text):
+        return claude_code_person_text(text), claude_code_person_text(text + "TEST</system-reminder>\nTEST 后面")
+
     text = "<system-reminder>\n" * 40_000
-    started = time.monotonic()
-    assert claude_code_person_text(text) == text
-    assert claude_code_person_text(text + "TEST</system-reminder>\nTEST 后面") == "TEST 后面"
-    assert time.monotonic() - started < 1.0
+    assert read(text) == (text, "TEST 后面")
+    assert slowdown(read, "<system-reminder>\n" * 10_000, text) < 8
     lone = "<system-reminder" * 40_000
-    started = time.monotonic()
     assert claude_code_person_text(lone) == lone
-    assert time.monotonic() - started < 1.0
+    assert slowdown(claude_code_person_text, "<system-reminder" * 10_000, lone) < 8
 
 
 def test_the_model_s_visible_text_is_said_and_nothing_else_of_it():

@@ -15,7 +15,7 @@ from scope_recall.core.recall_scope import query_scope
 
 from tests.contract.test_claims import app  # noqa: F401  (fixture; its clock says 2026-09-06T12:00:00Z)
 from tests.contract.test_recall_dating_and_order import _say
-from tests.v11_support import recall_request
+from tests.v11_support import recall_request, slowdown
 
 ENTRIES = {
     "tianji": "天姬",
@@ -258,31 +258,42 @@ def test_what_the_rest_of_a_day_s_question_asks(rest, asks):
 
 
 def test_a_long_rest_is_no_day_question_and_is_read_at_once():
-    """Twenty clock times each read two ways must not take seconds to reject, doubling with each more, while holding
-    the process's lock; nor may a long rest make the trailing strip quadratic."""
-    import time as _time
-
+    """Twenty clock times each read two ways would take seconds to reject, doubling with each more, while holding
+    the process's lock, and so would a part of the day before each time read as one time and as two; nor may a long
+    rest make the trailing strip quadratic.  Four times the times take no more than about four times as long
+    (``slowdown``)."""
     from scope_recall.core.recall_scope import _DAY_QUESTION, asks_what_was_said
 
     assert asks_what_was_said("帮我看看" * 16 + "聊了什么") is False
-    times = " ".join(f"{hour:02d}:{minute:02d}:00" for hour in range(5, 10) for minute in (0, 15, 30, 45)) + " 哪班车"
-    began = _time.perf_counter()
-    assert _DAY_QUESTION.fullmatch("".join(times.split())) is None
-    # A part of the day before its time must not be read as one time and as two (1.2 s at 81 characters).
+    stamps = [f"{hour:02d}:{minute:02d}:00" for hour in range(5, 10) for minute in (0, 15, 30, 45)]
+
+    def times(count):
+        return "".join(stamps[:count]) + "哪班车"
+
+    assert _DAY_QUESTION.fullmatch(times(20)) is None
     assert _DAY_QUESTION.fullmatch("上午1点" * 24 + "X") is None
-    assert _time.perf_counter() - began < 1.0
+    assert slowdown(_DAY_QUESTION.fullmatch, times(5), times(20)) < 8
+    assert slowdown(_DAY_QUESTION.fullmatch, "上午1点" * 6 + "X", "上午1点" * 24 + "X") < 8
 
 
-def test_a_long_message_or_one_naming_many_entries_names_no_scope_and_is_read_at_once():
-    """A message too long to be a question is found so before any entry's name is looked for in it: a log naming
-    instances hundreds of times would take a tenth of a second, and a name before a long run of digits a fifth."""
-    import time as _time
+def test_a_long_message_or_one_naming_many_entries_names_no_scope_and_is_read_at_once(monkeypatch):
+    """A message too long to be a question is found so before any day or entry is looked for in it: a log naming
+    instances hundreds of times would take a tenth of a second to read for their names, and a name before a long run
+    of digits a fifth.  A short one naming many entries names no scope either."""
+    from scope_recall.core import recall_scope
 
-    began = _time.perf_counter()
+    read = []
+    named_days = recall_scope._named_days
+
+    def days(text, today):
+        read.append(text)
+        return named_days(text, today)
+
+    monkeypatch.setattr(recall_scope, "_named_days", days)
     assert query_scope("昨天" + "天姬" * 4095, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
-    assert query_scope("今天 " + "codex " * 20, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
     assert query_scope("今天codex" + "1" * 8000 + "-", now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
-    assert _time.perf_counter() - began < 0.5
+    assert read == [], "neither is read for its days or its entries"
+    assert query_scope("今天 " + "codex " * 20, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
 
 
 @pytest.mark.parametrize(
