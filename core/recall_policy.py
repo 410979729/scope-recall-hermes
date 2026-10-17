@@ -640,3 +640,12 @@ def applicability(context: SearchContext, project_id: str | None, branch_id: str
 
 def rrf_score(ranks: Iterable[int], *, k: int = 60) -> float:
     return sum(1.0 / (k + rank) for rank in ranks)
+
+
+def term_weight(frequency: int, corpus: int) -> float:
+    """The information one query term carries in a store of ``corpus`` sources, ``frequency`` of which hold it: the
+    inverse document frequency BM25 weighs a term by, kept above zero.  A term most sources hold separates them hardly
+    at all, one a few hold separates them well: a source matching a term one source in a thousand holds says more
+    than one matching two that most hold."""
+    corpus = max(corpus, frequency)
+    return math.log(1.0 + (corpus - frequency + 0.5) / (frequency + 0.5))

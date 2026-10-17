@@ -14,13 +14,13 @@
   "metrics": {
     "auto": {
       "all": {
-        "recall@1": 0.3339,
+        "recall@1": 0.3411,
         "recall@3": 0.6863,
         "recall@6": 0.7333,
         "recall@10": 0.7333,
-        "mrr": 0.5562,
-        "ndcg@10": 0.5938,
-        "outdated_above_current": 0.3667,
+        "mrr": 0.5598,
+        "ndcg@10": 0.5965,
+        "outdated_above_current": 0.3333,
         "answered": 0.9929,
         "abstained": 0.0,
         "abstention_balanced_accuracy": 0.4965
@@ -53,13 +53,13 @@
         "answered": 1.0
       },
       "knowledge_update": {
-        "recall@1": 0.3333,
+        "recall@1": 0.3667,
         "recall@3": 0.7333,
         "recall@6": 0.7667,
         "recall@10": 0.7667,
-        "mrr": 0.5289,
-        "ndcg@10": 0.5899,
-        "outdated_above_current": 0.3667,
+        "mrr": 0.5456,
+        "ndcg@10": 0.6022,
+        "outdated_above_current": 0.3333,
         "answered": 0.9667
       },
       "aggregation": {

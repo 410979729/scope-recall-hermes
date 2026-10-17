@@ -1,5 +1,6 @@
 """Deterministic P08 core retrieval contracts using synthetic TEST identity."""
 
+import re
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -259,8 +260,10 @@ def test_P08_the_lexical_statement_starts_from_the_query_s_terms_however_many_th
             self._conn = conn
 
         def execute(self, sql, params=()):
-            if "GROUP_CONCAT(DISTINCT hex(" in sql:
-                plans.append(self._conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()[0][3])
+            if sql.startswith("WITH searched"):
+                steps = [row[3] for row in self._conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+                # The joined tables, as the plan reads them: the searched terms, the terms, postings, sources.
+                plans.append([step for step in steps if re.match(r"(?:SCAN|SEARCH) [stpe]\b", step)])
             return self._conn.execute(sql, params)
 
     def planned(self, tx, context, *, limit):
@@ -276,7 +279,10 @@ def test_P08_the_lexical_statement_starts_from_the_query_s_terms_however_many_th
     for count in (4, 12, 24, 40, 64):
         result = core.recall(ctx, recall_request(query=" ".join(words[:count]), mode="current"), deadline_seconds=10)
         found[count] = target.ref in [item.ref for item in result.items]
-    assert len(plans) >= 5 and all(plan.startswith("SEARCH t ") for plan in plans), plans
+    assert len(plans) >= 5, plans
+    for plan in plans:
+        assert [step.split(" ")[1] for step in plan] == ["s", "t", "p", "e"], plan
+        assert "(term=?)" in plan[1] and "(source_id=?)" in plan[3], plan
     assert found[4] and found[12], found
 
 
@@ -491,6 +497,29 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     with core.storage.read(reader) as tx:
         pool = RetrievalStorage().lexical(tx, search, limit=100)
     assert (pool[0].ref, pool[-1].ref) == (target.ref, reinjected.ref)
+
+
+def test_P08_lexical_pool_ranks_one_rare_term_above_two_common_ones(app):
+    """The pool takes the sources whose matched terms carry the most information (``term_weight``): one sharing the
+    question's rare word goes before sixty newer ones sharing two of its common words, which would fill all 47 places
+    by count.  Admission still asks for the question's words: one of them alone answers nothing, however common."""
+    core, ctx = app
+    rare = capture(core, ctx, "quarkonium 读数已归档。", key="TEST-p08/information/rare", when="2026-09-01T12:00:00Z")
+    common = {
+        capture(
+            core, ctx, f"flux report entry {index}", key=f"TEST-p08/information/{index}", when="2026-09-02T12:00:00Z"
+        ).ref
+        for index in range(60)
+    }
+    lone = capture(core, ctx, "flux 只出现一次。", key="TEST-p08/information/lone", when="2026-09-03T12:00:00Z")
+    reader = replace(ctx, session_id="TEST-p08-information-reader")
+    pool = [candidate.ref for candidate in _lexical_pool(core, reader, "quarkonium flux report")]
+    assert pool[0] == rare.ref and len(pool) == 47 and set(pool[1:]) <= common
+    # Every source shares one of these two words; the newest shares only the common one.
+    query = "flux quarkonium"
+    assert lone.ref in [candidate.ref for candidate in _lexical_pool(core, reader, query)]
+    for mode in ("current", "history"):
+        assert _recalled(core, reader, query, mode) == [], mode
 
 
 # -- Chinese synonyms ------------------------------------------------------------

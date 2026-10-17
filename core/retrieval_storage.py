@@ -28,6 +28,7 @@ from .recall_policy import (
     meaningful_query_terms,
     query_is_relevant,
     synonym_expansions,
+    term_weight,
 )
 from .recall_scope import says_something
 from .retrieval import (
@@ -80,29 +81,27 @@ def _marks(values: Iterable[object]) -> str:
 
 def _discriminating_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()) -> tuple[str, ...]:
     """The terms the lexical statement searches (``_searched_terms``)."""
-    return _searched_terms(tx, terms, keep)[0]
+    conn = tx._check()
+    ceiling = _common_term_ceiling(_corpus(conn))
+    return _searched_terms(terms, lexical_index.document_frequency(conn, terms), ceiling, keep)[0]
 
 
-def _searched_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _searched_terms(
+    terms: tuple[str, ...], frequencies: dict[str, int], ceiling: int, keep: tuple[str, ...] = ()
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """(the terms the lexical statement searches, those the posting budget left out of it).
 
-    Drop query terms too common to separate anything.
-
-    Document frequency is read once for the query's own terms, which is a
-    clustered range scan: ``lexical_postings`` is WITHOUT ROWID keyed on
-    ``(term_id, source_id)``.  If every term is that common the query keeps
-    its rarest ones: answering from a weak signal beats answering from none,
-    and the vector and recent channels still contribute.
+    Drop query terms too common to separate anything: those ``ceiling`` or more sources hold, by the document
+    frequencies read for the query's own terms (a clustered range scan: ``lexical_postings`` is WITHOUT ROWID keyed on
+    ``(term_id, source_id)``).  If every term is that common the query keeps its rarest ones: answering from a weak
+    signal beats answering from none, and the vector and recent channels still contribute.
 
     ``keep`` is never dropped however common: the query's hard identifiers,
     which hydration requires of every source.  Without them the SQL cannot
     reach a single source hydration would admit.
     """
-    conn = tx._check()
-    frequencies = lexical_index.document_frequency(conn, terms)
     if not frequencies:
         return terms, ()
-    ceiling = _common_term_ceiling(conn)
     kept = tuple(term for term in terms if term in keep or frequencies.get(term, 0) < ceiling)
     if kept:
         searched = _within_posting_budget(kept, frequencies, keep)
@@ -151,13 +150,17 @@ def _held_terms(tx, source_ids: list[int], terms: tuple[str, ...]) -> dict[int, 
     return held
 
 
-def _common_term_ceiling(conn) -> int:
+def _corpus(conn) -> int:
+    """How many source versions the store holds, the corpus a term's document frequency is a share of."""
+    return int(conn.execute("SELECT COUNT(*) FROM source_events").fetchone()[0] or 0)
+
+
+def _common_term_ceiling(corpus: int) -> int:
     """Document frequency at which a term is too common to separate anything."""
-    corpus = int(conn.execute("SELECT COUNT(*) FROM source_events").fetchone()[0] or 0)
     return max(_LEXICAL_DF_FLOOR, int(corpus * _LEXICAL_DF_FRACTION))
 
 
-def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...]) -> dict[str, str]:
+def _discriminating_synonyms(conn, synonyms: dict[str, str], terms: tuple[str, ...], ceiling: int) -> dict[str, str]:
     """The synonym terms worth searching, each still mapped to the query term it stands in for.
 
     A synonym term goes when the query term it stands in for was pruned, and it
@@ -168,11 +171,7 @@ def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...
     live = {term: original for term, original in synonyms.items() if original in terms}
     if not live:
         return {}
-    conn = tx._check()
     frequencies = lexical_index.document_frequency(conn, live)
-    if not frequencies:
-        return {}
-    ceiling = _common_term_ceiling(conn)
     return {term: original for term, original in live.items() if 0 < frequencies.get(term, 0) < ceiling}
 
 
@@ -305,16 +304,23 @@ class RetrievalStorage(RetrievalHydration):
         # never hydrated.
         requested = hard_identifiers(context.query)
         identifiers = tuple(term for term in terms if requested.intersection(hard_identifiers(term)))
-        terms, cut = _searched_terms(tx, terms, keep=identifiers)
-        # A synonym term matches as the query term it stands in for, so hits
-        # and matched terms still count the query's own terms, once each.
-        # Without a synonym the statement and its parameters are unchanged.
-        synonyms = _discriminating_synonyms(tx, synonym_expansions(context.query), terms)
-        credit = f"CASE t.term {' '.join('WHEN ? THEN ?' for _ in synonyms)} ELSE t.term END" if synonyms else "t.term"
-        credits = tuple(value for pair in synonyms.items() for value in pair)
+        conn = tx._check()
+        frequencies = lexical_index.document_frequency(conn, terms)
+        corpus = _corpus(conn)
+        ceiling = _common_term_ceiling(corpus)
+        terms, cut = _searched_terms(terms, frequencies, ceiling, keep=identifiers)
+        # A synonym term matches as the query term it stands in for: a source is credited with that term, at its
+        # weight, once however many of its stand-ins it holds, so matched terms still count the query's own.
+        synonyms = _discriminating_synonyms(conn, synonym_expansions(context.query), terms, ceiling)
+        # Each searched term, the query term it is credited to, that term's weight (``term_weight``) in millionths
+        # and whether it names a hard identifier.  Whole numbers sum exactly, so sources matching the same terms tie
+        # and the more recent goes first.
+        weights = {term: round(term_weight(frequencies.get(term, 0), corpus) * 1e6) for term in terms}
+        searched = [
+            *((term, term, weights[term], term in identifiers) for term in terms),
+            *((term, original, weights[original], False) for term, original in synonyms.items()),
+        ]
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
-        term_marks, scope_marks = _marks((*terms, *synonyms)), _marks(scopes)
-        identified = f"MAX(t.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
         current = (
             ""
             if context.mode in {"history", "as_of"}
@@ -322,8 +328,7 @@ class RetrievalStorage(RetrievalHydration):
         )
         as_of = ""
         params: list[object] = [
-            *terms,
-            *synonyms,
+            *(value for row in searched for value in row),
             *scopes,
             context.trusted_context.project_id,
             context.trusted_context.branch_id,
@@ -334,32 +339,38 @@ class RetrievalStorage(RetrievalHydration):
         # The statement starts from the query's terms.  A store keeps no planner statistics, so SQLite weighs the terms
         # against the scopes by rule of thumb, and with a long enough query it started from the scope index instead:
         # every event of the audience read one by one, 21 s for a Telegram message of 72 characters on the shared
-        # store, and the recall empty at its deadline.  ``+`` keeps the scope filter from choosing the index.
-        rows = (
-            tx._check()
-            .execute(
-                f"""SELECT e.event_id,e.source_revision,e.source_id,COUNT(DISTINCT {credit}) AS hits,
-                       GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
-                FROM {lexical_index.JOIN}
-                WHERE t.term IN ({term_marks}) AND +e.scope_id IN ({scope_marks})
+        # store, and the recall empty at its deadline.  ``CROSS JOIN`` keeps the searched terms the outer loop, and
+        # ``+`` keeps the scope filter from choosing the index.  A source's rows fold to one per query term it is
+        # credited with, and the pool takes the sources naming a hard identifier first, memory reinjected into a
+        # conversation last, and between them those whose matched terms carry the most information, the more recent
+        # first among equals: a source sharing the query's one rare word goes before those sharing two of its
+        # common ones, which would otherwise fill the pool.
+        rows = conn.execute(
+            f"""WITH searched(term,credit,weight,identifier) AS (VALUES {",".join("(?,?,?,?)" for _ in searched)})
+            SELECT event_id,source_revision,source_id,GROUP_CONCAT(hex(credit)) AS matched_term_hexes
+            FROM (
+                SELECT e.event_id,e.source_revision,e.source_id,e.occurred_at,s.credit,
+                       MAX(s.weight) AS weight,MAX(s.identifier) AS identifier,
+                       CASE
+                           WHEN e.role='tool' AND (
+                               e.origin='memory_reinjection'
+                               OR (e.origin='imported' AND e.source_original_origin='memory_reinjection')
+                           ) THEN 1 ELSE 0
+                       END AS reinjected
+                FROM searched s CROSS JOIN {lexical_index.JOIN}
+                WHERE t.term=s.term AND +e.scope_id IN ({_marks(scopes)})
                   AND e.read_blocked=0 AND (e.project_id IS NULL OR e.project_id=?)
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.event_id AND b.read_blocked=1)
                   {current}{as_of}
-                GROUP BY e.event_id,e.source_revision
-                ORDER BY CASE
-                    WHEN e.role='tool' AND (
-                        e.origin='memory_reinjection'
-                        OR (e.origin='imported' AND e.source_original_origin='memory_reinjection')
-                    ) THEN 1 ELSE 0
-                END,
-                {identified}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
-                LIMIT ?""",
-                (*credits, *credits, *params, *identifiers, limit),
+                GROUP BY e.source_id,s.credit
             )
-            .fetchall()
-        )
+            GROUP BY source_id
+            ORDER BY reinjected,MAX(identifier) DESC,SUM(weight) DESC,occurred_at DESC,event_id,source_revision DESC
+            LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
         # The posting budget chose which rows the statement found; what a found row holds of the terms it left out
         # still counts: admission weighs a row's matches against the whole query.
         held = _held_terms(tx, [row["source_id"] for row in rows], cut) if cut and rows else {}

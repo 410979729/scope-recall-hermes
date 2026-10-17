@@ -139,6 +139,7 @@ SUITES = {
         "tests/unit/test_check_runner.py",
         "tests/unit/test_secret_patterns.py",
         "tests/unit/test_recall_budget.py",
+        "tests/unit/test_term_weight.py",
         "tests/unit/test_contract_schemas.py",
         "tests/unit/test_claude_code_record.py",
         "tests/unit/test_workbuddy_record.py",
