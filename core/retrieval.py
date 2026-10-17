@@ -111,8 +111,9 @@ class SearchContext:
     zone: tzinfo | None = None
     #: The days and entries the question names, read once the store's entries are known (``RetrievalPipeline``).
     scope: QueryScope | None = None
-    #: The time the question names (``recall_scope.query_time``), read once (``RetrievalPipeline``): what was said
-    #: then ranks first, and is searched for the question's other words (``RetrievalStorage.dated``).
+    #: The time the question names (``recall_scope.query_time``), read once for a recall of what holds now and never
+    #: for a historical or as-of read (``RetrievalPipeline``): what was said then ranks first, and is searched for the
+    #: question's other words (``RetrievalStorage.dated``).
     time: QueryTime | None = None
     #: Since when the asking host's model still holds this session's own turns word for word: its last compaction,
     #: or the session's start when it has had none.  An automatic recall leaves out what stands only on those turns

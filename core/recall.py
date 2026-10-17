@@ -232,7 +232,8 @@ def _weighed_by_time(
     hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext
 ) -> list[tuple[CandidateRef, RetrievedObject]]:
     """``hydrated`` with each candidate said within the time the question names (``SearchContext.time``) weighed by
-    ``IN_TIME_WEIGHT``.  The others keep their scores, and nothing changes for a question that names no time."""
+    ``IN_TIME_WEIGHT``.  The others keep their scores, and nothing changes for a question that names no time or a read
+    that leaves it unread (``RetrievalPipeline.search``)."""
     if context.time is None:
         return hydrated
     windows = tuple((utc_timestamp(start), utc_timestamp(end)) for start, end in context.time.windows)
@@ -733,7 +734,7 @@ class RetrievalPipeline:
                 else (candidate, obj)
                 for candidate, obj in hydrated
             ]
-        if context is not None and context.mode not in {"history", "as_of"}:
+        if context is not None:
             hydrated = _weighed_by_time(hydrated, context)
         ranked = sorted(
             hydrated,
@@ -818,7 +819,11 @@ class RetrievalPipeline:
         if not isinstance(context, SearchContext):
             raise ContractError("INPUT_INVALID", "search_context")
         limits = effective_limits(context)
-        working = replace(context, limits=limits, time=query_time(context.query, now=context.now, zone=context.zone))
+        # A historical or as-of read is left as it was: the time a question names is read for a recall of what holds
+        # now, and no channel searches it or weighs by it otherwise.
+        reads_time = context.mode not in {"history", "as_of"}
+        time = query_time(context.query, now=context.now, zone=context.zone) if reads_time else None
+        working = replace(context, limits=limits, time=time)
         if self._remaining(working) <= 0:
             return _empty_result(working, "deadline_exceeded")
         gaps: list[str] = []

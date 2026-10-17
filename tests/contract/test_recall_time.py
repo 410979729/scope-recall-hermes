@@ -12,6 +12,7 @@ import time
 from dataclasses import replace
 from datetime import UTC
 
+import pytest
 from scope_recall.core.recall_policy import rrf_score
 from scope_recall.core.recall_scope import query_time
 from scope_recall.core.retrieval import CandidateRef, RetrievedObject, SearchContext
@@ -64,9 +65,9 @@ def test_within_the_time_a_candidate_one_channel_ranked_goes_before_two_channels
     assert fused == ["event-newest", "event-newer", "event-day"]
 
 
-def _refs(core, ctx, query: str, *, mode: str = "auto") -> list[str]:
+def _refs(core, ctx, query: str, **request) -> list[str]:
     reader = replace(ctx, session_id="TEST-time-reader")
-    packet = core.recall_packet(reader, recall_request(query=query, mode=mode), deadline_seconds=5, zone=UTC)
+    packet = core.recall_packet(reader, recall_request(query=query, **request), deadline_seconds=5, zone=UTC)
     return [item["ref"] for item in packet["items"]]
 
 
@@ -91,6 +92,23 @@ def test_what_was_said_on_the_day_asked_about_goes_before_newer_notes(app):
         refs = _refs(core, ctx, "Orchard release status on September 2?", mode=mode)
         assert refs[0] == second.ref, mode
         assert {fourth.ref, fifth.ref} <= set(refs), mode
+
+
+@pytest.mark.parametrize("request_mode", ({"mode": "history"}, {"mode": "as_of", "as_of": "2026-09-06T00:00:00Z"}))
+def test_a_historical_or_as_of_read_is_left_as_it_was(app, monkeypatch, request_mode):
+    """Read through history or as of a moment, a question naming a day gets the packet it gets without the day, the
+    newest note first, and the same with the time reading gone: no channel searches the day, nothing is weighed by it.
+    Asked of what holds now, the day's note goes first."""
+    from scope_recall.core import recall as recall_module
+
+    core, ctx = app
+    second, _fourth, fifth = _status_notes(core, ctx)
+    dated = _refs(core, ctx, "Orchard release status on September 2?", **request_mode)
+    assert dated == _refs(core, ctx, "Orchard release status?", **request_mode)
+    assert dated[0] == fifth.ref
+    assert _refs(core, ctx, "Orchard release status on September 2?")[0] == second.ref
+    monkeypatch.setattr(recall_module, "query_time", lambda *_args, **_kwargs: None)
+    assert _refs(core, ctx, "Orchard release status on September 2?", **request_mode) == dated
 
 
 def test_the_answer_said_on_another_day_is_still_delivered(app):
