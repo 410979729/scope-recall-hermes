@@ -3,6 +3,7 @@
 Each store is a TEST installation in the test's own folder, with synthetic messages only.
 """
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -17,8 +18,9 @@ from scope_recall.adapters.hermes.shared_entries import read_shared_payload
 from scope_recall.contracts import ContractError, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core import restore as core_restore
-from scope_recall.core.restore import InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest
+from scope_recall.core.restore import InstallationMaintenance, export_deletion_ledger, ledger_digest
 from scope_recall.core.schema import SCHEMA_VERSION
+from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterLease
 from scope_recall.maintenance import cli, restore
 from scope_recall.maintenance.doctor import run_doctor
@@ -27,6 +29,9 @@ from scope_recall.maintenance.shared import store_binding
 from v11_support import downgrade_store, source_event
 
 SECRET = "TEST-forgotten the door code is TEST-4711"
+#: Beside the store while a restore is pending, by the names every release that reads the ledger format uses.
+MARKER = "restore-required.json"
+KEPT_LEDGER = "restore-ledger.json"
 
 
 @dataclass
@@ -129,18 +134,13 @@ def test_going_back_to_a_backup_keeps_what_was_forgotten_since(store, capsys):
         "--apply",
     )
     assert code == 0, done
-    assert (done["status"], done["restore_pending"], done["wal_truncated"], done["purges_queued"]) == (
-        "restored",
-        False,
-        True,
-        1,
-    )
+    assert (done["status"], done["restore_pending"], done["purges_queued"]) == ("restored", False, 1)
     assert store.core.source(store.ctx, secret.ref, 1) is None
     assert not store.core.search_sources(store.ctx, "TEST-4711", history=True)
     assert not store.words(SECRET), "the snapshot's copy of the forgotten words left the store's files"
     assert store.core.source(store.ctx, kept.ref, 1) is not None, "what the backup held and nobody forgot is back"
     assert store.core.source(store.ctx, later.ref, 1) is None, "what came after the backup is not"
-    assert not (store.data / restore.LEDGER_FILENAME).exists()
+    assert SECRET not in (store.data / KEPT_LEDGER).read_text(encoding="utf-8"), "the ledger kept is content-free"
     with closing(sqlite3.connect(done["backup"]["path"])) as kept_copy:
         assert kept_copy.execute("PRAGMA quick_check").fetchone()[0] == "ok", "the store as it was is kept"
     with closing(sqlite3.connect(store.data / "memory.sqlite3")) as conn:
@@ -148,9 +148,9 @@ def test_going_back_to_a_backup_keeps_what_was_forgotten_since(store, capsys):
 
 
 def test_a_store_closed_for_a_restore_without_a_ledger_beside_it_is_reopened(store, capsys):
-    """``rollback --apply`` closed a store holding sources this way and kept no ledger: every host refused it and no
-    command opened it again.  ``restore`` reads the ledger through the fence from the store, which nothing replaced,
-    and finishes; given a snapshot of the closed store itself, the store reopens as it was."""
+    """A store closed for a restore with no ledger kept beside it is finished by ``restore``, which reads the ledger
+    through the fence from the store nothing has replaced; given a snapshot of the closed store itself, the store
+    opens again as it was."""
     secret = store.say(SECRET)
     store.forget(secret)
     kept = store.say("TEST-kept a message the store holds")
@@ -158,8 +158,15 @@ def test_a_store_closed_for_a_restore_without_a_ledger_beside_it_is_reopened(sto
         TrustedContext(store.ctx.binding, "TEST-closer", store.ctx.binding.scope_ids, "host_generated")
     )
     ledger = export_deletion_ledger(store.core.storage, authority)
-    begin_restore(store.core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
-    assert fenced(store)
+    binding = store.ctx.binding
+    marker = dict(
+        installation_id=binding.installation_id,
+        agent_id=binding.agent_id,
+        data_directory=str(binding.data_directory),
+        expected_ledger_sha256=ledger_digest(ledger),
+    )
+    (store.data / MARKER).write_text(json.dumps(marker), encoding="utf-8")
+    assert fenced(store) and not (store.data / KEPT_LEDGER).exists()
     itself = backup(capsys, store, "TEST-closed-store")
 
     code, done = run(
@@ -194,7 +201,7 @@ class _CopyCutShort:
         self._connection.backup(target, pages=1, progress=stop)
 
 
-@pytest.mark.parametrize("stage", ["open", "copy", "replay"])
+@pytest.mark.parametrize("stage", ["open", "copy", "replay", "truncate"])
 def test_a_run_cut_short_keeps_the_store_closed_and_the_next_run_finishes_it(store, capsys, monkeypatch, stage):
     secret = store.say(SECRET)
     snapshot = backup(capsys, store, "TEST-before-forget")
@@ -226,15 +233,18 @@ def test_a_run_cut_short_keeps_the_store_closed_and_the_next_run_finishes_it(sto
             def interrupted(*args, **kwargs):
                 raise KeyboardInterrupt
 
-            monkeypatch.setattr(restore, "replay_deletion_ledger", interrupted)
+            if stage == "replay":
+                monkeypatch.setattr(restore, "replay_deletion_ledger", interrupted)
+            else:
+                monkeypatch.setattr(SQLiteStorage, "truncate_wal", interrupted)
         with pytest.raises(KeyboardInterrupt):
             cli.main([*arguments, "--backup-dir", str(store.tmp / "TEST-kept"), "--apply"])
         capsys.readouterr()
     monkeypatch.undo()
-    assert fenced(store) and (store.data / restore.LEDGER_FILENAME).is_file()
+    assert fenced(store) and (store.data / KEPT_LEDGER).is_file()
     with closing(sqlite3.connect(f"{(store.data / 'memory.sqlite3').as_uri()}?mode=ro", uri=True)) as conn:
         held = conn.execute("SELECT count(*) FROM source_events WHERE event_id=?", (later.ref,)).fetchone()[0]
-    assert held == (1 if stage != "replay" else 0), "a copy cut short leaves the store as it was"
+    assert held == (1 if stage in ("open", "copy") else 0), "a copy cut short leaves the store as it was"
     assert "restore_pending" in run_doctor(host="codex", instance_root=store.home).capability_gaps
 
     code, plan = run(capsys, *arguments)
@@ -331,7 +341,7 @@ def test_a_store_some_process_still_writes_or_holds_open_is_left_alone(store, ca
     monkeypatch.undo()
     code, out = run(capsys, "restore", *store.target(), "--snapshot", str(snapshot), "--apply")
     assert (code, out["error"], out["restore_pending"]) == (2, "backup_required", False)
-    assert not (store.data / restore.LEDGER_FILENAME).exists()
+    assert not (store.data / KEPT_LEDGER).exists()
 
 
 def test_a_newer_release_prepares_and_the_release_that_reads_the_snapshot_finishes(store, capsys, monkeypatch):
@@ -409,3 +419,214 @@ def test_a_shared_store_is_restored_by_its_root(tmp_path, capsys, monkeypatch):
     code, done = run(capsys, *arguments, "--apply")
     assert code == 0 and (done["status"], done["installation_kind"]) == ("restored", "shared"), done
     assert shared.core.source(ctx, secret.ref, 1) is None and not shared.words(SECRET)
+
+
+def test_admission_stays_closed_until_the_log_that_held_the_snapshot_is_truncated(store, capsys, monkeypatch):
+    """A reader still on an older snapshot holds the truncation back: the copy put the snapshot's pages, forgotten
+    words included, into ``memory.sqlite3-wal``, so the store stays closed and the same command finishes later."""
+    secret = store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-before-forget")
+    store.forget(secret)
+    monkeypatch.setattr(restore, "_STORE_SECONDS", 0.5)
+    arguments = ["restore", *store.target(), "--snapshot", str(snapshot)]
+    reader = sqlite3.connect(store.data / "memory.sqlite3", isolation_level=None)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM source_events").fetchone()
+        code, out = run(capsys, *arguments, "--backup-dir", str(store.tmp / "TEST-kept"), "--apply")
+    finally:
+        reader.execute("ROLLBACK")
+        reader.close()
+    assert (code, out.get("field"), out["restore_pending"]) == (2, "wal_busy", True), out
+    assert fenced(store) and (store.data / KEPT_LEDGER).is_file()
+
+    code, done = run(capsys, *arguments, "--apply")
+    assert code == 0 and done["status"] == "restored", done
+    assert not fenced(store) and store.core.source(store.ctx, secret.ref, 1) is None
+    assert not store.words(SECRET)
+
+
+class _WrittenHalfWay:
+    """A file whose writer is stopped half way through its one write."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._stream.close()
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+    def write(self, text):
+        self._stream.write(text[: len(text) // 2])
+        self._stream.flush()
+        raise KeyboardInterrupt
+
+
+def test_a_marker_cut_short_while_it_is_written_never_strands_the_store(store, capsys, monkeypatch):
+    secret = store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-before-forget")
+    store.forget(secret)
+    actual = Path.open
+
+    def cut(self, mode="r", *args, **kwargs):
+        stream = actual(self, mode, *args, **kwargs)
+        return _WrittenHalfWay(stream) if "x" in mode and MARKER in self.name else stream
+
+    monkeypatch.setattr(Path, "open", cut)
+    arguments = ["restore", *store.target(), "--snapshot", str(snapshot), "--backup-dir"]
+    with pytest.raises(KeyboardInterrupt):
+        cli.main([*arguments, str(store.tmp / "TEST-kept"), "--apply"])
+    capsys.readouterr()
+    monkeypatch.undo()
+    marker = store.data / MARKER
+    assert not marker.exists() or json.loads(marker.read_text(encoding="utf-8")), "a marker is whole or absent"
+
+    code, done = run(capsys, *arguments, str(store.tmp / "TEST-kept-again"), "--apply")
+    assert code == 0 and done["status"] == "restored", done
+    assert store.core.source(store.ctx, secret.ref, 1) is None and not fenced(store)
+
+
+@pytest.mark.parametrize("left", ["empty", "partial"])
+def test_a_marker_left_partial_or_empty_is_written_again_while_nothing_replaced_the_store(store, capsys, left):
+    secret = store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-before-forget")
+    store.forget(secret)
+    later = store.say("TEST-later a message said after the backup")
+    binding = store.ctx.binding
+    whole = json.dumps(
+        dict(
+            installation_id=binding.installation_id,
+            agent_id=binding.agent_id,
+            data_directory=str(binding.data_directory),
+            expected_ledger_sha256="0" * 64,
+        )
+    )
+    (store.data / MARKER).write_text("" if left == "empty" else whole[: len(whole) // 2], encoding="utf-8")
+    assert fenced(store)
+
+    arguments = ["restore", *store.target(), "--snapshot", str(snapshot)]
+    code, plan = run(capsys, *arguments)
+    assert code == 0 and (plan["restore_pending"], plan["ledger_kept"], plan["backup_required"]) == (True, False, True)
+    code, done = run(capsys, *arguments, "--backup-dir", str(store.tmp / "TEST-kept"), "--apply")
+    assert code == 0 and done["status"] == "restored", done
+    assert not fenced(store) and store.core.source(store.ctx, secret.ref, 1) is None
+    assert store.core.source(store.ctx, later.ref, 1) is None
+    with closing(sqlite3.connect(done["backup"]["path"])) as kept:
+        held = kept.execute("SELECT count(*) FROM source_events WHERE event_id=?", (later.ref,)).fetchone()[0]
+    assert held == 1, "the store as it was when it was closed is kept"
+
+
+def test_a_damaged_marker_beside_a_ledger_newer_than_the_store_is_refused(store, capsys, monkeypatch):
+    """A run stopped after its copy leaves the snapshot in the store and the ledger beside it; with the marker then
+    damaged, only that ledger knows what was forgotten since, so the marker is not written again from the store."""
+    secret = store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-before-forget")
+    store.forget(secret)
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(restore, "replay_deletion_ledger", interrupted)
+    arguments = ["restore", *store.target(), "--snapshot", str(snapshot)]
+    with pytest.raises(KeyboardInterrupt):
+        cli.main([*arguments, "--backup-dir", str(store.tmp / "TEST-kept"), "--apply"])
+    capsys.readouterr()
+    monkeypatch.undo()
+    (store.data / MARKER).write_text("{", encoding="utf-8")
+    before = (store.data / "memory.sqlite3").read_bytes()
+
+    code, out = run(capsys, *arguments, "--backup-dir", str(store.tmp / "TEST-kept-again"), "--apply")
+    assert (code, out.get("field"), out["restore_pending"]) == (2, "marker_damaged", True), out
+    assert (store.data / "memory.sqlite3").read_bytes() == before and fenced(store)
+
+
+@pytest.mark.parametrize("change", ["write", "replace"])
+def test_the_snapshot_copied_is_the_one_checked(store, capsys, monkeypatch, change):
+    """Whatever happens to the snapshot's file once it is checked, what is copied over the store is what was
+    checked: another writer is kept out, and the file it was is the one read."""
+    kept = store.say("TEST-kept the meeting moved to Thursday")
+    secret = store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-checked")
+    checked = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    store.say("TEST-injected a message the checked snapshot does not hold")
+    other = backup(capsys, store, "TEST-other")
+    store.forget(secret)
+    actual = restore.begin_restore
+
+    def changed_meanwhile(*args, **kwargs):
+        try:
+            if change == "write":
+                with closing(sqlite3.connect(snapshot, timeout=0.2)) as conn:
+                    conn.execute("UPDATE source_events SET content='TEST-injected' WHERE event_id=?", (kept.ref,))
+                    conn.commit()
+            else:
+                os.replace(other, snapshot)
+        except (sqlite3.OperationalError, PermissionError):
+            pass
+        return actual(*args, **kwargs)
+
+    monkeypatch.setattr(restore, "begin_restore", changed_meanwhile)
+    code, done = run(
+        capsys,
+        "restore",
+        *store.target(),
+        "--snapshot",
+        str(snapshot),
+        "--backup-dir",
+        str(store.tmp / "TEST-kept"),
+        "--apply",
+    )
+    assert code == 0 and done["status"] == "restored" and done["snapshot_sha256"] == checked, done
+    assert store.core.source(store.ctx, kept.ref, 1).event["content"] == "TEST-kept the meeting moved to Thursday"
+    assert not store.words("TEST-injected")
+
+
+def test_a_snapshot_that_is_the_store_under_another_name_is_refused(store, capsys):
+    store.say(SECRET)
+    database = store.data / "memory.sqlite3"
+    with closing(sqlite3.connect(database)) as conn:
+        # Out of WAL mode, the store's own header reads as a backup snapshot's.
+        conn.execute("PRAGMA journal_mode=DELETE")
+    linked = store.tmp / "TEST-linked.sqlite3"
+    os.link(database, linked)
+    before = database.read_bytes()
+    code, out = run(
+        capsys,
+        "restore",
+        *store.target(),
+        "--snapshot",
+        str(linked),
+        "--backup-dir",
+        str(store.tmp / "TEST-kept"),
+        "--apply",
+    )
+    assert (code, out.get("error"), out["restore_pending"]) == (2, "snapshot_is_the_store", False), out
+    assert database.read_bytes() == before and not (store.tmp / "TEST-kept").exists()
+
+
+def test_a_store_whose_file_has_another_name_is_refused(store, capsys):
+    """Another name for the store's file is no backup: it changes with the store, and a process that opens the store
+    through it keeps a write-ahead log of its own and never sees the marker."""
+    store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-snapshot")
+    database = store.data / "memory.sqlite3"
+    os.link(database, store.tmp / "TEST-second-name.sqlite3")
+    before = database.read_bytes()
+    code, out = run(
+        capsys,
+        "restore",
+        *store.target(),
+        "--snapshot",
+        str(snapshot),
+        "--backup-dir",
+        str(store.tmp / "TEST-kept"),
+        "--apply",
+    )
+    assert (code, out.get("error"), out["restore_pending"]) == (2, "store_links", False), out
+    assert database.read_bytes() == before and not (store.tmp / "TEST-kept").exists()

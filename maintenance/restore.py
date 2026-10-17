@@ -4,20 +4,22 @@ A snapshot still holds what was forgotten after it was taken, and copied back by
 ``restore`` copies it back with the deletion ledger of the store it replaces (``core/restore.py``), replayed over it
 before any host may open the store again:
 
-1. With no restore pending, the ledger is exported from the store as it is, the store is backed up into
-   ``--backup-dir`` and admission is closed (``begin_restore``): every normal open refuses (``RESTORE_UNVERIFIED``).
-2. The ledger is written beside the marker, and onto the disk, before anything replaces the store.  The snapshot's
-   pages are then written over the store by SQLite's backup API on a connection to the store itself: one transaction
-   of the store's, in which SQLite keeps it in WAL mode with ``memory.sqlite3-wal`` and ``-shm`` its own, and which
-   leaves the store as it was if it is cut short.
-3. The ledger is replayed (``replay_deletion_ledger``), which reopens admission; the write-ahead log, which held the
-   snapshot's pages, is truncated, and the ledger file goes.
+1. The snapshot is opened read-only inside one read transaction, held until it is copied: what is copied is what was
+   checked, since SQLite keeps any other writer of the file out meanwhile and the file read is the one opened.
+2. With no restore pending, the ledger is exported from the store as it is, the store is backed up into
+   ``--backup-dir`` and admission is closed (``begin_restore``): the ledger and then the marker are written beside
+   the store, each whole, and every normal open refuses (``RESTORE_UNVERIFIED``).
+3. The snapshot's pages are written over the store by SQLite's backup API on a connection to the store itself: one
+   transaction of the store's, in which SQLite keeps it in WAL mode with ``memory.sqlite3-wal`` and ``-shm`` its own,
+   and which leaves the store as it was if it is cut short.
+4. The ledger is replayed (``replay_deletion_ledger``), which truncates the write-ahead log that held the snapshot's
+   pages before it reopens admission.
 
 Everything runs holding the store (``backup.exclusive_store``), once the running-code records show no host, server
-or worker that opened it still running.  A run that stops after step 1 leaves the store closed, and running the
-command again finishes it, with this snapshot or another: the ledger file, or the store itself while nothing has
-replaced it, holds the ledger the store was closed on (``pending_restore_ledger``).  A snapshot at an older schema
-than this release's gets step 1 here and the rest from a release that reads that schema.
+or worker that opened it still running.  A run that stops after step 2 leaves the store closed, and running the
+command again finishes it, with this snapshot or another: the ledger kept beside the marker, or the store itself while
+nothing has replaced it, holds the ledger the store was closed on (``pending_restore_ledger``).  A snapshot at an
+older schema than this release's gets step 2 here and the rest from a release that reads that schema.
 
 The vector companion and the retained files are left as they are.  They are reached only through SQLite, the replay
 queues the purge of every replayed delete again, and the worker's next pass removes those vectors and attachments
@@ -28,12 +30,11 @@ once more.  An attachment only the replaced store refers to stays in ``retained`
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sqlite3
 import sys
-import uuid
-from contextlib import ExitStack, closing
+from collections.abc import Iterator
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,13 +64,21 @@ from .doctor import load_binding
 from .install_common import HostChoice
 from .shared_run import SharedStoreError, encoded, store_lock
 
-#: Beside the marker while a restore is pending: the ledger it replays, whichever release wrote it.
-LEDGER_FILENAME = "restore-ledger.json"
 #: The oldest schema read by a release that carries this command.  A snapshot at an older one could be put back only
 #: by a release that cannot replay the ledger, so it is refused.
 RESTORE_SCHEMA_FLOOR = 1110
-#: How long one of the store's own transactions waits for SQLite's lock; the writer lease is held all along.
+#: How long one of the store's own transactions waits for SQLite's lock, and the replay for readers to leave the
+#: write-ahead log; the writer lease is held all along.
 _STORE_SECONDS = 10.0
+#: What to do when the core refuses with one of these ``RESTORE_UNVERIFIED`` fields.
+_HINTS = {
+    "wal_busy": "a reader is still on an older snapshot of the store, whose write-ahead log holds the snapshot's "
+    "pages: stop every process that reads the store, then run restore again",
+    "ledger_missing": "the store was replaced while it was closed and no ledger is kept beside it; the backup taken "
+    "before the copy holds the store as it was",
+    "marker_damaged": "the marker is damaged, and the ledger kept beside it is newer than the store: the store was "
+    "replaced after it was closed, so the marker is not written again from the store",
+}
 
 
 class RestoreError(RuntimeError):
@@ -103,37 +112,49 @@ class _Checked:
 
     storage: SQLiteStorage
     authority: InstallationMaintenance
+    #: The snapshot, read-only inside the read transaction its checks ran in, held until it is copied.
+    source: sqlite3.Connection
     snapshot_schema: int
+    snapshot_sha256: str
     ledger: dict[str, Any]
     #: The ledger is the one kept beside a pending restore's marker.  Otherwise it was read from the store, which is
     #: then still as it was when the ledger was taken, and is backed up before anything replaces it.
     kept: bool
 
 
-def _store_file(binding: InstanceBinding) -> Path:
-    """The store the binding names, which must be a file.  A link on its way is the Core's to refuse, on the first
-    read, before anything is written."""
+def _store_file(binding: InstanceBinding, snapshot: Path) -> Path:
+    """The store the binding names, a file no other name refers to, of which ``snapshot`` is no part under any name.
+
+    Another name for the store's file is no backup: it changes with the store, and a process that opens the store
+    through it keeps a write-ahead log of its own and never sees the marker.  A link on the store's own path is the
+    Core's to refuse, on its first read, before anything is written.
+    """
     store = binding.data_directory / "memory.sqlite3"
     if store.is_symlink() or not store.is_file():
         raise RestoreError("store_missing", f"no store at {store}")
+    for part in (store, store.with_name(store.name + "-wal"), store.with_name(store.name + "-shm")):
+        if part.exists() and os.path.samefile(snapshot, part):
+            raise RestoreError("snapshot_is_the_store", f"--snapshot is the store's {part.name} under another name")
+    links = store.stat().st_nlink
+    if links > 1:
+        raise RestoreError("store_links", f"the store's file has {links} names; a backup is a copy, not another name")
     return store
 
 
-def _checked(binding: InstanceBinding, snapshot: Path) -> _Checked:
-    _store_file(binding)
+@contextmanager
+def _checked(binding: InstanceBinding, snapshot: Path) -> Iterator[_Checked]:
+    _store_file(binding, snapshot)
     # A plan writes nothing, so a store at an older schema is refused rather than brought forward by the read.
     storage = SQLiteStorage(binding, timeout_seconds=_STORE_SECONDS, upgrade_on_open=False)
     authority = InstallationMaintenance(TrustedContext(binding, "restore", binding.scope_ids, "host_generated"))
-    schema = _snapshot_schema(storage, snapshot)
-    ledger, kept = _ledger(storage, authority)
-    return _Checked(storage, authority, schema, ledger, kept)
+    with closing(_held(snapshot)) as source:
+        schema = _snapshot_schema(storage, source)
+        ledger, kept = _ledger(storage, authority)
+        yield _Checked(storage, authority, source, schema, sha256(snapshot), ledger, kept)
 
 
-def _snapshot_schema(storage: SQLiteStorage, snapshot: Path) -> int:
-    """The snapshot's schema, once it is a whole ``backup`` snapshot of this very store, with its scopes and entries."""
-    store = storage.path.resolve()
-    if os.path.normcase(snapshot) in {os.path.normcase(f"{store}{suffix}") for suffix in ("", "-wal", "-shm")}:
-        raise RestoreError("snapshot_is_the_store", "--snapshot names the store itself")
+def _held(snapshot: Path) -> sqlite3.Connection:
+    """The snapshot opened read-only inside a read transaction, refused unless it is an SQLite file out of WAL mode."""
     with snapshot.open("rb") as stream:
         header = stream.read(20)
     if len(header) < 20 or header[:16] != b"SQLite format 3\x00":
@@ -142,22 +163,42 @@ def _snapshot_schema(storage: SQLiteStorage, snapshot: Path) -> int:
         # A file in WAL mode is a store's own file, or a copy of one: what its log held is not in it.
         raise RestoreError("snapshot_not_a_backup", "--snapshot is a live store's file; take one with backup")
     try:
-        with closing(connect_truth_database(snapshot, mode="ro")) as conn:
-            if conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
-                raise RestoreError("snapshot_not_a_backup", "--snapshot is not a Scope Recall 3 store")
-            quick = str(conn.execute("PRAGMA quick_check").fetchone()[0])
-            if quick.lower() != "ok":
-                raise RestoreError("snapshot_damaged", f"quick_check: {quick[:200]}")
-            schema = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            if not RESTORE_SCHEMA_FLOOR <= schema <= SCHEMA_VERSION:
-                raise RestoreError("snapshot_schema", _schema_hint(schema))
-            try:
-                storage.verify(conn, expected_schema=schema)
-            except ContractError as exc:
-                hint = f"the snapshot is not this store's ({exc.code}:{exc.field})"
-                raise RestoreError("snapshot_identity", hint) from None
-            scopes = frozenset(row[0] for row in conn.execute("SELECT scope_id FROM instance_scopes"))
-            registered = frozenset(row[0] for row in conn.execute("SELECT entry_id FROM entries"))
+        source = connect_truth_database(snapshot, mode="ro", isolation_level=None)
+    except sqlite3.DatabaseError as exc:
+        raise RestoreError("snapshot_damaged", f"{type(exc).__name__}: {exc}") from None
+    try:
+        source.execute("BEGIN")
+        # The first read takes the shared lock the transaction then holds.
+        source.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    except sqlite3.DatabaseError as exc:
+        source.close()
+        raise RestoreError("snapshot_damaged", f"{type(exc).__name__}: {exc}") from None
+    except BaseException:
+        source.close()
+        raise
+    return source
+
+
+def _snapshot_schema(storage: SQLiteStorage, source: sqlite3.Connection) -> int:
+    """The snapshot's schema, once it is a whole ``backup`` snapshot of this very store, with its scopes and entries."""
+    try:
+        if str(source.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+            raise RestoreError("snapshot_not_a_backup", "--snapshot is a live store's file; take one with backup")
+        if source.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
+            raise RestoreError("snapshot_not_a_backup", "--snapshot is not a Scope Recall 3 store")
+        quick = str(source.execute("PRAGMA quick_check").fetchone()[0])
+        if quick.lower() != "ok":
+            raise RestoreError("snapshot_damaged", f"quick_check: {quick[:200]}")
+        schema = int(source.execute("PRAGMA user_version").fetchone()[0])
+        if not RESTORE_SCHEMA_FLOOR <= schema <= SCHEMA_VERSION:
+            raise RestoreError("snapshot_schema", _schema_hint(schema))
+        try:
+            storage.verify(source, expected_schema=schema)
+        except ContractError as exc:
+            hint = f"the snapshot is not this store's ({exc.code}:{exc.field})"
+            raise RestoreError("snapshot_identity", hint) from None
+        scopes = frozenset(row[0] for row in source.execute("SELECT scope_id FROM instance_scopes"))
+        registered = frozenset(row[0] for row in source.execute("SELECT entry_id FROM entries"))
     except sqlite3.DatabaseError as exc:
         raise RestoreError("snapshot_damaged", f"{type(exc).__name__}: {exc}") from None
     if scopes != storage.binding.scope_ids:
@@ -183,46 +224,9 @@ def _schema_hint(schema: int) -> str:
 
 def _ledger(storage: SQLiteStorage, authority: InstallationMaintenance) -> tuple[dict[str, Any], bool]:
     """The ledger to replay, and whether it is the one kept beside a pending restore's marker."""
-    data_directory = storage.binding.data_directory
-    if not os.path.lexists(data_directory / MARKER_FILENAME):
+    if not os.path.lexists(storage.binding.data_directory / MARKER_FILENAME):
         return export_deletion_ledger(storage, authority), False
-    kept = _kept_ledger(data_directory / LEDGER_FILENAME)
-    if kept is not None:
-        try:
-            return pending_restore_ledger(storage, authority, kept), True
-        except ContractError:
-            # Damaged, or another restore's: the store itself holds the ledger while nothing has replaced it.
-            pass
-    try:
-        return pending_restore_ledger(storage, authority), False
-    except ContractError as exc:
-        if exc.field != "checkpoint_changed":
-            raise
-        raise RestoreError(
-            "ledger_missing",
-            f"the store was replaced while it was closed and the ledger kept beside it ({LEDGER_FILENAME}) is gone;"
-            " the backup taken before the copy holds the store as it was",
-        ) from None
-
-
-def _kept_ledger(path: Path) -> dict[str, Any] | None:
-    if path.is_symlink() or not path.is_file():
-        return None
-    try:
-        ledger = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return ledger if isinstance(ledger, dict) else None
-
-
-def _keep(path: Path, ledger: dict[str, Any]) -> None:
-    """``ledger`` written in one step, and onto the disk, where a later run of this release or another finds it."""
-    staged = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    with staged.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(ledger, sort_keys=True) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(staged, path)
+    return pending_restore_ledger(storage, authority)
 
 
 def _described(checked: _Checked, snapshot: Path) -> dict[str, Any]:
@@ -232,7 +236,7 @@ def _described(checked: _Checked, snapshot: Path) -> dict[str, Any]:
         installation_kind=checked.storage.binding.installation_kind,
         snapshot=str(snapshot),
         snapshot_schema=checked.snapshot_schema,
-        snapshot_sha256=sha256(snapshot),
+        snapshot_sha256=checked.snapshot_sha256,
         ledger_sha256=ledger_digest(ledger),
         ledger_schema=ledger["schema_version"],
         ledger_operations=len(ledger["operations"]),
@@ -242,20 +246,20 @@ def _described(checked: _Checked, snapshot: Path) -> dict[str, Any]:
 
 def plan_restore(binding: InstanceBinding, snapshot: Path) -> dict[str, Any]:
     """What ``apply_restore`` does, checked as it checks; nothing is written."""
-    checked = _checked(binding, snapshot)
-    return dict(
-        _described(checked, snapshot),
-        status="planned",
-        action="restore" if checked.snapshot_schema == SCHEMA_VERSION else "prepare",
-        backup_required=not checked.kept,
-        requires_apply=True,
-    )
+    with _checked(binding, snapshot) as checked:
+        return dict(
+            _described(checked, snapshot),
+            status="planned",
+            action="restore" if checked.snapshot_schema == SCHEMA_VERSION else "prepare",
+            backup_required=not checked.kept,
+            requires_apply=True,
+        )
 
 
 def apply_restore(binding: InstanceBinding, snapshot: Path, *, backup_dir: Path | None, now: datetime) -> dict:
     """Restore ``snapshot`` over the store of ``binding``, or, for an older schema's snapshot, close the store and
     keep its ledger for the release that reads that schema."""
-    _store_file(binding)
+    _store_file(binding, snapshot)
     with ExitStack() as held:
         if binding.installation_kind == "shared":
             held.enter_context(store_lock(binding.data_directory, "restore", now.isoformat()))
@@ -264,7 +268,7 @@ def apply_restore(binding: InstanceBinding, snapshot: Path, *, backup_dir: Path 
         if running:
             names = ", ".join(sorted(f"{record.host_adapter or 'process'} {record.pid}" for record in running))
             raise RestoreError("store_open", f"still running with this store open: {names}; stop them first")
-        checked = _checked(binding, snapshot)
+        checked = held.enter_context(_checked(binding, snapshot))
         receipt = _described(checked, snapshot)
         if not checked.kept:
             if backup_dir is None:
@@ -272,9 +276,7 @@ def apply_restore(binding: InstanceBinding, snapshot: Path, *, backup_dir: Path 
                     "backup_required", "give --backup-dir: the store is kept there before it is replaced"
                 )
             receipt["backup"] = _backed_up(checked.storage.path, backup_dir, now)
-            if not os.path.lexists(binding.data_directory / MARKER_FILENAME):
-                begin_restore(checked.storage, checked.authority, expected_ledger_sha256=ledger_digest(checked.ledger))
-            _keep(binding.data_directory / LEDGER_FILENAME, checked.ledger)
+            begin_restore(checked.storage, checked.authority, expected_ledger_sha256=ledger_digest(checked.ledger))
         if checked.snapshot_schema != SCHEMA_VERSION:
             return dict(
                 receipt,
@@ -285,26 +287,22 @@ def apply_restore(binding: InstanceBinding, snapshot: Path, *, backup_dir: Path 
                     "or keep the store as it was: run restore with the backup above as --snapshot",
                 ],
             )
-        return dict(receipt, **_restored(checked, snapshot))
+        return dict(receipt, **_restored(checked))
 
 
-def _restored(checked: _Checked, snapshot: Path) -> dict[str, Any]:
-    """Copy the snapshot over the store, replay the ledger and truncate the log that held the snapshot's pages."""
+def _restored(checked: _Checked) -> dict[str, Any]:
+    """Copy the snapshot checked over the store, then replay the ledger, which reopens the store."""
     storage = checked.storage
-    with (
-        closing(connect_truth_database(snapshot, mode="ro")) as source,
-        closing(connect_truth_database(storage.path, mode="rw", timeout=_STORE_SECONDS, isolation_level=None)) as store,
-    ):
-        source.backup(store)
+    with closing(
+        connect_truth_database(storage.path, mode="rw", timeout=_STORE_SECONDS, isolation_level=None)
+    ) as store:
+        checked.source.backup(store)
     replayed = replay_deletion_ledger(storage, checked.authority, checked.ledger, remaining_seconds=_STORE_SECONDS)
-    truncated = storage.truncate_wal(checked.authority.context, remaining_seconds=_STORE_SECONDS)
-    (storage.binding.data_directory / LEDGER_FILENAME).unlink(missing_ok=True)
     deletes = sum(entry["operation"]["mode"] == "delete" for entry in checked.ledger["operations"])
     return dict(
         status="restored",
         affected_objects=replayed["affected_objects"],
         purges_queued=deletes,
-        wal_truncated=truncated,
         next=[
             "start the store's worker again: its next pass removes the vectors and attachments of the replayed "
             "deletes once more",
@@ -370,6 +368,8 @@ def main(argv: list[str]) -> int:
         result, code = {"status": "error", "error": exc.code, "hint": exc.hint}, 2
     except ContractError as exc:
         result, code = {"status": "error", "error": exc.code, "field": exc.field}, 2
+        if exc.field in _HINTS:
+            result["hint"] = _HINTS[exc.field]
     except (BackupError, SharedStoreError, HermesIdentityError, CodexConfigError, OSError, sqlite3.Error) as exc:
         result, code = {"status": "error", "error": type(exc).__name__, "detail": str(exc)}, 2
     if binding is not None:

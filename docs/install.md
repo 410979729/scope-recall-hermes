@@ -632,7 +632,7 @@ Things that look wrong in a healthy report and are not:
 | `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails; on a store above 100 MB, a caller with a minute of budget does (section 9). A step is one way: take a `backup` first if you may want to go back. |
 | `schema_version_mismatch` | The database schema is one this code cannot bring forward. | Do not run against it. Back it up and use the migration path. |
 | `schema_header_stale` | The store's tables and its own record say one schema, the SQLite header another: another process stamped the header, typically a 2.0 plugin that opened the store after its migration. Every open is refused. | Stop that process, then run `upgrade-store` with `--backup-dir`: it snapshots the store and puts the recorded schema back into the header. |
-| `restore_pending` | A `restore` was begun and not finished, or an earlier release's `rollback --apply` closed the store. Every read and write of every host refuses it (`RESTORE_UNVERIFIED`). | Run the same `restore` command again (section 9): it finishes with the ledger kept beside the store. To keep the store as it was, give it the backup that run took as `--snapshot`; for a store `rollback` closed, take one first with `backup`. |
+| `restore_pending` | A `restore` was begun and not finished: the marker `restore-required.json` closes the store, and every read and write of every host refuses it (`RESTORE_UNVERIFIED`). | Run the same `restore` command again (section 9): it finishes with the ledger kept beside the store. To keep the store as it was, give it the backup that run took as `--snapshot`, or one `backup` takes of the closed store. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
 | `audience_owner_unverified` | An `owner_private` audience row names a user who is no owner principal, so it grants nothing and every session on its route captures and recalls nothing. The `audiences` check counts such rows by platform. `attention`. | If the user is the owner's own dashboard login, approve it with `apply-install --owner-login <platform>=<login>` (section 4); otherwise remove the rows. |
 | `owner_words_with_client_reminder` | Claude Code only. Messages stored as the owner's words before 3.10.5 that hold a `<system-reminder>` block Claude's desktop app put in them (#248): claims drawn from them read as things the owner said, and a recall can bring the block back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a session that has `forget` (Codex, a Hermes chat), ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New messages are stored without the block. |
@@ -992,27 +992,38 @@ first (`autostart pause`), then:
 
 - It changes nothing and says why while a process that recorded itself as running
   on the store still runs (`store_open`) or another process writes it
-  (`store_busy`), and for a snapshot that is not a whole `backup` snapshot of this
-  very store: a live store's file or another program's (`snapshot_not_a_backup`), a
-  copy cut short (`snapshot_damaged`), another store's (`snapshot_identity`), one
-  taken before an entry brought a scope of its own (`snapshot_scopes`) or before an
-  entry still attached was attached (`snapshot_entries`; detach it first), or one at
-  a schema it cannot replay into (`snapshot_schema`).
-- It backs the store up into `--backup-dir` as it is, closes it (every host then
-  refuses it with `RESTORE_UNVERIFIED`), keeps the ledger beside it, copies the
-  snapshot over it, replays the ledger and opens it again. It then truncates
-  `memory.sqlite3-wal`, which held the snapshot's pages (`wal_truncated`; a reader
-  still on an older snapshot holds that back, and the worker's purge truncates it
-  later). The receipt names the backup, the ledger's digest and the deletes it
-  replayed (`purges_queued`): start the worker again, and its next pass removes
-  their vectors and attachments once more. The vector companion and `retained\`
-  are otherwise left as they are; an attachment only the replaced store refers to
-  stays there, for that store if it is restored in turn from its backup.
+  (`store_busy`), while another name refers to the store's file, a hard link, which
+  is no backup since it changes with the store (`store_links`), and for a snapshot
+  that is not a whole `backup` snapshot of this very store: the store's file or its
+  log under any name (`snapshot_is_the_store`), a live store's file or another
+  program's (`snapshot_not_a_backup`), a copy cut short (`snapshot_damaged`),
+  another store's (`snapshot_identity`), one taken before an entry brought a scope of
+  its own (`snapshot_scopes`) or before an entry still attached was attached
+  (`snapshot_entries`; detach it first), or one at a schema it cannot replay into
+  (`snapshot_schema`). The snapshot stays open from its checks to its copy, so what
+  is copied is what was checked: another writer of its file is kept out, and a file
+  moved over it is not the one read.
+- It backs the store up into `--backup-dir` as it is and closes it: it writes the
+  ledger beside it (`restore-ledger.json`) and then the marker
+  (`restore-required.json`), each through a file of its own that is synced and then
+  moved into place, so a crash leaves either file whole or not there. Every host
+  then refuses the store (`RESTORE_UNVERIFIED`). It copies the snapshot over the
+  store and replays the ledger, and opens the store again only once
+  `memory.sqlite3-wal`, which held the snapshot's pages, is truncated: a reader
+  still on an older snapshot holds that back, and the run stops with the store
+  closed (`wal_busy`). The ledger stays beside the store, content-free, until the
+  next restore writes its own. The receipt names the backup, the ledger's digest and
+  the deletes it replayed (`purges_queued`): start the worker again, and its next
+  pass removes their vectors and attachments once more. The vector companion and
+  `retained\` are otherwise left as they are; an attachment only the replaced store
+  refers to stays there, for that store if it is restored in turn from its backup.
 - A run cut short leaves the store closed: `restore_pending: true` in the output,
   `restore_pending` in `doctor`. Run the same command again: it finishes with the
   ledger it kept, and asks for `--backup-dir` only while the store is still as it
   was. To keep the store as it was instead, give it the backup it took as
-  `--snapshot`.
+  `--snapshot`. A marker left empty or partial is written again while nothing has
+  replaced the store; beside a kept ledger newer than the store, the store was
+  replaced after it was closed, and the run is refused (`marker_damaged`).
 
 Going back across a schema step takes two releases: only the newer one reads the
 latest store, and only the older one writes a store at the snapshot's schema. Run
@@ -1368,7 +1379,7 @@ Known limits:
 | Codex installation record | `<instance-root>\codex-installation.json` |
 | Codex Core data directory | `<instance-root>\data\` |
 | Runtime config | `<core-data-directory>\runtime-config.json` |
-| A restore not finished | `<core-data-directory>\restore-required.json`, and the ledger it replays in `restore-ledger.json` |
+| A restore's files | `<core-data-directory>\restore-required.json` while it is not finished; `restore-ledger.json`, the ledger it replays, until the next restore |
 | WorkBuddy home | `WORKBUDDY_CONFIG_DIR`, else `%USERPROFILE%\.workbuddy` |
 | WorkBuddy hooks and MCP server | `hooks` in `<WorkBuddy home>\settings.json`, `mcpServers.scope-recall` in `<WorkBuddy home>\mcp.json` |
 | dsh home | `DSH_HOME`, else `%USERPROFILE%\.dsh` |

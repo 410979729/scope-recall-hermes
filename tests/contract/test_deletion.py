@@ -9,6 +9,7 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.delete_storage import canonical
 from scope_recall.core.restore import (
+    LEDGER_FILENAME,
     MARKER_FILENAME,
     InstallationMaintenance,
     begin_restore,
@@ -480,7 +481,10 @@ def test_restore_failed_commit_keeps_marker_closed_and_replay_retries(app, tmp_p
     assert core.source(ctx, source.ref, 1) is None and core.current_claim(ctx, item.ref) is None
 
 
-def test_the_ledger_of_a_pending_restore_reads_through_the_fence_until_the_store_is_replaced(app, tmp_path):
+def test_the_ledger_of_a_pending_restore_is_the_one_kept_beside_its_marker(app, tmp_path):
+    """``begin_restore`` keeps the ledger beside the store before it writes the marker.  The pending restore replays
+    that ledger once the store is replaced; while nothing has replaced the store, its own ledger, read through the
+    fence, serves as well, and without either the restore is refused."""
     core, ctx = app
     item, source = initial(core, ctx)
     backup = tmp_path / "TEST-pending-backup.sqlite3"
@@ -488,17 +492,22 @@ def test_the_ledger_of_a_pending_restore_reads_through_the_fence_until_the_store
     authorize(core, ctx, source)
     core.forget(ctx, request(source), remaining_seconds=10)
     authority = InstallationMaintenance(ctx)
+    kept = ctx.binding.data_directory / LEDGER_FILENAME
     with pytest.raises(ContractError, match="checkpoint_missing"):
         pending_restore_ledger(core.storage, authority)
     ledger = export_deletion_ledger(core.storage, authority)
     begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
-    assert pending_restore_ledger(core.storage, authority) == ledger
+    assert json.loads(kept.read_text(encoding="utf-8")) == ledger
+    assert pending_restore_ledger(core.storage, authority) == (ledger, True)
+    kept.write_text("{}", encoding="utf-8")
+    assert pending_restore_ledger(core.storage, authority) == (ledger, False)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    assert pending_restore_ledger(core.storage, authority) == (ledger, True)
     sqlite_backup(backup, core.storage.path)
-    with pytest.raises(ContractError, match="checkpoint_changed"):
+    assert pending_restore_ledger(core.storage, authority) == (ledger, True)
+    kept.write_text("{}", encoding="utf-8")
+    with pytest.raises(ContractError, match="ledger_missing"):
         pending_restore_ledger(core.storage, authority)
-    with pytest.raises(ContractError, match="ledger_incomplete"):
-        pending_restore_ledger(core.storage, authority, dict(ledger, operations=[]))
-    assert pending_restore_ledger(core.storage, authority, ledger) == ledger
     assert (ctx.binding.data_directory / MARKER_FILENAME).is_file()
 
 
