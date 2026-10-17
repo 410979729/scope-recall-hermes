@@ -36,6 +36,7 @@ from .claims import (
     bind_claim_subject,
     evidence_refs,
     is_denial,
+    negates,
     qualify,
     same_assertion,
 )
@@ -234,13 +235,13 @@ def retire_rootless_proposals(
 def restore_displaced_values(
     tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True
 ) -> RequalifyReport:
-    """Give each claim of one bounded page back the value a denial took its head from.
+    """Give each claim of one bounded page back the value a denial of another value took its head from.
 
-    A denial says what a slot's value is not (``claims.is_denial``) and no longer takes a head; one written before
-    holds its claim's head and reads as the slot's value.  Such a head is withdrawn with a retracted version, so no
-    read at any instant takes it for the value, and the last version before it that states one is re-instated as it
-    was; with none, the denial is kept as the proposal a new one is.  Every version stays in the history, and the
-    report names refs and revisions only, never claim text.
+    Such a denial ("not CircleCI" over Jenkins, ``claims.negates``) no longer takes a head; one written before holds
+    its claim's head and reads as the slot's value.  It is withdrawn with a retracted version, so no read at any
+    instant takes it for the value, and the version it displaced is re-instated as it was.  A denial that is the
+    slot's only value, or that denies the value it replaced, is the slot's value as a new one would be, and stays.
+    Every version stays in the history, and the report names refs and revisions only, never claim text.
     """
     refs = _page(tx, after_ref, limit)
     report = RequalifyReport(applied=not dry_run)
@@ -252,7 +253,9 @@ def restore_displaced_values(
             continue
         report.examined += 1
         stated = _stated_before(versions, head)
-        entry = {"ref": ref, "was": f"{head.state}:{head.reason}", "restores": stated.revision if stated else None}
+        if stated is None or stated.state == "proposed" or negates(head.payload, stated.payload):
+            continue
+        entry = {"ref": ref, "was": f"{head.state}:{head.reason}", "restores": stated.revision}
         if not dry_run:
             withdrawn = tx.claims.append(
                 head.scope_id,
@@ -261,12 +264,8 @@ def restore_displaced_values(
                 recorded_at=now,
                 previous=head,
             )
-            kept, verdict = (
-                (stated.payload, Qualification(stated.state, stated.basis, stated.reason))
-                if stated is not None
-                else (head.payload, Qualification("proposed", "inferred_suggestion", DENIAL_REASON))
-            )
-            saved = tx.claims.append(head.scope_id, kept, verdict, recorded_at=now, previous=withdrawn)
+            verdict = Qualification(stated.state, stated.basis, stated.reason)
+            saved = tx.claims.append(head.scope_id, stated.payload, verdict, recorded_at=now, previous=withdrawn)
             tx.candidates.register(saved.ref, saved.revision, observed_at=now, schedule_initial=False)
             entry["revision"] = saved.revision
         report.changed.append(entry)

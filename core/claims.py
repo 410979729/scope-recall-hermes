@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -21,7 +22,7 @@ from ..contracts import (
 )
 from .candidate_lifecycle import SELF_SUBJECTS
 from .fact_actions import ClaimDraft, EvidenceReference
-from .fact_evidence import evidence_supports_claim, evidence_supports_relation
+from .fact_evidence import evidence_supports_claim, evidence_supports_relation, stem
 from .fact_temporal_semantics import classify_durable_state_clause
 from .source_qualification import (
     AUTHORITY_QUESTION,
@@ -144,17 +145,44 @@ _DENIAL = re.compile(
 #: Kinds whose slot holds a value, so a denial can only say what it is not.  A constraint's negation is the rule
 #: itself ("never push to main"), and a decision not to do something is the decision.
 _VALUE_SLOT_KINDS = frozenset({"fact", "preference"})
-DENIAL_REASON = "denial_states_no_value"
+DENIAL_REASON = "denial_of_another_value"
+#: A word of a value as values are compared: one CJK character, or a run of other letters and digits.
+_VALUE_WORD = re.compile(r"[㐀-鿿]|[^\W_㐀-鿿]+")
 
 
 def is_denial(payload) -> bool:
-    """Whether a claim's value says what its slot is not, rather than what it is.
+    """Whether a claim's value says what its slot is not ("not CircleCI", "不吃辣", "don't like PowerShell").
 
-    "The CI service is not CircleCI" leaves the CI service unknown, and "I don't like PowerShell" does not say which
-    shell the person prefers.  Such a value is no version of the slot's value: it must not replace the one the slot
-    holds, nor be read as it.
+    Said where the slot holds nothing, it is the answer (a negative self-report often is the preference itself); said
+    of the value the slot holds (``negates``), it replaces it; said of another value, it leaves the slot as it is.
     """
     return payload.get("kind") in _VALUE_SLOT_KINDS and bool(_DENIAL.match(str(payload.get("value_text") or "")))
+
+
+def negates(denial, held) -> bool:
+    """Whether the denial ``denial`` says that the claim ``held`` (a payload) no longer holds.
+
+    The words it negates, its value after the negation, and ``held``'s value are compared as the store compares
+    values (NFKC, case-folded, letters and digits only), word by word: a CJK character is a word, and a Latin word is
+    taken by the stem the fact gate gives a predicate's words.  They are the same value when one holds the other as a
+    run of whole words: 不吃辣 negates 吃辣 and 爱吃辣, "don't like PowerShell" negates PowerShell, "don't drink
+    coffee" negates "drinks coffee"; "not CircleCI" does not negate Jenkins, nor "not 4 GB" 1 GB, nor "not MySQL" SQL.
+    """
+    value = str(denial.get("value_text") or "")
+    opening = _DENIAL.match(value)
+    if opening is None:
+        return False
+    denied, holds = _value_words(value[opening.end() :]), _value_words(str(held.get("value_text") or ""))
+    return bool(denied and holds) and (_runs_within(denied, holds) or _runs_within(holds, denied))
+
+
+def _value_words(text: str) -> tuple[str, ...]:
+    return tuple(stem(word) for word in _VALUE_WORD.findall(unicodedata.normalize("NFKC", text).casefold()))
+
+
+def _runs_within(words: tuple[str, ...], run: tuple[str, ...]) -> bool:
+    """Whether ``run`` stands in ``words`` as consecutive words."""
+    return any(words[at : at + len(run)] == run for at in range(len(words) - len(run) + 1))
 
 
 def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
@@ -567,11 +595,6 @@ def _procedure_proved(c: _Cited) -> str | None:
     return None
 
 
-def _states_a_value(c: _Cited) -> str | None:
-    """A denial stays a proposal: repeating it, or a second witness, cannot make it state the slot's value."""
-    return DENIAL_REASON if is_denial(c.proposal) else None
-
-
 def _fact_entailed(c: _Cited) -> str | None:
     """Ordinary durable facts keep the claim-frame support check."""
     if c.kind != "fact" or c.explicit_attribute_correction:
@@ -664,7 +687,6 @@ _REFUSALS = (
     _subject_binds,
     _intention_proved,
     _procedure_proved,
-    _states_a_value,
     _fact_entailed,
     _value_preserved,
     _time_scope_known,

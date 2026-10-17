@@ -22,6 +22,7 @@ from .aliases import validate_alias_source, validate_alias_target
 from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
 from .claim_storage import parse_source_ref
 from .claims import (
+    DENIAL_REASON,
     ClaimVersion,
     Qualification,
     bind_claim_subject,
@@ -31,6 +32,7 @@ from .claims import (
     evidence_refs,
     grounded_time,
     is_denial,
+    negates,
     qualify,
     same_assertion,
     select_effective,
@@ -214,6 +216,16 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     return qualification, True, ()
 
 
+def _denies_another_value(history, proposal, now: str) -> bool:
+    """Whether a denial leaves its slot as it is: the slot holds a value now and the denial is not of it
+    (``claims.negates``), as "not CircleCI" is not of Jenkins.  It is then kept beside the head as a proposal.  Said
+    where the slot holds no value, a denial is the answer; said of the value it holds, it replaces it."""
+    if not is_denial(proposal):
+        return False
+    held = select_effective(history, now) if history else None
+    return held is not None and not negates(proposal, held.payload)
+
+
 def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subject_bound: bool = False) -> Mutation:
     roots = tx.claims.roots(evidence_refs(proposal))
 
@@ -230,6 +242,9 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
         qualification = Qualification("proposed", "inferred_suggestion", "alias_target_or_relation_unverified")
     history = tx.claims.slot(scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
+    beside = _denies_another_value(history, proposal, now)
+    if beside and qualification.state != "proposed":
+        qualification = Qualification("proposed", "inferred_suggestion", DENIAL_REASON)
     # Repeated extraction cannot alter the live identity, validity, head,
     # lifecycle, epoch or work queue of the same assertion.
     identical = next(
@@ -254,9 +269,7 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
             return Mutation(saved.ref, saved.revision, "inserted", saved.state)
         return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
     advance, conflicts = True, ()
-    if previous is not None and is_denial(proposal):
-        # A denial says what the slot's value is not: it takes the head from no version, a proposal included, and is
-        # kept beside it.
+    if beside:
         advance = False
     elif previous is not None and previous.state != "proposed":
         if qualification.state == "proposed":
@@ -729,8 +742,7 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
         and v.scope_id == source.scope_id
         and (v.project_id, v.branch_id) == (source.project_id, source.branch_id)
     ]
-    # Adopting a denial would make it the slot's value, which it can never state (``is_denial``).
-    matches = [v for v in confirmation_targets(raw, heads, bound_literal=bound_literal) if not is_denial(v.payload)]
+    matches = confirmation_targets(raw, heads, bound_literal=bound_literal)
     if len(matches) != 1:
         if heads:
             tx.claims.unresolved(source.ref, source.revision, tuple(v.ref for v in heads), recorded_at=clock.utc_now())

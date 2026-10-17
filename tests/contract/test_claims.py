@@ -11,7 +11,7 @@ from threading import Barrier
 import pytest
 from scope_recall.contracts import ContractError, ImportProvenance, TrustedSourcePrincipal, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.claims import Qualification, qualify
+from scope_recall.core.claims import Qualification, negates, qualify
 from v11_support import context, source_event
 
 
@@ -316,75 +316,144 @@ def _fact(source, value, predicate="CI service"):
     return draft(source, value, kind="fact", predicate=predicate, statement_kind="assertion")
 
 
-def test_a_denial_neither_replaces_the_value_its_slot_holds_nor_stands_for_it(app):
-    """A denial (the CI service is not CircleCI) says nothing about whether Jenkins still holds, nor which service it
-    is."""
-    core, ctx = app
-    stated = accept(core, ctx, _fact(capture(core, ctx, "The TEST-project CI service is Jenkins."), "Jenkins")).items[0]
-    assert stated.state == "active"
-    for when, text, value in (
-        ("2026-09-03T12:00:00Z", "The TEST-project CI service is not CircleCI.", "not CircleCI"),
-        ("2026-09-04T12:00:00Z", "TEST-project 的 CI service 不是 Drone。", "不是 Drone"),
-    ):
-        denial = accept(core, ctx, _fact(capture(core, ctx, text, when=when), value)).items[0]
-        assert (denial.ref, denial.state, denial.disposition) == (stated.ref, "proposed", "historical")
-        assert core.claim_history(ctx, stated.ref)[-1].reason == "denial_states_no_value"
-    assert core.current_claim(ctx, stated.ref).payload["value_text"] == "Jenkins"
-    # Said where nothing is known yet, a denial is kept as a proposal and answers nothing; the value said later
-    # takes the slot.
-    denied = capture(core, ctx, "The TEST-project deploy region is not us-east-2.")
-    alone = accept(core, ctx, _fact(denied, "not us-east-2", "deploy region")).items[0]
-    assert alone.state == "proposed" and core.current_claim(ctx, alone.ref) is None
-    later = capture(core, ctx, "The TEST-project deploy region is eu-west-1.", when="2026-09-05T12:00:00Z")
-    region = accept(core, ctx, _fact(later, "eu-west-1", "deploy region")).items[0]
-    assert (region.ref, region.state) == (alone.ref, "active")
-    assert core.current_claim(ctx, alone.ref).payload["value_text"] == "eu-west-1"
+#: When the stated value is said, and when the denial is.
+_SAID, _LATER = "2026-09-01T12:00:00Z", "2026-09-03T12:00:00Z"
+_OWNER = TrustedSourcePrincipal("human", "verified", "principal:TEST-owner")
 
 
-def test_a_denial_stored_as_its_slot_s_head_gives_back_the_value_it_displaced(app):
-    """A denial written as a head before denials stopped taking one is withdrawn, and the value it displaced is
-    re-instated; with nothing displaced it is kept as a proposal.  The preview writes nothing; every version stays."""
+def _stated(core, ctx, text, value, when=_SAID, **frame):
+    """The claim drawn from ``text`` with ``value``: a fact about TEST-project's CI service unless ``frame`` says
+    otherwise."""
+    frame = {"kind": "fact", "predicate": "CI service", "statement_kind": "assertion", **frame}
+    return accept(core, ctx, draft(capture(core, ctx, text, when=when), value, **frame)).items[0]
+
+
+def _preferred(core, ctx, text, value, when=_SAID, predicate="饮食"):
+    """The owner's preference drawn from ``text``, through a context that attests them; and that context."""
+    owner = replace(ctx, source_principal=_OWNER)
+    return _stated(core, owner, text, value, when, kind="preference", subject="user", predicate=predicate), owner
+
+
+@pytest.mark.parametrize(
+    "stated,denied",
+    [
+        (
+            ("The TEST-project CI service is Jenkins.", "Jenkins"),
+            ("The TEST-project CI service is not CircleCI.", "not CircleCI"),
+        ),
+        (
+            ("TEST-project CI service 是 Jenkins。", "Jenkins"),
+            ("TEST-project CI service 不是 CircleCI。", "不是 CircleCI"),
+        ),
+    ],
+)
+def test_a_denial_of_another_value_leaves_the_value_its_slot_holds(app, stated, denied):
+    """(a) Not CircleCI says nothing about whether Jenkins still holds: the denial is kept beside it, a proposal."""
     core, ctx = app
-    stated = accept(core, ctx, _fact(capture(core, ctx, "The TEST-project CI service is Jenkins."), "Jenkins")).items[0]
-    denied = capture(core, ctx, "The TEST-project CI service is not CircleCI.", when="2026-09-03T12:00:00Z")
-    alone = capture(core, ctx, "The TEST-project deploy region is not us-east-2.")
-    verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+    held = _stated(core, ctx, *stated)
+    denial = _stated(core, ctx, *denied, _LATER)
+    assert held.state == "active"
+    assert (denial.ref, denial.state, denial.disposition) == (held.ref, "proposed", "historical")
+    assert core.claim_history(ctx, held.ref)[-1].reason == "denial_of_another_value"
+    assert core.current_claim(ctx, held.ref).payload["value_text"] == "Jenkins"
+
+
+@pytest.mark.parametrize("text,value", [("我不吃辣。", "不吃辣"), ("I never drink coffee.", "never drink coffee")])
+def test_a_denial_where_its_slot_holds_nothing_is_its_value(app, text, value):
+    """(b) With nothing else known, the owner's 我不吃辣 is the preference itself."""
+    core, ctx = app
+    claim, owner = _preferred(core, ctx, text, value)
+    assert claim.state == "active"
+    assert core.current_claim(owner, claim.ref).payload["value_text"] == value
+
+
+@pytest.mark.parametrize(
+    "stated,denied",
+    [
+        (("我爱吃辣。", "爱吃辣"), ("我现在不吃辣了。", "不吃辣")),
+        (("I drink coffee every morning.", "drink coffee"), ("I don't drink coffee any more.", "don't drink coffee")),
+    ],
+)
+def test_a_denial_of_the_value_its_slot_holds_replaces_it(app, stated, denied):
+    """(c) 我现在不吃辣了 says that 爱吃辣 holds no more: the owner's preference changed."""
+    core, ctx = app
+    held, owner = _preferred(core, ctx, *stated)
+    denial, _owner = _preferred(core, ctx, *denied, _LATER)
+    assert (denial.ref, denial.state, denial.disposition) == (held.ref, "active", "inserted")
+    assert core.current_claim(owner, held.ref).payload["value_text"] == denied[1]
+
+
+@pytest.mark.parametrize(
+    "stated,denied",
+    [
+        (("I prefer bash as my shell.", "bash"), ("I don't like PowerShell as a shell.", "don't like PowerShell")),
+        (("我喜欢用 bash 当 shell。", "bash"), ("我不喜欢用 PowerShell 当 shell。", "不喜欢用 PowerShell")),
+    ],
+)
+def test_a_dislike_of_something_else_leaves_the_preference_its_slot_holds(app, stated, denied):
+    """(d) Not liking PowerShell does not say which shell the person prefers; said again, it changes nothing."""
+    core, ctx = app
+    held, owner = _preferred(core, ctx, *stated, predicate="shell")
+    for when in (_LATER, "2026-09-04T12:00:00Z"):
+        dislike, _owner = _preferred(core, ctx, *denied, when, predicate="shell")
+        assert (dislike.ref, dislike.state) == (held.ref, "proposed")
+    assert core.current_claim(owner, held.ref).payload["value_text"] == "bash"
+
+
+@pytest.mark.parametrize(
+    "denied,held,same",
+    [
+        ("不吃辣", "爱吃辣", True),
+        ("不吃辣", "吃辣", True),
+        ("don't like PowerShell", "PowerShell", True),
+        ("don't drink coffee", "drinks coffee", True),
+        ("NOT ＣｉｒｃｌｅＣＩ", "circleci", True),
+        ("not CircleCI", "Jenkins", False),
+        ("not 4 GB", "1 GB", False),
+        ("not MySQL", "SQL", False),
+        ("don't like having meetings early in the morning", "late in the morning", False),
+    ],
+)
+def test_a_denial_negates_a_value_one_of_them_holds_as_whole_words(denied, held, same):
+    """The same value: compared as the store compares values, word by word, one holds the other."""
+    assert negates({"kind": "fact", "value_text": denied}, {"value_text": held}) is same
+
+
+def test_restore_gives_back_only_what_a_denial_of_another_value_displaced(app):
+    """A denial of another value an earlier release wrote as the head is withdrawn and the value it displaced
+    re-instated.  A denial that is its slot's only value, or one of the value it replaced, is the slot's value and
+    stays.  The preview writes nothing; every version stays."""
+    core, ctx = app
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    denied = capture(core, ctx, "The TEST-project CI service is not CircleCI.", when=_LATER)
     with core.storage.write(ctx) as tx:
-        head = next(v for v in tx.claims.versions(stated.ref) if v.revision == v.current_revision)
+        head = next(v for v in tx.claims.versions(jenkins.ref) if v.revision == v.current_revision)
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
         tx.claims.append("TEST-scope", _fact(denied, "not CircleCI"), verdict, recorded_at=Clock.now, previous=head)
-        lone = tx.claims.append(
-            "TEST-scope", _fact(alone, "not us-east-2", "deploy region"), verdict, recorded_at=Clock.now
-        )
-    assert core.current_claim(ctx, stated.ref).payload["value_text"] == "not CircleCI"
+    alone = _stated(
+        core, ctx, "The TEST-project deploy region is not us-east-2.", "not us-east-2", predicate="deploy region"
+    )
+    bucket = _stated(core, ctx, "The TEST-project backup bucket is vault-1.", "vault-1", predicate="backup bucket")
+    emptied = _stated(
+        core,
+        ctx,
+        "The TEST-project backup bucket is not vault-1 any more.",
+        "not vault-1",
+        _LATER,
+        predicate="backup bucket",
+    )
+    assert (alone.state, emptied.ref, emptied.disposition) == ("active", bucket.ref, "inserted")
     before = core.storage.path.read_bytes()
     preview = core.operations.restore_displaced_values(ctx, limit=32)
-    assert {(item["ref"], item["restores"]) for item in preview["changed"]} == {(stated.ref, 1), (lone.ref, None)}
+    assert [(item["ref"], item["restores"]) for item in preview["changed"]] == [(jenkins.ref, 1)]
     assert core.storage.path.read_bytes() == before
-    assert len(core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"]) == 2
-    assert core.current_claim(ctx, stated.ref).payload["value_text"] == "Jenkins"
-    assert core.current_claim(ctx, stated.ref, as_of="2026-09-05T00:00:00Z").payload["value_text"] == "Jenkins"
-    assert [v.state for v in core.claim_history(ctx, stated.ref)] == ["active", "active", "retracted", "active"]
-    assert core.current_claim(ctx, lone.ref) is None
-    assert core.claim_history(ctx, lone.ref)[-1].state == "proposed"
+    assert len(core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"]) == 1
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    assert core.current_claim(ctx, jenkins.ref, as_of="2026-09-05T00:00:00Z").payload["value_text"] == "Jenkins"
+    assert [v.state for v in core.claim_history(ctx, jenkins.ref)] == ["active", "active", "retracted", "active"]
+    assert core.current_claim(ctx, alone.ref).payload["value_text"] == "not us-east-2"
+    assert core.current_claim(ctx, bucket.ref).payload["value_text"] == "not vault-1"
     assert core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"] == []
-
-
-def test_a_dislike_does_not_replace_the_preference_its_slot_holds(app):
-    """A dislike (I don't like PowerShell) does not say which shell the person prefers, and repeating it changes
-    nothing."""
-    core, ctx = app
-    owner = replace(ctx, source_principal=TrustedSourcePrincipal("human", "verified", "principal:TEST-owner"))
-
-    def preference(text, value, when):
-        source = capture(core, owner, text, when=when)
-        return accept(core, owner, draft(source, value, kind="preference", subject="user", predicate="shell")).items[0]
-
-    stated = preference("I prefer bash as my shell.", "bash", "2026-09-01T12:00:00Z")
-    assert stated.state == "active"
-    for when in ("2026-09-03T12:00:00Z", "2026-09-04T12:00:00Z"):
-        dislike = preference("I don't like PowerShell as a shell.", "don't like PowerShell", when)
-        assert dislike.ref == stated.ref and dislike.state == "proposed"
-    assert core.current_claim(owner, stated.ref).payload["value_text"] == "bash"
 
 
 @pytest.mark.parametrize("origin", ["assistant_visible", "host_generated", "memory_reinjection", "origin_unknown"])

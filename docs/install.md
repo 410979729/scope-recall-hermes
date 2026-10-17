@@ -846,9 +846,9 @@ by reference, never by text. A retired claim gets a retracted version and stops
 waiting for evaluation; its sources, its earlier versions and every confirmed
 claim stay as they are.
 
-A denial ("the CI service is not CircleCI", "I don't like PowerShell") says what
-a value is not, so it no longer becomes a claim's current value. An earlier
-release let one take the place of the value it denied nothing about. To give
+A denial of another value than the one a claim holds ("the CI service is not
+CircleCI" while it is Jenkins, "I don't like PowerShell" while the preferred
+shell is bash) no longer replaces that value; an earlier release let it. To give
 those claims their value back, take a `backup` first, then:
 
 ```bash
@@ -857,10 +857,11 @@ scope-recall restore-displaced-values --config /path/to/instance-root/scope-reca
 
 It pages like `retire-rootless-claims`, and without `--apply` it only lists the
 claims it would change and the revision it would restore, by reference. Each
-such denial gets a retracted version, and the last version before it that
-stated a value becomes current again; a denial that displaced nothing is kept
-as a proposal. Nothing is deleted: every version stays in the claim's history,
-and `rollback` to the backup undoes the run.
+such denial gets a retracted version, and the value it displaced becomes current
+again. A denial that is a claim's only value ("我不吃辣") or that denies the
+value it replaced ("I don't drink coffee any more") is that claim's value, and
+the command leaves it. Nothing is deleted: every version stays in the claim's
+history, and `rollback` to the backup undoes the run.
 
 An earlier release's capture filter left a one-line summary in place of a tool
 output it withheld ("Tool execution summary ... output_preview=omitted"); stores
