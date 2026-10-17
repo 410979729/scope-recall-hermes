@@ -1,18 +1,18 @@
 """When a candidate's evidence has settled enough to be worth judging.
 
-The measured problem: every source that mentions a candidate adds evidence,
-every addition changes the evidence fingerprint, and every new fingerprint
-queued a fresh evaluation while superseding the ones still waiting.  In one store
-that produced 11,158 evaluations of which **7,802 were retired before anyone
-judged them** -- 69.9%, nearly all ``superseded_by_new_evidence`` -- and exactly
-**2** ever reached ``resolved / fact_active``.  The queue could not outrun its
-own input.
+Without a debounce, every source that mentions a candidate adds evidence, every
+addition changes the evidence fingerprint, and every new fingerprint queues a
+fresh evaluation while superseding the ones still waiting.  Measured in one
+store, that produced 11,158 evaluations of which **7,802 were retired before
+anyone judged them** -- 69.9%, nearly all ``superseded_by_new_evidence`` -- and
+exactly **2** ever reached ``resolved / fact_active``.  The queue could not
+outrun its own input.
 
 Replaying the real arrival times of all 11,667 evidence rows across 402
 candidates says what a quiet window is worth:
 
     inter-arrival within one candidate   p25 286s   p50 510s   p90 2,127s
-    quiet window   60s ->  11,234 evaluations   (98% of today; useless)
+    quiet window   60s ->  11,234 evaluations   (98% of the count with no window; useless)
     quiet window  300s ->   8,664               (76%; the obvious guess, too short)
     quiet window  900s ->   3,736               (33%)
     quiet window 1800s ->   1,966               (17%, but p50 verdict latency 30 min)
@@ -28,7 +28,7 @@ accumulating, judge it on what is there.
 
 The second rule matters more than the window: **at most one queued evaluation
 per candidate**.  That is what actually removes the supersede loop, because a
-second one can no longer be created to retire the first.  Evidence that arrives
+second one cannot be created to retire the first.  Evidence that arrives
 meanwhile is not lost -- it lands in ``candidate_evidence`` and joins the next
 evaluation, whose fingerprint then differs; an unchanged evidence set collides
 on that fingerprint and schedules nothing, so this cannot spin.
@@ -49,11 +49,11 @@ QUIET_SECONDS = 900
 MAX_DEFERRAL_SECONDS = 3600
 
 #: Questions put to the evaluator about one candidate version, none of which settled it, after which it is put to the
-#: evaluator at most once a day (``slowed_until``).  A candidate that keeps drawing evidence was asked again each time
-#: some came, about once an hour.  Over the week to 2026-10-10 on the shared store: 26,909 questions, 91% of them
-#: answered "not enough evidence yet" and 112 with a fact; of the 306 candidates ever resolved, 80% were resolved within
-#: their first five questions, while 556 had been asked twenty times or more.  A day's pace after five questions would
-#: have spared 42% of that week's questions and delayed, by at most a day, the fifth of resolutions that needed more.
+#: evaluator at most once a day (``slowed_until``).  Without it a candidate that keeps drawing evidence is asked again
+#: each time some comes, about once an hour.  Over one week on a shared store: 26,909 questions, 91% of them answered
+#: "not enough evidence yet" and 112 with a fact; of the 306 candidates ever resolved, 80% were resolved within their
+#: first five questions, while 556 had been asked twenty times or more.  A day's pace after five questions would have
+#: spared 42% of that week's questions and delayed, by at most a day, the fifth of resolutions that needed more.
 SLOW_AFTER_QUESTIONS = 5
 SLOW_INTERVAL_SECONDS = 86400
 

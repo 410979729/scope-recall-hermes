@@ -94,7 +94,7 @@ def host_source_key(
     safe_id = event_id.strip() or "unknown"
     # Entries of a shared store share its installation id and can see the same
     # host session and turn ids -- the owner talking to two bots -- so there the
-    # entry is part of the key.  A local store's keys are unchanged.
+    # entry is part of the key.  A local store's keys leave it out.
     owner = f"{installation_id}:{entry_id}" if entry_id is not None else installation_id
     return f"hermes:{owner}:{session_id}:{safe_kind}:{safe_id}@{revision}"
 
@@ -274,7 +274,7 @@ _COMPRESSED_SUMMARY = "_compressed_summary"
 #: The lines that bound a folded summary (``agent.context_compressor``: ``_MERGED_PRIOR_CONTEXT_HEADER``,
 #: ``_MERGED_SUMMARY_DELIMITER``, ``_SUMMARY_END_MARKER``) and the header of a to-do list a compression appends to the
 #: last user message (``tools.todo_tool.TODO_INJECTION_HEADER``), as Hermes 0.21.5 writes them.  Should Hermes change
-#: them, a folded message is no longer recognised: the turn is then the person's, as before.
+#: them, a folded message is no longer recognised: the turn is then the person's.
 _PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT \u2014 for reference only; not a new message]"
 _SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT \u2014 COMPACTION SUMMARY BELOW]"
 _SUMMARY_END = "--- END OF CONTEXT SUMMARY \u2014 respond to the message below, not the summary above ---"
@@ -315,14 +315,15 @@ def host_notice(history: object, user_message: object) -> bool:
     Hermes marks the user messages it writes itself with a display kind: a finished background process, a
     delegation's result, a wake-up, a plugin's message (``gateway.response_filters.display_kind_for_event``, the
     CLI's ``TimelineNotification``).  A steer is the one kind that holds the person's words
-    (``ContextCompressor._is_actionable_user_turn``).  Stored as the person's, a notice read as something they said.
+    (``ContextCompressor._is_actionable_user_turn``).  Stored as the person's, a notice would read as something they
+    said.
 
     The latest user message with words of its own decides: the turn is Hermes's when those words are the turn's
     text and the message carries a notice's kind.  A to-do list a compression adds after the turn's message has no
-    words of its own (``agent.turn_context.reanchor_current_turn_user_idx``).  The latest only: when Hermes put a note
-    of its own before the person's message (a model switch, a timestamp), an unanswered notice with the same words
-    took theirs, and so did an older folded one.  A request Hermes restores after a notice
-    decides in its place, and the notice stays the person's: the safe side.
+    words of its own (``agent.turn_context.reanchor_current_turn_user_idx``).  The latest only: otherwise, when Hermes
+    puts a note of its own before the person's message (a model switch, a timestamp), an unanswered notice with the same
+    words would take theirs, and so would an older folded one.  A request Hermes restores after a notice decides in its
+    place, and the notice stays the person's: the safe side.
 
     Past the last reply the message must be one Hermes folded and marked.  A compression at the turn's start can
     fold its summary into the turn's own message (``ContextCompressor._merge_summary_into_tail_row``) and put the

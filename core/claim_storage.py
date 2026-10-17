@@ -107,9 +107,9 @@ class Claims:
 
     def prefetch_versions(self, refs) -> None:
         """Load the versions of these claims into a read transaction's memory, with whether ``visibility.allowed``
-        admits each: two statements and two rows a page, however many claims there are.  A recall read each candidate
-        claim's versions on its own, and in a busy Hermes gateway every statement and row waited for the GIL (3.7.7,
-        ``Transaction.remembered``).  A write transaction loads nothing ahead."""
+        admits each: two statements and two rows a page, however many claims there are.  Read for each candidate
+        claim on its own, every statement and row would wait for the GIL in a busy Hermes gateway
+        (``Transaction.remembered``).  A write transaction loads nothing ahead."""
         tx = self._tx
         if not tx.remembers:
             return
@@ -529,10 +529,10 @@ class Claims:
             )
         for span in proposal["evidence_spans"]:
             source = self._tx.source(span["source_ref"], span["source_revision"])
-            # Three different findings once shared one name, so a diagnostic record
-            # said ``evidence_span`` and left an operator to guess which: a source
-            # that is not there, one that belongs to someone else, or a quote that
-            # is in neither.  Only the third is about what the model wrote.
+            # Three different findings, each with its own name, so a diagnostic
+            # record does not leave an operator to guess which: a source that is not
+            # there, one that belongs to someone else, or a quote that is in
+            # neither.  Only the third is about what the model wrote.
             if source is None:
                 raise ContractError("DERIVATION_INVALID", "evidence_source_missing")
             if (source.scope_id, source.project_id, source.branch_id) != (scope_id, ctx.project_id, ctx.branch_id):
@@ -711,9 +711,9 @@ class Claims:
     def close_unplaceable_updates(self, *, limit: int = 64) -> int:
         """Close open rows that name no candidate claim: nothing can ever settle them.
 
-        Releases before 3.4.0rc10 recorded a correction with no claim in scope as such a row
-        (``capture_correction``); 36 were open on the pilot, handed to every read.  They are marked ``obsolete``,
-        the state a deletion leaves too, since nothing was settled.
+        Such a row records a correction made with no claim in scope (``capture_correction``), and each one open
+        is handed to every read.  They are marked ``obsolete``, the state a deletion leaves too, since nothing
+        was settled.
         """
         if type(limit) is not int or not 1 <= limit <= 256:
             raise ContractError("INPUT_INVALID", "unresolved_limit")
@@ -735,11 +735,11 @@ class Claims:
         """Close ambiguity rows once one of their candidates is actually revised.
 
         ``unresolved`` records a correction the bounded path could not place:
-        either several claims matched or the times ran backwards.  The schema
-        has always had ``resolved``/``resolved_at`` and nothing ever wrote them,
-        so a row that the user went on to settle stayed open for good -- surfaced
-        to the host on every read, and bumping ``memory_epoch`` on the way in.
-        ``obsolete`` had a writer (deletion); the settled case had none.
+        either several claims matched or the times ran backwards.  This is the
+        one writer of ``resolved``/``resolved_at``: without it a row that the
+        user went on to settle would stay open for good -- surfaced to the host
+        on every read, and bumping ``memory_epoch`` on the way in.  Deletion
+        writes ``obsolete``.
 
         An authorized revision of one of the named candidates is that answer:
         it is the same human, through the path that requires the target to be

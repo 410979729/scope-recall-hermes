@@ -12,11 +12,11 @@ from .admission import classify
 from .visibility import allowed
 
 #: The roles of an import whose words a person reads back: what the owner said, what they were told, their
-#: documents, and the notes an older store kept without a role.  An import queued an embedding only where its source
-#: store had one (``maintenance/shared_import.py``), so a store that never had one left its history findable by its
-#: words alone: on the pilot one agent's, 1,928 of the owner's messages, 6,552 replies and 3,009 notes.  Tool output is
-#: left out: 200,000 imported outputs would cost more to embed than everything else in the store, and a captured
-#: one keeps its vector 180 days (``tool_output_retention_days``).
+#: documents, and the notes an older store kept without a role.  An import queues an embedding only where its source
+#: store had one (``maintenance/shared_import.py``), so a store that never had one leaves its history findable by its
+#: words alone: for one agent of one store, 1,928 of the owner's messages, 6,552 replies and 3,009 notes.  Tool output
+#: is left out: 200,000 imported outputs would cost more to embed than everything else in the store, and a captured one
+#: keeps its vector 180 days (``tool_output_retention_days``).
 IMPORT_EMBED_ROLES = ("user", "assistant", "document", "unknown")
 #: A page is added only while fewer embeddings than this wait, so a message captured now is never queued behind an
 #: import's history for its vector.
@@ -107,13 +107,13 @@ def queue_import_embeddings(
     acknowledgement) is passed over, not looked at again on every page.  A page tops the embedding queue up to
     ``IMPORT_EMBED_QUEUE_CEILING``, and to ``yield_ceiling`` while work of a type in ``yield_to`` is ready; with the
     queue there, nothing is queued, the page is ``held`` and the cursor stays where it was.  The worker claims
-    embeddings before candidate evaluations (``work_storage._CLAIM_ORDER``): the backfill kept a page past the
-    ceiling waiting (up to 127), every pass would take embeddings alone, and evaluations would wait behind an
+    embeddings before candidate evaluations (``work_storage._CLAIM_ORDER``): were the backfill to keep a page past
+    the ceiling waiting (up to 127), every pass would take embeddings alone, and evaluations would wait behind an
     import's history for the hours it runs.  Stopping for them instead would stop it for as long as they cannot be
-    done, a model refusing before any request; kept to part of a pass, it still moves.
-    Only sources the context's worker would embed are looked at, those of its project and branch: an import kept
-    by another's (a store converted from 2.x keeps them) was queued where this worker neither counts nor claims
-    it, and every pass queued another page of them past the ceiling.
+    done, a model refusing before any request; kept to part of a pass, it still moves.  Only sources the context's
+    worker would embed are looked at, those of its project and branch: an import kept by another's (a store
+    converted from 2.x keeps them) would be queued where this worker neither counts nor claims it, and every pass
+    would queue another page of them past the ceiling.
     """
     if type(limit) is not int or not 1 <= limit <= 200:
         raise ContractError("INPUT_INVALID", "import_embed_page")

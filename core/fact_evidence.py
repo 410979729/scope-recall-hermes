@@ -39,7 +39,7 @@ CORROBORATING_EVIDENCE_SOURCE_TYPES = frozenset(
 AUTHORITATIVE_EVIDENCE_SOURCE_TYPES = DIRECT_EVIDENCE_SOURCE_TYPES | CORROBORATING_EVIDENCE_SOURCE_TYPES
 _WORD_RE = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
 # A "." with an ASCII letter or digit on both sides sits inside one token
-# (3.1.0rc28, 3.5, example.com) and ends no clause; splitting there left a
+# (3.1.0rc28, 3.5, example.com) and ends no clause; splitting there would leave a
 # dotted value in no single clause, so it could never be proved.  A "." before
 # a space, the end or CJK text still ends one.  The dotted-date rewrites below
 # likewise match whole tokens only, never the "1.0" inside v3.1.0-rc28.

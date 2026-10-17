@@ -7,8 +7,7 @@ resolved episode -> journal source-ref mapping before its episode loop, calls
 ``apply`` for EACH resolved ref after the episode/version insert, keeps its
 evidence_links INSERT unconditional and legacy_fields (including the original
 ordered journal_entry_ids) unchanged, and calls ``verify`` after the entire
-loop, before committing, persisting its body-free audit result. Until 3.10.4
-this was opt-in, the migration job never opted in, and a shared entry ended it.
+loop, before committing, persisting its body-free audit result.
 
 Ownership uses the lexically smallest exact Core episode ID, not arrival order,
 recency, source authority, or a claimed historical owner. Sequences retain the

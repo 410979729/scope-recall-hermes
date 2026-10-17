@@ -52,7 +52,7 @@ SERVER_DESCRIPTION = "Scope Recall: the memory this machine's agents share"
 #: 6 s (``runtime/instance.py``).  A Stop's record read is bounded inside it.
 HOOK_WORK_SECONDS = 6
 #: The least each wait leaves for Git Bash and the interpreter to start before that work begins; both take about 0.6 s
-#: warm on the pilot machine, more on a cold start.
+#: warm on one machine, more on a cold start.
 START_SECONDS = 4
 #: The events recorded, and how many seconds WorkBuddy waits for each (60 unless a hook says otherwise).  WorkBuddy
 #: blocks a prompt whose hook runs past its wait, so each wait covers the start and the work: the claude-code host's.

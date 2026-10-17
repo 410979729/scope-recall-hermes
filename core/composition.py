@@ -171,8 +171,8 @@ class MemoryCore:
 
         if type(ref) is str and ref.startswith(RECALL_DIAGNOSTIC_PREFIX):
             # A recall packet's ``diagnostic_ref`` names a record this process keeps for its last recalls
-            # (``recall_diagnostics``), never a stored object: looked up in the store it was always SOURCE_MISSING
-            # (yuheng's audit of 3.4.2).  Only the session that recalled reads it, and only counts and gap codes.
+            # (``recall_diagnostics``), never a stored object: looked up in the store it would always be
+            # SOURCE_MISSING.  Only the session that recalled reads it, and only counts and gap codes.
             if revision not in (None, 1):
                 raise ContractError("INPUT_INVALID", "revision")
             record = self.recall_diagnostics.get(ref)

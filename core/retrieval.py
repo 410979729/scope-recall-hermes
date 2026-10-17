@@ -65,10 +65,10 @@ class SearchLimits:
             "candidate_pool": (self.candidate_pool, 1, 200),
             "recent_items": (self.recent_items, 0, 24),
             "relation_hops": (self.relation_hops, 0, 2),
-            # The ceiling used to equal the default, so an operator who noticed
-            # relation_bound_reached could not raise it.  Claims now also have
-            # their own channel (``RetrievalStorage.claims``); expansion still
-            # brings in the claims and episodes around what was retrieved.
+            # The ceiling is well above the default, so an operator who notices
+            # relation_bound_reached can raise it.  Claims also have their own
+            # channel (``RetrievalStorage.claims``); expansion still brings in the
+            # claims and episodes around what was retrieved.
             "relation_objects": (self.relation_objects, 0, 200),
             "vector_limit": (self.vector_limit, 0, 200),
             "followups": (self.followups, 0, 1),

@@ -145,8 +145,8 @@ def local_times(value: object, zone: tzinfo | None = None) -> object:
     """``value`` with every stored UTC instant written in ``zone``, offset included.
 
     Storage and the contracts keep UTC.  A model shown ``06:52:03+00:00``, whose
-    prompt gave it only the date and its zone, told the user it was 6:52 in the
-    morning when the host's clock read 2:52; the same instant in the host's own
+    prompt gives it only the date and its zone, would tell the user it was 6:52 in
+    the morning when the host's clock reads 2:52; the same instant in the host's own
     zone needs no arithmetic.  ``None`` is this machine's zone.  Only time fields
     change, never what a memory says; an instant the zone cannot place stays UTC.
     """
@@ -214,7 +214,7 @@ def fence_epoch(
     keys so hosts can still read the fenced shape.  ``retracted`` answers
     whether a deletion or suppression in the caller's scopes came after the
     view's epoch: every capture moves the epoch, so without it every move
-    blanks, which on a store several entries write to was most views.
+    would blank, which on a store several entries write to is most views.
     """
     if view.get("memory_epoch") is None or view["memory_epoch"] == current_epoch:
         return view

@@ -2,7 +2,7 @@
 
 Exists so that a diagnostic can ask "is the process that wrote this record
 still running?" without ever signalling, waiting on, or otherwise touching
-that process.  ``runtime/running_code.py`` is the only caller today.
+that process.  ``runtime/running_code.py`` is the only caller.
 
 Two things this module is deliberately careful about:
 

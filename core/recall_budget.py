@@ -29,14 +29,14 @@ def estimate_tokens(text: str) -> int:
     """Estimate ASCII runs at four chars/token, CJK at one, symbols by bytes.
 
     Counted with string operations rather than one Python step per character: the packet weighs every
-    candidate it considers, 1.9 million characters in one automatic recall on the shared store, and that
+    candidate it considers, 1.9 million characters in one automatic recall on a shared store, and that
     loop cost 180 ms of it.
     """
     whole = len(text.translate(_ASCII_QUARTER))
     quarters = len(text) - whole + 4 * whole
     rest = _CJK.sub("", text)
     if not rest.isascii():
-        # Counted once, not once per distinct symbol: a table of thousands of different glyphs made that
+        # Counted once, not once per distinct symbol: a table of thousands of different glyphs would make that
         # quadratic, 1.2 s for one 65,536-character source.
         for char, count in Counter(rest).items():
             if char > "\x7f" and unicodedata.category(char)[0] not in "LNMPZ":

@@ -48,7 +48,7 @@ __all__ = [
 #: Provider answers that mean "send less traffic".  Distinct from the
 #: recoverable set: that one says whether an item may be retried, this one
 #: decides whether the rest of the pass should even ask.  One name, one
-#: definition -- two hand-kept copies of this set drifted apart once already.
+#: definition: two hand-kept copies of this set would drift apart.
 _RATE_LIMITED_ERRORS = CAPACITY_REFUSALS
 
 #: Seconds a model-bound item keeps back, beyond its one bounded request, to
@@ -61,12 +61,12 @@ FINALIZE_MARGIN_SECONDS = 5.0
 #: Work that waits on an auxiliary provider; purge and projection rebuilds never do.
 _HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
 #: Truncated source-trigger pages a pass continues before it claims work.  At
-#: one page a pass, a source matching a thousand candidates took sixty passes,
-#: started back to back, each paying a whole pass to link sixteen of them.
+#: one page a pass, a source matching a thousand candidates would take sixty
+#: passes, started back to back, each paying a whole pass to link sixteen of them.
 SOURCE_PAGES_PER_PASS = 16
-#: Seconds a pass waits after each of those pages.  Each page is its own write, but the next one began at once,
-#: and a hook waiting for the writer lease polls every 10 ms (``core/storage.py``): it rarely landed in the gap,
-#: so it waited behind every page of the pass instead of one.  Two polls' worth lets it in.
+#: Seconds a pass waits after each of those pages.  Each page is its own write, but with the next one begun at once a
+#: hook waiting for the writer lease, which polls every 10 ms (``core/storage.py``), would rarely land in the gap, and
+#: would wait behind every page of the pass instead of one.  Two polls' worth lets it in.
 PAGE_TURN_SECONDS = 0.02
 #: Seconds of those pages a pass spends at most.  A page holds the writer lease while it matches its source
 #: against the candidates sharing a term: 0.5-7 s a page on a shared store with thousands of candidates, so
@@ -80,7 +80,7 @@ SOURCE_PAGE_SECONDS = 5.0
 #: its own ``max_items``.
 EMBED_BATCH_LIMIT = 1000
 #: Least lease time a group member must have left to still ask for itself.  Members
-#: are claimed together, so the last ones asked one at a time were asked after the
+#: are claimed together, so asked one at a time, the last ones would be asked after the
 #: lease had run out and dropped as stale, with the attempt spent and the vector paid for.
 GROUP_REQUEST_FLOOR_SECONDS = 5.0
 
@@ -96,8 +96,8 @@ class WorkerConfig:
     admission_policy: object | None = None
     candidate_batch_limit: int = PROCESS_BATCH_LIMIT
     #: Source embeddings a pass may ask for in one request.  One request per
-    #: source is what made a vector store of a hundred thousand sources days of
-    #: wall clock to rebuild, for minutes of tokens.
+    #: source would make a vector store of a hundred thousand sources take days
+    #: of wall clock to rebuild, for minutes of tokens.
     embed_batch_limit: int = EMBED_BATCH_LIMIT
     #: The bound the caller clamps every model and embedding request to (the
     #: runtime's ``request_seconds``).  None means the ports are unbounded and
@@ -243,29 +243,29 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
 #: Candidate evaluations allowed to wait before a pass stops queueing more.
 #:
 #: Scheduling settled candidates is how a candidate whose evidence stopped
-#: arriving is finally judged, and it ran every pass however deep the queue
-#: already was.  A pass evaluates at most ``candidate_batch_limit`` of them, so
-#: the queue could grow by eight a pass, to hundreds waiting for hours, while
-#: every one of them costs a model call to get there.  Above this
-#: depth the work is already recorded and waiting; adding more only ages it.
-#: Twelve passes' worth, an hour at the default wake, so an idle instance clears
-#: the ceiling before the next sweep.
+#: arriving is finally judged.  Run every pass however deep the queue already
+#: is, it would grow the queue by eight a pass, since a pass evaluates at most
+#: ``candidate_batch_limit`` of them, to hundreds waiting for hours, while every
+#: one of them costs a model call to get there.  Above this depth the work is
+#: already recorded and waiting; adding more only ages it.  Twelve passes'
+#: worth, an hour at the default wake, so an idle instance clears the ceiling
+#: before the next sweep.
 CANDIDATE_QUEUE_CEILING = PROCESS_BATCH_LIMIT * 12
 
-#: Stale pending candidates a pass returns to waiting for evidence, each checked again under the writer lease; the
-#: 2,045 on the pilot take about 64 passes.
+#: Stale pending candidates a pass returns to waiting for evidence, each checked again under the writer lease;
+#: 2,045 of them, as one store held, take about 64 passes.
 STALE_PENDING_PAGE = 32
 
 
 #: Seconds a pass may still spend handing untouched leases back once its budget
 #: is gone.  The usual reason a group is cut short is that the pass ran out of
-#: time, and that was the one case in which nothing was handed back: every item
-#: claimed and never looked at kept its spent attempt, and after three such
-#: passes it was failed as ``lease_exhausted`` without having been tried once.
-#: Seen on an instance whose ``max_items`` had been left at 1000: 888 embeddings
-#: in an hour, through all four automatic recoveries.  This is one page of
-#: UPDATEs; the runtime keeps a margin of the handed deadline for what follows
-#: the drain and the watchdog waits ``KILL_GRACE_SECONDS`` beyond it.
+#: time; with nothing handed back then, every item claimed and never looked at
+#: would keep its spent attempt, and after three such passes it would be failed
+#: as ``lease_exhausted`` without having been tried once (888 embeddings in an
+#: hour on a store whose ``max_items`` was 1000, through all four automatic
+#: recoveries).  This is one page of UPDATEs; the runtime keeps a margin of the
+#: handed deadline for what follows the drain and the watchdog waits
+#: ``KILL_GRACE_SECONDS`` beyond it.
 RELEASE_SECONDS = 1.0
 
 
@@ -328,7 +328,7 @@ def _recover_failed_work(
             )
         if "evaluate_candidate" in allowed:
             # Evidence stops arriving silently, so something has to notice.
-            # observe_source no longer schedules while a candidate is still
+            # observe_source does not schedule while a candidate is still
             # collecting; this is where a settled one finally gets its one
             # evaluation.  See core/candidate_debounce.py.  A pass queues at
             # most what it can also evaluate, and stops queueing entirely once
@@ -338,7 +338,7 @@ def _recover_failed_work(
                 tx.candidates.schedule_settled_candidates(
                     now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items), refs=settled
                 )
-            # Pending with nothing new to ask, left by releases before 3.4.0rc10 (``stale_pending``).
+            # Pending with nothing new to ask (``stale_pending``) is returned to waiting for evidence.
             if stale:
                 tx.candidates.settle_stale_pending(stale, now=clock.utc_now())
             recovered += tx.candidates.reschedule_budget_blocked_candidates(
@@ -410,7 +410,7 @@ def _embed_group(storage, clock, context, group: tuple, embed, started: float, b
         )
         return (item,), {}, {}, {item.work_id: ("deferred", refusal.error_code, "pending")}
     # One commit for the group's vectors, for the same reason as one
-    # request for its texts: the per-item cost was the store's lock,
+    # request for its texts: the per-item cost is the store's lock,
     # not the work.  Then one record for the members it wrote.
     published_group = publish_embed_group(
         storage,
@@ -538,7 +538,7 @@ def drain_worker(
             item = member
         # A member that still has to ask for itself is bounded by the lease it was
         # claimed with, not only by the pass: asked after the lease ran out, its
-        # vector was paid for and dropped as stale.
+        # vector would be paid for and dropped as stale.
         lease_end = (claimed_at - started) + config.lease_seconds - FINALIZE_MARGIN_SECONDS
         rest = [member for member in group if member.work_id not in recorded]
         for index, member in enumerate(rest):

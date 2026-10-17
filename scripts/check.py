@@ -27,28 +27,28 @@ RELEASE_WATCHDOG_SECONDS = 600
 #: tens of minutes of real work there. Cap the integration tier so the
 #: watchdog bounds a hang, not a slow-but-healthy suite.
 INTEGRATION_WATCHDOG_SECONDS = 2700
-#: Headroom granted per selected test file, on top of the historical floor.
-#: The integration tier grew to 1,048 tests across 66 files and began timing
-#: out at a flat 180s -- nothing hung, the suite simply got bigger, and a gate
-#: that reports a timeout instead of a result is not a gate. A watchdog is
-#: there to bound a *hang*, which is unbounded; sizing it to the work actually
-#: selected keeps that meaning instead of turning every eighty new tests into
-#: a flake that has to be rediscovered.  GitHub's Windows runners also run the
-#: same healthy suite several times slower at times: the retrieval tier took
-#: 39-170s across runs and then met its 215s watchdog, the host tier took
-#: 142-237s and then met 290s, with nothing hung either time.  Twenty seconds a
-#: file leaves such a runner room and still bounds a hang at the release budget.
+#: Headroom granted per selected test file, on top of the 180s floor.  A flat
+#: 180s times out a tier of 1,048 tests across 66 files with nothing hung, only
+#: a bigger suite, and a gate that reports a timeout instead of a result is not
+#: a gate.  A watchdog is there to bound a *hang*, which is unbounded; sizing it
+#: to the work actually selected keeps that meaning instead of turning every
+#: eighty new tests into a flake that has to be rediscovered.  GitHub's Windows
+#: runners also run the same healthy suite several times slower at times: the
+#: retrieval tier took 39-170s across runs and once ran past a 215s watchdog,
+#: the host tier 142-237s and once past 290s, with nothing hung either time.
+#: Twenty seconds a file leaves such a runner room and still bounds a hang at
+#: the release budget.
 WATCHDOG_SECONDS_PER_FILE = 20
 
 
 def pytest_watchdog_seconds(tier: str, selected_files: int = 0) -> int:
     """Bounded suite watchdog, scaled to how much this run selected.
 
-    Release and integration keep their own fixed budgets: release's historical
-    600s, integration's 2700s sized to the GitHub Windows runner's measured
-    need for the 118-file baseline. Every other tier keeps the historical 180s
-    as a floor and adds room for what it actually runs, capped at the release
-    budget so no run -- hung or merely large -- waits forever.
+    Release and integration keep their own fixed budgets: release's 600s,
+    integration's 2700s sized to the GitHub Windows runner's measured need for
+    the 118-file baseline. Every other tier keeps 180s as a floor and adds room
+    for what it actually runs, capped at the release budget so no run -- hung
+    or merely large -- waits forever.
     """
 
     if tier == "release":
@@ -57,10 +57,9 @@ def pytest_watchdog_seconds(tier: str, selected_files: int = 0) -> int:
         selected_files = 0
     if tier == "integration":
         # The GitHub Windows runner executes the 118-file integration baseline
-        # tens of times slower than Linux; the receipt shows the shared cap
-        # firing at 600s with the suite 25% done and still printing progress.
-        # The tier carries its own fixed budget, sized to that receipt, exactly
-        # the way release carries 600s.
+        # tens of times slower than Linux: a shared cap of 600s fired with the
+        # suite 25% done and still printing progress.  The tier carries its own
+        # fixed budget, sized to that run, the way release carries 600s.
         return INTEGRATION_WATCHDOG_SECONDS
     scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
     return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS)

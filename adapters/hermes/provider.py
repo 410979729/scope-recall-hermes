@@ -295,7 +295,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         return ""
 
     def shutdown(self) -> None:
-        # A turn being written is finished first (``sync_turn``), as when it held the adapter lock throughout, and so
+        # A turn being written is finished first (``sync_turn``), as if it held the adapter lock throughout, and so
         # is a tool hook's capture whose store I/O runs without the lock, for at most ``_CAPTURE_DRAIN_WAIT_S``: its
         # bookkeeping needs the session it was said in.  One still writing after that is counted, not waited out.
         with self._sync_lock, self._lock:

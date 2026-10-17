@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from .handler import CodexHookHandler
 
 #: The longest query a recall request carries (``contracts/recall_request.schema.json``).  A longer prompt is
-#: searched by its first part, as Hermes does: whole, it failed the request and the turn had no recall at all.
+#: searched by its first part, as Hermes does: whole, it would fail the request and leave the turn no recall at all.
 _RECALL_QUERY_CHARS = 8192
 #: When a prompt hook that asked the entry's server (``resident_recall``) recalls as well, if the server has not
 #: answered: with this much left.  The helper the hook started at its own start is ready by then.
@@ -79,7 +79,7 @@ class PromptRecall:
         failed, ran out of time or came back empty because its read did not finish (``_RESIDENT_REASONS``), or none,
         leaves the hook's own.  One without its vector search is used as it is unless what failed was the server's
         own (``server_own_vector_fault``) and this hook has a vector search: the hook then recalls as well (a server
-        that lost its key recalled every prompt by words alone).  The server writes nothing: the prompt was stored
+        that lost its key would recall every prompt by words alone).  The server writes nothing: the prompt was stored
         here, so an answer that comes after the hook is done costs the turn nothing but its warm vectors."""
         remaining = self._hook.remaining(deadline)
         if remaining < _RESIDENT_MIN_S:
@@ -227,7 +227,7 @@ class PromptRecall:
                     context, request, current_source_refs=current_refs, deadline_seconds=remaining
                 )
             else:
-                # Named only for a Claude Code prompt: every other host's recall is asked as before.
+                # Named only for a Claude Code prompt: every other host's recall is asked without it.
                 packet = self._hook.core.recall_packet(
                     context,
                     request,

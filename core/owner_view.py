@@ -1,8 +1,8 @@
 """Who a store's owner is called, and a question that names them, asked as they would ask it themselves.
 
 The owner's own words never carry their name.  A question that names them, the way an agent asks the recall tool
-("Joy 对辣的饮食偏好是什么？"), was drawn by its embedding to every greeting addressed to them, and lexically an
-answer in their own words fell short of the name.  Recall reads such a question as the owner's own as well
+("Joy 对辣的饮食偏好是什么？"), is drawn by its embedding to every greeting addressed to them, and lexically an
+answer in their own words falls short of the name.  Recall reads such a question as the owner's own as well
 (``owner_view``): the vector channel searches it in the first person beside the question as asked, both embedded in
 one request, and lexical admission takes a candidate the question without the name admits.  The question as asked
 keeps finding what names them.

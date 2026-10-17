@@ -5,8 +5,8 @@ this server cannot leave that job: under WorkBuddy it lives as long as the conve
 it, or less (measured; docs/install.md, section 12).
 
 WorkBuddy starts the entry's MCP server, and with it the recall server its prompt hooks ask, with each conversation's
-agent process and stops it with that process.  A prompt that started one met a server still opening its vector store
-and its embedding connection, and was recalled by words alone: a cold server answered with its vector search 12.7 s
+agent process and stops it with that process.  A prompt that starts one meets a server still opening its vector store
+and its embedding connection, and is recalled by words alone: a cold server answered with its vector search 12.7 s
 after its start (measured), past the prompt hook's 6 s.  This server is started by the entry's hook or MCP
 server when none runs, names itself resident (hooks ask it first), and ends ``resident_recall_minutes`` after the last
 prompt's recall or the last mark of a live client process (``local_endpoint.keep_resident``), once the minutes are 0,
@@ -51,16 +51,16 @@ from .local_endpoint import (
 #: recall stuck too long.
 IDLE_CHECK_SECONDS = 30.0
 #: Checks in a row whose files could not be read before the server ends: one read caught mid-save, or held for a
-#: moment by a scanner, ended a warm server, and files gone for good end it a check later.
+#: moment by a scanner, would end a warm server, and files gone for good end it a check later.
 UNSURE_CHECKS = 2
 #: How long a recall may run past its time before the server ends.  Such a server tells every hook it is busy, and the
 #: marks of live client processes would keep it up, cold for every prompt, for as long as the client ran; ended, it
 #: is started anew by the next look.
 STUCK_END_SECONDS = 300.0
 #: How long a starting server waits for the entry's lock.  A hook that looks whether one runs holds it for a moment
-#: (``local_endpoint.resident_running``); held a quarter of a second, a busy machine's look made a start give way, and
-#: the start stamp then kept the entry without a server for a minute.  One of another version
-#: this server or a hook stopped holds it until the system has ended that process.
+#: (``local_endpoint.resident_running``); waiting only a quarter of a second, a start would give way to a busy machine's
+#: look, and the start stamp would then keep the entry without a server for a minute.  One of another version this
+#: server or a hook stopped holds it until the system has ended that process.
 LOCK_WAIT_SECONDS = 3.0
 STOPPED_WAIT_SECONDS = 5.0
 #: A mark of a live client process further ahead of the clock than this is a clock set back, not a mark; one just made
@@ -87,8 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     if not home.is_absolute() or (args.env_file is not None and not args.env_file.is_absolute()):
         return 2
     if args.detach:
-        # Started by the client's MCP server, which lives as long as the conversation, the server was its child:
-        # WorkBuddy ending the conversation's process tree ended it too (measured: its tree is killed as
+        # Started by the client's MCP server, which lives as long as the conversation, the server would be its child:
+        # WorkBuddy ending the conversation's process tree would end it too (measured: its tree is killed as
         # ``taskkill /T`` does).  Started from this process, which ends now, it has no living parent in that tree.
         from .local_endpoint import start_detached
 
@@ -151,8 +151,8 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
             package = _package_state()
             minutes = configured_minutes(home, host, missing=None) if configured else None
             if minutes is not None:
-                # A change of the entry's minutes is taken here: set to 0 to free the server's memory, it kept serving,
-                # and every prompt put its end off.
+                # A change of the entry's minutes is taken here: otherwise, set to 0 to free the server's memory, it
+                # would keep serving, and every prompt would put its end off.
                 idle = minutes * 60.0
             unsure = unsure + 1 if package == "unknown" or (configured and minutes is None) else 0
             if (
@@ -186,7 +186,7 @@ def _keep_record(path: Path, host: str) -> None:
 def _package_state() -> str:
     """``same``; ``replaced`` when the package on disk is no longer the one this server runs (an upgrade replaced it, or
     an uninstall took it away); ``unknown`` when its version could not be read just now.  A server of the old version
-    kept the entry's lock against every one of the new version until its idle end, while hooks asked it nothing."""
+    would keep the entry's lock against every one of the new version until its idle end, while hooks ask it nothing."""
     folder = Path(_version.__file__).resolve().parent
     try:
         (folder / "_version.py").stat()
@@ -202,8 +202,8 @@ def _package_state() -> str:
 
 def _idle_seconds(last_used: float, alive: Path) -> float:
     """Seconds since the last prompt's recall (``last_used``, by the monotonic clock) or the last mark of a live client
-    process (``alive``), whichever came later.  A mark from the future, a clock set back, counts as none: it kept the
-    server up until the clock passed it."""
+    process (``alive``), whichever came later.  A mark from the future, a clock set back, counts as none: it would keep
+    the server up until the clock passed it."""
     idle = time.monotonic() - last_used
     try:
         age = time.time() - alive.stat().st_mtime

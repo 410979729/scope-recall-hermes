@@ -55,14 +55,14 @@ QUERY_EMBEDDING_SHARE = 0.7
 class _QueryEmbedding:
     """A recall's query embeddings, asked for when it starts instead of after the SQLite channels.
 
-    Behind the exact, lexical, claim and recent channels the embedding had three quarters of what they left, about
-    2.2 s of a prompt's 4 s window: enough on a warm connection, not for the new one a prompt more than 30 s after the
-    last needs (the proxy's tunnel, TLS, then the provider): measured, a remote client's server recalled 4 of 9
+    Behind the exact, lexical, claim and recent channels the embedding would have three quarters of what they left,
+    about 2.2 s of a prompt's 4 s window: enough on a warm connection, not for the new one a prompt more than 30 s after
+    the last needs (the proxy's tunnel, TLS, then the provider): measured, a remote client's server recalled 4 of 9
     prompts by words alone that way (``AuxiliaryModelError:timeout``).  Asked for as the recall starts, it runs beside
     those channels with its share of the whole window.
 
     ``queries`` is the question and the other ways recall reads it (``core/owner_view.py``), embedded in one request:
-    one after the other, the second waited for the first on the one persistent connection.
+    one after the other, the second would wait for the first on the one persistent connection.
     """
 
     def __init__(self, queries: tuple[str, ...], deadline: float) -> None:
@@ -180,9 +180,10 @@ class _LazyVectorPort:
         failed: list[Exception] = []
 
         def embed_while_opening() -> bool | None:
-            # The embedding's failure is this recall's to report.  Raised inside the open, it closed the helper as
-            # well, and the next prompt opened the table cold again; reported as False, the open is taken if it has
-            # come and parked for the next request if not, so a fast failure does not wait for the table either.
+            # The embedding's failure is this recall's to report.  Raised inside the open, it would close the
+            # helper as well, and the next prompt would open the table cold again; reported as False, the open is
+            # taken if it has come and parked for the next request if not, so a fast failure does not wait for the
+            # table either.
             try:
                 if prefetched is not None:
                     prepared.append((context.query, _taken(prefetched, effective_deadline, context.query)))
@@ -218,8 +219,8 @@ class _LazyVectorPort:
                 raise failed[0]
             if deadline.remaining() <= 0.0:
                 # The helper is still opening the table: its answer waits for the next request, which a hook's
-                # process never makes.  Returned as nothing, this recall looked as if the search had found nothing
-                # and reported no gap; Claude Code and Codex lost their vector search this way unseen.
+                # process never makes.  Returned as nothing, this recall would look as if the search had found nothing
+                # and report no gap, and a client would lose its vector search this way unseen.
                 raise TimeoutError("native vector helper open deadline exhausted before the search")
             if not prepared and prefetched is not None:
                 prepared.append((context.query, _taken(prefetched, effective_deadline, context.query)))
@@ -341,10 +342,10 @@ class RuntimeInstance:
     def warm_vector_store(self, seconds: float) -> bool:
         """Open the existing companion store and search it once, off any prompt's time.
 
-        A recall handler kept across prompts (adapters/clients/local_endpoint.KeptRecaller) was made at its first
-        prompt: that prompt's recall started the helper, opened the table and read the index, and it recalled by
-        words alone (``helper_request_deadline``) after every start of its server, which for Claude Code is every
-        session.  Warmed when the server starts, the first prompt finds them ready.  It writes nothing.
+        Made at its first prompt, a recall handler kept across prompts (adapters/clients/local_endpoint.KeptRecaller)
+        would start the helper, open the table and read the index inside that prompt's recall, and that recall would
+        answer by words alone (``helper_request_deadline``) after every start of its server, which for Claude Code is
+        every session.  Warmed when the server starts, the first prompt finds them ready.  It writes nothing.
         """
         self._ensure_open()
         if self.config.vector is None or self._vector_factory is None:
@@ -362,7 +363,7 @@ class RuntimeInstance:
             # Every partition a recall of this runtime filters on (``lance_port._partition_hits``).  The first
             # search of an index reads all of it into the helper's cache whatever the filter; after that a search
             # touches only the codes of the rows its filter keeps.  Filtered on the first scope's partition, which
-            # held no rows for any entry of the shared store, the search touched 26 MB of the 306 MB the next recall
+            # held no rows for any entry of a shared store, the search touched 26 MB of the 306 MB the next recall
             # paged back in once the helper's memory was trimmed.  What it finds is not looked at.
             search_scopes(
                 [1.0] + [0.0] * (self.config.vector.dimensions - 1),
@@ -375,10 +376,10 @@ class RuntimeInstance:
         """Ask the query embedding route for one vector, off any prompt's time: a server's start, for its embedding
         worker and its connection.
 
-        Warming the vector store alone left them to the first recall: a WorkBuddy entry's server, started cold, lost
-        the vector search of its first two recalls to the embedding's time (``AuxiliaryModelError:timeout``, measured)
-        and answered with it from the third, 12.7 s after its start.  The text is fixed and nothing of what
-        comes back is kept; it writes nothing."""
+        Warming the vector store alone would leave them to the first recall: measured, a WorkBuddy entry's server
+        started cold lost the vector search of its first two recalls to the embedding's time
+        (``AuxiliaryModelError:timeout``) and answered with it from the third, 12.7 s after its start.  The text is
+        fixed and nothing of what comes back is kept; it writes nothing."""
         self._ensure_open()
         if self.config.vector is None:
             return False
@@ -433,11 +434,10 @@ class RuntimeInstance:
     def memory_epoch(self) -> int:
         """Read the authority fence without counting the backlog.
 
-        A pass used to call ``status()`` to prove its database was the bound
-        one, which cost six whole-store aggregates and a JSON scan of every
-        source -- measured at 4.4 seconds on an instance with 150,000 queued
-        items, for a value that was discarded.  The epoch read proves the same
-        binding from one indexed row.
+        Proving the binding with ``status()`` would cost six whole-store
+        aggregates and a JSON scan of every source -- measured at 4.4 seconds
+        on a store with 150,000 queued items, for a value that is discarded.
+        The epoch read proves the same binding from one indexed row.
         """
         self._ensure_open()
         return self.core.memory_epoch(self.config.context())
@@ -588,7 +588,7 @@ class RuntimeInstance:
         # A key-collided capture is invisible to the first replay, which only
         # retries failures that might clear by themselves; without the second
         # it stays in the inbox forever, captured but never stored.  Each runs
-        # whatever the other met: one that raised skipped the other.
+        # whatever the other met: one that raised would skip the other.
         pending = False
         for replay in (replay_inbox, resolve_conflicted_ingress):
             try:

@@ -70,7 +70,7 @@ def _normalize_user_id(
     # The host's user_id_alt is another stable id of the same sender in another namespace
     # (Feishu's union_id beside its open_id, Signal's UUID), never a second person, so two
     # different values are not a conflict.  The principal stays user_id: the audience
-    # rows and owner principals every earlier release wrote are keyed on it.
+    # rows and owner principals a store holds are keyed on it.
     resolved = primary or alternate
     # A session the host names no user for is the owner's on the CLI, and on a
     # local surface the installer approved for this installation.  Anywhere

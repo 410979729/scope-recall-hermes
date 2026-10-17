@@ -56,13 +56,12 @@ def canonical_embedding_space(value: dict) -> dict:
 
     if type(value) is not dict or set(value) != set(EMBEDDING_SPACE):
         raise ContractError("INPUT_INVALID", "embedding_space")
-    # Shape and bounds, not identity. This used to require every field to equal
-    # the module default, which made the embedding model unconfigurable: a
-    # deployment could not choose its own provider even though the vector store
-    # keys everything on the space digest and would have rebuilt cleanly.
-    # Identity is still enforced, one layer out and where it belongs — a vector
-    # whose space digest differs from the one its `RecallPolicy` is bound to
-    # (`embedding_space_id`, the configured route's space in a runtime
+    # Shape and bounds, not identity: requiring every field to equal the module
+    # default would make the embedding model unconfigurable, though the vector
+    # store keys everything on the space digest and rebuilds cleanly for
+    # another provider.  Identity is enforced one layer out, where it belongs —
+    # a vector whose space digest differs from the one its `RecallPolicy` is
+    # bound to (`embedding_space_id`, the configured route's space in a runtime
     # instance) is refused admission in `RecallPolicy.vector_admission`.
     if type(value.get("model")) is not str or not 1 <= len(value["model"]) <= 200:
         raise ContractError("INPUT_INVALID", "embedding_space")
@@ -149,8 +148,7 @@ def build_embedding_space(*, model: str, dimensions: int, endpoint: str, dialect
     dimensionality or the request shape and the digest changes, the store moves
     to a new directory, and vectors from the old space are refused admission
     instead of being silently compared across incompatible geometries. That
-    property is what makes swapping embedding models safe; it was already here,
-    and only the hardcoded descriptor stopped anyone from using it.
+    property is what makes swapping embedding models safe.
     """
     if dialect not in EMBEDDING_DIALECTS:
         raise ContractError("INPUT_INVALID", "embedding_dialect")
@@ -400,8 +398,8 @@ def query_is_specific(
 
 #: Characters that only ask: 什么, 怎么, 哪个, 谁, 多少 and the sentence-final
 #: particles.  The index holds overlapping bigrams, so "这个实例当前是什么模型"
-#: searched 是什, 什么 and 么模 too -- terms every earlier question shares and
-#: no answer does -- so "你现在是什么模型呀" came back as the best match.
+#: would search 是什, 什么 and 么模 too -- terms every earlier question shares
+#: and no answer does -- and "你现在是什么模型呀" would come back as the best match.
 #: A bigram holding one of these asks rather than names, so it proves nothing.
 #: The few nouns built on them (酒吧, 哪吒) are the price of that rule.
 _ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥谁")
@@ -477,8 +475,8 @@ def _without_closing(text: str, marks: frozenset[str] = _CLOSING_MARKS) -> str:
 def asks_without_answering(text: str) -> bool:
     """Whether a message only asks.
 
-    Asking again, one instance returned five earlier questions like the query and
-    not the reply that answered one: a question shares every content word with
+    Asked again, a question can return five earlier questions like it and not
+    the reply that answered one: a question shares every content word with
     a later one and is short, so it outranks its own answer.  A short message
     with a question mark, or ending on an asking particle, is such a question.
     "去看下那台机器怎么了" is a request, and "不管什么情况都要先备份" a rule.
@@ -504,7 +502,8 @@ def same_message(text: str, other: str) -> bool:
 
     The automatic recall sets an older copy of the current message aside (``RetrievalPipeline._hydrate_admit``):
     the message already says it.  Compared character for character, "我家窗外有什么" and "我家窗外有什么？" (both ask)
-    were two messages, and the copy without the question mark took a packet slot as if it answered the one with it.
+    would be two messages, and the copy without the question mark would take a packet slot as if it answered the one
+    with it.
     "我的航班改到周五早上八点了。" asked back as "……八点了？" is not a copy: the person's statement stays found, at
     any length.  Letter case still tells two messages apart ("Release-2" is not "release-2").  A
     message of closing marks alone is compared as it is.
@@ -608,8 +607,8 @@ def _spelled_out_forms(text: str) -> frozenset[str]:
     """The same names, also as they read with a space or dash between letters and their digits.
 
     A reply writes "DLSS 5" and "glm-5.3-flash" where the question wrote DLSS5
-    and glm5.3-flash; compared as written, the reply was refused as naming a
-    different thing.  Only the text being offered is read both ways: read that
+    and glm5.3-flash; compared as written, the reply would be refused as naming
+    a different thing.  Only the text being offered is read both ways: read that
     way, a query asking for "the top 5 options" would start demanding that an
     answer contain "top5", and a query about H100 would ask for "H100as".
     """

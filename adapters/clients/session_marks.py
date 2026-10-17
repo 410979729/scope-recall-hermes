@@ -71,7 +71,7 @@ def in_suggestions_thread(config, session_id: str, *, ended: bool = False) -> bo
 # Stop carries this turn's.  So a prompt opens a turn, under that id when no turn of the session has it yet and else
 # under one made from the session, the person's words and the moment; the turn is kept in a small file per session for
 # the Stop that closes it and the read of the session record after, and the session's end removes it.  The file is
-# disposable: without it a Stop makes a turn of its own, and the record is matched by words and moment as before.
+# disposable: without it a Stop makes a turn of its own, and the record is matched by words and moment.
 
 #: How long a session's turns are kept; older ones are removed when a turn is kept.
 _TURNS_SECONDS = 24 * 3600

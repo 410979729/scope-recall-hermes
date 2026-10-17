@@ -371,11 +371,11 @@ def utc_instant(value: object) -> object:
     """The same instant written in UTC, when a model used a non-zero offset.
 
     The contract accepts only ``Z``/``+00:00``, so a model writing
-    ``2026-09-16T10:00:00+08:00`` was refused although it named a correct
+    ``2026-09-16T10:00:00+08:00`` would be refused although it names a correct
     instant; a model reads its memory's times in its host's zone and writes
     them back that way.  Bare dates, naive times, zero offsets and impossible
     dates or offsets are returned unchanged, so the validator still rejects
-    them as before.
+    them.
     """
     match = _NUMERIC_OFFSET_TIME.fullmatch(value) if type(value) is str else None
     if match is None:
@@ -529,11 +529,11 @@ def _offending_field(error) -> str:
     """The property a validation error is about, or the keyword when it is about the whole payload.
 
     The failing keyword alone does not say what to fix.  A recall asking for a
-    day's memory with ``as_of`` written in a local offset came back as
-    ``INPUT_INVALID`` / ``format``, and an evaluation missing one property came
-    back as ``required``: in both cases the name is already in the error, in its
-    path or in the keyword's own value, and was thrown away.  The same field is
-    what a failed derivation feeds back to the model on its one repair attempt.
+    day's memory with ``as_of`` written in a local offset would come back as
+    ``INPUT_INVALID`` / ``format``, and an evaluation missing one property as
+    ``required``: in both cases the name is already in the error, in its path or
+    in the keyword's own value.  The same field is what a failed derivation
+    feeds back to the model on its one repair attempt.
     """
     named = [part for part in error.absolute_path if isinstance(part, str)]
     if named:
@@ -601,8 +601,8 @@ ENTRY_ID = re.compile(r"[a-z][a-z0-9-]{1,31}")
 #: What one local binding can carry.
 MAX_BINDING_SCOPES = 128
 #: What one shared binding can carry.  A shared store's worker binds every scope
-#: the store holds, and each instance brings its own: the three pilot instances
-#: have 221 distinct scopes between them, all five 369.  Attaching an entry is
+#: the store holds, and each entry brings its own: three entries of one store
+#: have 221 distinct scopes between them, five 369.  Attaching an entry is
 #: refused before the store would pass this.
 MAX_SHARED_SCOPES = 1024
 
@@ -837,8 +837,8 @@ def _validate_claim_evidence(
     cited_contents = []
     for span in claim["evidence_spans"]:
         key = f"{span['source_ref']}@{span['source_revision']}"
-        # Two findings once shared one name, so every rejection read
-        # ``evidence_span`` whether the model had cited a source it never
+        # Two findings, each with its own name: under one, every rejection would
+        # read ``evidence_span`` whether the model cited a source it never
         # declared or quoted one it had. Only the second is about the words
         # it wrote, and only the second is what the quote ladder can repair.
         if key not in declared:
@@ -869,7 +869,7 @@ def _grounded_claims(
         try:
             _validate_claim_evidence(claim, declared, available)
         except ContractError as exc:
-            # Refused whole, one such claim cost a worker every other claim, summary and reference the result
+            # Refused whole, one such claim would cost a worker every other claim, summary and reference the result
             # held (2.0% of one store's results in a week, 119 claims with them); stored, it could never be
             # promoted (``core/evidence_question.unanswerable_reason``).
             if ungrounded_values is None or exc.field != "evidence_value":

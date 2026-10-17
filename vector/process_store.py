@@ -143,14 +143,14 @@ _spare_lock = threading.Lock()
 def prestart() -> None:
     """Start a helper now, for the next store that starts one to take.
 
-    A helper spends about 2 s importing LanceDB before it answers.  A Claude Code or Codex hook is a new process
-    for every prompt, and a helper started when its recall reached the vector search was not ready before that
-    search's budget ran out: those hosts' automatic recall answered from words alone.  Started when the hook
-    starts, the import runs while the message is stored and the words are searched.  A server that runs on starts
-    one for the store all its runtimes share (``share``); it kept a spare as well, replaced each time one was taken,
-    about 0.55 GB of committed memory idle once the shared store holds its helper (3.4.9).  A Hermes gateway asks for
-    one each time it binds an agent (adapters/hermes/session_binding.py ``_start_vector_helper``); once the store its
-    runtimes share holds its helper, that spare would never be taken, and none is started.
+    A helper spends about 2 s importing LanceDB before it answers.  A Claude Code or Codex hook is a new process for
+    every prompt, and a helper started when its recall reaches the vector search would not be ready before that search's
+    budget ran out: those hosts' automatic recall would answer from words alone.  Started when the hook starts, the
+    import runs while the message is stored and the words are searched.  A server that runs on starts one for the store
+    all its runtimes share (``share``), and none once that store holds its helper: a spare replaced each time one was
+    taken would hold about 0.55 GB of committed memory idle.  A Hermes gateway asks for one each time it
+    binds an agent (adapters/hermes/session_binding.py ``_start_vector_helper``); once the store its runtimes share
+    holds its helper, that spare would never be taken, and none is started.
     """
     global _spare
     if _sharing and _a_shared_store_holds_a_helper():
@@ -462,8 +462,8 @@ class ProcessLanceVectorStore(VectorStore):
             except BaseException:
                 if self._process is None:
                     # The open never reached a helper (its time ran out first): the store has no table and stays
-                    # closed for the next request to open.  Left looking open, it sent the next search to a helper
-                    # started for that search, which held no table, and nothing opened it again.
+                    # closed for the next request to open.  Left looking open, it would send the next search to a helper
+                    # started for that search, which holds no table, and nothing would open it again.
                     self._failed = self._closed = True
                 raise
 
@@ -530,7 +530,7 @@ class ProcessLanceVectorStore(VectorStore):
             raise RuntimeError("native vector worker is closed; reopen the vector runtime explicitly")
         if self._process is None and method not in ("open", "open_existing", "is_available"):
             # A helper is started to open the table (or to say whether LanceDB is installed): one started for a
-            # search held no table and answered every search so, and nothing opened the table.
+            # search would hold no table and answer every search so, and nothing would open the table.
             self._failed = self._closed = True
             raise RuntimeError("native vector worker is closed; reopen the vector runtime explicitly")
         # The frame a previous caller gave up on is discarded here rather than
@@ -598,9 +598,9 @@ class ProcessLanceVectorStore(VectorStore):
                 self._detach_helper(failed=True)
             raise (_fence_failed() if guard is not None else _worker_failed()) from exc
         if not response.get("ok") and method in ("open", "open_existing"):
-            # A helper that could not open the table holds none, and every search it answered said so until the
-            # process ended: the store is closed for the next request to reopen, as for an open answered late
-            # (``_drain_pending_response_locked``).  A store a runtime owned alone was closed by it and made anew;
+            # A helper that could not open the table holds none, and every search it answered would say so until
+            # the process ended: the store is closed for the next request to reopen, as for an open answered late
+            # (``_drain_pending_response_locked``).  A store a runtime owns alone is closed by it and made anew;
             # one its process shares is not.
             self._detach_helper(failed=True)
         return self._response_result(response)
@@ -726,8 +726,9 @@ class ProcessLanceVectorStore(VectorStore):
         if request_id is None:
             return
         # A frame nobody asked for since it was parked may have come in long ago.  A kept recall handler asked again
-        # minutes after its first, cold search took that answer for a wedged helper, closed the helper, and recalled
-        # the next prompt cold as well (worker_unresponsive).  Only a frame that has still not come is a wedge.
+        # minutes after its first, cold search would take that answer for a wedged helper, close the helper, and
+        # recall the next prompt cold as well (worker_unresponsive).  Only a frame that has still not come is a
+        # wedge.
         stale = time.monotonic() - self._pending_response_since > self._pending_response_timeout
         try:
             response = self._receive_response_locked(request_id, only_if_ready=stale)
@@ -747,8 +748,8 @@ class ProcessLanceVectorStore(VectorStore):
         self._clear_pending_response()
         if not response.get("ok") and method in ("open", "open_existing"):
             # A table open that ran out of its caller's time and then failed in the helper leaves no open table, and
-            # every later search said so until the host restarted: the store is closed for the next request to
-            # reopen.  Any other late failure (a purge out of its own time, say) was that request's; the helper holds
+            # every later search would say so until the host restarted: the store is closed for the next request to
+            # reopen.  Any other late failure (a purge out of its own time, say) is that request's; the helper holds
             # its table and goes on.
             self._detach_helper(failed=True)
             self._response_result(response)
@@ -889,14 +890,14 @@ def share() -> None:
     """Give every store of one table this process builds one helper (``store_for``): for a process that runs on, a
     server or a Hermes gateway (``adapters/hermes/runtime_wiring.py``).
 
-    The server answers a prompt with the handler it keeps, and each prompt that comes meanwhile with a handler made
-    for it, whose store started a helper of its own: about 2 s importing LanceDB, then the table's open, while that
-    prompt's words were searched.  Parallel sub-agents opening sessions two and three a second lose their vector
-    search that way, and some their whole recall.  On a copy of the shared store, bursts of three prompts with long
-    briefs, each stored and then recalled within the hook's 6 s, kept their vector search in 29 of 48 recalls (16
-    lost it to a helper's start); with one store for the process, 45 of 48 (none).  The
-    prompts take turns on the helper, one search each, 10-40 ms when warm.  A store of a table the process no longer
-    uses (its embedding space changed under it) keeps its helper until the process ends.
+    The server answers a prompt with the handler it keeps, and each prompt that comes meanwhile with a handler made for
+    it, whose store would otherwise start a helper of its own: about 2 s importing LanceDB, then the table's open, while
+    that prompt's words are searched.  Parallel sub-agents opening sessions two and three a second would lose their
+    vector search that way, and some their whole recall.  On a copy of a shared store, bursts of three prompts with long
+    briefs, each stored and then recalled within the hook's 6 s, kept their vector search in 29 of 48 recalls (16 lost
+    it to a helper's start); with one store for the process, 45 of 48 (none).  The prompts take turns on the helper, one
+    search each, 10-40 ms when warm.  A store of a table the process no longer uses (its embedding space changed under
+    it) keeps its helper until the process ends.
     """
     global _sharing
     _sharing = True
@@ -905,10 +906,10 @@ def share() -> None:
 def _a_shared_store_holds_a_helper() -> bool:
     """Whether a store this process shares holds a live helper (``prestart``).
 
-    Not ``_serving()``: a store that had just taken the spare had not asked for its table yet, and a bind in that
-    instant started a spare nothing would take; a helper that had ended outside any request still counted, and the
-    next agent's bind started none for the reopen.  Any table counts: a process whose embedding
-    space changed opens the new table's helper cold, as before sharing.
+    Not ``_serving()``: by that, a store that has just taken the spare has not asked for its table yet, and a bind in
+    that instant would start a spare nothing takes; a helper that ended outside any request would still count, and the
+    next agent's bind would start none for the reopen.  Any table counts: a process whose embedding space changed opens
+    the new table's helper cold, as it would without sharing.
     """
     with _shared_lock:
         stores = [shared.store for shared in _shared.values()]
@@ -978,13 +979,13 @@ class SharedStore:
         self._open("open_existing")
 
     def open_existing_with_work(self, work: Callable[[], Any]) -> None:
-        # A table not made yet is said at once, as by a store of its own: each prompt started a helper to learn it,
-        # about 2 s each with no spare.
+        # A table not made yet is said at once, as by a store of its own: otherwise each prompt would start a helper
+        # to learn it, about 2 s each with no spare.
         if not (self._store.db_path / f"{self._store.table_name}.lance").is_dir():
             raise FileNotFoundError("LanceDB physical storage is missing")
         # The work (the query's embedding, already asked for when the recall started: runtime/instance.py
-        # ``_QueryEmbedding``) runs outside the store's lock: overlapped with the open, it held every other runtime's
-        # search for the length of one prompt's embedding.
+        # ``_QueryEmbedding``) runs outside the store's lock: overlapped with the open, it would hold every other
+        # runtime's search for the length of one prompt's embedding.
         self._open("open_existing")
         work()
 

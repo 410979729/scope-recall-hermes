@@ -3,8 +3,7 @@
 Each sweep takes one page, is idempotent, and either schedules through
 ``CandidateIntake`` or moves rows nothing else will move: candidates whose
 evidence settled after their conversation ended, candidates that went quiet
-for a month, and evaluations that died only on an input bound that has since
-changed.
+for a month, and evaluations that died only on an older input bound.
 """
 
 from __future__ import annotations
@@ -81,9 +80,9 @@ class CandidateSweeps(CandidateIntake):
     ) -> tuple[tuple[str, int], ...]:
         """Pending candidates whose evidence was already put to the evaluator, found with reads only.
 
-        Before 3.4.0rc10 any evidence marked a candidate pending, first-hand or not, and one whose question had
-        been asked already stayed pending with nothing to schedule it: 2,045 on the pilot, read by every agent as
-        a backlog.  ``settle_stale_pending`` returns them to waiting for evidence.
+        A candidate marked pending on evidence that poses no new question (evidence that is not first-hand, or a
+        question already asked) has nothing to schedule it and would stay pending, which every agent reads as a
+        backlog.  ``settle_stale_pending`` returns such candidates to waiting for evidence.
         """
         if type(limit) is not int or not 1 <= limit <= 256:
             raise ContractError("INPUT_INVALID", "stale_pending_limit")
@@ -448,8 +447,8 @@ class CandidateSweeps(CandidateIntake):
         has settled and that scheduling would ask nothing new about, because
         the same evidence was already put to the evaluator (whatever came of
         it) or none of it can be read.  Such a candidate is not work.  It
-        waits for new evidence, and counted as pending it made a queue that
-        never drains out of a thousand candidates nothing was ever going to
+        waits for new evidence, and counted as pending it would make a queue
+        that never drains out of a thousand candidates nothing will ever
         evaluate.  A fifth, ``slowed``, has something new to ask and waits out
         its day after questions that did not settle it (``slowed_until``).
         """
@@ -474,7 +473,7 @@ class CandidateSweeps(CandidateIntake):
 
         ``recover_oversized_evaluations`` re-runs the *same* evidence set, so a
         candidate whose set is genuinely too large keeps its ``budget_checked``
-        marker and is never retried by it.  Evidence is now bounded by bytes
+        marker and is never retried by it.  Evidence is bounded by bytes
         and prefers sources that fit, so the same candidate yields a different
         set, a new fingerprint and a genuinely new evaluation; an unchanged
         set collides and inserts nothing, so this cannot loop.

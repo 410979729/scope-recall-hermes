@@ -47,11 +47,11 @@ class HookDiagnostics:
     capture_error_detail: str | None = None
     capture_elapsed_ms: int | None = None
     #: What stopped an automatic recall (``recall_exception``): the exception's class and, for a contract error,
-    #: its code.  Without it the server's log said only that a recall had failed.
+    #: its code.  Without it the server's log would say only that a recall failed.
     recall_error_detail: str | None = None
-    #: Why the recall ran without its vector search (``recall_without_vectors``), when it did.  The packet carried
-    #: that to the model and nowhere else: Claude Code and Codex recalled without their vector search for as long as
-    #: anyone could tell, and no log showed it.
+    #: Why the recall ran without its vector search (``recall_without_vectors``), when it did.  The packet carries
+    #: that to the model and nowhere else: without this a client could recall without its vector search for as long
+    #: as anyone could tell, and no log would show it.
     recall_vector_gap: str | None = None
     #: Whether the recall ran its vector search: what a hook asks of its server's answer (``_resident_answer``).
     recall_vectors: bool | None = None

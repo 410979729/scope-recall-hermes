@@ -31,8 +31,8 @@ from .shared_entries import load_binding_for_home
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
 
-#: The adapter's log name, which these lines carried before the adapter was split: a host writes it into each line,
-#: and a logging configuration may name it.
+#: The adapter's log name, the provider module's, which this module logs under as well: a host writes it into each
+#: line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 
 #: What the retry thread's pass may spend, off any hook's time and off Hermes' single memory worker.  At a capture's
@@ -44,12 +44,12 @@ _RETRY_PASS_SECONDS = 5.0
 #: a longer pass seldom changes the outcome while it holds up a gateway's planned stop.
 SHUTDOWN_RETRY_SECONDS = 2.0
 #: How long a capture is kept to retry: one that cannot be written by then is dropped and logged as lost.  Kept for
-#: good, a capture of a full inbox or of an installation whose scopes changed under a running gateway was retried every
-#: ``_RETRY_EVERY_S`` for the life of the process, and its thread would hold an evicted agent's adapter.
+#: good, a capture of a full inbox or of an installation whose scopes changed under a running gateway would be retried
+#: every ``_RETRY_EVERY_S`` for the life of the process, and its thread would hold an evicted agent's adapter.
 _RETRY_GIVE_UP_S = 1800.0
 #: How often the retry thread writes again what the buffer holds, for as long as it holds anything.  Hermes runs
 #: ``sync_turn`` only after a turn with a message and a reply: a turn it injected (a watch notification), one it
-#: interrupted, or one with no reply ran no retry.  An idle agent evicted from Hermes' cache keeps its adapter without
+#: interrupted, or one with no reply runs no retry.  An idle agent evicted from Hermes' cache keeps its adapter without
 #: a shutdown, so without this thread nothing writes the buffer again until a gateway restart drops it, and the tool
 #: results it held are lost (``capture_failure`` logged once, never in the store).
 _RETRY_EVERY_S = 30.0
@@ -100,7 +100,7 @@ class CaptureRetry:
             except (ContractError, OSError, RuntimeError, sqlite3.Error, ValueError):
                 self._adapter._merge_gaps(("capture_gap:durable_ingress_pending",))
             else:
-                # A busy store stops the replay's page with a receipt that says so, where it used to raise.
+                # A busy store stops the replay's page with a receipt that says so; it does not raise.
                 if any(INGRESS_PENDING_GAP in receipt.gaps for receipt in receipts):
                     self._adapter._merge_gaps((INGRESS_PENDING_GAP,))
         self.write_buffered(deadline=deadline)
@@ -115,11 +115,11 @@ class CaptureRetry:
     ) -> None:
         """Write again what a busy store kept in memory; nothing to do, and nothing opened, when it holds none.
 
-        Run at every ``sync_turn``, by the retry thread while the buffer holds anything (``_run``), at the
-        session's end, before a compression and at shutdown: waiting for the turns left a capture that timed out on
-        the writer lease in memory for hours, and an eviction or a restart lost it.  One pass at a time; ``force`` is
-        shutdown's, which may run while another pass waits for the lock between two captures.  One retry per hold of
-        the lock; with ``release`` (``sync_turn`` and the retry thread, which do not hold it) each writes without.
+        Run at every ``sync_turn``, by the retry thread while the buffer holds anything (``_run``), at the session's
+        end, before a compression and at shutdown: waiting for the turns would leave a capture that timed out on the
+        writer lease in memory for hours, and an eviction or a restart would lose it.  One pass at a time; ``force``
+        is shutdown's, which may run while another pass waits for the lock between two captures.  One retry per hold
+        of the lock; with ``release`` (``sync_turn`` and the retry thread, which do not hold it) each writes without.
         A caller's earlier deadline caps the pass, measured before acquiring the lock.
         """
         pass_deadline = time.monotonic() + seconds
@@ -185,7 +185,7 @@ class CaptureRetry:
                     continue
                 # Not the current session's read-only state either: a capture is buffered only after a write its own
                 # session was allowed, and one kept while a read-only session (an unknown user, a delegated agent)
-                # was current waited and was dropped at shutdown.
+                # was current would wait and be dropped at shutdown.
                 # Narrow current authorization only. Original actor, session,
                 # project, branch, occurrence time and DTO identity stay intact.
                 context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))

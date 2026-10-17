@@ -209,7 +209,7 @@ def redact_secret_like_text(text: Any) -> str:
 
     The spans are every pattern's matches on the text before any of them is replaced, merged where they
     touch.  One pattern at a time, an earlier match could swallow the key of a later secret and leave its
-    value in the output: ``{"password":"x","api_token": "abc123def"}`` kept ``abc123def``.
+    value in the output: ``{"password":"x","api_token": "abc123def"}`` would keep ``abc123def``.
     """
     cleaned = clean_text(text)
     if not cleaned:

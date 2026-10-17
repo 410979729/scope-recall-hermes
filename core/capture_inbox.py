@@ -178,7 +178,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         )
         if receipt.disposition in {"conflict", "cancelled"}:
             # A capture that conflicts under the key it was given for its content stays final: written back as a
-            # bare conflict, it was given the same key and refused again on every pass.
+            # bare conflict, it would be given the same key and refused again on every pass.
             code = _REKEYED_CONFLICT if rekeyed and receipt.disposition == "conflict" else receipt.error_code
             with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
                 tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
@@ -271,8 +271,8 @@ def _rekeyed_event(event: dict, capture: str = "") -> dict:
     A segment of a long message moves with its group: the group key takes the
     marker and the fingerprint of the whole capture (``capture``), and the
     segment's own key is derived from the new group key as when it was split
-    (``events.prepare_capture``).  Only the segment's key had changed, so the
-    segments met the first message's group again and were never stored.
+    (``events.prepare_capture``).  Were only the segment's key changed, the
+    segments would meet the first message's group again and never be stored.
     """
     segment = event.get("segment")
     if segment:
@@ -302,8 +302,8 @@ _KEY_LIMIT = 512
 
 def _rekey(key: str, fingerprint: str) -> str:
     """``key`` with the marker and the fingerprint, its original part cut to fit the key limit: a key of 490 characters
-    or more went past it and was refused on every pass.  The fingerprint covers the whole original key, so the cut
-    one stays unique."""
+    or more would go past it and be refused on every pass.  The fingerprint covers the whole original key, so the
+    cut one stays unique."""
     suffix = f"{REKEY_MARKER}{fingerprint}"
     return key[: _KEY_LIMIT - len(suffix)] + suffix
 

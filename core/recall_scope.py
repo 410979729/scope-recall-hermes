@@ -1,20 +1,19 @@
 """What a question names of when, and of which entry: a scope the recall can read directly.
 
-"9月29日工作机 Claude Code 聊了什么" asks for one entry's conversation on one day.  Searched by its words, the
-date and the entry's name matched nothing useful ("聊了", "工作", "29") and the recall answered from other days and
-other entries: 4 of 106 such questions over two weeks of the shared store found a message of the named entry from
-the named day (yuheng's audit of 3.4.2 and its baseline).  The scope is read here and nowhere else; the lexical,
-vector and other channels are unchanged.
+"9月29日工作机 Claude Code 聊了什么" asks for one entry's conversation on one day.  Searched by its words, the date and
+the entry's name match nothing useful ("聊了", "工作", "29") and the recall answers from other days and other entries:
+over two weeks of a shared store, 4 of 106 such questions found a message of the named entry from the named day.  The
+scope is read here and nowhere else; it adds a channel beside the lexical, vector and other channels, which search as
+for any question.
 
-Only a question about what was said or done on its day is read in it (``asks_what_was_said``): with its days and
-entries taken out, what is left must be, whole, one of a few forms of such a question or request ("聊了什么",
-"帮我看看做了哪些工作", "总结一下", "有什么进展", "what did we talk about").  Anything else is recalled as if it
-named no day: a question about a subject ("9月2日发布的 3.4.2 修了什么", "继续昨天的任务"), which read in its day
-lost the answer said on another day, the current task and the claims that answered it, and a message that only
-mentions a day ("今天在吗", "我今天在忙呢", "今晚做什么菜"), which lost the owner's preferences and task.
-A bag of words let such messages through round after round; a whole form does not, and a question it
-misses is only recalled as before.  A range of days, more than three, a day still to come and a placeholder such as
-9999-12-31 are no scope either.
+Only a question about what was said or done on its day is read in it (``asks_what_was_said``): with its days and entries
+taken out, what is left must be, whole, one of a few forms of such a question or request ("聊了什么",
+"帮我看看做了哪些工作", "总结一下", "有什么进展", "what did we talk about").  Anything else is recalled as if it named
+no day: a question about a subject ("9月2日发布的 3.4.2 修了什么", "继续昨天的任务"), which read in its day would lose
+the answer said on another day, the current task and the claims that answered it, and a message that only mentions a day
+("今天在吗", "我今天在忙呢", "今晚做什么菜"), which would lose the owner's preferences and task.  A bag of words would
+let such messages through; a whole form does not, and a question it misses is recalled as if it named no day.  A range
+of days, more than three, a day still to come and a placeholder such as 9999-12-31 are no scope either.
 
 A day is a calendar day in the zone the asking host shows its model (``SearchContext.zone``; when the host names
 none, the serving machine's, with that day's daylight-saving offset), the zone its recalled times are rendered in,
@@ -49,8 +48,7 @@ _MAX_ENTRY_MENTIONS = 16
 #: "改了什么", "聊什么了", "有什么进展", "进展如何", "总结一下", "的聊天记录").  Curated and strict: a message with
 #: anything more in it ("做什么饭", "继续做的", "忙吗", "在忙呢", "怎么办"), one asking what to do rather than what was
 #: done ("今天做什么", "今天聊点什么", "今天可以做什么"), or where the work stopped ("昨天聊到哪了", "where did we leave
-#: off"), which the current task answers and the whole day's spread did not, is no question about
-#: its day.
+#: off"), which the current task answers and the whole day's spread would not, is no question about its day.
 _REQUEST = (
     r"(?:帮我|帮忙|告诉我|给我|跟我|和我|说说|讲讲|列一下|列出|问一下|查查|查一下|看看|看一下|总结|回顾|汇总|复盘|"
     r"梳理|盘点)"
@@ -63,8 +61,8 @@ _ASKER = (
 #: A clock time has one reading: "5:00", "3点", "3点15分".  Read two ways ("5:00:00" as "5:00" and "0:00"), a list
 #: of twenty times took seconds to reject and doubled with each more.
 _CLOCK = r"\d{1,2}(?::\d{2}|点(?:\d{1,2}分?)?)(?!\d)"
-#: A part of the day with its time, or alone and followed by no digit: "上午1点" read as one time and as "上午" then
-#: "1点" doubled the work of each more.
+#: A part of the day with its time, or alone and followed by no digit: read both as one time and as "上午" then
+#: "1点", "上午1点" would double the work with each more.
 _TIME_OF_DAY = (
     rf"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:{_CLOCK}|(?!\d))|{_CLOCK})"
     r"(?:左右|前后|之前|之后|以后|以前)?"
@@ -99,7 +97,7 @@ _DAY_QUESTION_EN = re.compile(
     r")(?:\s+(?:on|from|of|in|at|so\s+far))?"
 )
 #: Longest rest a day's question has: a longer one is a message that also says something, and a long run of a
-#: character the trailing strip scans made that strip quadratic.
+#: character the trailing strip scans would make that strip quadratic.
 _QUESTION_CHARS = 64
 _TRAILING = re.compile(r"[\s?？。.!！~～…,，、]+$")
 #: Acknowledgements, as whole words: "好的，继续吧", "OK 继续执行", "按你说的做", "确认", "下一步", "可以，就按这个来",
@@ -214,7 +212,7 @@ _MONTH_DAY = re.compile(r"(?<![\d.])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![\
 #: What joins two days into a range ("9月28日到9月30日", "2026-09-28 至 2026-09-30", "昨天到今天"), and a date
 #: followed by the end of its range ("9月28-30日", "9月28日到30日").
 _RANGE = re.compile(r"\s*(?:到|至|~|～|-|—|–)\s*")
-#: What lists two named days or entries: "9月28日和9月29日", "昨天、今天", "天璇和天权", "today and yesterday".
+#: What lists two named days or entries: "9月28日和9月29日", "昨天、今天", "pc1和pc2", "today and yesterday".
 _JOINER = re.compile(r"\s*(?:和|跟|与|及|以及|还有|、|,|，|and|&)\s*", re.IGNORECASE)
 _RANGE_TAIL = re.compile(r"\s*(?:到|至|~|～|-|—|–)\s*(?:\d{4}\s*[-/年]\s*)?(?:\d{1,2}\s*[-/月]\s*)?\d{1,2}(?![\d.])")
 #: Days before today each relative word names.
@@ -278,7 +276,7 @@ def _named_days(text: str, today: date) -> tuple[list[date], list[tuple[int, int
         if day is not None and _EARLIEST <= day <= today and day not in days:
             days.append(day)
         if len(spans) > _MAX_DAY_MENTIONS:
-            # A log that repeats "今天" thousands of times cost a quadratic scan of its mentions.
+            # A log that repeats "今天" thousands of times would cost a quadratic scan of its mentions.
             raise _NoScope
 
     for match in _FULL_DATE.finditer(text):
@@ -405,8 +403,8 @@ def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[s
         entry_ids, entry_spans = _named_entries(text, entries)
     except _NoScope:
         return None
-    # What joins the named days and entries goes with them: "9月28日和9月29日聊了什么" asks what was said on both, and
-    # "昨天天璇和天权聊了什么" what those two entries said; between entries it had been left in the rest.
+    # What joins the named days and entries goes with them, between entries as between days: "9月28日和9月29日聊了什么"
+    # asks what was said on both, and "昨天pc1和pc2聊了什么" what those two entries said.
     ordered = sorted([*day_spans, *entry_spans])
     joiners = [
         (end, start)

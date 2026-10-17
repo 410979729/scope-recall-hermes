@@ -192,8 +192,8 @@ class LanceEmbedPort:
     ) -> tuple[PreparedSourceEmbedding, ...]:
         """Prepare many claim versions in as few requests as sources take, in order.
 
-        A claim was one request each, asked one after another: about two seconds a claim, so a
-        store's two thousand claims took over an hour while the provider allows thousands of
+        One request a claim, asked one after another at about two seconds each, would take a
+        store's two thousand claims over an hour while the provider allows thousands of
         requests a minute.  The text and its encoding are exactly ``prepare_claim``'s, so a
         claim lands on the same vector either way.  A port that cannot batch falls back to one
         request each.
@@ -276,9 +276,9 @@ class LanceEmbedPort:
     ) -> None:
         """Publish a whole group's vectors in one fenced commit.
 
-        The store's own write API is plural and this adapter handed it one row at a time, so
-        a pass of 32 sources took 32 lock-held handshakes -- measured at nine times the cost
-        of one commit carrying all 32.  The fence is unchanged in kind: ``lease_guard``
+        The store's own write API is plural; handed one row at a time, a pass of 32 sources
+        would take 32 lock-held handshakes -- measured at nine times the cost of one commit
+        carrying all 32.  The fence is the same as a single row's: ``lease_guard``
         answers for every member of the group while the helper holds the lock, and a group it
         refuses writes nothing, leaving each member to publish on its own fence.
         """
@@ -643,7 +643,7 @@ class LanceVectorPort:
         if prepared is None:
             remaining = deadline - self._clock()
             if remaining <= 0:
-                # Returned as no vector, the recall said nothing and looked as if it had searched by meaning.
+                # Returned as no vector, the recall would say nothing and look as if it had searched by meaning.
                 raise TimeoutError("query embedding stage deadline exhausted")
             vector = self._embed_query(context.query, remaining)
         else:
@@ -667,12 +667,11 @@ class LanceVectorPort:
     ) -> list[CandidateRef]:
         """Query every trusted (scope, project, branch) partition, in one request where the store allows.
 
-        Each partition used to be its own request, one after another until the deadline: about
-        150 ms apiece, so an entry holding 110 scopes searched the first seven of them in sorted
-        order and never reached the owner's own scope, ranked 105th.  The pilot's agents with that
-        many scopes were not finding by meaning what the owner had just told another agent.  One
-        request filters by the whole list of trusted partition literals; a store that cannot is
-        asked one partition at a time as before.
+        Asked a request each, one after another until the deadline, at about 150 ms apiece, an
+        entry holding 110 scopes would search the first seven of them in sorted order and never
+        reach the owner's own scope, ranked 105th: an agent with that many scopes would not find
+        by meaning what the owner had just told another agent.  One request filters by the whole
+        list of trusted partition literals; a store that cannot is asked one partition at a time.
         """
         trusted = context.trusted_context
         logical = search_partitions(trusted, self._expected_embedding_space)
@@ -680,8 +679,8 @@ class LanceVectorPort:
         search_scopes = getattr(self._store, "search_scopes", None)
         if callable(search_scopes):
             if deadline - self._clock() <= 0:
-                # The embedding took the time the search needed.  An empty answer here reported no gap: the recall
-                # looked as if it had searched by meaning and found nothing.
+                # The embedding took the time the search needed.  An empty answer here would report no gap: the recall
+                # would look as if it had searched by meaning and found nothing.
                 raise TimeoutError("native vector helper request deadline exhausted before the search")
             for row in search_scopes(query_vector, scope_ids=list(logical), limit=limit) or ():
                 partition = row.get("scope_id") if isinstance(row, Mapping) else None

@@ -55,7 +55,7 @@ AUTHORIZATION_STATEMENTS = (
 )
 #: The lexical index (``core/lexical_index.py``): a term dictionary and
 #: integer postings.  The text projection it replaces took half of one
-#: instance's store; this takes a fifth of that.
+#: store; this takes a fifth of that.
 LEXICAL_STATEMENTS = (
     """CREATE TABLE lexical_terms (
         term_id INTEGER PRIMARY KEY, term TEXT NOT NULL UNIQUE
@@ -467,10 +467,11 @@ def upgrade_1107(connection):
 def upgrade_1108(connection):
     """Keep each episode lineage row once, at the revision its source entered.
 
-    Every attach copied the previous revision's evidence links and object
-    dependencies onto the new revision, so a 200-event segment held 20,100
-    link rows for 200 sources.  Readers now take every row at or below the
-    revision they ask for, which makes the earliest copy the one to keep.
+    A store at the previous schema holds, at every revision of an episode,
+    a copy of the previous revision's evidence links and object
+    dependencies, so a 200-event segment holds 20,100 link rows for 200
+    sources.  Readers take every row at or below the revision they ask
+    for, which makes the earliest copy the one to keep.
 
     The same step adds the retention ledger, ``expired_vectors``, the content
     index a repeated tool output is looked up by, moves the migrated scope
