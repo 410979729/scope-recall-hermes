@@ -815,6 +815,7 @@ def test_negative_and_questioned_operations_do_not_change_current(app, raw):
         ("Did TEST-project 配色 change to 银色", "银色"),
         # Someone else's words, or quoted text.
         ("张三说：TEST-project 配色换成银色。", "银色"),
+        ("张三说 TEST-project 配色换成银色了。", "银色"),
         ("> TEST-project 配色改成银色。", "银色"),
         ("The style guide says “TEST-project 配色改成银色”.", "银色"),
     ],
@@ -839,6 +840,22 @@ def test_a_plain_correction_takes_the_value_its_replacement_names(app, raw):
     item, _ = initial(core, ctx)
     capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
     assert core.current_claim(ctx, item.ref).payload["value_text"] == "银色"
+
+
+@pytest.mark.parametrize(
+    "held,raw,value",
+    [
+        ("30 天", "TEST-project 配色改成 90 天了。", "90 天"),
+        ("#night-shift", "TEST-project 配色换成 #ops-pager。", "#ops-pager"),
+    ],
+)
+def test_a_correction_takes_the_whole_value_it_names(app, held, raw, value):
+    """A value with a space in it (90 天), or opening with the mark a channel's name carries (#ops-pager), is all of
+    the value."""
+    core, ctx = app
+    item, _ = initial(core, ctx, value=held)
+    capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == value
 
 
 def test_a_correction_naming_its_claim_by_ref_applies(app):

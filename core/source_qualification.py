@@ -50,11 +50,14 @@ _UNASSERTED_CONTEXT = re.compile(
     r"customer said|may|might|maybe|perhaps|guess(?:ed)?|heard\s+that|reportedly)\b",
     re.I,
 )
-#: A named or unnamed speaker other than the one writing, before what they said: ``张三说：``, ``张三说，``,
-#: ``Alice said``, ``the wiki says``, ``Everyone thinks``.  ``我说：`` and ``I said`` are the writer's own, and a
-#: verb that opens an identifier (``claim-4daf…``, a claim's ref) is no verb.
+#: A named or unnamed speaker other than the one writing, before what they said: ``张三说：``, ``张三说，``, a name
+#: opening a clause before 说 with nothing between (``张三说配色换成了银色``), ``Alice said``, ``the wiki says``,
+#: ``Everyone thinks``.  ``我说：`` and ``I said`` are the writer's own; 说 in a noun (小说, 传说, 学说) says nothing,
+#: nor does it in 说错 (misspoke), 说好 (agreed), 说明 (explain) or 说得 (put it); and a verb that opens an identifier
+#: (``claim-4daf…``, a claim's ref) is no verb.
 _SAID_BY_ANOTHER = re.compile(
-    r"(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
+    r"(?<![我小传学演游劝解])(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
+    r"|(?:^|(?<=[\n，,。；;！!？?、\s]))(?!我)[^\s，,。；;！!？?、：:]{1,8}?(?<![小传学演游劝解])说(?![错好明得法服])"
     r"|\b(?!I\b)\w+\s+(?:(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard)"
     r"\b(?!-)|(?:told|tells)\s+\w+\b)",
     re.I,

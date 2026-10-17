@@ -582,16 +582,20 @@ def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds:
     return MutationReceipt((item,), epoch)
 
 
-#: Words a message puts in a value's place: "改为 X", "用 X", "是 X", "change to X".
-_REPLACEMENT_WORD = re.compile(
-    r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为|用|是|change to|switch to)\s*([A-Za-z0-9\u4e00-\u9fff_.-]{1,120})(?=[。！？；，,;.!?\s]|$)",
-    re.I,
-)
-#: Only the explicit replacements among them ("改为 X", "change to X"; not "用 X" or "是 X").
+#: A value said as one word: letters, digits, CJK and the marks identifiers carry ("#ops-pager", "@owner", "v3.1").
+_WORD_VALUE = r"[#@]?[\w./+-]{1,120}"
+#: Where such a word ends: a space, a clause's punctuation, a full stop before a space or the end, or the end.
+_WORD_END = r"(?=[\s。！？；，,;!?]|\.(?:\s|$)|$)"
+#: An explicit replacement and the value it names.  After a Chinese verb the value is the rest of its clause, spaces
+#: included, without a closing particle ("改成 90 天了" names "90 天"); after "change to" or "switch to" it is a word.
 _EXPLICIT_REPLACEMENT = re.compile(
-    r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为|change to|switch to)\s*([A-Za-z0-9\u4e00-\u9fff_.-]{1,120})(?=[。！？；，,;.!?\s]|$)",
+    r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为)[\s:：]*"
+    r"([^\s。！？；，,;!?][^。！？；，,;!?\n]{0,119}?)\s*(?:了|啦|吧|呢)?(?=[。！？；，,;!?\n]|\.(?:\s|$)|$)"
+    rf"|\b(?:change|switch) to\s+({_WORD_VALUE}){_WORD_END}",
     re.I,
 )
+#: The looser words that put a value in place too: "用 X", "是 X".
+_LOOSE_REPLACEMENT = re.compile(rf"(?:用|是)\s*({_WORD_VALUE}){_WORD_END}")
 
 
 def _may_correct(source, raw: str) -> bool:
@@ -647,16 +651,11 @@ def _correction_targets(tx, source, raw: str):
 def _replacement_words(raw: str, matches) -> tuple[list[str], list[str]]:
     """The words a message puts in a value's place, and the explicit replacements among them; with one claim matched,
     "replace OLD with NEW" counts as both.  A sentence-final ASCII full stop is punctuation, not part of the value."""
-    tokens = _REPLACEMENT_WORD.findall(raw)
-    replacements = _EXPLICIT_REPLACEMENT.findall(raw)
+    replacements = [found.group(1) or found.group(2) for found in _EXPLICIT_REPLACEMENT.finditer(raw)]
+    tokens = [*replacements, *_LOOSE_REPLACEMENT.findall(raw)]
     if len(matches) == 1:
         old = re.escape(matches[0].payload["value_text"])
-        english = re.findall(
-            r"(?i:\breplace)\s+"
-            + old
-            + r"\s+(?i:with)\s+([A-Za-z0-9\u4e00-\u9fff_.-]{1,120})(?=[。！？；，,;.!?\s]|$)",
-            raw,
-        )
+        english = re.findall(rf"(?i:\breplace)\s+{old}\s+(?i:with)\s+({_WORD_VALUE}){_WORD_END}", raw)
         tokens.extend(english)
         replacements.extend(english)
     return [token.rstrip(".") for token in tokens], [token.rstrip(".") for token in replacements]
