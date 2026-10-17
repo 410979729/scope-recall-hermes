@@ -205,5 +205,5 @@ def test_the_guard_takes_what_a_tier_may_do_from_the_table() -> None:
     imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     strings = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
 
-    assert "scripts.tier_allows" in imported
+    assert "tier_allows" in imported
     assert not strings & set(check.TIER_ALLOWS)

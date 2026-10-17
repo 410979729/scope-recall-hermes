@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -352,6 +354,26 @@ def test_every_path_an_impact_names_exists_in_the_checkout() -> None:
             path = ROOT / entry
             assert path.is_dir() if entry.endswith("/") else path.is_file(), (kind, entry)
     assert list((ROOT / "adapters").rglob("runtime_wiring.py")), "no runtime wiring module for the impact to name"
+
+
+@pytest.mark.parametrize("tier", [*sorted(check.TIER_ALLOWS), "unit"])
+def test_the_guard_finds_the_table_from_a_directory_that_exposes_only_tests(tier, tmp_path) -> None:
+    """The guard is a plugin: pytest imports it before it has set up an import path, from whatever directory it runs
+    in."""
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(ROOT / "tests"),
+        "SCOPE_RECALL_TEST_TIER": tier,
+        "SCOPE_RECALL_TEST_BOUNDARY_PARENT": str(tmp_path),
+    }
+    code = "import json, v11_guard; print(json.dumps(sorted(v11_guard.ALLOWS)))"
+
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=tmp_path, env=env, capture_output=True, text=True, check=False
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == sorted(check.TIER_ALLOWS.get(tier, frozenset()))
 
 
 def test_the_source_distribution_ships_the_modules_the_checker_imports() -> None:

@@ -4,9 +4,14 @@ import shlex
 import sys
 from pathlib import Path
 
-from scripts.tier_allows import TIER_ALLOWS
-
 _ROOT = Path(__file__).resolve().parents[1]
+# pytest imports this plugin before it has set up an import path, from whatever directory it runs in, so the tier table
+# is found by where this file is.  ``scripts/check.py`` imports it the same way, from beside itself.
+if str(_ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "scripts"))
+
+from tier_allows import TIER_ALLOWS  # noqa: E402
+
 _ISOLATED = Path(os.environ["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).resolve()
 _RUNTIME = (Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve())
 _SYSTEM = Path(os.environ.get("SystemRoot", "/usr")).resolve()
@@ -14,7 +19,7 @@ _PYTHON = Path(sys.executable).resolve()
 _ALLOW_CHILD_PROCESSES = os.environ.get("SCOPE_RECALL_TEST_ALLOW_OWNED_SUBPROCESSES") == "1"
 _PROCESS_TIER = os.environ.get("SCOPE_RECALL_TEST_TIER", "")
 # What this tier's runs may do (``scripts/tier_allows.py``, the table ``scripts/check.py`` sets the run up by).
-_ALLOWS = TIER_ALLOWS.get(_PROCESS_TIER, frozenset())
+ALLOWS = TIER_ALLOWS.get(_PROCESS_TIER, frozenset())
 _PACKAGING_HELPER_ROOTS = tuple(
     Path(item).resolve()
     for item in os.environ.get("SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS", "").split(os.pathsep)
@@ -126,13 +131,13 @@ def _windows_command_tokens(text: str) -> list[str]:
 def _is_allowed_child_path(token: str) -> bool:
     if _is_allowed_path(token):
         return True
-    if _NODE is not None and "node" in _ALLOWS:
+    if _NODE is not None and "node" in ALLOWS:
         try:
             if Path(token).resolve(strict=False) == _NODE:
                 return True
         except (TypeError, ValueError, OSError):
             return False
-    if "build" not in _ALLOWS:
+    if "build" not in ALLOWS:
         return False
     try:
         path = Path(token).resolve(strict=False)
@@ -171,7 +176,7 @@ def _is_local_git_command(tokens: list[str], cwd=None) -> bool:
 
 
 def _check_owned_child_process(args) -> None:
-    if not _ALLOW_CHILD_PROCESSES or "process" not in _ALLOWS:
+    if not _ALLOW_CHILD_PROCESSES or "process" not in ALLOWS:
         raise PermissionError("TEST_BOUNDARY: child processes disabled")
     command = args[1] if len(args) > 1 else None
     cwd = args[2] if len(args) > 2 else None
@@ -180,7 +185,7 @@ def _check_owned_child_process(args) -> None:
     tokens = _command_tokens(command)
     first = tokens[0].lower() if tokens else ""
     if first in _CHECKOUT_BARE_COMMANDS:
-        if "git" not in _ALLOWS:
+        if "git" not in ALLOWS:
             raise PermissionError("TEST_BOUNDARY: child executable/path outside TEST boundary")
         if not _is_local_git_command(tokens, cwd):
             raise PermissionError("TEST_BOUNDARY: child executable/path outside TEST boundary")
@@ -191,7 +196,7 @@ def _check_owned_child_process(args) -> None:
         if Path(token).is_absolute() or (os.name == "nt" and re.match(r"^[A-Za-z]:[\\/]", token))
     ]
     if not absolute_tokens:
-        if "build" in _ALLOWS and first in _PACKAGING_BARE_COMMANDS:
+        if "build" in ALLOWS and first in _PACKAGING_BARE_COMMANDS:
             return
         raise PermissionError("TEST_BOUNDARY: child executable/path outside TEST boundary")
     if not all(_is_allowed_child_path(token) for token in absolute_tokens):
