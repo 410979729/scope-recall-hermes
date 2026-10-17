@@ -136,11 +136,10 @@ def test_an_existing_installation_gains_the_skill_on_its_next_apply(tmp_path, mo
 
 
 def test_an_agent_s_edit_of_a_skill_stays_when_the_package_did_not_change_it(tmp_path, monkeypatch):
-    """Yuheng edited its memory skill between two releases that left the skill as it was; the upgrade reported an
-    edited prior file and stopped before its apply, which left the new package under the old wrapper and receipt
-    (2026-09-29).  The edit stays and the rest is installed; the receipt keeps the package's digest, so the next
-    install compares the skill with the package again.  A skill the package changed, and any other edited file,
-    is still a conflict."""
+    """A memory skill an agent edited between two releases that left the skill as it was is not a conflict: the edit
+    stays and the rest is installed, so the new package does not stay under the old wrapper and receipt.  The receipt
+    keeps the package's digest, so the next install compares the skill with the package again.  A skill the package
+    changed, and any other edited file, is still a conflict."""
     import json
 
     from scope_recall.maintenance import install_common, install_hermes
