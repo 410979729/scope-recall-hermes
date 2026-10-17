@@ -419,6 +419,26 @@ def test_a_denial_negates_a_value_one_of_them_holds_as_whole_words(denied, held,
     assert negates({"kind": "fact", "value_text": denied}, {"value_text": held}) is same
 
 
+@pytest.mark.parametrize(
+    "text,predicate,condition",
+    [
+        ("要是值班表调整，TEST-project 告警频道是 ops-pager。", "告警频道", "值班表调整"),
+        (
+            "If the rotation changes, the TEST-project alert channel is ops-pager.",
+            "alert channel",
+            "the rotation changes",
+        ),
+    ],
+)
+def test_a_claim_said_under_a_condition_holds_only_with_it(app, text, predicate, condition):
+    """Dropped, the condition would make ops-pager the alert channel now; kept, the claim is a slot of its own."""
+    core, ctx = app
+    bare = _stated(core, ctx, text, "ops-pager", predicate=predicate)
+    assert (bare.state, core.claim_history(ctx, bare.ref)[-1].reason) == ("proposed", "condition_not_preserved")
+    kept = _stated(core, ctx, text, "ops-pager", predicate=predicate, conditions=[condition])
+    assert kept.state == "active" and kept.ref != bare.ref
+
+
 def test_restore_gives_back_only_what_a_denial_of_another_value_displaced(app):
     """A denial of another value an earlier release wrote as the head is withdrawn and the value it displaced
     re-instated.  A denial that is its slot's only value, or one of the value it replaced, is the slot's value and

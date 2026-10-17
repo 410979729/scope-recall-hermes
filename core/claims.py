@@ -26,6 +26,7 @@ from .fact_evidence import evidence_supports_claim, evidence_supports_relation, 
 from .fact_temporal_semantics import classify_durable_state_clause
 from .source_qualification import (
     AUTHORITY_QUESTION,
+    CONDITIONAL,
     RELATIVE_SCOPE,
     REPORTED_SPEECH,
     UNASSERTED_UNCERTAINTY,
@@ -507,6 +508,9 @@ def _scope_preserved(c: _Cited) -> str | None:
         not condition_supports_value(c.source_text, condition, c.proposal["value_text"]) for condition in conditions
     ):
         return "condition_not_supported"
+    # "要是值班表调整，告警频道是 X" holds only under its condition: a claim that drops it would say X holds now.
+    if CONDITIONAL.search(c.source_text) and not conditions:
+        return "condition_not_preserved"
     if _LIMIT.search(c.source_text) and not conditions and valid_to is None:
         return "missing_limitation"
     for marker in RELATIVE_SCOPE.finditer(c.source_text):
