@@ -283,9 +283,14 @@ TIER_METADATA = {
     "model_runtime": {"level": "T4", "requires": ["model"], "model_calls": True},
 }
 
+#: The tiers whose runs allow child processes and loopback sockets.  ``tests/v11_guard.py`` refuses both to every other
+#: tier, so a test that starts a process or opens a socket can only pass in one of these.
+PROCESS_TIERS = frozenset({"native", "host", "integration", "migration", "packaging", "release"})
+
 # These are the deterministic checks that protect the authority and privacy
 # boundary when a change affects writes, identity, deletion, or time.  They are
-# intentionally separate from semantic/model evaluation.
+# intentionally separate from semantic/model evaluation.  None of them starts a
+# child process or opens a socket, so every tier can run them.
 SAFETY_BASELINE = [
     "tests/unit/test_trusted_context.py",
     "tests/contract/test_synthetic_inputs.py",
@@ -350,6 +355,8 @@ I_SAFETY_MATRIX = {
     "I14": ["tests/contract/test_synthetic_inputs.py", "tests/host/hermes/test_audience_isolation.py"],
 }
 I_CORE_BASELINE = _dedupe([path for paths in I_SAFETY_MATRIX.values() for path in paths])
+# The I-contract baseline of the tiers that refuse child processes: none of these tests starts a process or opens a
+# socket.  I_CORE_BASELINE also holds host and native tests that do.
 CONTRACT_I_BASELINE = [
     "tests/contract/test_retrieval_history_state.py",
     "tests/unit/test_trusted_context.py",
@@ -369,6 +376,8 @@ CONTRACT_I_BASELINE = [
     "tests/contract/test_operator_retry.py",
     "tests/contract/test_recall_budget_config.py",
 ]
+# The contracts a change to claims, episodes or time calls for.  They need no process; the migration drills that
+# complete the closure run in the migration tier.
 CLAIMS_TIME_CONTRACT_CLOSURE = [
     "tests/contract/test_claims.py",
     "tests/contract/test_episode_authority.py",
@@ -470,6 +479,8 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_retire_rootless_claims.py",
 ]
 
+# The runtime's boundaries with the processes and sockets it uses.  Most of these tests start a child process or open a
+# loopback socket, so a process tier runs all of them.
 RUNTIME_BOUNDARY_TESTS = [
     "tests/contract/test_http_transport_boundary.py",
     "tests/contract/test_codex_cli_consolidation.py",
@@ -479,6 +490,7 @@ RUNTIME_BOUNDARY_TESTS = [
     "tests/host/test_runtime_watchdog.py",
     "tests/host/test_runtime_wiring_common.py",
 ]
+# The host adapters' tests.  Some start child processes or open loopback sockets, so a process tier runs all of them.
 HERMES_HOST_TESTS = [path for path in SUITES["host"] if "/hermes/" in path]
 CODEX_HOST_TESTS = [path for path in SUITES["host"] if "/codex/" in path]
 INTEGRATION_STABLE_BASELINE = _dedupe(list(SUITES["native"]) + list(SUITES["host"]) + list(SUITES["migration"]))
@@ -631,8 +643,39 @@ def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
     return impacts, unknown
 
 
+def _if_processes_allowed(tier: str, tests: list[str]) -> list[str]:
+    """``tests``, which start child processes or open loopback sockets, for a tier whose runs allow both; none for any
+    other tier, which leaves them to the process tier that ``required_tiers`` names."""
+    return tests if tier in PROCESS_TIERS else []
+
+
+def _process_tier_of(path: str) -> str | None:
+    """The process tier that owns a test: the one whose own suite (native, host, migration or packaging) lists it, or
+    integration for a runtime boundary test.  A test in none of them, including one no suite lists yet, has no owner."""
+    for tier in ("native", "host", "migration", "packaging"):
+        if path in SUITES[tier]:
+            return tier
+    return "integration" if path in RUNTIME_BOUNDARY_TESTS else None
+
+
+def _split_changed_tests(tier: str, changed_tests: list[str]) -> tuple[list[str], list[str]]:
+    """The changed tests ``tier`` runs, and the process tiers that own the others.
+
+    A tier whose runs refuse child processes and sockets leaves a test that a process tier owns to that tier.
+    """
+    if tier in PROCESS_TIERS:
+        return changed_tests, []
+    owners = {path: owner for path in changed_tests if (owner := _process_tier_of(path))}
+    return [path for path in changed_tests if path not in owners], _dedupe(list(owners.values()))
+
+
 def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[str], dict]:
-    """Select a bounded suite and report why safety gates were added."""
+    """Select a bounded suite and report why safety gates were added.
+
+    A run selects only tests its tier's process policy allows (``PROCESS_TIERS``).  The tests a change calls for that
+    start child processes or open loopback sockets go into a process tier's run; any other tier names the process tier
+    in ``required_tiers`` instead.  Every name there is a key of ``SUITES``.
+    """
     changed = changed or []
     if tier == "release":
         selected = _dedupe(
@@ -648,11 +691,12 @@ def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[s
     changed_tests = [
         path for path in changed if path.startswith("tests/") and path.endswith(".py") and (ROOT / path).is_file()
     ]
+    changed_tests, left_to = _split_changed_tests(tier, changed_tests)
     if changed_tests:
         selected = _dedupe(selected + changed_tests)
     impacts, unknown = _impact(changed)
-    reasons: list[str] = []
-    required_tiers = [tier]
+    reasons = ["changed_tests_owned_by_process_tiers"] if left_to else []
+    required_tiers = [tier, *left_to]
     if tier in {"integration", "release"}:
         selected = _dedupe(selected + CORE_RELEASE_CONTRACTS + RUNTIME_BOUNDARY_TESTS + SCRIPT_GATE_TESTS)
     if tier == "integration":
@@ -660,7 +704,7 @@ def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[s
         # is the CI baseline, so it retains native, host, and migration
         # coverage even when ``changed=[]``.
         selected = _dedupe(selected + INTEGRATION_STABLE_BASELINE)
-        required_tiers.extend(["native", "hermes", "codex", "migration"])
+        required_tiers.extend(["native", "host", "migration"])
         reasons.append("integration_stable_native_host_migration_baseline")
     if tier in {"unit", "contract", "storage", "capture", "claims", "deletion", "episodes", "retrieval"}:
         host_impacts = {"host", "host_both", "hermes_host", "codex_host", "runtime_boundary"}
@@ -672,8 +716,7 @@ def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[s
             path.startswith(("adapters/", "runtime/")) for path in production_changed
         )
         if authority_impacts.intersection({"scope", "write", "delete", "time"}) and not host_only_change:
-            safety = I_CORE_BASELINE if tier in {"native", "host", "integration", "release"} else CONTRACT_I_BASELINE
-            selected = _dedupe(safety + selected)
+            selected = _dedupe(CONTRACT_I_BASELINE + selected)
             reasons.append("I01_I03_I04_I06_I07_I08_I09_I10_I14_safety_baseline")
         if "read" in impacts and tier != "retrieval":
             selected = _dedupe(selected + SUITES["retrieval"])
@@ -686,27 +729,29 @@ def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[s
         host_selected = []
         if "hermes_host" in impacts or "host_both" in impacts:
             host_selected.extend(HERMES_HOST_TESTS)
-            required_tiers.append("hermes")
         if "codex_host" in impacts or "host_both" in impacts:
             host_selected.extend(CODEX_HOST_TESTS)
-            required_tiers.append("codex")
-        selected = _dedupe(selected + host_selected + SAFETY_BASELINE)
-        reasons.append("host_specific_contract_and_core_safety_baseline")
+        host_tests = _if_processes_allowed(tier, host_selected)
+        selected = _dedupe(selected + host_tests + SAFETY_BASELINE)
+        required_tiers.append("host")
+        reasons.append(
+            "host_specific_contract_and_core_safety_baseline" if host_tests else "core_safety_baseline_for_host_change"
+        )
     if "runtime_boundary" in impacts:
-        selected = _dedupe(selected + RUNTIME_BOUNDARY_TESTS)
+        selected = _dedupe(selected + _if_processes_allowed(tier, RUNTIME_BOUNDARY_TESTS))
         required_tiers.append("integration")
         reasons.append("runtime_boundary_contracts")
     if "native" in impacts:
-        selected = _dedupe(selected + SUITES["native"] + I_CORE_BASELINE)
+        selected = _dedupe(selected + _if_processes_allowed(tier, SUITES["native"] + I_CORE_BASELINE))
         required_tiers.append("native")
         reasons.append("native_boundary_for_vector_change")
     if impacts.intersection({"packaging", "unknown_config"}):
         required_tiers.extend(["integration", "packaging"])
-        selected = _dedupe(selected + SUITES["integration"] + SUITES["packaging"])
+        selected = _dedupe(selected + _if_processes_allowed(tier, SUITES["integration"] + SUITES["packaging"]))
         reasons.append("integration_and_build_for_packaging_or_config")
     if unknown:
         required_tiers.extend(["integration", "packaging"])
-        selected = _dedupe(selected + SUITES["integration"] + SUITES["packaging"])
+        selected = _dedupe(selected + _if_processes_allowed(tier, SUITES["integration"] + SUITES["packaging"]))
         reasons.append("unknown_dependency_requires_conservative_integration_and_build")
     if changed and not unknown and not impacts and tier not in {"unit", "contract"}:
         # A changed test is still a valid direct selection; no silent empty
@@ -758,9 +803,6 @@ def _as_text(value: object) -> str:
     return str(value or "")
 
 
-_PROCESS_TIERS = frozenset({"native", "host", "integration", "migration", "packaging", "release"})
-
-
 def _test_environment(tier: str, isolated: Path) -> dict[str, str]:
     """A clean, isolated environment for one pytest run: only the OS essentials,
     every user/config/temp location redirected under ``isolated``."""
@@ -801,7 +843,7 @@ def _test_environment(tier: str, isolated: Path) -> dict[str, str]:
     )
     env.update(packaging_helper_env(tier))
     env.update(node_helper_env(tier))
-    if tier in _PROCESS_TIERS:
+    if tier in PROCESS_TIERS:
         # Process tiers enable v11_guard's allowlisted TEST child-process path;
         # network and protected-file checks remain active in the parent.
         env["SCOPE_RECALL_TEST_ALLOW_OWNED_SUBPROCESSES"] = "1"
@@ -820,7 +862,7 @@ def _junit_counts(junit: Path) -> dict[str, int]:
 
 
 def _evidence_scope(tier: str, task: str) -> str:
-    if tier in _PROCESS_TIERS:
+    if tier in PROCESS_TIERS:
         return f"{task} selected local contracts and bounded TEST process boundaries; no model/API semantic evaluation"
     return f"{task} selected local in-process contracts only; no model/API semantic evaluation"
 
@@ -1032,7 +1074,7 @@ def _execute(args, selected: list[str], selection: dict) -> int:
         "log": log.relative_to(ROOT).as_posix(),
         "model_calls": bool(args.allow_model_calls and TIER_METADATA.get(args.tier, {}).get("model_calls", False)),
         "process_policy": "v11_guard_with_allowlisted_test_subprocesses"
-        if args.tier in _PROCESS_TIERS
+        if args.tier in PROCESS_TIERS
         else "v11_guard_no_child_processes",
         "test_data": "synthetic_only",
         "source_base": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),

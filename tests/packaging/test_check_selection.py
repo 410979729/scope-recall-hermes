@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
@@ -37,8 +39,6 @@ def test_packaging_change_requires_build_and_integration() -> None:
     selected, details = check.select_tests("unit", changed=["pyproject.toml"])
 
     assert set(check.SUITES["unit"]) <= set(selected)
-    assert set(check.SUITES["integration"]) <= set(selected)
-    assert set(check.SUITES["packaging"]) <= set(selected)
     assert details["required_tiers"] == ["unit", "integration", "packaging"]
     assert "integration_and_build_for_packaging_or_config" in details["reasons"]
 
@@ -81,21 +81,22 @@ def test_claim_change_adds_current_history_time_and_migration_closure() -> None:
 
 
 def test_host_change_targets_only_changed_host_and_core_baseline() -> None:
-    selected, details = check.select_tests("unit", changed=["adapters/clients/mcp_server.py"])
+    selected, details = check.select_tests("packaging", changed=["adapters/clients/mcp_server.py"])
 
     assert set(check.CODEX_HOST_TESTS) <= set(selected)
     assert not set(check.HERMES_HOST_TESTS) & set(selected)
     assert set(check.SAFETY_BASELINE) <= set(selected)
-    assert "codex" in details["required_tiers"]
+    assert "host" in details["required_tiers"]
+    assert "host_specific_contract_and_core_safety_baseline" in details["reasons"]
 
 
 def test_hermes_identity_change_selects_direct_identity_contract() -> None:
-    selected, details = check.select_tests("unit", changed=["adapters/hermes/identity.py"])
+    selected, details = check.select_tests("packaging", changed=["adapters/hermes/identity.py"])
 
     assert "tests/host/hermes/test_identity.py" in selected
     assert "tests/host/hermes/test_audience_isolation.py" in selected
     assert "tests/host/hermes/test_dedupe.py" in selected
-    assert "hermes" in details["required_tiers"]
+    assert "host" in details["required_tiers"]
 
 
 def test_integration_and_release_include_new_runtime_and_core_contracts() -> None:
@@ -138,8 +139,7 @@ def test_clean_integration_keeps_native_host_and_migration_baseline() -> None:
     assert "tests/contract/test_operator_retry.py" in selected
     assert "tests/contract/test_recall_budget_config.py" in selected
     assert "native" in details["required_tiers"]
-    assert "hermes" in details["required_tiers"]
-    assert "codex" in details["required_tiers"]
+    assert "host" in details["required_tiers"]
     assert "migration" in details["required_tiers"]
     assert "integration_stable_native_host_migration_baseline" in details["reasons"]
 
@@ -147,6 +147,152 @@ def test_clean_integration_keeps_native_host_and_migration_baseline() -> None:
 def test_process_tiers_are_explicitly_distinct_from_guarded_contract_tiers() -> None:
     assert "tests/contract/test_runtime_worker_entry.py" in check.SUITES["integration"]
     assert "tests/contract/test_runtime_worker_entry.py" not in check.SUITES["contract"]
+
+
+# --------------------------------------------------------------------------
+# A run selects only the tests its tier's process policy allows
+# --------------------------------------------------------------------------
+
+#: The tiers whose runs refuse child processes and sockets (``tests/v11_guard.py``).
+IN_PROCESS_TIERS = sorted(set(check.SUITES) - check.PROCESS_TIERS)
+
+#: Changed files that between them reach every addition the selector makes.
+CHANGES = {
+    "client": ["adapters/clients/mcp_server.py"],
+    "hermes": ["adapters/hermes/identity.py"],
+    "runtime": ["runtime/worker_entry.py"],
+    "vector": ["runtime/lance_port.py"],
+    "store": ["core/delete_storage.py", "core/visibility.py"],
+    "claim": ["core/claims.py"],
+    "recall": ["core/recall.py"],
+    "packaging": ["pyproject.toml"],
+    "unknown": ["new_dependency_adapter.py"],
+    "selector": ["scripts/check.py"],
+    "host test": ["tests/host/codex/test_remote.py"],
+    "contract test": ["tests/contract/test_storage.py"],
+}
+
+#: What a change calls for beyond a tier's own suite and some of whose tests need a process, with the tiers that run it.
+PROCESS_ADDITIONS = {
+    "client": (CHANGES["client"], check.CODEX_HOST_TESTS, ["host"]),
+    "hermes": (CHANGES["hermes"], check.HERMES_HOST_TESTS, ["host"]),
+    "runtime": (
+        CHANGES["runtime"],
+        [*check.RUNTIME_BOUNDARY_TESTS, *check.HERMES_HOST_TESTS, *check.CODEX_HOST_TESTS],
+        ["host", "integration"],
+    ),
+    "vector": (CHANGES["vector"], [*check.SUITES["native"], *check.I_CORE_BASELINE], ["native"]),
+    "packaging": (
+        CHANGES["packaging"],
+        [*check.SUITES["integration"], *check.SUITES["packaging"]],
+        ["integration", "packaging"],
+    ),
+    "unknown": (
+        CHANGES["unknown"],
+        [*check.SUITES["integration"], *check.SUITES["packaging"]],
+        ["integration", "packaging"],
+    ),
+}
+
+
+def run_only_by_process_tiers(tests: list[str]) -> set[str]:
+    """The ``tests`` that no tier refusing child processes runs on its own: not in its suite, not in the baseline built
+    for those tiers."""
+    in_process = {path for tier in IN_PROCESS_TIERS for path in check.SUITES[tier]} | set(check.CONTRACT_I_BASELINE)
+    return set(tests) - in_process
+
+
+@pytest.mark.parametrize("tier", sorted(check.SUITES))
+@pytest.mark.parametrize("changed", CHANGES.values(), ids=list(CHANGES))
+def test_a_plan_names_only_tiers_that_exist(tier, changed) -> None:
+    """``--tier`` accepts the keys of ``SUITES`` and nothing else, so any other name is a tier nobody can run."""
+    _, details = check.select_tests(tier, changed=changed)
+
+    assert set(details["required_tiers"]) <= set(check.SUITES)
+
+
+def test_every_tier_a_plan_names_is_a_tier_the_runner_accepts(monkeypatch, capsys) -> None:
+    changed = [path for change in ("client", "vector", "packaging", "claim") for path in CHANGES[change]]
+    monkeypatch.setattr(sys, "argv", ["check.py", "--tier", "unit", "--plan", "--changed-files", *changed])
+    assert check.main() == 0
+    named = json.loads(capsys.readouterr().out)["selection"]["required_tiers"]
+
+    assert len(named) > 1
+    for name in named:
+        monkeypatch.setattr(sys, "argv", ["check.py", "--tier", name, "--plan"])
+        assert check.main() == 0, name
+        capsys.readouterr()
+
+
+@pytest.mark.parametrize("tier", IN_PROCESS_TIERS)
+@pytest.mark.parametrize("change", ["client", "hermes", "runtime"])
+def test_a_host_change_selects_no_host_test_where_child_processes_are_refused(tier, change) -> None:
+    selected, details = check.select_tests(tier, changed=CHANGES[change])
+
+    assert not set(selected) & set(check.SUITES["host"])
+    assert set(check.SAFETY_BASELINE) <= set(selected)
+    assert "host" in details["required_tiers"]
+    assert "core_safety_baseline_for_host_change" in details["reasons"]
+    assert "host_specific_contract_and_core_safety_baseline" not in details["reasons"]
+
+
+@pytest.mark.parametrize("tier", IN_PROCESS_TIERS)
+@pytest.mark.parametrize("change", PROCESS_ADDITIONS)
+def test_a_tier_that_refuses_child_processes_leaves_their_tests_to_the_tier_that_runs_them(tier, change) -> None:
+    changed, additions, named = PROCESS_ADDITIONS[change]
+
+    selected, details = check.select_tests(tier, changed=changed)
+
+    assert not run_only_by_process_tiers(additions) & (set(selected) - set(check.SUITES[tier]))
+    assert set(named) <= set(details["required_tiers"])
+
+
+@pytest.mark.parametrize("tier", sorted(check.PROCESS_TIERS))
+@pytest.mark.parametrize("change", PROCESS_ADDITIONS)
+def test_a_process_tier_selects_the_tests_a_change_calls_for(tier, change) -> None:
+    changed, additions, named = PROCESS_ADDITIONS[change]
+
+    selected, details = check.select_tests(tier, changed=changed)
+
+    assert set(additions) <= set(selected)
+    assert set(named) <= set(details["required_tiers"])
+
+
+def test_a_changed_test_is_left_to_the_process_tier_that_owns_it() -> None:
+    changed = CHANGES["host test"]
+
+    selected, details = check.select_tests("unit", changed=changed)
+
+    assert changed[0] not in selected
+    assert details["required_tiers"] == ["unit", "host"]
+    assert "changed_tests_owned_by_process_tiers" in details["reasons"]
+    assert changed[0] in check.select_tests("host", changed=changed)[0]
+
+
+def test_a_tier_left_with_no_changed_test_to_run_keeps_its_own_suite() -> None:
+    selected, details = check.select_tests("storage", changed=CHANGES["host test"])
+
+    assert selected == check.SUITES["storage"]
+    assert details["required_tiers"] == ["storage", "host"]
+
+
+def test_a_changed_test_a_tier_that_refuses_child_processes_already_runs_is_selected() -> None:
+    selected, details = check.select_tests("unit", changed=CHANGES["contract test"])
+
+    assert CHANGES["contract test"][0] in selected
+    assert details["required_tiers"] == ["unit"]
+
+
+@pytest.mark.parametrize("tier", ["unit", "storage", "host", "release"])
+def test_a_changed_test_no_suite_lists_is_selected_by_every_tier(tier, monkeypatch, tmp_path) -> None:
+    unlisted = "tests/contract/test_not_in_a_suite_yet.py"
+    (tmp_path / "tests" / "contract").mkdir(parents=True)
+    (tmp_path / unlisted).write_text("def test_it():\n    pass\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(check, "ROOT", tmp_path)
+
+    selected, _ = check.select_tests(tier, changed=[unlisted])
+
+    assert unlisted in selected
 
 
 def test_eval_without_authorization_is_nonzero_and_model_free(monkeypatch, capsys) -> None:
