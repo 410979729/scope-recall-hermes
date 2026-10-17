@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +28,8 @@ MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
 #: Work items one explicit operator retry may name.
 MAX_OPERATOR_PAGE = 8
+#: Failed rows ``retry_failed`` reads at a time (``WorkItems._failed_rows``).
+RETRY_SCAN_PAGE = 512
 #: Failed rows one pass may reopen.  Reopening a failure is not the same kind of
 #: work as claiming a ready item: each reopened row becomes a model call later,
 #: so it keeps its own page however large a pass of cheap work may be.  It was
@@ -875,7 +878,9 @@ class WorkItems:
         request covers are counted (``already_retried``, the first ids in
         ``already_retried_work_ids``): each failed again after this release
         re-opened it, and a run that re-opens nothing says so rather than
-        nothing.
+        nothing.  However many failed rows a run passes over, by design or
+        already re-opened, it reads on to the rows it may re-open
+        (``_failed_rows``).
         """
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
@@ -883,13 +888,6 @@ class WorkItems:
         # A preview must be able to run inside a read transaction, which is what
         # makes "look before you touch production" the cheap option.
         conn = self._tx._check(write=not dry_run)
-        visible, params = self._visible_filter()
-        rows = conn.execute(
-            f"""SELECT work_id, work_type, last_error_code FROM work_items
-                WHERE state='failed' AND {visible} ORDER BY work_id LIMIT ?""",
-            (*params, max(limit * 8, limit)),
-        ).fetchall()
-
         report = {
             "examined": 0,
             "retried": 0,
@@ -898,7 +896,7 @@ class WorkItems:
             "already_retried": 0,
             "already_retried_work_ids": [],
         }
-        for row in rows:
+        for row in self._failed_rows(conn):
             if report["retried"] >= limit:
                 break
             report["examined"] += 1
@@ -969,6 +967,26 @@ class WorkItems:
                 "UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(row[0],) for row in refused]
             )
         return report
+
+    def _failed_rows(self, conn) -> Iterator:
+        """Every failed row of this context, ``RETRY_SCAN_PAGE`` at a time, in the order ``work_ready`` keeps them (by
+        when each failed): a run reaches the rows it may re-open however many come before them.
+
+        A page is read whole before the caller changes a row, and the next one starts after the last row read: a row
+        the caller re-opened has left the failed rows, and no row is read twice or passed over."""
+        visible, params = self._visible_filter()
+        last = ("", 0)
+        while True:
+            page = conn.execute(
+                f"""SELECT work_id, work_type, last_error_code, available_at FROM work_items
+                    WHERE state='failed' AND (available_at, work_id)>(?,?) AND {visible}
+                    ORDER BY available_at, work_id LIMIT ?""",
+                (*last, *params, RETRY_SCAN_PAGE),
+            ).fetchall()
+            yield from page
+            if len(page) < RETRY_SCAN_PAGE:
+                return
+            last = (page[-1]["available_at"], page[-1]["work_id"])
 
     def _claim_heads_without_vectors(self, *, limit: int) -> list[tuple[int | None, str, int]]:
         """Readable claim heads of this context whose vector work was made obsolete or never queued: (the obsolete

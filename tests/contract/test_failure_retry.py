@@ -542,6 +542,19 @@ def test_every_failure_the_status_counts_is_one_a_run_re_opens(app):
     assert every["retried"] == status.failed_work
 
 
+@pytest.mark.parametrize("ahead", ["derivation_invalid", f"retried:{RETRY_GENERATION}|timeout"])
+def test_failures_a_run_passes_over_never_hide_the_ones_behind_them(app, ahead):
+    """A run read eight failed rows for each one it could re-open and looked no further: more older rows than that it
+    passes over, by design or already re-opened by this release, hid every fault behind them."""
+    core, ctx = app
+    _insert_failed(core, ctx, [ahead] * 600 + ["timeout"])
+    report = core.operations.retry_failed_work(ctx, limit=1, dry_run=False)
+    assert (report["retried"], report["by_kind"], report["examined"]) == (1, {"timeout": 1}, 601)
+    with sqlite3.connect(core.storage.path) as conn:
+        states = dict(conn.execute("SELECT subject_ref,state FROM work_items WHERE subject_ref LIKE 'TEST-event-%'"))
+    assert states.pop("TEST-event-00600") == "pending" and set(states.values()) == {"failed"}
+
+
 class _Embedding:
     """An embedding port that answers each request with the next of ``answers`` and every later one with the last: a
     code, raised as the route's adapter raises it, or None for a vector."""
