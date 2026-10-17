@@ -67,19 +67,28 @@ _SAID_BY_ANOTHER = re.compile(
     r"|guess(?:es|ed)?|heard)\b(?!-)|(?:told|tells)\s+\w+\b)",
     re.I,
 )
-#: A line that opens with another speaker's name and a colon before a statement, on it or on the next line
-#: (``张三：TEST-project 配色换成银色``, ``Alice: the CI is GitLab``, ``<alice> …``), after a list marker, a
-#: ``[10:32]`` or in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of theirs (``更正：``,
-#: ``Update:``, ``刚才写错了：``), a key before its value (``配色：银色``, which states nothing) and a head without a
-#: name's shape give no one else's words: a name is two to four CJK characters that end no phrase
-#: (``库里只有这一句：``, ``问题是：``), or one Latin word (not ``TEST-project 配色：`` or a JSON ``"key":``).
+#: The common surnames a Chinese name begins with, less those that also begin everyday keys (方案, 高度, 任务, 金额,
+#: 周一).
+_SURNAME = (
+    "[王李张刘陈杨黄赵吴徐孙朱胡郭林罗郑梁谢宋唐韩冯邓曹彭肖董袁潘蒋蔡杜苏魏吕"
+    "丁沈姚卢姜崔谭汪廖贾韦邹孟熊秦邱尹薛闫雷侯陶贺顾郝龚邵覃武戴莫孔汤欧司]"
+)
+#: A speaker's name as a line's label: a surname and one or two characters after it (张三, 李经理), 小 or 老 before
+#: one (小王, 老张), 阿 and a character (阿乙), a role (同事, 客户, 老板), or one Latin word (Alice) that is no heading
+#: (Note, Update, Remember).  An instruction or a key before its value (记住：, 配色：) is no name.
+_SPEAKER_NAME = (
+    rf"(?:[小老]{_SURNAME}|{_SURNAME}[\u3400-\u9fff]{{1,2}}|阿[\u3400-\u9fff]"
+    r"|同事|客户|老板|领导|经理|主管|组长|老师|同学|朋友|家人|妈妈|爸爸|儿子|女儿|老婆|老公|对方|甲方|乙方|助手"
+    r"|(?!(?:note|nb|update|correction|edit|summary|fyi|reminder|remember|important|warning|btw|ps|todo|answer"
+    r"|question|result|conclusion|decision|context|background|status|example|q|a)\b)[A-Za-z][A-Za-z0-9_.-]{0,15})"
+)
+#: A line that opens with another speaker's name (``_SPEAKER_NAME``) and a colon before a statement, on it or on the
+#: next line (``张三：TEST-project 配色换成银色``, ``Alice: the CI is GitLab``), after a list marker, a ``[10:32]`` or
+#: in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of theirs (``更正：``, ``Update:``,
+#: ``刚才写错了：``) and a head that is a phrase (``库里只有这一句：``) give no one else's words.
 _SPEAKER_LINE = re.compile(
     r"(?:^|(?<=\n))[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?(?:\[[^\]\n]{0,24}\][^\S\n]*)?(?:\*\*|__)?"
-    r"(?!我|I\b|[^\n:：]{0,16}?(?:错|不对|更正|纠正|修正|注意|备注|补充|说明|总结|结论|更新|提醒|另外|对了|顺便|如下"
-    r"|note|update|correction|edit|summary|fyi|reminder|btw|ps\b|todo))"
-    r"(?:<[^<>\n]{1,24}>|(?:[\u3400-\u9fff]{2,4}(?<![是为的了说道])|[A-Za-z][A-Za-z0-9_.-]{0,15})"
-    r"(?:\*\*|__)?[：:](?!//))"
-    rf"(?=[^\n]*?{_STATEMENT}|[^\S\n]*\n[^\n]*?{_STATEMENT})",
+    rf"{_SPEAKER_NAME}(?:\*\*|__)?[：:](?!//)(?=[^\n]*?{_STATEMENT}|[^\S\n]*\n[^\n]*?{_STATEMENT})",
     re.I,
 )
 #: Someone else's words, or an example, around a first person: a speaker other than the writer
