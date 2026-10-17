@@ -657,7 +657,7 @@ _COMMANDS: tuple[
     ),
     (
         "restore-displaced-values",
-        "give a bounded page of claims back the value a denial took their head from",
+        "withdraw a page of denials holding a claim's head without being its value, restoring what they displaced",
         _add_requalify_arguments,
         _restore_displaced,
     ),

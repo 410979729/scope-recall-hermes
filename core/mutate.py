@@ -23,6 +23,8 @@ from .claim_normalization import expand_frames, human_owner, name_frame, normali
 from .claim_storage import parse_source_ref
 from .claims import (
     DENIAL_REASON,
+    DENIED_REASON,
+    NOT_A_VALUE_REASON,
     ClaimVersion,
     Qualification,
     bind_claim_subject,
@@ -216,14 +218,39 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     return qualification, True, ()
 
 
-def _denies_another_value(history, proposal, now: str) -> bool:
-    """Whether a denial leaves its slot as it is: the slot holds a value now and the denial is not of it
-    (``claims.negates``), as "not CircleCI" is not of Jenkins.  It is then kept beside the head as a proposal.  Said
-    where the slot holds no value, a denial is the answer; said of the value it holds, it replaces it."""
+def _denial_verdict(proposal, held, roots) -> tuple[str | None, bool]:
+    """Why a denial's own version is a proposal, if it is, and whether the value its slot holds (``held``) ends.
+
+    A denial of another value than the one held ("not CircleCI" while Jenkins is, ``claims.negates``) leaves the slot
+    as it is.  Of the person's own slot, a preference or a fact about the person whose words it cites, a denial is
+    their answer where the slot holds nothing ("我不吃辣") and replaces the value it denies.  A fact about anything else
+    says what its slot is not and is never its value; when it denies the value held, that value ends.
+    """
     if not is_denial(proposal):
-        return False
-    held = select_effective(history, now) if history else None
-    return held is not None and not negates(proposal, held.payload)
+        return None, False
+    denies_held = held is not None and negates(proposal, held.payload)
+    if held is not None and not denies_held:
+        return DENIAL_REASON, False
+    if proposal["kind"] == "preference" or proposal["subject"] == human_owner(roots):
+        return None, False
+    return NOT_A_VALUE_REASON, denies_held
+
+
+def _end_denied_value(tx, proposal, roots, previous, held, qualification, scope_id, now) -> Mutation | None:
+    """End the value a denial says no longer holds where a value of the denial's would replace it
+    (``_order_against_head``): a retraction of it from the denial's time, on the denial's evidence, becomes the slot's
+    head, and the denial is kept beside it as a proposal.  None where it would not replace it."""
+    if previous.state != "proposed":
+        ordered, advance, _conflicts = _order_against_head(tx, proposal, roots, previous, qualification, scope_id)
+        if not advance or ordered.state != "active":
+            return None
+    ended = deepcopy(held.payload)
+    ended.update(valid_from=proposal["valid_from"], evidence_spans=deepcopy(proposal["evidence_spans"]))
+    retraction = Qualification("retracted", qualification.basis, DENIED_REASON)
+    retracted = tx.claims.append(scope_id, ended, retraction, recorded_at=now, previous=previous)
+    beside = Qualification("proposed", "inferred_suggestion", NOT_A_VALUE_REASON)
+    tx.claims.append(scope_id, proposal, beside, recorded_at=now, previous=retracted, advance_head=False)
+    return Mutation(retracted.ref, retracted.revision, "retracted", retracted.state)
 
 
 def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subject_bound: bool = False) -> Mutation:
@@ -242,9 +269,11 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
         qualification = Qualification("proposed", "inferred_suggestion", "alias_target_or_relation_unverified")
     history = tx.claims.slot(scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
-    beside = _denies_another_value(history, proposal, now)
-    if beside and qualification.state != "proposed":
-        qualification = Qualification("proposed", "inferred_suggestion", DENIAL_REASON)
+    held = select_effective(history, now) if history else None
+    denial_reason, ends_held = _denial_verdict(proposal, held, roots)
+    gated = qualification
+    if denial_reason is not None and qualification.state != "proposed":
+        qualification = Qualification("proposed", "inferred_suggestion", denial_reason)
     # Repeated extraction cannot alter the live identity, validity, head,
     # lifecycle, epoch or work queue of the same assertion.
     identical = next(
@@ -268,8 +297,12 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
             )
             return Mutation(saved.ref, saved.revision, "inserted", saved.state)
         return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
+    if ends_held and gated.state == "active":
+        ended = _end_denied_value(tx, proposal, roots, previous, held, gated, scope_id, now)
+        if ended is not None:
+            return ended
     advance, conflicts = True, ()
-    if beside:
+    if denial_reason is not None and previous is not None:
         advance = False
     elif previous is not None and previous.state != "proposed":
         if qualification.state == "proposed":

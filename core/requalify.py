@@ -29,9 +29,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts import ContractError
-from .claim_normalization import expand_frames
+from .claim_normalization import expand_frames, human_owner
 from .claims import (
     DENIAL_REASON,
+    NOT_A_VALUE_REASON,
     Qualification,
     bind_claim_subject,
     evidence_refs,
@@ -39,6 +40,8 @@ from .claims import (
     negates,
     qualify,
     same_assertion,
+    select_effective,
+    valid_at,
 )
 from .confirmation import CONFIRMED_REASON
 from .corroboration import CORROBORATED_REASON
@@ -64,11 +67,13 @@ def _preserved_reasons() -> frozenset[str]:
     vouched for it, or two independent witnesses did -- and re-running the text
     gate over a single stored payload would return "unproved" for both and
     silently undo them.  Every user confirmation would be withdrawn by the next
-    maintenance pass.
+    maintenance pass.  A denial's verdict answers another still: whether it is
+    its slot's value, given what the slot held when it was written.  The text
+    gate alone would promote it.
 
     Imported lazily so this module stays free of import cycles with ``mutate``.
     """
-    return frozenset({CONFIRMED_REASON, CORROBORATED_REASON})
+    return frozenset({CONFIRMED_REASON, CORROBORATED_REASON, DENIAL_REASON, NOT_A_VALUE_REASON})
 
 
 @dataclass
@@ -235,13 +240,17 @@ def retire_rootless_proposals(
 def restore_displaced_values(
     tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True
 ) -> RequalifyReport:
-    """Give each claim of one bounded page back the value a denial of another value took its head from.
+    """Withdraw each denial of one bounded page that holds its claim's head without being its slot's value, and give
+    back the value it displaced.
 
-    Such a denial ("not CircleCI" over Jenkins, ``claims.negates``) no longer takes a head; one written before holds
-    its claim's head and reads as the slot's value.  It is withdrawn with a retracted version, so no read at any
-    instant takes it for the value, and the version it displaced is re-instated as it was.  A denial that is the
-    slot's only value, or that denies the value it replaced, is the slot's value as a new one would be, and stays.
-    Every version stays in the history, and the report names refs and revisions only, never claim text.
+    A denial is its slot's value only as the person's own answer: in a preference or a fact about the person whose
+    words it cites, where the slot held no value when it was written or held the value it denies
+    (``mutate._denial_verdict``).  Any other denial at the head ("not CircleCI" over Jenkins, "not us-east-2" as a
+    project's region) reads as the slot's value: it is withdrawn with a retracted version, so no read at any instant
+    takes it for the value.  Where it denied another value than the one held (``claims.negates``), that value is
+    re-instated as it was, if it was the slot's value when the denial was written (``select_effective``) and still holds
+    now (``valid_at``); an expired value is not.  Every version stays in the history, and the report names refs and
+    revisions only, never claim text.
     """
     refs = _page(tx, after_ref, limit)
     report = RequalifyReport(applied=not dry_run)
@@ -252,38 +261,30 @@ def restore_displaced_values(
         if head is None or head.state not in {"active", "disputed"} or not is_denial(head.payload):
             continue
         report.examined += 1
-        stated = _stated_before(versions, head)
-        if stated is None or stated.state == "proposed" or negates(head.payload, stated.payload):
+        earlier = tuple(v for v in versions if v.revision < head.revision)
+        held = select_effective(earlier, head.recorded_from) if earlier else None
+        displaced = held if held is not None and not negates(head.payload, held.payload) else None
+        roots = tx.claims.roots(evidence_refs(head.payload))
+        owned = head.payload["kind"] == "preference" or head.payload["subject"] == human_owner(roots)
+        if displaced is None and owned:
             continue
-        entry = {"ref": ref, "was": f"{head.state}:{head.reason}", "restores": stated.revision}
+        restores = displaced if displaced is not None and valid_at(displaced, now, historical=False) else None
+        entry = {
+            "ref": ref,
+            "was": f"{head.state}:{head.reason}",
+            "restores": None if restores is None else restores.revision,
+        }
         if not dry_run:
-            withdrawn = tx.claims.append(
-                head.scope_id,
-                head.payload,
-                Qualification("retracted", head.basis, DENIAL_REASON),
-                recorded_at=now,
-                previous=head,
-            )
-            verdict = Qualification(stated.state, stated.basis, stated.reason)
-            saved = tx.claims.append(head.scope_id, stated.payload, verdict, recorded_at=now, previous=withdrawn)
+            reason = NOT_A_VALUE_REASON if displaced is None else DENIAL_REASON
+            withdrawal = Qualification("retracted", head.basis, reason)
+            saved = tx.claims.append(head.scope_id, head.payload, withdrawal, recorded_at=now, previous=head)
+            if restores is not None:
+                verdict = Qualification(restores.state, restores.basis, restores.reason)
+                saved = tx.claims.append(head.scope_id, restores.payload, verdict, recorded_at=now, previous=saved)
             tx.candidates.register(saved.ref, saved.revision, observed_at=now, schedule_initial=False)
             entry["revision"] = saved.revision
         report.changed.append(entry)
     return report
-
-
-def _stated_before(versions, head):
-    """The last version before ``head`` among the claim's heads that states a value, or None; a retraction ends the
-    search, since nothing was held from then on."""
-    by_revision = {version.revision: version for version in versions}
-    version = head
-    while version.replaces_revision is not None:
-        version = by_revision[version.replaces_revision]
-        if version.state == "retracted":
-            return None
-        if not is_denial(version.payload):
-            return version
-    return None
 
 
 __all__ = [

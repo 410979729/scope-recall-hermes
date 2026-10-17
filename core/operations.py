@@ -1,5 +1,5 @@
 """The maintenance passes an operator runs on a store (``MemoryCore.operations``): repairing and requalifying
-claims, retiring rootless proposals, restoring the values denials displaced, unindexing withheld tool outputs,
+claims, retiring rootless proposals, withdrawing denials that hold a claim's head, unindexing withheld tool outputs,
 retrying failed work, re-embedding into a new space and purging."""
 
 from __future__ import annotations
@@ -81,7 +81,8 @@ class Operations:
         dry_run: bool = True,
         remaining_seconds: float | None = None,
     ):
-        """Give one bounded page of claims back the value a denial displaced; a preview unless ``dry_run=False``."""
+        """Withdraw the denials of one bounded page that hold a claim's head without being its value, giving back what
+        they displaced; a preview unless ``dry_run=False``."""
         from .requalify import restore_displaced_values as _restore
 
         seconds = self._core.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds

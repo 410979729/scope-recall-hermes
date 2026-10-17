@@ -139,7 +139,9 @@ _ENGLISH_SELF_REPORT = re.compile(
     + r"|my\s+(?:preference|decision|requirement|constraint|habit)\b)",
     re.I,
 )
-_ENGLISH_FACT = re.compile(_ENGLISH_HEAD + r"I\s+(?:am|have|live|work)\b", re.I)
+_ENGLISH_FACT = re.compile(
+    _ENGLISH_HEAD + r"I\s+(?:am|(?:(?:do\s+not|don[’']t|never|no\s+longer)\s+)?(?:have|live|work))\b", re.I
+)
 _CJK_CHAR = re.compile(r"[\u3400-\u9fff]")
 _SENTENCE_BREAK = re.compile(r"[;；。!?！？\n]")
 _DURABLE_DIRECTIVE = re.compile(
@@ -310,7 +312,7 @@ def self_report_bound(content, value_text, *, kind=None):
         )
         english = _ENGLISH_SELF_REPORT.search(prefix)
         if kind == "fact":
-            chinese = chinese or re.search(r"(?:^|[\s：:])我(?:是|住在|工作于)", prefix)
+            chinese = chinese or re.search(r"(?:^|[\s：:])我(?:不|没)?(?:是|有|住在|工作于)", prefix)
             english = english or _ENGLISH_FACT.search(prefix)
         if chinese or english:
             return True

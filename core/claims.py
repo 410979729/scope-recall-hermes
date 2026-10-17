@@ -159,7 +159,12 @@ _DENIAL = re.compile(
 #: Kinds whose slot holds a value, so a denial can only say what it is not.  A constraint's negation is the rule
 #: itself ("never push to main"), and a decision not to do something is the decision.
 _VALUE_SLOT_KINDS = frozenset({"fact", "preference"})
+#: Why a denial's own version is a proposal: it denies another value than the one its slot holds; or it is a fact
+#: about something other than the person whose words it cites, which says what the slot is not and never what it is.
 DENIAL_REASON = "denial_of_another_value"
+NOT_A_VALUE_REASON = "denial_not_a_value"
+#: Why a value ended: a source denies it.
+DENIED_REASON = "value_denied"
 #: A word of a value as values are compared: one CJK character, or an identifier whole with the marks it carries
 #: (v3.1, my_var, ops-pager, a/b, #ops-pager, @owner).
 _VALUE_WORD = re.compile(r"[\u3400-\u9fff]|[#@]?[^\W\u3400-\u9fff](?:[./-]?[^\W\u3400-\u9fff])*")
@@ -645,8 +650,10 @@ def _procedure_proved(c: _Cited) -> str | None:
 
 
 def _fact_entailed(c: _Cited) -> str | None:
-    """Ordinary durable facts keep the claim-frame support check."""
-    if c.kind != "fact" or c.explicit_attribute_correction:
+    """Ordinary durable facts keep the claim-frame support check.  A person's denial of themselves ("I don't have a
+    car", 我不吃辣) holds its verb in its value, so no frame orders subject, relation and value in it; bound to their
+    own clause (``bind_claim_subject``), it stands on that as their preference does."""
+    if c.kind != "fact" or c.explicit_attribute_correction or (c.subject_bound and is_denial(c.proposal)):
         return None
     try:
         draft = ClaimDraft.from_parts(
