@@ -160,7 +160,7 @@ def test_a_prompt_is_the_owner_s_under_the_client_s_entry_and_a_hermes_entry_rec
     )
 
 
-def test_what_a_hermes_entry_was_told_reaches_the_client_s_prompt_marked_as_theirs(store):
+def test_what_a_hermes_entry_was_told_reaches_the_client_s_prompt_marked_as_theirs(store, still_clocks):
     root, homes, client, _capture = store
     told = _hermes(homes["tianquan"])
     try:
@@ -458,7 +458,7 @@ def _said_in_store(root):
     return sorted(_rows(root, "SELECT role, origin, content FROM source_events WHERE entry_id='claude-code'"))
 
 
-def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(store, tmp_path):
+def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(store, tmp_path, still_clocks):
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -787,12 +787,7 @@ def test_a_prompt_still_in_the_inbox_is_not_stored_again_from_the_record(store, 
     assert _rows(root, "SELECT count(*) FROM source_events WHERE source_event_key LIKE '%:record:u1@1'") == [(0,)]
 
 
-def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch):
-    from scope_recall.adapters.clients import handler as handler_module
-
-    # Room for every message of the record to be written in one hook however slow the runner: what is written and
-    # when, not the budget, is under test.  On the 2 s default a slow runner left the last ones for a later stop.
-    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 30.0)
+def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch, still_clocks):
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -956,7 +951,7 @@ def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(st
     assert asked[2:] == ["TEST 服务这边的问题。"]
 
 
-def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(store, tmp_path):
+def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(store, tmp_path, still_clocks):
     """#248, the session record: the reminder is a text block of its own, or ahead of the typed text in one string, in
     a message the record marks as the person's.  A message that is only reminders is not theirs."""
     root, _homes, client, _capture = store
@@ -1002,7 +997,7 @@ def _compaction(stamp):
     ]
 
 
-def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store, tmp_path):
+def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store, tmp_path, still_clocks):
     """#249: a message of this session the model still has (said since its last compaction, or in a session that has
     had none) came back in a later prompt's recall, a second copy in the context.  One said before the compaction
     reaches the model only as the compaction's summary, and is still recalled."""
@@ -1291,7 +1286,7 @@ def test_the_doctor_names_codex_s_requests_stored_as_the_owner_s_words(store, tm
     assert other.capability_gaps == [] and other.checks == [], "another entry's"
 
 
-def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):
+def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store, still_clocks):
     """A recall request carries at most 8,192 characters of query.  A longer prompt went whole, the request was
     refused, and the turn had no recall at all: three of the work computer's Codex prompts in one morning."""
     _root, homes, client, _capture = store
@@ -1571,16 +1566,14 @@ def test_the_server_answers_a_prompt_s_recall_and_the_hook_stores_the_prompt(
     assert not endpoint.path.exists()
 
 
-def test_a_late_answer_leaves_the_prompt_stored_once(resident, small_reserve, monkeypatch, capsys):
+def test_a_late_answer_leaves_the_prompt_stored_once(
+    resident, small_reserve, storing_takes_no_hook_time, monkeypatch, capsys
+):
     """The first version had the server store the prompt too: one that answered after its hook stopped waiting left
     the prompt stored twice.  The server now only recalls, and the hook recalls itself; while its late recall runs, the
     server tells the next prompt at once that it is busy."""
     import threading
 
-    from scope_recall.adapters.clients import handler as handler_module
-
-    # A real entry's 6 s: on the 2 s default, a slow runner's write of the prompt left no time to ask the server.
-    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 6.0)
     root, client, endpoint = resident
     release, finished = threading.Event(), []
     calls = _counted(endpoint, monkeypatch, hold=release, finished=finished)
@@ -1926,7 +1919,9 @@ def test_the_mcp_server_starts_whatever_its_endpoint_does(store, monkeypatch):
     assert local_endpoint.serve(client, "claude-code") is None
 
 
-def test_a_slow_server_s_answer_is_taken_while_the_hook_recalls_alongside(resident, monkeypatch, capsys):
+def test_a_slow_server_s_answer_is_taken_while_the_hook_recalls_alongside(
+    resident, storing_takes_no_hook_time, monkeypatch, capsys
+):
     """Given only what the hook kept back, a server's recall that needed most of the time had none, and neither had
     the hook's (review of rc11).  The server has all of it now: the hook recalls alongside once little is left, and
     takes the server's answer when it comes."""
@@ -3482,7 +3477,7 @@ def _wb_turns(root, kind):
     return [key[len(prefix) : -len("@1")] for (key,) in keys if key.startswith(prefix)]
 
 
-def test_workbuddy_stores_the_person_s_last_query_and_recalls_for_it(workbuddy, store):
+def test_workbuddy_stores_the_person_s_last_query_and_recalls_for_it(workbuddy, store, still_clocks):
     """WorkBuddy hands its prompt hook every user message of the input, joined.  The person's words are the last
     ``<user_query>`` block; the reminders around it are WorkBuddy's, never stored and never searched for."""
     root, home, _projects = workbuddy
@@ -3923,7 +3918,9 @@ def test_a_workbuddy_prompt_runs_the_entry_s_budget(workbuddy):
         hook.close()
 
 
-def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_reserve, monkeypatch, capsys):
+def test_a_workbuddy_prompt_hook_answers_within_its_budget(
+    workbuddy, small_reserve, storing_takes_no_hook_time, monkeypatch, capsys
+):
     """A WorkBuddy prompt hook that runs past its wait blocks the prompt.  With the entry's server slower than the
     hook's whole budget, the hook still answers inside the budget, with the prompt stored."""
     import io
@@ -3935,8 +3932,6 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_rese
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
-    # A real entry's 6 s: on the 2 s default, a slow runner's write of the prompt left no time to ask the server.
-    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 6.0)
     root, home, _projects = workbuddy
     endpoint = local_endpoint.serve(home, "workbuddy", warm=False)
     assert endpoint is not None
@@ -3953,10 +3948,12 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_rese
         monkeypatch.setattr(hook_entry.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(raw)})())
         started = time.monotonic()
         assert hook_entry.main(["--home", str(home), "--host", "workbuddy"]) == 0
-        elapsed = time.monotonic() - started
+        # No runtime config names a budget here: the hook's own (``_TOTAL_BUDGET_S``), which storing the prompt takes
+        # none of (``storing_takes_no_hook_time``).
+        elapsed = time.monotonic() - started - storing_takes_no_hook_time[0]
+        budget = handler_module._TOTAL_BUDGET_S
         captured = capsys.readouterr()
-        # No runtime config names a budget here: the hook's own (``_TOTAL_BUDGET_S``).
-        assert elapsed < 6.0 + 1.0, f"the hook took {elapsed:.1f} s of its 6 s"
+        assert elapsed < budget + 1.0, f"the hook took {elapsed:.1f} s of its {budget} s besides storing the prompt"
         assert not captured.out or "additionalContext" in json.loads(captured.out)["hookSpecificOutput"]
         assert "CODEX_RECALL_RESIDENT:late" in captured.err
         assert len(calls) == 1
@@ -4040,7 +4037,7 @@ def _dsh_said(root, role=None):
     return sorted(_rows(root, f"SELECT role, origin, content FROM source_events WHERE entry_id='dsh'{where}"))
 
 
-def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(dsh):
+def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(dsh, still_clocks):
     """The plugin runs the prompt hook before a turn's first step: the prompt is the owner's, named by the session and
     dsh's turn number, and the answer is what is remembered, which the plugin appends to the step."""
     root, home = dsh
@@ -4060,7 +4057,7 @@ def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(ds
     assert "Mochi" in context, "a new session's first prompt recalls what another one said"
 
 
-def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh):
+def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh, still_clocks):
     """The plugin keeps a turn's messages and sends them with its Stop: the reply under the turn, and from the lines what
     the model said while it worked and what the person sent meanwhile.  The answer's ``through`` is how many lines are
     stored; the same lines sent again (an answer lost on the way, or the rest of a turn after a Stop that stored part

@@ -189,7 +189,7 @@ def _installed(client, tmp_path):
     return home, rows
 
 
-def test_dsh_remote_record_recall_identity_and_bounds(remote):
+def test_dsh_remote_record_recall_identity_and_bounds(remote, still_clocks):
     root, home, client, bodies, records = remote
     assert remote_client.HOOK_TIMEOUTS["dsh"] == {"UserPromptSubmit": 9, "Stop": 20}
     _hook(
@@ -380,7 +380,7 @@ def _plugin(home, config, scenario="turn"):
 
 
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is not installed, or this tier may not start it")
-def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote, tmp_path):
+def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote, tmp_path, still_clocks):
     root, _home, client, bodies, records = remote
     home, rows = _installed(client, tmp_path)
     config = rows["scope-recall"]["config"]
