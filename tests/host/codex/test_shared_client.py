@@ -4063,7 +4063,9 @@ def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(ds
 def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh):
     """The plugin keeps a turn's messages and sends them with its Stop: the reply under the turn, and from the lines what
     the model said while it worked and what the person sent meanwhile.  The answer's ``through`` is how many lines are
-    stored; the same lines sent again (an answer lost on the way) store nothing twice."""
+    stored; the same lines sent again (an answer lost on the way, or the rest of a turn after a Stop that stored part
+    of it) store nothing twice: the reply sent again is the one stored, with nothing left in the inbox for the store's
+    worker to store under a key of its own."""
     root, home = dsh
     at = _dsh_ms()
     _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "3", "prompt": "TEST 把两个文件改名。"})
@@ -4090,8 +4092,9 @@ def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh):
         ]
     )
     assert _dsh_said(root) == expected
-    result, _diagnostics = _dsh(home, stop)
+    result, diagnostics = _dsh(home, stop)
     assert result == {"through": 4} and _dsh_said(root) == expected, "sent again, nothing is stored twice"
+    assert diagnostics.capture_error_detail is None and _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
 
 
 def test_a_dsh_turn_without_a_reply_stores_what_its_lines_show(dsh):
@@ -4346,9 +4349,9 @@ def test_an_aborted_step_is_passed_on_untouched(dsh, tmp_path):
 @_NEEDS_NODE
 def test_the_plugin_stores_what_a_dsh_that_is_gone_left_and_leaves_a_running_one_s_file(dsh, tmp_path):
     """A dsh that ended before its store did leaves its spool file; another dsh's plugin takes it, once it is idle and its
-    process is gone, and stores it.  That turn ended minutes ago, so its reply is stored from the record alone, once (sent
-    as the reply too, it would be stored again: the store compares moments 120 s apart at most).  A message older than
-    14 days is dropped and said; the file of a process that still runs is left to it."""
+    process is gone, and stores it.  That turn ended minutes ago, so its reply is stored from the record alone, once (the
+    plugin sends a reply with its Stop only while a store that dates it by the hook's moment would still know it).  A
+    message older than 14 days is dropped and said; the file of a process that still runs is left to it."""
     root, home = dsh
     spool = tmp_path / "TEST-spool"
     spool.mkdir()

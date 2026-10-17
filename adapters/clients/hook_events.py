@@ -39,6 +39,7 @@ from .session_marks import (
 
 if TYPE_CHECKING:
     from .handler import CodexHookHandler
+    from .record_reader import RecordLines
 
 #: How long a capture waits for the writer lease.
 CAPTURE_TIMEOUT_S = 1.0
@@ -227,7 +228,10 @@ class HookEvents:
             in_suggestions_thread(self._hook.config, session_id, ended=True)
         return turn_id, prompt, gaps
 
-    def stop(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+    def stop(
+        self, session_id: str, audience, payload: dict[str, Any], deadline: float, *, record: RecordLines | None = None
+    ) -> dict[str, Any]:
+        """Store the turn's reply; ``record`` holds the lines the Stop carries (``record_reader.RecordLines``)."""
         if self._hook.host == "dsh" and type(payload.get("last_assistant_message")) is not str:
             # A turn that ended without a reply (aborted, failed), or dsh's plugin sending what it kept of earlier
             # turns: the record lines carry whatever was said.
@@ -263,6 +267,11 @@ class HookEvents:
             # The model's answer to Codex's request for suggestions (``is_codex_suggestions_prompt``).
             self._hook.note("host_generated_reply")
             return {}
+        # dsh's plugin sends the reply again with each later Stop that carries its line: after one whose time ran out
+        # before all of the turn's lines were stored, and from its sweep after a store that failed.  Dated by each
+        # hook's moment, the reply sent again would be another message under the turn's key: refused (VERSION_CONFLICT),
+        # then stored a second time under a key of its own.  Dated by its own line, it is the one already stored.
+        said_at = record.said_at("assistant", message) if self._hook.host == "dsh" and record is not None else None
         event, outcome_gaps = assistant_stop_source_event(
             installation_id=self._hook.config.installation_id,
             host=self._hook.host,
@@ -270,6 +279,7 @@ class HookEvents:
             turn_id=turn_id,
             message=message,
             recorded_at=self._hook.clock.utc_now(),
+            occurred_at=said_at,
         )
         context = self._hook.context(audience, session_id, "assistant_visible")
         self._hook.capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))

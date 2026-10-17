@@ -46,6 +46,13 @@ class RecordLines:
     lines: list[tuple[int, "transcript.Said | None"]]
     through: int | None = None
 
+    def said_at(self, role: str, text: str) -> str | None:
+        """When the last of these lines that shows ``role`` saying ``text`` was said; None when none does."""
+        for _end, said in reversed(self.lines):
+            if said is not None and (said.role, said.text) == (role, text):
+                return said.occurred_at
+        return None
+
 
 class RecordReader:
     """A hook's reading of its session record; one per handler."""

@@ -256,8 +256,10 @@ def assistant_stop_source_event(
     turn_id: str,
     message: str,
     recorded_at: str,
+    occurred_at: str | None = None,
     host: str = "codex",
 ) -> tuple[SourceEvent | None, tuple[str, ...]]:
+    """A turn's reply under the turn's key, said at ``occurred_at`` when the client says when, else when recorded."""
     gaps: list[str] = []
     if not message.strip():
         gaps.append("outcome_gap:missing_assistant_body")
@@ -275,7 +277,7 @@ def assistant_stop_source_event(
         "origin": "assistant_visible",
         "role": "assistant",
         "content": message,
-        "occurred_at": recorded_at,
+        "occurred_at": recorded_at if occurred_at is None else occurred_at,
         "recorded_at": recorded_at,
         "time_precision": "instant",
         "capture_state": "complete",

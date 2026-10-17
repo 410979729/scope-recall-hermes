@@ -435,8 +435,10 @@ class CodexHookHandler:
             # The turn's messages as dsh's plugin kept them (it has no record a hook could open), read as a remote
             # client's lines; the answer says how many are stored, so the plugin drops those and sends the rest again.
             record = RecordLines(start=0, lines=transcript.dsh_lines(payload.get("record")))
-        capture = self.events.stop if event == "Stop" else self.events.session_end
-        result = capture(session_id, audience, payload, deadline)
+        if event == "Stop":
+            result = self.events.stop(session_id, audience, payload, deadline, record=record)
+        else:
+            result = self.events.session_end(session_id, audience, payload, deadline)
         # A server for a client on another machine reads only the lines that client sent (``local_record``
         # False): the payload's transcript_path names a file over there, and a path from a request is never
         # opened here.

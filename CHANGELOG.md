@@ -17,6 +17,8 @@ longer text this file once held is in its history.
 
 **The `model_runtime` tier is removed.** `scripts/check.py --tier model_runtime` ran `probes/eval_model_runtime.py`, a budgeted client for three named models, through `tests/host/test_eval_model_runtime.py`. The module it loaded to price calls had been removed, so 8 of its 11 tests failed with `FileNotFoundError`, and no workflow ran the tier. The tier, the client and its tests are gone; `--tier eval`, `--allow-model-calls` and the A2A kit in `probes/hermes/` are unchanged.
 
+**dsh: a turn's reply sent again was stored twice.** dsh's plugin sends a turn's reply with each `Stop` that carries the reply's line, so it goes again with the next `Stop` when one ran out of time before all of the turn's lines were stored, and with a later pass over what a failed store left. The reply was dated by each hook's moment, and the store took the one sent again for another message under the turn's key: it was refused (`VERSION_CONFLICT`) at the cost of that `Stop`'s time, which on a busy store left none for the turn's lines and sent the plugin into its longer waits, and it stayed in the capture inbox until the store's worker stored it a second time under a key of its own. The reply is now dated by its own line, and one sent again is the reply already stored.
+
 ### Upgrading from 3.10.6
 
 Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110).

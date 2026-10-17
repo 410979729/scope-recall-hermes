@@ -34,9 +34,10 @@ const RECORD_BYTES = 40_000
 const TEXT_BYTES = 36_000
 const MAX_TEXT = 20_000
 const MAX_OUTPUT = 1 << 20
-// A completed turn's reply goes with its Stop only while the store still recognises the same words among the turn's
-// messages (it compares moments 120 s apart at most, and the reply's moment is the hook's); a reply said earlier than
-// this, or a turn that did not complete, is stored from the turn's messages alone.
+// A completed turn's reply goes with its Stop only while it is fresh, so that a store dating the reply by the hook's
+// moment, as an earlier version on another machine does, still recognises the same words among the turn's messages
+// (it compares moments 120 s apart at most); a reply said earlier than this, or a turn that did not complete, is
+// stored from the turn's messages alone.
 const REPLY_FRESH_MS = 60_000
 const SWEEP_MS = 60_000
 const MAX_BACKOFF_MS = 30 * 60_000
