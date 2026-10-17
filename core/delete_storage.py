@@ -62,6 +62,12 @@ def purge_work_parts(ref: str) -> tuple[str, str]:
     return operation_id, scope_id
 
 
+def purge_finished(receipt: dict) -> bool:
+    """Whether a delete's purge work is done: its active content is removed, and so is the SQLite history, the page
+    images the store's files kept from before the scrub."""
+    return bool(receipt["active_content_removed"]) and receipt["layers"].get("sqlite_history") == "removed"
+
+
 def group_digest(binding, scope_id, project_id, branch_id, group_key):
     return hashlib.sha256(
         canonical([binding.installation_id, scope_id, project_id, branch_id, group_key]).encode()
@@ -281,7 +287,7 @@ class Deletions:
         delete = request["mode"] == "delete"
         layers = dict(
             sqlite_active="pending" if delete else "retained",
-            sqlite_history="maintenance_pending" if delete else "retained",
+            sqlite_history="pending" if delete else "retained",
             vector_active="inventory_pending" if delete else "retained",
             vector_history="inventory_pending" if delete else "retained",
             attachments="inventory_pending" if delete else "retained",
@@ -576,6 +582,20 @@ class Deletions:
         if layers.get("sqlite_active") != "removed":
             raise ContractError("VERSION_CONFLICT", "sqlite_scrub_required")
         layers["vector_active"] = "removed"
+        return self._record_layers(conn, operation_id, layers)
+
+    def mark_sqlite_history(self, operation_id: str, *, removed: bool) -> dict:
+        """Record the SQLite history removed when the write-ahead log was truncated after the scrub committed
+        (``SQLiteStorage.truncate_wal``): no page image from before the scrub is then left in the store's files.  The
+        receipt as it then reads."""
+        conn = self._tx._check(write=True)
+        receipt = self._deletion(operation_id)
+        layers = receipt["layers"]
+        if not removed or layers.get("sqlite_history") == "removed":
+            return receipt
+        if layers.get("sqlite_active") != "removed":
+            raise ContractError("VERSION_CONFLICT", "sqlite_scrub_required")
+        layers["sqlite_history"] = "removed"
         return self._record_layers(conn, operation_id, layers)
 
     def attachment_plan(self, operation_id: str) -> dict:
