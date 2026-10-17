@@ -9,7 +9,6 @@ import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.admission import (
-    ADMISSION_KEY,
     AdmissionDecision,
     AdmissionPolicy,
     classify,
@@ -17,6 +16,10 @@ from scope_recall.core.admission import (
     store_decision,
 )
 from v11_support import context, source_event
+
+#: The key of a source's ``extra_json`` that holds the scheduling decision capture made.  It is stored data, which the
+#: SQL of the store and of these tests names by value, so the tests name it by value too.
+ADMISSION_KEY = "_scope_recall_admission"
 
 
 def app_at(tmp_path, policy=None):
