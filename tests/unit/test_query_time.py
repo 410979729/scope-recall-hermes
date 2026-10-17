@@ -86,6 +86,28 @@ def test_what_else_a_question_asks_is_it_without_its_time(query, rest):
     assert time is not None and time.rest == rest
 
 
+@pytest.mark.parametrize(
+    ("query", "now", "first", "last"),
+    (
+        ("9月8日到9月6日的发布", NOW, "2026-09-06", "2026-09-08"),
+        ("2026-09-08到2026-09-06的发布", NOW, "2026-09-06", "2026-09-08"),
+        ("What happened from Sep 8 to Sep 6?", NOW, "2026-09-06", "2026-09-08"),
+        ("9月28日到10月3日的安排", "2026-10-05T09:30:00.000000Z", "2026-09-28", "2026-10-03"),
+        ("12月30日到1月2日的安排", "2027-01-05T09:30:00.000000Z", "2026-12-30", "2027-01-02"),
+    ),
+)
+def test_a_range_is_the_days_between_its_ends(query, now, first, last):
+    """An end in an earlier month than the first's is in the next year; an end written before its first in the same
+    month names the same days end first, not the year up to the next 6 September."""
+    time = query_time(query, now=now, zone=UTC)
+    assert time is not None and time.windows == (_window(first, last),), query
+
+
+def test_a_range_whose_end_names_a_day_before_its_first_alone_names_no_time():
+    """ "9月28-3日" may end in the next month or be a slip: no window is read for it."""
+    assert query_time("9月28-3日的安排", now=NOW, zone=UTC) is None
+
+
 def test_two_named_days_are_two_windows():
     time = query_time("9月18日和9月20日的发布", now=NOW, zone=UTC)
     assert time is not None

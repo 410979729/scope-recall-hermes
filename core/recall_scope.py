@@ -419,16 +419,21 @@ def _day_of(match: re.Match[str], today: date) -> date | None:
     return _calendar_day(int(named["year"]), month, day) if named.get("year") else _latest(month, day, today)
 
 
-def _tail_end(first: date | None, tail: re.Match[str]) -> date | None:
-    """The last day of a range written after its first ("9月28-30日"): in the first's year and month unless the end
-    names its own, and an end in an earlier month is in the next year ("12月28日到1月3日")."""
+def _range_of(first: date | None, tail: re.Match[str]) -> tuple[date | None, date | None]:
+    """The days of a range written as its first day and the end after it ("9月28-30日", "9月28日到10月3日"), the end in
+    the first's year and month unless it names its own.  An end naming a month before the first's is in the next year
+    ("12月30日到1月2日"); one before its first in the same month is the same days written end first ("9月8日到9月6日"),
+    since both are named, unless it names its day alone ("9月28-3日"), which may mean the next month and reads as none.
+    An end no calendar holds is unread, and the range then ends today."""
     named = tail.groupdict()
     if first is None:
-        return None
-    end = _calendar_day(int(named.get("year") or first.year), int(named.get("month") or first.month), int(named["day"]))
-    if end is not None and end < first and named.get("month") and not named.get("year"):
-        end = _calendar_day(end.year + 1, end.month, end.day)
-    return end if end is not None and end >= first else None
+        return None, None
+    month = int(named.get("month") or first.month)
+    year = int(named.get("year") or first.year) + (0 if named.get("year") or month >= first.month else 1)
+    end = _calendar_day(year, month, int(named["day"]))
+    if end is None or end >= first:
+        return first, end
+    return (end, first) if named.get("month") or named.get("year") else (None, None)
 
 
 def _month_span(match: re.Match[str], today: date) -> tuple[date | None, date | None]:
@@ -469,7 +474,7 @@ def _dates(text: str, today: date) -> Iterator[_Named]:
             if end is None:
                 yield _Named(match.span(), first, first, True)
             else:
-                yield _Named((match.start(), end.end()), first, _tail_end(first, end), False)
+                yield _Named((match.start(), end.end()), *_range_of(first, end), False)
 
 
 def _words(text: str, today: date) -> Iterator[_Named]:
@@ -509,7 +514,8 @@ def _mentions(text: str, today: date) -> list[_Named]:
 
 def _joined(text: str, named: list[_Named]) -> list[_Named]:
     """``named`` with each two a range joins made one (``_RANGE``, ``_JOINER``): "9月28日到9月30日", "from Sep 28 to
-    Oct 2", "between Sep 6 and Sep 8", "9月6日和9月8日之间"."""
+    Oct 2", "between Sep 6 and Sep 8", "9月6日和9月8日之间".  Two written end first ("from Sep 8 to Sep 6") are the same
+    days."""
     joined: list[_Named] = []
     for item in named:
         left = joined[-1] if joined else None
@@ -519,7 +525,9 @@ def _joined(text: str, named: list[_Named]) -> list[_Named]:
                 _LEADS.search(text, 0, left.span[0]) or _TRAILS.match(text, item.span[1])
             )
             if _RANGE.fullmatch(gap) or listed:
-                joined[-1] = _Named((left.span[0], item.span[1]), left.first, item.last, False)
+                backwards = left.first is not None and item.last is not None and item.last < left.first
+                first, last = (item.first, left.last) if backwards else (left.first, item.last)
+                joined[-1] = _Named((left.span[0], item.span[1]), first, last, False)
                 continue
         joined.append(item)
     return joined
