@@ -27,7 +27,7 @@ from .recall_policy import (
     rrf_score,
     same_message,
 )
-from .recall_scope import asks_what_was_said, query_scope
+from .recall_scope import asks_what_was_said, query_scope, query_time
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -84,6 +84,11 @@ SCOPED_CANDIDATES = 12
 #: which on a shared store would fill the packet ("Claude Code" is in thousands of other messages).  Three puts a
 #: first rank above any candidate two channels agree on at their first rank.
 SCOPED_WEIGHT = 3.0
+#: What the fused score of a candidate said within the time its question names (``recall_scope.query_time``) is
+#: multiplied by.  Notes on one subject from other days hold the question's words as well, and the newest ranked
+#: first: 2.5 puts what one channel ranked within its first sixteen above any candidate of another time that two
+#: channels agree on at their first rank.  Nothing is left out for its time, which may be the answer's.
+IN_TIME_WEIGHT = 2.5
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
     "embedding_space_mismatch": "vector_old_or_mismatched_space",
@@ -194,6 +199,32 @@ def _said_after(obj: RetrievedObject, moment: str) -> bool:
         return (canonical_time(stamp) or "") > moment
     except ContractError:
         return False
+
+
+def _said_within(obj: RetrievedObject, windows: tuple[tuple[str, str], ...]) -> bool:
+    """Whether ``obj`` was said within one of ``windows`` (``canonical_time`` bounds, ``[start, end)``), as far as its
+    time tells (``_said_after``).  Without one it is not."""
+    try:
+        moment = canonical_time(dict(obj.metadata).get("occurred_at"))
+    except ContractError:
+        return False
+    return moment is not None and any(start <= moment < end for start, end in windows)
+
+
+def _weighed_by_time(
+    hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext
+) -> list[tuple[CandidateRef, RetrievedObject]]:
+    """``hydrated`` with each candidate said within the time the question names (``SearchContext.time``) weighed by
+    ``IN_TIME_WEIGHT``.  The others keep their scores, and nothing changes for a question that names no time."""
+    if context.time is None:
+        return hydrated
+    windows = tuple((utc_timestamp(start), utc_timestamp(end)) for start, end in context.time.windows)
+    return [
+        (replace(candidate, fusion_score=candidate.fusion_score * IN_TIME_WEIGHT), obj)
+        if _said_within(obj, windows)
+        else (candidate, obj)
+        for candidate, obj in hydrated
+    ]
 
 
 #: See ``RetrievalPipeline.RELATION_WEIGHT``.
@@ -679,6 +710,8 @@ class RetrievalPipeline:
                 else (candidate, obj)
                 for candidate, obj in hydrated
             ]
+        if context is not None and context.mode not in {"history", "as_of"}:
+            hydrated = _weighed_by_time(hydrated, context)
         ranked = sorted(
             hydrated,
             key=lambda pair: (
@@ -762,7 +795,7 @@ class RetrievalPipeline:
         if not isinstance(context, SearchContext):
             raise ContractError("INPUT_INVALID", "search_context")
         limits = effective_limits(context)
-        working = replace(context, limits=limits) if limits != context.limits else context
+        working = replace(context, limits=limits, time=query_time(context.query, now=context.now, zone=context.zone))
         if self._remaining(working) <= 0:
             return _empty_result(working, "deadline_exceeded")
         gaps: list[str] = []
@@ -835,8 +868,8 @@ class RetrievalPipeline:
             if self._remaining(working) <= 0:
                 gaps.append("deadline_exceeded_followup" if round_index else "deadline_exceeded")
                 break
-            # The day a question names is read once: a follow-up asks for something else.
-            round_context = replace(working, query=follow_query, scope=None) if follow_query else working
+            # The day and the time a question names are read once: a follow-up asks for something else.
+            round_context = replace(working, query=follow_query, scope=None, time=None) if follow_query else working
             budget.hold(max_rounds - round_index - 1)
             seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget, prefetched=prefetched)
             seed_count += len(seeds)

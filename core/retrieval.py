@@ -15,7 +15,7 @@ from datetime import tzinfo
 from typing import Literal
 
 from ..contracts import ContractError, RecallRequest, TrustedContext, utc_timestamp, validate_model_request
-from .recall_scope import QueryScope
+from .recall_scope import QueryScope, QueryTime
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
 CandidateChannel = Literal[
@@ -111,6 +111,9 @@ class SearchContext:
     zone: tzinfo | None = None
     #: The days and entries the question names, read once the store's entries are known (``RetrievalPipeline``).
     scope: QueryScope | None = None
+    #: The time the question names (``recall_scope.query_time``), read once (``RetrievalPipeline``): what was said
+    #: then ranks first.
+    time: QueryTime | None = None
     #: Since when the asking host's model still holds this session's own turns word for word: its last compaction,
     #: or the session's start when it has had none.  An automatic recall leaves out what stands only on those turns
     #: (``RetrievalPipeline._in_context``).  A trusted caller's word, never a request field; None when unknown.
@@ -127,6 +130,8 @@ class SearchContext:
             raise ContractError("INPUT_INVALID", "zone")
         if self.scope is not None and not isinstance(self.scope, QueryScope):
             raise ContractError("INPUT_INVALID", "scope")
+        if self.time is not None and not isinstance(self.time, QueryTime):
+            raise ContractError("INPUT_INVALID", "time")
         if self.in_context_since is not None:
             object.__setattr__(self, "in_context_since", utc_timestamp(self.in_context_since))
         if self.mode not in {"auto", "current", "history", "as_of", "method"}:
