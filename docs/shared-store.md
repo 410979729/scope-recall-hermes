@@ -19,6 +19,7 @@ A home without a pointer keeps its own store and binds as its own installation s
   runtime-config.json         the shared worker's config: every scope, the worker's model routes
   .env                        the shared worker's credentials (you write this)
   receipts\                   one receipt per command, and a copy of every file it replaced
+  commands.lock               held by the command that writes the store, for as long as it runs
 <home>\scope-recall\
   attachment.json             the pointer: the root, the entry id, its display name
   runtime-config.json         the entry's own model routes, used for query vectors at recall
@@ -82,10 +83,12 @@ An entry never starts a worker of its own. Leave the instance's own autostart pa
 removed; the shared store's worker does all background work.
 
 Attaching another agent later adds its scopes to the store. Agents already running keep working
-without a restart. Run one shared-store command at a time: an `attach` whose store manifest
-another command wrote after `attach` read it writes nothing and says so (`the store's manifest
-changed`), as `grants` does; run it again. An `attach` run again from a home already attached
-(one that stopped, or after `adopt`) keeps the entry's grants as they are
+without a restart. A command that writes the store (`init-shared`, `attach`, `detach`, `adopt`,
+`import-entry`, and `grants` with `--grants-from`) holds its `commands.lock` from its first read
+to its last write, so no other writes in between. One that finds it held waits up to 10 s, then
+writes nothing and names the command that holds it: run it again once that one has finished. An
+`attach` run again from a home already attached (one that stopped, or after `adopt`) keeps the
+entry's grants as they are
 ([Changing an entry's grants](#changing-an-entrys-grants)).
 
 ## Bringing an agent's memories along
@@ -358,9 +361,9 @@ With `--apply` it writes the store's manifest, and the entry's runtime config wh
 binds change, keeping a copy of each file under `receipts\`, with `grants-before.json`, the
 grants as they were: applied the same way, it puts them back. A write that fails, the receipt's
 included, puts the copies back (a file it could not put back is named with its copy, to copy by
-hand); run again, the command also rebinds an entry config that a failed run left behind. If the
-store's manifest changed after the command read it (another command wrote it), it writes nothing
-and says so: run it again. Run one shared-store command at a time.
+hand); run again, the command also rebinds an entry config that a failed run left behind. From
+reading the manifest to its last write it holds the store's `commands.lock`, so no other
+shared-store command writes in between ([above](#make-a-store-and-attach-the-first-agent)).
 
 A row matches a session field by field, as at attach: `platform`, `user_id`, `chat_type`,
 `chat_id`, `thread_id`, `gateway_session_key` (empty does not pin the host's session key) and

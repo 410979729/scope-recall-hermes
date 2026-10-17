@@ -898,14 +898,13 @@
   "maintenance/shared_import.py": {
    "C901": {
     "_import_rows": 19,
-    "import_entry": 16
+    "_imported": 16
    },
    "PLR0912": {
-    "import_entry": 18
+    "_imported": 18
    },
    "PLR0915": {
-    "_import_rows": 100,
-    "import_entry": 61
+    "_import_rows": 100
    },
    "UP017": 1,
    "UP035": 1

@@ -56,7 +56,7 @@ from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
 from ..runtime.running_code import live_records
 from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
-from .shared_run import Run, SharedStoreError
+from .shared_run import Run, SharedStoreError, store_lock
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
 SOURCE_SCHEMAS = frozenset({1109, 1110})
@@ -521,7 +521,14 @@ def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
 def import_entry(
     *, root: Path, entry_id: str, source: Path, dry_run: bool = False, now: str | None = None
 ) -> dict[str, Any]:
+    """Copy what the entry's own store at ``source`` held into the shared store at ``root``, holding the store's lock
+    from the read of its manifest to the receipt: no other shared-store command writes meanwhile."""
     now = now or _now()
+    with store_lock(root, f"import-entry --entry {entry_id}", now):
+        return _imported(root=root, entry_id=entry_id, source=source, dry_run=dry_run, now=now)
+
+
+def _imported(*, root: Path, entry_id: str, source: Path, dry_run: bool, now: str) -> dict[str, Any]:
     payload = read_shared_payload(root)
     record = next((e for e in payload["entries"] if e["entry_id"] == entry_id and not e.get("detached_at")), None)
     if record is None:

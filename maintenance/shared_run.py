@@ -1,6 +1,7 @@
-"""What a shared-store write command leaves behind: the error it refuses with, the JSON files it writes (replaced in
-one step, retried while Windows refuses because a reader holds the file), and the receipt with the copies it kept
-(``Run``).  The commands live in ``shared`` and ``shared_import``."""
+"""What a shared-store write command holds and leaves behind: the store's lock while it runs (``store_lock``), the
+error it refuses with, the JSON files it writes (replaced in one step, retried while Windows refuses because a reader
+holds the file), and the receipt with the copies it kept (``Run``).  The commands live in ``shared`` and
+``shared_import``."""
 
 from __future__ import annotations
 
@@ -9,10 +10,20 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
+from ..core.file_lock import advisory_file_lock
+
 RECEIPTS_DIRNAME = "receipts"
+#: Beside the store's manifest: held by each shared-store command that writes, from its first read to its last write.
+LOCK_FILENAME = "commands.lock"
+#: How long a command waits for the one holding the lock before it refuses.
+LOCK_WAIT_SECONDS = 10.0
+#: What the holder's note after the lock's first byte may weigh; the operating system locks that byte.
+_NOTE_LIMIT = 1024
 
 
 class SharedStoreError(RuntimeError):
@@ -21,6 +32,46 @@ class SharedStoreError(RuntimeError):
 
 def encoded(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+@contextmanager
+def store_lock(root: Path, command: str, now: str) -> Iterator[None]:
+    """Hold the lock of the shared store at ``root`` while ``command`` (its words as an operator runs it) reads what its
+    change rests on and writes it: no other shared-store command writes in between, so a change is never written over
+    one made meanwhile nor checked against a manifest that is no longer the store's.  A command that finds the lock
+    held waits ``LOCK_WAIT_SECONDS`` and then refuses, naming the command that holds it from the note the holder keeps
+    after the lock's first byte."""
+    lock = root / LOCK_FILENAME
+    with ExitStack() as held:
+        try:
+            held.enter_context(advisory_file_lock(lock, timeout_seconds=LOCK_WAIT_SECONDS))
+        except TimeoutError:
+            holder = _holder(lock) or "another shared-store command"
+            raise SharedStoreError(
+                f"{holder} is writing this store; run {command} again once it has finished"
+            ) from None
+        _note(lock, {"command": command, "pid": os.getpid(), "since": now})
+        held.callback(_note, lock, None)
+        yield
+
+
+def _note(lock: Path, note: dict[str, Any] | None) -> None:
+    with lock.open("r+b") as handle:
+        handle.seek(1)
+        if note is not None:
+            handle.write(json.dumps(note, ensure_ascii=False).encode("utf-8")[:_NOTE_LIMIT])
+        handle.truncate()
+
+
+def _holder(lock: Path) -> str:
+    """The command holding ``lock`` as its note names it, or nothing when the note is not written yet or unreadable."""
+    try:
+        with lock.open("rb") as handle:
+            handle.seek(1)
+            note = json.loads(handle.read(_NOTE_LIMIT).decode("utf-8"))
+        return f"{note['command']} (process {note['pid']}, since {note['since']})"
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
 
 
 def replace_file(staged: Path, path: Path) -> None:
