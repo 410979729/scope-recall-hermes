@@ -11,9 +11,9 @@ from .claims import canonical_time
 from .source_qualification import AUTHORITY_QUESTION, preserves_qualifiers
 
 TOPIC_BREAK = re.compile(r"换个话题|另一个话题|转去|转到|接下来讨论|switch (?:topic|to)|new topic", re.I)
-#: ``如果``/``假如``/``假设`` had no English counterpart, so an English
-#: conditional read as an assertion: "If a tool failed because of setup state,
-#: capture the FIX" was taken as a report that the episode had failed.
+#: English markers beside ``如果``/``假如``/``假设``: without them an English
+#: conditional reads as an assertion, and "If a tool failed because of setup
+#: state, capture the FIX" would be taken as a report that the episode failed.
 UNSETTLED = re.compile(
     r"假设|假如|如果|也许|可能|引用|据说|他说|她说|suppose|hypothetical|perhaps|maybe|quoted|\bif\b|\bin case\b", re.I
 )
@@ -32,10 +32,9 @@ WORK_REQUEST = re.compile(
     re.I,
 )
 
-#: The three terminal markers, each required to name *what* reached that state.
-#: ``failed`` used to be the exception -- a bare ``失败``/``failed`` anywhere in
-#: a source ended the episode -- while ``cancelled`` and ``completed`` both
-#: demanded the task noun.  In one store that produced 32 failed episode versions
+#: The three terminal markers, each required to name *what* reached that state,
+#: ``failed`` included.  In one store, ending the episode on a bare
+#: ``失败``/``failed`` anywhere in a source produced 32 failed episode versions
 #: and not one of them was a real failure: the only live source that still
 #: reaches this rule says "two prior failed questions remain in evidence",
 #: an adjective, 4 KB into a 7,674-character tool transcript.  A wrongly failed
@@ -117,8 +116,8 @@ def state_from_sources(sources, *, has_goal=False, previous="unknown") -> str:
         if source_origin(source) not in {"human_direct", "tool_observation", "host_generated"} or source.capture_gaps:
             continue
         # A tool call that failed, was stopped or came back cut off (stored ``partial``) tells its own outcome, not the
-        # task's: a grep that finds nothing exits 1, a command the person stopped exits 130.  Kept since 3.7.8, such a
-        # Hermes result turned the open task failed, and resume offers only an open or an interrupted one.
+        # task's: a grep that finds nothing exits 1, a command the person stopped exits 130.  Read as the task's, such
+        # a result would turn the open task failed, and resume offers only an open or an interrupted one.
         if source_origin(source) == "tool_observation" and source.event.get("capture_state") != "complete":
             continue
         raw = source.event["content"]

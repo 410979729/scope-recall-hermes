@@ -43,14 +43,14 @@ from .vector_failure import vector_failure_label
 
 #: Ceiling on the candidates hydrated after the deadline is already gone.
 #:
-#: An optional channel that overruns its allowance used to empty the packet:
-#: the lexical, exact and recent candidates were all in hand, and the hydrate
-#: loop abandoned every one of them because the clock was gone.  The floor is
-#: the caller's own ``max_items`` rather than a fixed number, because hydrating
-#: three when the packet holds eight just moves the emptiness one stage later.
-#: This ceiling bounds what a large ``max_items`` can cost once the deadline is
-#: gone -- each one is a single bounded storage read, and the overrun is still
-#: reported, so nothing is hidden.
+#: Without a floor, an optional channel that overruns its allowance would empty
+#: the packet: the lexical, exact and recent candidates are all in hand, and
+#: the hydrate loop would abandon every one of them because the clock is gone.
+#: The floor is the caller's own ``max_items`` rather than a fixed number,
+#: because hydrating three when the packet holds eight just moves the emptiness
+#: one stage later.  This ceiling bounds what a large ``max_items`` can cost
+#: once the deadline is gone -- each one is a single bounded storage read, and
+#: the overrun is still reported, so nothing is hidden.
 MINIMUM_HYDRATION_CAP = 16
 #: Claims offered per round.  A packet holds at most 30 items and a default one
 #: six; a claim that answers competes for those slots on rank, so a deep pool
@@ -64,10 +64,10 @@ CLAIM_CANDIDATES = 16
 #: ranked in the mid-teens, and still ranks as context when nothing answers.
 CONTEXT_ONLY_WEIGHT = 0.6
 #: Meaningful terms a query needs before an older copy of it leads to what that copy was told
-#: (``RetrievalPipeline._expand``).  A short command sent again asks nothing an old turn answered.  Chinese terms
-#: are overlapping character pairs, so "继续执行" holds three and "按你说的做" four, and three let both bring back
-#: every old turn they had opened; five is about six characters.  Of the owner's prompts over
-#: two weeks, 33 of the 115 with fewer had an exact older copy; of the owner's real questions, 167 of 173 have five.
+#: (``RetrievalPipeline._expand``).  A short command sent again asks nothing an old turn answered.  Chinese terms are
+#: overlapping character pairs, so "继续执行" holds three and "按你说的做" four, and three would let both bring back
+#: every old turn they opened; five is about six characters.  Of the owner's prompts over two weeks, 33 of the 115 with
+#: fewer had an exact older copy; of the owner's real questions, 167 of 173 have five.
 ECHO_TURN_MIN_TERMS = 5
 #: SQLite virtual-machine steps between two looks at the recall's deadline while a candidate statement runs: one
 #: every 10-60 ms of statement time.  Each look takes the GIL back from the statement, and beside a busy thread (the
@@ -81,7 +81,7 @@ _CHANNELS = ("scoped", "exact", "lexical", "claim", "recent", "vector", "vector_
 SCOPED_CANDIDATES = 12
 #: What a scoped candidate's fused score is multiplied by.  The question asked only what was said on its day: that
 #: day's messages go before a candidate one channel found elsewhere by the question's words or the entry's name,
-#: which on the shared store filled the packet ("Claude Code" is in thousands of other messages).  Three puts a
+#: which on a shared store would fill the packet ("Claude Code" is in thousands of other messages).  Three puts a
 #: first rank above any candidate two channels agree on at their first rank.
 SCOPED_WEIGHT = 3.0
 #: Vector admission reasons that are reported, and how; the rest are silent.
@@ -204,7 +204,7 @@ RELATION_WEIGHT = 0.5
 class _Aside:
     """What hydration sets aside rather than delivers (``RetrievalPipeline._hydrate_admit``): older copies of the
     current message, which lead to their turn's replies, and what the asking model still holds, which leads on to
-    what is related to it (#249)."""
+    what is related to it."""
 
     echoes: list[CandidateRef] = field(default_factory=list)
     held: list[CandidateRef] = field(default_factory=list)
@@ -238,10 +238,10 @@ class RetrievalPipeline:
     def _prefetch_query(self, context: SearchContext):
         """Ask the vector port for the query's embedding before the SQLite channels run, if it can take one early.
 
-        Asked for after them, the embedding had three quarters of what they left (runtime/instance.py
-        ``_QueryEmbedding``).  A port that cannot start one early, or fails to, embeds in its search as before.  A
+        Asked for after them, the embedding would have three quarters of what they left (runtime/instance.py
+        ``_QueryEmbedding``).  A port that cannot start one early, or fails to, embeds in its search instead.  A
         question that names the owner is asked for in their first person as well, in the same request where the port
-        takes several (``also``): one after the other, the second waited for the first.
+        takes several (``also``): one after the other, the second would wait for the first.
         """
         if self.vector_port is None or context.limits.vector_limit == 0:
             return None
@@ -271,8 +271,8 @@ class RetrievalPipeline:
 
     def _lexically_admitted(self, candidate: CandidateRef, context: SearchContext) -> bool:
         """Admitted by the question as asked, which a reply naming the owner beside its other words still meets, or
-        without the owner's name: their own words never carry it, and in a short question it was one of the two words
-        a candidate had to match.  The name alone admits nothing either way."""
+        without the owner's name: their own words never carry it, and in a short question it would be one of the two
+        words a candidate has to match.  The name alone admits nothing either way."""
         if self.policy.lexical_admission(candidate, context.query, exact=False)[0]:
             return True
         view = self._owner_view(context)
@@ -406,7 +406,7 @@ class RetrievalPipeline:
             ("recent", self.storage_reader.recent, context.limits.recent_items),
         )
         # A statement cannot see the recall's deadline: with no planner statistics the lexical one ran 18-21 s for a
-        # long Telegram message (fixed in 3.4.3), and the recall came back empty long after its deadline.  Past the
+        # long Telegram message, and the recall came back empty long after its deadline.  Past the
         # deadline a channel's statement is interrupted: that channel gives nothing, the gap says so, and what the
         # channels before it found still answers.  Only here: interrupted while hydrating, a recall would lose what
         # it had already found.
@@ -493,10 +493,10 @@ class RetrievalPipeline:
         if candidate.source != "exact_ref" and obj.kind == "episode" and _says_only_its_state(obj.content):
             return None
         if context.mode == "auto" and context.in_context_since is not None and _in_context(tx, obj, context):
-            # The asking model still holds everything it stands on, word for word: delivered, it was a second copy in
-            # that model's context, and took a slot from what the model does not have (#249).  Set aside in ``aside``,
-            # it still leads to what is related to it, as it did delivered: left out of that, a session's own messages
-            # stopped leading to the claims and procedures drawn from it before its last compaction.
+            # The asking model still holds everything it stands on, word for word: delivered, it would be a second copy
+            # in that model's context, and take a slot from what the model does not have.  Set aside in ``aside``, it
+            # still leads to what is related to it, as it would delivered: left out of that, a session's own messages
+            # would stop leading to the claims and procedures drawn from it before its last compaction.
             if aside is not None:
                 aside.held.append(candidate)
             return None
@@ -534,27 +534,20 @@ class RetrievalPipeline:
 
     #: What an object reached by relation may score against the hit it was reached from.
     #:
-    #: Every related object used to score by its place in its own seed's list, so
-    #: the first object related to the thirteenth hit scored 1/62, above every
-    #: direct hit but the first.  It did no harm while an episode's lineage was
-    #: copied onto each of its revisions: the rows of one episode at dozens of old
-    #: revisions spent the relation bound without becoming candidates, and about
-    #: one related object per query got through.  Writing that lineage once freed
-    #: the bound; sixteen arrived where one had, all scoring with the best hits,
-    #: and over one instance's real questions the reply that had answered each
-    #: was in the top five for 20 of 30 where it had been for 28, with fact
-    #: recall, no-match, supersession and question recall all unchanged.  Held to
-    #: the smaller of its own score and its seed's, times this, it is 28 again on
-    #: the same stores (0.8 gives the same; letting a related object continue its
-    #: seed's rank gives 27).  That is the 3.1.0 figure, and the price is the
-    #: other side of the same coin: on a second instance the freed bound had let
-    #: a related object answer one question of 25 that 3.1.0 missed (19 where it
-    #: had 18), and weighing gives that one back.  Both instances now recall what
-    #: 3.1.0 recalled, by rule.  At 0.5 the best it can score is 1/124 and the 48th
-    #: hit of one channel scores 1/108, so with the default pool a related object
-    #: sorts after every direct hit, and among themselves they keep the order of
-    #: the hits that led to them.  A turn's replies are not weighed: they are
-    #: what the question was told, and are read before the hops.
+    #: Scored by its place in its own seed's list, the first object related to the
+    #: thirteenth hit would score 1/62, above every direct hit but the first.  A query
+    #: reaches some sixteen related objects, and scored that way they all rank with the
+    #: best hits: over one store's real questions the reply that answered each was in
+    #: the top five for 20 of 30, against 28 with this weight, while fact recall,
+    #: no-match, supersession and question recall were the same either way.  Held to the
+    #: smaller of its own score and its seed's, times this, it is 28 (0.8 gives the
+    #: same; letting a related object continue its seed's rank gives 27).  The price: on
+    #: a second store, a related object scored by rank answers one question of 25 that
+    #: this weight loses (19 against 18).  At 0.5 the best it can score is 1/124 and the
+    #: 48th hit of one channel scores 1/108, so with the default pool a related object
+    #: sorts after every direct hit, and among themselves they keep the order of the
+    #: hits that led to them.  A turn's replies are not weighed: they are what the
+    #: question was told, and are read before the hops.
     RELATION_WEIGHT = RELATION_WEIGHT
 
     def _expand(
@@ -584,15 +577,16 @@ class RetrievalPipeline:
             return tuple(all_candidates)
 
         # The replies a recalled message received come before any other
-        # relation, for every seed: spent seed by seed they went to whichever
-        # seeds ranked first, and a lower-ranked question never reached its
-        # answer.  Half the bound is the most they may take, because a query
-        # that recalls many messages would otherwise leave nothing for the
-        # claims and episodes an answer is just as often reached through.
-        # A question asked again word for word is refused as an echo of the
-        # current message, and it was the only way to what it had been told:
-        # over the owner's real questions asked again on the shared store, 42
-        # of the 46 answers never reached were behind such a copy (3.4.2).
+        # relation, for every seed: spent seed by seed they would go to
+        # whichever seeds ranked first, and a lower-ranked question would
+        # never reach its answer.  Half the bound is the most they may take,
+        # because a query that recalls many messages would otherwise leave
+        # nothing for the claims and episodes an answer is just as often
+        # reached through.  A question asked again word for word is refused
+        # as an echo of the current message, and it is the only way to what
+        # it was told: over the owner's real questions asked again on a
+        # shared store, 42 of the 46 answers never reached were behind such a
+        # copy.
         turn_replies = getattr(self.storage_reader, "turn_replies", None)
         if callable(turn_replies):
             turn_bound = max(1, limits.relation_objects // 2)
@@ -622,7 +616,7 @@ class RetrievalPipeline:
         for _hop in range(limits.relation_hops):
             next_frontier: list[CandidateRef] = []
             # The shared object bound is spent best seed first.  In key order it
-            # went to whichever refs sorted lowest, often a weak match's claims.
+            # would go to whichever refs sort lowest, often a weak match's claims.
             for seed in sorted(frontier, key=lambda item: (-item.fusion_score, item.key)):
                 if inspected >= limits.relation_objects:
                     return stopped("relation_bound_reached")
@@ -908,20 +902,19 @@ class RetrievalPipeline:
     ) -> None:
         """What the same question was told the last time it was asked goes before the best candidate of its time.
 
-        Reached as any seed's turn is, at a first rank's fixed score, it fell below every candidate two channels agreed
-        on: with vectors on, one person's questions asked again lost about 25 of 124 answers (a threshold sweep).
-        Only the latest copy's turn is raised, so an answer that changed since is not raised beside the
-        one that replaced it.  Of that turn at most half the packet is: the replies a channel ranked highest, which say
-        what was asked, then the turn's last reply, which answers it, when the turn was read to its end.  An agent's
-        turn opens with what it is about to do, and raising every reply let an old turn's first messages fill the
-        packet, as raising every reply a channel found let its narration of the subject do; the last reply read of a
-        turn cut by the window was narration too.  Raising only the best
-        found reply lost 6 of the owner's 173 questions asked again with vectors on, where more replies are found and
-        the answer is not always the best of them.  They go above the best
-        candidate said up to that turn, the turn's other replies included, and not above what was said after it and
-        ranks higher still, which may say the answer changed.  Kept below every such candidate outranking the best of
-        the turn's time, the answer fell out of the packet for 5 of the owner's 173 questions asked again: a store keeps
-        growing, and something said since matches most questions.
+        Reached as any seed's turn is, at a first rank's fixed score, it would fall below every candidate two channels
+        agree on: with vectors on, one person's questions asked again lost about 25 of 124 answers in a threshold sweep.
+        Only the latest copy's turn is raised, so an answer that changed since is not raised beside the one that
+        replaced it.  Of that turn at most half the packet is: the replies a channel ranked highest, which say what was
+        asked, then the turn's last reply, which answers it, when the turn was read to its end.  An agent's turn opens
+        with what it is about to do, and raising every reply would let an old turn's first messages fill the packet, as
+        raising every reply a channel found would let its narration of the subject do; the last reply read of a turn cut
+        by the window is narration too.  Raising only the best found reply lost 6 of the owner's 173 questions asked
+        again with vectors on, where more replies are found and the answer is not always the best of them.  They go
+        above the best candidate said up to that turn, the turn's other replies included, and not above what was said
+        after it and ranks higher still, which may say the answer changed.  Kept below every such candidate outranking
+        the best of the turn's time, the answer fell out of the packet for 5 of the owner's 173 questions asked again: a
+        store keeps growing, and something said since matches most questions.
         """
         latest_turn = getattr(self.storage_reader, "latest_turn", None)
         if not echoes or not callable(latest_turn):
@@ -970,18 +963,18 @@ class RetrievalPipeline:
         """Rank, fold duplicate bodies, fit the item budget, then add background."""
         # Distinct *content*, not distinct rows: candidates are already unique
         # by (kind, ref, revision), but a corpus where a legacy import
-        # re-delivered the same bodies under fresh identities let one document
-        # hold four of six slots.  One filter spans both passes so background
-        # cannot repeat the evidence either.
+        # re-delivered the same bodies under fresh identities would let one
+        # document hold four of six slots.  One filter spans both passes so
+        # background cannot repeat the evidence either.
         distinct = DistinctContent()
         ranked = self._apply_budget(distinct.filtered(self._rank_hydrated(hydrated, working)), working.limits)
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):
-                # Nothing that fits answered: one hit too large for any packet stays, as the hint that it can be
-                # expanded, and the background takes the other slots.  Six such hits took all of them, the compiler
-                # refused each, and the packet came back empty (#249's replay: two prompts whose only hit that fitted
-                # was a message the model still held).
+                # Nothing that fits answered (as when the only hit that fits is a message the model still holds): one
+                # hit too large for any packet stays, as the hint that it can be expanded, and the background takes
+                # the other slots.  Six such hits would take all of them, the compiler would refuse each, and the
+                # packet would come back empty.
                 ranked = ranked[:1]
             background = background_candidates(
                 tx, working, self.storage_reader, self.clock, gaps, query_evidence=bool(query_items)

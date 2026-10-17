@@ -337,12 +337,10 @@ def assertion_clause(content: str, quote: str) -> str:
         left = before[-1].end() if before else 0
         end = at + len(quote)
         # A quote whose own last character is the break already ends its
-        # clause.  Searching onwards from there finds the *next* sentence's
-        # terminator and pulls that whole sentence in -- which is how three
-        # correct assertions were vetoed by a question standing in the sentence
-        # after them, in a message that said in so many words
-        # "我只是问…这不是确认".  ``evidence_context`` has always had this
-        # guard; this is the same one.
+        # clause.  Searching onwards from there would find the *next*
+        # sentence's terminator and pull that whole sentence in, so a question
+        # standing in the sentence after a correct assertion would veto it.
+        # ``evidence_context`` has the same guard.
         if closes:
             right = end
         else:
@@ -698,9 +696,9 @@ def select_proposal(versions: tuple[ClaimVersion, ...], instant: str) -> ClaimVe
 
     ``select_effective`` deliberately returns None for these, and it is right to:
     a proposal is not an effective version and must never be answered as if it
-    were settled. But that also removed them from recall entirely, and in a real
+    were settled. But that alone removes them from recall entirely, and in a real
     store almost the whole derived layer can sit in this state (231 proposed
-    against 11 active in one), so most of what consolidation produced would be
+    against 11 active in one), so most of what consolidation produces would be
     invisible to every caller, with no error and no gap to notice it by.
 
     Returning the head here lets retrieval admit it *labelled*, so the reader can

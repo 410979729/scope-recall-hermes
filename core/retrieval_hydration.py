@@ -173,12 +173,12 @@ def _second_precision(moment) -> str:
 def recall_echo(tx, source) -> bool:
     """Whether an assistant reply restates what memory lookups in its turn returned.
 
-    an agent that tests its own recall and reports the queries and what came back
-    has the report come back first for those very queries, above the evidence
-    it quoted.  The turn is the stretch since the session's last user message,
-    which the host captures before any tool runs, and the reply is dated as the
-    store can best tell (``witnessed_at``), since that report's own row carried
-    a day-old time.
+    An agent that tests its own recall and reports the queries and what came back
+    would have the report come back first for those very queries, above the
+    evidence it quoted.  The turn is the stretch since the session's last user
+    message, which the host captures before any tool runs, and the reply is dated
+    as the store can best tell (``witnessed_at``), since such a report's own row
+    can carry a day-old time.
     """
     if source.event.get("origin") != "assistant_visible":
         return False
@@ -294,8 +294,8 @@ class RetrievalHydration:
 
     def prefetch(self, tx, candidates, context: SearchContext) -> None:
         """Load what hydrating these candidates reads first, together: their visibility, the events' rows and the
-        claims' versions (``Transaction.remembered``).  Each was read on its own, and in a busy Hermes gateway every
-        statement and row waited for the GIL, so a recall ran past its deadline in every stage (3.7.7)."""
+        claims' versions (``Transaction.remembered``).  Read one by one, every statement and row would wait for the GIL
+        in a busy Hermes gateway, and a recall would run past its deadline in every stage."""
         if not getattr(tx, "remembers", False):
             return
         by_kind: dict[str, list[CandidateRef]] = {}
@@ -363,7 +363,7 @@ class RetrievalHydration:
                     return None
             else:
                 # A claim qualification never promoted has no effective version,
-                # which on a real instance is almost the whole derived layer.
+                # which in a real store is almost the whole derived layer.
                 # Admit the proposal head instead; it stays labelled below
                 # (temporal_status "historical", claim_state and
                 # qualification_reason in metadata) so it cannot be mistaken
@@ -501,7 +501,7 @@ class RetrievalHydration:
         if retained:
             pairs = [parse_source_ref(ref) for ref in retained]
             pair_marks = ",".join("(?, ?)" for _ in pairs)
-            # One row, ordered here: each row read on its own waited for the GIL in a busy gateway (3.7.7).
+            # One row, ordered here: read row by row, each would wait for the GIL in a busy gateway.
             rows = sorted(
                 json.loads(
                     tx._check()

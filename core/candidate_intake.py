@@ -231,10 +231,10 @@ class CandidateIntake(CandidateTables):
                 bool(prior["truncated"]),
             )
         # Only first-hand testimony can pose a new question (``question_digest``).  Other evidence is recorded for
-        # the next evaluation and changes nothing else about the candidate: marked pending and its clock reset,
-        # 2,045 candidates on the pilot waited for an evaluation nothing would schedule, and a tool output every
-        # few days kept them from ever going dormant.  Its ``updated_at`` stays too, which is the dormancy clock of
-        # a candidate with no first-hand evidence since it was evaluated.
+        # the next evaluation and changes nothing else about the candidate: marked pending and its clock reset, a
+        # candidate would wait for an evaluation nothing schedules (2,045 did in one store), and a tool output
+        # every few days would keep it from ever going dormant.  Its ``updated_at`` stays too, which is the
+        # dormancy clock of a candidate with no first-hand evidence since it was evaluated.
         first_hand = is_first_hand(evidence_text(source).origin)
 
         def link(rows: list[tuple[str, int]], *, recheck: bool) -> tuple[int, int]:
@@ -316,10 +316,10 @@ class CandidateIntake(CandidateTables):
             return []
         first_hand = is_first_hand(evidence_text(source).origin)
         context, params = self._context("l.")
-        # The terms go in as one parameter and the candidates come back in one row.  A parameter per term failed a part
-        # of 63,993 distinct terms whole ("too many SQL variables", kept to retry for good), and a row per candidate
-        # waited for the GIL in a busy Hermes gateway (``lexical_index.index_terms``).  The CROSS JOIN
-        # starts from the terms: from the candidates, SQLite looked every term up for each reachable one, 3-12 s for a
+        # The terms go in as one parameter and the candidates come back in one row.  A parameter per term would fail a
+        # part of 63,993 distinct terms whole ("too many SQL variables", kept to retry for good), and a row per
+        # candidate would wait for the GIL in a busy Hermes gateway (``lexical_index.index_terms``).  The CROSS JOIN
+        # starts from the terms: from the candidates, SQLite looks every term up for each reachable one, 3-12 s for a
         # tool output of 5,001 terms beside 3,000-10,000 candidates.
         row = (
             self._read()
@@ -371,10 +371,9 @@ class CandidateIntake(CandidateTables):
         """Schedule only once this candidate has stopped collecting evidence.
 
         One schedule per arriving source, each retiring the ones still waiting,
-        is where the evaluation pile-up came from; ``core/candidate_debounce.py``
-        holds the window, and the slow pace of one asked many times without
-        settling.  The evidence is recorded either way, so nothing is dropped
-        by waiting.
+        would pile evaluations up; ``core/candidate_debounce.py`` holds the
+        window, and the slow pace of one asked many times without settling.
+        The evidence is recorded either way, so nothing is dropped by waiting.
         """
         row = self._lifecycle_row(candidate.ref, candidate.revision)
         if row is None:
@@ -405,7 +404,7 @@ class CandidateIntake(CandidateTables):
             return None, False
         payload = getattr(candidate, "payload", None)
         if needs_absent_person(payload, self._cited_origins(candidate.ref, candidate.revision)):
-            # A candidate registered before this rule: archive it the way registration now would.
+            # A candidate registered before this rule: archive it the way registration would.
             self._retire_evaluations(candidate.ref, candidate.revision, PERSON_ABSENT_REASON, now)
             self._move(candidate.ref, candidate.revision, "archived", PERSON_ABSENT_REASON, now=now, dormant_at=now)
             conn.execute(
@@ -568,8 +567,8 @@ class CandidateIntake(CandidateTables):
 
         Finding the candidates is most of a page: every candidate that shares a term with the source is
         joined, de-duplicated and sorted, and a source that is not first-hand is then read against them one
-        by one.  Inside the page's write that held the writer lease 0.5-7.4 s a page on the shared store
-        (median 1.3 s), and every hook that waited its second for the lease meanwhile lost its capture.
+        by one.  Inside the page's write that would hold the writer lease 0.5-7.4 s a page on a shared store
+        (median 1.3 s), and every hook that waited its second for the lease meanwhile would lose its capture.
         ``resume_source_pages(page=...)`` then links in a write of its own, checking each candidate again.
         The candidates are ``None`` when the source is gone: that write closes the trigger.
         """

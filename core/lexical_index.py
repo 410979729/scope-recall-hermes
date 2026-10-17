@@ -1,13 +1,13 @@
 """The lexical index: a term dictionary and integer postings.
 
-``lexical_projection`` stored every (term, event_id, source_revision) as
-text, and its mirror index doubled that: 5.2 million rows took 713 MB, half
-a large store, for 258,000 distinct terms.  A term is now one
-row in ``lexical_terms`` and a posting two integers in ``lexical_postings``
-(``term_id``, ``source_id``) with a reverse index: 135 MB for the same rows,
-and a document-frequency lookup in 18 ms.  ``source_id`` is a source
-version's integer identity (``source_events.source_id``), assigned at insert;
-the 1109 upgrade numbers the existing rows.
+``lexical_projection``, the table the 1109 upgrade replaces, stored every
+(term, event_id, source_revision) as text, and its mirror index doubled that:
+5.2 million rows took 713 MB, half a large store, for 258,000 distinct terms.
+Here a term is one row in ``lexical_terms`` and a posting two integers in
+``lexical_postings`` (``term_id``, ``source_id``) with a reverse index:
+135 MB for the same rows, and a document-frequency lookup in 18 ms.
+``source_id`` is a source version's integer identity (``source_events.source_id``),
+assigned at insert; the 1109 upgrade numbers the existing rows.
 
 Every reader and writer of the index goes through here.  The two ranking
 queries that start from the terms (``storage.search_sources`` and the lexical
@@ -105,7 +105,7 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
     """One page of withheld tool outputs' placeholders that hold postings beyond their own terms, in ``source_id``
     order, and those postings dropped unless ``dry_run``.
 
-    An older release, the 1109 upgrade and both imports indexed the whole placeholder; it is found now by its error
+    An older release, the 1109 upgrade and both imports indexed the whole placeholder; it is found by its error
     text alone, when it carries one (``events.indexed_terms``).  The sources stay, and so do the postings of their
     error text.  The scan walks ``source_id``: the ``+`` keeps SQLite from starting at the role and scope index and
     sorting every tool row while the page holds the writer lease.  A page cut short is found again,

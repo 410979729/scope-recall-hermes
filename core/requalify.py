@@ -1,9 +1,10 @@
 """Re-judge stored claims after the rules that judged them have changed.
 
-A claim is judged once, when it is written.  Nothing ever looks at it again, so
-a gate repair only ever helps claims captured *after* the repair ships -- the
-366 proposals already in one instance's store would keep their original verdicts
-forever, including the ones refused by a rule that has since been fixed.
+A claim is judged once, when it is written.  Without this nothing looks at it
+again, so a gate repair only ever helps claims captured *after* the repair ships
+-- the proposals already in a store (366 in one) would keep their original
+verdicts forever, including the ones refused by a rule that has since been
+fixed.
 
 This is the bounded way to let a rule change reach them.  It re-runs exactly
 the qualification an ordinary write runs, on the payload already stored, and
@@ -167,9 +168,9 @@ def retire_rootless_proposals(
 ) -> RequalifyReport:
     """Retire one bounded page of proposed claims that no derivation root supports.
 
-    Consolidation derives claims only from ``DERIVATION_ROOT_ORIGINS``; tool output left that set in
-    3.2.0rc6.  A proposal whose every evidence source is of another origin would not be derived
-    today, and it is still waiting for a proof nobody asked for: it gets a retracted version with
+    Consolidation derives claims only from ``DERIVATION_ROOT_ORIGINS``, which tool output is not in.
+    A proposal whose every evidence source is of another origin is one consolidation would not
+    derive, and it is still waiting for a proof nobody asked for: it gets a retracted version with
     ``ROOTLESS_REASON``, registered as the candidate's new head so its queued evaluations end.  Its
     sources and its earlier versions stay.  Active and disputed claims are left alone -- a claim that
     was proved stands on that proof -- and nothing is re-judged here; ``requalify_claims`` does that.
@@ -177,7 +178,7 @@ def retire_rootless_proposals(
     evaluation, not in its own evidence, and the verdict on their words decides.
 
     Separate from ``requalify_claims`` on purpose: a re-judgement moves claims for every rule that
-    changed since they were written (on the pilot, 154 of them, promotions included), and retiring
+    changed since they were written (154 of them in one store, promotions included), and retiring
     these must not bring that along.  The report names refs and verdicts only, never claim text.
     """
     refs = _page(tx, after_ref, limit)

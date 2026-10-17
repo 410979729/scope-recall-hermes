@@ -15,14 +15,14 @@ character as one, whatever the script.  That is the most any measured text
 costs: against Zhipu ``embedding-3`` (3,072 tokens per input) 3,068 Chinese
 characters stopped at exactly 3,072 tokens, and ASCII ran from 4.0
 characters a token for letters down to 2.5 for code, 2.0 for symbols, 1.4 for
-base64 and **1.0 for digits**.  The estimate this replaced counted three
-ASCII characters as one token, which held for prose and symbols and let 6,000
-characters of a digit-dense body through as 2,000 tokens -- logs, IDs, hashes
-and JSON -- and ``embedding-3`` refused them with ``http_400`` for good.  One
-token a character keeps 2,000 of anything under both limits in use: 3,072 and
-Gemini's 2,048.  It costs ASCII prose: a long English source is embedded from
-its first 2,000 characters where it had 6,000; all of it stays in the lexical
-index.  A tokeniser would know better, and is a dependency this does not take.
+base64 and **1.0 for digits**.  Counting three ASCII characters as one token
+holds for prose and symbols but lets 6,000 characters of a digit-dense body
+through as 2,000 tokens -- logs, IDs, hashes and JSON -- which ``embedding-3``
+refuses with ``http_400`` for good.  One token a character keeps 2,000 of
+anything under both limits in use: 3,072 and Gemini's 2,048.  It costs ASCII
+prose: a long English source is embedded from its first 2,000 characters only;
+all of it stays in the lexical index.  A tokeniser would know better, and is a
+dependency this does not take.
 An emoji or a rare character can cost a provider more than one token.
 
 Not responsible for: deciding *whether* to embed (``core/worker.py``), or for

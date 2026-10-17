@@ -2,10 +2,10 @@ r"""Recognising a person explicitly adopting a claim the system would not assert
 
 Every gate in ``qualify`` protects against one thing: the *model* asserting
 something the evidence does not support.  None of them is a reason to overrule
-a person who reads a proposal and says "yes, that one, keep it".  Until now
-there was no way for them to say it: ``revise`` targets claims that are already
-active, ``propose_memory`` makes new proposals, and the 366 refused proposals on
-one instance had no route forward at all.
+a person who reads a proposal and says "yes, that one, keep it".  Without this
+there is no way for them to say it: ``revise`` targets claims that are already
+active, ``propose_memory`` makes new proposals, and a refused proposal has no
+route forward at all (366 of them in one store).
 
 This is the mirror of ``capture_correction``: model-free, human-only, and
 recognised in ordinary conversation rather than behind a tool call, because
@@ -22,8 +22,8 @@ in only one, it would read these five ordinary sentences as adoption:
     我记住了，下次注意
 
 The first one is the worst case in miniature: the person is *rejecting* the
-claim by name, and the only thing the old rule looked for was the word 记住
-somewhere in the message.  So:
+claim by name, and a rule that looks only for the word 记住 somewhere in the
+message reads it as adoption.  So:
 
 * **A clause, not a message.**  The adoption marker and the name of the thing
   being adopted must sit in the same clause.  "记住昨天那件事，另外 topic.md
@@ -37,12 +37,12 @@ somewhere in the message.  So:
 * **It must be an instruction, not a report.**  "我记住了" is the person saying
   *they* remembered.  It is not addressed to the memory at all.
 
-The remaining safety property is unchanged and still does most of the work: the
-clause must literally contain the claim's reference, subject, predicate or
-value, and must match exactly one proposal.  A bare "对，记住" names nothing,
-and this deliberately does *not* resolve it from conversational context --
-guessing which of several proposals somebody meant is exactly the class of
-inference this project refuses everywhere else.
+The remaining safety property still does most of the work: the clause must
+literally contain the claim's reference, subject, predicate or value, and must
+match exactly one proposal.  A bare "对，记住" names nothing, and this
+deliberately does *not* resolve it from conversational context -- guessing
+which of several proposals somebody meant is exactly the class of inference
+this project refuses everywhere else.
 
 Not responsible for: writing (``core/mutate.capture_confirmation`` owns the
 version), or for what a host shows the person before they confirm.
@@ -107,8 +107,8 @@ def adoption_clause(text: object) -> str | None:
 
     Returning the clause rather than a boolean is the point: everything
     downstream -- which claim was named, whether the sentence was negative --
-    has to be judged on the same span, and handing back the whole message is
-    what let "记住 X 这条是错的" read as adoption of X.
+    has to be judged on the same span, and handing back the whole message
+    would let "记住 X 这条是错的" read as adoption of X.
     """
     if type(text) is not str or not text.strip():
         return None

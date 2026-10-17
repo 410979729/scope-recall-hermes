@@ -86,8 +86,8 @@ def _candidate_obsolete(
 def _apply_verdict(tx, item, current, value, live_sources, now):
     """Validate one decoded verdict and apply its proposal; None when it has none."""
     # Which sources the question carried is this evaluation's own record, not something the model has to repeat.
-    # Asked to echo every supplied ref, it left one out or miscopied a 70-character id in 5.2% of the evaluations
-    # with nine or more sources on the pilot (none with one), and each such verdict was lost for good.  What the
+    # Asked to echo every supplied ref, a model left one out or miscopied a 70-character id in 5.2% of the evaluations
+    # with nine or more sources in one store (none with one), and each such verdict would be lost for good.  What the
     # verdict cites -- a span, a counterexample, a state reference -- must still be one of them
     # (``validate_proposal_references``).
     value = dict(value, source_refs=[f"{ref}@{revision}" for ref, revision in current.evidence_refs])
@@ -167,8 +167,8 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
     try:
         applied = _apply_verdict(tx, item, current, value, live_sources, now)
     except ContractError as exc:
-        # A rejection caused by a claim written during the call stays
-        # the conflict the epoch comparison used to report first.
+        # A rejection caused by a claim written during the call is
+        # reported as the ``VERSION_CONFLICT`` (``memory_epoch``) of a changed dependency.
         if claims_changed(tx, dependencies, until=mark):
             raise ContractError("VERSION_CONFLICT", "memory_epoch") from exc
         raise

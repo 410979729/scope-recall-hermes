@@ -135,8 +135,8 @@ def name_frame(proposal, roots):
 
     An alias attaches another name to an existing fact (``alias.target_ref`` names a claim), and is
     held back until that link is proved.  Told "我的猫咪叫年糕" with nothing yet known about the cat,
-    the consolidation model filed "年糕" as an alias whose target was the message itself: it
-    could never be proved, stayed proposed, and no agent recalled the cat's name.  Only the literal
+    the consolidation model can file "年糕" as an alias whose target is the message itself: it
+    can never be proved, stays proposed, and no agent recalls the cat's name.  Only the literal
     naming forms above are re-framed, and only from one complete first-hand statement; the subject,
     verb and name are the quote's own words, so the fact is qualified like any other.
     """

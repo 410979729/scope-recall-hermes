@@ -63,8 +63,8 @@ def _allowed_now(tx, kind: str, ref: str, automatic: bool) -> bool:
 def allowed_refs(tx, kind: str, refs, *, automatic: bool = False) -> frozenset[str]:
     """The refs of one kind that ``allowed`` admits, read in one statement and one row.
 
-    An episode's members were checked one by one, two statements each, inside every capture that joined the episode:
-    in a busy Hermes gateway each statement waited for the GIL (``lexical_index.index_terms``).
+    Checked one by one, an episode's members would take two statements each inside every capture that joins the
+    episode, and in a busy Hermes gateway each statement waits for the GIL (``lexical_index.index_terms``).
     """
     wanted = list(dict.fromkeys(refs))
     if not wanted:
@@ -130,9 +130,9 @@ def epoch_retracted(tx, context, epoch: int) -> bool:
     """Whether what a reader read at ``epoch`` may since have been withdrawn in this context's scopes.
 
     The epoch moves with every capture: with several entries writing to one store, a read and its
-    release were rarely at the same epoch, and every such release was refused.  Only a deletion or
-    suppression in the reader's scopes withdraws; any other change is caught by each object's own
-    fresh load, which follows in the same transaction.
+    release are rarely at the same epoch, and refusing on any move would refuse almost every
+    release.  Only a deletion or suppression in the reader's scopes withdraws; any other change is
+    caught by each object's own fresh load, which follows in the same transaction.
     """
     return tx.status().memory_epoch != epoch and retraction_after(tx._check(), context.allowed_scope_ids, epoch)
 

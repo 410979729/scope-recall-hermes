@@ -54,9 +54,9 @@ def purge_work_ref(operation_id: str, scope_id: str) -> str:
 def purge_work_parts(ref: str) -> tuple[str, str]:
     """``(operation_id, scope_id)`` of a purge work subject.
 
-    The operation id holds no colon and a scope id may hold several (``workspace:6:hermes|agent:7:...``): the
-    subject splits at its first colon.  The worker split it at the last, found no such operation, and marked every
-    delete's purge on such a store obsolete, leaving the deleted text and its vectors on disk behind the read block.
+    The operation id holds no colon and a scope id may hold several (``workspace:6:hermes|agent:7:...``): the subject
+    splits at its first colon.  Split at the last, it names no such operation, and the worker would mark every delete's
+    purge on such a store obsolete, leaving the deleted text and its vectors on disk behind the read block.
     """
     operation_id, _colon, scope_id = str(ref).partition(":")
     return operation_id, scope_id
@@ -320,7 +320,7 @@ class Deletions:
     def requeue_unfinished_purges(self, *, now: str, limit: int = 8) -> int:
         """Give once more the purge a worker marked obsolete before it removed anything.
 
-        Up to 3.4.0rc8 the worker read a purge's operation id at the last colon of its subject (see
+        An older worker read a purge's operation id at the last colon of its subject (see
         ``purge_work_parts``), so every delete's purge on a store whose scope ids hold colons was marked obsolete
         and the operation's physical layers stayed pending.  Such a row, obsolete within three attempts, whose
         delete operation still has a layer to remove, goes back to pending under a new lease token; each try counts
@@ -386,8 +386,8 @@ class Deletions:
         texts: list[frozenset[tuple[str, str]]] = []
 
         def forgotten_texts() -> frozenset[tuple[str, str]]:
-            # Each version of a deleted message is put together once, and only when a waiting row is looked into:
-            # put together for each of its segments, under the writer lease, a delete of long messages took seconds.
+            # Each version of a deleted message is put together once, and only when a waiting row is looked into: once
+            # for each segment, under the writer lease, a delete of long messages would take seconds.
             if not texts:
                 texts.append(
                     frozenset(

@@ -25,8 +25,8 @@ from .evidence_question import DERIVATION_ROOT_ORIGINS, question_digest, restate
 #: CANDIDATE_EVALUATION_INPUT_BUDGET is 64,000 bytes and roughly 12 KB of every
 #: request is fixed prompt overhead, so this leaves room even when every
 #: character is three UTF-8 bytes.  The bound is a size, not a source count: a
-#: count let candidates accumulate sixteen sources of any length until their
-#: prompt exceeded every budget and died terminal.
+#: count would let candidates accumulate sixteen sources of any length until
+#: their prompt exceeded every budget and died terminal.
 CANDIDATE_EVIDENCE_BUDGET_CHARS = 14000
 
 #: Recalled memory delivered back into a conversation.  It is this system's
@@ -235,7 +235,7 @@ class CandidateTables:
         A person who says a proposal again is heard here and not in the claim's own evidence, because
         ``apply_claim`` takes the restatement for a duplicate; such a proposal is left to its
         evaluation (``requalify.retire_rootless_proposals``).  A source that only shares a word with
-        it -- on the pilot, 1,525 of 2,785 tool-derived proposals had one -- restates nothing.
+        it -- in one store, 1,525 of 2,785 tool-derived proposals had one -- restates nothing.
         """
         origins = sorted(DERIVATION_ROOT_ORIGINS)
         contents = [
@@ -414,8 +414,8 @@ class CandidateTables:
         """The live, bounded evidence set an evaluation of this candidate would carry.
 
         What a person said comes first, an imported message of theirs too: ranked by the
-        stored column it sat behind every newer tool output, and the model was asked without
-        it (the 3.2.0 audit).  The origin handed on is the effective one as well, so the
+        stored column it would sit behind every newer tool output, and the model would be
+        asked without it.  The origin handed on is the effective one as well, so the
         question it poses (``question_digest``) counts that message as testimony.
         """
         evidence = (
@@ -458,7 +458,7 @@ class CandidateTables:
 
         The digest keys on the *question*, not the byte-exact selection: one
         more tool observation displacing an older one is not a new question,
-        and keying on that is what let the fingerprint guard never collide.
+        and keying on that would let the fingerprint guard never collide.
         """
         selected = self._evaluation_evidence(ref, revision)
         refs = tuple(sorted((str(item["source_ref"]), int(item["source_revision"])) for item in selected))

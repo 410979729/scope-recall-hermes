@@ -180,8 +180,8 @@ class Sources:
         """A source restating a suppressed claim (subject, predicate, value and every
         condition literally present) is suppressed with it.
 
-        The suppressed claims are picked first.  Subject and predicate are in the scope's index, so SQLite searched the
-        content for those of every claim in the scope before it read whether one was suppressed: 8,995 claims, 11 of
+        The suppressed claims are picked first.  Subject and predicate are in the scope's index, so SQLite would search
+        the content for those of every claim in the scope before it read whether one was suppressed: 8,995 claims, 11 of
         them suppressed, held the writer lease 1 s for a tool output of 51,283 characters.
         """
         return (
@@ -293,17 +293,17 @@ class Sources:
     def refuse_under_a_deleted_key(self, events, *, scope_id: str) -> None:
         """Refuse a message under a deleted message's key or source group, or tell another message from it.
 
-        The deletion contract's least unit is a source group, with its later versions and missing parts: a revision
-        the deleted group never stored, and a part sent without the message's first, are refused.  A whole message is
-        compared with the deleted one, all its parts together (a first part changed by one character had let the
-        second through, word for word): a part with a deleted part's digest; while the deleted words are kept, all of
-        them held or a near copy, as a delete compares waiting captures (``inbox_rules.holds_events``); after the
-        purge, the same words spaced, cased or punctuated otherwise (``inbox_rules.deleted_forms``).  A copy is
-        refused (``source_unavailable``).  Anything else is a key collision (``VERSION_CONFLICT``), which the capture
-        inbox stores under a key of its own: a restarted Hermes gateway numbers its turns from 1 again, and a delete
-        removes its own command's key, so the next message at that turn would otherwise be refused.  After the
-        purge, a copy with words added is not known by anything kept, and is stored as another message.  A key with
-        nothing stored left to compare with (a restored absence) refuses whatever comes."""
+        The deletion contract's least unit is a source group, with its later versions and missing parts: a revision the
+        deleted group never stored, and a part sent without the message's first, are refused.  A whole message is
+        compared with the deleted one, all its parts together (part by part, a first part changed by one character would
+        let the second through, word for word): a part with a deleted part's digest; while the deleted words are kept,
+        all of them held or a near copy, as a delete compares waiting captures (``inbox_rules.holds_events``); after the
+        purge, the same words spaced, cased or punctuated otherwise (``inbox_rules.deleted_forms``).  A copy is refused
+        (``source_unavailable``).  Anything else is a key collision (``VERSION_CONFLICT``), which the capture inbox
+        stores under a key of its own: a restarted Hermes gateway numbers its turns from 1 again, and a delete removes
+        its own command's key, so the next message at that turn would otherwise be refused.  After the purge, a copy
+        with words added is not known by anything kept, and is stored as another message.  A key with nothing stored
+        left to compare with (a restored absence) refuses whatever comes."""
         if not events:
             return
         conn = self._tx._check()
@@ -567,8 +567,8 @@ class Sources:
         # Named messages first, so the same words said again cannot take the copy a named message owns.
         named = {host_key for *_said, host_key in items if host_key is not None}
         # A message over 65,536 characters is stored in segments under keys of their own, grouped under the host's
-        # key: looked up by the host's key alone, it was never found, and the Stop's read of the session record
-        # stored a long prompt a second time.  A message stored whole is its own group.
+        # key: looked up by the host's key alone, it would never be found, and the Stop's read of the session record
+        # would store a long prompt a second time.  A message stored whole is its own group.
         # A named message that was deleted counts as said as well: once the delete is purged its rows no longer
         # carry the key, and a record read would store the words again under a key of the record's.
 
@@ -619,7 +619,7 @@ class Sources:
                 copies[role, digest] = list(unique.values())
             unnamed.setdefault((role, digest), []).append((index, occurred_at))
         # The closest message and copy are paired first: taken in the order asked, a message with no copy of its own
-        # took the copy of one said alike a moment after it, and that one was stored again.
+        # would take the copy of one said alike a moment after it, and that one would be stored again.
         for group, said in unnamed.items():
             pairs = sorted(
                 (distance, index, position)

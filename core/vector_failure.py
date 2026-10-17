@@ -15,13 +15,8 @@ Measured: every recall of one day reported ``vector_unavailable`` together with
 The exception is caught and discarded, so the message survives nowhere else --
 not in the gap, not in a log, not in the database.
 
-This is the same shape the project has already named twice: ``model_unavailable``
-standing for every auxiliary failure, and ``OperationalError`` standing for every
-SQLite fault until ``sqlite_errorname`` was attached to it.
-
-The vocabulary is closed on purpose.  The first version of this module derived a
-token from the message text, and the gate immediately showed why that is wrong:
-a test's own wording turned into
+The vocabulary is closed on purpose: a token derived from the message text would
+turn a test's own wording into
 ``TimeoutError:synthetic_embedding_request_used_its_entire_allowance``.  A gap is
 something a reader groups on, so it may only take values from a set someone can
 enumerate -- which is the very reason ``error_type`` is preferred over a message

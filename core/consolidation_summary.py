@@ -34,7 +34,7 @@ def validate_fragment(tx, value, fence, content):
     A goal from an earlier *accepted* page may be carried forward.  Every other proposed item must be grounded in the
     current page; final Core qualification still uses the complete original including negations.  A summary that is
     not is dropped, as a whole message's summary is when it does not qualify (``apply_summary``): refusing the page
-    for it lost the page's claims, checked on their own, and every page after it.
+    for it would lose the page's claims, checked on their own, and every page after it.
     """
     seeds = resume_seed(tx, fence.work_id)
     page = content[fence.chunk.start : fence.chunk.end]
