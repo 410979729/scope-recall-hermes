@@ -528,8 +528,8 @@ def test_a_refusal_field_beside_answer_text_is_metadata(tmp_path, monkeypatch, r
 
 @pytest.mark.parametrize(
     "content",
-    [" \n\t ", [], [{"type": "text", "text": "  "}], [{"type": "annotation", "note": "n"}]],
-    ids=["blank_text", "empty_list", "blank_text_part", "part_without_text"],
+    [" \n\t ", [], {}, [{"type": "text", "text": "  "}], [{"type": "annotation", "note": "n"}]],
+    ids=["blank_text", "empty_list", "empty_object", "blank_text_part", "part_without_text"],
 )
 def test_a_refusal_beside_content_without_answer_text_is_a_refusal(tmp_path, monkeypatch, content):
     config, _, _ = _runtime_config(tmp_path)
@@ -543,22 +543,51 @@ def test_a_refusal_beside_content_without_answer_text_is_a_refusal(tmp_path, mon
     assert exc.value.error_type == "model_refused"
 
 
-def test_a_refusal_beside_a_list_that_holds_text_is_not_a_refusal(tmp_path, monkeypatch):
-    """Parts that hold text are answer content, whatever else the message carries; a list of parts is not a shape this
-    route reads."""
+@pytest.mark.parametrize(
+    "content",
+    [[{"type": "text", "text": '{"protocol_version":"1.1"}'}], {"text": '{"protocol_version":"1.1"}'}],
+    ids=["text_parts", "object"],
+)
+def test_a_refusal_beside_content_that_may_hold_the_answer_is_not_a_refusal(tmp_path, monkeypatch, content):
+    """Parts that hold text, or content in a shape this route does not read, may hold the answer, whatever else the
+    message carries; the reply is a shape this route does not read, not a refusal."""
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
-    message = {
-        "role": "assistant",
-        "content": [{"type": "text", "text": '{"protocol_version":"1.1"}'}],
-        "refusal": "kept as metadata by a gateway",
-    }
+    message = {"role": "assistant", "content": content, "refusal": "kept as metadata by a gateway"}
     runtime = build_auxiliary_runtime(
         config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "stop")))
     )
     with pytest.raises(AuxiliaryModelError) as exc:
         runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
     assert exc.value.error_type == "unsupported_response_shape"
+
+
+@pytest.mark.parametrize(
+    "refusal", ["", " \n", None, ["I can't help with that."]], ids=["empty", "blank", "null", "list"]
+)
+def test_a_refusal_that_declines_nothing_is_no_refusal(tmp_path, monkeypatch, refusal):
+    """Without a refusal text there is no refusal to name: null content is then a shape the route does not read."""
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    message = {"role": "assistant", "content": None, "refusal": refusal}
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "stop")))
+    )
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "unsupported_response_shape"
+
+
+@pytest.mark.parametrize("finish_reason", [[], {}, 7, None], ids=["list", "object", "number", "null"])
+def test_a_finish_reason_that_is_not_a_string_stops_nothing(tmp_path, monkeypatch, finish_reason):
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    message = {"role": "assistant", "content": '{"protocol_version":"1.1"}'}
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, finish_reason)))
+    )
+    answer = runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert answer == '{"protocol_version":"1.1"}'
 
 
 @pytest.mark.parametrize("finish_reason", ["insufficient_system_resource", "aborted"])

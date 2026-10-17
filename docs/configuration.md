@@ -379,9 +379,10 @@ it again once the model, the route or the provider's policy has changed. One
 the provider ended without finishing
 (`finish_reason: "insufficient_system_resource"` or `"aborted"`, whatever text
 the message holds) fails as `model_output_interrupted`: a transient fault, not
-a failure by design. The worker asks again as after a timeout, the automatic
-recovery (`max_auto_recoveries`) re-opens it after its attempts, and a plain
-`retry-failures` run re-opens what is left.
+a failure by design. A consolidation is asked again as after a timeout and
+re-opened by the automatic recovery (`max_auto_recoveries`); a candidate
+evaluation, which is asked once, fails at once. A plain `retry-failures` run
+re-opens what is left.
 
 Setting `"kind": "openai_responses"` selects a Responses-API route instead of
 chat completions. It targets the documented contract of DeepSeek

@@ -89,19 +89,23 @@ def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_RO
         reject_secrets(message["content"])
 
 
-#: ``finish_reason`` values with which a provider ends a generation it did not finish, for lack of capacity or by
-#: interruption: DeepSeek documents both, and the chat completions of OpenAI and Azure document none of this kind.  A
-#: tuple, so a ``finish_reason`` that is not a string can be compared with it.
+#: ``finish_reason`` values with which DeepSeek ends a generation it did not finish, for lack of capacity or by
+#: interruption.  A tuple, so a ``finish_reason`` that is not a string can be compared with it.
 _CHAT_INTERRUPTIONS = ("insufficient_system_resource", "aborted")
 
 
-def _answer_text(content: object) -> str:
-    """The text a chat message's ``content`` holds: a string, or the ``text`` of each part of a list of parts."""
+def _without_answer_text(content: object) -> bool:
+    """Whether a chat message's ``content`` is known to hold no answer text: absent or empty, a blank string, or a
+    list of parts none of which has text.  Content of any other shape may hold an answer this route does not read."""
+    if not content:
+        return True
     if type(content) is str:
-        return content
+        return not content.strip()
     if isinstance(content, list):
-        return "".join(part["text"] for part in content if isinstance(part, dict) and type(part.get("text")) is str)
-    return ""
+        return not any(
+            isinstance(part, dict) and type(part.get("text")) is str and part["text"].strip() for part in content
+        )
+    return False
 
 
 def _extract_chat_content(payload: Mapping[str, Any]) -> str:
@@ -137,9 +141,9 @@ def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     content = message.get("content")
     # A model that declines puts its refusal where the answer belongs, so no
     # answer text stands beside it: none in a blank string, and none in a list
-    # of parts without a text part.
+    # of parts without a text part.  A blank refusal declines nothing.
     refusal = message.get("refusal")
-    if type(refusal) is str and refusal.strip() and not _answer_text(content).strip():
+    if type(refusal) is str and refusal.strip() and _without_answer_text(content):
         raise AuxiliaryModelError("model_refused")
     if type(content) is not str:
         raise AuxiliaryModelError("unsupported_response_shape")
