@@ -11,7 +11,7 @@ from functools import partial
 from typing import Callable, Protocol
 
 from ..contracts import ContractError
-from .delete_storage import purge_work_parts
+from .delete_storage import purge_finished, purge_work_parts
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
 from .source_records import StoredSource
@@ -545,9 +545,13 @@ def _purge_layers(storage, clock, context, item, *, purge, started, budget, fini
         remaining = budget_left(started, clock, budget)
         if remaining <= 0:
             return deadline_result(storage, context, item)
-        now = clock.utc_now()
         try:
-            with storage.write(context, remaining_seconds=remaining) as tx:
+            # The scrub is committed: truncated now, the log keeps no frame from before it, so the page images that
+            # still held the deleted words leave the store's files; the frames this pass writes after it hold none of
+            # them.  A reader on an older snapshot holds the truncation back, and the purge stays queued.
+            truncated = storage.truncate_wal(context, remaining_seconds=remaining)
+            now = clock.utc_now()
+            with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
                 if not tx.work._verify_lease(*item.lease, now=now):
                     return stale_result(tx, item)
                 receipt = tx.deletions.receipt(operation_id)
@@ -556,7 +560,8 @@ def _purge_layers(storage, clock, context, item, *, purge, started, budget, fini
                 if receipt["layers"].get("vector_active") != "removed":
                     receipt = tx.deletions.mark_vector_active_removed(operation_id)
                 receipt = tx.deletions.finalize_attachments(operation_id, attachment_plan, erased=True)
-                if not receipt["active_content_removed"]:
+                receipt = tx.deletions.mark_sqlite_history(operation_id, removed=truncated)
+                if not purge_finished(receipt):
                     return work_result(
                         tx.work.fail(*item.lease, error_code="storage_unavailable", now=now, recoverable=True)
                     )
@@ -564,5 +569,6 @@ def _purge_layers(storage, clock, context, item, *, purge, started, budget, fini
         except Exception:
             # Physical layers may already be gone when the final CAS fails.
             # Keep the one work item retryable; the next pass inventories and
-            # idempotently acknowledges both native and attachment layers.
+            # idempotently acknowledges the native and attachment layers, and
+            # truncates the log again.
             return finish("retry", "storage_unavailable")

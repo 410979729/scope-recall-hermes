@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
 from ..core.file_lock import advisory_file_lock
-from . import VectorRecord, VectorStore, VectorStoreCompatibilityError
+from . import VectorRecord, VectorStore, VectorStoreCompatibilityError, require_no_text
 from .compaction import measure_footprint
 from .lance_native import native_modules
 from .purge import governed_row_ids, purge_request
@@ -213,8 +213,8 @@ class LanceVectorStore(VectorStore):
         outbox completion CAS.  ``merge_insert`` makes that retry one
         idempotent transaction instead of a delete/add crash window.
         """
+        payload = require_no_text(rows)
         self._ensure_schema_compatible()
-        payload = list(rows)
         if payload:
             (
                 self._fresh_table()
@@ -254,7 +254,7 @@ class LanceVectorStore(VectorStore):
             or remaining_seconds <= 0
         ):
             raise RuntimeError("native vector fence deadline exhausted")
-        payload = list(rows)
+        payload = require_no_text(rows)
         try:
             with self.physical_write_lock(timeout_seconds=float(remaining_seconds)):
                 if not guard():

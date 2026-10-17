@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator
 
+from scope_recall.core.truth_connection import connect_truth_database
 from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
 
 from .install_common import BACKUP_DIRNAME, InstallError, UninstallPlan, normalized_path, reject_symlink_chain
@@ -102,8 +103,7 @@ def _expected_retained(db_path: Path, data_directory: Path, *, installation_id: 
     expected: set[Path] = set()
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(str(db_path), timeout=0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
+        conn = connect_truth_database(db_path, mode="rw", timeout=0, isolation_level=None)
         conn.execute("BEGIN IMMEDIATE")
         meta = conn.execute(
             "SELECT agent_id,installation_id,data_directory FROM instance_meta WHERE singleton=1"

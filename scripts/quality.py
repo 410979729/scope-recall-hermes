@@ -32,6 +32,10 @@ syntax, not values: a call through another function or a called lambda while a m
 named like ``import_module``, and code that changes ``typing.TYPE_CHECKING`` are beyond it.  For the named lazy
 imports, ``tests/packaging/test_clean_v11_wheel.py`` loads the runtime from the built wheel and finds no adapter
 module loaded.
+
+Comments, docstrings and Markdown are held, with no baseline, to verified behaviour: none of them may carry a word
+that leaves work undone or undecided (``MARKERS``).  Other string literals are data and are not read, and evidence
+kept as written (``verification/``, ``fixtures/``) is left out.
 """
 
 from __future__ import annotations
@@ -40,14 +44,16 @@ import argparse
 import ast
 import importlib.metadata
 import importlib.util
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tokenize
 import tomllib
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -736,11 +742,68 @@ def _upward(edges: list[Edge], graph: dict[str, set[str]]) -> list[str]:
     return problems
 
 
+#: Words that leave work undone or undecided.  The English ones are whole words of ASCII letters in capitals, so
+#: "TODOS" and a lower-case "todo" are none, and a capital one beside Chinese text still counts; the Chinese ones do
+#: not count inside 等待, which only says "wait" (等待确认, 等待定时器).
+MARKERS = re.compile(r"\b(?:TODO|FIXME|TBD)\b|(?<!等)待定|暂定|(?<!等)待确认", re.ASCII)
+#: Directories, at any depth, whose files are kept as they were written: evidence and data.
+_KEPT_AS_WRITTEN = frozenset({"verification", "fixtures"})
+
+
+def tracked(root: Path, *patterns: str) -> list[str]:
+    """The files under ``root`` that match ``patterns`` and that git would commit: tracked ones still on disk and new
+    ones it does not ignore, as posix paths relative to ``root``."""
+    command = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *patterns]
+    try:
+        done = subprocess.run(command, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", "replace").strip()
+        raise SystemExit(f"quality: git cannot list the files of {root}: {detail}") from exc
+    except OSError as exc:
+        raise SystemExit(f"quality: git cannot list the files of {root}: {exc}") from exc
+    names = dict.fromkeys(name for name in done.stdout.decode("utf-8").split("\0") if name)
+    return [name for name in names if (root / name).is_file()]
+
+
+def _prose(source: str) -> Iterator[tuple[int, str]]:
+    """A module's comments and docstrings as written in its source, each with the line it starts on: read from the
+    source rather than evaluated, so an escape or a line continuation in a docstring does not move its lines."""
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            yield token.start[0], token.string
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) or not node.body:
+            continue
+        first = node.body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+            yield first.value.lineno, ast.get_source_segment(source, first.value) or ""
+
+
+def marker_problems(root: Path, files: Iterable[str]) -> list[str]:
+    """Each place in a comment, a docstring or a Markdown file where one of ``MARKERS`` stands, by file and line."""
+    found: set[tuple[str, int, str]] = set()
+    for name in files:
+        if not name.endswith((".py", ".md")) or _KEPT_AS_WRITTEN.intersection(name.split("/")[:-1]):
+            continue
+        source = (root / name).read_text(encoding="utf-8")
+        try:
+            pieces = list(_prose(source)) if name.endswith(".py") else [(1, source)]
+        except (SyntaxError, tokenize.TokenError) as exc:
+            raise SystemExit(f"quality: {name} does not parse: {exc}") from exc
+        for first, piece in pieces:
+            for match in MARKERS.finditer(piece):
+                found.add((name, first + piece.count("\n", 0, match.start()), match.group()))
+    return [f"{name}:{line}: {marker}" for name, line, marker in sorted(found)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--update", action="store_true", help="record the current findings as the baseline")
     parser.add_argument("--allow-more", action="store_true", help="with --update: record more than before")
     args = parser.parse_args(argv)
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        # A finding may quote Chinese text, which a console in a legacy code page cannot print.
+        sys.stdout.reconfigure(errors="backslashreplace")
     check_environment()
     recorded = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     findings = ruff_findings() + pyright_findings()
@@ -761,6 +824,11 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         print("\n".join(problems))
         print("the package's imports may form no cycle and may not reach a layer above their own (LAYERS in this file)")
+        failed = True
+    markers = marker_problems(ROOT, tracked(ROOT, "*.py", "*.md"))
+    if markers:
+        print("\n".join(markers))
+        print("code and docs state verified behaviour: do the work or say what holds, and track the rest as an issue")
         failed = True
     done = _run("ruff", "format", "--check", "--output-format", "concise", ".")
     if done.returncode != 0:
@@ -785,8 +853,8 @@ def main(argv: list[str] | None = None) -> int:
         failed = True
     if not failed:
         print(
-            f"quality: formatted, imports along the layers, and nothing above the baseline ({len(findings)} findings"
-            " recorded)"
+            f"quality: formatted, imports along the layers, no open markers, and nothing above the baseline"
+            f" ({len(findings)} findings recorded)"
         )
     return 1 if failed else 0
 

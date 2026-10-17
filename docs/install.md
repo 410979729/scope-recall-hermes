@@ -977,7 +977,12 @@ product's, or records no schema this release knows, is still refused.
   open. Never copy the files by hand while the host or the worker runs;
   `scope-recall backup` takes a consistent snapshot and writes it in
   rollback-journal mode. Readers and the writer coexist, so an operator
-  query no longer fails a worker pass.
+  query no longer fails a worker pass. After a `forget`, the worker's purge
+  truncates `memory.sqlite3-wal`, which still held the deleted words; what is
+  written to it afterwards holds none of them. A read transaction left open on
+  an older snapshot holds the truncation back until a later pass.
+  [deletion-contract.md](deletion-contract.md) says what a purge removes and
+  what it does not.
 
 - **LanceDB** needs the `lancedb` extra. Keep the data directory short, for
   example `C:\ScopeRecall\my-agent`: LanceDB appends index, table and temporary
@@ -997,13 +1002,16 @@ share one store, Hermes agents and from 3.3.0 Codex and Claude Code, each attach
 it as an entry, with every memory marked with the agent it came in through:
 [shared-store.md](shared-store.md). Claude Code installs only this way. An attached home keeps
 only a pointer, `scope-recall\attachment.json`; `plan-install`, `apply-install` and
-`doctor` recognize it.
+`doctor` recognize it. Clients alone can share a store: the first one attached to a new store
+brings the owner's scope, and the clients attached after it share it
+([shared-store.md](shared-store.md#a-store-of-clients-alone)).
 
 ## 12. WorkBuddy
 
 WorkBuddy runs the hooks and the MCP server of the `codex` adapter as an entry of a shared
-store, the owner at this machine. Attach its home first ([shared-store.md](shared-store.md)),
-from an environment with the `codex` extra, then install. WorkBuddy's agent reads its hooks from
+store, the owner at this machine. Attach its home first, beside the store's other entries or as
+the first entry of a new store ([shared-store.md](shared-store.md)), from an environment with the
+`codex` extra, then install. WorkBuddy's agent reads its hooks from
 `settings.json` in WorkBuddy's own home. Its MCP servers are those listed in `mcp.json` there:
 WorkBuddy starts each one, once you have approved it in its MCP settings, and serves its tools to
 the agent. (`.mcp.json` beside it is WorkBuddy's record of its own connector proxy; its agent
@@ -1173,8 +1181,8 @@ rest). It does not offer `propose_memory`, `revise` or `forget`: dsh's MCP clien
 conversation with a call, and the store takes such a change only on the word of the person's latest
 message in the same conversation ([shared-store.md](shared-store.md)).
 
-Attach dsh's entry first ([shared-store.md](shared-store.md)), from an environment with the
-`codex` extra, then install:
+Attach dsh's entry first, beside the store's other entries or as the first entry of a new store
+([shared-store.md](shared-store.md)), from an environment with the `codex` extra, then install:
 
 ```powershell
 $Entry  = "D:\ScopeRecall\dsh"

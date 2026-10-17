@@ -200,10 +200,7 @@ def test_purge_removes_source_claim_quote_and_lexical_payloads_and_reports_remai
     deleted = core.forget(ctx, request(source), remaining_seconds=10)
     result = core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
     assert not result["active_content_removed"] and result["layers"]["sqlite_active"] == "removed"
-    assert (
-        result["layers"]["sqlite_history"] == "maintenance_pending"
-        and result["layers"]["vector_history"] == "inventory_pending"
-    )
+    assert result["layers"]["sqlite_history"] == "pending" and result["layers"]["vector_history"] == "inventory_pending"
     assert not result["declared_scope_complete"]
     with sqlite3.connect(core.storage.path) as conn:
         for table, column in (

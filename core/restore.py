@@ -189,7 +189,7 @@ def _replay_operation(tx, conn, context, entry, checkpoint_epoch) -> int:
     if row["mode"] == "delete":
         layers.update(
             sqlite_active="pending",
-            sqlite_history="maintenance_pending",
+            sqlite_history="pending",
             vector_active="inventory_pending",
             vector_history="inventory_pending",
             attachments="inventory_pending",

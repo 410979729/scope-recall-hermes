@@ -12,6 +12,7 @@ from typing import Any, Callable
 from scope_recall.core.failure_retry import TERMINAL_FAILURES
 from scope_recall.core.schema import SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.truth_connection import connect_truth_database
 from scope_recall.core.writer_lease import TruthWriterBusyError
 
 from .backup import BackupError, backup_sqlite
@@ -410,13 +411,10 @@ def _doctor(args: argparse.Namespace) -> int:
 
 def _restamp_header(database: Path, recorded: int, *, timeout: float) -> bool:
     """Write ``recorded`` into the header if, inside the write transaction, it is still what the store records."""
-    import sqlite3
     from contextlib import closing
 
     # mode=rw: a store that disappeared meanwhile is an error, never a new empty file.
-    with closing(
-        sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True, timeout=timeout, isolation_level=None)
-    ) as db:
+    with closing(connect_truth_database(database, mode="rw", timeout=timeout, isolation_level=None)) as db:
         db.execute("BEGIN IMMEDIATE")
         if stale_header_schema(db) != recorded:
             db.execute("ROLLBACK")
@@ -515,7 +513,7 @@ def _upgrade_store(args: argparse.Namespace) -> int:
         # header back, in a write transaction that checks it again, and carry on from there.
         try:
             restamped = _restamp_header(database, recorded, timeout=wait)
-        except sqlite3.OperationalError as exc:
+        except (sqlite3.OperationalError, TruthWriterBusyError) as exc:
             result.update(
                 status="not_upgraded",
                 error="store_busy",

@@ -147,13 +147,14 @@ SUITES = {
     ],
     "storage": [
         "tests/contract/test_storage.py",
+        "tests/contract/test_writable_store_connections.py",
         "tests/contract/test_shared_store.py",
         "tests/contract/test_embedding_respace.py",
         "tests/known_answer/test_recall_invariants_check.py",
     ],
     "capture": ["tests/contract/test_capture.py", "tests/contract/test_capture_row_crossings.py"],
     "claims": ["tests/contract/test_claims.py", "tests/contract/test_claim_embed_recovery.py"],
-    "deletion": ["tests/contract/test_deletion.py"],
+    "deletion": ["tests/contract/test_deletion.py", "tests/contract/test_purge_leaves_no_copy.py"],
     "episodes": [
         "tests/contract/test_episodes.py",
         "tests/contract/test_retained_artifacts.py",
@@ -214,6 +215,7 @@ SUITES = {
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
+        "tests/host/codex/test_clients_only_store.py",
         "tests/host/codex/test_remote.py",
         "tests/host/codex/test_dsh_remote.py",
         "tests/host/codex/test_resident_recall.py",

@@ -14,21 +14,23 @@ The store's directory holds everything memory needs, so moving to another
 machine is copying that directory, ``adopt``, and attaching each agent again.
 Every write command keeps a copy of each file it replaces and leaves a receipt
 under the store's ``receipts/``.  Hermes homes attach with the grants their own
-installation had; a local client (Codex, Claude Code) has none of its own and
-attaches as the owner, with grants taken from Hermes entries' owner rows.
+installation had; a local client (Codex, Claude Code, WorkBuddy, dsh) has none
+of its own and attaches as the owner, with grants taken from the owner rows of
+entries already attached, or, as the store's first entry, a fresh installation's.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,8 +50,10 @@ from ..adapters.hermes.shared_entries import (
     CLIENT_HOSTS,
     ENTRY_HOSTS,
     GRANTS_SCHEMA,
+    Attachment,
     attach_shared_entry,
     attach_shared_record,
+    attached_again,
     attachment_path,
     client_entry_record,
     entry_grants,
@@ -69,7 +73,7 @@ from ..runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .install_common import RUNTIME_CONFIG_LIMIT
 from .install_hermes import DEFAULT_AGENT_WORKSPACE
 from .shared_import import import_entry
-from .shared_run import Run, SharedStoreError, encoded, replace_file, write_json
+from .shared_run import Run, SharedStoreError, encoded, home_lock, replace_file, store_lock, write_json
 
 #: The shared worker's own names in its runtime config.  Hosts replace the
 #: session with theirs; the worker keeps these.
@@ -188,31 +192,55 @@ def _entry_config(
     return out
 
 
-def _client_grants(payload: dict[str, Any], like: tuple[str, ...], capture_like: str) -> tuple[set[str], set[str], str]:
-    """What a client entry reads, writes and captures into, taken from attached Hermes entries' owner rows.
+def _fresh_installation(home: Path, payload: dict[str, Any]) -> InstallationManifest:
+    """The grants of a home with no installation to carry over: a fresh installation's, the CLI's owner row alone.
 
-    It reads what the owner reads through any of ``like`` (``("all",)``: every
-    attached Hermes entry), may write where the owner may there, and captures
-    where ``capture_like``'s owner captures, which must be a scope every owner
-    row of every attached Hermes entry reads: what the owner says in the client
-    reaches every agent, and no Hermes entry's grants change.
+    Its owner scope is the one an installation of the store's agent made with the default workspace holds: that
+    installation's entry and an entry given these grants read, write and capture into the same scope.
     """
-    hermes = {
-        entry["entry_id"]: entry
+    return build_installation_manifest(
+        home, agent_id=payload["agent_id"], agent_workspace=DEFAULT_AGENT_WORKSPACE, test_mode=payload["test_mode"]
+    )
+
+
+def _client_grants(
+    payload: dict[str, Any], home: Path, entry_id: str, like: tuple[str, ...], capture_like: str | None
+) -> tuple[set[str], set[str], str]:
+    """What a client entry reads, writes and captures into, taken from the owner rows of the store's other attached
+    entries, Hermes homes and clients alike.
+
+    It reads what the owner reads through any of ``like`` (``("all",)``: every other attached entry), may write where
+    the owner may there, and captures where ``capture_like``'s owner captures, which must be a scope every owner row
+    of every other attached entry reads: what the owner says in the client reaches every agent, and no other entry's
+    grants change.  With no other entry attached, the client is the store's first and there is nothing to be like: it
+    gets the owner grants of a fresh installation, as a Hermes home attached without ``--grants-from`` does, and
+    brings their owner scope into the store.  The client's own record, when it is attached again, is not one of the
+    others: running the same attach again finishes or repeats it.
+    """
+    others = {
+        entry["entry_id"]: [row for row in entry["audiences"] if row.get("kind") == "owner_private"]
         for entry in payload["entries"]
-        if entry["host"] == "hermes" and not entry.get("detached_at")
+        if not entry.get("detached_at") and entry["entry_id"] != entry_id
     }
-    names = tuple(hermes) if like == ("all",) else like
-    unknown = sorted(set(names) - set(hermes)) + ([capture_like] if capture_like not in hermes else [])
-    if not names or unknown:
-        raise SharedStoreError(f"not attached Hermes entries of this store: {', '.join(unknown) or '(none named)'}")
-
-    def owner_rows(name: str) -> list[dict[str, Any]]:
-        return [row for row in hermes[name]["audiences"] if row.get("kind") == "owner_private"]
-
-    allowed = {scope for name in names for row in owner_rows(name) for scope in row["allowed_scope_ids"]}
-    writable = {scope for name in names for row in owner_rows(name) for scope in row["writable_scope_ids"]}
-    captures = {row["capture_scope_id"] for row in owner_rows(capture_like)}
+    if not others:
+        if like or capture_like:
+            raise SharedStoreError(
+                "no other entry is attached to this store to take grants like: attach its first client without "
+                "--grants-like and --capture-like, and it brings the owner's scope"
+            )
+        owner = _fresh_installation(home, payload).audience_scopes["owner_private"]
+        return {owner}, {owner}, owner
+    if not like or not capture_like:
+        raise SharedStoreError(
+            "a client's entry needs --grants-like and --capture-like: the store has entries attached"
+        )
+    names = tuple(others) if like == ("all",) else like
+    unknown = sorted(set(names) - set(others)) + ([capture_like] if capture_like not in others else [])
+    if unknown:
+        raise SharedStoreError(f"not other entries attached to this store: {', '.join(unknown)}")
+    allowed = {scope for name in names for row in others[name] for scope in row["allowed_scope_ids"]}
+    writable = {scope for name in names for row in others[name] for scope in row["writable_scope_ids"]}
+    captures = {row["capture_scope_id"] for row in others[capture_like]}
     if len(captures) != 1:
         raise SharedStoreError(
             f"{capture_like}'s owner rows capture into {len(captures)} scopes; name an entry with one"
@@ -220,8 +248,8 @@ def _client_grants(payload: dict[str, Any], like: tuple[str, ...], capture_like:
     capture = next(iter(captures))
     unread = sorted(
         f"{name}:{row['platform']}"
-        for name in hermes
-        for row in owner_rows(name)
+        for name, rows in others.items()
+        for row in rows
         if capture not in row["allowed_scope_ids"]
     )
     if unread:
@@ -265,9 +293,12 @@ def init_shared(
             raise SharedStoreError(
                 f"root is inside an agent's home ({parent}); put the shared store outside every agent"
             )
-    payload = new_shared_payload(root, agent_id=agent_id, test_mode=test_mode)
-    write_shared_payload(root, payload)
-    receipt = Run(root, "init", now).receipt({"root": str(root), "installation_id": payload["installation_id"]})
+    with store_lock(root, "init-shared", now):
+        if (root / MANIFEST_FILENAME).exists():
+            raise SharedStoreError("root holds a shared store already")
+        payload = new_shared_payload(root, agent_id=agent_id, test_mode=test_mode)
+        write_shared_payload(root, payload)
+        receipt = Run(root, "init", now).receipt({"root": str(root), "installation_id": payload["installation_id"]})
     return {
         "status": "initialized",
         "root": str(root),
@@ -276,83 +307,56 @@ def init_shared(
     }
 
 
-def attach(
-    *,
-    host: str,
-    instance_root: Path,
-    root: Path,
-    entry_id: str,
-    display_name: str,
-    grants_from: Path | None = None,
-    runtime_config_from: Path | None = None,
-    python_executable: Path | None = None,
-    grants_like: tuple[str, ...] = (),
-    capture_like: str | None = None,
-    now: str | None = None,
-) -> dict[str, Any]:
-    now = now or _now()
-    payload = read_shared_payload(root)
-    python = str(python_executable) if python_executable else None
+def _refuse_misfit(
+    host: str, home: Path, grants_from: Path | None, grants_like: tuple[str, ...], capture_like: str | None
+) -> None:
+    """Refuse a host this command does not attach, grant options ``host`` takes none of, and a home whose own store is
+    still in place."""
     if host == "hermes":
         if grants_like or capture_like:
             raise SharedStoreError(
                 "--grants-like and --capture-like are for a client's entry; a Hermes home carries its own grants over"
             )
-        if (instance_root / "scope-recall" / MANIFEST_FILENAME).exists():
+        if (home / "scope-recall" / MANIFEST_FILENAME).exists():
             raise SharedStoreError(
                 "this home still has its own store: move its scope-recall directory aside (for "
                 "example to scope-recall.local-<date>) and pass that installation.json as --grants-from"
             )
-        source = (
-            load_archived_installation(grants_from, instance_root)
-            if grants_from is not None
-            else build_installation_manifest(
-                instance_root,
-                agent_id=payload["agent_id"],
-                agent_workspace=DEFAULT_AGENT_WORKSPACE,
-                test_mode=payload["test_mode"],
-            )
-        )
-        record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now)
     elif host in CLIENT_HOSTS:
         if grants_from is not None:
-            raise SharedStoreError("a client has no installation to carry grants over from; use --grants-like")
-        if not grants_like or not capture_like:
-            raise SharedStoreError("a client's entry needs --grants-like and --capture-like")
-        if (instance_root / CODEX_CONFIG_FILENAME).exists() or (instance_root / "data" / "memory.sqlite3").exists():
+            raise SharedStoreError(
+                "a client has no installation to carry grants over from: it takes them like entries already "
+                "attached (--grants-like), or as a store's first entry brings the owner's"
+            )
+        if (home / CODEX_CONFIG_FILENAME).exists() or (home / "data" / "memory.sqlite3").exists():
             raise SharedStoreError(
                 f"this home still has its own store: move {CODEX_CONFIG_FILENAME} and data aside "
                 "(for example into local-<date>); the client's memory is then the store's"
             )
-        allowed, writable, capture = _client_grants(payload, grants_like, capture_like)
-        record = client_entry_record(
-            host=host,
-            home=instance_root,
-            entry_id=entry_id,
-            display_name=display_name,
-            attached_at=now,
-            allowed_scope_ids=sorted(allowed),
-            writable_scope_ids=sorted(writable),
-            capture_scope_id=capture,
-            python_executable=python,
-        )
     else:
         raise SharedStoreError(f"host must be one of {', '.join(ENTRY_HOSTS)}")
+
+
+def _runtime_configs(
+    routes_from: Path | None, payload: dict[str, Any], root: Path, record: dict[str, Any], home: Path
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    """What an attach of ``record`` writes of runtime configs, built and checked before anything is written: the
+    entry's, from ``routes_from`` bound to its scopes, and the shared worker's, from the same routes when the store has
+    none, else its own bound to every scope of the store with the entry's (``None`` when that leaves it as it is);
+    then the worker's as it stands, and notes on what is not configured."""
     scopes = frozenset(record["scope_ids"])
     union = frozenset(payload["scope_ids"]) | scopes
     worker_path = root / RUNTIME_CONFIG_FILENAME
-    entry_path = attachment_path(instance_root).parent / RUNTIME_CONFIG_FILENAME
     worker_now = _read_json(worker_path) if worker_path.is_file() else None
-    notes: list[str] = []
     entry_config = worker_config = None
-    # Everything written below is built and checked first.
-    if runtime_config_from is not None:
-        routes = _read_json(runtime_config_from)
+    notes = []
+    if routes_from is not None:
+        routes = _read_json(routes_from)
         entry_config = _entry_config(
             routes,
             _store_binding(payload, root, scopes),
-            home=instance_root,
-            host=host,
+            home=home,
+            host=record["host"],
             entry_id=record["entry_id"],
             worker=worker_now,
         )
@@ -375,135 +379,221 @@ def attach(
         notes.append("worker_unconfigured: pass --runtime-config-from to give the shared worker its routes")
     _fits(entry_config, "entry's")
     _fits(worker_config, "shared worker's")
+    return entry_config, worker_config, worker_now, notes
 
-    run = Run(root, f"attach-{record['entry_id']}", now)
-    run.keep(root / MANIFEST_FILENAME, "store")
-    run.keep(worker_path, "worker")
-    run.keep(attachment_path(instance_root), "entry")
-    run.keep(entry_path, "entry")
-    if host == "hermes":
-        view = attach_shared_entry(
-            root, source, entry_id=entry_id, display_name=display_name, now=now, python_executable=python
+
+def attach(
+    *,
+    host: str,
+    instance_root: Path,
+    root: Path,
+    entry_id: str,
+    display_name: str,
+    grants_from: Path | None = None,
+    runtime_config_from: Path | None = None,
+    python_executable: Path | None = None,
+    grants_like: tuple[str, ...] = (),
+    capture_like: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    now = now or _now()
+    python = str(python_executable) if python_executable else None
+    shape = f"attach --host {host} --entry {entry_id}"
+    _refuse_misfit(host, instance_root, grants_from, grants_like, capture_like)
+    # The entry's grants are taken from this manifest and checked against it, the manifest is written over and the
+    # home's pointer written: no other command writes the store or points the home elsewhere in between.
+    with home_lock(instance_root, shape, now), store_lock(root, shape, now):
+        payload = read_shared_payload(root)
+        source, notes = None, []
+        # A home attached as the entry already keeps the grants the entry holds, and takes none of the options.
+        record = attached_again(
+            payload,
+            entry_id=entry_id,
+            host=host,
+            home=instance_root,
+            display_name=display_name,
+            attached_at=now,
+            python_executable=python,
         )
-    else:
-        view = attach_shared_record(root, record, now=now)
-    ledgers = []
-    for path, config in ((entry_path, entry_config), (worker_path, worker_config)):
-        if config is not None:
-            write_json(path, config)
-            ledgers += _ledger_made(config)
-    result = {
-        "status": "attached",
-        "root": str(root),
-        "entry_id": view.entry_id,
-        "display_name": view.entry_name,
-        "home": str(instance_root),
-        "entry_scopes": len(scopes),
-        "store_scopes": len(union),
-        "new_scopes": len(union) - len(payload["scope_ids"]),
-        "entry_runtime_config": str(entry_path) if entry_config is not None else None,
-        "worker_runtime_config": str(worker_path) if worker_config is not None or worker_now is not None else None,
-        "worker_runtime_config_written": worker_config is not None,
-        "grants_from": str(grants_from) if grants_from is not None else None,
-        "grants_like": list(grants_like) or None,
-        "capture_scope_like": capture_like,
-        "ledgers_created": ledgers,
-        "notes": notes,
-    }
-    result["receipt"] = run.receipt(result)
+        if record is not None:
+            if grants_from is not None or grants_like or capture_like:
+                notes.append(
+                    f"grants_kept: {entry_id} is attached from this home already and keeps the grants it holds; "
+                    "the grant options given are not used (scope-recall grants changes grants)"
+                )
+        elif host == "hermes":
+            source = (
+                load_archived_installation(grants_from, instance_root)
+                if grants_from is not None
+                else _fresh_installation(instance_root, payload)
+            )
+            record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now)
+        else:
+            allowed, writable, capture = _client_grants(payload, instance_root, entry_id, grants_like, capture_like)
+            record = client_entry_record(
+                host=host,
+                home=instance_root,
+                entry_id=entry_id,
+                display_name=display_name,
+                attached_at=now,
+                allowed_scope_ids=sorted(allowed),
+                writable_scope_ids=sorted(writable),
+                capture_scope_id=capture,
+                python_executable=python,
+            )
+        scopes = frozenset(record["scope_ids"])
+        union = frozenset(payload["scope_ids"]) | scopes
+        worker_path = root / RUNTIME_CONFIG_FILENAME
+        entry_path = attachment_path(instance_root).parent / RUNTIME_CONFIG_FILENAME
+        entry_config, worker_config, worker_now, configured = _runtime_configs(
+            runtime_config_from, payload, root, record, instance_root
+        )
+        notes += configured
+
+        run = Run(root, f"attach-{record['entry_id']}", now)
+        run.keep(root / MANIFEST_FILENAME, "store")
+        run.keep(worker_path, "worker")
+        run.keep(attachment_path(instance_root), "entry")
+        run.keep(entry_path, "entry")
+        if source is not None:
+            view = attach_shared_entry(
+                root, source, entry_id=entry_id, display_name=display_name, now=now, python_executable=python
+            )
+        else:
+            view = attach_shared_record(root, record, now=now)
+        ledgers = []
+        for path, config in ((entry_path, entry_config), (worker_path, worker_config)):
+            if config is not None:
+                write_json(path, config)
+                ledgers += _ledger_made(config)
+        result = {
+            "status": "attached",
+            "root": str(root),
+            "entry_id": view.entry_id,
+            "display_name": view.entry_name,
+            "home": str(instance_root),
+            "entry_scopes": len(scopes),
+            "store_scopes": len(union),
+            "new_scopes": len(union) - len(payload["scope_ids"]),
+            "entry_runtime_config": str(entry_path) if entry_config is not None else None,
+            "worker_runtime_config": str(worker_path) if worker_config is not None or worker_now is not None else None,
+            "worker_runtime_config_written": worker_config is not None,
+            "grants_from": str(grants_from) if grants_from is not None else None,
+            "grants_like": list(grants_like) or None,
+            "capture_scope_like": capture_like,
+            "ledgers_created": ledgers,
+            "notes": notes,
+        }
+        result["receipt"] = run.receipt(result)
     return result
+
+
+@contextmanager
+def _attached_home(instance_root: Path, command: str, now: str) -> Iterator[Attachment]:
+    """The home's pointer, held: the home's lock, then the lock of the store the pointer names.  Read again under both,
+    the pointer must still name that store and entry; one written meanwhile by something that takes neither lock, such
+    as an edit by hand, is refused, so that nothing is written to a store the home no longer points at, nor the pointer
+    of another store removed."""
+    attachment = read_attachment(instance_root)
+    if attachment is None:
+        raise SharedStoreError("this home is not attached to a shared store")
+    with home_lock(instance_root, command, now), store_lock(attachment.root, command, now):
+        if read_attachment(instance_root) != attachment:
+            raise SharedStoreError(
+                "this home's pointer changed while the command waited for its locks: nothing was written; run it again"
+            )
+        yield attachment
 
 
 def detach(*, instance_root: Path, now: str | None = None) -> dict[str, Any]:
     now = now or _now()
-    attachment = read_attachment(instance_root)
-    if attachment is None:
-        raise SharedStoreError("this home is not attached to a shared store")
-    root = attachment.root
-    payload = read_shared_payload(root)
-    record = next((entry for entry in payload["entries"] if entry["entry_id"] == attachment.entry_id), None)
-    if record is None:
-        raise SharedStoreError("the shared store has no record of this entry")
-    run = Run(root, f"detach-{attachment.entry_id}", now)
-    entry_dir = attachment_path(instance_root).parent
-    pointer, entry_config = attachment_path(instance_root), entry_dir / RUNTIME_CONFIG_FILENAME
-    # The entry's spend ledger lives beside its pointer (attach made it); it is
-    # a record of what the entry spent, so it moves out with the receipt, whole.
-    ledger = (
-        getattr(RuntimeInstanceConfig.from_mapping(_read_json(entry_config)).auxiliary, "ledger_path", None)
-        if entry_config.is_file()
-        else None
-    )
-    ledgers = [
-        path
-        for path in ((ledger, Path(f"{ledger}-wal"), Path(f"{ledger}-shm")) if ledger is not None else ())
-        if path.parent.resolve() == entry_dir.resolve() and path.is_file()
-    ]
-    run.keep(root / MANIFEST_FILENAME, "store")
-    run.keep(pointer, "entry")
-    run.keep(entry_config, "entry")
-    # The record stays, detached: the store's rows still name this entry, and
-    # a capture it left in the inbox is still checked against its grants.
-    record["detached_at"] = now
-    write_shared_payload(root, payload)
-    for path in ledgers:
-        run.folder.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(path), str(run.folder / f"entry-{path.name}"))
-        run.backups.append(str(run.folder / f"entry-{path.name}"))
-    for path in (pointer, entry_config):
-        path.unlink(missing_ok=True)
-    if entry_dir.is_dir() and not any(entry_dir.iterdir()):
-        entry_dir.rmdir()
-    result = {
-        "status": "detached",
-        "root": str(root),
-        "entry_id": attachment.entry_id,
-        "home": str(instance_root),
-        "home_directory_left": entry_dir.is_dir(),
-    }
-    result["receipt"] = run.receipt(result)
+    with _attached_home(instance_root, f"detach --instance-root {instance_root}", now) as attachment:
+        root = attachment.root
+        payload = read_shared_payload(root)
+        record = next((entry for entry in payload["entries"] if entry["entry_id"] == attachment.entry_id), None)
+        if record is None:
+            raise SharedStoreError("the shared store has no record of this entry")
+        run = Run(root, f"detach-{attachment.entry_id}", now)
+        entry_dir = attachment_path(instance_root).parent
+        pointer, entry_config = attachment_path(instance_root), entry_dir / RUNTIME_CONFIG_FILENAME
+        # The entry's spend ledger lives beside its pointer (attach made it); it is
+        # a record of what the entry spent, so it moves out with the receipt, whole.
+        ledger = (
+            getattr(RuntimeInstanceConfig.from_mapping(_read_json(entry_config)).auxiliary, "ledger_path", None)
+            if entry_config.is_file()
+            else None
+        )
+        ledgers = [
+            path
+            for path in ((ledger, Path(f"{ledger}-wal"), Path(f"{ledger}-shm")) if ledger is not None else ())
+            if path.parent.resolve() == entry_dir.resolve() and path.is_file()
+        ]
+        run.keep(root / MANIFEST_FILENAME, "store")
+        run.keep(pointer, "entry")
+        run.keep(entry_config, "entry")
+        # The record stays, detached: the store's rows still name this entry, and
+        # a capture it left in the inbox is still checked against its grants.
+        record["detached_at"] = now
+        write_shared_payload(root, payload)
+        for path in ledgers:
+            run.folder.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(run.folder / f"entry-{path.name}"))
+            run.backups.append(str(run.folder / f"entry-{path.name}"))
+        for path in (pointer, entry_config):
+            path.unlink(missing_ok=True)
+        if entry_dir.is_dir() and not any(entry_dir.iterdir()):
+            entry_dir.rmdir()
+        result = {
+            "status": "detached",
+            "root": str(root),
+            "entry_id": attachment.entry_id,
+            "home": str(instance_root),
+            "home_directory_left": entry_dir.is_dir(),
+        }
+        result["receipt"] = run.receipt(result)
     return result
 
 
 def adopt(*, root: Path, now: str | None = None) -> dict[str, Any]:
     now = now or _now()
-    payload = read_shared_payload(root)
-    if not payload["scope_ids"]:
-        raise SharedStoreError("the store has no entries yet; there is nothing to adopt")
-    binding = _store_binding(payload, root, frozenset(payload["scope_ids"]))
-    run = Run(root, "adopt", now)
-    worker_path = root / RUNTIME_CONFIG_FILENAME
-    worker_now = _read_json(worker_path) if worker_path.is_file() else None
-    worker_config = _bound(worker_now, binding) if worker_now is not None else None
-    if worker_config is not None and isinstance(worker_config.get("auxiliary"), dict):
-        auxiliary = worker_config["auxiliary"]
-        if auxiliary.get("installation_dir") or auxiliary.get("ledger_path"):
-            auxiliary["installation_dir"] = str(root)
-            auxiliary["ledger_path"] = str(root / DEFAULT_LEDGER_NAME)
-        RuntimeInstanceConfig.from_mapping(worker_config)
-    run.keep(root / MANIFEST_FILENAME, "store")
-    run.keep(worker_path, "worker")
-    try:
-        previous = SQLiteStorage(binding).adopt()
-    except sqlite3.OperationalError as exc:
-        raise SharedStoreError(
-            "the store is busy: pause the shared worker (autostart pause) and stop every "
-            "attached host, then adopt again"
-        ) from exc
-    payload["data_directory"] = str(root)
-    write_shared_payload(root, payload)
-    if worker_config is not None:
-        write_json(worker_path, worker_config)
-    result = {
-        "status": "adopted",
-        "root": str(root),
-        "previous_directory": previous,
-        "next": [
-            "register the shared worker again: autostart enable --config <root>/runtime-config.json",
-            "attach every agent again from its home",
-        ],
-    }
-    result["receipt"] = run.receipt(result)
+    with store_lock(root, "adopt", now):
+        payload = read_shared_payload(root)
+        if not payload["scope_ids"]:
+            raise SharedStoreError("the store has no entries yet; there is nothing to adopt")
+        binding = _store_binding(payload, root, frozenset(payload["scope_ids"]))
+        run = Run(root, "adopt", now)
+        worker_path = root / RUNTIME_CONFIG_FILENAME
+        worker_now = _read_json(worker_path) if worker_path.is_file() else None
+        worker_config = _bound(worker_now, binding) if worker_now is not None else None
+        if worker_config is not None and isinstance(worker_config.get("auxiliary"), dict):
+            auxiliary = worker_config["auxiliary"]
+            if auxiliary.get("installation_dir") or auxiliary.get("ledger_path"):
+                auxiliary["installation_dir"] = str(root)
+                auxiliary["ledger_path"] = str(root / DEFAULT_LEDGER_NAME)
+            RuntimeInstanceConfig.from_mapping(worker_config)
+        run.keep(root / MANIFEST_FILENAME, "store")
+        run.keep(worker_path, "worker")
+        try:
+            previous = SQLiteStorage(binding).adopt()
+        except sqlite3.OperationalError as exc:
+            raise SharedStoreError(
+                "the store is busy: pause the shared worker (autostart pause) and stop every "
+                "attached host, then adopt again"
+            ) from exc
+        payload["data_directory"] = str(root)
+        write_shared_payload(root, payload)
+        if worker_config is not None:
+            write_json(worker_path, worker_config)
+        result = {
+            "status": "adopted",
+            "root": str(root),
+            "previous_directory": previous,
+            "next": [
+                "register the shared worker again: autostart enable --config <root>/runtime-config.json",
+                "attach every agent again from its home",
+            ],
+        }
+        result["receipt"] = run.receipt(result)
     return result
 
 
@@ -545,9 +635,9 @@ def _in_order(rows: list[str], common: Counter[str]) -> list[str]:
 
 def _routes_changed(before: InstallationManifest, after: InstallationManifest) -> list[dict[str, Any]]:
     """Each route a row names, before or after, that the change lets read, write or capture otherwise, as its
-    session binds (``resolve_runtime_audience``) before and after.  Rows alone did not say it: of the rows a session
-    matches, the first that captures into a scope it may write decides, so two rows on one route, swapped, moved a
-    chat's captures with nothing else shown (review of 3.10.5); an owner principal wakes or silences owner rows.  A
+    session binds (``resolve_runtime_audience``) before and after.  Rows alone do not say it: of the rows a session
+    matches, the first that captures into a scope it may write decides, so two rows on one route, swapped, move a
+    chat's captures with no row, scope or principal changed; an owner principal wakes or silences owner rows.  A
     route resolved with its own session key stands for every session it matches, unpinned rows included."""
     routes = {tuple(row[field] for field in _ROUTE_FIELDS) for row in (*before.audiences, *after.audiences)}
     changed = []
@@ -610,7 +700,7 @@ def grants(
     apply: bool = False,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Show an attached entry's grants, or change them from an edited copy (#246).
+    """Show an attached entry's grants, or change them from an edited copy.
 
     Without ``grants_from`` the entry's grants come back as a document, written to ``out`` when one is named.  With
     it the edited document is checked as attach checks a record and the change is shown; with ``apply`` as well it
@@ -618,24 +708,29 @@ def grants(
     The store's own scopes never change (``regranted``), so the shared worker's config does not either.  A copy of
     each file replaced and the entry's grants before the change (``grants-before.json``, which applied the same way
     puts them back) go with the receipt.  A write that fails puts the copies back; run again, the command also
-    rebinds an entry config a failed run left behind.  Memories keep their scopes; nothing else is written.
+    rebinds an entry config a failed run left behind.  Memories keep their scopes; nothing else is written.  The
+    grants are read, and a change planned and written, holding the home's lock and the store's (``_attached_home``),
+    so no other command writes the store or points the home elsewhere in between.
     """
-    if grants_from is None:
-        if apply:
-            raise SharedStoreError("--apply needs --grants-from, the entry's grants as edited")
-        return _shown_grants(instance_root, out)
-    if out is not None:
+    if grants_from is None and apply:
+        raise SharedStoreError("--apply needs --grants-from, the entry's grants as edited")
+    if grants_from is not None and out is not None:
         raise SharedStoreError("--out writes the entry's grants to edit; with --grants-from nothing is written there")
-    plan = _planned_grants(instance_root, grants_from)
-    if not plan.manifest_changes and plan.entry_config is None:
-        return {"status": "unchanged", **plan.change}
-    if not apply:
-        return {
-            "status": "preview",
-            **plan.change,
-            "next": "nothing is written: stop this entry's host, run again with --apply, then start it again",
-        }
-    return _applied_grants(plan, now or _now())
+    now = now or _now()
+    shape = f"grants --instance-root {instance_root}{' --apply' if apply else ''}"
+    with _attached_home(instance_root, shape, now):
+        if grants_from is None:
+            return _shown_grants(instance_root, out)
+        plan = _planned_grants(instance_root, grants_from)
+        if not plan.manifest_changes and plan.entry_config is None:
+            return {"status": "unchanged", **plan.change}
+        if not apply:
+            return {
+                "status": "preview",
+                **plan.change,
+                "next": "nothing is written: stop this entry's host, run again with --apply, then start it again",
+            }
+        return _applied_grants(plan, now)
 
 
 def _shown_grants(instance_root: Path, out: Path | None) -> dict[str, Any]:
@@ -654,8 +749,7 @@ def _shown_grants(instance_root: Path, out: Path | None) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _GrantsPlan:
-    """A checked grants change: the store's manifest after it, and the entry's runtime config when it must follow.
-    ``manifest_digest`` is the manifest it was checked against."""
+    """A checked grants change: the store's manifest after it, and the entry's runtime config when it must follow."""
 
     store: Path
     before: dict[str, Any]
@@ -663,7 +757,6 @@ class _GrantsPlan:
     change: dict[str, Any]
     entry_path: Path
     entry_config: dict[str, Any] | None
-    manifest_digest: str
 
     @property
     def manifest_changes(self) -> bool:
@@ -677,11 +770,7 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
         document = json.loads(grants_from.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SharedStoreError(f"{grants_from} is not readable JSON") from exc
-    attachment = read_attachment(instance_root)
-    digest = _manifest_digest(attachment.root) if attachment is not None else ""
     store, view_before, before, after, updated, view = regranted(instance_root, document)
-    if _manifest_digest(store) != digest:
-        raise SharedStoreError("the store's manifest changed while it was read: run the command again")
     if view.entry_host in CLIENT_HOSTS:
         _client_route_holds(view)
     change = _grants_change(before, after, (view_before, view))
@@ -696,21 +785,14 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
             entry_config = None
     change["entry_runtime_config_rebound"] = entry_config is not None
     _fits(entry_config, "entry's")
-    return _GrantsPlan(store, before, updated, change, entry_path, entry_config, digest)
-
-
-def _manifest_digest(store: Path) -> str:
-    try:
-        return hashlib.sha256((store / MANIFEST_FILENAME).read_bytes()).hexdigest()
-    except OSError:
-        return ""
+    return _GrantsPlan(store, before, updated, change, entry_path, entry_config)
 
 
 def _client_route_holds(view: InstallationManifest) -> None:
     """Refuse grants under which a client entry's own route, bound as the client binds it (``load_shared_client``),
     has no owner row of an owner principal that reads and captures.  The client takes whoever types into it for the
-    owner: with a conversation row in its owner row's place, or its owner principal replaced, it still bound, as no
-    owner (review of 3.10.5).  So only the owner rows are counted."""
+    owner: a conversation row in its owner row's place, or its owner principal replaced, would still bind it, as no
+    owner.  So only the owner rows are counted."""
     scope = HermesRuntimeScope(
         platform=view.entry_host,
         user_id=LOCAL_USER_ID,
@@ -736,15 +818,6 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
     replaced = {plan.store / MANIFEST_FILENAME: "store", plan.entry_path: "entry"}
     for path, label in replaced.items():
         run.keep(path, label)
-    # Planned from one manifest, a change written over another undid what the other command had written (two runs at
-    # once: a revoked route came back).  The copy just kept is the manifest this run would replace.  A writer that
-    # lands between here and the replace is not seen; shared-store commands run one at a time.
-    kept = run.folder / f"store-{MANIFEST_FILENAME}"
-    if not kept.is_file() or hashlib.sha256(kept.read_bytes()).hexdigest() != plan.manifest_digest:
-        run.receipt({"status": "refused", "entry_id": plan.before["entry_id"], "reason": "manifest_changed"})
-        raise SharedStoreError(
-            "the store's manifest changed after this change was checked: nothing was written; run the command again"
-        )
     rollback = None
     if plan.manifest_changes:
         rollback = run.folder / "grants-before.json"
@@ -761,8 +834,8 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
             "rollback": str(rollback) if rollback is not None else None,
             "next": "start this entry's host again: it binds the new grants when it starts (doctor checks them)",
         }
-        # The receipt is part of the change: written after it, a receipt that failed left the grants changed and
-        # the command failed, with no word of the grants as they were (review of 3.10.5).
+        # The receipt is part of the change: one that failed once the change was written would leave the grants
+        # changed and the command failed, with no word of the grants as they were.
         result["receipt"] = run.receipt(result)
     except BaseException as exc:
         # Half a change binds the entry to scopes its grants do not name, or the other way round.
@@ -774,8 +847,8 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
 
 
 def _put_back(run: Run, replaced: dict[Path, str]) -> list[str]:
-    """Each file a run kept a copy of, as the copy has it, replaced in one step, and retried while a reader holds it
-    (a single try left a change half undone while the worker read the manifest; review of 3.10.5).  Each file is
+    """Each file a run kept a copy of, as the copy has it, replaced in one step, and retried while a reader holds it,
+    as the worker reading the manifest does for a moment: tried once, a change would be left half undone.  Each file is
     tried; what could not be put back comes back as ``copy -> file``, to copy by hand."""
     left = []
     for path, label in replaced.items():
@@ -790,7 +863,18 @@ def _put_back(run: Run, replaced: dict[Path, str]) -> list[str]:
     return left
 
 
-def entries(*, root: Path) -> dict[str, Any]:
+def _pointer_of(home: Path, now: str) -> Attachment | None:
+    """A home's pointer, read holding the home's lock, so that no command is midway through changing it.  The lock is
+    held for that read alone, never beside another home's; a home that is no directory has no pointer, and gets no
+    lock file."""
+    if not home.is_dir():
+        return None
+    with home_lock(home, "entries", now):
+        return read_attachment(home)
+
+
+def entries(*, root: Path, now: str | None = None) -> dict[str, Any]:
+    now = now or _now()
     payload = read_shared_payload(root)
     seen: dict[str, dict[str, str]] = {}
     store = "empty"
@@ -808,7 +892,7 @@ def entries(*, root: Path) -> dict[str, Any]:
     for record in payload["entries"]:
         home = Path(record["home"])
         try:
-            pointer = read_attachment(home)
+            pointer = _pointer_of(home, now)
             here = pointer is not None and pointer.entry_id == record["entry_id"] and pointer.root == root
         except HermesIdentityError:
             here = False
@@ -853,11 +937,12 @@ def main(argv: list[str]) -> int:
     join.add_argument("--grants-from", help="the installation.json of the home's own store, moved aside")
     join.add_argument(
         "--grants-like",
-        help="a client's entry: the attached Hermes entries whose owner grants it gets, comma separated, or all",
+        help="a client's entry: the attached entries, Hermes or client, whose owner grants it gets, comma separated, "
+        "or all; with no other entry attached, leave it and --capture-like out: the client brings the owner's scope",
     )
     join.add_argument(
         "--capture-like",
-        help="a client's entry: the Hermes entry whose owner capture scope it "
+        help="a client's entry: the attached entry whose owner capture scope it "
         "writes into; every owner row of the store must read that scope",
     )
     join.add_argument("--runtime-config-from", help="the runtime-config.json with this entry's model routes")

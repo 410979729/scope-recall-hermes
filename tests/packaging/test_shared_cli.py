@@ -12,15 +12,19 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from scope_recall.adapters.clients import remote_client
 from scope_recall.adapters.clients.config import load_shared_client
-from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
-from scope_recall.adapters.hermes.shared_entries import read_attachment, read_shared_payload
-from scope_recall.maintenance import cli, install_dsh, install_workbuddy
+from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity, shared_entries
+from scope_recall.adapters.hermes.shared_entries import CLIENT_HOSTS, read_attachment, read_shared_payload
+from scope_recall.maintenance import cli, install_codex, install_dsh, install_workbuddy, shared, shared_run
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, apply_uninstall, plan_install, plan_uninstall
 from scope_recall.maintenance.install_common import InstallError, InstallPlan
@@ -295,8 +299,8 @@ def _with_scopes(home, name, count):
 
 
 def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, capsys, root):
-    """The worker's config lists every scope of the store twice, about 120 bytes each.  The pilot's 221 scopes
-    made 58 KB; one more instance passed the 64 KB these commands read, and the next attach refused the store."""
+    """The worker's config lists every scope of the store twice, about 120 bytes each, so a store of a few hundred
+    scopes gives it more than 64 KB: attach, detach and adopt still read and write it."""
     homes = []
     for name in ("tianshu", "tianji", "yuheng"):
         home, _options = _installed(tmp_path, name)
@@ -317,7 +321,7 @@ def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, c
 
 
 def _hermes_pair(tmp_path, capsys, root, *, second_workspace=None):
-    """Two Hermes entries of the store, tianshu's routes the worker's."""
+    """Two Hermes entries of the store, the first one's routes the worker's."""
     first, _options = _installed(tmp_path, "tianshu")
     _attach(capsys, first, root, _moved_aside(first, _routes(first)), "tianshu", "天枢")
     second, _options = _installed(tmp_path, "tianquan", workspace=second_workspace)
@@ -325,24 +329,17 @@ def _hermes_pair(tmp_path, capsys, root, *, second_workspace=None):
     return first, second
 
 
+CLIENT_NAMES = {"codex": "Codex", "claude-code": "Claude Code", "workbuddy": "WorkBuddy", "dsh": "DeepSeek Harness"}
+
+
 def _attach_client(capsys, root, home, *, host="claude-code", like="all", capture="tianshu", routes=None):
-    argv = [
-        "attach",
-        "--host",
-        host,
-        "--instance-root",
-        str(home),
-        "--root",
-        str(root),
-        "--entry",
-        host,
-        "--display-name",
-        "Claude Code" if host == "claude-code" else "Codex",
-        "--grants-like",
-        like,
-        "--capture-like",
-        capture,
-    ]
+    """``attach`` for a client entry named after its host; ``like`` or ``capture`` None leaves that option out."""
+    argv = ["attach", "--host", host, "--instance-root", str(home), "--root", str(root)]
+    argv += ["--entry", host, "--display-name", CLIENT_NAMES[host]]
+    if like is not None:
+        argv += ["--grants-like", like]
+    if capture is not None:
+        argv += ["--capture-like", capture]
     if routes is not None:
         argv += ["--runtime-config-from", str(routes)]
     return _run(capsys, *argv)
@@ -410,7 +407,7 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
 
 
 def _workbuddy_home(tmp_path):
-    """A WorkBuddy home shaped like the pilot's: keys of WorkBuddy's own and another tool's prompt hook in its
+    """A WorkBuddy home shaped as one in use is: keys of WorkBuddy's own and another tool's prompt hook in its
     settings, and one MCP server of WorkBuddy's.  Every value is made up."""
     home = (tmp_path / "TEST-profile" / ".workbuddy").resolve()
     home.mkdir(parents=True)
@@ -507,7 +504,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert {path.name for path in workbuddy.iterdir()} == present, "a plan writes nothing"
 
     # A resident recall server runs the package it was started from: one of the installation an install replaces
-    # (another venv, an older version) held the entry's lock against the new one's (review 2 of 3.6.0rc1).
+    # (another venv, an older version) would hold the entry's lock against the new one's, so the install stops it.
     from scope_recall.adapters.clients import local_endpoint
 
     stopped = []
@@ -752,10 +749,9 @@ def _weixin(home, user="TEST-wx-1"):
 
 
 def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path, capsys, root):
-    """#246: an attached entry kept the grants it was attached with; a gateway owner route or a read of another
-    scope could not be added.  The operator prints the entry's grants, edits them, sees the change, applies it with a
-    backup and a receipt, and puts the old grants back the same way.  Rows stay exact; what the store holds keeps
-    its scopes."""
+    """An attached entry's grants change from an edited copy: the operator prints them, adds a gateway owner route
+    and a read of another scope, sees the change, applies it with a backup and a receipt, and puts the old grants back
+    the same way.  Rows stay exact; what the store holds keeps its scopes."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     manifest = root / "installation.json"
     original = json.loads(manifest.read_text(encoding="utf-8"))
@@ -780,7 +776,7 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
     elsewhere = next(entry for entry in original["entries"] if entry["entry_id"] == "tianquan")["scope_ids"][0]
     assert elsewhere not in owner["allowed_scope_ids"]
     document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
-    owner["allowed_scope_ids"].append(elsewhere)  # the owner reads what tianquan's chats hold, writes as before
+    owner["allowed_scope_ids"].append(elsewhere)  # the owner reads what the other entry's chats hold, writes as it did
     dm = dict(owner, platform="weixin", user_id="TEST-wx-1", chat_type="dm", chat_id="TEST-wx-1", thread_id="")
     document["audiences"].append(dm)
     edit.write_text(json.dumps(document), encoding="utf-8")
@@ -828,11 +824,9 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
 def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_finishes(
     tmp_path, capsys, root, monkeypatch
 ):
-    """A write that fails after the manifest changed left the entry bound to its old scopes, and running the command
-    again said unchanged (review of 3.10.5).  The copies go back on a failure; and a run that finds the manifest done
-    but the entry's runtime config not rebinds it."""
-    from scope_recall.maintenance import shared
-
+    """A write that fails after the manifest changed would leave the entry bound to its old scopes, and running the
+    command again would say unchanged.  The copies go back on a failure; and a run that finds the manifest done but the
+    entry's runtime config not rebinds it."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
     before_manifest, before_entry = manifest.read_bytes(), entry.read_bytes()
@@ -868,35 +862,39 @@ def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_f
     assert load_config(entry).binding == _bind(first).binding
 
 
-def test_two_grants_changes_planned_from_one_manifest_cannot_both_be_written(tmp_path, capsys, root):
-    """Each change carries the whole manifest: written over the other, the second undid the first (a revoked route
-    came back; review of 3.10.5).  The second is refused and writes nothing."""
-    from scope_recall.maintenance import shared
-
+def test_a_grants_change_started_while_another_is_written_cannot_undo_it(tmp_path, capsys, root, monkeypatch):
+    """Each change carries the whole manifest: written over one made meanwhile, it undid that one (a revoked route came
+    back).  A second grants --apply started while the first writes its manifest waits for the store's lock and is
+    refused; run again, it is planned from the manifest the first wrote, and both changes hold."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.3)
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     mine = read_shared_payload(root)["entries"][0]["audience_scopes"]["owner_private"]
-    plans = []
-    for home, name in ((first, "one"), (second, "two")):
+    edits = {}
+    for home in (first, second):
         code, shown = _run(capsys, "grants", "--instance-root", str(home))
         document = shown["grants"]
         if home == second:
             document["audiences"][0]["allowed_scope_ids"].append(mine)
         else:
             document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
-        edit = tmp_path / f"TEST-plan-{name}.json"
-        edit.write_text(json.dumps(document), encoding="utf-8")
-        plans.append(shared._planned_grants(home, edit))
-    shared._applied_grants(plans[0], "2026-10-15T12:00:00Z")
-    written = (root / "installation.json").read_bytes()
-    with pytest.raises(shared.SharedStoreError, match="changed after this change was checked"):
-        shared._applied_grants(plans[1], "2026-10-15T12:00:01Z")
-    assert (root / "installation.json").read_bytes() == written, "the second wrote nothing"
+        edits[home] = tmp_path / f"TEST-plan-{shown['entry_id']}.json"
+        edits[home].write_text(json.dumps(document), encoding="utf-8")
+    apply_second = ("grants", "--instance-root", str(second), "--grants-from", str(edits[second]), "--apply")
+    other = _meanwhile(monkeypatch, capsys, shared, "write_shared_payload", *apply_second)
+    code, applied = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(edits[first]), "--apply")
+    assert (code, applied["status"]) == (0, "applied"), applied
+    assert other.get("code") == 2 and "is writing this store" in other["result"]["error"], other
+    code, applied = _run(capsys, *apply_second)
+    assert (code, applied["status"]) == (0, "applied"), applied
+    entries = {entry["entry_id"]: entry for entry in read_shared_payload(root)["entries"]}
+    assert {"platform": "weixin", "user_id": "TEST-wx-1"} in entries["tianshu"]["owner_principals"]
+    assert mine in entries["tianquan"]["audiences"][0]["allowed_scope_ids"]
 
 
 def test_two_rows_on_one_route_are_each_a_grant(tmp_path, capsys, root):
-    """Rows were compared by route, so of two rows on one route one was lost, and taking away the one that read more
-    read as no change and was never written (review of 3.10.5).  An owner row whose user is no owner principal grants
-    nothing and is named, and the grants before a change put such a row back as it was."""
+    """Two rows on one route are each a grant: both are kept, and taking away the one that reads more is a change,
+    and written.  An owner row whose user is no owner principal grants nothing and is named, and the grants before a
+    change put such a row back as it was."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     elsewhere = read_shared_payload(root)["entries"][1]["scope_ids"][0]
 
@@ -958,8 +956,8 @@ def test_two_runs_of_one_command_in_one_second_keep_apart(tmp_path):
     receipt = Path(one.receipt({"status": "TEST"}))
     assert receipt == one.folder.with_name(one.folder.name + ".json") and one.folder.is_dir(), "kept, though empty"
     assert Run(tmp_path, "grants-TEST", at).folder not in (one.folder, two.folder)
-    # import-entry's moments have fractions of a second: a receipt named by replacing a suffix lost the fraction and
-    # the command, and the second run of one second looked for a free name forever (review of 3.10.5).
+    # import-entry's moments have fractions of a second: a receipt named by replacing a suffix would lose the fraction
+    # and the command, and two runs in one second each find a name of their own.
     fine = "2026-10-15T12:00:00.123456+00:00"
     three, four = Run(tmp_path, "import-TEST", fine), Run(tmp_path, "import-TEST", fine)
     receipts = {Path(run.receipt({"status": "TEST"})).name for run in (three, four)}
@@ -1005,9 +1003,8 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
 
 def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_order(tmp_path, capsys, root):
     """Of the rows a session matches, the first that captures into a scope it may write decides where its messages
-    go.  Two owner rows on one route, swapped, moved the owner's captures into another scope with every row, scope
-    and principal list of the preview empty (review of 3.10.5).  The preview names the route as it binds, before and
-    after."""
+    go: two owner rows on one route, swapped, move the owner's captures into another scope with every row, scope and
+    principal list of the preview empty.  The preview names the route as it binds, before and after."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     payload = read_shared_payload(root)
     mine = payload["entries"][0]["audience_scopes"]["owner_private"]
@@ -1049,8 +1046,8 @@ def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_ord
 
 
 def test_a_grants_apply_whose_receipt_fails_puts_back_what_it_replaced(tmp_path, capsys, root, monkeypatch):
-    """The receipt was written after the change, outside what a failure puts back: a full disk at that moment left
-    the grants changed and the command failed, with no word of the grants as they were (review of 3.10.5)."""
+    """The receipt is part of the change: a receipt that cannot be written (a full disk) puts back what the change
+    replaced, rather than leave the grants changed with no word of them as they were."""
     from scope_recall.maintenance import shared_run
 
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
@@ -1081,12 +1078,9 @@ def test_a_grants_apply_whose_receipt_fails_puts_back_what_it_replaced(tmp_path,
 
 
 def test_a_grants_apply_puts_back_past_a_reader_and_names_what_it_could_not(tmp_path, capsys, root, monkeypatch):
-    """Putting the copies back was a single try: a worker reading the manifest at that moment, which Windows refuses
-    a replace for, left the change half undone (review of 3.10.5).  It is tried again as every write is, and a file
-    it still could not put back is named with its copy."""
+    """Putting the copies back is tried again as every write is, past a worker reading the manifest for a moment,
+    which Windows refuses a replace for; a file it still could not put back is named with its copy."""
     import os
-
-    from scope_recall.maintenance import shared
 
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
@@ -1169,8 +1163,8 @@ def test_a_client_entry_s_grants_change_and_keep_its_own_route(tmp_path, capsys,
         edit.write_text(json.dumps(moved), encoding="utf-8")
         code, refused = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
         assert code == 2 and "its own route" in refused["error"], (field, refused)
-    # A conversation row in the owner row's place still read and captured, so it passed, the owner principal replaced
-    # too (review of 3.10.5): the client takes whoever types into it for the owner, so its route keeps an owner row.
+    # A conversation row in the owner row's place reads and captures, and so does an owner row of another principal:
+    # the client takes whoever types into it for the owner, so its route keeps an owner row of an owner principal.
     someone = {"platform": "weixin", "user_id": "TEST-wx-1"}
     for name, kind, principals in (
         ("conversation", "conversation", document["owner_principals"]),
@@ -1228,9 +1222,568 @@ def test_a_codex_home_with_its_own_store_still_in_place_is_refused(tmp_path, cap
     assert load_shared_client(codex, "codex").entry_id == "codex"
 
 
+# -- a store whose first entry is a client --------------------------------------------------------------------------
+
+
+def _client_homes(tmp_path, *hosts):
+    homes = {host: (tmp_path / f"TEST-{host}-home").resolve() for host in hosts}
+    for home in homes.values():
+        home.mkdir()
+    return homes
+
+
+def _owner_rows(root, entry_id):
+    record = next(entry for entry in read_shared_payload(root)["entries"] if entry["entry_id"] == entry_id)
+    return [row for row in record["audiences"] if row["kind"] == "owner_private"]
+
+
+def _written_routes(tmp_path):
+    """A runtime config written by hand, as for a store no home with routes is attached to: its binding is made up."""
+    nowhere = str((tmp_path / "TEST-nowhere").resolve())
+    routes = {
+        "binding": {
+            "agent_id": AGENT,
+            "installation_id": "TEST-unbound",
+            "data_directory": nowhere,
+            "scope_ids": ["TEST-scope"],
+        },
+        "session_id": "TEST-background",
+        "allowed_scope_ids": ["TEST-scope"],
+        "auxiliary": {
+            "external_embedding": False,
+            "external_consolidation": False,
+            "embedding": {"credential_env": "TEST_EMBED_KEY"},
+            "installation_dir": nowhere,
+        },
+    }
+    path = tmp_path / "TEST-routes.json"
+    path.write_text(json.dumps(routes), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("host", CLIENT_HOSTS)
+def test_each_client_attaches_first_to_a_new_store_and_another_client_names_it(tmp_path, capsys, root, host):
+    """With no other entry attached, a client takes no grants like another's: it gets a fresh installation's owner
+    grants and brings that owner scope into the store, and its routes give the shared worker its own.  A client of
+    another host attached after it names it, and both bind as the owner, reading, writing and capturing in that one
+    scope, their runtime configs bound to the store whatever the written one named."""
+    later = CLIENT_HOSTS[(CLIENT_HOSTS.index(host) + 1) % len(CLIENT_HOSTS)]
+    homes, routes = _client_homes(tmp_path, host, later), _written_routes(tmp_path)
+    code, result = _attach_client(capsys, root, homes[host], host=host, like=None, capture=None, routes=routes)
+    assert (code, result.get("new_scopes"), result.get("worker_runtime_config_written")) == (0, 1, True), result
+    code, result = _attach_client(capsys, root, homes[later], host=later, like=host, capture=host, routes=routes)
+    assert (code, result.get("new_scopes"), result.get("worker_runtime_config_written")) == (0, 0, False), result
+    [scope] = read_shared_payload(root)["scope_ids"]
+    assert load_config(root / "runtime-config.json").binding.scope_ids == {scope}
+    for name, home in homes.items():
+        config = load_shared_client(home, name)
+        audience = config.audience
+        assert (audience.allowed_scope_ids, audience.writable_scope_ids, audience.capture_scope_id) == (
+            frozenset({scope}),
+            frozenset({scope}),
+            scope,
+        ), name
+        entry = load_config(home / "scope-recall" / "runtime-config.json")
+        assert (entry.binding, entry.host_adapter) == (config.to_binding(), name)
+
+
+def test_a_client_names_only_entries_attached_beside_it(tmp_path, capsys, root):
+    """On a new store the first client names no entry to take grants like, and a client after it must name attached
+    ones; the first client's attach run again repeats it.  A refused attach writes nothing."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like="all", capture="workbuddy")
+    assert code == 2 and "no other entry is attached" in result["error"], result
+    assert read_shared_payload(root)["entries"] == [] and read_attachment(homes["workbuddy"]) is None
+    for new_scopes in (1, 0):
+        code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+        assert (code, result.get("new_scopes")) == (0, new_scopes), result
+    for like, capture, refused in (
+        (None, None, "needs --grants-like and --capture-like"),
+        ("all", None, "needs --grants-like and --capture-like"),
+        ("workbuddy,nobody", "workbuddy", "not other entries attached to this store: nobody"),
+        ("all", "dsh", "not other entries attached to this store: dsh"),
+    ):
+        code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like=like, capture=capture)
+        assert code == 2 and refused in result["error"], (like, capture, result)
+    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["workbuddy"]
+    assert read_attachment(homes["dsh"]) is None
+    code, result = _run(capsys, "detach", "--instance-root", str(homes["workbuddy"]))
+    assert (code, result["status"]) == (0, "detached"), result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="workbuddy", capture="workbuddy")
+    assert code == 2 and "no other entry is attached" in result["error"], "a detached entry is none to be like"
+
+
+def test_a_hermes_home_attached_after_the_clients_holds_their_scope_or_is_granted_it(tmp_path, capsys, root):
+    """An installation made with the default workspace holds the owner scope the store's first client brought: attached
+    later, it brings no scope and its owner rows read, write and capture there.  One of another workspace keeps its
+    owner scope apart, and a later client capturing where the clients do is refused, until grants let each side read
+    the other's; then a client attached later reads both."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    clients = load_shared_client(homes["workbuddy"], "workbuddy").audience.capture_scope_id
+
+    desk, _options = _installed(tmp_path, "desk")
+    code, result = _attach(capsys, desk, root, _moved_aside(desk, _routes(desk)), "desk", "Desk")
+    assert (code, result.get("new_scopes")) == (0, 0), result
+    granted = {
+        (tuple(row["allowed_scope_ids"]), tuple(row["writable_scope_ids"]), row["capture_scope_id"])
+        for row in _owner_rows(root, "desk")
+    }
+    assert granted == {((clients,), (clients,), clients)}
+
+    apart, _options = _installed(tmp_path, "apart", workspace="TEST-elsewhere")
+    code, result = _attach(capsys, apart, root, _moved_aside(apart, _routes(apart)), "apart", "Apart")
+    assert (code, result.get("new_scopes")) == (0, 1), result
+    [own] = {row["capture_scope_id"] for row in _owner_rows(root, "apart")}
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="workbuddy")
+    assert code == 2 and "not read by these owner rows: apart:cli" in result["error"], result
+
+    def reads(scope):
+        def change(document):
+            for row in document["audiences"]:
+                if row["kind"] == "owner_private":
+                    row["allowed_scope_ids"].append(scope)
+
+        return change
+
+    for home, scope in ((apart, clients), (homes["workbuddy"], own)):
+        code, applied = _granted(capsys, tmp_path, home, reads(scope))
+        assert (code, applied["status"]) == (0, "applied"), applied
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="workbuddy")
+    assert code == 0, result
+    audience = load_shared_client(homes["dsh"], "dsh").audience
+    assert (audience.allowed_scope_ids, audience.capture_scope_id) == (frozenset({clients, own}), clients)
+
+
+def test_an_empty_hermes_home_a_store_began_with_detaches_and_its_clients_keep_their_grants(tmp_path, capsys, root):
+    """A store begun with an empty Hermes home, so that a client had an entry to take grants like, lets that home go:
+    the clients keep the grants they were given, and a client attached later names one of them."""
+    empty = (tmp_path / "TEST-empty-hermes-home").resolve()
+    empty.mkdir()
+    argv = ["attach", "--host", "hermes", "--instance-root", str(empty), "--root", str(root)]
+    code, result = _run(capsys, *argv, "--entry", "empty", "--display-name", "Empty")
+    assert code == 0, result
+    homes = _client_homes(tmp_path, "codex", "claude-code")
+    code, result = _attach_client(capsys, root, homes["codex"], host="codex", like="empty", capture="empty")
+    assert code == 0, result
+    code, result = _run(capsys, "detach", "--instance-root", str(empty))
+    assert (code, result["status"]) == (0, "detached"), result
+    code, result = _attach_client(capsys, root, homes["claude-code"], host="claude-code", like="all", capture="codex")
+    assert (code, result.get("new_scopes")) == (0, 0), result
+    [scope] = read_shared_payload(root)["scope_ids"]
+    for name, home in homes.items():
+        audience = load_shared_client(home, name).audience
+        assert (audience.allowed_scope_ids, audience.capture_scope_id) == (frozenset({scope}), scope), name
+
+
+def test_a_client_captures_only_where_every_attached_owner_row_reads_a_client_s_included(tmp_path, capsys, root):
+    """A later client's capture scope is refused when an attached client's owner row does not read it, though every
+    Hermes owner row does, and so is an entry to capture like whose owner rows capture into two scopes."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    clients = load_shared_client(homes["workbuddy"], "workbuddy").audience.capture_scope_id
+    apart, _options = _installed(tmp_path, "apart", workspace="TEST-elsewhere")
+    code, result = _attach(capsys, apart, root, _moved_aside(apart, _routes(apart)), "apart", "Apart")
+    assert code == 0, result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="apart")
+    assert (code, result.get("error")) == (
+        2,
+        "apart's capture scope is not read by these owner rows: workbuddy:workbuddy; "
+        "what the owner says in the client would not reach them",
+    ), result
+
+    def a_dm_capturing_where_the_clients_do(document):
+        document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
+        owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+        dm = dict(owner, platform="weixin", user_id="TEST-wx-1", chat_type="dm", chat_id="TEST-wx-1", thread_id="")
+        dm.update(allowed_scope_ids=[clients], writable_scope_ids=[clients], capture_scope_id=clients)
+        document["audiences"].append(dm)
+
+    code, applied = _granted(capsys, tmp_path, apart, a_dm_capturing_where_the_clients_do)
+    assert (code, applied["status"]) == (0, "applied"), applied
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="apart")
+    assert (code, result.get("error")) == (2, "apart's owner rows capture into 2 scopes; name an entry with one")
+
+
+def _meanwhile(monkeypatch, capsys, module, name, *argv):
+    """Start the operator command ``argv`` in a thread of its own the first time ``module.name`` is called, as one run
+    at that moment would be, and let it run, or wait for the store's lock, until it ends.  What it answered is in the
+    dict returned."""
+    original, answered = getattr(module, name), {}
+
+    def then_another(*args, **kwargs):
+        monkeypatch.setattr(module, name, original)
+        other = threading.Thread(target=lambda: answered.update(code=main(list(argv))))
+        other.start()
+        other.join(timeout=60)
+        answered["result"] = json.loads(capsys.readouterr().out)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, then_another)
+    return answered
+
+
+def test_two_first_attaches_started_together_leave_one_entry_and_one_scope(tmp_path, capsys, root, monkeypatch):
+    """Two clients attached to a new store at once: the one holding the store's lock reads, takes its grants and
+    writes; the other, started just before the first writes its manifest, waits for the lock, is refused naming the
+    command that holds it, and writes nothing.  The store holds one entry and one scope, and no home points at an
+    entry the manifest does not hold."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.3)
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    dsh = ("attach", "--host", "dsh", "--instance-root", str(homes["dsh"]), "--root", str(root), "--entry", "dsh")
+    other = _meanwhile(monkeypatch, capsys, shared_entries, "write_shared_payload", *dsh, "--display-name", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    assert other.get("code") == 2, other
+    assert other["result"]["error"].startswith("attach --host workbuddy --entry workbuddy (process "), other
+    assert other["result"]["error"].endswith("run attach --host dsh --entry dsh again once it has finished"), other
+    payload = read_shared_payload(root)
+    assert ([entry["entry_id"] for entry in payload["entries"]], len(payload["scope_ids"])) == (["workbuddy"], 1)
+    assert read_attachment(homes["dsh"]) is None
+
+
+def test_no_command_writes_between_an_attach_taking_its_grants_and_its_write(tmp_path, capsys, root, monkeypatch):
+    """A Hermes entry attached while a client takes its grants would not read the scope the client captures into.  It
+    waits for the store's lock and is refused, so the client's grants are written against the manifest they were taken
+    from; attached after it, the Hermes entry stands as any entry attached later does."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.3)
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    apart, _options = _installed(tmp_path, "apart", workspace="TEST-elsewhere")
+    grants_from = _moved_aside(apart, _routes(apart)) / "installation.json"
+    hermes = ("attach", "--host", "hermes", "--instance-root", str(apart), "--root", str(root), "--entry", "apart")
+    hermes += ("--display-name", "Apart", "--grants-from", str(grants_from))
+    other = _meanwhile(monkeypatch, capsys, shared, "_client_grants", *hermes)
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="workbuddy")
+    assert code == 0, result
+    assert other.get("code") == 2 and "is writing this store" in other["result"]["error"], other
+    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["workbuddy", "dsh"]
+    code, result = _run(capsys, *hermes)
+    assert code == 0, result
+
+
+#: Another process holding the store's lock, as a long import does, until its stdin closes.
+_HOLDER = """
+import sys
+from pathlib import Path
+from scope_recall.maintenance.shared_run import store_lock
+with store_lock(Path(sys.argv[1]), "import-entry --entry desk", "2026-10-17T12:00:00Z"):
+    print("held", flush=True)
+    sys.stdin.read()
+"""
+
+
+def test_a_command_finding_the_store_held_by_another_process_waits_then_refuses_and_names_it(
+    tmp_path, capsys, root, monkeypatch
+):
+    """Shared-store commands that write hold the store's lock from their first read to their last write.  One that
+    finds another process holding it waits a bounded time, writes nothing, and refuses with the command that holds it;
+    once that one has ended it goes through."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.5)
+    homes = _client_homes(tmp_path, "workbuddy")
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+        waited = time.monotonic() - started
+    finally:
+        holder.communicate(timeout=60)
+    assert code == 2 and result["error"].startswith("import-entry --entry desk (process "), result
+    assert "since 2026-10-17T12:00:00Z) is writing this store" in result["error"], result
+    assert 0.5 <= waited < 10, waited
+    assert read_shared_payload(root)["entries"] == [] and read_attachment(homes["workbuddy"]) is None
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+
+
+@contextmanager
+def _held_elsewhere(lock, place, command="attach --host TEST --entry TEST"):
+    """``lock`` (``store_lock`` or ``home_lock``) of ``place`` held by another thread, as by another command named
+    ``command``, until the block ends."""
+    held, done = threading.Event(), threading.Event()
+
+    def hold():
+        with lock(place, command, "2026-10-17T12:00:00Z"):
+            held.set()
+            done.wait(60)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert held.wait(10)
+    try:
+        yield
+    finally:
+        done.set()
+        holder.join(30)
+
+
+@pytest.mark.parametrize("command", ["detach", "adopt", "grants", "grants --apply", "import-entry"])
+def test_each_command_that_writes_the_store_waits_for_its_lock_and_changes_nothing(
+    tmp_path, capsys, root, monkeypatch, command
+):
+    """detach, adopt, grants and import-entry hold the store's lock as attach does: with another command holding it,
+    each waits, refuses naming that command, and leaves the store and the home as they were."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    [home] = _client_homes(tmp_path, "workbuddy").values()
+    code, result = _attach_client(capsys, root, home, host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    edit = tmp_path / "TEST-grants.json"
+    code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(edit))
+    assert code == 0, result
+    argv = {
+        "detach": ("detach", "--instance-root", str(home)),
+        "adopt": ("adopt", "--root", str(root)),
+        "grants": ("grants", "--instance-root", str(home), "--grants-from", str(edit)),
+        "grants --apply": ("grants", "--instance-root", str(home), "--grants-from", str(edit), "--apply"),
+        "import-entry": ("import-entry", "--root", str(root), "--entry", "workbuddy", "--from", str(tmp_path)),
+    }[command]
+    manifest, pointer = (root / "installation.json").read_bytes(), read_attachment(home)
+    with _held_elsewhere(shared_run.store_lock, root):
+        code, result = _run(capsys, *argv)
+    assert code == 2, result
+    assert result["error"].startswith("attach --host TEST --entry TEST (process "), result
+    assert ((root / "installation.json").read_bytes(), read_attachment(home)) == (manifest, pointer)
+
+
+@pytest.mark.parametrize("command", ["attach", "detach", "grants --apply"])
+def test_each_command_that_reads_or_changes_a_home_s_pointer_waits_for_the_home_s_lock(
+    tmp_path, capsys, root, monkeypatch, command
+):
+    """attach, detach and grants hold the lock of the home whose pointer they read or change, taken before the
+    store's: with another command holding it, each waits, refuses naming that command, and leaves the home's pointer
+    and the store as they were."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    [home] = _client_homes(tmp_path, "workbuddy").values()
+    code, result = _attach_client(capsys, root, home, host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    edit = tmp_path / "TEST-grants.json"
+    code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(edit))
+    assert code == 0, result
+    argv = {
+        "attach": ("attach", "--host", "workbuddy", "--instance-root", str(home), "--root", str(root)),
+        "detach": ("detach", "--instance-root", str(home)),
+        "grants --apply": ("grants", "--instance-root", str(home), "--grants-from", str(edit), "--apply"),
+    }[command]
+    if command == "attach":
+        argv += ("--entry", "workbuddy", "--display-name", "WorkBuddy")
+    manifest, pointer = (root / "installation.json").read_bytes(), read_attachment(home)
+    with _held_elsewhere(shared_run.home_lock, home, "detach --instance-root TEST"):
+        code, result = _run(capsys, *argv)
+    assert code == 2, result
+    assert result["error"].startswith("detach --instance-root TEST (process "), result
+    assert "is changing this home's attachment" in result["error"], result
+    assert ((root / "installation.json").read_bytes(), read_attachment(home)) == (manifest, pointer)
+
+
+def test_a_codex_home_detached_from_a_store_takes_a_store_of_its_own_as_an_empty_home_does(tmp_path, capsys, root):
+    """A home keeps the lock of its attachment beside where its pointer was, also once detached; a Codex install of a
+    store of its own does not take that lock for content of another installation."""
+    [home] = _client_homes(tmp_path, "codex").values()
+    code, result = _attach_client(capsys, root, home, host="codex", like=None, capture=None)
+    assert code == 0, result
+    code, result = _run(capsys, "detach", "--instance-root", str(home))
+    assert code == 0, result
+    assert [path.name for path in home.iterdir()] == [shared_run.HOME_LOCK_FILENAME]
+    assert install_codex.foreign_instance_entries(home) == []
+
+
+@pytest.mark.parametrize("command", ["detach", "grants --apply"])
+def test_a_command_whose_home_points_at_another_store_by_the_time_it_holds_the_locks_is_refused(
+    tmp_path, capsys, root, monkeypatch, command
+):
+    """detach and grants find the store from the home's pointer, then take that store's lock.  A pointer that names
+    another store by the time both locks are held, written by something that takes neither, is refused: neither store
+    is written and the pointer is left as it is, where detach would have removed the other store's pointer and grants
+    would have written the other store's manifest under this one's lock."""
+    [home] = _client_homes(tmp_path, "workbuddy").values()
+    code, result = _attach_client(capsys, root, home, host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    edit = tmp_path / "TEST-grants.json"
+    code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(edit))
+    assert code == 0, result
+    document = json.loads(edit.read_text(encoding="utf-8"))
+    _a_group_row(document)
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    other = (tmp_path / "TEST-copied").resolve()
+    shutil.copytree(root, other)
+    code, result = _run(capsys, "adopt", "--root", str(other))
+    assert code == 0, result
+    argv = {
+        "detach": ("detach", "--instance-root", str(home)),
+        "grants --apply": ("grants", "--instance-root", str(home), "--grants-from", str(edit), "--apply"),
+    }[command]
+    lock, pointer = shared.store_lock, home / "scope-recall" / "attachment.json"
+
+    def pointed_elsewhere_meanwhile(*args, **kwargs):
+        monkeypatch.setattr(shared, "store_lock", lock)
+        pointer.write_text(json.dumps(dict(json.loads(pointer.read_text(encoding="utf-8")), root=str(other))))
+        return lock(*args, **kwargs)
+
+    monkeypatch.setattr(shared, "store_lock", pointed_elsewhere_meanwhile)
+    manifests = {store: (store / "installation.json").read_bytes() for store in (root, other)}
+    code, result = _run(capsys, *argv)
+    assert code == 2 and "pointer changed" in result["error"], result
+    assert read_attachment(home).root == other
+    assert {store: (store / "installation.json").read_bytes() for store in (root, other)} == manifests
+
+
+def test_a_command_holding_the_store_under_a_long_name_is_named_by_one_that_waits(tmp_path, capsys, root, monkeypatch):
+    """The note that names the holder is JSON within its bound whatever the command's words weigh: a command named by
+    a home path of thousands of characters, not all of them ASCII, is named, shortened, to the command that waits."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    long = "grants --instance-root C:/TEST/" + "记忆-" * 700 + "home --apply"
+    with _held_elsewhere(shared_run.store_lock, root, long):
+        code, result = _run(capsys, "adopt", "--root", str(root))
+    assert code == 2, result
+    assert result["error"].startswith("grants --instance-root C:/TEST/记忆-"), result
+    assert "home --apply (process " in result["error"] and len(result["error"]) < 400, result
+
+
+@pytest.mark.parametrize("held", ["home", "store"])
+def test_grants_shown_waits_for_the_home_and_its_store_and_writes_no_copy_meanwhile(
+    tmp_path, capsys, root, monkeypatch, held
+):
+    """grants without --grants-from reads the home's pointer and the store's manifest, and writes --out, holding the
+    home's lock and then the store's: with another command holding either, it waits, refuses naming that command, and
+    writes no copy; once that one has ended it shows the grants."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    [home] = _client_homes(tmp_path, "workbuddy").values()
+    code, result = _attach_client(capsys, root, home, host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    out = tmp_path / "TEST-grants.json"
+    with _held_elsewhere(*((shared_run.home_lock, home) if held == "home" else (shared_run.store_lock, root))):
+        code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(out))
+    assert code == 2 and result["error"].startswith("attach --host TEST --entry TEST (process "), result
+    assert not out.exists()
+    code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(out))
+    assert (code, result.get("status"), out.is_file()) == (0, "shown", True), result
+
+
+def test_entries_reads_each_home_s_pointer_holding_that_home_s_lock(tmp_path, capsys, root, monkeypatch):
+    """entries reads each home's pointer holding that home's lock, one home at a time: with another command holding a
+    home's lock, it waits and refuses naming that command.  A home that is gone gets no lock file and is not made
+    again; its pointer counts as absent."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="workbuddy", capture="workbuddy")
+    assert code == 0, result
+    with _held_elsewhere(shared_run.home_lock, homes["dsh"]):
+        code, result = _run(capsys, "entries", "--root", str(root))
+    assert code == 2 and result["error"].startswith("attach --host TEST --entry TEST (process "), result
+    homes["dsh"].rename(homes["dsh"].with_name("TEST-dsh-home-moved"))
+    code, listing = _run(capsys, "entries", "--root", str(root))
+    assert code == 0, listing
+    shown = [(row["entry_id"], row["pointer_present"]) for row in listing["entries"]]
+    assert shown == [("workbuddy", True), ("dsh", False)] and not homes["dsh"].exists()
+
+
+def test_a_holder_note_read_while_it_is_being_written_is_read_again_then_named(tmp_path, monkeypatch):
+    """A reader that comes while the holder writes its note finds part of it; it reads again, and names the holder once
+    the note is whole.  One that never reads as a note, after five reads, names no one."""
+    lock = tmp_path / "TEST.lock"
+    whole = json.dumps({"command": "adopt", "pid": 7, "since": "2026-10-17T12:00:00Z"}).encode("utf-8")
+    lock.write_bytes(b"\0" + whole[:10])
+    waits = []
+
+    def written_meanwhile(seconds):
+        waits.append(seconds)
+        lock.write_bytes(b"\0" + whole)
+
+    monkeypatch.setattr(shared_run.time, "sleep", written_meanwhile)
+    assert (shared_run._holder(lock), len(waits)) == ("adopt (process 7, since 2026-10-17T12:00:00Z)", 1)
+    lock.write_bytes(b"\0" + whole[:10])
+    monkeypatch.setattr(shared_run.time, "sleep", waits.append)
+    assert (shared_run._holder(lock), len(waits)) == ("", 6)
+
+
+def test_a_holder_note_stays_json_within_1024_bytes_whatever_the_command_s_words(tmp_path):
+    """Words of control characters, which JSON escapes to six bytes each, and of four-byte characters with half of a
+    surrogate pair among them, and a long moment: the note after the lock's first byte is JSON within 1024 bytes,
+    naming the command's start and end."""
+    words = "\x01" * 3000 + "\U0001f600" * 3000 + "\ud800" + " --apply"
+    with shared_run.store_lock(tmp_path, words, "T" * 500):
+        with (tmp_path / shared_run.LOCK_FILENAME).open("rb") as handle:
+            handle.seek(1)
+            note = handle.read()
+    assert len(note) <= 1024, len(note)
+    parsed = json.loads(note.decode("utf-8"))
+    assert parsed["command"].startswith("\x01") and parsed["command"].endswith("? --apply"), parsed["command"]
+    assert parsed["since"] == "T" * 40
+
+
+def _a_group_row(document):
+    """A grants change: a group chat on the owner row's route, reading what it reads."""
+    owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+    group = dict(owner, kind="conversation", chat_type="group", chat_id="TEST-group")
+    document["audiences"].append(dict(group, writable_scope_ids=[], capture_scope_id=""))
+
+
+def _kept(result):
+    return any(note.startswith("grants_kept:") for note in result.get("notes", ()))
+
+
+def test_a_home_attached_again_as_its_entry_keeps_the_grants_it_was_given_since(tmp_path, capsys, root):
+    """An attach run again for a home already attached as its entry, a store's only client or a Hermes home, repeats
+    the first: the entry keeps its grants, a route added with ``grants --apply`` included, and grant options given
+    again are not used, which the result says.  So does one that points the home at the store copied elsewhere and
+    adopted."""
+
+    def attached_again(home, attach, *, options):
+        code, result = attach()
+        assert code == 0, result
+        code, applied = _granted(capsys, tmp_path, home, _a_group_row)
+        assert (code, applied["status"]) == (0, "applied"), applied
+        edited = read_shared_payload(root)["entries"][-1]["audiences"]
+        code, result = attach()
+        assert code == 0, result
+        assert read_shared_payload(root)["entries"][-1]["audiences"] == edited and len(edited) == 2
+        assert _kept(result) == options, result
+
+    [client] = _client_homes(tmp_path, "workbuddy").values()
+    attached_again(
+        client, lambda: _attach_client(capsys, root, client, host="workbuddy", like=None, capture=None), options=False
+    )
+    desk, _options = _installed(tmp_path, "desk")
+    archive = _moved_aside(desk, _routes(desk))
+    attached_again(desk, lambda: _attach(capsys, desk, root, archive, "desk", "Desk"), options=True)
+    held = {entry["entry_id"]: entry["audiences"] for entry in read_shared_payload(root)["entries"]}
+    moved = (tmp_path / "TEST-moved").resolve()
+    shutil.copytree(root, moved)
+    code, result = _run(capsys, "adopt", "--root", str(moved))
+    assert code == 0, result
+    code, result = _attach_client(capsys, moved, client, host="workbuddy", like="desk", capture="desk")
+    assert code == 0 and _kept(result), result
+    assert {entry["entry_id"]: entry["audiences"] for entry in read_shared_payload(moved)["entries"]} == held
+    assert read_attachment(client).root == moved
+
+
+def test_a_client_attached_again_beside_other_entries_needs_no_grant_options(tmp_path, capsys, root):
+    """With another entry attached, a client's first attach names an entry to take grants like; attached again from
+    its home it needs none, and keeps the grants it holds, an edited route included."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="workbuddy", capture="workbuddy")
+    assert code == 0, result
+    code, applied = _granted(capsys, tmp_path, homes["dsh"], _a_group_row)
+    assert (code, applied["status"]) == (0, "applied"), applied
+    edited = read_shared_payload(root)["entries"][-1]["audiences"]
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like=None, capture=None)
+    assert code == 0 and not _kept(result), result
+    assert read_shared_payload(root)["entries"][-1]["audiences"] == edited and len(edited) == 2
+
+
 def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):
-    """tianji's routes came from its own 3.1 store, which named its table source_embeddings; its entry then
-    searched a table the shared worker never fills, and recall lost its vector half (2026-09-24)."""
+    """An entry whose routes came from a store that named its vector table otherwise (``source_embeddings``)
+    searches the shared worker's table, the one the worker fills."""
 
     def with_table(home, table):
         routes = _routes(home)
