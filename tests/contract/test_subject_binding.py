@@ -172,13 +172,13 @@ def test_a_subject_two_sentences_away_is_still_refused():
 
 
 def test_a_quote_ending_a_sentence_does_not_read_the_next_sentence():
-    """Found on alpha: a question in the *following* sentence vetoed a claim.
+    """A question in the *following* sentence does not veto a claim.
 
-    The source said, in so many words, that the question was not a
-    confirmation -- and the question gate refused the assertion anyway, because
-    ``assertion_clause`` searched for the next terminator starting after a
-    quote whose own last character already was one.  ``evidence_context`` has
-    always had this guard; this asserts the other one does too.
+    The source says, in so many words, that the question was not a
+    confirmation, so the question gate must not refuse the assertion:
+    ``assertion_clause`` must not search for the next terminator starting after
+    a quote whose own last character already is one.  ``evidence_context`` has
+    this guard; this asserts the other one does too.
     """
     from scope_recall.core.claims import assertion_clause
 

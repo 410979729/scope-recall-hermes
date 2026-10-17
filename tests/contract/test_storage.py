@@ -426,7 +426,7 @@ def test_every_store_connection_reads_through_the_memory_map_the_store_sets(stor
     """Each operation opens its own connection and, on a shared store, another process writes between any two recalls,
     so SQLite's own page cache never carries over.  Through a memory map a recall's pages come from the system's file
     cache without a read call each (``STORE_MMAP_BYTES``).  A size no build has as its default shows that the store set
-    it: a build whose default map is its limit reports that limit with no pragma at all (review of 3.5.0rc3)."""
+    it: a build whose default map is its limit reports that limit with no pragma at all."""
     storage, ctx = store
     with closing(sqlite3.connect(storage.path)) as probe:
         limit = probe.execute(f"PRAGMA mmap_size={1 << 40}").fetchone()[0]
@@ -480,9 +480,9 @@ def test_a_failed_pragma_whose_close_fails_keeps_the_connection_for_the_next_ope
     "statement,writable", [("PRAGMA user_version", True), ("PRAGMA user_version", False), ("PRAGMA journal_mode", True)]
 )
 def test_a_failure_right_after_open_closes_the_connection_and_its_writer_lease(store, monkeypatch, statement, writable):
-    """A transaction read the store's version, and switched a writer to WAL, before the block that closes its
-    connection.  A failure there left the connection open, and a writer's lease held until the process ended: every
-    other process's writes failed (review of 3.5.0rc3).  A busy store can answer the first statement with "database is
+    """A transaction reads the store's version, and switches a writer to WAL, before the block that closes its
+    connection.  A failure there must not leave the connection open and a writer's lease held until the process
+    ends, with every other process's writes failing.  A busy store can answer the first statement with "database is
     locked"."""
     storage, ctx = store
     actual, opened = inject(monkeypatch, operation=statement)

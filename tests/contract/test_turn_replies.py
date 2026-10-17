@@ -1,7 +1,6 @@
 """A recalled question reaches the reply it was given.
 
-Over the benchmark's real questions, alpha answered 21 of 30 and beta 14 of 25: the
-question itself came back, and its neighbours, but not the answer.  A reply is joined to
+Without it the question itself comes back, and its neighbours, but not the answer.  A reply is joined to
 its question only through episode membership, which is spent on every event of the episode
 in id order, so a question recalled at all could use the whole relation bound before
 reaching what it was told.  The turn a person's message opened is followed first, for
@@ -88,7 +87,7 @@ def test_the_turn_takes_at_most_half_the_relation_bound(app):
         )
         for n in range(TURN_REPLY_LIMIT)
     ]
-    # Cites the answer it was told as well as the question: a value no cited source carries is refused (#236).
+    # Cites the answer it was told as well as the question: a value no cited source carries is refused.
     told = dict(source_ref=replies[0].ref, source_revision=replies[0].revision, quote=replies[0].event["content"])
     asked = dict(source_ref=question.ref, source_revision=question.revision, quote=question.event["content"])
     claim = accept(
@@ -120,9 +119,8 @@ def test_the_answer_is_delivered_in_the_packet(app):
 
 def test_a_question_asked_again_word_for_word_is_given_what_it_was_told(app):
     """The automatic recall refuses an older copy of the current message: the message already says it.  The copy
-    was also the only way to what it had been told, when the answer shares no word with it: over the owner's real
-    questions asked again on the shared store, 42 of the 46 answers never reached were behind such a copy (baseline
-    of 3.4.2, 2026-09-30).  The copy leads to its turn and is still never delivered."""
+    is also the only way to what it had been told, when the answer shares no word with it.  The copy leads to its
+    turn and is still never delivered."""
     core, ctx = app
     question = _say(
         core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/again-ask"
@@ -205,10 +203,9 @@ def _turn(core, ctx, day, replies, *, tag):
 
 def test_what_the_last_copy_of_a_question_was_told_goes_before_the_best_candidate(app):
     """The last time the question was asked, the last reply of its turn answered it: that reply goes before the best
-    candidate.  At a first rank's fixed score it fell below every candidate two channels agreed on (with vectors on,
-    the owner's questions asked again lost about 25 of 124 answers); raising every reply of every older copy let an
-    agent's opening messages fill the packet instead, and put the first answer beside the one that replaced it
-    (review of its first version)."""
+    candidate.  At a first rank's fixed score it would fall below every candidate two channels agreed on; raising
+    every reply of every older copy would let an agent's opening messages fill the packet instead, and put the first
+    answer beside the one that replaced it."""
     core, ctx = app
     turns = [
         _turn(
@@ -239,7 +236,7 @@ def test_what_the_last_copy_of_a_question_was_told_goes_before_the_best_candidat
 
 def test_a_reply_a_channel_found_in_that_turn_goes_first(app):
     """A reply of the last copy's turn that a channel found says what was asked, wherever it stands in the turn; it
-    kept its own score while its turn's other replies were raised above it (review of its first version)."""
+    must not keep its own score while its turn's other replies are raised above it."""
     core, ctx = app
     copy, (opening, found, summary) = _turn(
         core,
@@ -265,7 +262,7 @@ def test_a_reply_a_channel_found_in_that_turn_goes_first(app):
 def test_what_was_said_after_the_last_copy_is_not_outranked_by_the_raise(app):
     """The raise goes above the best candidate said up to that turn, not above what was said after it: a newer
     statement two channels found stays above the old answer, which still goes above an older one that outranked it
-    before (review of its first version)."""
+    before."""
     core, ctx = app
     copy, (told,) = _turn(core, ctx, 1, [TOLD], tag="stale")
     newer = _say(
@@ -293,9 +290,9 @@ def test_what_was_said_after_the_last_copy_is_not_outranked_by_the_raise(app):
 
 def test_of_that_turn_at_most_half_the_packet_is_raised(app):
     """An agent that narrates its work names the subject in every message, and a channel finds each: raising them all
-    filled the packet with the turn's narration, the answer and everything else left out (review of its second
-    version).  Of a six-item packet three are raised: the two replies a channel ranked highest, then the turn's last
-    reply; the rest keep their own places."""
+    would fill the packet with the turn's narration, the answer and everything else left out.  Of a six-item
+    packet three are raised: the two replies a channel ranked highest, then the turn's last reply; the rest keep
+    their own places."""
     core, ctx = app
     copy, (*narration, answer) = _turn(
         core,
@@ -329,8 +326,8 @@ def test_of_that_turn_at_most_half_the_packet_is_raised(app):
 
 
 def test_the_answer_goes_above_the_turn_s_own_narration_when_nothing_else_is_found(app):
-    """The turn's other replies are of its time: with nothing else found, the answer stayed below the turn's own
-    narration that a channel found and that was not raised (review of its second version)."""
+    """The turn's other replies are of its time: with nothing else found, the answer must not stay below the turn's own
+    narration that a channel found and that was not raised."""
     core, ctx = app
     copy, (*narration, answer) = _turn(
         core,
@@ -350,8 +347,8 @@ def test_the_answer_goes_above_the_turn_s_own_narration_when_nothing_else_is_fou
 
 def test_the_last_reply_of_a_turn_that_goes_on_is_not_raised(app):
     """A turn whose rows ran out is whole only once its window has closed and what the session says next is the
-    person's, or nothing: the agent still working past the window, or a turn asked minutes ago, had its last narration
-    raised above the answer of an older copy (second review of 3.4.7)."""
+    person's, or nothing: the agent still working past the window, or a turn asked minutes ago, must not have its last
+    narration raised above the answer of an older copy."""
     core, ctx = app
     copy, (step, last) = _turn(core, ctx, 2, ["正在处理第一部分。", "正在处理第二部分。"], tag="goes-on")
     _say(
@@ -402,7 +399,7 @@ def test_the_last_reply_of_a_turn_that_goes_on_is_not_raised(app):
 def test_a_host_record_after_the_window_is_not_the_person_speaking(app):
     """What the session says next decides whether the replies read were the turn's last.  A record a coding client's
     host writes there (an interrupt, ``role='system'``) is not the person speaking: the agent's long tool call was
-    cut, and its last narration is not the turn's answer (review of 3.7.2)."""
+    cut, and its last narration is not the turn's answer."""
     core, ctx = app
     copy, (_step, last) = _turn(core, ctx, 2, ["正在跑一个很长的测试。", "测试还在跑。"], tag="cut-host")
     _say(
@@ -438,7 +435,7 @@ def test_a_host_record_after_the_window_is_not_the_person_speaking(app):
 
 def test_the_latest_copy_that_was_answered_is_raised_and_equal_times_go_by_capture(app):
     """A newer copy that received no reply leads nowhere and the latest one answered is raised; of two copies asked
-    at the same moment, the one captured last (second review of 3.4.7)."""
+    at the same moment, the one captured last."""
     core, ctx = app
     answered, (told,) = _turn(core, ctx, 1, [TOLD], tag="answered")
     unanswered = _say(
@@ -453,7 +450,7 @@ def test_the_latest_copy_that_was_answered_is_raised_and_equal_times_go_by_captu
         when="2026-09-03T09:01:00Z",
         key="TEST-turn/unanswered-next",
     )
-    # Answered after the change of subject: a reply to that, never to the question (review of 3.7.2).
+    # Answered after the change of subject: a reply to that, never to the question.
     _say(
         core,
         ctx,
@@ -518,8 +515,8 @@ def test_a_raise_out_of_time_says_so(app):
 
 
 def test_the_last_reply_of_a_turn_cut_by_the_window_is_not_raised(app):
-    """A turn read only to its first 64 rows may go on: its last reply read was narration, raised above an answer a
-    channel had found (review of its second version)."""
+    """A turn read only to its first 64 rows may go on: its last reply read is narration, not to be raised above an
+    answer a channel had found."""
     core, ctx = app
     copy = _say(
         core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/cut-ask"
@@ -593,10 +590,9 @@ def test_the_packet_leads_with_what_the_question_was_told(app):
 
 def test_a_short_command_sent_again_does_not_bring_back_an_old_turn(app):
     """A short command sent again asks nothing an old turn answered, so its older copy leads nowhere.  "继续执行"
-    holds three overlapping character pairs, "按你说的做" four: with three the bar, both brought back every old
-    turn they had opened (review of 3.4.4).  Ending like a question does not make it one: "按你说的做吗？" and
-    "按你说的做呀" read as asking, and a lower bar for questions brought back an old reply for both (review of
-    3.7.1)."""
+    holds three overlapping character pairs, "按你说的做" four: with three the bar, both would bring back every
+    old turn they had opened.  Ending like a question does not make it one: "按你说的做吗？" and "按你说的做呀" read
+    as asking, and a lower bar for questions would bring back an old reply for both."""
     core, ctx = app
     for index, command in enumerate(("继续", "继续执行", "按你说的做", "按你说的做吗？", "按你说的做呀")):
         _say(
@@ -623,8 +619,8 @@ def test_a_short_command_sent_again_does_not_bring_back_an_old_turn(app):
 
 def test_a_short_status_question_asked_again_does_not_put_the_old_answer_first(app):
     """ "测试通过了吗？" holds four terms: what it was told last time is not raised, so the newer message that says the
-    tests fail now stays above that old answer.  Raised for four-term questions, the old answer came first and the
-    newer one second (review of 3.7.1)."""
+    tests fail now stays above that old answer.  Raised for four-term questions, the old answer would come first and the
+    newer one second."""
     core, ctx = app
     _say(
         core,
@@ -673,9 +669,9 @@ ASK_AGAIN = "TEST-project 的发布窗口改到几点了呢"
 
 def test_an_older_copy_closed_differently_is_still_an_older_copy(app):
     """The same question asked once without its question mark and once with it, asking both times: the copy is set
-    aside and leads to its turn.  Compared character for character it was another message, delivered as if it
-    answered.  (The owner's window question of 2026-10-04, "我家窗外有什么" and "我家窗外有什么？", is now set aside
-    too; its four terms are too few to lead to its turn.)"""
+    aside and leads to its turn.  Compared character for character it would be another message, delivered as if it
+    answered.  (The window question "我家窗外有什么" and "我家窗外有什么？" is set aside too; its four terms are too
+    few to lead to its turn.)"""
     core, ctx = app
     question = _say(
         core,
@@ -703,7 +699,7 @@ def test_an_older_copy_closed_differently_is_still_an_older_copy(app):
 
 def test_a_statement_asked_back_as_a_question_stays_found(app):
     """The person's statement, asked back as a question in the same words, is not an older copy of the question: it
-    says what was asked.  Set aside, only the acknowledgement that followed it came back (review of 3.7.1)."""
+    says what was asked.  Set aside, only the acknowledgement that followed it would come back."""
     core, ctx = app
     statement = _say(
         core,
@@ -759,8 +755,9 @@ def test_a_reply_belongs_to_the_turn_it_was_written_in(app):
 
 
 def test_the_same_message_stored_again_does_not_end_its_turn(app):
-    """Until 3.4.4 a rebuilt Hermes provider stored a turn's message a second time, with the reply, under the host's
-    ordinal.  The first copy stopped at the second as if the person had spoken again, and never reached the reply."""
+    """A rebuilt Hermes provider stored a turn's message a second time, with the reply, under the host's ordinal, as an
+    earlier release did.  The first copy does not stop at the second as if the person had spoken again; it reaches
+    the reply."""
     core, ctx = app
     first = _say(
         core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/twice-uuid"
@@ -798,9 +795,9 @@ def test_the_same_message_stored_again_does_not_end_its_turn(app):
 
 
 def test_what_the_person_adds_before_the_reply_stays_in_the_turn(app):
-    """The person adds to what they asked while the agent works, and the reply answers both.  Of the owner's 1,242
-    messages of 2026-09-20..10-05, 141 had such a follow-up before a reply; their turns read empty, and a question
-    asked again never reached what it had been told."""
+    """The person adds to what they asked while the agent works, and the reply answers both.  A message with such a
+    follow-up before a reply must not read as an empty turn, with a question asked again never reaching what it had
+    been told."""
     core, ctx = app
     question = _say(
         core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/add-ask"
@@ -858,7 +855,7 @@ def test_a_message_long_after_with_no_reply_opens_its_own_turn(app):
 def test_what_follows_a_host_message_is_not_the_question_s_answer(app):
     """A background job begun for an earlier request finished after the question was answered, and the agent
     reported on it.  The rows do not say which turn the job began in, so the host's message ends the question's turn
-    as the person's would: what the question was told stays its answer (review of 3.7.2)."""
+    as the person's would: what the question was told stays its answer."""
     core, ctx = app
     copy, (told,) = _turn(core, ctx, 2, [TOLD], tag="job")
     _say(
@@ -895,7 +892,7 @@ def test_what_follows_a_host_message_is_not_the_question_s_answer(app):
 
 def test_a_host_message_after_an_unanswered_question_does_not_answer_it(app):
     """The question's turn ended without a reply; then a background job finished and the agent reported on it.  The
-    report is not what the question was told: the copy answered before still is (review of 3.7.2)."""
+    report is not what the question was told: the copy answered before still is."""
     core, ctx = app
     answered, (told,) = _turn(core, ctx, 1, [TOLD], tag="failed")
     failed = _say(
@@ -936,7 +933,7 @@ def test_a_host_message_after_an_unanswered_question_does_not_answer_it(app):
 def test_a_question_dropped_for_another_request_does_not_lead_to_that_answer(app):
     """Asked again, the question was dropped within minutes for another request, and the reply answered that one.
     The reply is offered as a candidate of the question's turn, ranked like any other, but never raised as what the
-    question was told: the copy answered before still is (review of 3.7.2)."""
+    question was told: the copy answered before still is."""
     core, ctx = app
     answered, (told,) = _turn(core, ctx, 1, [TOLD], tag="dropped")
     dropped = _say(

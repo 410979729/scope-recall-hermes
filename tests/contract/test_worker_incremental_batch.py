@@ -140,14 +140,14 @@ class BatchTracker:
 
 
 def test_unrelated_capture_during_extraction_still_writes_claims(worker_app):
-    """A capture during the model call no longer throws the paid result away.
+    """A capture during the model call does not throw the paid result away.
 
-    This was ``..._keeps_original_work_retryable``: the capture advanced the
-    instance-wide ``memory_epoch`` and the first pass had to retry with
-    ``memory_epoch_changed``.  During a live chat every message and tool call
-    is such a capture, so fresh facts were consolidated late or never.  The
-    capture changes nothing this result was derived from, so the first pass now
-    writes the claim, and the capture is still consolidated by its own work.
+    The capture advances the instance-wide ``memory_epoch``, but it changes
+    nothing this result was derived from, so the first pass writes the claim
+    rather than retrying with ``memory_epoch_changed``: during a live chat every
+    message and tool call is such a capture, and fresh facts would be
+    consolidated late or never.  The capture is still consolidated by its own
+    work.
     """
     core, ctx, clock = worker_app
     original = capture(core, ctx, "TEST-project 配色 蓝色。", key="TEST-epoch-original")
@@ -173,12 +173,12 @@ def test_unrelated_capture_during_extraction_still_writes_claims(worker_app):
 
 @pytest.mark.parametrize("stage", ["prepare", "boundary", "publish"])
 def test_unrelated_capture_during_embedding_still_publishes(worker_app, stage):
-    """An unrelated capture around the embedding call no longer blocks publication.
+    """An unrelated capture around the embedding call does not block publication.
 
-    This was ``..._keeps_source_retryable``: each stage expected the item back
-    in ``pending`` with ``memory_epoch_changed``, and the ``boundary`` stage
-    expected the port's own guard to refuse.  The capture is not a dependency
-    of this source's vector, so every stage now publishes once and completes.
+    The capture is not a dependency of this source's vector, so every stage
+    publishes once and completes, rather than the item going back to ``pending``
+    with ``memory_epoch_changed`` (or, at the ``boundary`` stage, the port's own
+    guard refusing).
     """
     core, ctx, clock = worker_app
     original = capture(core, ctx, "TEST embedding retained source。", key="TEST-embed-original")
@@ -212,10 +212,10 @@ def test_unrelated_capture_during_embedding_still_publishes(worker_app, stage):
 
 
 def test_unrelated_capture_before_no_root_completion_still_completes(worker_app, monkeypatch):
-    """A capture before a no-root completion no longer sends the item back.
+    """A capture before a no-root completion does not send the item back.
 
-    This was ``..._keeps_work_retryable`` and expected ``memory_epoch_changed``;
-    the batch sources are unchanged, so the completion is recorded.
+    The batch sources are unchanged, so the completion is recorded rather than
+    retried with ``memory_epoch_changed``.
     """
     from contextlib import contextmanager
 

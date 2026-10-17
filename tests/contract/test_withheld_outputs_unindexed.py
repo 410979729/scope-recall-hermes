@@ -1,10 +1,9 @@
-"""A withheld tool output's placeholder is kept but found by nothing (#206).
+"""A withheld tool output's placeholder is kept but found by nothing.
 
 The capture filter leaves "Tool execution summary (terminal): tool=terminal; output_chars=377; exit_code=0;
 output_preview=omitted" in place of an output it withheld.  Every word in it is the envelope's own.  Indexed, the
-placeholders an imported store holds (212,773 of the shared store's 311,051 sources) pushed "tool", "status",
-"patch", "true" and "0" past the common-term ceiling, and the lexical channel dropped those words from every
-question that held them: 289 of the 1,772 messages the owner had sent.
+placeholders an imported store holds would push "tool", "status", "patch", "true" and "0" past the
+common-term ceiling, and the lexical channel would drop those words from every question that held them.
 """
 
 from __future__ import annotations
@@ -179,7 +178,7 @@ def test_unindexing_keeps_a_placeholder_s_error_text(tmp_path):
 
 def test_the_command_finds_a_placeholder_its_pattern_finds_whatever_leads_it(tmp_path):
     """Capture keeps leading whitespace, and the pattern passes over it: so does the query that looks for the
-    command's pages (review of 3.7.4)."""
+    command's pages."""
     core, ctx, _vectors = _app(tmp_path)
     led = _capture(core, ctx, "TEST-withheld/led", "\n  " + _placeholder(0), origin="tool_observation")
     assert led.event["content"].startswith("\n"), "the premise: capture kept the leading whitespace"

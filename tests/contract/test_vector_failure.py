@@ -166,21 +166,20 @@ def test_a_malformed_remote_type_is_refused_rather_than_reported(bogus):
 
 
 def test_the_one_remote_fallback_carries_the_type():
-    """Plain and fenced responses are judged by one function.  Two copies, one
-    fixed and one left behind, is how this drifted before."""
+    """Plain and fenced responses are judged by one function: two copies would drift."""
     import inspect
 
     from scope_recall.vector import process_store as lance_process_store
 
     source = inspect.getsource(lance_process_store)
     assert source.count("raise _remote_failure(error_type, message)") == 1
-    # The bare fallback must be gone, or the fix is half applied.
+    # The bare fallback must be gone.
     assert "raise RuntimeError(message)" not in source
 
 
 def test_a_refused_call_says_which_answer_the_provider_gave():
-    """For seven hours on 2026-09-17 Google refused every embedding call, and the
-    gap said only ``http_status`` -- what a malformed request would also say."""
+    """When a provider refuses every embedding call, the gap names the answer it gave,
+    not only ``http_status`` -- what a malformed request would also say."""
     from scope_recall.core.vector_failure import vector_failure_label
     from scope_recall.runtime.models import AuxiliaryModelError
 

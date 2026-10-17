@@ -1,9 +1,9 @@
-"""A worker's summary that does not qualify no longer takes the claims beside it down.
+"""A worker's summary that does not qualify does not take the claims beside it down.
 
-On 2026-09-17 beta recorded 208 violations of the resume rules in one day, nearly all goal_authority:
-the model named as the user's goal something the user had not asked for. A paged consolidation already
-dropped such a summary and kept its claims; a single page rolled the whole result back, paid for a second
-model call and, when that answer failed too, lost every claim in the page.
+A resume that names as the user's goal something the user had not asked for breaks the resume rules
+(``goal_authority``). A paged consolidation drops such a summary and keeps its claims; a single page must do the
+same, not roll the whole result back, pay for a second model call and, when that answer fails too, lose every
+claim in the page.
 """
 
 from __future__ import annotations
