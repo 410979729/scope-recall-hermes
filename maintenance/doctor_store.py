@@ -618,8 +618,9 @@ def _codex_host_request(origin: str, content: str) -> bool:
     return is_codex_suggestions_prompt(content) if origin == "human_direct" else is_codex_suggestions_reply(content)
 
 
-#: Per host whose hooks once stored words the host wrote itself: a cheap filter SQLite applies first, the test that
-#: tells such a message (the one the hooks now apply before storing), the gap and the check's result.
+#: Per host whose hooks once stored words the host wrote itself: a cheap filter SQLite applies first, which keeps every
+#: row the test could accept (a reply is JSON, and a JSON key may be written with escapes, so only its brace is
+#: certain), the test that tells such a message (the one the hooks now apply before storing), the gap and the result.
 _HOST_WORDS = {
     "claude-code": (
         "origin='human_direct' AND instr(content,'<system-reminder')>0",
@@ -630,7 +631,7 @@ _HOST_WORDS = {
     "codex": (
         "(origin='human_direct' AND (instr(lower(content),'app-generated request')>0"
         " OR instr(lower(content),'hyperpersonali')>0))"
-        " OR (origin='assistant_visible' AND instr(content,'\"suggestion')>0)",
+        " OR (origin='assistant_visible' AND instr(content,'{')>0)",
         _codex_host_request,
         "owner_words_from_host_request",
         "host_requests",

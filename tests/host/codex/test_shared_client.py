@@ -1259,6 +1259,8 @@ def test_the_doctor_names_codex_s_requests_stored_as_the_owner_s_words(store, tm
     turns = (
         (SUGGESTED_MESSAGE_PROMPT, '{"suggestion":"TEST 我的测试暗号是什么？"}'),
         ('TEST 我自己的话：上次的回答是 {"suggestion": "TEST"}。', "TEST 好的。"),
+        # A key written with an escape is still the answer's one key.
+        (SUGGESTED_MESSAGE_PROMPT, '{"\\u0073uggestion":"TEST 下一句"}'),
     )
     hook = CodexHookHandler.from_home(str(codex), "codex")
     try:
@@ -1271,14 +1273,14 @@ def test_the_doctor_names_codex_s_requests_stored_as_the_owner_s_words(store, tm
     written_by_codex = _rows(
         root,
         """SELECT event_id,source_revision FROM source_events WHERE entry_id='codex'
-        AND (content LIKE 'This is an app-generated request%' OR content LIKE '{"suggestion":%') ORDER BY rowid""",
+        AND (content LIKE 'This is an app-generated request%' OR content LIKE '{"%uggestion":%') ORDER BY rowid""",
     )
-    assert len(written_by_codex) == 2
+    assert len(written_by_codex) == 4
     report = DoctorReport(host="codex", status="ok")
     check_owner_words(report, "codex", root, "codex")
     assert report.capability_gaps == ["owner_words_from_host_request"]
     refs = ",".join(f"{event}@{revision}" for event, revision in written_by_codex)
-    assert report.checks == [{"name": "owner_words", "result": "host_requests", "detail": f"2: {refs}"}]
+    assert report.checks == [{"name": "owner_words", "result": "host_requests", "detail": f"4: {refs}"}]
     other = DoctorReport(host="codex", status="ok")
     check_owner_words(other, "codex", root, "tianshu")
     assert other.capability_gaps == [] and other.checks == [], "another entry's"
