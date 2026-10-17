@@ -788,6 +788,11 @@ def test_a_prompt_still_in_the_inbox_is_not_stored_again_from_the_record(store, 
 
 
 def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch):
+    from scope_recall.adapters.clients import handler as handler_module
+
+    # Room for every message of the record to be written in one hook however slow the runner: what is written and
+    # when, not the budget, is under test.  On the 2 s default a slow runner left the last ones for a later stop.
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 30.0)
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -3922,17 +3927,22 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_rese
     """A WorkBuddy prompt hook that runs past its wait blocks the prompt.  With the entry's server slower than the
     hook's whole budget, the hook still answers inside the budget, with the prompt stored."""
     import io
+    import threading
     import time
 
+    from scope_recall.adapters.clients import handler as handler_module
     from scope_recall.adapters.clients import hook_entry, local_endpoint
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    # A real entry's 6 s: on the 2 s default, a slow runner's write of the prompt left no time to ask the server.
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 6.0)
     root, home, _projects = workbuddy
     endpoint = local_endpoint.serve(home, "workbuddy", warm=False)
     assert endpoint is not None
+    release, finished = threading.Event(), []
     try:
-        calls = _counted(endpoint, monkeypatch, delay=3.0)
+        calls = _counted(endpoint, monkeypatch, hold=release, finished=finished)
         raw = json.dumps(
             {
                 "session_id": WB_SESSION,
@@ -3945,14 +3955,16 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_rese
         assert hook_entry.main(["--home", str(home), "--host", "workbuddy"]) == 0
         elapsed = time.monotonic() - started
         captured = capsys.readouterr()
-        # No runtime config names a budget here: the hook's own 2 s (``_TOTAL_BUDGET_S``).
-        assert elapsed < 2.0 + 1.0, f"the hook took {elapsed:.1f} s of its 2 s"
+        # No runtime config names a budget here: the hook's own (``_TOTAL_BUDGET_S``).
+        assert elapsed < 6.0 + 1.0, f"the hook took {elapsed:.1f} s of its 6 s"
         assert not captured.out or "additionalContext" in json.loads(captured.out)["hookSpecificOutput"]
         assert "CODEX_RECALL_RESIDENT:late" in captured.err
         assert len(calls) == 1
         assert _wb_said(root, "user") == [("user", "human_direct", "TEST 服务答得太慢。")]
-        time.sleep(3.0)  # the server's late recall ends; it writes nothing
+        release.set()
+        assert _eventually(lambda: finished), "the server's late recall ends; it writes nothing"
     finally:
+        release.set()
         endpoint.stop()
     assert _wb_said(root, "user") == [("user", "human_direct", "TEST 服务答得太慢。")]
 
