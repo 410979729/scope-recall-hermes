@@ -50,26 +50,46 @@ _UNASSERTED_CONTEXT = re.compile(
     r"customer said|may|might|maybe|perhaps|guess(?:ed)?|heard\s+that|reportedly)\b",
     re.I,
 )
+#: What a statement says holds or changes: a copula, 用, a change (改成, 换成, "switch to"), what should be.
+_STATEMENT = r"(?:是|为|用|改|换|调整|应该|应当|要|\b(?:is|are|was|were|uses?|should|will|must|change|switch)\b)"
 #: A named or unnamed speaker other than the one writing, before what they said: ``张三说：``, ``张三说，``, a name
-#: opening a clause before 说 with nothing between (``张三说配色换成了银色``), ``Alice said``, ``the wiki says``,
-#: ``Everyone thinks``.  ``我说：`` and ``I said`` are the writer's own; 说 in a noun (小说, 传说, 学说) says nothing,
-#: nor does it in 说错 (misspoke), 说好 (agreed), 说明 (explain) or 说得 (put it); and a verb that opens an identifier
-#: (``claim-4daf…``, a claim's ref) is no verb.
+#: opening a clause before 说 with nothing between (``张三说配色换成了银色``), or before 表示, 称, 提到, 认为, 觉得,
+#: 指出 or 声称 and a statement (``张三表示配色换成银色``; ``红色表示错误`` states nothing), ``Alice said``, ``the
+#: wiki says``, ``Everyone thinks``.  ``我说：``, ``我表示`` and ``I said`` are the writer's own; 说 in a noun (小说,
+#: 传说, 学说) says nothing, nor does it in 说错 (misspoke), 说好 (agreed), 说明 (explain) or 说得 (put it), nor 称 in
+#: a name (名称, 简称, 称为); and a verb that opens an identifier (``claim-4daf…``, a claim's ref) is no verb.
 _SAID_BY_ANOTHER = re.compile(
     r"(?<![我小传学演游劝解])(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
-    r"|(?:^|(?<=[\n，,。；;！!？?、\s]))(?!我)[^\s，,。；;！!？?、：:]{1,8}?(?<![小传学演游劝解])说(?![错好明得法服])"
-    r"|\b(?!I\b)\w+\s+(?:(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard)"
-    r"\b(?!-)|(?:told|tells)\s+\w+\b)",
+    r"|(?:^|(?<=[\n，,。；;！!？?、\s]))(?!我)[^\s，,。；;！!？?、：:]{1,8}?(?:(?<![小传学演游劝解])说(?![错好明得法服])"
+    r"|(?:表示|(?<![名简昵俗统通职堪相对匀])称(?![为作呼号赞心职重])|提到(?!的)|认为|觉得|指出|声称)"
+    rf"(?=[^。！？；;!?\n]*?{_STATEMENT}))"
+    r"|\b(?!I\b)\w+\s+(?:(?:said|says|wrote|thinks?|thought|believes?|believed|claims?|claimed|assumes?|assumed"
+    r"|guess(?:es|ed)?|heard)\b(?!-)|(?:told|tells)\s+\w+\b)",
+    re.I,
+)
+#: A line that opens with another speaker's name and a colon before a statement, on it or on the next line
+#: (``张三：TEST-project 配色换成银色``, ``Alice: the CI is GitLab``, ``<alice> …``), after a list marker, a
+#: ``[10:32]`` or in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of theirs (``更正：``,
+#: ``Update:``, ``刚才写错了：``), a head that is no name (``TEST-project 配色：``, a JSON ``"key":``) and a key
+#: before its value (``配色：银色``, which states nothing) give no one else's words.
+_SPEAKER_LINE = re.compile(
+    r"(?:^|(?<=\n))[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?(?:\[[^\]\n]{0,24}\][^\S\n]*)?(?:\*\*|__)?"
+    r"(?!我|I\b|[^\n:：]{0,16}?(?:错|不对|更正|纠正|修正|注意|备注|补充|说明|总结|结论|更新|提醒|另外|对了|顺便"
+    r"|note|update|correction|edit|summary|fyi|reminder|btw|ps\b|todo))"
+    r"(?:<[^<>\n]{1,24}>|[^\W_][\w.-]{0,15}(?:\*\*|__)?[：:](?!//))"
+    rf"(?=[^\n]*?{_STATEMENT}|[^\S\n]*\n[^\n]*?{_STATEMENT})",
     re.I,
 )
 #: Someone else's words, or an example, around a first person: a speaker other than the writer
-#: (``_SAID_BY_ANOTHER``), a quoted first person in double, CJK or single quotes (an apostrophe inside a word,
-#: ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a first person after a speaker's label
-#: (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
+#: (``_SAID_BY_ANOTHER``, and ``Alice writes``, ``Alice hears``), a quoted first person in double, CJK or single
+#: quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a
+#: first person after a speaker's label (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one
+#: else's words.
 _REPORTED_SELF = re.compile(
     r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)|"
     + _SAID_BY_ANOTHER.pattern
-    + r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
+    + r"|\b(?!I\b)\w+\s+(?:writes|hears?)\b"
+    r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
     r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
     r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
@@ -363,10 +383,12 @@ def is_transient_request(content):
     return bool(_DIRECT_REQUEST.search(content) and not _DURABLE_DIRECTIVE.search(content))
 
 
-def said_by_another(content: str) -> bool:
-    """Whether the text names a speaker other than its writer as saying something (``_SAID_BY_ANOTHER``), outside
-    the writer's own framing (``老实说，``, ``That said,``)."""
-    return _SAID_BY_ANOTHER.search(_OWN_FRAMING.sub("", content)) is not None
+def attributed_to_another(content: str) -> bool:
+    """Whether the text gives what it says to someone other than its writer: reported speech (``REPORTED_SPEECH``), a
+    speaker before what they said (``_SAID_BY_ANOTHER``) or a line opening with their name (``_SPEAKER_LINE``),
+    outside the writer's own framing (``老实说，``, ``That said,``).  The writer's own ``我表示…`` stays theirs."""
+    unframed = _OWN_FRAMING.sub("", content)
+    return bool(REPORTED_SPEECH.search(content) or _SAID_BY_ANOTHER.search(unframed) or _SPEAKER_LINE.search(unframed))
 
 
 def first_person_reference(content):

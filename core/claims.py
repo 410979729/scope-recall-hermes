@@ -28,9 +28,9 @@ from .source_qualification import (
     AUTHORITY_QUESTION,
     CONDITIONAL,
     RELATIVE_SCOPE,
-    REPORTED_SPEECH,
     UNASSERTED_UNCERTAINTY,
     asserted_marker,
+    attributed_to_another,
     bound_literal,
     condition_supports_value,
     in_pasted_text,
@@ -547,7 +547,7 @@ def _not_asserted(c: _Cited) -> str | None:
         return "transient_request_not_durable"
     if (
         c.kind in {"preference", "constraint", "decision"} and _QUOTED_OTHER.search(c.source_text)
-    ) or REPORTED_SPEECH.search(c.source_text):
+    ) or attributed_to_another(c.source_text):
         return "other_speaker"
     return None
 

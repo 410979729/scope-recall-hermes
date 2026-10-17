@@ -962,6 +962,13 @@ def test_negative_and_questioned_operations_do_not_change_current(app, raw):
         # Someone else's words, or quoted text.
         ("张三说：TEST-project 配色换成银色。", "银色"),
         ("张三说 TEST-project 配色换成银色了。", "银色"),
+        ("张三：TEST-project 配色换成银色。", "银色"),
+        ("张三表示 TEST-project 配色换成银色。", "银色"),
+        ("张三称 TEST-project 配色换成银色。", "银色"),
+        ("张三提到 TEST-project 配色换成银色了。", "银色"),
+        ("张三认为 TEST-project 配色应该换成银色。", "银色"),
+        ("Alice: TEST-project 配色 should change to 银色.", "银色"),
+        ("Alice claims TEST-project 配色 should switch to 银色.", "银色"),
         ("> TEST-project 配色改成银色。", "银色"),
         ("The style guide says “TEST-project 配色改成银色”.", "银色"),
     ],
@@ -978,10 +985,17 @@ def test_a_change_the_person_does_not_assert_corrects_nothing(app, raw, value):
 
 
 @pytest.mark.parametrize(
-    "raw", ["TEST-project 配色还是改成银色。", "I would like TEST-project 配色 to switch to 银色."]
+    "raw",
+    [
+        "TEST-project 配色还是改成银色。",
+        "I would like TEST-project 配色 to switch to 银色.",
+        "我表示 TEST-project 配色换成银色。",
+        "更正：TEST-project 配色换成银色。",
+    ],
 )
 def test_a_plain_correction_takes_the_value_its_replacement_names(app, raw):
-    """In 还是改成银色 the looser replacement word 是 stands too; the value is the word 改成 names."""
+    """In 还是改成银色 the looser replacement word 是 stands too; the value is the word 改成 names.  The person's own
+    我表示 and a heading of theirs give their words to no one else."""
     core, ctx = app
     item, _ = initial(core, ctx)
     capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
@@ -1018,6 +1032,24 @@ def test_a_replacement_that_names_more_than_a_value_is_left_for_the_person_to_se
     source = capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
     assert core.current_claim(ctx, item.ref).payload["value_text"] == "蓝色"
     assert core.records.unresolved_updates(ctx)[0]["source_ref"] == source.ref
+
+
+@pytest.mark.parametrize(
+    "raw,state",
+    [
+        ("张三：TEST-project 配色是银色。", "proposed"),
+        ("张三：\nTEST-project 配色是银色。", "proposed"),
+        ("张三表示 TEST-project 配色是银色。", "proposed"),
+        ("我表示 TEST-project 配色是银色。", "active"),
+        ("更正：TEST-project 配色是银色。", "active"),
+    ],
+)
+def test_a_claim_in_words_given_to_someone_else_is_not_the_person_s(app, raw, state):
+    """Qualification gives words to a speaker as the correction path does (``attributed_to_another``)."""
+    core, ctx = app
+    item = accept(core, ctx, draft(capture(core, ctx, raw), "银色")).items[0]
+    reason = core.claim_history(ctx, item.ref)[-1].reason
+    assert (item.state, reason) == (state, "other_speaker" if state == "proposed" else "explicit_scoped_source")
 
 
 def test_a_correction_naming_its_claim_by_ref_applies(app):

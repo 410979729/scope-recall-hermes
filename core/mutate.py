@@ -47,11 +47,10 @@ from .source_qualification import (
     AUTHORITY_QUESTION,
     CONDITIONAL,
     RELATIVE_SCOPE,
-    REPORTED_SPEECH,
+    attributed_to_another,
     bound_literal,
     first_person_reference,
     quoted_at,
-    said_by_another,
 )
 
 
@@ -390,7 +389,7 @@ _ASKED = re.compile(
     r"|(?:^|[.!?。！？\n]\s*)(?:do|does|did|is|are|was|were)\s+(?!not\b)\w",
     re.I,
 )
-#: An example, beside the reported speech the evidence gates know (``REPORTED_SPEECH``).
+#: An example, beside the words the evidence gates give to someone else (``attributed_to_another``).
 _EXAMPLE = re.compile(r"举例|示例|\b(?:for example|example:)", re.I)
 
 
@@ -407,9 +406,9 @@ def _not_asserted(raw: str) -> bool:
 
 
 def _reported(raw: str) -> bool:
-    """Whether a message reports someone else's change: reported speech, a speaker other than the person, an
+    """Whether a message reports someone else's change: words it gives to someone else (``attributed_to_another``), an
     example, or a correction or retraction word standing in quoted text."""
-    if REPORTED_SPEECH.search(raw) or said_by_another(raw) or _EXAMPLE.search(raw):
+    if attributed_to_another(raw) or _EXAMPLE.search(raw):
         return True
     markers = (*_CORRECTION.finditer(raw), *_RETRACT.finditer(raw))
     return any(quoted_at(raw, marker.start()) for marker in markers)
