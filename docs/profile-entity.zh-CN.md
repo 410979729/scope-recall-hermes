@@ -1,18 +1,10 @@
-# Profile / Entity 只读视图（3.0.0 候选）
+# Profile / Entity 只读视图
 
-> 本文描述**本工作区候选**上的共享 Core 读视图，以及 Hermes / Codex MCP 上的同名工具。协议仍是 **1.1**。这不是已安装生产 wheel 的承诺，也不表示可以发布、启用生产或做历史迁移。
+本文描述共享 Core 的读视图，以及 Hermes / Codex MCP 上的同名工具。协议版本为 **1.1**。
 
-`profile` 与 `entity` 只读已承认的结构化 claim。空数据或尚未巩固的原始对话必须如实报告缺口，**不会**把原始聊天、USER.md、MEMORY.md 或共现文本自动写成档案。
+`profile` 与 `entity` 只读已承认的结构化 claim。空数据或尚未巩固的原始对话必须如实报告缺口，**不会**把原始聊天、USER.md、MEMORY.md 或共现文本自动写成档案。身份、路径与范围只来自已初始化的宿主上下文，工具参数不能传入。
 
-## 安装候选 vs 已安装实例
-
-| 表面 | 有这些工具的条件 |
-|------|------------------|
-| 本目录候选（import `scope_recall` 指向本工作区） | 源码里已实现 `MemoryCore.profile` / `MemoryCore.entity` |
-| 已安装的旧 3.0.0 wheel / 日常解释器 | **没有**这些工具，直到该候选经过复核、打包并安装 |
-| 身份 / 路径 / 范围 | 只来自已初始化的宿主上下文，工具参数不能传入 |
-
-`budget_tokens` 按**最终**规范化 JSON 的 UTF-8 字节计费（含 honesty 标记、身份字符串、provenance），**不是**分词器 token 数。默认 `max_items=16`、`budget_tokens=4096`。请求下限仍是 64，不会为了塞进空信封而抬高下限。若连最小的诚实空结果 / `unavailable` 信封都放不下，调用以 `ContractError(INPUT_INVALID, budget_tokens)` 拒绝；宿主错误包装**不是**视图结果。扫描封顶（候选并集在发布前裁到现有 200 对象栅栏内）时，`coverage` **绝不会**是 `complete_for_query`。`no_match` 只表示在当前范围与预算内没有可发布的当前项，**不是**全局不存在的证明。别名枚举触顶时不能证明唯一，返回未解析 / `ambiguous` 的部分缺口，不会按不完整前缀解析。
+`budget_tokens` 按**最终**规范化 JSON 的 UTF-8 字节计费（含 honesty 标记、身份字符串、provenance），**不是**分词器 token 数。默认 `max_items=16`、`budget_tokens=4096`。请求下限是 64，不会为了塞进空信封而抬高下限。若连最小的诚实空结果 / `unavailable` 信封都放不下，调用以 `ContractError(INPUT_INVALID, budget_tokens)` 拒绝；宿主错误包装**不是**视图结果。扫描封顶（候选并集在发布前裁到 200 对象栅栏内）时，`coverage` **绝不会**是 `complete_for_query`。`no_match` 只表示在当前范围与预算内没有可发布的当前项，**不是**全局不存在的证明。别名枚举触顶时不能证明唯一，返回未解析 / `ambiguous` 的部分缺口，不会按不完整前缀解析。
 
 ## 巩固前提
 
@@ -142,7 +134,7 @@
 
 有条件的直接关系会保留 `conditions` 与 `valid_from` / `valid_to`，不会被渲染成无条件边。若记录的是 `value_text: "Bob, Carol"`，查询 `Bob` **不会**得到入边。入边枚举匹配**仍保留的版本**上的标量，再由 `select_effective` 与整段相等复检决定是否当前；过期 / 被替代的旧值不会当成当前。
 
-## 显式别名（现有项目名契约，不放宽）
+## 显式别名（项目名契约，不放宽）
 
 只复用**已经承认**的 `kind=alias` claim，并在读取时再次做：
 
@@ -150,7 +142,7 @@
 - `validate_alias_source`：源证据仍绑定完整改名关系
 - 别名与目标的证据都参与权限、删除、epoch 重验
 
-当前 Core **有意**只认证显式项目名别名。读取路径不把任意人名别名放宽为可解析身份。字面主体字符串不会被静默正规化成另一个实体。
+Core **有意**只认证显式项目名别名。读取路径不把任意人名别名放宽为可解析身份。字面主体字符串不会被静默正规化成另一个实体。
 
 | 情况 | 结果 |
 |------|------|
@@ -161,7 +153,7 @@
 
 ## 部分结果与只读
 
-- `truncated` / `max_items_cap` / `budget_token_cap` / `scan_capped`：有界诚实部分结果，足够本切片；续读可选，本切片不实现游标
+- `truncated` / `max_items_cap` / `budget_token_cap` / `scan_capped`：有界、如实的部分结果；没有续读游标
 - 选择与发布之间数据变化：失败关闭，返回 `unavailable`，不带过期档案 / 边 / 别名正文
 - 只读：不写 SQLite、不写审计、不入队、不碰向量；不需要 embedding / LLM 配置
 - Hermes 与 Codex 共用同一套 Core 方法；适配器只做身份绑定与参数边界

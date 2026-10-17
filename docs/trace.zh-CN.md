@@ -1,8 +1,8 @@
 # 多跳证据路径
 
 `trace` 适合需要把两三条已记录关系串起来的问题，例如「Joy 参与的项目，
-由谁负责前端，他记录了什么需求」。普通记忆搜索继续用 `recall`，
-查询某个人或项目的直接资料继续用 `entity` / `profile`。
+由谁负责前端，他记录了什么需求」。普通记忆搜索用 `recall`，
+查询某个人或项目的直接资料用 `entity` / `profile`。
 
 Hermes 和 Codex 都调用同一个 `MemoryCore.trace`。默认最多两跳，可显式设置三跳。
 返回路径中的每一步都有原始事实 ref、版本和证据，查询本身不写新事实，也不调用额外模型。
@@ -25,10 +25,10 @@ Hermes 和 Codex 都调用同一个 `MemoryCore.trace`。默认最多两跳，�
 30 条路径、64 KiB 和五秒。预算明确叫 `budget_bytes`，统计 UTF-8 JSON 字节，
 不冒充模型 token 数。超限只返回完整路径并标记 partial。
 
-`core/trace.py` 复用 `core/read_views.py` 的权限、事实状态、别名与证据检查。
-没有增加事实表、图数据库、后台任务、模型配置或宿主专属推理实现。
-停用或不调用 trace，不影响原有捕获、事实更新和召回。
+`core/trace.py` 复用 `core/read_views.py` 的权限、事实状态、别名与证据检查，
+没有自己的事实表、图数据库、后台任务、模型配置或宿主专属推理实现。
+不调用 trace，不影响捕获、事实更新和召回。
 
 迁移方面同样划分边界：`maintenance/onboarding.py` 判别安装路径，
-`maintenance/upgrade.py` 管任务状态，原 `migrate_v2.py` 负责唯一转换，
-`core/index_rebuild.py` 负责分页投递现有 embed 队列，宿主切换由 Agent 操作流程负责。
+`maintenance/upgrade.py` 管任务状态，`maintenance/migrate_v2.py` 负责唯一转换，
+`core/index_rebuild.py` 负责分页投递到 embed 队列，宿主切换由 Agent 操作流程负责。
