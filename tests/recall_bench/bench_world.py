@@ -8,9 +8,10 @@ in it is real.
 
 Beside its answer a question has hard negatives: the same attribute of another project, a hypothetical, a quotation,
 a denial, an assistant's unconfirmed guess and tool output that name another value, the value a later message
-replaced, and the same subject on another day.  The claims are proposed for every sentence that names an attribute's
-value, negatives included, as a careless extractor would: what keeps a hypothetical, a quotation, a denial or an
-assistant's guess from becoming a fact is the store's own qualification, which is part of what is measured.
+replaced, and the same subject on another day.  Claims are proposed the way the consolidation contract asks of a
+careful extractor (``careful``): a hypothetical and a quotation carry their statement kind, and a denial quotes its
+negation with the value.  An assistant's guess and tool output are proposed as statements, as an extractor may; keeping
+them from becoming facts is the store's part.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from itertools import count, cycle
 from pathlib import Path
@@ -43,6 +44,8 @@ QUESTIONS = {
 DAYS = 28
 #: The kinds of message that look like the answer to a question about a project's attribute and are not one.
 NEGATIVE_KINDS = ("other_project", "hypothetical", "quoted", "negated", "assistant", "tool")
+#: The statement kind a careful extractor gives a sentence of each template form; any other form is an assertion.
+STATEMENT_KINDS = {"hypothetical": "hypothetical", "quoted": "quotation"}
 #: Chance that an entry also has a session of ordinary chatter on a day, and how many turns it runs.
 CHATTER_ODDS = 0.45
 CHATTER_TURNS = (1, 3)
@@ -99,6 +102,7 @@ class Claim:
     subject: str
     predicate: str
     value: str
+    statement_kind: str = "assertion"
 
 
 @dataclass(frozen=True)
@@ -322,7 +326,8 @@ class _Plan:
             _fact, other = self._slot(fact)
             text = self._fact(fact, language, "say", other, value)
             return kind, self._say(day, entry, scope, language, text, self._fact_claim(fact, language, other, value))
-        text, claim = self._fact(fact, language, kind, project, value), self._fact_claim(fact, language, project, value)
+        text = self._fact(fact, language, kind, project, value)
+        text, claim = careful(kind, text, self._fact_claim(fact, language, project, value))
         if kind == "assistant":
             return kind, self._reply(day, entry, scope, self._fact(fact, language, "ask", project), text, claim)
         if kind == "tool":
@@ -381,7 +386,7 @@ class _Plan:
 
     def _preferred(self, preference: dict, language: str, form: str, value: str = "") -> tuple[str, Claim]:
         text = self.rng.choice(preference[language][form]).format(value=value)
-        return text, Claim("preference", "user", preference["predicate"][language], value)
+        return careful(form, text, Claim("preference", "user", preference["predicate"][language], value))
 
     def preferences(self, n: int) -> None:
         """Half stated in so many words, half implied by a remark that never names the preference."""
@@ -683,6 +688,21 @@ class _Plan:
                         at = opened + timedelta(minutes=3 * place, seconds=40 * step)
                         messages.append(Message(key, entry, scope, session, origin, text, _utc(at)))
         return tuple(sorted(messages, key=lambda message: (message.at, message.key)))
+
+
+def careful(form: str, text: str, claim: Claim) -> tuple[str, Claim]:
+    """A sentence of a template ``form`` as it is said, and the claim a careful extractor proposes for it.
+
+    The contract keeps a sentence's negation in what it quotes, so a denial's template marks with ``[...]`` the span
+    that holds the negation and the value, and that span is the claim's value.
+    """
+    if form == "negated":
+        if text.count("[") != 1 or text.count("]") != 1:
+            raise ValueError(f"a denial template marks the span it quotes with [...]: {text}")
+        head, marked = text.split("[")
+        span, tail = marked.split("]")
+        return head + span + tail, replace(claim, value=span)
+    return text, replace(claim, statement_kind=STATEMENT_KINDS.get(form, "assertion"))
 
 
 def _utc(moment: datetime) -> str:

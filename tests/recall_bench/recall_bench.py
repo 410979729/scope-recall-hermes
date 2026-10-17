@@ -8,8 +8,8 @@
 
 How it runs:
   * ``bench_world.py`` beside this file makes the world: owners, the entries they talk to, the scopes each entry
-    reads, weeks of sessions, the claims a consolidation model proposes and the questions.  It is synthetic and the
-    same on every machine.
+    reads, weeks of sessions, the claims a careful consolidation model proposes and the questions.  It is synthetic
+    and the same on every machine.
   * Public MemoryCore calls on a fresh temp store, as in ``tests/known_answer/recall_invariants_check.py``: each
     message is captured at its own time on the world's clock with the principal its host attests, and a worker pass
     runs at the end of every day with a stub consolidation that proposes the world's claims, the shipped SQLite
@@ -18,14 +18,18 @@ How it runs:
   * Every question is asked twice, each time in a session of its own and on the same store: as the automatic packet
     a hook or a prefetch puts before a prompt, and as the explicit lookup a recall tool makes.  Questions are not
     captured, so none answers another.  A day a question names is read in the world's zone.
+  * The store runs on a clock that ticks a microsecond each time it is read (``WorldClock``), so a recall's deadline
+    counts the work it did and is never reached: every machine scores the same packets.  Latency is measured in a
+    second pass on the real clock, and is reported, not gated.
 
-What it reports, per path and task: the share of each question's answer found in the first 1, 3, 6 and 10 items,
-MRR, nDCG@10, how often a replaced value ranked above the current one (and each other kind of hard negative above
-the answer), abstention balanced accuracy (answering what can be answered, saying ``unknown`` for the rest), items
-from a scope the asking entry does not read, packet size in the packet's own units, latency, and which channel found
-the first item that answered.  ``test_recall_bench.py`` beside this file runs the dev split in the retrieval tier and
-fails on any cross-scope item, or on a metric that moved further than ``baseline.json``'s tolerance to the wrong
-side of its recorded value.
+An item answers a part of a question when it is that part's message, or a claim drawn from it that states what the
+message says (``credits``): a claim that cites the message but names another value, denies it or quotes it answers
+nothing.  Per path and task the report gives the share of each question's answer in the first 1, 3, 6 and 10 items,
+MRR, nDCG@10, how often a replaced value ranked above the current one (and each other kind of hard negative above the
+answer), the share of answerable questions answered and of the others met with ``unknown``, and over all questions
+their balanced accuracy, items from a scope the asking entry does not read, packet size in the packet's own units,
+latency, and the channel that found the first item that answered.  It also gives the state each kind of message's
+claims reached in the store.  ``test_recall_bench.py`` beside this file runs the dev split in the retrieval tier.
 
 The vector channel here hashes words: it finds what shares a question's words, not what means the same, so a
 paraphrased question measures what the store finds without a model.
@@ -41,8 +45,10 @@ import shutil
 import sys
 import tempfile
 import time
+import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -59,7 +65,7 @@ from scope_recall.core import CoreConfig, MemoryCore  # noqa: E402
 from scope_recall.core.events import lexical_terms  # noqa: E402
 from scope_recall.core.recall_packet import envelope_tokens  # noqa: E402
 from scope_recall.core.recall_policy import RecallPolicy  # noqa: E402
-from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS  # noqa: E402
+from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, optional_json  # noqa: E402
 from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort  # noqa: E402
 from scope_recall.vector.store import build_vector_store  # noqa: E402
 
@@ -76,7 +82,9 @@ PATHS = {
     ),
 }
 CUTOFFS = (1, 3, 6, 10)
-#: The metrics the baseline holds; the rest (size, latency, channels, other hard negatives) are reported only.
+#: The metrics the baseline holds, where a block has them: ``answered`` where it has answerable questions,
+#: ``abstained`` where it has unanswerable ones, balanced accuracy where it has both.  Size, latency, channels,
+#: hard negatives other than the replaced value, and claim states are reported only.
 GATED = (
     "recall@1",
     "recall@3",
@@ -85,13 +93,19 @@ GATED = (
     "mrr",
     "ndcg@10",
     "outdated_above_current",
+    "answered",
+    "abstained",
     "abstention_balanced_accuracy",
 )
 LOWER_IS_BETTER = frozenset({"outdated_above_current"})
-#: How far a gated metric may move to the wrong side of its recorded value.  The world is fixed, so the numbers
-#: repeat exactly; the margin is for ties another SQLite build may order differently.  One question of the largest
-#: task moves its recall@k by 0.028, past the margin.
+#: How far a gated metric may move to the wrong side of its recorded value.  The world and the clock are fixed, so
+#: the numbers repeat exactly; the margin is for ties another SQLite build may order differently.  One question of
+#: the largest task moves its recall@k by 0.028, past the margin.
 TOLERANCE = 0.02
+#: Kinds of hard negative a careful extractor marks, or the store refuses by their source: none should become a
+#: fact.  The baseline holds how many of each did (``facts``) as a ceiling, with no margin: the store may refuse more
+#: of them, and a change that lets one more through fails.
+NEVER_FACTS = ("hypothetical", "quoted", "negated", "assistant", "tool")
 
 
 # ---------------------------------------------------------------- the model seams
@@ -136,7 +150,7 @@ class ManifestConsolidation:
                 "predicate": claim.predicate,
                 "value_text": claim.value,
                 "conditions": [],
-                "statement_kind": "assertion",
+                "statement_kind": claim.statement_kind,
                 "valid_from": source.event["occurred_at"],
                 "valid_to": None,
                 "evidence_spans": [
@@ -158,16 +172,88 @@ class ManifestConsolidation:
 
 
 class WorldClock:
-    """The world's time, moved by the store's builder; ``monotonic`` stays real, so deadlines and latency are."""
+    """The world's time, moved by the store's builder, and a monotonic clock that ticks ``TICK`` each time it is read
+    unless ``realtime`` is set.  A recall reads it a few hundred times, so none comes near its deadline of seconds on
+    any machine, and a loop that waits on it still ends."""
+
+    TICK = 1e-6
 
     def __init__(self, now: str) -> None:
         self.now = now
+        self.realtime = False
+        self._ticks = 0
 
     def utc_now(self) -> str:
         return self.now
 
     def monotonic(self) -> float:
-        return time.monotonic()
+        if self.realtime:
+            return time.monotonic()
+        self._ticks += 1
+        return self._ticks * self.TICK
+
+
+# ---------------------------------------------------------------- what answers
+
+
+@dataclass(frozen=True)
+class Frame:
+    """What a claim states when it answers a part: its kind, its subject (any name it may be bound to), predicate and
+    value."""
+
+    kind: str
+    subjects: frozenset[str]
+    predicate: str
+    value: str
+
+
+def _same(left: object, right: object) -> bool:
+    def norm(value: object) -> str:
+        return " ".join(unicodedata.normalize("NFKC", str(value)).casefold().split())
+
+    return norm(left) == norm(right)
+
+
+def credits(
+    item: dict, gold: tuple[str, ...], key_of: Mapping[str, str], frames: Mapping[str, tuple[Frame, ...]]
+) -> frozenset[str]:
+    """The gold messages (parts of an answer) a delivered item gives: the message itself, or a claim drawn from it
+    that asserts one of the ``frames`` that message states.  A claim citing the message with another value, a denial
+    or a quotation of it gives none."""
+    if item["kind"] == "event":
+        return frozenset({key_of.get(item["ref"])} & set(gold))
+    payload = optional_json(item["content"]) if item["kind"] in {"claim", "procedure"} else None
+    if not isinstance(payload, dict) or payload.get("statement_kind") != "assertion":
+        return frozenset()
+    cited = {key_of.get(ref.rsplit("@", 1)[0]) for ref in item["evidence_refs"]}
+    return frozenset(
+        key
+        for key in gold
+        if key in cited
+        and any(
+            payload.get("kind") == frame.kind
+            and any(_same(payload.get("subject"), subject) for subject in frame.subjects)
+            and _same(payload.get("predicate"), frame.predicate)
+            and _same(payload.get("value_text"), frame.value)
+            for frame in frames.get(key, ())
+        )
+    )
+
+
+def ndcg(credited: tuple[frozenset[str], ...], parts: int, cutoff: int = 10) -> float:
+    """nDCG@cutoff over delivered items: an item's gain is the parts of the answer it is first to give, and the ideal
+    ranking holds the items that gave any, most first, then one item for each part none gave."""
+    given: set[str] = set()
+    gains = []
+    for keys in credited:
+        gains.append(len(keys - given))
+        given |= keys
+    ideal = [*sorted((gain for gain in gains if gain), reverse=True), *[1] * (parts - len(given))]
+
+    def dcg(values) -> float:
+        return sum(value / math.log2(place + 1) for place, value in enumerate(values[:cutoff], 1))
+
+    return dcg(gains) / dcg(ideal)
 
 
 # ---------------------------------------------------------------- the store
@@ -175,10 +261,12 @@ class WorldClock:
 
 @dataclass(frozen=True)
 class Answer:
-    """One recall: the messages each delivered item stands on, the channel that found it, and what it cost.
-    ``seen_before`` is whether the question's revoked scopes still showed in its packet a moment before."""
+    """One recall: the gold messages each delivered item gives, every message it stands on, the channel that found
+    it, and what it cost.  ``seen_before`` is whether the question's revoked scopes still showed in its packet a
+    moment before."""
 
     packet: dict
+    credited: tuple[frozenset[str], ...]
     carried: tuple[frozenset[str], ...]
     channels: tuple[str | None, ...]
     tokens: int
@@ -204,10 +292,11 @@ class BenchStore:
         self.purge = LancePurgePort(
             self.companion, embedding_spaces=(SPACE,), agent_id=AGENT, installation_id=INSTALLATION
         )
+        port = LanceVectorPort(self.companion, embedder, expected_embedding_space=SPACE, clock=self.clock.monotonic)
         self.core = MemoryCore(
             CoreConfig(self.binding),
             clock=self.clock,
-            vectors=LanceVectorPort(self.companion, embedder, expected_embedding_space=SPACE) if vectors else None,
+            vectors=port if vectors else None,
             retrieval_policy=RecallPolicy(
                 vector_threshold=VECTOR_THRESHOLD if vectors else None, embedding_space_id=SPACE
             ),
@@ -218,6 +307,8 @@ class BenchStore:
         self.entries = {entry.id: entry for entry in world.entries}
         self.key_of: dict[str, str] = {}
         self.scope_of = {message.key: message.scope for message in world.messages}
+        self.text_of = {message.key: message.text for message in world.messages}
+        self.frames = {message.key: self._frames(message) for message in world.messages}
         with self.core.storage.write(self.worker) as tx:
             tx.registry.register_scopes(world.scopes)
             for entry in world.entries:
@@ -234,6 +325,20 @@ class BenchStore:
         started = time.perf_counter()
         self._capture()
         self.build_seconds = time.perf_counter() - started
+
+    def _frames(self, message) -> tuple[Frame, ...]:
+        """What the claims asserted for a message state; a claim about the person ("user") is bound to its owner."""
+        owner = self.entries[message.entry].owner
+        return tuple(
+            Frame(
+                claim.kind,
+                frozenset({claim.subject, f"principal:human:{owner}"} if claim.subject == "user" else {claim.subject}),
+                claim.predicate,
+                claim.value,
+            )
+            for claim in self.world.claims.get(message.text, ())
+            if claim.statement_kind == "assertion"
+        )
 
     def _context(self, entry_id: str, session: str, origin: str, reads: frozenset[str] | None = None) -> TrustedContext:
         """A context of ``entry_id`` as its host attests it: the owner and the entry's assistant are verified."""
@@ -308,13 +413,18 @@ class BenchStore:
         packet = self._recall(question, request, call, session, question.reads)
         ms = (time.perf_counter() - started) * 1000
         found = {(c.kind, c.ref, c.revision): c.source for c in self.last_result.candidates} if self.last_result else {}
+        items = packet["items"]
         # A procedure is a claim in the store; the packet names it apart.
-        kinds = ("claim" if item["kind"] == "procedure" else item["kind"] for item in packet["items"])
-        channels = tuple(
-            found.get((kind, item["ref"], item["revision"])) for kind, item in zip(kinds, packet["items"], strict=True)
+        kinds = ("claim" if item["kind"] == "procedure" else item["kind"] for item in items)
+        return Answer(
+            packet,
+            tuple(credits(item, question.gold, self.key_of, self.frames) for item in items),
+            tuple(self._carried(item) for item in items),
+            tuple(found.get((kind, item["ref"], item["revision"])) for kind, item in zip(kinds, items, strict=True)),
+            envelope_tokens(packet),
+            ms,
+            seen_before,
         )
-        carried = tuple(self._carried(item) for item in packet["items"])
-        return Answer(packet, carried, channels, envelope_tokens(packet), ms, seen_before)
 
     def _recall(self, question: Question, request: dict, call: dict, session: str, reads: frozenset[str]) -> dict:
         context = self._context(question.entry, session, "human_direct", reads)
@@ -327,6 +437,33 @@ class BenchStore:
         captured as reads as ``?``, which the leak count takes for another scope's."""
         return frozenset(self.key_of.get(ref.rsplit("@", 1)[0], "?") for ref in item["evidence_refs"])
 
+    def qualification(self) -> dict[str, dict[str, int]]:
+        """For each kind of message a question names (its answer, each kind of hard negative): how many of them a
+        claim drawn from them made a fact (``active``), how many only had claims left unqualified, and how many had
+        none.  Read through the store's claim accessor, under the worker's context, which reads every scope."""
+        roles: dict[str, str] = {}
+        for question in self.world.questions:
+            roles.update((key, kind) for kind, key in question.negatives if key not in roles)
+            roles.update((key, "answer") for key in question.gold)
+        states: dict[str, set[str]] = {}
+        slots = {(claim.kind, claim.predicate) for claims in self.world.claims.values() for claim in claims}
+        with self.core.storage.read(self.worker) as tx:
+            for kind, predicate in sorted(slots):
+                for ref in tx.claims.list_refs(kind=kind, predicate=predicate, limit=200):
+                    for version in tx.claims.versions(ref):
+                        for span in version.payload["evidence_spans"]:
+                            key = self.key_of.get(span["source_ref"])
+                            states.setdefault(key, set()).add(version.state)
+        table: dict[str, Counter] = {}
+        for key, role in roles.items():
+            if not self.world.claims.get(self.text_of[key]):
+                continue
+            found = states.get(key, set())
+            table.setdefault(role, Counter())[
+                "active" if "active" in found else "unqualified" if found else "none"
+            ] += 1
+        return {role: dict(sorted(counts.items())) for role, counts in sorted(table.items())}
+
     def close(self) -> None:
         self.companion.close()
 
@@ -336,18 +473,19 @@ class BenchStore:
 
 @dataclass(frozen=True)
 class Outcome:
-    """What one question got on one path; positions are 1-based."""
+    """What one question got on one path; positions are 1-based.  ``ms`` comes from the latency pass, when it ran."""
 
     ranks: tuple[int | None, ...]
     first: int | None
     channel: str | None
+    ndcg: float | None
     negatives: tuple[tuple[str, int | None], ...]
     leaks: int
     answerability: str
     tokens: int
-    ms: float
     items: tuple[str, ...]
     seen_before: bool | None
+    ms: float | None = None
 
     @property
     def abstained(self) -> bool:
@@ -357,27 +495,31 @@ class Outcome:
 def outcome(question: Question, answer: Answer, scope_of: dict[str, str]) -> Outcome:
     """Where the answer's parts and each kind of hard negative first came, and what came from outside the reads."""
 
-    def first_carrying(keys) -> int | None:
-        return next((place for place, carried in enumerate(answer.carried, 1) if carried & keys), None)
+    def first_where(test) -> int | None:
+        return next((place for place in range(1, len(answer.credited) + 1) if test(place - 1)), None)
 
-    first = first_carrying(set(question.gold))
+    first = first_where(lambda index: answer.credited[index])
     kinds = sorted({kind for kind, _key in question.negatives})
-    labels = {key: kind for kind, key in question.negatives} | {key: "gold" for key in question.gold}
+    labels = {key: kind for kind, key in question.negatives}
+
+    def label(index: int) -> str:
+        if answer.credited[index]:
+            return "gold"
+        return "+".join(sorted({labels.get(key, "other") for key in answer.carried[index]})) or "other"
+
     return Outcome(
-        ranks=tuple(first_carrying({key}) for key in question.gold),
+        ranks=tuple(first_where(lambda index, key=key: key in answer.credited[index]) for key in question.gold),
         first=first,
         channel=answer.channels[first - 1] if first else None,
+        ndcg=ndcg(answer.credited, len(question.gold)) if question.gold else None,
         negatives=tuple(
-            (kind, first_carrying({k for name, k in question.negatives if name == kind})) for kind in kinds
+            (kind, first_where(lambda index, kind=kind: any(labels.get(key) == kind for key in answer.carried[index])))
+            for kind in kinds
         ),
         leaks=sum(any(scope_of.get(key) not in question.reads for key in carried) for carried in answer.carried),
         answerability=answer.packet["answerability"],
         tokens=answer.tokens,
-        ms=answer.ms,
-        items=tuple(
-            "+".join(sorted({labels.get(key, "other") for key in carried})) + f":{channel}"
-            for carried, channel in zip(answer.carried, answer.channels, strict=True)
-        ),
+        items=tuple(f"{label(index)}:{answer.channels[index]}" for index in range(len(answer.credited))),
         seen_before=answer.seen_before,
     )
 
@@ -387,17 +529,10 @@ def _share(flags) -> float | None:
     return round(sum(flags) / len(flags), 4) if flags else None
 
 
-def _percentile(values, share: float) -> float:
+def _percentile(values, share: float) -> float | None:
     """Nearest rank: the smallest value at least ``share`` of them do not exceed."""
-    ordered = sorted(values)
-    return ordered[max(0, math.ceil(share * len(ordered)) - 1)]
-
-
-def _ndcg(ranks: tuple[int | None, ...], cutoff: int = 10) -> float:
-    """Binary nDCG over the answer's parts: an item counts once however many parts it carries."""
-    positions = sorted({rank for rank in ranks if rank is not None and rank <= cutoff})
-    ideal = sum(1 / math.log2(place + 1) for place in range(1, min(len(ranks), cutoff) + 1))
-    return sum(1 / math.log2(place + 1) for place in positions) / ideal
+    ordered = sorted(value for value in values if value is not None)
+    return round(ordered[max(0, math.ceil(share * len(ordered)) - 1)], 1) if ordered else None
 
 
 def _above(outcome: Outcome, kind: str) -> bool | None:
@@ -408,9 +543,8 @@ def _above(outcome: Outcome, kind: str) -> bool | None:
     return None
 
 
-def metrics(pairs: list[tuple[Question, Outcome]], answered_overall: float | None) -> dict:
-    """One block of the report: a task's questions on one path, or all of them.  Abstention balanced accuracy needs
-    questions of both kinds; a task with only unanswerable ones is weighed with ``answered_overall``."""
+def metrics(pairs: list[tuple[Question, Outcome]]) -> dict:
+    """One block of the report: a task's questions on one path, or all of them."""
     answerable = [o for q, o in pairs if q.gold]
     unanswerable = [o for q, o in pairs if not q.gold]
     block: dict = {"questions": len(pairs)}
@@ -419,25 +553,25 @@ def metrics(pairs: list[tuple[Question, Outcome]], answered_overall: float | Non
             parts = [sum(r is not None and r <= cutoff for r in o.ranks) / len(o.ranks) for o in answerable]
             block[f"recall@{cutoff}"] = round(sum(parts) / len(parts), 4)
         block["mrr"] = round(mean_reciprocal_rank([o.first for o in answerable]), 4)
-        block["ndcg@10"] = round(sum(_ndcg(o.ranks) for o in answerable) / len(answerable), 4)
+        block["ndcg@10"] = round(sum(o.ndcg for o in answerable) / len(answerable), 4)
         block["answered"] = _share(not o.abstained for o in answerable)
         block["first_found_by"] = dict(sorted(Counter(o.channel or "none" for o in answerable).items()))
+    if unanswerable:
+        block["abstained"] = _share(o.abstained for o in unanswerable)
+    if answerable and unanswerable:
+        block["abstention_balanced_accuracy"] = round((block["answered"] + block["abstained"]) / 2, 4)
     kinds = sorted({name for _q, o in pairs for name, _rank in o.negatives})
     above = {kind: _share(flag for _q, o in pairs if (flag := _above(o, kind)) is not None) for kind in kinds}
     if "outdated" in above:
         block["outdated_above_current"] = above.pop("outdated")
     if above:
         block["negative_above_answer"] = above
-    if unanswerable:
-        block["abstained"] = _share(o.abstained for o in unanswerable)
-        positive = block.get("answered", answered_overall)
-        if positive is not None:
-            block["abstention_balanced_accuracy"] = round((positive + block["abstained"]) / 2, 4)
     block["answerability"] = dict(sorted(Counter(o.answerability for _q, o in pairs).items()))
     block["leaks"] = sum(o.leaks for _q, o in pairs)
-    for name, values in (("packet_tokens", [o.tokens for _q, o in pairs]), ("latency_ms", [o.ms for _q, o in pairs])):
-        block[f"{name}_p50"] = round(_percentile(values, 0.5), 1)
-        block[f"{name}_p95"] = round(_percentile(values, 0.95), 1)
+    block["packet_tokens_p50"] = _percentile((o.tokens for _q, o in pairs), 0.5)
+    block["packet_tokens_p95"] = _percentile((o.tokens for _q, o in pairs), 0.95)
+    block["latency_ms_p50"] = _percentile((o.ms for _q, o in pairs), 0.5)
+    block["latency_ms_p95"] = _percentile((o.ms for _q, o in pairs), 0.95)
     return block
 
 
@@ -445,9 +579,8 @@ def report(world: World, store: BenchStore, outcomes: dict[str, list[Outcome]]) 
     paths = {}
     for path, results in outcomes.items():
         pairs = list(zip(world.questions, results, strict=True))
-        overall = metrics(pairs, None)
-        paths[path] = {"all": overall} | {
-            task: metrics([(q, o) for q, o in pairs if q.task == task], overall.get("answered")) for task in TASKS
+        paths[path] = {"all": metrics(pairs)} | {
+            task: metrics([(q, o) for q, o in pairs if q.task == task]) for task in TASKS
         }
     status = store.core.status(store.worker)
     revoked = [o.seen_before for results in outcomes.values() for o in results if o.seen_before is not None]
@@ -465,6 +598,7 @@ def report(world: World, store: BenchStore, outcomes: dict[str, list[Outcome]]) 
             "failed_work": status.failed_work,
             "build_seconds": round(store.build_seconds, 1),
         },
+        "qualification": store.qualification(),
         "leaks": sum(blocks["all"]["leaks"] for blocks in paths.values()),
         "revoked_seen_before": {"asked": len(revoked), "seen": sum(revoked)},
         "paths": paths,
@@ -492,8 +626,9 @@ def _detail(outcome: Outcome) -> dict:
     }
 
 
-def run(split: str = "dev", *, scale: int = 1, vectors: bool = True) -> dict:
-    """Build the world's store in a temp directory, ask every question on both paths, and report."""
+def run(split: str = "dev", *, scale: int = 1, vectors: bool = True, latency: bool = True) -> dict:
+    """Build the world's store in a temp directory, ask every question on both paths and report; with ``latency``,
+    ask them all again on the real clock for their latency."""
     world = build_world(split, scale=scale)
     root = Path(tempfile.mkdtemp(prefix="scope-recall-bench-"))
     try:
@@ -502,6 +637,12 @@ def run(split: str = "dev", *, scale: int = 1, vectors: bool = True) -> dict:
             outcomes = {
                 path: [outcome(q, store.ask(q, path), store.scope_of) for q in world.questions] for path in PATHS
             }
+            if latency:
+                store.clock.realtime = True
+                outcomes = {
+                    path: [replace(o, ms=store.ask(q, path).ms) for q, o in zip(world.questions, results, strict=True)]
+                    for path, results in outcomes.items()
+                }
             return report(world, store, outcomes)
         finally:
             store.close()
@@ -523,11 +664,21 @@ def gated(report: dict) -> dict:
     }
 
 
+def facts(report: dict) -> dict[str, int]:
+    """How many hard negatives of each ``NEVER_FACTS`` kind a claim made a fact."""
+    return {kind: report["qualification"].get(kind, {}).get("active", 0) for kind in NEVER_FACTS}
+
+
 def regressions(report: dict, baseline: dict) -> list[str]:
-    """Each gated metric further than the tolerance on the wrong side of its recorded value."""
+    """Each gated metric further than the tolerance on the wrong side of its recorded value, and each kind of hard
+    negative of which more became facts than recorded."""
     if report["world"] != baseline["world"]:
         return [f"the world is not the one {BASELINE.name} was measured on: the templates or the generator changed"]
-    problems = []
+    problems = [
+        f"{kind} messages that became facts: {count} (baseline {baseline['facts'].get(kind, 0)})"
+        for kind, count in facts(report).items()
+        if count > baseline["facts"].get(kind, 0)
+    ]
     now = gated(report)
     for path, blocks in baseline["metrics"].items():
         for name, recorded in blocks.items():
@@ -546,6 +697,7 @@ def record_baseline(report: dict) -> None:
         "scale": report["scale"],
         "world": report["world"],
         "tolerance": TOLERANCE,
+        "facts": facts(report),
         "metrics": gated(report),
     }
     BASELINE.write_bytes((json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
@@ -562,28 +714,40 @@ def summary(report: dict) -> str:
         f" | {store['messages']} messages, {store['questions']} questions, built in {store['build_seconds']} s",
         f"cross-scope items: {report['leaks']} | revoked scopes seen before revocation: {revoked['seen']} of"
         f" {revoked['asked']}",
+        "messages whose claims became facts: "
+        + ", ".join(
+            f"{role} {counts.get('active', 0)}/{sum(counts.values())}"
+            for role, counts in report["qualification"].items()
+        ),
     ]
     columns = ("recall@1", "recall@3", "recall@6", "recall@10", "mrr", "ndcg@10")
     for path, blocks in report["paths"].items():
         lines += [
             "",
-            f"{path:<17}{'r@1':>6}{'r@3':>6}{'r@6':>6}{'r@10':>6}{'mrr':>6}{'ndcg':>6}{'old>new':>8}{'abst.BA':>8}"
-            f"{'leaks':>6}{'tokens p50/95':>15}{'ms p50/95':>12}",
+            f"{path:<17}{'r@1':>6}{'r@3':>6}{'r@6':>6}{'r@10':>6}{'mrr':>6}{'ndcg':>6}{'old>new':>8}{'answ':>6}"
+            f"{'abst':>6}{'leaks':>6}{'tokens p50/95':>15}{'ms p50/95':>12}",
         ]
         for name, block in blocks.items():
             lines.append(
                 f"{name:<17}{''.join(f'{_cell(block.get(metric)):>6}' for metric in columns)}"
-                f"{_cell(block.get('outdated_above_current')):>8}{_cell(block.get('abstention_balanced_accuracy')):>8}"
-                f"{block['leaks']:>6}{block['packet_tokens_p50']:>9.0f}/{block['packet_tokens_p95']:<5.0f}"
-                f"{block['latency_ms_p50']:>7.0f}/{block['latency_ms_p95']:<4.0f}"
+                f"{_cell(block.get('outdated_above_current')):>8}"
+                f"{_cell(block.get('answered')):>6}{_cell(block.get('abstained')):>6}"
+                f"{block['leaks']:>6}{_count(block['packet_tokens_p50']):>9}/{_count(block['packet_tokens_p95']):<5}"
+                f"{_count(block['latency_ms_p50']):>7}/{_count(block['latency_ms_p95']):<4}"
             )
-        lines.append("first answer found by: " + _counts(blocks["all"].get("first_found_by", {})))
-        lines.append("negative above the answer: " + _counts(blocks["all"].get("negative_above_answer", {})))
+        everything = blocks["all"]
+        lines.append(f"abstention balanced accuracy: {_cell(everything.get('abstention_balanced_accuracy'))}")
+        lines.append("first answer found by: " + _counts(everything.get("first_found_by", {})))
+        lines.append("negative above the answer: " + _counts(everything.get("negative_above_answer", {})))
     return "\n".join(lines)
 
 
 def _cell(value) -> str:
     return "-" if value is None else f"{value:.2f}"
+
+
+def _count(value) -> str:
+    return "-" if value is None else f"{value:.0f}"
 
 
 def _counts(values: dict) -> str:
@@ -595,6 +759,7 @@ def main() -> int:
     parser.add_argument("--split", choices=("dev", "heldout"), default="dev")
     parser.add_argument("--scale", type=int, default=1, help="1 is the CI size; 2 doubles the days and the questions")
     parser.add_argument("--no-vectors", action="store_true", help="recall without the vector channel")
+    parser.add_argument("--no-latency", action="store_true", help="skip the second pass that measures latency")
     parser.add_argument("--json", help="also write the full report, every question included, to this file")
     parser.add_argument("--update", action="store_true", help="record this run in baseline.json (dev, scale 1)")
     parser.add_argument("--allow-worse", action="store_true", help="with --update: record numbers below the baseline")
@@ -602,23 +767,29 @@ def main() -> int:
     measured_as_baseline = (args.split, args.scale, args.no_vectors) == ("dev", 1, False)
     if args.update and not measured_as_baseline:
         parser.error("the baseline is the dev split at scale 1, with vectors")
-    result = run(args.split, scale=args.scale, vectors=not args.no_vectors)
+    if args.json and Path(args.json).resolve() == BASELINE.resolve():
+        parser.error(f"--json would overwrite {BASELINE.name}; --update is what records it")
+    result = run(args.split, scale=args.scale, vectors=not args.no_vectors, latency=not args.no_latency)
     print(summary(result))
-    if args.json:
-        Path(args.json).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else None
     problems = regressions(result, baseline) if baseline is not None and measured_as_baseline else []
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.update:
-        # A changed world has nothing to be worse than; on the same world, recording a drop is asked for in words.
-        if problems and result["world"] == baseline["world"] and not args.allow_worse:
-            print("\nnot recorded, below the baseline (--allow-worse records it):\n  " + "\n  ".join(problems))
-            return 1
-        record_baseline(result)
-        print(f"\nrecorded in {BASELINE.name}")
-        return 0
+        return _update(result, baseline, problems, allow_worse=args.allow_worse)
     if problems:
         print("\nbelow the baseline:\n  " + "\n  ".join(problems))
     return 1 if problems or result["leaks"] else 0
+
+
+def _update(result: dict, baseline: dict | None, problems: list[str], *, allow_worse: bool) -> int:
+    # A changed world has nothing to be worse than; on the same world, recording a drop is asked for in words.
+    if problems and baseline is not None and result["world"] == baseline["world"] and not allow_worse:
+        print("\nnot recorded, below the baseline (--allow-worse records it):\n  " + "\n  ".join(problems))
+        return 1
+    record_baseline(result)
+    print(f"\nrecorded in {BASELINE.name}")
+    return 0
 
 
 if __name__ == "__main__":

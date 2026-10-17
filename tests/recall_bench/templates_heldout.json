@@ -1,5 +1,5 @@
 {
-  "about": "Hand-written templates for the held-out split of the recall benchmark (bench_world.py), written apart from the dev templates: another cast, other projects, attributes, values and phrasings. Every name and value is invented.",
+  "about": "Hand-written templates for the held-out split of the recall benchmark (bench_world.py), written apart from the dev templates: another cast, other projects, attributes, values and phrasings. Every name and value is invented. A denial template marks with [...] the span a careful extractor quotes for it: the negation with the value.",
   "now": "2026-08-10T08:30:00",
   "zone_hours": -4,
   "cast": {
@@ -31,7 +31,7 @@
         "ask": ["Which host runs the production database for {project}?", "Where does {project}'s production database live?"],
         "hypothetical": ["Suppose we shard {project}; its production database host would then be {value}."],
         "quoted": ["A contractor's handover note reads \"{project} production database host = {value}\", and nobody has checked it."],
-        "negated": ["{project}'s production database host isn't {value}, that box was retired."],
+        "negated": ["{project}'s production database host [isn't {value}], that box was retired."],
         "assistant": ["From what I can tell, the production database host for {project} might be {value}."],
         "tool": ["$ grep -h DB_HOST {project}/env/*.sample\nDB_HOST={value}"]
       },
@@ -41,7 +41,7 @@
         "ask": ["{project} 的生产数据库在哪台主机上？", "{project} 生产库的主机是哪个？"],
         "hypothetical": ["假设 {project} 做了分库，生产数据库主机就会换成 {value}。"],
         "quoted": ["外包交接文档里写着“{project} 生产数据库主机 = {value}”，还没人核对过。"],
-        "negated": ["{project} 的生产数据库主机不是 {value}，那台机器早就下线了。"],
+        "negated": ["{project} 的生产数据库主机[不是 {value}]，那台机器早就下线了。"],
         "assistant": ["据我推测，{project} 的生产数据库主机也许是 {value}。"],
         "tool": ["$ grep -h DB_HOST {project}/env/*.sample\nDB_HOST={value}"]
       }
@@ -58,7 +58,7 @@
         "ask": ["Who leads on-call for {project}?", "Who should I page first about {project}?"],
         "hypothetical": ["Suppose the rotation flips next month; then {value} would be the {project} on-call lead."],
         "quoted": ["The pager app still shows \"{project} on-call lead: {value}\", which is a leftover from spring."],
-        "negated": ["{value} isn't the on-call lead for {project}, just the holiday cover."],
+        "negated": ["The {project} on-call lead [isn't {value}]; that is just the holiday cover."],
         "assistant": ["It seems {value} might be the on-call lead for {project}, though I can't confirm that."],
         "tool": ["$ pagerctl show {project} --archived\nlead: {value} (2025 rotation)"]
       },
@@ -68,7 +68,7 @@
         "ask": ["{project} 的值班负责人是谁？", "{project} 出问题先找谁？"],
         "hypothetical": ["假设下个月轮换，{project} 的值班负责人就是{value}。"],
         "quoted": ["值班软件上还显示“{project} 值班负责人：{value}”，那是春天留下的。"],
-        "negated": ["{value}不是 {project} 的值班负责人，只是节假日顶班。"],
+        "negated": ["{project} 的值班负责人[不是{value}]，那只是节假日顶班的人。"],
         "assistant": ["看起来 {project} 的值班负责人可能是{value}，不过我没法确认。"],
         "tool": ["$ pagerctl show {project} --archived\nlead: {value} (2025 rotation)"]
       }
@@ -82,7 +82,7 @@
         "ask": ["Which package registry does {project} publish to?", "Where do the {project} packages get published?"],
         "hypothetical": ["Suppose the license renewal falls through; {project} would switch its package registry to {value}."],
         "quoted": ["A slide from the vendor pitch says \"{project} package registry: {value}\", but that was only a proposal."],
-        "negated": ["{project} doesn't publish to {value}; that was a different team."],
+        "negated": ["{project} [doesn't publish to {value}]; that was a different team."],
         "assistant": ["Possibly {project} uses {value} as its package registry, going by the build logs."],
         "tool": ["$ grep registry {project}/.npmrc.old\nregistry=https://{value}.example/api"]
       },
@@ -92,7 +92,7 @@
         "ask": ["{project} 的制品发布到哪个仓库？", "{project} 用的是什么制品仓库？"],
         "hypothetical": ["假设许可证续不上，{project} 的制品仓库就要换成 {value}。"],
         "quoted": ["厂商宣讲的幻灯片上写着“{project} 制品仓库：{value}”，那只是个提案。"],
-        "negated": ["{project} 的制品仓库不是 {value}，那是别的团队的。"],
+        "negated": ["{project} 的制品仓库[不是 {value}]，那是别的团队的。"],
         "assistant": ["从构建日志看，{project} 的制品仓库可能是 {value}。"],
         "tool": ["$ grep registry {project}/.npmrc.old\nregistry=https://{value}.example/api"]
       }
@@ -106,7 +106,7 @@
         "ask": ["How big is the {project} cache?", "What cache size does {project} run with?"],
         "hypothetical": ["Suppose traffic doubles; the {project} cache size would need to be {value}."],
         "quoted": ["The capacity sheet lists \"{project} cache size: {value}\", copied from the staging config."],
-        "negated": ["The {project} cache size is not {value}, whatever the dashboard says."],
+        "negated": ["The {project} cache size is [not {value}], whatever the dashboard says."],
         "assistant": ["Maybe the {project} cache size is around {value}."],
         "tool": ["$ redis-cli -h {project}-cache CONFIG GET maxmemory-human\nmaxmemory-human\n{value}"]
       },
@@ -116,7 +116,7 @@
         "ask": ["{project} 的缓存有多大？", "{project} 缓存大小是多少？"],
         "hypothetical": ["假设流量翻倍，{project} 的缓存大小就得是 {value}。"],
         "quoted": ["容量表里写着“{project} 缓存大小：{value}”，是从预发配置里抄的。"],
-        "negated": ["不管看板怎么显示，{project} 的缓存大小都不是 {value}。"],
+        "negated": ["不管看板怎么显示，{project} 的缓存大小都[不是 {value}]。"],
         "assistant": ["{project} 的缓存大小大概在 {value} 左右吧。"],
         "tool": ["$ redis-cli -h {project}-cache CONFIG GET maxmemory-human\nmaxmemory-human\n{value}"]
       }
@@ -133,7 +133,7 @@
         "ask": ["How long are the {project} sprints?", "What sprint length does {project} use?"],
         "hypothetical": ["Suppose we merge the two squads; the {project} sprint length would become {value}."],
         "quoted": ["The agile coach's slides say \"{project} sprint length: {value}\", but that was a suggestion."],
-        "negated": ["The {project} sprint length isn't {value}."],
+        "negated": ["The {project} sprint length [isn't {value}]."],
         "assistant": ["I'd guess the {project} sprint length is {value}."],
         "tool": ["$ jira-cli board show {project} --field sprintLength\nsprintLength: {value} (template)"]
       },
@@ -143,7 +143,7 @@
         "ask": ["{project} 一个迭代多长时间？", "{project} 的迭代周期是多久？"],
         "hypothetical": ["假设两个小组合并，{project} 的迭代周期就会变成{value}。"],
         "quoted": ["敏捷教练的幻灯片里写着“{project} 迭代周期：{value}”，那只是个建议。"],
-        "negated": ["{project} 的迭代周期不是{value}。"],
+        "negated": ["{project} 的迭代周期[不是{value}]。"],
         "assistant": ["我猜 {project} 的迭代周期是{value}。"],
         "tool": ["$ jira-cli board show {project} --field sprintLength\nsprintLength: {value} (template)"]
       }
@@ -157,7 +157,7 @@
         "ask": ["Where is the {project} status page?", "Which URL shows the {project} status page?"],
         "hypothetical": ["Suppose we drop the hosted service; the {project} status page would end up at {value}."],
         "quoted": ["An old support macro still says \"{project} status page: {value}\"."],
-        "negated": ["The {project} status page is not {value}."],
+        "negated": ["The {project} status page is [not {value}]."],
         "assistant": ["Perhaps the {project} status page is {value}."],
         "tool": ["$ curl -sI https://{value}/{project} | head -1\nHTTP/2 301"]
       },
@@ -167,7 +167,7 @@
         "ask": ["{project} 的状态页在哪？", "{project} 的状态页是哪个网址？"],
         "hypothetical": ["假设不再用托管服务，{project} 的状态页就会放到 {value}。"],
         "quoted": ["一条旧的客服快捷回复里还写着“{project} 状态页：{value}”。"],
-        "negated": ["{project} 的状态页不是 {value}。"],
+        "negated": ["{project} 的状态页[不是 {value}]。"],
         "assistant": ["{project} 的状态页或许是 {value}。"],
         "tool": ["$ curl -sI https://{value}/{project} | head -1\nHTTP/2 301"]
       }
@@ -184,7 +184,7 @@
         "ask": ["What is the API rate limit on {project}?", "How many requests does the {project} API allow?"],
         "hypothetical": ["Suppose the partner deal closes; the {project} API rate limit would go to {value}."],
         "quoted": ["The public docs claim \"{project} API rate limit: {value}\", but they lag behind."],
-        "negated": ["The {project} API rate limit is not {value}."],
+        "negated": ["The {project} API rate limit is [not {value}]."],
         "assistant": ["The {project} API rate limit might be {value}, if I remember the gateway config right."],
         "tool": ["$ grep -A1 ratelimit gateway/{project}.yaml.bak\nratelimit:\n  rate: {value}"]
       },
@@ -194,7 +194,7 @@
         "ask": ["{project} 的接口限流是多少？", "{project} 的接口每分钟能调用多少次？"],
         "hypothetical": ["假设合作谈成了，{project} 的接口限流会调到{value}。"],
         "quoted": ["公开文档上写着“{project} 接口限流：{value}”，但文档一直滞后。"],
-        "negated": ["{project} 的接口限流不是{value}。"],
+        "negated": ["{project} 的接口限流[不是{value}]。"],
         "assistant": ["如果我没记错网关配置，{project} 的接口限流可能是{value}。"],
         "tool": ["$ grep -A1 ratelimit gateway/{project}.yaml.bak\nratelimit:\n  rate: {value}"]
       }
@@ -211,7 +211,7 @@
         "ask": ["Who reviews designs for {project}?", "Who is the {project} design reviewer?"],
         "hypothetical": ["Suppose the current reviewer goes part-time; {value} would become the {project} design reviewer."],
         "quoted": ["The RFC template still says \"{project} design reviewer: {value}\"."],
-        "negated": ["{value} is not the design reviewer for {project}."],
+        "negated": ["The {project} design reviewer is [not {value}]."],
         "assistant": ["Maybe {value} is the {project} design reviewer? I'm only guessing from the doc history."],
         "tool": ["$ git log -1 --format=%an -- {project}/docs/design.md\n{value}"]
       },
@@ -221,7 +221,7 @@
         "ask": ["{project} 的设计评审人是谁？", "{project} 的设计由谁来评审？"],
         "hypothetical": ["假设现在的评审人改成兼职，{project} 的设计评审人就会是{value}。"],
         "quoted": ["技术方案模板里还写着“{project} 设计评审人：{value}”。"],
-        "negated": ["{value}不是 {project} 的设计评审人。"],
+        "negated": ["{project} 的设计评审人[不是{value}]。"],
         "assistant": ["我只是从文档历史猜的，{project} 的设计评审人也许是{value}？"],
         "tool": ["$ git log -1 --format=%an -- {project}/docs/design.md\n{value}"]
       }
@@ -240,7 +240,7 @@
         "ask": ["What do I drink first thing in the morning?", "What should be in my cup when I start the day?"],
         "hypothetical": ["Suppose I cut caffeine; then {value} in the morning, I guess."],
         "assistant": ["Have you tried {value} in the morning?"],
-        "negated": ["I can't stand {value} in the morning."]
+        "negated": ["I [can't stand {value}] in the morning."]
       },
       "zh": {
         "say": ["我喜欢早上来一杯{value}。"],
@@ -248,7 +248,7 @@
         "ask": ["我早上喝什么？", "早上给我准备什么喝的？"],
         "hypothetical": ["假设我戒了咖啡因，早上大概就喝{value}了。"],
         "assistant": ["早上要不要试试{value}？"],
-        "negated": ["我早上受不了{value}。"]
+        "negated": ["我早上[受不了{value}]。"]
       }
     },
     {
@@ -263,7 +263,7 @@
         "ask": ["What do I take notes in?", "Where should you put my meeting notes?"],
         "hypothetical": ["Suppose my laptop dies; I'd jot things in {value}."],
         "assistant": ["You could keep your notes in {value}."],
-        "negated": ["I can't stand {value} for notes."]
+        "negated": ["I [can't stand {value}] for notes."]
       },
       "zh": {
         "say": ["我喜欢用{value}记笔记。"],
@@ -271,7 +271,7 @@
         "ask": ["我用什么记笔记？", "会议纪要应该帮我记在哪里？"],
         "hypothetical": ["假设电脑坏了，我就先用{value}记。"],
         "assistant": ["你可以把笔记记在{value}里。"],
-        "negated": ["我很讨厌用{value}记笔记。"]
+        "negated": ["我很[讨厌用{value}]记笔记。"]
       }
     },
     {
@@ -286,7 +286,7 @@
         "ask": ["How do I like to travel for short trips?", "What should you book for my next short trip?"],
         "hypothetical": ["Suppose the strike goes on; I'd go with {value}."],
         "assistant": ["You might find {value} more relaxing."],
-        "negated": ["I can't stand {value}."]
+        "negated": ["I [can't stand {value}]."]
       },
       "zh": {
         "say": ["五小时以内的行程我喜欢{value}。"],
@@ -294,7 +294,7 @@
         "ask": ["短途出差我喜欢怎么走？", "下次短途出行给我订什么？"],
         "hypothetical": ["假设罢工还没结束，我就只能{value}了。"],
         "assistant": ["你也许会觉得{value}更轻松。"],
-        "negated": ["我很讨厌{value}。"]
+        "negated": ["我很[讨厌{value}]。"]
       }
     },
     {
@@ -309,7 +309,7 @@
         "ask": ["Which browser do I use?", "Which browser should you open links in for me?"],
         "hypothetical": ["Suppose the extension stops working; I'd move to {value}."],
         "assistant": ["You might like {value} for browsing."],
-        "negated": ["I can't stand {value}."]
+        "negated": ["I [can't stand {value}]."]
       },
       "zh": {
         "say": ["我喜欢用 {value} 上网。"],
@@ -317,7 +317,7 @@
         "ask": ["我用哪个浏览器？", "帮我打开链接用哪个浏览器？"],
         "hypothetical": ["假设那个插件不能用了，我就换 {value}。"],
         "assistant": ["你也许会喜欢用 {value} 浏览网页。"],
-        "negated": ["我很讨厌 {value}。"]
+        "negated": ["我很[讨厌 {value}]。"]
       }
     },
     {
@@ -332,7 +332,7 @@
         "ask": ["Which font do I use in my terminal?", "What font should you set in my terminal profile?"],
         "hypothetical": ["Suppose I get a bigger monitor; I might try {value} in the terminal."],
         "assistant": ["{value} could look nice in your terminal."],
-        "negated": ["I can't stand {value} in a terminal."]
+        "negated": ["I [can't stand {value}] in a terminal."]
       },
       "zh": {
         "say": ["我喜欢用 {value} 当终端字体。"],
@@ -340,7 +340,7 @@
         "ask": ["我终端里用什么字体？", "终端配置里字体给我设成什么？"],
         "hypothetical": ["假设换了大显示器，我可能会在终端里试试 {value}。"],
         "assistant": ["{value} 用在你的终端里应该挺好看。"],
-        "negated": ["我很讨厌终端里用 {value}。"]
+        "negated": ["我很[讨厌终端里用 {value}]。"]
       }
     },
     {
@@ -355,7 +355,7 @@
         "ask": ["What do I like to eat for dinner?", "What should you book for my dinner tonight?"],
         "hypothetical": ["Suppose we're out late; {value} would be fine for dinner."],
         "assistant": ["You might enjoy {value} for dinner."],
-        "negated": ["I can't stand {value}."]
+        "negated": ["I [can't stand {value}]."]
       },
       "zh": {
         "say": ["累了一天我喜欢晚饭吃{value}。"],
@@ -363,7 +363,7 @@
         "ask": ["我晚饭喜欢吃什么？", "今晚帮我订什么当晚饭？"],
         "hypothetical": ["假设加班到很晚，晚饭吃{value}也行。"],
         "assistant": ["你晚饭也许会喜欢{value}。"],
-        "negated": ["我很讨厌吃{value}。"]
+        "negated": ["我很[讨厌吃{value}]。"]
       }
     },
     {
@@ -378,7 +378,7 @@
         "ask": ["How do I like status meetings to happen?", "Should my status meetings be calls, in person or written?"],
         "hypothetical": ["Suppose the office closes for renovation; we'd do {value}."],
         "assistant": ["Perhaps {value} would suit your status meetings."],
-        "negated": ["I can't stand {value} for status meetings."]
+        "negated": ["I [can't stand {value}] for status meetings."]
       },
       "zh": {
         "say": ["例会我喜欢用{value}的形式。"],
@@ -386,7 +386,7 @@
         "ask": ["我的例会喜欢用什么形式？", "例会是打电话、当面还是写书面汇报？"],
         "hypothetical": ["假设办公室装修，例会就改成{value}。"],
         "assistant": ["你的例会也许适合{value}。"],
-        "negated": ["例会我很讨厌{value}。"]
+        "negated": ["例会我很[讨厌{value}]。"]
       }
     },
     {
@@ -401,7 +401,7 @@
         "ask": ["When do I usually go to sleep?", "Until what time can you schedule evening calls for me?"],
         "hypothetical": ["Suppose the launch slips; I'd be up {value}."],
         "assistant": ["Going to bed {value} might help your focus."],
-        "negated": ["I can't stand staying up {value}."]
+        "negated": ["I [can't stand staying up {value}]."]
       },
       "zh": {
         "say": ["我喜欢{value}睡觉。"],
@@ -409,7 +409,7 @@
         "ask": ["我一般几点睡？", "晚上的电话最晚可以约到几点？"],
         "hypothetical": ["假设上线推迟，我得熬到{value}。"],
         "assistant": ["{value}睡觉也许对你的专注力更好。"],
-        "negated": ["我很讨厌熬到{value}。"]
+        "negated": ["我很[讨厌熬到{value}]。"]
       }
     },
     {
@@ -424,7 +424,7 @@
         "ask": ["What do I do on weekends?", "What should you plan for my Saturday?"],
         "hypothetical": ["Suppose it rains all weekend; I'd go for {value}."],
         "assistant": ["You might enjoy {value} on weekends."],
-        "negated": ["I can't stand {value}."]
+        "negated": ["I [can't stand {value}]."]
       },
       "zh": {
         "say": ["我周末喜欢{value}。"],
@@ -432,7 +432,7 @@
         "ask": ["我周末一般做什么？", "周六给我安排点什么？"],
         "hypothetical": ["假设周末一直下雨，我就去{value}。"],
         "assistant": ["你周末也许会喜欢{value}。"],
-        "negated": ["我很讨厌{value}。"]
+        "negated": ["我很[讨厌{value}]。"]
       }
     },
     {
@@ -447,7 +447,7 @@
         "ask": ["What do I listen to on my commute?", "What should you queue up for my ride to work?"],
         "hypothetical": ["Suppose my commute gets longer; I'd add {value}."],
         "assistant": ["You might like {value} for the commute."],
-        "negated": ["I can't stand {value}."]
+        "negated": ["I [can't stand {value}]."]
       },
       "zh": {
         "say": ["我通勤的时候喜欢听{value}。"],
@@ -455,7 +455,7 @@
         "ask": ["我通勤路上听什么？", "上班路上给我放点什么？"],
         "hypothetical": ["假设通勤时间变长，我会加上{value}。"],
         "assistant": ["你通勤时也许会喜欢听{value}。"],
-        "negated": ["我很讨厌听{value}。"]
+        "negated": ["我很[讨厌听{value}]。"]
       }
     },
     {
@@ -470,7 +470,7 @@
         "ask": ["Where do I like to sit on the train?", "Which carriage should you book for me?"],
         "hypothetical": ["Suppose the trip is overnight; I'd take {value}."],
         "assistant": ["You might be more comfortable in {value}."],
-        "negated": ["I can't stand {value}."]
+        "negated": ["I [can't stand {value}]."]
       },
       "zh": {
         "say": ["坐火车我喜欢{value}。"],
@@ -478,7 +478,7 @@
         "ask": ["坐火车我喜欢坐哪？", "给我订哪种车厢？"],
         "hypothetical": ["假设坐夜车，我会选{value}。"],
         "assistant": ["你坐{value}也许会更舒服。"],
-        "negated": ["我很讨厌{value}。"]
+        "negated": ["我很[讨厌{value}]。"]
       }
     },
     {
@@ -493,7 +493,7 @@
         "ask": ["Which language do I write scripts in?", "What language should a quick helper script for me be in?"],
         "hypothetical": ["Suppose the script has to run on routers; I'd write it in {value}."],
         "assistant": ["{value} could be handy for your scripts."],
-        "negated": ["I can't stand writing scripts in {value}."]
+        "negated": ["I [can't stand writing scripts in {value}]."]
       },
       "zh": {
         "say": ["我喜欢用 {value} 写小脚本。"],
@@ -501,7 +501,7 @@
         "ask": ["我写脚本用什么语言？", "给我写个小工具脚本用什么语言？"],
         "hypothetical": ["假设脚本要跑在路由器上，我就用 {value} 写。"],
         "assistant": ["{value} 写你的脚本也许挺方便。"],
-        "negated": ["我很讨厌用 {value} 写脚本。"]
+        "negated": ["我很[讨厌用 {value}] 写脚本。"]
       }
     },
     {
@@ -513,7 +513,7 @@
         "ask": ["When do I go to the gym?", "When should you block time for my workout?"],
         "hypothetical": ["Suppose the gym changes its hours; I'd go {value}."],
         "assistant": ["Working out {value} might suit you."],
-        "negated": ["I can't stand working out {value}."]
+        "negated": ["I [can't stand working out {value}]."]
       },
       "zh": {
         "say": ["我喜欢{value}去健身。"],
@@ -521,7 +521,7 @@
         "ask": ["我什么时候去健身？", "帮我把健身时间排在什么时候？"],
         "hypothetical": ["假设健身房改了营业时间，我就{value}去。"],
         "assistant": ["{value}健身也许更适合你。"],
-        "negated": ["我很讨厌{value}健身。"]
+        "negated": ["我很[讨厌{value}]健身。"]
       }
     },
     {
@@ -533,7 +533,7 @@
         "ask": ["What do I listen to while driving?", "What should play in the car for me?"],
         "hypothetical": ["Suppose the trip is long; I'd put on {value}."],
         "assistant": ["You might enjoy {value} on the road."],
-        "negated": ["I can't stand {value} in the car."]
+        "negated": ["I [can't stand {value}] in the car."]
       },
       "zh": {
         "say": ["我开车的时候喜欢听{value}。"],
@@ -541,7 +541,7 @@
         "ask": ["我开车时听什么？", "车上给我放点什么？"],
         "hypothetical": ["假设开长途，我会放{value}。"],
         "assistant": ["你开车时也许会喜欢{value}。"],
-        "negated": ["我开车很讨厌听{value}。"]
+        "negated": ["我开车很[讨厌听{value}]。"]
       }
     },
     {
@@ -553,7 +553,7 @@
         "ask": ["What pillow do I want at hotels?", "Which pillow should you request for my room?"],
         "hypothetical": ["Suppose my neck acts up; I'd ask for {value}."],
         "assistant": ["You might sleep better with {value}."],
-        "negated": ["I can't stand {value}."]
+        "negated": ["I [can't stand {value}]."]
       },
       "zh": {
         "say": ["住酒店我喜欢{value}。"],
@@ -561,7 +561,7 @@
         "ask": ["住酒店我要什么枕头？", "订房时帮我要哪种枕头？"],
         "hypothetical": ["假设脖子又不舒服，我会要{value}。"],
         "assistant": ["你用{value}也许会睡得更好。"],
-        "negated": ["我很讨厌{value}。"]
+        "negated": ["我很[讨厌{value}]。"]
       }
     },
     {
@@ -573,7 +573,7 @@
         "ask": ["When do I do my code reviews?", "When should you send me review requests?"],
         "hypothetical": ["Suppose standup moves; I'd review code {value}."],
         "assistant": ["Reviewing {value} might work better for you."],
-        "negated": ["I can't stand doing reviews {value}."]
+        "negated": ["I [can't stand doing reviews {value}]."]
       },
       "zh": {
         "say": ["我喜欢{value}做代码评审。"],
@@ -581,7 +581,7 @@
         "ask": ["我什么时候做代码评审？", "评审请求什么时候发给我？"],
         "hypothetical": ["假设站会时间变了，我就{value}评审。"],
         "assistant": ["{value}做评审也许更适合你。"],
-        "negated": ["我很讨厌{value}做评审。"]
+        "negated": ["我很[讨厌{value}]做评审。"]
       }
     }
   ],
