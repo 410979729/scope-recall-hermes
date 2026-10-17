@@ -8,16 +8,17 @@ and stay open; the others owe many pages of sixteen candidates, at one page a pa
 
 from __future__ import annotations
 
+import itertools
 import sqlite3
 from dataclasses import replace
 
-from scope_recall.core import worker
+from scope_recall.core import CoreConfig, MemoryCore, worker
 from scope_recall.core.candidate_lifecycle import SOURCE_MATCH_LIMIT
 from scope_recall.core.claims import Qualification
 
 from tests.contract.test_candidate_lifecycle import Evaluator, _finish_source_work
 from tests.contract.test_claims import app, capture, draft  # noqa: F401  (fixture)
-from tests.v11_support import source_event
+from tests.v11_support import context, source_event
 
 
 def _candidates(core, ctx, count):
@@ -245,6 +246,37 @@ def test_a_pass_stops_resuming_pages_once_their_time_is_spent(app, monkeypatch):
     core.drain_worker(ctx, max_items=32, remaining_seconds=10, consolidation=Evaluator())
 
     assert _trigger(core, trigger.ref) == (SOURCE_MATCH_LIMIT * 2, 1), "one page, then the time is spent"
+
+
+class _TurnClock:
+    """A core's clock whose seconds pass only while the worker turns between pages."""
+
+    now = "2026-09-06T12:00:00Z"
+    seconds = 0.0
+
+    def utc_now(self):
+        return self.now
+
+    def monotonic(self):
+        return self.seconds
+
+
+def test_a_pass_times_its_pages_on_the_core_s_clock(tmp_path, monkeypatch):
+    """The pages' time is read on the clock the core runs on, as the rest of the pass's budget is.  Each turn between
+    pages spends six of that clock's seconds and no real time worth counting: one page, and the time is spent."""
+    ctx = replace(context(tmp_path / "TEST-page-clock"), project_id="TEST-project", branch_id="TEST-main")
+    clock = _TurnClock()
+    core = MemoryCore(CoreConfig(ctx.binding), clock=clock)
+    core.initialize()
+    core.test_sequence = itertools.count(1)
+    _candidates(core, ctx, SOURCE_MATCH_LIMIT * 4 + 4)
+    trigger = capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/clock")
+    _finish_source_work(core)
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: setattr(clock, "seconds", clock.seconds + 6.0))
+
+    core.drain_worker(ctx, max_items=32, remaining_seconds=60, consolidation=Evaluator())
+
+    assert _trigger(core, trigger.ref) == (SOURCE_MATCH_LIMIT * 2, 1)
 
 
 def test_a_pass_resumes_at_most_its_page_allowance(app, monkeypatch):

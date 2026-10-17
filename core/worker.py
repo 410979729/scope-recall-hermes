@@ -202,8 +202,8 @@ def _resume_admission(
     )
     # Each page is chosen in a read and linked in a write of its own, so a capture waits behind at most one
     # page's links, never its matching; the pages may take at most half of the pass, and at most
-    # SOURCE_PAGE_SECONDS.
-    pages_started = time.monotonic()
+    # SOURCE_PAGE_SECONDS, on the pass's clock.
+    pages_started = clock.monotonic()
     for _ in range(SOURCE_PAGES_PER_PASS):
         if budget_left(started, clock, budget) <= budget / 2:
             break
@@ -214,7 +214,7 @@ def _resume_admission(
         with storage.write(context, remaining_seconds=min(1.0, budget_left(started, clock, budget))) as tx:
             tx.candidates.resume_source_pages(now=clock.utc_now(), page=page)
         time.sleep(PAGE_TURN_SECONDS)
-        if time.monotonic() - pages_started >= SOURCE_PAGE_SECONDS:
+        if clock.monotonic() - pages_started >= SOURCE_PAGE_SECONDS:
             break
     page = min(config.candidate_batch_limit, config.max_items)
     with storage.write(context, remaining_seconds=min(1.0, budget_left(started, clock, budget))) as tx:

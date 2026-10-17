@@ -4,6 +4,7 @@ Storage-level only.  What an adapter puts in a source key, and what recall shows
 a reader, are tested where they are built.  Sources are synthetic.
 """
 
+import itertools
 import os
 import shutil
 import sqlite3
@@ -438,3 +439,32 @@ def test_a_writer_gives_up_when_the_turn_outlasts_its_deadline(monkeypatch, shar
     assert 0.05 <= time.monotonic() - started < 0.5
     with storage.read(shared_context(binding)) as tx:
         assert tx.status() is not None, "a reader never waits for the writer lease"
+
+
+def test_a_writer_times_its_wait_on_the_clock_it_is_given(monkeypatch, shared):
+    """Ten seconds pass on its clock between two readings: the first refusal sets the deadline, the second finds it
+    gone, and the writer gives up without waiting out a real second."""
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+
+    _storage, binding = shared
+    jumping = SQLiteStorage(binding, timeout_seconds=1.0, clock=itertools.count(0, 10).__next__)
+    calls = _busy_for(monkeypatch, None)
+    with pytest.raises(TruthWriterBusyError):
+        with jumping.write(shared_context(binding, "tianshu")):
+            pass
+    assert len(calls) == 2
+
+
+def test_a_writer_on_a_clock_that_stands_still_still_gives_up(monkeypatch, shared):
+    """The clock a store is given need not move while a writer waits (one that counts its readings hardly does):
+    the wait still ends within its timeout, on its count of polls."""
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+
+    _storage, binding = shared
+    standing = SQLiteStorage(binding, timeout_seconds=0.1, clock=lambda: 7.0)
+    _busy_for(monkeypatch, None)
+    started = time.monotonic()
+    with pytest.raises(TruthWriterBusyError):
+        with standing.write(shared_context(binding, "tianshu")):
+            pass
+    assert time.monotonic() - started < 0.5

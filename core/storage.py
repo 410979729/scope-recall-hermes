@@ -7,7 +7,7 @@ import math
 import os
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -481,7 +481,14 @@ def _ensure_wal(conn: sqlite3.Connection) -> None:
 
 
 class SQLiteStorage:
-    def __init__(self, binding: InstanceBinding, *, timeout_seconds: float = 1.0, upgrade_on_open: bool = True) -> None:
+    def __init__(
+        self,
+        binding: InstanceBinding,
+        *,
+        timeout_seconds: float = 1.0,
+        upgrade_on_open: bool = True,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         if not isinstance(binding, InstanceBinding):
             raise ContractError("IDENTITY_UNBOUND")
         if (
@@ -500,6 +507,9 @@ class SQLiteStorage:
         #: ``pip install -U`` alone is enough.  The doctor turns this off: it
         #: reports a pending upgrade and never applies one.
         self.upgrade_on_open = upgrade_on_open
+        #: The monotonic clock a writer's wait for the lease is timed on: the one its ``MemoryCore`` runs on, so that
+        #: the store and the recalls and worker passes over it keep one time.
+        self.monotonic = clock if clock is not None else time.monotonic
         self.__pending_close: list[sqlite3.Connection] = []
 
     @property
@@ -554,16 +564,21 @@ class SQLiteStorage:
         # worker, the entries of a shared store -- take turns.  A turn ends in
         # milliseconds; failing at once on one sent captures to the memory-only
         # retry (one in ten with three entries writing).  A writer waits for the
-        # lease as SQLite waits for its own lock: within this timeout.
-        deadline = time.monotonic() + timeout
+        # lease as SQLite waits for its own lock: within this timeout, counted from the first refusal, so that an
+        # open that finds the lease free reads no clock.  The polls are counted as well, since the clock a caller
+        # gives need not move while this sleeps; on one that keeps time the count never ends a wait first.
+        deadline: float | None = None
+        polls = 0
         while True:
             try:
-                conn = connect_truth_database(
-                    self.path, mode=mode, timeout=max(0.0, deadline - time.monotonic()), isolation_level=None
-                )
+                left = timeout if deadline is None else max(0.0, deadline - self.monotonic())
+                conn = connect_truth_database(self.path, mode=mode, timeout=left, isolation_level=None)
             except TruthWriterBusyError:
-                if time.monotonic() + _LEASE_POLL_SECONDS >= deadline:
+                now = self.monotonic()
+                deadline = now + timeout if deadline is None else deadline
+                if now + _LEASE_POLL_SECONDS >= deadline or polls * _LEASE_POLL_SECONDS >= timeout:
                     raise
+                polls += 1
                 time.sleep(_LEASE_POLL_SECONDS)
                 continue
             try:
