@@ -1,8 +1,8 @@
 """retire-rootless-claims: the unconfirmed claims tool output left behind, and nothing else.
 
-Until 3.2.0rc6 consolidation derived claims from tool output; on the pilot 2,773 proposals rested on
-it alone.  ``retire_rootless_proposals`` retires proposals no derivation root supports and leaves
-proved claims, proposals a person supports, and mixed evidence as they are.
+Earlier releases derived claims from tool output.  ``retire_rootless_proposals`` retires the proposals
+that rest on it alone, those no derivation root supports, and leaves proved claims, proposals a person
+supports, and mixed evidence as they are.
 """
 
 from __future__ import annotations

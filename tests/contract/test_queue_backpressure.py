@@ -1,11 +1,11 @@
 """A pass never queues more candidate evaluations than it can also make.
 
-Replayed on beta's snapshot with a model that answers instantly, a pass evaluated eight
-candidates while the schedulers queued up to sixteen more: the queue grew by eight a pass
-with no new conversation at all, 941 deep and the oldest ten hours old, each one having cost
-a model call to get there.  Two rules put that right.  A pass queues at most what it can
-evaluate, and stops queueing entirely once the queue is deeper than passes can reach.  The
-batch limit stands candidates down only while work it can still do waits behind them.
+With a model that answers instantly, a pass that evaluates eight candidates while the
+schedulers queue up to sixteen more grows the queue by eight a pass with no new conversation
+at all, each one costing a model call to get there.  Two rules prevent that.  A pass queues
+at most what it can evaluate, and stops queueing entirely once the queue is deeper than
+passes can reach.  The batch limit stands candidates down only while work it can still do
+waits behind them.
 """
 
 from __future__ import annotations

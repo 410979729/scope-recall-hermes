@@ -216,7 +216,7 @@ def _accept_relation_claim(core: MemoryCore, ctx: TrustedContext, root: Any, pee
         "kind": "fact",
         "subject": f"TEST-relation-{index}",
         "predicate": "connected_to",
-        # In the peer's own words: a value no cited source carries is refused (#236).
+        # In the peer's own words: a value no cited source carries is refused.
         "value_text": peer.event["content"].rstrip("."),
         "conditions": [],
         "statement_kind": "assertion",
@@ -900,7 +900,7 @@ def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_pat
     assert all(item["evidence_refs"] for item in default["items"])
     assert "budget_token_cap" not in default["gaps"]
 
-    # 1200 estimated units now fit these short CJK records. This measured
+    # 1200 estimated units fit these short CJK records. This measured
     # 500-unit boundary fits two event envelopes, not three, including gaps.
     cap = 500
     capped = core.recall_packet(
@@ -912,10 +912,10 @@ def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_pat
     assert "budget_token_cap" in capped["gaps"]
     # A budget cut comes off the bottom of the ranking, and what is cut is named.
     #
-    # This used to assert that "今晚不能恢复" was dropped, on the assumption that
-    # the ranking followed the vector scores above. It does not: that source is
-    # the property's definitive answer and it carries "今晚" straight out of the
-    # query, so the ranker puts it second. The source ranked below it is the
+    # "今晚不能恢复" is not the one dropped: the ranking does not follow the vector
+    # scores above. That source is the property's definitive answer and it
+    # carries "今晚" straight out of the query, so the ranker puts it second.
+    # The source ranked below it is the
     # assistant_visible echo — "助手说会跟踪进度" — which carries no information
     # at all. Dropping the answer to keep the echo would be strictly worse
     # memory, and the packet is kept honest by the gap naming what went, not by

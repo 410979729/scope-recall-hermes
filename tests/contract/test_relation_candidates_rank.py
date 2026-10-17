@@ -1,16 +1,13 @@
 """An object reached by relation never outranks a direct hit.
 
-Expansion scored every related object by its place in its own seed's list, so the first
-object related to the thirteenth hit scored 1/62: above every direct hit but the first.
-Nothing showed it while an episode's lineage was copied onto each of its revisions,
-because the rows of one episode at dozens of old revisions spent the relation bound
-without becoming candidates.  Writing that lineage once freed the bound, the related
-objects arrived, and over one instance's real questions the reply that had answered each
-was in the top five for 20 of 30 where it had been for 28.  With a related object held
-below the hit it was reached from it is 28 again, on the same stores, with fact recall,
-no-match, supersession and question recall unchanged.  On a second instance the freed
-bound had answered one question of 25 that 3.1.0 missed; weighing gives that one back, so
-both instances recall what 3.1.0 recalled.
+Scoring every related object by its place in its own seed's list would give the first
+object related to the thirteenth hit 1/62: above every direct hit but the first.
+That stays hidden while an episode's lineage is copied onto each of its revisions,
+because the rows of one episode at dozens of old revisions spend the relation bound
+without becoming candidates.  Once the lineage is written once, the bound is free, the
+related objects arrive, and the reply that answered a question drops out of the top five.
+With a related object held below the hit it was reached from, the answers stay where they
+were, with fact recall, no-match, supersession and question recall unchanged.
 """
 
 from __future__ import annotations

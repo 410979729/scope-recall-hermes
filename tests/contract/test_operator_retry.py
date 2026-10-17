@@ -303,8 +303,7 @@ def test_operator_retry_operation_tokens_are_exact_and_bounded(tmp_path):
 def test_operator_retry_budget_counts_through_marks_put_in_front(tmp_path, spent):
     """A release that re-opened the row, the extra derivation attempt or an interrupted attempt puts its mark in
     front of an explicit retry's token, a later retry keeps it all behind ``prior:``, and a shortened or rebuilt
-    code keeps the tokens side by side; wherever a token was not read, a spent budget began again (audits of
-    3.10.1)."""
+    code keeps the tokens side by side; wherever a token is not read, a spent budget would begin again."""
     binding, core, context, work_id, _ = _failed_embed(tmp_path)
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET last_error_code=? WHERE work_id=?", (spent, work_id))
@@ -316,7 +315,7 @@ def test_operator_retry_budget_counts_through_marks_put_in_front(tmp_path, spent
 
 def test_operator_retry_of_a_long_history_keeps_its_token_and_the_kind(tmp_path):
     """Past the bound, the requeue's code gives way between its marks and its kind, so its own token and the extra
-    derivation attempt stay readable (audit of 3.10.1)."""
+    derivation attempt stay readable."""
     from scope_recall.core.work_storage import CODE_BOUND, _operator_retry_ids
 
     binding, core, context, work_id, _ = _failed_embed(tmp_path)

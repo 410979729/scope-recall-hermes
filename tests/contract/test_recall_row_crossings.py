@@ -1,9 +1,8 @@
 """A read transaction keeps what it loaded, and hydration loads its candidates' sources, visibility and versions together:
-the same answers, in a count of statements and rows that does not grow with the evidence (3.7.7).
+the same answers, in a count of statements and rows that does not grow with the evidence.
 
-A recall loaded each evidence source up to five times, three statements each: 16,222 statements and 7,087 rows for one of
-yuheng's questions on a copy of the shared store.  In a busy Hermes gateway every statement and every row waited for the
-GIL (``test_capture_row_crossings``).  Now 469 statements and 755 rows.
+A recall that loaded each evidence source up to five times, three statements each, would take thousands of statements and rows for one question.
+In a busy Hermes gateway every statement and every row waits for the GIL (``test_capture_row_crossings``).
 """
 
 import json
@@ -186,7 +185,7 @@ def test_a_recall_answers_alike_whether_or_not_it_keeps_what_it_loads(app, monke
     core, ctx = app
     item, source = initial(core, ctx)
     sources = _sources(core, ctx, 12)
-    silver = capture(core, ctx, "TEST-project 外壳 银色。")  # the value's own source (#236)
+    silver = capture(core, ctx, "TEST-project 外壳 银色。")  # the value's own source
     accept(
         core,
         ctx,
@@ -250,7 +249,7 @@ def test_hydrating_a_claim_does_not_grow_with_its_evidence(app, monkeypatch):
     assert lots[0] - few[0] <= 4 and lots[1] - few[1] <= 4, (few, lots)
 
 
-# --- what is loaded together keeps the reader's audience (review of 3.7.7) -------------------------------------------
+# --- what is loaded together keeps the reader's audience -------------------------------------------------------------
 
 
 def _both(core, ctx, pairs):

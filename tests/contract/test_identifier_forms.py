@@ -46,7 +46,7 @@ def test_a_comparison_still_admits_one_side_at_a_time():
 
 
 def test_a_reply_that_spells_the_name_out_is_recalled(app):
-    """The alpha case: the answer to "DLSS5到底是什么" wrote "DLSS 5" and was refused."""
+    """The answer to "DLSS5到底是什么" writes "DLSS 5" and must not be refused."""
     core, ctx = app
     question = _say(
         core,

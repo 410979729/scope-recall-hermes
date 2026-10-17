@@ -1,8 +1,8 @@
 """A question about what was said on a day, and by an entry, is read in that scope (core/recall_scope.py).
 
-"9月29日工作机 Claude Code 聊了什么" found a message of the named entry from the named day for 4 of 106 such questions
-over two weeks of the shared store: its date and the entry's name were searched as words.  Any other message that
-names a day is recalled as if it named none (reviews of 3.4.6).
+"9月29日工作机 Claude Code 聊了什么" is read in the named day and entry, not searched as words: the date and the
+entry's name as words rarely find a message of that entry from that day.  Any other message that names a day is
+recalled as if it named none.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def test_a_question_s_days_and_entries(query, days, entries):
 def test_a_question_that_names_no_day_has_no_scope(query):
     """An entry named without a day asks about a subject: reading that entry's messages would crowd out the answer.
     A version number is not a date, nor 今天 in 如今天下 or 至今 or 前天 in 往前, 之前, 目前; a message naming days
-    more than sixteen times is a log, whose mentions took a quadratic scan (review of 3.4.6)."""
+    more than sixteen times is a log, whose mentions would take a quadratic scan."""
     assert query_scope(query, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
 
 
@@ -109,9 +109,9 @@ def test_a_question_that_names_no_day_has_no_scope(query):
     ),
 )
 def test_a_range_a_long_list_or_a_day_with_no_conversation_is_no_scope(query, zone):
-    """A range read as its first and last days missed the rest; more than three days is a list, counted with the
-    days that hold nothing; a placeholder date overflowed and emptied the whole recall; a day not yet come holds no
-    conversation (reviews of 3.4.6)."""
+    """A range is not read as its first and last days, which misses the rest; more than three days is a list, counted
+    with the days that hold nothing; a placeholder date must not overflow and empty the whole recall; a day not yet
+    come holds no conversation."""
     assert query_scope(query, now=NOW, zone=zone, entries=ENTRIES) is None
 
 
@@ -121,7 +121,7 @@ def test_a_month_and_day_is_the_last_one_within_half_a_year():
 
 
 def test_an_entry_s_latin_name_is_a_word_of_its_own():
-    """ "desk" is no entry in "Claude Desktop" or "xdesk", nor "codex" in "codexbar" or "codex2" (review of 3.4.6);
+    """ "desk" is no entry in "Claude Desktop" or "xdesk", nor "codex" in "codexbar" or "codex2";
     a date right after the name leaves it the entry's."""
     entries = {"desk": "desk", "codex": "Codex", "claude-code": "Claude Code"}
     for query, named in (
@@ -139,7 +139,7 @@ def test_an_entry_s_latin_name_is_a_word_of_its_own():
 
 def test_entries_joined_as_days_are_joined_are_all_read():
     """Two entries joined by "和" or "、" are both read and the joiner leaves the question: it had been left in the rest,
-    and the question was recalled as if it named no day (review 5 of 3.4.8)."""
+    and the question was recalled as if it named no day."""
     from scope_recall.core.recall_scope import asks_what_was_said
 
     entries = {
@@ -161,8 +161,7 @@ def test_entries_joined_as_days_are_joined_are_all_read():
 
 
 def test_yesterday_is_the_host_s_yesterday():
-    """At 22:00 on 29 September in New York it is already 30 September in UTC: "昨天" is the 28th there (review 5 of
-    3.4.8: taken in UTC, nothing failed)."""
+    """At 22:00 on 29 September in New York it is already 30 September in UTC: "昨天" is the 28th there."""
     scope = query_scope("昨天聊了什么", now="2026-09-30T02:00:00.000000Z", zone=NEW_YORK, entries={})
     assert scope.windows == (_day("28"),)
 
@@ -251,17 +250,16 @@ def test_yesterday_is_the_host_s_yesterday():
 )
 def test_what_the_rest_of_a_day_s_question_asks(rest, asks):
     """Only a question or request that is, whole, one of the forms of asking what was said or done then is read in
-    its day: a bag of words read "请继续昨天做的", "我今天在忙呢" and "今晚做什么菜" in their day, and lost the current
-    task and the owner's preferences; so did asking what to do today ("今天做什么", "今天聊点什么") (reviews of
-    3.4.6)."""
+    its day: a bag of words would read "请继续昨天做的", "我今天在忙呢" and "今晚做什么菜" in their day, and lose the
+    current task and the owner's preferences; so would asking what to do today ("今天做什么", "今天聊点什么")."""
     from scope_recall.core.recall_scope import asks_what_was_said
 
     assert asks_what_was_said(rest) is asks
 
 
 def test_a_long_rest_is_no_day_question_and_is_read_at_once():
-    """Twenty clock times each read two ways took seconds to reject, doubling with each more, and held the process's
-    lock; a long rest also made the trailing strip quadratic (review of 3.4.6)."""
+    """Twenty clock times each read two ways must not take seconds to reject, doubling with each more, while holding
+    the process's lock; nor may a long rest make the trailing strip quadratic."""
     import time as _time
 
     from scope_recall.core.recall_scope import _DAY_QUESTION, asks_what_was_said
@@ -270,15 +268,14 @@ def test_a_long_rest_is_no_day_question_and_is_read_at_once():
     times = " ".join(f"{hour:02d}:{minute:02d}:00" for hour in range(5, 10) for minute in (0, 15, 30, 45)) + " 哪班车"
     began = _time.perf_counter()
     assert _DAY_QUESTION.fullmatch("".join(times.split())) is None
-    # A part of the day before its time was read as one time and as two (review 5 of 3.4.8): 1.2 s at 81 characters.
+    # A part of the day before its time must not be read as one time and as two (1.2 s at 81 characters).
     assert _DAY_QUESTION.fullmatch("上午1点" * 24 + "X") is None
     assert _time.perf_counter() - began < 1.0
 
 
 def test_a_long_message_or_one_naming_many_entries_names_no_scope_and_is_read_at_once():
-    """Every entry's name was looked for in the whole message before its rest was found too long: a log naming
-    instances hundreds of times took a tenth of a second, and a name before a long run of digits a fifth (review 5 of
-    3.4.8)."""
+    """A message too long to be a question is found so before any entry's name is looked for in it: a log naming
+    instances hundreds of times would take a tenth of a second, and a name before a long run of digits a fifth."""
     import time as _time
 
     began = _time.perf_counter()
@@ -348,8 +345,8 @@ def test_a_day_is_read_in_the_zone_the_host_shows_its_model():
 
 
 def test_the_machine_s_zone_is_read_with_each_day_s_own_offset():
-    """With no zone named (Claude Code, Codex), each day starts at its own local midnight: today's offset moved every
-    day on the other side of a daylight-saving change by an hour (review of 3.4.6).  It can fail only on a machine
+    """With no zone named (Claude Code, Codex), each day starts at its own local midnight: today's offset would move
+    every day on the other side of a daylight-saving change by an hour.  It can fail only on a machine
     whose zone keeps daylight saving."""
     for day in (date(2026, 1, 15), date(2026, 7, 15)):
         scope = query_scope(f"{day.month}月{day.day}日聊了什么", now=NOW, zone=None, entries={})
@@ -403,8 +400,8 @@ def test_a_question_naming_a_day_is_given_that_day_s_conversation(app):
 
 def test_the_day_goes_before_other_days_that_hold_the_question_s_words(app):
     """Later messages that say "9月2日聊了..." hold every search word of "9月2日聊了什么", and the day's own messages
-    none: the day's still come first.  Unweighted, they ranked below such messages, and 18 of 106 such questions on
-    a copy of the shared store were answered from other days."""
+    none: the day's still come first.  Unweighted, they would rank below such messages, and the question would be
+    answered from other days."""
     core, ctx = app
     day = [
         _say(
@@ -437,8 +434,8 @@ def test_the_day_goes_before_other_days_that_hold_the_question_s_words(app):
 
 def test_the_spread_leaves_out_acknowledgements_and_puts_what_fits_first(app):
     """A day of long prompts, a short walk, a short reply and acknowledgements of one to thirteen characters: the
-    short message first, then the long prompts, then the reply; the acknowledgements never.  They filled the packet
-    when only messages under five characters, and then only two word lists, were left out (reviews of 3.4.6)."""
+    short message first, then the long prompts, then the reply; the acknowledgements never.  They would fill the packet
+    if only messages under five characters, or only two word lists, were left out."""
     core, ctx = app
     long = [
         _say(
@@ -499,8 +496,8 @@ def test_the_spread_leaves_out_acknowledgements_and_puts_what_fits_first(app):
 
 def test_a_day_is_spread_across_its_hours(app):
     """Thirty messages and twelve slots: the first of the day and one near its end are among them, and so are they
-    among the first six, which is what an automatic packet keeps: offered in time order, the six were the day's
-    morning (review 5 of 3.4.8)."""
+    among the first six, which is what an automatic packet keeps: offered in time order, the six would be the day's
+    morning."""
     core, ctx = app
     said = [
         _say(
@@ -547,7 +544,7 @@ def test_the_packet_holds_the_whole_day(app):
 
 def test_several_days_take_turns_and_hand_on_an_empty_share(app):
     """Two days share the slots and alternate; with one day empty the other takes them all.  The first-named day
-    filled the packet (review of 3.4.6)."""
+    does not fill the packet."""
     core, ctx = app
     first = [
         _say(
@@ -608,8 +605,7 @@ def test_as_of_bounds_the_day(app):
 
 
 def test_a_day_read_for_one_entry_holds_that_entry_s_messages_alone(app):
-    """The day's read keeps to the entries the question names: a message of another entry is not offered (review 5
-    of 3.4.8: nothing failed with the filter taken out)."""
+    """The day's read keeps to the entries the question names: a message of another entry is not offered."""
     import time as _time
 
     from scope_recall.core.retrieval import SearchContext
@@ -644,8 +640,8 @@ def test_a_day_read_for_one_entry_holds_that_entry_s_messages_alone(app):
 
 def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_path):
     """Through the pipeline on a shared store: the entry's name comes from the store's entries and is taken out of
-    the question, and only that entry's messages of the day are offered (review 5 of 3.4.8: with the entries not
-    read, or the name left in the question, it fell back to plain recall and nothing failed)."""
+    the question, and only that entry's messages of the day are offered, not a fall back to plain recall when the
+    entries are not read or the name is left in the question."""
     import time as _time
 
     from scope_recall.core.recall import recall
@@ -719,10 +715,10 @@ def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_p
 def test_a_message_that_is_no_question_about_its_day_is_recalled_as_if_it_named_none(
     app, monkeypatch, query, mode, background
 ):
-    """Read in its day, a question naming a subject lost the answer said on another day, the current task and the
-    claims that answered it, an explicit lookup that had found nothing got the day's unrelated messages, and a
-    message that only mentions a day lost what it would otherwise have been given (reviews of 3.4.6).  Each is
-    recalled exactly as with no day named."""
+    """Read in its day, a question naming a subject would lose the answer said on another day, the current task and
+    the claims that answered it, an explicit lookup that had found nothing would get the day's unrelated messages, and
+    a message that only mentions a day would lose what it is otherwise given.  Each is recalled exactly as with no
+    day named."""
     from scope_recall.core import recall as recall_module
 
     core, ctx = app
@@ -824,8 +820,8 @@ def test_a_day_that_never_mentions_the_subject_does_not_answer_for_it(app):
     ),
 )
 def test_a_question_the_day_cannot_be_read_from_is_still_recalled(app, query, zone):
-    """A placeholder date overflowed the day's end, and a long prompt whose normalised text outgrew the search
-    raised; either way the recall came back empty and blamed SQLite (reviews of 3.4.6)."""
+    """A placeholder date must not overflow the day's end, nor a long prompt whose normalised text outgrows the search
+    raise; either would leave the recall empty, blaming SQLite."""
     core, ctx = app
     _say(
         core,
@@ -845,7 +841,7 @@ def test_a_question_the_day_cannot_be_read_from_is_still_recalled(app, query, zo
 
 
 def test_the_day_is_offered_its_full_twelve_slots(app, monkeypatch):
-    """A follow-up round never reads the day, so none of its slots is held back for one (review of 3.4.6)."""
+    """A follow-up round never reads the day, so none of its slots is held back for one."""
     from scope_recall.core import retrieval_storage
 
     core, ctx = app
@@ -877,7 +873,7 @@ def test_the_day_is_offered_its_full_twelve_slots(app, monkeypatch):
 
 def test_only_a_message_of_the_day_is_spared_the_entry_s_name_as_an_identifier(app):
     """ "昨天pc2聊了什么": a message of the day and entry need not repeat "pc2", whichever channel ranked it higher;
-    a message found only by another channel still must (review of 3.4.6)."""
+    a message found only by another channel still must."""
     import time as _time
 
     from scope_recall.core.recall_scope import QueryScope
@@ -939,8 +935,8 @@ def test_a_scope_that_cannot_be_read_is_a_gap_not_an_empty_recall(app, monkeypat
 
 
 def test_two_days_joined_in_the_question_are_both_read(app):
-    """ "9月2日和9月3日聊了什么": the joiner left in the rest kept every such question from being read at all
-    (review of 3.4.6)."""
+    """ "9月2日和9月3日聊了什么": the joiner is taken out of the rest, or it would keep every such question from being
+    read at all."""
     core, ctx = app
     first = _say(
         core,

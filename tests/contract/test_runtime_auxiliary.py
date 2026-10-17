@@ -368,8 +368,8 @@ def test_a_cache_count_that_cannot_be_true_is_not_recorded(tmp_path, monkeypatch
     ],
 )
 def test_output_billed_outside_completion_tokens_is_recorded_and_charged(tmp_path, monkeypatch, usage, unreported):
-    """beta's Gemini route recorded 325 completion tokens a call while the
-    provider billed thousands of thinking tokens nobody could see."""
+    """A Gemini route can record few completion tokens a call (325, say) while the
+    provider bills thousands of thinking tokens nobody can see."""
     config, ledger, budget = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
     runtime = build_auxiliary_runtime(config, transport=_cached_reply(usage))
@@ -1346,7 +1346,7 @@ def test_cumulative_caps_are_optional_and_zero_still_denies(tmp_path):
     uncapped = policy()
     ledger = tmp_path / "uncapped.sqlite3"
     initialize_auxiliary_budget_ledger(ledger, uncapped)
-    # Far past every number the old fixed caps used; none of them binds now.
+    # Far past every number a fixed cap would use; none of them binds.
     for _ in range(12):
         assert _reserve(ledger, uncapped, "deepseek-v4-flash") > 0
 
