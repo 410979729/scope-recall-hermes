@@ -675,6 +675,33 @@ def test_restore_withdraws_a_denial_that_is_no_value_and_gives_back_what_it_disp
     assert core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"] == []
 
 
+def test_requalify_reads_a_denial_at_the_head_as_writing_does(app):
+    """Re-judging the store settles a denial as writing would (``mutate.denial_verdict``): one an older rule made the
+    head of TEST-project's CI service is withdrawn and Jenkins, which it displaced, comes back; one that became the
+    deploy region's only value is withdrawn and leaves none; and one the text gate now proves stays a proposal."""
+    core, ctx = app
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not CircleCI.", "not CircleCI")
+    region = capture(core, ctx, "The TEST-project deploy region is not us-east-2.", when=_LATER)
+    bucket = capture(core, ctx, "The TEST-project backup bucket is not vault-1.", when=_LATER)
+    alone = draft(region, "not us-east-2", kind="fact", predicate="deploy region", statement_kind="assertion")
+    unproved = draft(bucket, "not vault-1", kind="fact", predicate="backup bucket", statement_kind="assertion")
+    with core.storage.write(ctx) as tx:
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+        alone_ref = tx.claims.append("TEST-scope", alone, verdict, recorded_at=Clock.now).ref
+        refused = Qualification("proposed", "inferred_suggestion", "fact_entailment_unproved")
+        bucket_ref = tx.claims.append("TEST-scope", unproved, refused, recorded_at=Clock.now).ref
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=False)
+    assert {item["ref"]: item["now"] for item in report["changed"]} == {
+        jenkins.ref: "retracted:denial_of_another_value",
+        alone_ref: "retracted:denial_not_a_value",
+        bucket_ref: "proposed:denial_not_a_value",
+    }
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    assert core.current_claim(ctx, alone_ref) is None and core.current_claim(ctx, bucket_ref) is None
+    assert core.operations.requalify_claims(ctx, limit=32, dry_run=False)["changed"] == []
+
+
 @pytest.mark.parametrize("origin", ["assistant_visible", "host_generated", "memory_reinjection", "origin_unknown"])
 def test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering(app, origin):
     core, ctx = app
