@@ -172,23 +172,35 @@ _CODEX_SUGGESTIONS_PROMPT = re.compile(r"\bhyperpersonali[sz]ed\s+suggestions?\b
 _CODEX_SUGGESTIONS_HEADINGS = re.compile(
     r"^#{1,2}[ \t]*(?:overview|rules|examples|bad examples|response format)[ \t]*$", re.IGNORECASE | re.MULTILINE
 )
+#: How the desktop app opens the shorter request it sends after each turn for one suggested next message: a frame in
+#: which Codex itself says the user did not write it.  Stored as the owner's, it would add Codex's instructions to
+#: their messages after every turn, and its answer would come back in recall.
+_CODEX_SUGGESTED_MESSAGE_PROMPT = re.compile(
+    r"This is an app-generated request for a suggested next user message\.\s+The user did not write this message\.",
+    re.IGNORECASE,
+)
 
 
 def is_codex_suggestions_prompt(prompt: str) -> bool:
     """Whether a prompt is Codex asking the model for suggestions, not the owner's words.
 
-    Told by its whole frame, not by one phrase: it opens with a heading, names its "hyperpersonalized suggestions"
-    in its first lines, runs to 11,000-15,000 characters and carries at least three of its own headings (Overview,
-    Rules, Examples, Bad examples, Response format).  A note of the owner's about it, even a long one, is their words.
+    Codex asks in two ways, each told by its own frame rather than by one phrase.  The request for one suggested next
+    message opens with the two sentences in which Codex says the user did not write it.  The request for several
+    suggestions opens with a heading, names its "hyperpersonalized suggestions" in its first lines, runs to
+    11,000-15,000 characters and carries at least three of its own headings (Overview, Rules, Examples, Bad examples,
+    Response format).  The owner's words about either, even long ones, stay theirs unless they open with that frame.
     """
     text = prompt.lstrip()
+    if _CODEX_SUGGESTED_MESSAGE_PROMPT.match(text) is not None:
+        return True
     if not text.startswith("#") or len(text) < 8000 or _CODEX_SUGGESTIONS_PROMPT.search(text[:600]) is None:
         return False
     return len({heading.strip("# \t").lower() for heading in _CODEX_SUGGESTIONS_HEADINGS.findall(text)}) >= 3
 
 
 def is_codex_suggestions_reply(message: str) -> bool:
-    """Whether a reply is the model's answer to that request: a JSON object holding only a list of suggestions."""
+    """Whether a reply is the model's answer to such a request: a JSON object holding only a list of suggestions, or
+    only the one suggested message."""
     text = message.strip()
     if not text.startswith("{") or len(text) > _MAX_TOOL_CHARS:
         return False
@@ -196,7 +208,11 @@ def is_codex_suggestions_reply(message: str) -> bool:
         value = json.loads(text)
     except (ValueError, RecursionError):
         return False
-    return isinstance(value, dict) and set(value) == {"suggestions"} and isinstance(value["suggestions"], list)
+    if not isinstance(value, dict) or len(value) != 1:
+        return False
+    if "suggestions" in value:
+        return isinstance(value["suggestions"], list)
+    return isinstance(value.get("suggestion"), str)
 
 
 def user_prompt_source_event(

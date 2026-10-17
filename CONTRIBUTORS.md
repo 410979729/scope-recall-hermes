@@ -26,6 +26,7 @@ And these reports, each with its reproduction, led to fixes:
 
 | Contributor | Contribution |
 | --- | --- |
+| [erosaishen](https://github.com/erosaishen) | Codex desktop's request for a suggested next message stored as the owner's words, with the rows and the filters that missed it ([#256](https://github.com/410979729/scope-recall-hermes/issues/256)). |
 | [phfqy](https://github.com/phfqy) | Four reports with reproductions and live measurements ([#236](https://github.com/410979729/scope-recall-hermes/issues/236)), and the limits that kept thinking models from consolidation ([#240](https://github.com/410979729/scope-recall-hermes/issues/240)). |
 | [panxuewen0101](https://github.com/panxuewen0101) | The request-size cap that refused candidate evaluations before sending them ([#237](https://github.com/410979729/scope-recall-hermes/issues/237)), and no supported way to change an attached entry's grants ([#246](https://github.com/410979729/scope-recall-hermes/issues/246)). |
 | [SaberAlterP](https://github.com/SaberAlterP) | The desktop app's reminders stored as the owner's words ([#248](https://github.com/410979729/scope-recall-hermes/issues/248)), and automatic recall repeating what the model still had ([#249](https://github.com/410979729/scope-recall-hermes/issues/249)). |
