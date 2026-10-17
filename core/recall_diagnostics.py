@@ -135,13 +135,3 @@ class RecallDiagnostics:
             return None
         with self._lock:
             return self._by_ref.get(ref[:_MAX_FIELD_LEN])
-
-    @property
-    def record_count(self) -> int:
-        with self._lock:
-            return len(self._records)
-
-    @property
-    def index_count(self) -> int:
-        with self._lock:
-            return len(self._by_ref)
