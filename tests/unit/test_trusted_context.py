@@ -128,7 +128,7 @@ def test_runner_isolates_home_and_blocks_external_effects(tmp_path):
 
 
 def test_packaging_helper_roots_follow_declared_tier(tmp_path):
-    from v11_guard import _PACKAGING_HELPER_ROOTS, _PROCESS_TIER, _check_owned_child_process, _is_allowed_child_path
+    from v11_guard import _PACKAGING_HELPER_ROOTS, ALLOWS, _check_owned_child_process, _is_allowed_child_path
 
     # A path outside every allowed root on THIS platform: Windows drive
     # letters are absolute only on Windows, and POSIX treats "D:/..." as a
@@ -141,7 +141,7 @@ def test_packaging_helper_roots_follow_declared_tier(tmp_path):
     assert _is_allowed_child_path(foreign) is False
     with pytest.raises(PermissionError, match="TEST_BOUNDARY"):
         _check_owned_child_process((None, f"{foreign} build --wheel", str(tmp_path), None))
-    if _PROCESS_TIER in {"packaging", "release"}:
+    if "build" in ALLOWS:
         assert _PACKAGING_HELPER_ROOTS
         helper = next(iter(_PACKAGING_HELPER_ROOTS))
         authorized = helper / ("uv.exe" if os.name == "nt" else "uv")

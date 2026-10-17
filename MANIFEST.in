@@ -23,7 +23,10 @@ include docs/autonomous-memory.md
 prune tests
 recursive-include packaging_hooks *.py
 include packaging/v11-module-allowlist.json
+# The checker ships with the modules it imports.
 include scripts/check.py
+include scripts/test_directories.py
+include scripts/tier_allows.py
 include scripts/build.package_manifest.py
 include .github/scripts/extract_changelog_release_notes.py
 recursive-include constraints *.txt
