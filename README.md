@@ -14,9 +14,10 @@ the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
 first time it is opened, after which a 3.1 process cannot open it. Section 9 of the
 [3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
 migration procedure for a 2.0.1 memory database.
-Memory accumulates evidence before a fact is written rather than judging one
-sentence on sight. SQLite is the only fact authority; host adapters share the
-same contracts.
+Facts are drawn from accumulated evidence rather than judged one sentence on
+sight; only the owner's explicit correction or confirmation changes a fact as it
+is captured. SQLite is the only fact authority; host adapters share the same
+contracts.
 
 **What is not verified.** `scripts/check.py --tier release` runs about 3,600 tests with
 none failing. They check contracts, storage and the hosts' wiring; none of them

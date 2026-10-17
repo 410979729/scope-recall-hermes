@@ -135,8 +135,9 @@ package manager builds (`packages.venv.environment` in that file), not in the ve
 the `hermes` command runs with, and builds it again from each plugin's declaration
 in `<home>\plugins\`. Upgrading the venv with `package-upgrade` does not reach the
 gateway, and pip or uv into the package manager's environment is undone by its next
-build. A declaration written there by hand without the vector extra leaves every
-recall without vectors, while checks that read the venv show nothing wrong.
+build. A declaration written there by hand without the vector extra leaves a LanceDB
+store's recall without vectors; `doctor` reads that environment and reports it
+under `hermes_runtime`.
 
 1. Once the release is on PyPI, run plan-install/apply-install with
    `--target-plugin-dir <home>\plugins\scope-recall`. A receipt that names another

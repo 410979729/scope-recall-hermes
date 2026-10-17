@@ -15,7 +15,7 @@
 
 工具输出有两种情况在捕获时直接按 `source_only` 处理：与本 scope 内更早一条工具输出内容完全相同的重复（`tool_output_repeat`），以及更早版本的捕获过滤器为被省略的输出留下的占位摘要（`tool_output_omitted`）。两者都不嵌入、不进入整理；重复的工具输出原文与词法索引照常保留。占位摘要只按其中工具自己的报错文字建词法索引（有的话），其余不建：其余的词全是信封自带的（tool、status、exit_code……），导入的大量占位摘要会把这些常用词推过高频词上限，提问里的这些词就被丢掉了。更早版本建的多余索引用 `unindex-withheld-outputs` 清掉（见 `install.md`）。在一台实例上，16.8 万条来源里有 13.2 万条是这两类；共享库导入了 21.3 万条占位摘要，占全部来源的 68%，其中 4,348 条带报错文字。
 
-其余工具输出也不进入整理：原文、词法索引和向量照常保留，按字、按意思都能查到，但不从中提炼记忆事实（`DERIVATION_ROOT_ORIGINS` 里没有工具输出，接收时只排向量任务）。agent 读过、运行过的内容不是它该记住的东西；怎么做一类任务，由主机提炼成技能。在一个实测库上，一个 2.5 小时的任务从工具输出里提炼出 787 条事实（文件大小、路径、端口、创建时间），全库 93% 的事实只来自工具输出，而主人的 30 个真实问题没有一个靠它们回答。更早版本提炼出、还没确认的这类事实，用 `retire-rootless-claims` 撤下（见 `install.md`）。
+其余工具输出也不进入整理：原文和词法索引照常保留，一直能按字查到；向量保留 `tool_output_retention_days` 天（默认 180 天），这段时间里也能按意思查到。但不从中提炼记忆事实（`DERIVATION_ROOT_ORIGINS` 里没有工具输出，接收时只排向量任务）。agent 读过、运行过的内容不是它该记住的东西；怎么做一类任务，由主机提炼成技能。从工具输出提炼出的多是文件大小、路径、端口、创建时间这类事实，数量会远超真正值得记住的内容，主人的提问却用不到它们。更早版本提炼出、还没确认的这类事实，用 `retire-rootless-claims` 撤下（见 `install.md`）。
 
 ## 默认边界
 
@@ -36,11 +36,11 @@
 
 `runtime-config.json` 的可信配置可覆盖 `daily_work_limit`（0–1000000，**0 表示不限**，默认即 0）、`auto_retry_cooldown_seconds`（60–86400）、`max_auto_recoveries`（0–4）、`worker_min_interval_seconds`（1–3600），以及 `max_items`、`request_seconds`、`drain_seconds`。修改后下一次进程加载生效。上限是保护措施，不意味着推荐把它们调到最大。
 
-`daily_work_limit` 不是花费闸门：金额、调用数与 token 由辅助模型账本（`runtime/model_budget.py`）在每次请求前于 `BEGIN IMMEDIATE` 事务中按五道独立上限强制执行。该计数只限制每天尝试多少个队列项，且看不到任何一项的成本。把它设成低于实际产生速率的值，结果不是省钱而是永久积压：实测一台轻度使用的实例，一天 127 条原生来源产生 1,913 个工作项，256 的上限只能处理其中 13%，积压每天净增约 1,650 且永不追平。
+`daily_work_limit` 不是花费闸门：金额、调用数与 token 由辅助模型账本（`runtime/model_budget.py`）在每次请求前于 `BEGIN IMMEDIATE` 事务中按五道独立上限强制执行。该计数只限制每天尝试多少个队列项，且看不到任何一项的成本。一条来源会产生多个工作项（提炼、向量等），把它设成低于每天实际产生的工作项数，结果不是省钱而是永久积压：每天处理不完的部分只增不减。
 
 辅助模型必须显式配置并有预算账本。模型不可用时，原文与词法召回仍正常，提炼的偏好/任务不会凭空生成。Core 嵌入方可通过 `CoreConfig.admission_policy` 设置 `AdmissionPolicy`；运行时默认使用上表值。主机配置不是用户聊天或模型工具参数，不能用聊天文本修改身份、范围或预算。
 
-OpenCode Go 的提炼路由允许显式设置 `consolidation.reasoning_effort: "none"`，以及 `response_format: {"type": "json_object"}`；其他 OpenAI 兼容路由的 `reasoning_effort` 只接受 `low`、`high`、`max`。不同服务的关闭推理参数有差异，参见 [OpenCode 上游问题记录](https://github.com/anomalyco/opencode/issues/46178)。
+OpenCode Go 的提炼路由允许显式设置 `consolidation.reasoning_effort: "none"`，以及 `response_format: {"type": "json_object"}`；其他 OpenAI 兼容路由的 `reasoning_effort` 只接受 `low`、`high`、`max`。各服务关闭推理的参数不同，以所用服务的文档为准。
 
 ## 生命周期与故障
 

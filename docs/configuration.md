@@ -200,17 +200,11 @@ unset and let recall stay lexical; a guessed threshold either admits noise as
 evidence or admits nothing at all.
 
 On a shared store (`docs/shared-store.md`) in the shipped space, the accepted
-value admits too much: the store holds every entry's memories. Measured on a copy
-of a store of nine entries, two agents' sets of 20
-questions that have no answer were each given an unrelated memory for 12 of them
-at `0.653`, and for 2 of them from `0.68` up, as by words alone. At `0.653` the
-best memory the vector search offered such a question scored from 0.653 to
-0.691 (an offer is not always delivered), and the replies it found for the
-owner's questions asked again scored 0.722 or more. Over all 428 questions measured, `0.70`
-answered 23 more than `0.653` and one fewer, and two more than `0.68` and one
-fewer; `0.72` answered four more than `0.70` and two fewer, one of them a fact
-an agent had been told. So on a shared store in the shipped space whose runtime
-configs hold `0.653`, set `0.70` in each entry's runtime config. A store in
+value admits too much: the store holds every entry's memories, so a question
+with no answer meets far more unrelated memories just above `0.653`, while the
+replies that do answer the owner's questions score well above `0.70`. On a
+shared store in the shipped space whose runtime configs hold `0.653`, set `0.70`
+in each entry's runtime config. A store in
 another space, or one whose threshold was calibrated on it, keeps its own.
 `attach` copies the attached instance's value as it is.
 
@@ -253,13 +247,9 @@ particle, a preposition, a common verb or adverb, a time: `王芳对…`, `王�
 (`王芳芳`, `王芳林`); a name followed by a word outside that list is recalled as
 asked. List the name as it is written. A name of one character is never matched.
 
-Measured on a copy of a shared store of nine entries: of 52 questions agents ask
-about the owner by name, each answered by one of the owner's own messages, 16
-came back in the top five without the second search and 27 with it, none lost;
-asked as the recall tool asks them, 16 and 24 of the 48 that both runs searched
-by meaning; the same questions about a configured Chinese name (`王芳`), 19 and
-24 of 45. The owner's own 173 questions, which name no one, came back the same
-either way.
+The second search brings more of the owner's own messages into the top results
+for questions that name the owner, and loses none; questions that name no one
+are recalled as they would be without it.
 
 ## `auxiliary`
 
