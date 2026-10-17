@@ -566,7 +566,9 @@ class SQLiteStorage:
         # retry (one in ten with three entries writing).  A writer waits for the
         # lease as SQLite waits for its own lock: within this timeout, counted from the first refusal, so that an
         # open that finds the lease free reads no clock.  The polls are counted as well, since the clock a caller
-        # gives need not move while this sleeps; on one that keeps time the count never ends a wait first.
+        # gives need not move while this sleeps: a poll is slept only while the polls so far and it fit in the
+        # timeout, so no wait sleeps past it on any clock.  On one that keeps time, the polls so far have taken at
+        # least their own length, so the count gives up only where the clock does too.
         deadline: float | None = None
         polls = 0
         while True:
@@ -576,7 +578,7 @@ class SQLiteStorage:
             except TruthWriterBusyError:
                 now = self.monotonic()
                 deadline = now + timeout if deadline is None else deadline
-                if now + _LEASE_POLL_SECONDS >= deadline or polls * _LEASE_POLL_SECONDS >= timeout:
+                if now + _LEASE_POLL_SECONDS >= deadline or (polls + 1) * _LEASE_POLL_SECONDS >= timeout:
                     raise
                 polls += 1
                 time.sleep(_LEASE_POLL_SECONDS)

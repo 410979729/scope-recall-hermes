@@ -455,16 +455,19 @@ def test_a_writer_times_its_wait_on_the_clock_it_is_given(monkeypatch, shared):
     assert len(calls) == 2
 
 
-def test_a_writer_on_a_clock_that_stands_still_still_gives_up(monkeypatch, shared):
+def test_a_writer_on_a_clock_that_stands_still_never_sleeps_past_its_timeout(monkeypatch, shared):
     """The clock a store is given need not move while a writer waits (one that counts its readings hardly does):
-    the wait still ends within its timeout, on its count of polls."""
+    the wait then ends on its count of polls, and the polls it sleeps add up to no more than its timeout."""
+    from scope_recall.core import storage as module
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
     _storage, binding = shared
-    standing = SQLiteStorage(binding, timeout_seconds=0.1, clock=lambda: 7.0)
     _busy_for(monkeypatch, None)
-    started = time.monotonic()
-    with pytest.raises(TruthWriterBusyError):
-        with standing.write(shared_context(binding, "tianshu")):
-            pass
-    assert time.monotonic() - started < 0.5
+    for timeout, polls in ((0.005, 0), (0.015, 1), (0.105, 10)):
+        slept: list[float] = []
+        monkeypatch.setattr(module.time, "sleep", slept.append)
+        standing = SQLiteStorage(binding, timeout_seconds=timeout, clock=lambda: 7.0)
+        with pytest.raises(TruthWriterBusyError):
+            with standing.write(shared_context(binding, "tianshu")):
+                pass
+        assert len(slept) == polls and sum(slept) <= timeout, (timeout, slept)
