@@ -6,8 +6,7 @@ entry. What the owner tells one agent, another can recall, and the recall says w
 came in through. A deletion through any entry is gone for all of them. Moving the memory to
 another machine is copying one directory.
 
-A home without a pointer keeps its own store and binds as its own installation says, as before
-(3.2.0 changes how some gateway sessions bind for every home; see the changelog).
+A home without a pointer keeps its own store and binds as its own installation says.
 
 ## What is where
 
@@ -146,9 +145,9 @@ each prompt as the owner's and each final reply as Claude Code's, and put what i
 front of the prompt. What the model still has word for word is not put there again: an item that
 stands only on this session's messages since its last compaction (the session record names it; with
 none, since the session began) is left out, and other memories take its place. What was said before
-a compaction reaches the model only as the compaction's summary, and is recalled (#249). The
+a compaction reaches the model only as the compaction's summary, and is recalled. The
 reminders Claude's desktop app puts in a message (a `<system-reminder>` block that opens a line) are
-not the owner's words: they are neither recorded nor recalled for (#248).
+not the owner's words: they are neither recorded nor recalled for.
 A turn is recorded under its prompt id, which Claude Code sends from 2.1.196.
 At the end of each turn the Stop hook also reads the session record Claude Code keeps (the hook's
 `transcript_path`) from where the last read stopped, and records what it shows being said: the
@@ -165,7 +164,7 @@ PowerShell without it), so keep the interpreter, the home and the env file on AS
 spaces; `apply-install` refuses others. Its MCP tools read the store. The three that would change
 it (`propose_memory`, `revise`, `forget`) are not offered: the store takes such a change only on the
 word of the person's latest message in the same conversation, and Claude Code does not tell the tools
-which conversation a call comes from, so each was refused (#245). Correct or delete through a Hermes
+which conversation a call comes from, so the store would refuse each. Correct or delete through a Hermes
 agent or Codex; the store is one, so the change holds for every entry. Each answer of the tools that
 are offered names the gap `mcp_session_is_not_claude_code_conversation_id` (`..._workbuddy_...`,
 `..._dsh_...` on those entries): the call is tied to no conversation. It is expected and needs
@@ -191,7 +190,7 @@ server's own (its key, its LanceDB helper, or no vector search at all while the 
 hook then recalls as well and uses its own if that ran its vector search. An embedding call's failure
 (what the provider answered, the network, the time it took) the hook would meet as well.
 With no server running (the client closed, or its MCP server disabled), or one that says it is busy,
-the hook recalls itself at once, as before; an answer that comes after the hook is done is dropped,
+the hook recalls itself at once; an answer that comes after the hook is done is dropped,
 and one that failed, or came back empty because its read did not finish (the store unreadable, or its
 time up), is replaced by the hook's own. A prompt
 hook that asked says how it went on stderr (`CODEX_RECALL_RESIDENT:answered`, `slow`, `late`,
@@ -203,15 +202,15 @@ until its own check, every 2 s, finds it answering in time. The server keeps the
 one prompt to the next, and with it its LanceDB table open and its embedding worker connected: made anew for
 each prompt, they took 3.9-4.1 s of every recall on the pilot, and two of five lost their vector search to the
 time, where a kept one answers in 1.6-2.1 s. One recall uses it at a time; another that comes meanwhile is
-recalled by a handler of its own, as before. It is made anew when the env file or the runtime config changed,
+recalled by a handler of its own. It is made anew when the env file or the runtime config changed,
 after a recall that raised, or when its runtime could not be attached. A recall that fails in the server is answered as
 failed, with the last frames of its traceback on the server's stderr (the client's MCP log). It reads its key again at the next prompt
 after its env file or the runtime config changed, or when it could not read them before. A server
 started before an upgrade is not asked until its client restarts; a resident recall server ends itself
 within 30 s of the upgrade ([install.md](install.md), section 12). Each open client keeps one LanceDB
-helper, which its kept handler, the handlers made for prompts that come meanwhile and its tools share (3.4.9).
+helper, which its kept handler, the handlers made for prompts that come meanwhile and its tools share.
 The system pages it out while it is idle, and the server searches it once more after each 10 minutes
-without a recall that searched it (3.5.0). Each prompt hook still starts one of its own, which
+without a recall that searched it. Each prompt hook still starts one of its own, which
 ends with the hook, once its import is done, when the hook did not need it.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches

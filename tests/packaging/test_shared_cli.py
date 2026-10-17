@@ -299,8 +299,8 @@ def _with_scopes(home, name, count):
 
 
 def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, capsys, root):
-    """The worker's config lists every scope of the store twice, about 120 bytes each.  The pilot's 221 scopes
-    made 58 KB; one more instance passed the 64 KB these commands read, and the next attach refused the store."""
+    """The worker's config lists every scope of the store twice, about 120 bytes each, so a store of a few hundred
+    scopes gives it more than 64 KB: attach, detach and adopt still read and write it."""
     homes = []
     for name in ("tianshu", "tianji", "yuheng"):
         home, _options = _installed(tmp_path, name)
@@ -321,7 +321,7 @@ def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, c
 
 
 def _hermes_pair(tmp_path, capsys, root, *, second_workspace=None):
-    """Two Hermes entries of the store, tianshu's routes the worker's."""
+    """Two Hermes entries of the store, the first one's routes the worker's."""
     first, _options = _installed(tmp_path, "tianshu")
     _attach(capsys, first, root, _moved_aside(first, _routes(first)), "tianshu", "天枢")
     second, _options = _installed(tmp_path, "tianquan", workspace=second_workspace)
@@ -407,7 +407,7 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
 
 
 def _workbuddy_home(tmp_path):
-    """A WorkBuddy home shaped like the pilot's: keys of WorkBuddy's own and another tool's prompt hook in its
+    """A WorkBuddy home shaped as one in use is: keys of WorkBuddy's own and another tool's prompt hook in its
     settings, and one MCP server of WorkBuddy's.  Every value is made up."""
     home = (tmp_path / "TEST-profile" / ".workbuddy").resolve()
     home.mkdir(parents=True)
@@ -504,7 +504,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert {path.name for path in workbuddy.iterdir()} == present, "a plan writes nothing"
 
     # A resident recall server runs the package it was started from: one of the installation an install replaces
-    # (another venv, an older version) held the entry's lock against the new one's (review 2 of 3.6.0rc1).
+    # (another venv, an older version) would hold the entry's lock against the new one's, so the install stops it.
     from scope_recall.adapters.clients import local_endpoint
 
     stopped = []
@@ -749,10 +749,9 @@ def _weixin(home, user="TEST-wx-1"):
 
 
 def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path, capsys, root):
-    """#246: an attached entry kept the grants it was attached with; a gateway owner route or a read of another
-    scope could not be added.  The operator prints the entry's grants, edits them, sees the change, applies it with a
-    backup and a receipt, and puts the old grants back the same way.  Rows stay exact; what the store holds keeps
-    its scopes."""
+    """An attached entry's grants change from an edited copy: the operator prints them, adds a gateway owner route
+    and a read of another scope, sees the change, applies it with a backup and a receipt, and puts the old grants back
+    the same way.  Rows stay exact; what the store holds keeps its scopes."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     manifest = root / "installation.json"
     original = json.loads(manifest.read_text(encoding="utf-8"))
@@ -777,7 +776,7 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
     elsewhere = next(entry for entry in original["entries"] if entry["entry_id"] == "tianquan")["scope_ids"][0]
     assert elsewhere not in owner["allowed_scope_ids"]
     document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
-    owner["allowed_scope_ids"].append(elsewhere)  # the owner reads what tianquan's chats hold, writes as before
+    owner["allowed_scope_ids"].append(elsewhere)  # the owner reads what the other entry's chats hold, writes as it did
     dm = dict(owner, platform="weixin", user_id="TEST-wx-1", chat_type="dm", chat_id="TEST-wx-1", thread_id="")
     document["audiences"].append(dm)
     edit.write_text(json.dumps(document), encoding="utf-8")
@@ -825,9 +824,9 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
 def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_finishes(
     tmp_path, capsys, root, monkeypatch
 ):
-    """A write that fails after the manifest changed left the entry bound to its old scopes, and running the command
-    again said unchanged (review of 3.10.5).  The copies go back on a failure; and a run that finds the manifest done
-    but the entry's runtime config not rebinds it."""
+    """A write that fails after the manifest changed would leave the entry bound to its old scopes, and running the
+    command again would say unchanged.  The copies go back on a failure; and a run that finds the manifest done but the
+    entry's runtime config not rebinds it."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
     before_manifest, before_entry = manifest.read_bytes(), entry.read_bytes()
@@ -893,9 +892,9 @@ def test_a_grants_change_started_while_another_is_written_cannot_undo_it(tmp_pat
 
 
 def test_two_rows_on_one_route_are_each_a_grant(tmp_path, capsys, root):
-    """Rows were compared by route, so of two rows on one route one was lost, and taking away the one that read more
-    read as no change and was never written (review of 3.10.5).  An owner row whose user is no owner principal grants
-    nothing and is named, and the grants before a change put such a row back as it was."""
+    """Two rows on one route are each a grant: both are kept, and taking away the one that reads more is a change,
+    and written.  An owner row whose user is no owner principal grants nothing and is named, and the grants before a
+    change put such a row back as it was."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     elsewhere = read_shared_payload(root)["entries"][1]["scope_ids"][0]
 
@@ -957,8 +956,8 @@ def test_two_runs_of_one_command_in_one_second_keep_apart(tmp_path):
     receipt = Path(one.receipt({"status": "TEST"}))
     assert receipt == one.folder.with_name(one.folder.name + ".json") and one.folder.is_dir(), "kept, though empty"
     assert Run(tmp_path, "grants-TEST", at).folder not in (one.folder, two.folder)
-    # import-entry's moments have fractions of a second: a receipt named by replacing a suffix lost the fraction and
-    # the command, and the second run of one second looked for a free name forever (review of 3.10.5).
+    # import-entry's moments have fractions of a second: a receipt named by replacing a suffix would lose the fraction
+    # and the command, and two runs in one second each find a name of their own.
     fine = "2026-10-15T12:00:00.123456+00:00"
     three, four = Run(tmp_path, "import-TEST", fine), Run(tmp_path, "import-TEST", fine)
     receipts = {Path(run.receipt({"status": "TEST"})).name for run in (three, four)}
@@ -1004,9 +1003,8 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
 
 def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_order(tmp_path, capsys, root):
     """Of the rows a session matches, the first that captures into a scope it may write decides where its messages
-    go.  Two owner rows on one route, swapped, moved the owner's captures into another scope with every row, scope
-    and principal list of the preview empty (review of 3.10.5).  The preview names the route as it binds, before and
-    after."""
+    go: two owner rows on one route, swapped, move the owner's captures into another scope with every row, scope and
+    principal list of the preview empty.  The preview names the route as it binds, before and after."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     payload = read_shared_payload(root)
     mine = payload["entries"][0]["audience_scopes"]["owner_private"]
@@ -1048,8 +1046,8 @@ def test_a_grants_preview_names_a_route_whose_captures_move_when_rows_change_ord
 
 
 def test_a_grants_apply_whose_receipt_fails_puts_back_what_it_replaced(tmp_path, capsys, root, monkeypatch):
-    """The receipt was written after the change, outside what a failure puts back: a full disk at that moment left
-    the grants changed and the command failed, with no word of the grants as they were (review of 3.10.5)."""
+    """The receipt is part of the change: a receipt that cannot be written (a full disk) puts back what the change
+    replaced, rather than leave the grants changed with no word of them as they were."""
     from scope_recall.maintenance import shared_run
 
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
@@ -1080,9 +1078,8 @@ def test_a_grants_apply_whose_receipt_fails_puts_back_what_it_replaced(tmp_path,
 
 
 def test_a_grants_apply_puts_back_past_a_reader_and_names_what_it_could_not(tmp_path, capsys, root, monkeypatch):
-    """Putting the copies back was a single try: a worker reading the manifest at that moment, which Windows refuses
-    a replace for, left the change half undone (review of 3.10.5).  It is tried again as every write is, and a file
-    it still could not put back is named with its copy."""
+    """Putting the copies back is tried again as every write is, past a worker reading the manifest for a moment,
+    which Windows refuses a replace for; a file it still could not put back is named with its copy."""
     import os
 
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
@@ -1166,8 +1163,8 @@ def test_a_client_entry_s_grants_change_and_keep_its_own_route(tmp_path, capsys,
         edit.write_text(json.dumps(moved), encoding="utf-8")
         code, refused = _run(capsys, "grants", "--instance-root", str(client), "--grants-from", str(edit))
         assert code == 2 and "its own route" in refused["error"], (field, refused)
-    # A conversation row in the owner row's place still read and captured, so it passed, the owner principal replaced
-    # too (review of 3.10.5): the client takes whoever types into it for the owner, so its route keeps an owner row.
+    # A conversation row in the owner row's place reads and captures, and so does an owner row of another principal:
+    # the client takes whoever types into it for the owner, so its route keeps an owner row of an owner principal.
     someone = {"platform": "weixin", "user_id": "TEST-wx-1"}
     for name, kind, principals in (
         ("conversation", "conversation", document["owner_principals"]),
@@ -1711,8 +1708,8 @@ def test_a_client_attached_again_beside_other_entries_needs_no_grant_options(tmp
 
 
 def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):
-    """tianji's routes came from its own 3.1 store, which named its table source_embeddings; its entry then
-    searched a table the shared worker never fills, and recall lost its vector half (2026-09-24)."""
+    """An entry whose routes came from a store that named its vector table otherwise (``source_embeddings``)
+    searches the shared worker's table, the one the worker fills."""
 
     def with_table(home, table):
         routes = _routes(home)

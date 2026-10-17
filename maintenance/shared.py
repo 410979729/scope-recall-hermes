@@ -635,9 +635,9 @@ def _in_order(rows: list[str], common: Counter[str]) -> list[str]:
 
 def _routes_changed(before: InstallationManifest, after: InstallationManifest) -> list[dict[str, Any]]:
     """Each route a row names, before or after, that the change lets read, write or capture otherwise, as its
-    session binds (``resolve_runtime_audience``) before and after.  Rows alone did not say it: of the rows a session
-    matches, the first that captures into a scope it may write decides, so two rows on one route, swapped, moved a
-    chat's captures with nothing else shown (review of 3.10.5); an owner principal wakes or silences owner rows.  A
+    session binds (``resolve_runtime_audience``) before and after.  Rows alone do not say it: of the rows a session
+    matches, the first that captures into a scope it may write decides, so two rows on one route, swapped, move a
+    chat's captures with no row, scope or principal changed; an owner principal wakes or silences owner rows.  A
     route resolved with its own session key stands for every session it matches, unpinned rows included."""
     routes = {tuple(row[field] for field in _ROUTE_FIELDS) for row in (*before.audiences, *after.audiences)}
     changed = []
@@ -700,7 +700,7 @@ def grants(
     apply: bool = False,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Show an attached entry's grants, or change them from an edited copy (#246).
+    """Show an attached entry's grants, or change them from an edited copy.
 
     Without ``grants_from`` the entry's grants come back as a document, written to ``out`` when one is named.  With
     it the edited document is checked as attach checks a record and the change is shown; with ``apply`` as well it
@@ -791,8 +791,8 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
 def _client_route_holds(view: InstallationManifest) -> None:
     """Refuse grants under which a client entry's own route, bound as the client binds it (``load_shared_client``),
     has no owner row of an owner principal that reads and captures.  The client takes whoever types into it for the
-    owner: with a conversation row in its owner row's place, or its owner principal replaced, it still bound, as no
-    owner (review of 3.10.5).  So only the owner rows are counted."""
+    owner: a conversation row in its owner row's place, or its owner principal replaced, would still bind it, as no
+    owner.  So only the owner rows are counted."""
     scope = HermesRuntimeScope(
         platform=view.entry_host,
         user_id=LOCAL_USER_ID,
@@ -834,8 +834,8 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
             "rollback": str(rollback) if rollback is not None else None,
             "next": "start this entry's host again: it binds the new grants when it starts (doctor checks them)",
         }
-        # The receipt is part of the change: written after it, a receipt that failed left the grants changed and
-        # the command failed, with no word of the grants as they were (review of 3.10.5).
+        # The receipt is part of the change: one that failed once the change was written would leave the grants
+        # changed and the command failed, with no word of the grants as they were.
         result["receipt"] = run.receipt(result)
     except BaseException as exc:
         # Half a change binds the entry to scopes its grants do not name, or the other way round.
@@ -847,8 +847,8 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
 
 
 def _put_back(run: Run, replaced: dict[Path, str]) -> list[str]:
-    """Each file a run kept a copy of, as the copy has it, replaced in one step, and retried while a reader holds it
-    (a single try left a change half undone while the worker read the manifest; review of 3.10.5).  Each file is
+    """Each file a run kept a copy of, as the copy has it, replaced in one step, and retried while a reader holds it,
+    as the worker reading the manifest does for a moment: tried once, a change would be left half undone.  Each file is
     tried; what could not be put back comes back as ``copy -> file``, to copy by hand."""
     left = []
     for path, label in replaced.items():

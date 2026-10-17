@@ -458,7 +458,7 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
 
 # -- an attached entry's grants ---------------------------------------------------------
 #
-# An entry keeps the grants it was attached with until the operator changes them here (#246): its record's
+# An entry keeps the grants it was attached with until the operator changes them here: its record's
 # owner principals, the capture scope of each audience kind, and its exact audience rows.  ``entry_grants`` gives
 # them as a document to edit, ``regranted`` checks an edited one as attach checks a record, and the
 # command writes the manifest it returns (``maintenance/shared.py``).  What the store holds keeps its scopes; only
