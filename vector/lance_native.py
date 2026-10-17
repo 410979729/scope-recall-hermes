@@ -70,9 +70,9 @@ def helper_start_failure(timeout: float) -> str | None:
     """What the helper's start-up writes to stderr when it fails, run once more; ``None`` when it starts.
 
     The helper's own stderr is discarded (``process_store._spawn_helper``), so a helper that ended before its first
-    answer left nothing to say why.  This run is sent no request at all and cannot hold memory text, only an import
-    or start-up traceback, of which the last 8 KiB are kept.  In UTF-8: an isolated child ignores PYTHONUTF8 and
-    wrote a localized error in the ANSI code page, which read as replacement characters.
+    answer would leave nothing to say why.  This run is sent no request at all and cannot hold memory text, only an
+    import or start-up traceback, of which the last 8 KiB are kept.  In UTF-8: an isolated child ignores PYTHONUTF8 and
+    would write a localized error in the ANSI code page, which reads as replacement characters.
     """
     command = helper_command("--probe")
     command[1:1] = ["-X", "utf8"]
