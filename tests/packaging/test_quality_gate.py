@@ -6,6 +6,7 @@ Running ruff and pyright is the CI lint job's part; these tests feed the compari
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -549,12 +550,17 @@ def test_the_files_read_are_those_git_would_commit(tmp_path):
     deleted from the tree but not from the index is not read."""
     root = tmp_path / "仓库"
     root.mkdir()
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
-    for name in ("kept.py", "gone.py", "说明.md"):
-        (root / name).write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
-    (root / "gone.py").unlink()
-    (root / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
-    (root / "ignored.md").write_text("# Ignored\n", encoding="utf-8")
-    (root / "new.md").write_text("# New\n", encoding="utf-8")
-    assert sorted(quality.tracked(root, "*.py", "*.md")) == ["kept.py", "new.md", "说明.md"]
+    try:
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        for name in ("kept.py", "gone.py", "说明.md"):
+            (root / name).write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        (root / "gone.py").unlink()
+        (root / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
+        (root / "ignored.md").write_text("# Ignored\n", encoding="utf-8")
+        (root / "new.md").write_text("# New\n", encoding="utf-8")
+        assert sorted(quality.tracked(root, "*.py", "*.md")) == ["kept.py", "new.md", "说明.md"]
+    finally:
+        # Git writes its objects read-only, and Windows refuses to remove a read-only file with the test's folder.
+        for path in root.rglob("*"):
+            path.chmod(path.stat().st_mode | stat.S_IWRITE)
