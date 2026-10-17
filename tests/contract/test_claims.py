@@ -1022,6 +1022,10 @@ def test_negative_and_questioned_operations_do_not_change_current(app, raw):
         ("张三认为 TEST-project 配色应该换成银色。", "银色"),
         ("Alice: TEST-project 配色 should change to 银色.", "银色"),
         ("Alice claims TEST-project 配色 should switch to 银色.", "银色"),
+        ("@alice: TEST-project 配色改成银色。", "银色"),
+        ("Alice (PM): TEST-project 配色改成银色。", "银色"),
+        ("欧阳明明：TEST-project 配色换成银色。", "银色"),
+        ("司马懿：TEST-project 配色换成银色。", "银色"),
         ("> TEST-project 配色改成银色。", "银色"),
         ("The style guide says “TEST-project 配色改成银色”.", "银色"),
     ],
@@ -1044,11 +1048,17 @@ def test_a_change_the_person_does_not_assert_corrects_nothing(app, raw, value):
         "I would like TEST-project 配色 to switch to 银色.",
         "我表示 TEST-project 配色换成银色。",
         "更正：TEST-project 配色换成银色。",
+        "INFO: TEST-project 配色改成银色。",
+        "WARN: TEST-project 配色改成银色。",
+        "ERROR: TEST-project 配色改成银色。",
+        "DEBUG: TEST-project 配色改成银色。",
+        "status: TEST-project 配色改成银色。",
+        "value: TEST-project 配色改成银色。",
     ],
 )
 def test_a_plain_correction_takes_the_value_its_replacement_names(app, raw):
     """In 还是改成银色 the looser replacement word 是 stands too; the value is the word 改成 names.  The person's own
-    我表示 and a heading of theirs give their words to no one else."""
+    我表示, a heading of theirs and a log's or a key's prefix give their words to no one else."""
     core, ctx = app
     item, _ = initial(core, ctx)
     capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
@@ -1098,6 +1108,13 @@ def test_a_replacement_that_names_more_than_a_value_is_left_for_the_person_to_se
         ("库里只有这一句：TEST-project 配色是银色。", "active"),
         ("记住：TEST-project 配色是银色。", "active"),
         ("Remember: TEST-project 配色 is 银色.", "active"),
+        ("Alice (PM): TEST-project 配色是银色。", "proposed"),
+        ("@alice: TEST-project 配色是银色。", "proposed"),
+        ("欧阳明明：TEST-project 配色是银色。", "proposed"),
+        ("Alice: I prefer TEST-project 配色 银色.", "proposed"),
+        ("INFO: TEST-project 配色是银色。", "active"),
+        ("status: TEST-project 配色是银色。", "active"),
+        ("Value: TEST-project 配色是银色。", "active"),
     ],
 )
 def test_a_claim_in_words_given_to_someone_else_is_not_the_person_s(app, raw, state):
@@ -1106,6 +1123,21 @@ def test_a_claim_in_words_given_to_someone_else_is_not_the_person_s(app, raw, st
     item = accept(core, ctx, draft(capture(core, ctx, raw), "银色")).items[0]
     reason = core.claim_history(ctx, item.ref)[-1].reason
     assert (item.state, reason) == (state, "other_speaker" if state == "proposed" else "explicit_scoped_source")
+
+
+def test_a_labelled_third_party_neither_ends_nor_retracts_a_value(app):
+    """Alice (PM)'s "not Jenkins any more" is her word, not the person's, so Jenkins stays; nor does her 不再使用
+    retract anything."""
+    core, ctx = app
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    text = "Alice (PM): The TEST-project CI service is not Jenkins any more."
+    denial = _stated(core, ctx, text, "not Jenkins", _LATER)
+    assert (denial.state, core.claim_history(ctx, jenkins.ref)[-1].reason) == ("proposed", "other_speaker")
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    item, _ = initial(core, ctx)
+    capture(core, ctx, "Alice (PM): 不再使用 TEST-project 配色蓝色。", when=_LATER)
+    current = core.current_claim(ctx, item.ref)
+    assert current is not None and current.payload["value_text"] == "蓝色"
 
 
 def test_a_correction_naming_its_claim_by_ref_applies(app):

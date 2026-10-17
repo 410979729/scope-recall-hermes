@@ -73,23 +73,37 @@ _SURNAME = (
     "[王李张刘陈杨黄赵吴徐孙朱胡郭林罗郑梁谢宋唐韩冯邓曹彭肖董袁潘蒋蔡杜苏魏吕"
     "丁沈姚卢姜崔谭汪廖贾韦邹孟熊秦邱尹薛闫雷侯陶贺顾郝龚邵覃武戴莫孔汤欧司]"
 )
-#: A speaker's name as a line's label: a surname and one or two characters after it (张三, 李经理), 小 or 老 before
-#: one (小王, 老张), 阿 and a character (阿乙), a role (同事, 客户, 老板), or one Latin word (Alice) that is no heading
-#: (Note, Update, Remember).  An instruction or a key before its value (记住：, 配色：) is no name.
+#: Surnames of two characters (欧阳明明, 司马懿, 上官婉儿).
+_COMPOUND_SURNAME = "(?:欧阳|司马|上官|诸葛|东方|皇甫|慕容|司徒|公孙|夏侯|令狐|尉迟|长孙|宇文)"
+#: A speaker's name as a line's label: a surname and one or two characters after it (张三, 李经理, 欧阳明明), 小 or 老
+#: before one (小王, 老张), 阿 and a character (阿乙), a role (同事, 客户, 老板), a handle (@alice), or a capitalised
+#: Latin word that is no heading, log level or key (Alice; not Note, Update, Remember, Status, Value); and a role or a
+#: time after it in brackets (Alice (PM), 张三（产品）).  An instruction or a key before its value (记住：, 配色：), a
+#: log's level (INFO:, ERROR:) and a key in lower case (status:, value:) are no name.
 _SPEAKER_NAME = (
-    rf"(?:[小老]{_SURNAME}|{_SURNAME}[\u3400-\u9fff]{{1,2}}|阿[\u3400-\u9fff]"
+    rf"(?:{_COMPOUND_SURNAME}[\u3400-\u9fff]{{1,2}}|[小老]{_SURNAME}|{_SURNAME}[\u3400-\u9fff]{{1,2}}|阿[\u3400-\u9fff]"
     r"|同事|客户|老板|领导|经理|主管|组长|老师|同学|朋友|家人|妈妈|爸爸|儿子|女儿|老婆|老公|对方|甲方|乙方|助手"
-    r"|(?!(?:note|nb|update|correction|edit|summary|fyi|reminder|remember|important|warning|btw|ps|todo|answer"
-    r"|question|result|conclusion|decision|context|background|status|example|q|a)\b)[A-Za-z][A-Za-z0-9_.-]{0,15})"
+    r"|@[\w.-]{1,24}"
+    r"|(?!(?:Note|Notes|Nb|Update|Updates|Correction|Edit|Summary|Fyi|Reminder|Remember|Important|Warning|Warn"
+    r"|Error|Info|Debug|Notice|Tip|Hint|Btw|Ps|Todo|Answer|Question|Result|Results|Conclusion|Decision|Context"
+    r"|Background|Status|State|Value|Values|Example|Reason|Cause|Output|Input|Source|Subject|Log|Name|Type|Mode"
+    r"|Level|Version|Owner|Problem|Issue|Fix|Plan|Goal|Task|Step|Steps|Next|Done)\b)[A-Z][a-z][A-Za-z0-9_.-]{0,15})"
+    r"(?:[^\S\n]*[(（][^()（）\n]{1,24}[)）])?"
 )
-#: A line that opens with another speaker's name (``_SPEAKER_NAME``) and a colon before a statement, on it or on the
-#: next line (``张三：TEST-project 配色换成银色``, ``Alice: the CI is GitLab``), after a list marker, a ``[10:32]`` or
-#: in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of theirs (``更正：``, ``Update:``,
-#: ``刚才写错了：``) and a head that is a phrase (``库里只有这一句：``) give no one else's words.
+#: What a line says when it holds a sentence rather than a key's value: a statement (``_STATEMENT``), a negation, a
+#: person or a liking (张三：我不吃辣, Alice: I prefer blue).
+_SAYS = (
+    rf"(?i:{_STATEMENT}|不|没|别|我|你|他|她|喜欢|偏好|讨厌"
+    r"|\b(?:i|my|me|we|our|you|he|she|they|not|never|no|prefer|like|love|hate|want|need)\b|n['’]t\b)"
+)
+#: A line that opens with another speaker's name (``_SPEAKER_NAME``) and a colon before a sentence (``_SAYS``), on it or
+#: on the next line (``张三：TEST-project 配色换成银色``, ``Alice (PM): the CI is GitLab``, ``Alice: I prefer blue``),
+#: after a list marker, a ``[10:32]`` or in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of
+#: theirs (``更正：``, ``Update:``, ``刚才写错了：``), a head that is a phrase (``库里只有这一句：``), a log's line
+#: (``INFO: …``) and a key before its value (``status: …``, ``Region: us-east-1``) give no one else's words.
 _SPEAKER_LINE = re.compile(
     r"(?:^|(?<=\n))[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?(?:\[[^\]\n]{0,24}\][^\S\n]*)?(?:\*\*|__)?"
-    rf"{_SPEAKER_NAME}(?:\*\*|__)?[：:](?!//)(?=[^\n]*?{_STATEMENT}|[^\S\n]*\n[^\n]*?{_STATEMENT})",
-    re.I,
+    rf"{_SPEAKER_NAME}(?:\*\*|__)?[：:](?!//)(?=[^\n]*?{_SAYS}|[^\S\n]*\n[^\n]*?{_SAYS})"
 )
 #: Someone else's words, or an example, around a first person: a speaker other than the writer
 #: (``_SAID_BY_ANOTHER``, and ``Alice writes``, ``Alice hears``), a quoted first person in double, CJK or single
@@ -394,12 +408,22 @@ def is_transient_request(content):
     return bool(_DIRECT_REQUEST.search(content) and not _DURABLE_DIRECTIVE.search(content))
 
 
+#: An example, which shows what might be said rather than says it (举例, 示例, "for example", "Example: …").
+_EXAMPLE = re.compile(r"举例|示例|\b(?:for example|example:)", re.I)
+
+
 def attributed_to_another(content: str) -> bool:
-    """Whether the text gives what it says to someone other than its writer: reported speech (``REPORTED_SPEECH``), a
-    speaker before what they said (``_SAID_BY_ANOTHER``) or a line opening with their name (``_SPEAKER_LINE``),
-    outside the writer's own framing (``老实说，``, ``That said,``).  The writer's own ``我表示…`` stays theirs."""
+    """Whether the text gives what it says to anyone but its writer: reported speech (``REPORTED_SPEECH``), a speaker
+    before what they said (``_SAID_BY_ANOTHER``), a line opening with their name (``_SPEAKER_LINE``) or an example
+    (``_EXAMPLE``), outside the writer's own framing (``老实说，``, ``That said,``).  The one check that claims and
+    corrections are read by; the writer's own ``我表示…`` stays theirs."""
     unframed = _OWN_FRAMING.sub("", content)
-    return bool(REPORTED_SPEECH.search(content) or _SAID_BY_ANOTHER.search(unframed) or _SPEAKER_LINE.search(unframed))
+    return bool(
+        REPORTED_SPEECH.search(content)
+        or _EXAMPLE.search(content)
+        or _SAID_BY_ANOTHER.search(unframed)
+        or _SPEAKER_LINE.search(unframed)
+    )
 
 
 def first_person_reference(content):

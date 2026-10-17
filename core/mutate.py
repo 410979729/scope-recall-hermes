@@ -396,10 +396,6 @@ _ASKED = re.compile(
 )
 
 
-#: An example, beside the words the evidence gates give to someone else (``attributed_to_another``).
-_EXAMPLE = re.compile(r"举例|示例|\b(?:for example|example:)", re.I)
-
-
 def _not_asserted(raw: str) -> bool:
     """Whether a message's change is not the person making it: negated, asked, said under a condition or a
     supposition, someone else's words or an example, or a correction word inside quoted text."""
@@ -413,9 +409,9 @@ def _not_asserted(raw: str) -> bool:
 
 
 def _reported(raw: str) -> bool:
-    """Whether a message reports someone else's change: words it gives to someone else (``attributed_to_another``), an
-    example, or a correction or retraction word standing in quoted text."""
-    if attributed_to_another(raw) or _EXAMPLE.search(raw):
+    """Whether a message reports someone else's change: words it gives to anyone but the person, an example included
+    (``attributed_to_another``, as claims are read), or a correction or retraction word standing in quoted text."""
+    if attributed_to_another(raw):
         return True
     markers = (*_CORRECTION.finditer(raw), *_RETRACT.finditer(raw))
     return any(quoted_at(raw, marker.start()) for marker in markers)
