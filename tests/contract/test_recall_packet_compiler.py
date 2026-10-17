@@ -1822,6 +1822,26 @@ def test_a_supposition_a_quotation_a_guess_or_a_question_alone_answers_nothing(a
     assert packet["answerability"] == "unknown"
 
 
+def test_a_claim_and_the_message_it_was_drawn_from_are_one_answer_not_a_choice(app):
+    """A question that asks to choose is ambiguous when what answers it rests on more than one source; a claim and the
+    message it was drawn from say one thing once."""
+    core, ctx = app
+    source = capture(core, ctx, "We picked the blue colour scheme for Orchard.", key="TEST-answerability/choice-said")
+    accept(core, ctx, draft(source, "blue", subject="Orchard", predicate="colour scheme"))
+
+    def asked():
+        body = recall_request(
+            query="Which colour scheme did we pick for Orchard?", mode="current", request_id="TEST-answerability-choice"
+        )
+        return core.recall(ctx, body, deadline_seconds=5)
+
+    once = asked()
+    assert sorted(item.kind for item in once.items) == ["claim", "event"]
+    assert once.answerability_hint == "supported"
+    capture(core, ctx, "We also tried the red colour scheme for Orchard.", key="TEST-answerability/choice-other")
+    assert asked().answerability_hint == "ambiguous"
+
+
 def test_p09_renderer_dedupes_same_installation_session_request(app):
     core, ctx = app
     capture(core, ctx, "P09 renderer dedupe H100 record.", key="TEST-p09/render-dedupe")

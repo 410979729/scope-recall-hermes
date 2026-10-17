@@ -1067,8 +1067,9 @@ class RetrievalPipeline:
         question: str,
     ) -> RetrievalResult:
         """The search's result and its verdict on its query evidence: unknown without any, partial with a need left
-        open, unknown when none answers what the question names (``answering``), ambiguous when several answer a
-        question that asks to choose, else supported.  ``question`` is the question without the owner's name, which
+        open, unknown when none answers what the question names (``answering``), ambiguous when what answers a
+        question that asks to choose rests on more than one source (``evidence_roots``: a claim and the message it was
+        drawn from say one thing once), else supported.  ``question`` is the question without the owner's name, which
         their own words never carry.  A question about a day names its days and entries, not what answers it
         (``recall_scope``), and is judged as one that names nothing."""
         items = tuple(obj for _candidate, obj in ranked)
@@ -1076,13 +1077,14 @@ class RetrievalPipeline:
         if items and not query_items:
             needs = (*needs, "query_evidence_missing")
         answers = query_items if working.scope is not None else answering(question, query_items)
+        sources = {root for item in answers for root in evidence_roots(item)}
         if not query_items:
             answerability = "unknown"
         elif needs:
             answerability = "partial"
         elif not answers:
             answerability = "unknown"
-        elif len(answers) > 1 and mentions(working.query, CHOICE_MARKERS):
+        elif len(sources) > 1 and mentions(working.query, CHOICE_MARKERS):
             answerability = "ambiguous"
         else:
             answerability = "supported"
