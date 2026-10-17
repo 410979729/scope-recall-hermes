@@ -34,8 +34,9 @@ MAX_SCOPE_DAYS = 3
 #: asked on 9月30日 is a day with no conversation yet.
 _MONTH_DAY_REACH = timedelta(days=183)
 #: The earliest day read: an older date is a placeholder or an example ("0001-01-01"), and a day before this one
-#: cannot be turned into a time the store holds on every machine.
-_EARLIEST = date(1970, 1, 2)
+#: cannot be turned into a time the store holds on every machine.  Windows places no instant before 1970 in the
+#: machine's zone, and finding a midnight's offset looks a day earlier: east of UTC, 2 January 1970 already fails.
+_EARLIEST = date(1970, 1, 3)
 #: Longest message read for its days and entries: a day's question is its days, its entries and a rest of at most
 #: ``_QUESTION_CHARS``.  Every entry's name was looked for in the whole message, and a log naming instances hundreds
 #: of times took a tenth of a second before the rest was found too long.
