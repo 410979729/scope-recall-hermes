@@ -885,10 +885,10 @@
   },
   "maintenance/shared.py": {
    "C901": {
-    "attach": 17
+    "attach": 16
    },
    "PLR0912": {
-    "attach": 19
+    "attach": 18
    },
    "PLR0913": {
     "attach": 11

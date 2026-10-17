@@ -14,8 +14,9 @@ The store's directory holds everything memory needs, so moving to another
 machine is copying that directory, ``adopt``, and attaching each agent again.
 Every write command keeps a copy of each file it replaces and leaves a receipt
 under the store's ``receipts/``.  Hermes homes attach with the grants their own
-installation had; a local client (Codex, Claude Code) has none of its own and
-attaches as the owner, with grants taken from Hermes entries' owner rows.
+installation had; a local client (Codex, Claude Code, WorkBuddy, dsh) has none
+of its own and attaches as the owner, with grants taken from the owner rows of
+entries already attached, or, as the store's first entry, a fresh installation's.
 """
 
 from __future__ import annotations
@@ -188,31 +189,55 @@ def _entry_config(
     return out
 
 
-def _client_grants(payload: dict[str, Any], like: tuple[str, ...], capture_like: str) -> tuple[set[str], set[str], str]:
-    """What a client entry reads, writes and captures into, taken from attached Hermes entries' owner rows.
+def _fresh_installation(home: Path, payload: dict[str, Any]) -> InstallationManifest:
+    """The grants of a home with no installation to carry over: a fresh installation's, the CLI's owner row alone.
 
-    It reads what the owner reads through any of ``like`` (``("all",)``: every
-    attached Hermes entry), may write where the owner may there, and captures
-    where ``capture_like``'s owner captures, which must be a scope every owner
-    row of every attached Hermes entry reads: what the owner says in the client
-    reaches every agent, and no Hermes entry's grants change.
+    Its owner scope is the one an installation of the store's agent made with the default workspace holds: that
+    installation's entry and an entry given these grants read, write and capture into the same scope.
     """
-    hermes = {
-        entry["entry_id"]: entry
+    return build_installation_manifest(
+        home, agent_id=payload["agent_id"], agent_workspace=DEFAULT_AGENT_WORKSPACE, test_mode=payload["test_mode"]
+    )
+
+
+def _client_grants(
+    payload: dict[str, Any], home: Path, entry_id: str, like: tuple[str, ...], capture_like: str | None
+) -> tuple[set[str], set[str], str]:
+    """What a client entry reads, writes and captures into, taken from the owner rows of the store's other attached
+    entries, Hermes homes and clients alike.
+
+    It reads what the owner reads through any of ``like`` (``("all",)``: every other attached entry), may write where
+    the owner may there, and captures where ``capture_like``'s owner captures, which must be a scope every owner row
+    of every other attached entry reads: what the owner says in the client reaches every agent, and no other entry's
+    grants change.  With no other entry attached, the client is the store's first and there is nothing to be like: it
+    gets the owner grants of a fresh installation, as a Hermes home attached without ``--grants-from`` does, and
+    brings their owner scope into the store.  The client's own record, when it is attached again, is not one of the
+    others: running the same attach again finishes or repeats it.
+    """
+    others = {
+        entry["entry_id"]: [row for row in entry["audiences"] if row.get("kind") == "owner_private"]
         for entry in payload["entries"]
-        if entry["host"] == "hermes" and not entry.get("detached_at")
+        if not entry.get("detached_at") and entry["entry_id"] != entry_id
     }
-    names = tuple(hermes) if like == ("all",) else like
-    unknown = sorted(set(names) - set(hermes)) + ([capture_like] if capture_like not in hermes else [])
-    if not names or unknown:
-        raise SharedStoreError(f"not attached Hermes entries of this store: {', '.join(unknown) or '(none named)'}")
-
-    def owner_rows(name: str) -> list[dict[str, Any]]:
-        return [row for row in hermes[name]["audiences"] if row.get("kind") == "owner_private"]
-
-    allowed = {scope for name in names for row in owner_rows(name) for scope in row["allowed_scope_ids"]}
-    writable = {scope for name in names for row in owner_rows(name) for scope in row["writable_scope_ids"]}
-    captures = {row["capture_scope_id"] for row in owner_rows(capture_like)}
+    if not others:
+        if like or capture_like:
+            raise SharedStoreError(
+                "no other entry is attached to this store to take grants like: attach its first client without "
+                "--grants-like and --capture-like, and it brings the owner's scope"
+            )
+        owner = _fresh_installation(home, payload).audience_scopes["owner_private"]
+        return {owner}, {owner}, owner
+    if not like or not capture_like:
+        raise SharedStoreError(
+            "a client's entry needs --grants-like and --capture-like: the store has entries attached"
+        )
+    names = tuple(others) if like == ("all",) else like
+    unknown = sorted(set(names) - set(others)) + ([capture_like] if capture_like not in others else [])
+    if unknown:
+        raise SharedStoreError(f"not other entries attached to this store: {', '.join(unknown)}")
+    allowed = {scope for name in names for row in others[name] for scope in row["allowed_scope_ids"]}
+    writable = {scope for name in names for row in others[name] for scope in row["writable_scope_ids"]}
+    captures = {row["capture_scope_id"] for row in others[capture_like]}
     if len(captures) != 1:
         raise SharedStoreError(
             f"{capture_like}'s owner rows capture into {len(captures)} scopes; name an entry with one"
@@ -220,8 +245,8 @@ def _client_grants(payload: dict[str, Any], like: tuple[str, ...], capture_like:
     capture = next(iter(captures))
     unread = sorted(
         f"{name}:{row['platform']}"
-        for name in hermes
-        for row in owner_rows(name)
+        for name, rows in others.items()
+        for row in rows
         if capture not in row["allowed_scope_ids"]
     )
     if unread:
@@ -306,25 +331,21 @@ def attach(
         source = (
             load_archived_installation(grants_from, instance_root)
             if grants_from is not None
-            else build_installation_manifest(
-                instance_root,
-                agent_id=payload["agent_id"],
-                agent_workspace=DEFAULT_AGENT_WORKSPACE,
-                test_mode=payload["test_mode"],
-            )
+            else _fresh_installation(instance_root, payload)
         )
         record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now)
     elif host in CLIENT_HOSTS:
         if grants_from is not None:
-            raise SharedStoreError("a client has no installation to carry grants over from; use --grants-like")
-        if not grants_like or not capture_like:
-            raise SharedStoreError("a client's entry needs --grants-like and --capture-like")
+            raise SharedStoreError(
+                "a client has no installation to carry grants over from: it takes them like entries already "
+                "attached (--grants-like), or as a store's first entry brings the owner's"
+            )
         if (instance_root / CODEX_CONFIG_FILENAME).exists() or (instance_root / "data" / "memory.sqlite3").exists():
             raise SharedStoreError(
                 f"this home still has its own store: move {CODEX_CONFIG_FILENAME} and data aside "
                 "(for example into local-<date>); the client's memory is then the store's"
             )
-        allowed, writable, capture = _client_grants(payload, grants_like, capture_like)
+        allowed, writable, capture = _client_grants(payload, instance_root, entry_id, grants_like, capture_like)
         record = client_entry_record(
             host=host,
             home=instance_root,
@@ -853,11 +874,12 @@ def main(argv: list[str]) -> int:
     join.add_argument("--grants-from", help="the installation.json of the home's own store, moved aside")
     join.add_argument(
         "--grants-like",
-        help="a client's entry: the attached Hermes entries whose owner grants it gets, comma separated, or all",
+        help="a client's entry: the attached entries, Hermes or client, whose owner grants it gets, comma separated, "
+        "or all; with no other entry attached, leave it and --capture-like out: the client brings the owner's scope",
     )
     join.add_argument(
         "--capture-like",
-        help="a client's entry: the Hermes entry whose owner capture scope it "
+        help="a client's entry: the attached entry whose owner capture scope it "
         "writes into; every owner row of the store must read that scope",
     )
     join.add_argument("--runtime-config-from", help="the runtime-config.json with this entry's model routes")

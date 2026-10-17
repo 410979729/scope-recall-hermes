@@ -19,7 +19,7 @@ import pytest
 from scope_recall.adapters.clients import remote_client
 from scope_recall.adapters.clients.config import load_shared_client
 from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
-from scope_recall.adapters.hermes.shared_entries import read_attachment, read_shared_payload
+from scope_recall.adapters.hermes.shared_entries import CLIENT_HOSTS, read_attachment, read_shared_payload
 from scope_recall.maintenance import cli, install_dsh, install_workbuddy
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, apply_uninstall, plan_install, plan_uninstall
@@ -325,24 +325,17 @@ def _hermes_pair(tmp_path, capsys, root, *, second_workspace=None):
     return first, second
 
 
+CLIENT_NAMES = {"codex": "Codex", "claude-code": "Claude Code", "workbuddy": "WorkBuddy", "dsh": "DeepSeek Harness"}
+
+
 def _attach_client(capsys, root, home, *, host="claude-code", like="all", capture="tianshu", routes=None):
-    argv = [
-        "attach",
-        "--host",
-        host,
-        "--instance-root",
-        str(home),
-        "--root",
-        str(root),
-        "--entry",
-        host,
-        "--display-name",
-        "Claude Code" if host == "claude-code" else "Codex",
-        "--grants-like",
-        like,
-        "--capture-like",
-        capture,
-    ]
+    """``attach`` for a client entry named after its host; ``like`` or ``capture`` None leaves that option out."""
+    argv = ["attach", "--host", host, "--instance-root", str(home), "--root", str(root)]
+    argv += ["--entry", host, "--display-name", CLIENT_NAMES[host]]
+    if like is not None:
+        argv += ["--grants-like", like]
+    if capture is not None:
+        argv += ["--capture-like", capture]
     if routes is not None:
         argv += ["--runtime-config-from", str(routes)]
     return _run(capsys, *argv)
@@ -1226,6 +1219,161 @@ def test_a_codex_home_with_its_own_store_still_in_place_is_refused(tmp_path, cap
     code, result = _attach_client(capsys, root, codex, host="codex")
     assert (code, result["status"]) == (0, "attached"), result
     assert load_shared_client(codex, "codex").entry_id == "codex"
+
+
+# -- a store whose first entry is a client --------------------------------------------------------------------------
+
+
+def _client_homes(tmp_path, *hosts):
+    homes = {host: (tmp_path / f"TEST-{host}-home").resolve() for host in hosts}
+    for home in homes.values():
+        home.mkdir()
+    return homes
+
+
+def _owner_rows(root, entry_id):
+    record = next(entry for entry in read_shared_payload(root)["entries"] if entry["entry_id"] == entry_id)
+    return [row for row in record["audiences"] if row["kind"] == "owner_private"]
+
+
+def _written_routes(tmp_path):
+    """A runtime config written by hand, as for a store no home with routes is attached to: its binding is made up."""
+    nowhere = str((tmp_path / "TEST-nowhere").resolve())
+    routes = {
+        "binding": {
+            "agent_id": AGENT,
+            "installation_id": "TEST-unbound",
+            "data_directory": nowhere,
+            "scope_ids": ["TEST-scope"],
+        },
+        "session_id": "TEST-background",
+        "allowed_scope_ids": ["TEST-scope"],
+        "auxiliary": {
+            "external_embedding": False,
+            "external_consolidation": False,
+            "embedding": {"credential_env": "TEST_EMBED_KEY"},
+            "installation_dir": nowhere,
+        },
+    }
+    path = tmp_path / "TEST-routes.json"
+    path.write_text(json.dumps(routes), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("host", CLIENT_HOSTS)
+def test_each_client_attaches_first_to_a_new_store_and_another_client_names_it(tmp_path, capsys, root, host):
+    """With no other entry attached, a client takes no grants like another's: it gets a fresh installation's owner
+    grants and brings that owner scope into the store, and its routes give the shared worker its own.  A client of
+    another host attached after it names it, and both bind as the owner, reading, writing and capturing in that one
+    scope, their runtime configs bound to the store whatever the written one named."""
+    later = CLIENT_HOSTS[(CLIENT_HOSTS.index(host) + 1) % len(CLIENT_HOSTS)]
+    homes, routes = _client_homes(tmp_path, host, later), _written_routes(tmp_path)
+    code, result = _attach_client(capsys, root, homes[host], host=host, like=None, capture=None, routes=routes)
+    assert (code, result.get("new_scopes"), result.get("worker_runtime_config_written")) == (0, 1, True), result
+    code, result = _attach_client(capsys, root, homes[later], host=later, like=host, capture=host, routes=routes)
+    assert (code, result.get("new_scopes"), result.get("worker_runtime_config_written")) == (0, 0, False), result
+    [scope] = read_shared_payload(root)["scope_ids"]
+    assert load_config(root / "runtime-config.json").binding.scope_ids == {scope}
+    for name, home in homes.items():
+        config = load_shared_client(home, name)
+        audience = config.audience
+        assert (audience.allowed_scope_ids, audience.writable_scope_ids, audience.capture_scope_id) == (
+            frozenset({scope}),
+            frozenset({scope}),
+            scope,
+        ), name
+        entry = load_config(home / "scope-recall" / "runtime-config.json")
+        assert (entry.binding, entry.host_adapter) == (config.to_binding(), name)
+
+
+def test_a_client_names_only_entries_attached_beside_it(tmp_path, capsys, root):
+    """On a new store the first client names no entry to take grants like, and a client after it must name attached
+    ones; the first client's attach run again repeats it.  A refused attach writes nothing."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like="all", capture="workbuddy")
+    assert code == 2 and "no other entry is attached" in result["error"], result
+    assert read_shared_payload(root)["entries"] == [] and read_attachment(homes["workbuddy"]) is None
+    for new_scopes in (1, 0):
+        code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+        assert (code, result.get("new_scopes")) == (0, new_scopes), result
+    for like, capture, refused in (
+        (None, None, "needs --grants-like and --capture-like"),
+        ("all", None, "needs --grants-like and --capture-like"),
+        ("workbuddy,nobody", "workbuddy", "not other entries attached to this store: nobody"),
+        ("all", "dsh", "not other entries attached to this store: dsh"),
+    ):
+        code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like=like, capture=capture)
+        assert code == 2 and refused in result["error"], (like, capture, result)
+    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["workbuddy"]
+    assert read_attachment(homes["dsh"]) is None
+    code, result = _run(capsys, "detach", "--instance-root", str(homes["workbuddy"]))
+    assert (code, result["status"]) == (0, "detached"), result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="workbuddy", capture="workbuddy")
+    assert code == 2 and "no other entry is attached" in result["error"], "a detached entry is none to be like"
+
+
+def test_a_hermes_home_attached_after_the_clients_holds_their_scope_or_is_granted_it(tmp_path, capsys, root):
+    """An installation made with the default workspace holds the owner scope the store's first client brought: attached
+    later, it brings no scope and its owner rows read, write and capture there.  One of another workspace keeps its
+    owner scope apart, and a later client capturing where the clients do is refused, until grants let each side read
+    the other's; then a client attached later reads both."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    clients = load_shared_client(homes["workbuddy"], "workbuddy").audience.capture_scope_id
+
+    desk, _options = _installed(tmp_path, "desk")
+    code, result = _attach(capsys, desk, root, _moved_aside(desk, _routes(desk)), "desk", "Desk")
+    assert (code, result.get("new_scopes")) == (0, 0), result
+    granted = {
+        (tuple(row["allowed_scope_ids"]), tuple(row["writable_scope_ids"]), row["capture_scope_id"])
+        for row in _owner_rows(root, "desk")
+    }
+    assert granted == {((clients,), (clients,), clients)}
+
+    apart, _options = _installed(tmp_path, "apart", workspace="TEST-elsewhere")
+    code, result = _attach(capsys, apart, root, _moved_aside(apart, _routes(apart)), "apart", "Apart")
+    assert (code, result.get("new_scopes")) == (0, 1), result
+    [own] = {row["capture_scope_id"] for row in _owner_rows(root, "apart")}
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="workbuddy")
+    assert code == 2 and "not read by these owner rows: apart:cli" in result["error"], result
+
+    def reads(scope):
+        def change(document):
+            for row in document["audiences"]:
+                if row["kind"] == "owner_private":
+                    row["allowed_scope_ids"].append(scope)
+
+        return change
+
+    for home, scope in ((apart, clients), (homes["workbuddy"], own)):
+        code, applied = _granted(capsys, tmp_path, home, reads(scope))
+        assert (code, applied["status"]) == (0, "applied"), applied
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="workbuddy")
+    assert code == 0, result
+    audience = load_shared_client(homes["dsh"], "dsh").audience
+    assert (audience.allowed_scope_ids, audience.capture_scope_id) == (frozenset({clients, own}), clients)
+
+
+def test_an_empty_hermes_home_a_store_began_with_detaches_and_its_clients_keep_their_grants(tmp_path, capsys, root):
+    """A store begun with an empty Hermes home, so that a client had an entry to take grants like, lets that home go:
+    the clients keep the grants they were given, and a client attached later names one of them."""
+    empty = (tmp_path / "TEST-empty-hermes-home").resolve()
+    empty.mkdir()
+    argv = ["attach", "--host", "hermes", "--instance-root", str(empty), "--root", str(root)]
+    code, result = _run(capsys, *argv, "--entry", "empty", "--display-name", "Empty")
+    assert code == 0, result
+    homes = _client_homes(tmp_path, "codex", "claude-code")
+    code, result = _attach_client(capsys, root, homes["codex"], host="codex", like="empty", capture="empty")
+    assert code == 0, result
+    code, result = _run(capsys, "detach", "--instance-root", str(empty))
+    assert (code, result["status"]) == (0, "detached"), result
+    code, result = _attach_client(capsys, root, homes["claude-code"], host="claude-code", like="all", capture="codex")
+    assert (code, result.get("new_scopes")) == (0, 0), result
+    [scope] = read_shared_payload(root)["scope_ids"]
+    for name, home in homes.items():
+        audience = load_shared_client(home, name).audience
+        assert (audience.allowed_scope_ids, audience.capture_scope_id) == (frozenset({scope}), scope), name
 
 
 def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):

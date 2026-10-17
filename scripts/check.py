@@ -213,6 +213,7 @@ SUITES = {
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
+        "tests/host/codex/test_clients_only_store.py",
         "tests/host/codex/test_remote.py",
         "tests/host/codex/test_dsh_remote.py",
         "tests/host/codex/test_resident_recall.py",

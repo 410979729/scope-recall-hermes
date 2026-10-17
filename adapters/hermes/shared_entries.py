@@ -341,8 +341,9 @@ def client_entry_record(
     A client names no user, like the Hermes CLI, so attaching it is the operator's
     statement that whoever types into it here is the owner: the owner principal
     ``(host, "local")`` and one owner row on that route.  The scopes are ones the store
-    already registers (``maintenance/shared.py`` takes them from the Hermes entries'
-    owner rows), so no other entry's binding changes.
+    already registers (``maintenance/shared.py`` takes them from the owner rows of the
+    entries already attached), so no other entry's binding changes; the store's first
+    client brings the owner scope of a fresh installation, as a Hermes home does its own.
     """
     if host not in CLIENT_HOSTS:
         raise HermesIdentityError(f"a client entry's host is one of {', '.join(CLIENT_HOSTS)}")
