@@ -47,9 +47,13 @@ __all__ = [
 
 #: Provider answers that mean "send less traffic".  Distinct from the
 #: recoverable set: that one says whether an item may be retried, this one
-#: decides whether the rest of the pass should even ask.  One name, one
-#: definition: two hand-kept copies of this set would drift apart.
-_RATE_LIMITED_ERRORS = CAPACITY_REFUSALS
+#: decides whether the rest of the pass should even ask.  Every capacity
+#: refusal is one, taken from ``CAPACITY_REFUSALS`` and not copied (two
+#: hand-kept copies of the set would drift apart).  So is a generation the
+#: provider interrupted, for lack of capacity or at its own end: the next item
+#: meets it too.  That one was a billed answer, so unlike a refusal it is not
+#: refunded; it costs its item an attempt.
+_RATE_LIMITED_ERRORS = CAPACITY_REFUSALS | {"model_output_interrupted"}
 
 #: Seconds a model-bound item keeps back, beyond its one bounded request, to
 #: record the verdict under its lease: a few fenced SQLite writes and, for
@@ -434,7 +438,7 @@ def _port_refused(disposition: str, error_code) -> bool:
 
 
 def _rate_limited(error_code) -> bool:
-    """Whether the provider answered an item with a rate limit or capacity refusal."""
+    """Whether the provider answered an item with a rate limit, a capacity refusal or an interrupted generation."""
     return str(error_code or "").lower() in _RATE_LIMITED_ERRORS
 
 

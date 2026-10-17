@@ -62,26 +62,27 @@ def test_transient_auto_recovery_is_cooled_and_has_lifetime_ceiling(worker_app):
     assert "auto_retry:2|" in work_rows(core)[0][6]
 
 
-def test_an_interrupted_answer_is_recovered_once_the_provider_can_answer(worker_app):
+@pytest.mark.parametrize("code", ["model_output_interrupted", "response_status_failed"])
+def test_a_transient_provider_failure_is_recovered_once_the_provider_can_answer(worker_app, code):
     from scope_recall.runtime.models import AuxiliaryModelError
     from test_worker import FakeConsolidation, consolidation_payload
 
-    class Interrupted:
+    class Failing:
         calls = 0
 
         def propose(self, *args, **kwargs):
             self.calls += 1
-            raise AuxiliaryModelError("model_output_interrupted")
+            raise AuxiliaryModelError(code)
 
     core, ctx, clock = worker_app
     capture(core, ctx, "TEST 需要可靠记住的长期决定。")
     _mark_embed_done(core)
-    model = Interrupted()
+    model = Failing()
     for iso in ("12:00:00", "12:00:03", "12:00:10"):
         clock.advance(iso=f"2026-09-06T{iso}Z")
         core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
     assert model.calls == 3 and work_rows(core)[0][3] == "failed"
-    assert work_rows(core)[0][6] == "model_output_interrupted"
+    assert work_rows(core)[0][6] == code
     clock.advance(iso="2026-09-06T13:01:00Z")
     answering = FakeConsolidation(lambda sources, **_: consolidation_payload(*sources))
     receipt = core.drain_worker(ctx, consolidation=answering, max_items=1, remaining_seconds=5)

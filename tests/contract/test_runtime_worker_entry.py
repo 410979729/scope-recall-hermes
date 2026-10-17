@@ -1501,7 +1501,7 @@ def test_the_two_stop_loss_layers_stay_distinct():
     from scope_recall.core.work_storage import CAPACITY_REFUSALS
     from scope_recall.core.worker import _RATE_LIMITED_ERRORS
 
-    assert _RATE_LIMITED_ERRORS == CAPACITY_REFUSALS
+    assert CAPACITY_REFUSALS < _RATE_LIMITED_ERRORS
     assert "http_429" in _RATE_LIMITED_ERRORS
 
 

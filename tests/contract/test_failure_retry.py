@@ -764,6 +764,8 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
     [
         "model_unavailable",
         "model_timeout",
+        "model_output_interrupted",
+        "response_status_failed",
         "network_error",
         "http_protocol",
         "http_429",
@@ -772,9 +774,10 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
         "rate_limited",
     ],
 )
-def test_a_transient_model_failure_can_be_cleared(code):
+def test_a_transient_model_failure_is_cleared_by_a_run_and_by_the_automatic_recovery(code):
     assert retry_class(code) == "actionable"
     assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is True
+    assert code in AUTO_RECOVERABLE_ERRORS
 
 
 @pytest.mark.parametrize(
@@ -1039,12 +1042,14 @@ def test_consecutive_refusals_space_the_retries_out(app):
 
 
 def test_the_two_rate_limit_sets_cannot_drift_apart():
-    """They said the same thing about 429 and 503 while disagreeing about 502
-    and 504 -- which is how a pair of hand-kept sets always ends up."""
+    """Two hand-kept sets said the same thing about 429 and 503 while disagreeing about 502 and 504, which is how a
+    pair always ends up.  The pass stands a work type down for every capacity refusal, taken from that set and not
+    copied from it, and for an interrupted answer, which was billed and is no refusal."""
     from scope_recall.core.work_storage import CAPACITY_REFUSALS
     from scope_recall.core.worker import _RATE_LIMITED_ERRORS
 
-    assert _RATE_LIMITED_ERRORS is CAPACITY_REFUSALS
+    assert CAPACITY_REFUSALS <= _RATE_LIMITED_ERRORS
+    assert _RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted"}
 
 
 @pytest.mark.parametrize("legacy", [False, True])

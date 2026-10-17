@@ -409,6 +409,37 @@ def test_reply_the_provider_interrupted_is_asked_again_and_is_a_fault_while_it_l
     assert (plain["retried"], plain["by_kind"]) == (1, {"model_output_interrupted": 1})
 
 
+@pytest.mark.parametrize("finish_reason", ["insufficient_system_resource", "aborted"])
+def test_an_outage_of_interrupted_answers_costs_one_billed_request_a_pass(
+    worker_app, tmp_path, monkeypatch, finish_reason
+):
+    """The provider ended an answer itself, so the next item meets the same outage: the pass asks once and stands the
+    work type down, as after a 429.  Unlike a 429 it was a billed answer, which is one of its item's attempts and not
+    a refund."""
+    from scope_recall.core.worker import build_consolidation_model
+    from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+    from scope_recall.runtime.instance import _BoundedConsolidation
+    from test_runtime_auxiliary import FakeTransport, _chat_reply, _runtime_config
+
+    core, ctx, clock = worker_app
+    for n in range(4):
+        capture(core, ctx, f"TEST 提供方的推理资源耗尽 {n}。")
+    _mark_embed_done(core)
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    cut = {"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'}
+    transport = FakeTransport(lambda **kwargs: (200, _chat_reply(cut, finish_reason)))
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    model = _BoundedConsolidation(build_consolidation_model(runtime.consolidation), 3)
+    for passes in (1, 2, 3):
+        clock.advance(iso=f"2026-09-06T12:0{passes}:00Z")
+        receipt = core.drain_worker(ctx, consolidation=model, max_items=8, remaining_seconds=5)
+        assert (transport.calls, receipt.processed) == (passes, 1)
+    rows = consolidate_rows(core)
+    assert len(rows) == 4 and {row[3] for row in rows} == {"pending"}
+    assert sum(row[4] for row in rows) == 3 and {row[6] for row in rows} <= {None, "model_output_interrupted"}
+
+
 def test_consolidation_accepts_only_transport_fence_and_null_optional_location(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 的公开代号是 TEST-ARCHIVE-V12-FLARE。")

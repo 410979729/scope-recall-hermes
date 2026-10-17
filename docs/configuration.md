@@ -382,7 +382,10 @@ the message holds) fails as `model_output_interrupted`: a transient fault, not
 a failure by design. A consolidation is asked again as after a timeout and
 re-opened by the automatic recovery (`max_auto_recoveries`); a candidate
 evaluation, which is asked once, fails at once. A plain `retry-failures` run
-re-opens what is left.
+re-opens what is left. A pass that meets an interrupted answer stops asking
+for that kind of work for the rest of the pass, as after a 429, so an outage
+costs one request a pass; unlike a refusal, it was a billed answer, and counts
+as an attempt of its item.
 
 Setting `"kind": "openai_responses"` selects a Responses-API route instead of
 chat completions. It targets the documented contract of DeepSeek
@@ -419,7 +422,8 @@ at all, fails as `DERIVATION_INVALID` on `model_output_truncated`, exactly like
 a chat answer cut off at the output limit; `content_filter` fails as
 `model_refused`, like a chat answer the provider's policy stopped; any other
 reason fails as `unsupported_response_shape`. `failed` fails as
-`response_status_failed`. From a completed response the
+`response_status_failed`, a transient fault recovered like a timeout: asked
+again, then re-opened by the automatic recovery (`max_auto_recoveries`). From a completed response the
 adapter reads only the `output_text` parts of `assistant` message items —
 `reasoning` items and `reasoning_text` parts are never treated as an answer, a
 refusal part fails as `model_refused`, and an answer with no text fails as
