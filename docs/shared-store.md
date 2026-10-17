@@ -84,7 +84,9 @@ removed; the shared store's worker does all background work.
 Attaching another agent later adds its scopes to the store. Agents already running keep working
 without a restart. Run one shared-store command at a time: an `attach` whose store manifest
 another command wrote after `attach` read it writes nothing and says so (`the store's manifest
-changed`), as `grants` does; run it again.
+changed`), as `grants` does; run it again. An `attach` run again from a home already attached
+(one that stopped, or after `adopt`) keeps the entry's grants as they are
+([Changing an entry's grants](#changing-an-entrys-grants)).
 
 ## Bringing an agent's memories along
 
@@ -301,8 +303,7 @@ to the store whatever that file's `binding` block names, and the first client at
 gives the shared worker its routes. Then install each client as its section says, and give the
 shared worker its credentials and register it as for a Hermes entry
 ([above](#make-a-store-and-attach-the-first-agent)). A first client given `--grants-like` or
-`--capture-like` is refused, and so is a later one without them. The first client's `attach` run
-again repeats it.
+`--capture-like` is refused, and so is a later one without them.
 
 A Hermes home attached to such a store later meets the clients in that scope when it is attached
 without `--grants-from`, or with the grants of an installation made with the default
@@ -330,9 +331,11 @@ and the shared worker's registration.
 ## Changing an entry's grants
 
 An entry keeps the grants it was attached with: its owner principals, the capture scope of each
-audience kind, and its exact audience rows. To add a route (a gateway DM of the owner), let a row
-read another scope (a conversation another route captured into, or an older scope), or take a
-row away, change them from an edited copy:
+audience kind, and its exact audience rows. An `attach` run again from the entry's home keeps them
+too, a change made here included, and uses none of the grants it was given (`--grants-from`,
+`--grants-like`); when those differ from the entry's, its result says so (`grants_kept`). To add a
+route (a gateway DM of the owner), let a row read another scope (a conversation another route
+captured into, or an older scope), or take a row away, change them from an edited copy:
 
 ```text
 scope-recall grants --instance-root <home> --out D:\grants-desk.json

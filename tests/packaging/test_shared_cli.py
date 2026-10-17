@@ -1425,6 +1425,44 @@ def test_two_first_clients_attached_at_once_take_one_owner_scope_and_the_later_w
     assert (code, result.get("new_scopes")) == (0, 0), result
 
 
+def test_a_home_attached_again_as_its_entry_keeps_the_grants_it_was_given_since(tmp_path, capsys, root):
+    """An attach run again for a home already attached as its entry, a store's only client or a Hermes home, repeats
+    the first: the entry keeps its grants, a route added with ``grants --apply`` included, and the result says the
+    grants this attach took were not used.  So does one that points the home at the store copied elsewhere and
+    adopted."""
+
+    def a_group_row(document):
+        owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
+        group = dict(owner, kind="conversation", chat_type="group", chat_id="TEST-group")
+        document["audiences"].append(dict(group, writable_scope_ids=[], capture_scope_id=""))
+
+    def attached_again(home, attach):
+        code, result = attach()
+        assert code == 0, result
+        code, applied = _granted(capsys, tmp_path, home, a_group_row)
+        assert (code, applied["status"]) == (0, "applied"), applied
+        edited = read_shared_payload(root)["entries"][-1]["audiences"]
+        code, result = attach()
+        assert code == 0, result
+        assert read_shared_payload(root)["entries"][-1]["audiences"] == edited and len(edited) == 2
+        assert any(note.startswith("grants_kept:") for note in result["notes"]), result
+
+    [client] = _client_homes(tmp_path, "workbuddy").values()
+    attached_again(client, lambda: _attach_client(capsys, root, client, host="workbuddy", like=None, capture=None))
+    desk, _options = _installed(tmp_path, "desk")
+    archive = _moved_aside(desk, _routes(desk))
+    attached_again(desk, lambda: _attach(capsys, desk, root, archive, "desk", "Desk"))
+    held = {entry["entry_id"]: entry["audiences"] for entry in read_shared_payload(root)["entries"]}
+    moved = (tmp_path / "TEST-moved").resolve()
+    shutil.copytree(root, moved)
+    code, result = _run(capsys, "adopt", "--root", str(moved))
+    assert code == 0, result
+    code, result = _attach_client(capsys, moved, client, host="workbuddy", like="desk", capture="desk")
+    assert code == 0 and any(note.startswith("grants_kept:") for note in result["notes"]), result
+    assert {entry["entry_id"]: entry["audiences"] for entry in read_shared_payload(moved)["entries"]} == held
+    assert read_attachment(client).root == moved
+
+
 def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):
     """tianji's routes came from its own 3.1 store, which named its table source_embeddings; its entry then
     searched a table the shared worker never fills, and recall lost its vector half (2026-09-24)."""

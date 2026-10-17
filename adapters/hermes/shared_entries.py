@@ -401,10 +401,12 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
     Everything is checked before anything is written.  Then the store (its
     scopes, then the entry), the store's manifest, and last the pointer: stopped
     anywhere, running it again finishes the job, and until the pointer exists
-    the home binds nothing new.  Returns the entry's view.
+    the home binds nothing new.  A home attached as the entry already keeps the
+    grants the entry holds (``attached_record``).  Returns the entry's view.
     """
     store = Path(str(root)).expanduser().resolve()
     payload = read_shared_payload(store)
+    record = attached_record(payload, record)
     home = Path(record["home"])
     for entry in payload["entries"]:
         if (
@@ -466,6 +468,25 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
 
 GRANTS_SCHEMA = "scope-recall.entry-grants/1"
 _GRANT_FIELDS = ("owner_principals", "audience_scopes", "audiences")
+
+
+def attached_record(payload: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    """``record`` as an attach writes it into the store whose manifest ``payload`` is.
+
+    When the store holds ``record``'s home attached as that entry already, for the same host, the record keeps the
+    grants the entry holds.  An attach run again finishes or repeats the first, or points the home at a store moved
+    elsewhere; the grants it took anew, from an installation or like other entries, would undo a change made since
+    (``regranted``).  Its name, interpreter and moment are the attach's own.
+    """
+    for entry in payload["entries"]:
+        if (
+            entry["entry_id"] == record["entry_id"]
+            and entry["host"] == record["host"]
+            and not entry.get("detached_at")
+            and _same_path(entry["home"], record["home"])
+        ):
+            return {**record, **{name: entry[name] for name in ("scope_ids", *_GRANT_FIELDS)}}
+    return record
 
 
 def _attached(hermes_home: Path | str) -> tuple[Path, dict[str, Any], dict[str, Any]]:

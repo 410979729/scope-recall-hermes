@@ -51,6 +51,7 @@ from ..adapters.hermes.shared_entries import (
     GRANTS_SCHEMA,
     attach_shared_entry,
     attach_shared_record,
+    attached_record,
     attachment_path,
     client_entry_record,
     entry_grants,
@@ -257,6 +258,18 @@ def _client_grants(
     return allowed | {capture}, writable | {capture}, capture
 
 
+def _kept_grants(payload: dict[str, Any], record: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """``record`` as the store will hold it (``attached_record``), and a note when that keeps other grants than this
+    attach took: the home is attached as the entry already, and its grants were changed since, or the options differ."""
+    held = attached_record(payload, record)
+    if all(encoded({"value": held[name]}) == encoded({"value": record[name]}) for name in _GRANT_FIELDS):
+        return held, []
+    return held, [
+        f"grants_kept: {record['entry_id']} is attached from this home already and keeps the grants it holds; "
+        "scope-recall grants changes them"
+    ]
+
+
 def _ledger_made(raw: dict[str, Any]) -> list[str]:
     """Create the spend ledger a written config names, when it does not exist yet.
 
@@ -382,12 +395,12 @@ def attach(
         )
     else:
         raise SharedStoreError(f"host must be one of {', '.join(ENTRY_HOSTS)}")
+    record, notes = _kept_grants(payload, record)
     scopes = frozenset(record["scope_ids"])
     union = frozenset(payload["scope_ids"]) | scopes
     worker_path = root / RUNTIME_CONFIG_FILENAME
     entry_path = attachment_path(instance_root).parent / RUNTIME_CONFIG_FILENAME
     worker_now = _read_json(worker_path) if worker_path.is_file() else None
-    notes: list[str] = []
     entry_config = worker_config = None
     # Everything written below is built and checked first.
     if runtime_config_from is not None:
