@@ -63,19 +63,21 @@ digests of the deleted words (as stored, without whitespace, and their letters a
 digits) by which a later copy under the message's key is refused. A cleanup failure
 rolls back physical changes while the earlier read block remains effective.
 
-Every write to the store overwrites with zeros what it deletes or replaces (SQLite's
-`secure_delete`), so the free space of a page keeps no copy: neither what the cleanup
-replaced nor the inbox row a stored capture leaves. Once the cleanup has committed,
-the purge copies the write-ahead log into the store and truncates it to zero bytes
-(`wal_checkpoint(TRUNCATE)`): no page image from before the cleanup is then left in
-`memory.sqlite3` or `memory.sqlite3-wal` (`memory.sqlite3-shm` holds no page), and
-the receipt's `sqlite_history` layer reads `removed`. A reader still on an older
-snapshot holds the truncation back; the purge waits for it no longer than the
+Every writable connection to the store overwrites with zeros what it deletes or
+replaces (SQLite's `secure_delete`), so the free space of a page keeps no copy:
+neither what the cleanup replaced nor the inbox row a stored capture leaves. Once the
+cleanup has committed, the purge copies the write-ahead log into the store and
+truncates it (`wal_checkpoint(TRUNCATE)`): no frame from before the cleanup is left
+in `memory.sqlite3-wal`, the store's pages hold what the cleanup wrote, and the
+receipt's `sqlite_history` layer reads `removed`. The log grows again with the
+commits that follow, the purge's own receipt among them, and none of them holds the
+deleted words; `memory.sqlite3-shm` holds no page. A reader still on an older
+snapshot holds the truncation back: the purge waits for it no longer than the
 store's timeout, leaves `sqlite_history` at `pending` and stays queued for a later
-worker pass, and is done once every layer it removes is removed. The vector
-companions hold vectors and opaque identities, no text. Vector active/history files,
-attachments, backup inventory and host-owned sources each retain their actual
-pending, unknown or external state.
+worker pass, and is done once every layer it removes is removed. A vector companion
+holds vectors and opaque identities and refuses a row that carries text. Vector
+active/history files, attachments, backup inventory and host-owned sources each
+retain their actual pending, unknown or external state.
 
 A purge does not remove what lies outside the store's files: backups and their
 copies, text already delivered to a host, and what a storage device keeps of blocks

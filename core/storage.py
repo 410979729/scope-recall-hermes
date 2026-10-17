@@ -816,12 +816,13 @@ class SQLiteStorage:
         return self._transaction(context, writable=False, remaining_seconds=remaining_seconds)
 
     def truncate_wal(self, context: TrustedContext, *, remaining_seconds: float) -> bool:
-        """Copy the write-ahead log into the store and truncate it to zero bytes; whether that was done.
+        """Copy the write-ahead log into the store and truncate it; whether that was done.
 
         A commit's page images go to ``memory.sqlite3-wal`` and the store's pages keep their earlier images until a
         checkpoint copies the new ones over them; a frame stays in the log until it is written over or the log is
-        truncated.  A reader still on an older snapshot holds the truncation back: SQLite waits for it within this
-        connection's timeout, then reports it busy.  The writer lease is held meanwhile, as for a write.
+        truncated.  Done, no frame from before this call is left, and the commits after it start the log again.  A
+        reader still on an older snapshot holds the truncation back: SQLite waits for it within this connection's
+        timeout, then reports it busy.  The writer lease is held meanwhile, as for a write.
         """
         self._context_check(context)
         conn = self._open("rw", remaining_seconds)

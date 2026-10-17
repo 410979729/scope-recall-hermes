@@ -546,8 +546,9 @@ def _purge_layers(storage, clock, context, item, *, purge, started, budget, fini
         if remaining <= 0:
             return deadline_result(storage, context, item)
         try:
-            # The scrub is committed: truncating the log takes the page images that still hold the deleted words out
-            # of the store's files.  A reader on an older snapshot holds it back, and the purge stays queued.
+            # The scrub is committed: truncated now, the log keeps no frame from before it, so the page images that
+            # still held the deleted words leave the store's files; the frames this pass writes after it hold none of
+            # them.  A reader on an older snapshot holds the truncation back, and the purge stays queued.
             truncated = storage.truncate_wal(context, remaining_seconds=remaining)
             now = clock.utc_now()
             with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
