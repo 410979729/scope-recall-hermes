@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -258,7 +258,7 @@ def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one
     root, _home, client, _bodies, _records = remote
 
     def client_now():
-        return datetime.now(timezone.utc) + timedelta(minutes=10)
+        return datetime.now(UTC) + timedelta(minutes=10)
 
     monkeypatch.setattr(remote_client, "_now", lambda: client_now().isoformat().replace("+00:00", "Z"))
     _hook(
@@ -278,7 +278,7 @@ def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one
     )
     assert _hook(client, **stop) == {"through": 2}
     assert _hook(client, **stop) == {"through": 2}, "sent again"
-    latest = datetime.now(timezone.utc) + timedelta(seconds=remote_server.CLOCK_AHEAD_SECONDS)
+    latest = datetime.now(UTC) + timedelta(seconds=remote_server.CLOCK_AHEAD_SECONDS)
     with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
         kept = db.execute(
             "SELECT source_event_key, occurred_at FROM source_events WHERE source_event_key LIKE '%:TEST-fast:%'"

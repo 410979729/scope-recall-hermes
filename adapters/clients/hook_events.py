@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from typing import TYPE_CHECKING, Any, cast
 
-from scope_recall.contracts import ContractError, Origin
+from scope_recall.contracts import ContractError, Origin, SourceEvent
 from scope_recall.core.events import stored_content_digest
 from scope_recall.core.secret_patterns import contains_secret_like_text
 
@@ -292,7 +292,7 @@ class HookEvents:
         self._hook.capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
         return {}
 
-    def _keep_stored_moment(self, context, event: dict[str, Any], deadline: float) -> None:
+    def _keep_stored_moment(self, context, event: SourceEvent, deadline: float) -> None:
         """A dsh reply already stored under its turn's key with the same words keeps the moment it was stored with.
 
         The plugin sends the reply again with each later Stop that carries its line: after one whose time ran out
@@ -311,8 +311,8 @@ class HookEvents:
         except (ContractError, OSError, RuntimeError, sqlite3.Error):
             return
         if stored is not None and stored.content_sha256 == stored_content_digest(event["content"]):
-            for field in ("occurred_at", "time_precision"):
-                event[field] = stored.event[field]
+            event["occurred_at"] = stored.event["occurred_at"]
+            event["time_precision"] = stored.event["time_precision"]
 
     def _workbuddy_error_reply(self, session_id: str, payload: dict[str, Any], reply: str) -> bool:
         """Whether a WorkBuddy Stop's reply is an error its record marks (``transcript.workbuddy_error_reply``).  A client
