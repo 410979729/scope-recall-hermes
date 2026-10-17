@@ -171,7 +171,7 @@ are offered names the gap `mcp_session_is_not_claude_code_conversation_id` (`...
 nothing.
 
 Each hook is a process of its own, and a prompt hook that starts LanceDB for its recall was often
-not ready before the recall's budget ran out (6 of 8 cold Claude Code prompts on the pilot recalled
+not ready before the recall's budget ran out (6 of 8 cold Claude Code prompts measured recalled
 by words alone). So the entry's MCP server, which the client runs for as long as it is open, keeps a
 LanceDB helper ready and answers the recall of the entry's prompts on this machine. The prompt hook
 still stores the prompt itself, then asks the server for its recall; the server writes nothing. It
@@ -200,7 +200,7 @@ the hook's when both recalled. A server with a recall past the time its hook gav
 that it is busy until that recall ends, and one that does not prove itself within 0.5 s loses its name
 until its own check, every 2 s, finds it answering in time. The server keeps the handler it recalls with from
 one prompt to the next, and with it its LanceDB table open and its embedding worker connected: made anew for
-each prompt, they took 3.9-4.1 s of every recall on the pilot, and two of five lost their vector search to the
+each prompt, they took 3.9-4.1 s of every recall measured, and two of five lost their vector search to the
 time, where a kept one answers in 1.6-2.1 s. One recall uses it at a time; another that comes meanwhile is
 recalled by a handler of its own. It is made anew when the env file or the runtime config changed,
 after a recall that raised, or when its runtime could not be attached. A recall that fails in the server is answered as
