@@ -6,6 +6,8 @@ Running ruff and pyright is the CI lint job's part; these tests feed the compari
 from __future__ import annotations
 
 import json
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -486,3 +488,79 @@ def test_star_imports_dynamic_imports_and_a_named_lazy_import_run_at_load(tmp_pa
         "    core/pkg/leaf.py:1 imports core/a.py",
         "upward import: core/a.py:2 imports runtime/b.py in a function",
     ]
+
+
+MARKED_MODULE = (
+    '"""A module: 暂定 names."""\n'
+    "\n"
+    'PATTERN = "TODO"  # TBD\n'
+    "\n"
+    "\n"
+    "class Store:\n"
+    '    """A store.\n'
+    "\n"
+    "    FIXME: the order.\n"
+    '    """\n'
+    "\n"
+    "    async def run(self):\n"
+    '        """Run it.\\n待确认 the rest."""\n'
+    "\n"
+    "\n"
+    "def step():\n"
+    '    """Line one \\\n'
+    '    待定 on the next line."""\n'
+    "\n"
+    "\n"
+    "def parenthesised():\n"
+    "    (\n"
+    '        """TBD in parentheses."""\n'
+    "    )\n"
+)
+
+
+def test_a_marker_in_prose_is_found_on_its_own_line_and_data_is_not(tmp_path):
+    """Comments and the docstrings of a module, a class, an async and a plain function are read as written, so an
+    escape, a line continuation or parentheses around a docstring do not move the line a marker is reported on.  A
+    string literal is data; a word that only holds the letters, a lower-case one, and 等待 ("wait") before 确认 or 定
+    are no markers; a capital one beside Chinese text is one; evidence and data at any depth are not read."""
+    for name, text in {
+        "pkg/mod.py": MARKED_MODULE,
+        "guide.md": "# Guide\n\nKeep the to-do list and the TODOS, todo or not.\n\n等待确认，等待定时器。\n\n"
+        "版本号TBD\n",
+        "verification/notes.md": "TODO\n",
+        "tests/fixtures/notes.md": "TODO\n",
+        "data.json": '{"note": "TODO"}\n',
+    }.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    files = ["pkg/mod.py", "guide.md", "verification/notes.md", "tests/fixtures/notes.md", "data.json"]
+    assert quality.marker_problems(tmp_path, files) == [
+        "guide.md:7: TBD",
+        "pkg/mod.py:1: 暂定",
+        "pkg/mod.py:3: TBD",
+        "pkg/mod.py:9: FIXME",
+        "pkg/mod.py:13: 待确认",
+        "pkg/mod.py:18: 待定",
+        "pkg/mod.py:23: TBD",
+    ]
+
+
+def test_the_files_read_are_those_git_would_commit(tmp_path):
+    """Tracked files still on disk and new ones git does not ignore, under a path and with names in any script; a file
+    deleted from the tree but not from the index is not read."""
+    root = tmp_path / "仓库"
+    root.mkdir()
+    try:
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        for name in ("kept.py", "gone.py", "说明.md"):
+            (root / name).write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        (root / "gone.py").unlink()
+        (root / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
+        (root / "ignored.md").write_text("# Ignored\n", encoding="utf-8")
+        (root / "new.md").write_text("# New\n", encoding="utf-8")
+        assert sorted(quality.tracked(root, "*.py", "*.md")) == ["kept.py", "new.md", "说明.md"]
+    finally:
+        # Git writes its objects read-only, and Windows refuses to remove a read-only file with the test's folder.
+        for path in root.rglob("*"):
+            path.chmod(path.stat().st_mode | stat.S_IWRITE)

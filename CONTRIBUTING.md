@@ -28,7 +28,9 @@ in `scripts/check.py`.
    file as it is, no file has more ruff or pyright findings of a rule than
    `scripts/quality.baseline.json` records, and no function is bigger than
    recorded (new code meets the rules in `pyproject.toml`; older findings are
-   recorded until they are fixed). Make the
+   recorded until they are fixed). No comment, docstring or Markdown file may
+   carry a marker of work left undone (`MARKERS` in the script names them): do
+   the work or say what holds, and open an issue for the rest. Make the
    environment from the lock, so the tool versions and packages are CI's:
    `uv sync --locked --no-editable --reinstall-package hermes-scope-recall --extra lancedb --extra codex --extra dev`
    then `uv run --no-sync python scripts/quality.py`. When you fixed findings it
