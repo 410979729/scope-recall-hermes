@@ -4,21 +4,29 @@ import sqlite3
 from contextlib import closing
 
 from scope_recall.core.claims import Qualification
+from scope_recall.core.events import lexical_terms
 from scope_recall.runtime.lance_port import LanceIndexWriter, LancePurgePort, LanceVectorRecord
 from scope_recall.vector.store import build_vector_store
 from test_claims import app, capture, draft
 from test_deletion import authorize, request
 from v11_support import source_event
 
-#: A message only these tests send, and two words the lexical index takes from it: an identifier whole and a pair of
-#: Chinese characters.
+#: A message only these tests send, the words a claim quotes from it, and that claim's subject, predicate and value.
 SECRET = "TEST 紫色仓库的钥匙藏在第七块砖下，口令 violet-key-under-brick-seven。"
-SECRET_TERMS = ("violet-key-under-brick-seven", "钥匙")
+QUOTE = "钥匙藏在第七块砖下"
+CLAIM = dict(subject="entity-violet-brick", predicate="hides-the-violet-key", value="under-brick-seven-today")
 SPACE = "TEST-space"
 
 
+def forgotten_fields():
+    """Every field of the message the store keeps: its text, the quote, the claim's subject, predicate and value (the
+    candidate's trigger terms are these), and each term the lexical index takes from the text but ``test``, which
+    the store's schema spells as well."""
+    return sorted({SECRET, QUOTE, *CLAIM.values(), *(term for term in lexical_terms(SECRET) if term != "test")})
+
+
 def host_capture(core, ctx, key, text):
-    """Store a message the way the hosts store one: through the capture inbox."""
+    """Store a message the way the hosts store one, through the capture inbox; the stored source."""
     receipt = core.record_host_event(
         ctx,
         source_event(source_event_key=key, content=text),
@@ -27,7 +35,30 @@ def host_capture(core, ctx, key, text):
         remaining_seconds=10,
     )
     assert receipt.durability == "persisted", receipt
-    return receipt.event_refs[0]
+    written = receipt.event_refs[0]
+    return core.source(ctx, written.ref, written.revision)
+
+
+def candidate_from(core, ctx, source):
+    """``CLAIM``, proposed from ``source`` with ``QUOTE`` as its evidence and registered as a candidate."""
+    proposal = draft(
+        source,
+        CLAIM["value"],
+        quote_override=QUOTE,
+        subject=CLAIM["subject"],
+        predicate=CLAIM["predicate"],
+        kind="fact",
+        statement_kind="fact",
+    )
+    with core.storage.write(ctx) as tx:
+        candidate = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
+        tx.candidates.register(candidate.ref, candidate.revision, observed_at=core.clock.utc_now())
+    return candidate
 
 
 def copies(directory, needle):
@@ -63,7 +94,8 @@ def test_a_stored_capture_leaves_no_copy_of_its_inbox_row(app):
     overwritten with it, so the store's files hold the words once, in the stored message."""
     core, ctx = app
     host_capture(core, ctx, "TEST-inbox/1", SECRET)
-    assert core.storage.truncate_wal(ctx, remaining_seconds=5)
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        assert conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
     assert copies(ctx.binding.data_directory, SECRET) == {"memory.sqlite3": 1}
 
 
@@ -73,24 +105,9 @@ def test_a_purge_takes_the_terms_only_the_forgotten_message_held(app):
     core, ctx = app
     capture(core, ctx, "TEST 钥匙在门口。", key="TEST-terms/kept")
     source = capture(core, ctx, SECRET, key="TEST-terms/secret")
-    proposal = draft(
-        source,
-        "violet-key-under-brick-seven",
-        subject="entity-said",
-        predicate="property-said",
-        kind="fact",
-        statement_kind="fact",
-    )
-    with core.storage.write(ctx) as tx:
-        candidate = tx.claims.append(
-            "TEST-scope",
-            proposal,
-            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
-            recorded_at=core.clock.utc_now(),
-        )
-        tx.candidates.register(candidate.ref, candidate.revision, observed_at=core.clock.utc_now())
+    candidate_from(core, ctx, source)
     triggers = "SELECT term FROM candidate_trigger_terms"
-    assert first_column(core, triggers) == {"entity-said", "property-said", "violet-key-under-brick-seven"}
+    assert first_column(core, triggers) == set(CLAIM.values())
     authorize(core, ctx, source)
     deleted = core.forget(ctx, request(source), remaining_seconds=10)
     core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
@@ -101,10 +118,9 @@ def test_a_purge_takes_the_terms_only_the_forgotten_message_held(app):
 
 
 def test_a_purged_message_leaves_no_copy_in_the_store_files(app):
-    """After a forget and the worker's purge, no file in the store's directory holds the message or a word the index
-    took from it: not ``memory.sqlite3``, its write-ahead log or shared memory, nor the SQLite vector companion the
-    purge removes the message's vector from.  Another process holds the store open meanwhile, as a host does, so the
-    log is still there when the worker's connections close."""
+    """After a forget and the worker's purge, no file in the store's directory holds a field of the message: not
+    ``memory.sqlite3`` or its write-ahead log, nor the SQLite vector companion the purge removes its vector from.
+    Another process holds the store open meanwhile, as a host does, so the log outlives the worker's connections."""
     core, ctx = app
     directory = ctx.binding.data_directory
     vectors = build_vector_store(
@@ -130,6 +146,7 @@ def test_a_purged_message_leaves_no_copy_in_the_store_files(app):
             ctx.branch_id,
         )
         assert LanceIndexWriter(vectors).upsert_fenced(record, guard=lambda: True, remaining_seconds=5)
+        candidate_from(core, ctx, source)
         host_capture(core, ctx, "TEST-purge/2", f"删除 {source.ref}")
         deleted = core.forget(ctx, request(source), remaining_seconds=10)
         port = LancePurgePort(
@@ -137,9 +154,17 @@ def test_a_purged_message_leaves_no_copy_in_the_store_files(app):
         )
         passed = core.drain_worker(ctx, purge=port, remaining_seconds=30)
         assert [(item.work_type, item.disposition) for item in passed.items] == [("purge", "completed")]
+        files = {
+            path.relative_to(directory).as_posix(): path.read_bytes()
+            for path in sorted(directory.rglob("*"))
+            if path.is_file()
+        }
+        assert {"memory.sqlite3", "memory.sqlite3-wal"} <= files.keys()
+        held = {name: [field for field in forgotten_fields() if field.encode() in data] for name, data in files.items()}
+        assert held == {name: [] for name in files}
+        assert not set(forgotten_fields()) & first_column(core, "SELECT term FROM lexical_terms")
+        assert first_column(core, "SELECT term FROM candidate_trigger_terms") == set()
         assert vectors.count_rows() == 0 and sqlite_history(core, ctx, deleted) == "removed"
-        words = (SECRET, *SECRET_TERMS)
-        assert {word: copies(directory, word) for word in words} == {word: {} for word in words}
     finally:
         host.close()
         vectors.close()
