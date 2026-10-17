@@ -1042,6 +1042,7 @@ def test_a_replacement_that_names_more_than_a_value_is_left_for_the_person_to_se
         ("张三表示 TEST-project 配色是银色。", "proposed"),
         ("我表示 TEST-project 配色是银色。", "active"),
         ("更正：TEST-project 配色是银色。", "active"),
+        ("库里只有这一句：TEST-project 配色是银色。", "active"),
     ],
 )
 def test_a_claim_in_words_given_to_someone_else_is_not_the_person_s(app, raw, state):

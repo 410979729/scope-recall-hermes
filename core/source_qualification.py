@@ -70,13 +70,15 @@ _SAID_BY_ANOTHER = re.compile(
 #: A line that opens with another speaker's name and a colon before a statement, on it or on the next line
 #: (``张三：TEST-project 配色换成银色``, ``Alice: the CI is GitLab``, ``<alice> …``), after a list marker, a
 #: ``[10:32]`` or in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of theirs (``更正：``,
-#: ``Update:``, ``刚才写错了：``), a head that is no name (``TEST-project 配色：``, a JSON ``"key":``) and a key
-#: before its value (``配色：银色``, which states nothing) give no one else's words.
+#: ``Update:``, ``刚才写错了：``), a key before its value (``配色：银色``, which states nothing) and a head without a
+#: name's shape give no one else's words: a name is two to four CJK characters that end no phrase
+#: (``库里只有这一句：``, ``问题是：``), or one Latin word (not ``TEST-project 配色：`` or a JSON ``"key":``).
 _SPEAKER_LINE = re.compile(
     r"(?:^|(?<=\n))[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?(?:\[[^\]\n]{0,24}\][^\S\n]*)?(?:\*\*|__)?"
-    r"(?!我|I\b|[^\n:：]{0,16}?(?:错|不对|更正|纠正|修正|注意|备注|补充|说明|总结|结论|更新|提醒|另外|对了|顺便"
+    r"(?!我|I\b|[^\n:：]{0,16}?(?:错|不对|更正|纠正|修正|注意|备注|补充|说明|总结|结论|更新|提醒|另外|对了|顺便|如下"
     r"|note|update|correction|edit|summary|fyi|reminder|btw|ps\b|todo))"
-    r"(?:<[^<>\n]{1,24}>|[^\W_][\w.-]{0,15}(?:\*\*|__)?[：:](?!//))"
+    r"(?:<[^<>\n]{1,24}>|(?:[\u3400-\u9fff]{2,4}(?<![是为的了说道])|[A-Za-z][A-Za-z0-9_.-]{0,15})"
+    r"(?:\*\*|__)?[：:](?!//))"
     rf"(?=[^\n]*?{_STATEMENT}|[^\S\n]*\n[^\n]*?{_STATEMENT})",
     re.I,
 )
