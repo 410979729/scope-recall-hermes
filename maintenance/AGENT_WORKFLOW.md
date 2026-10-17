@@ -63,11 +63,11 @@ scope map is one-to-one. The 3.x host never sends that principal, so it needs no
 owner principal of its own. Never approve anything for a scheduled (`cron`) run;
 the installer refuses it.
 
-## 1.1 Current package upgrades (D14, including pip-less uv venvs)
+## 1.1 Current package upgrades (including pip-less uv venvs)
 
 Reuse this workflow and the installed `maintenance.cli package-upgrade` command.
-The historical root `managed_upgrade.py` upgrades old plugin trees and is not in
-the current wheel; do not route wheel-based installations through that engine.
+The root `managed_upgrade.py` of old plugin trees is not in the wheel; do not
+route wheel-based installations through it.
 
 1. Verify the exact interpreter/home/controller and offline wheel identity. Back
    up configuration, installation manifests/receipts/wrappers and consistent SQLite
@@ -117,7 +117,7 @@ the current wheel; do not route wheel-based installations through that engine.
    restart and probe the real host. The package receipt never authorizes restart
    on its own (`host_restart_allowed=false`). Keep the backup until that succeeds.
 
-The Windows preflight removes the known D14 held-handle path before uninstall.
+The Windows preflight rules out the known held-handle failure before uninstall.
 It is not a guarantee against disk failure or a new process started in violation
 of quiescence. Those failures remain explicit recovery, never a green upgrade.
 
@@ -135,8 +135,8 @@ package manager builds (`packages.venv.environment` in that file), not in the ve
 the `hermes` command runs with, and builds it again from each plugin's declaration
 in `<home>\plugins\`. Upgrading the venv with `package-upgrade` does not reach the
 gateway, and pip or uv into the package manager's environment is undone by its next
-build. A declaration written there by hand without the vector extra once left every
-recall without vectors for two days, while every check read the venv.
+build. A declaration written there by hand without the vector extra leaves every
+recall without vectors, while checks that read the venv show nothing wrong.
 
 1. Once the release is on PyPI, run plan-install/apply-install with
    `--target-plugin-dir <home>\plugins\scope-recall`. A receipt that names another
@@ -245,7 +245,7 @@ gate, not proof that the live host has loaded the new plugin.
 
 Configure the destination's approved embedding route and own budget ledger using
 the existing runtime configuration. Preserve the user's main model choice. Never
-silently add another extraction model. Current Codex host-model consolidation is
+silently add another extraction model. Codex host-model consolidation is
 a separate capability boundary; installing/upgrading cannot claim to create it.
 
 Run `scope-recall migrate queue-index --job <job-dir>` until `index_queue_complete`
