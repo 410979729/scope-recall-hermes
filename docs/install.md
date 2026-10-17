@@ -977,7 +977,12 @@ product's, or records no schema this release knows, is still refused.
   open. Never copy the files by hand while the host or the worker runs;
   `scope-recall backup` takes a consistent snapshot and writes it in
   rollback-journal mode. Readers and the writer coexist, so an operator
-  query no longer fails a worker pass.
+  query no longer fails a worker pass. After a `forget`, the worker's purge
+  truncates `memory.sqlite3-wal`, which still held the deleted words; what is
+  written to it afterwards holds none of them. A read transaction left open on
+  an older snapshot holds the truncation back until a later pass.
+  [deletion-contract.md](deletion-contract.md) says what a purge removes and
+  what it does not.
 
 - **LanceDB** needs the `lancedb` extra. Keep the data directory short, for
   example `C:\ScopeRecall\my-agent`: LanceDB appends index, table and temporary

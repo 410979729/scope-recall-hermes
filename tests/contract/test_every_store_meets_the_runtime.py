@@ -142,6 +142,27 @@ def check_a_row_that_cannot_be_classified_is_never_acknowledged_as_gone(store) -
     assert store.list_ids() == ["TEST:stray"], "and nothing is deleted on a guess"
 
 
+def check_a_row_that_carries_text_is_refused(store) -> None:
+    """A companion row is a vector and opaque identities: one with words in ``content`` or ``summary`` is refused,
+    fenced or not, before anything is written, so no file of the companion ever holds them."""
+    row = dict(
+        id="TEST:event-1:1",
+        scope_id="TEST-partition",
+        source="event-1",
+        target="{}",
+        content="",
+        summary="",
+        updated_at="",
+        vector=[0.25, 0.75],
+    )
+    for field in ("content", "summary"):
+        with pytest.raises(ValueError, match="carries no text"):
+            store.upsert_records([{**row, field: "TEST 紫色钥匙"}])
+        with pytest.raises(ValueError, match="carries no text"):
+            store.fenced_upsert_records([{**row, field: "TEST 紫色钥匙"}], guard=lambda: True, remaining_seconds=5.0)
+    assert store.list_ids() == []
+
+
 def check_a_search_over_several_partitions_filters_before_it_ranks(store) -> None:
     """An entry holding a hundred scopes asks once, and rows it may not read never crowd out its own.
 
@@ -185,6 +206,7 @@ CHECKS = (
     check_a_group_is_published_under_one_guard_check_and_a_refusal_writes_nothing,
     check_a_forget_removes_every_revision_of_its_members_and_only_those,
     check_a_row_that_cannot_be_classified_is_never_acknowledged_as_gone,
+    check_a_row_that_carries_text_is_refused,
     check_a_search_over_several_partitions_filters_before_it_ranks,
 )
 
