@@ -406,6 +406,11 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
     store = Path(str(root)).expanduser().resolve()
     payload = read_shared_payload(store)
     home = Path(record["home"])
+    # Another home's pointer is read here without that home's lock.  A pointer is written to name this store only by
+    # an attach to it, which holds the store's lock as this one does (``maintenance/shared.py``), and is removed from it
+    # only by a detach holding that lock too: while this one runs, another command can only point such a home away from
+    # this store.  Read before that, the pointer refuses this attach, which a run again lets through; two homes never
+    # come to hold one entry.
     for entry in payload["entries"]:
         if (
             entry["entry_id"] == record["entry_id"]

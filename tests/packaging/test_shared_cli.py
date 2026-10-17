@@ -1685,6 +1685,40 @@ def test_entries_reads_each_home_s_pointer_holding_that_home_s_lock(tmp_path, ca
     assert shown == [("workbuddy", True), ("dsh", False)] and not homes["dsh"].exists()
 
 
+def test_a_holder_note_read_while_it_is_being_written_is_read_again_then_named(tmp_path, monkeypatch):
+    """A reader that comes while the holder writes its note finds part of it; it reads again, and names the holder once
+    the note is whole.  One that never reads as a note, after five reads, names no one."""
+    lock = tmp_path / "TEST.lock"
+    whole = json.dumps({"command": "adopt", "pid": 7, "since": "2026-10-17T12:00:00Z"}).encode("utf-8")
+    lock.write_bytes(b"\0" + whole[:10])
+    waits = []
+
+    def written_meanwhile(seconds):
+        waits.append(seconds)
+        lock.write_bytes(b"\0" + whole)
+
+    monkeypatch.setattr(shared_run.time, "sleep", written_meanwhile)
+    assert (shared_run._holder(lock), len(waits)) == ("adopt (process 7, since 2026-10-17T12:00:00Z)", 1)
+    lock.write_bytes(b"\0" + whole[:10])
+    monkeypatch.setattr(shared_run.time, "sleep", waits.append)
+    assert (shared_run._holder(lock), len(waits)) == ("", 6)
+
+
+def test_a_holder_note_stays_json_within_1024_bytes_whatever_the_command_s_words(tmp_path):
+    """Words of control characters, which JSON escapes to six bytes each, and of four-byte characters with half of a
+    surrogate pair among them, and a long moment: the note after the lock's first byte is JSON within 1024 bytes,
+    naming the command's start and end."""
+    words = "\x01" * 3000 + "\U0001f600" * 3000 + "\ud800" + " --apply"
+    with shared_run.store_lock(tmp_path, words, "T" * 500):
+        with (tmp_path / shared_run.LOCK_FILENAME).open("rb") as handle:
+            handle.seek(1)
+            note = handle.read()
+    assert len(note) <= 1024, len(note)
+    parsed = json.loads(note.decode("utf-8"))
+    assert parsed["command"].startswith("\x01") and parsed["command"].endswith("? --apply"), parsed["command"]
+    assert parsed["since"] == "T" * 40
+
+
 def _a_group_row(document):
     """A grants change: a group chat on the owner row's route, reading what it reads."""
     owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")
