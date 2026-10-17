@@ -587,7 +587,7 @@
    }
   },
   "core/mutate.py": {
-   "E501": 7
+   "E501": 5
   },
   "core/read_views.py": {
    "UP035": 1

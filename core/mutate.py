@@ -39,7 +39,16 @@ from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmatio
 from .corroboration import CORROBORATED_REASON, corroboration_promotes
 from .evidence_quote import resolve_evidence_quotes
 from .secret_patterns import contains_secret_like_text
-from .source_qualification import AUTHORITY_QUESTION, RELATIVE_SCOPE, bound_literal, first_person_reference
+from .source_qualification import (
+    AUTHORITY_QUESTION,
+    CONDITIONAL,
+    RELATIVE_SCOPE,
+    REPORTED_SPEECH,
+    bound_literal,
+    first_person_reference,
+    quoted_at,
+    said_by_another,
+)
 
 
 @dataclass(frozen=True)
@@ -317,19 +326,47 @@ _AMBIGUOUS = re.compile(
     r"\b(?:change that|that is wrong|replace it|remove it)\b",
     re.I,
 )
+#: What the fast path cannot date to its message: a limit in time, a change said for later ("下周换成 X", "会改成 X",
+#: "will switch to X"), or an instruction to leave the value alone.
 _NO_FAST_PATH = re.compile(
-    r"假设|假如|如果|除非|仅限|只限|今天|明天|以后|日起|将停止|将不再|将弃用|不要改|别改|\b(?:suppose|unless|only today|tomorrow|do not change|will stop|will discontinue)\b",
+    r"仅限|只限|今天|明天|以后|日起|下周|下个?月|明年|将来|将要|将会|会改|会换|将停止|将不再|将弃用|不要改|别改|"
+    r"\b(?:only today|tomorrow|next (?:week|month|year)|do not change|will (?:change|switch|move|stop|discontinue))\b",
     re.I,
 )
 _NEGATED_ACTION = re.compile(
     r"(?:不要|别|不能|不必|暂不)[^。！？!?;；\n]{0,4096}(?:改|换成|换为|调整为|调整成|替换|更换|更正|撤回|撤销|作废|停止|不再|弃用)|\b(?:do not|don't|never)\s+(?:change|correct|retract|withdraw|replace|stop|discontinue|switch)\b",
     re.I,
 )
-_QUESTION = AUTHORITY_QUESTION
-_REPORTED_ACTION = re.compile(
-    r"举例|示例|客户原文|引用|他说|她说|他们说|文档写|\b(?:for example|example:|quoted|customer said|he said|she said)\b",
+#: A question asked without a question mark ("换成 X 怎么样", "为什么改成 X 了", "Did it change to X"), beside those
+#: ``AUTHORITY_QUESTION`` knows.
+_ASKED = re.compile(
+    r"为什么|为何|怎么样|好不好|行不行|可不可以|能不能|难道|\b(?:why|how\s+about|what\s+about)\b"
+    r"|(?:^|[.!?。！？\n]\s*)(?:do|does|did|is|are|was|were)\s+(?!not\b)\w",
     re.I,
 )
+#: An example, beside the reported speech the evidence gates know (``REPORTED_SPEECH``).
+_EXAMPLE = re.compile(r"举例|示例|\b(?:for example|example:)", re.I)
+
+
+def _not_asserted(raw: str) -> bool:
+    """Whether a message's change is not the person making it: negated, asked, said under a condition or a
+    supposition, someone else's words or an example, or a correction word inside quoted text."""
+    return bool(
+        _NEGATED_ACTION.search(raw)
+        or AUTHORITY_QUESTION.search(raw)
+        or _ASKED.search(raw)
+        or CONDITIONAL.search(raw)
+        or _reported(raw)
+    )
+
+
+def _reported(raw: str) -> bool:
+    """Whether a message reports someone else's change: reported speech, a speaker other than the person, an
+    example, or a correction or retraction word standing in quoted text."""
+    if REPORTED_SPEECH.search(raw) or said_by_another(raw) or _EXAMPLE.search(raw):
+        return True
+    markers = (*_CORRECTION.finditer(raw), *_RETRACT.finditer(raw))
+    return any(quoted_at(raw, marker.start()) for marker in markers)
 
 
 def _source_principal_ref(source) -> str | None:
@@ -369,7 +406,7 @@ def _names_target(text: str, head, first_person_target: bool) -> bool:
 
 def _revision_authority(tx, head, request) -> _Authority:
     """The person's current message the request cites, checked to assert this revision of this claim: not older
-    than the claim's version, not negated, asked or reported, a correction or a plain retraction, naming the claim."""
+    than the claim's version, asserted (``_not_asserted``), a correction or a plain retraction, naming the claim."""
     source = tx.claims.current_human(tuple(request["source_evidence_refs"]), head.scope_id)
     raw = source.event["content"]
     principal_matches = _source_principal_ref(source) == head.payload["subject"]
@@ -378,7 +415,7 @@ def _revision_authority(tx, head, request) -> _Authority:
     head_time = canonical_time(head.valid_from)
     if source_time is not None and head_time is not None and source_time < head_time:
         raise ContractError("DERIVATION_INVALID", "late_historical_correction")
-    if _NEGATED_ACTION.search(raw) or _QUESTION.search(raw) or _REPORTED_ACTION.search(raw):
+    if _not_asserted(raw):
         raise ContractError("ACCESS_DENIED", "revision_not_asserted")
     new_value = request["new_value"]
     retraction = new_value is None or new_value == {"state": "retracted"}
@@ -549,7 +586,7 @@ def _may_correct(source, raw: str) -> bool:
     correction, a retraction or an ambiguous change."""
     if source.event["origin"] != "human_direct" or source.capture_gaps or source.event["capture_state"] != "complete":
         return False
-    if _REPORTED_ACTION.search(raw):
+    if _reported(raw):
         return False
     return bool(_CORRECTION.search(raw) or _RETRACT.search(raw) or _AMBIGUOUS.search(raw))
 
@@ -614,17 +651,13 @@ def _replacement_words(raw: str, matches) -> tuple[list[str], list[str]]:
 
 def _plain_correction(raw: str, matches, tokens, replacements) -> bool:
     """Whether the message corrects or retracts one claim plainly enough to apply at once: one claim, at most one
-    explicit replacement, a value or a retraction, and nothing conditional, relative, negated or asked."""
+    explicit replacement, a value or a retraction, nothing limited to a time or relative to the moment, and asserted
+    (``_not_asserted``)."""
     return (
         len(matches) == 1
         and len(replacements) <= 1
         and bool(tokens or _RETRACT.search(raw))
-        and not (
-            _NO_FAST_PATH.search(raw)
-            or RELATIVE_SCOPE.search(raw)
-            or _NEGATED_ACTION.search(raw)
-            or _QUESTION.search(raw)
-        )
+        and not (_NO_FAST_PATH.search(raw) or RELATIVE_SCOPE.search(raw) or _not_asserted(raw))
     )
 
 
@@ -642,11 +675,14 @@ def capture_correction(tx, source, clock) -> Mutation | None:
         if source_time is not None and target_time is not None and source_time < target_time:
             tx.claims.unresolved(source.ref, source.revision, (target.ref,), recorded_at=clock.utc_now())
             return None
+        # An explicit replacement ("改成 X") names the value; a looser word ("是", "用") can stand inside another word
+        # ("还是改成 X" yields "改成").
+        replacement = replacements[-1] if replacements else None
         request = dict(
             protocol_version="1.1",
             target_ref=target.ref,
             expected_revision=target.current_revision,
-            new_value=(replacements[-1] if replacements else None) if _RETRACT.search(raw) else tokens[-1],
+            new_value=replacement if _RETRACT.search(raw) else (replacement or tokens[-1]),
             conditions=target.payload["conditions"],
             source_evidence_refs=[f"{source.ref}@{source.revision}"],
             valid_from=source.event["occurred_at"],

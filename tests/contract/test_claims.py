@@ -690,6 +690,70 @@ def test_negative_and_questioned_operations_do_not_change_current(app, raw):
         core.revise(ctx, revise_request(item, source, None if "撤回" in raw else "银色"))
 
 
+@pytest.mark.parametrize(
+    "raw,value",
+    [
+        # Said under a condition or a supposition: what would change, not what did.
+        ("要是值班表调整，TEST-project 配色就会改成 #A1。", "#A1"),
+        ("万一预算削减，TEST-project 配色换成银色。", "银色"),
+        ("预算削减的话，TEST-project 配色换成银色。", "银色"),
+        ("If the budget is cut, TEST-project 配色 would switch to 银色.", "银色"),
+        # Asked without a question mark.
+        ("TEST-project 配色换成银色怎么样", "银色"),
+        ("Did TEST-project 配色 change to 银色", "银色"),
+        # Someone else's words, or quoted text.
+        ("张三说：TEST-project 配色换成银色。", "银色"),
+        ("> TEST-project 配色改成银色。", "银色"),
+        ("The style guide says “TEST-project 配色改成银色”.", "银色"),
+    ],
+)
+def test_a_change_the_person_does_not_assert_corrects_nothing(app, raw, value):
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    source = capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    current = core.current_claim(ctx, item.ref)
+    assert (current.revision, current.payload["value_text"]) == (1, "蓝色")
+    with pytest.raises(ContractError, match="revision_not_asserted"):
+        core.revise(ctx, revise_request(item, source, value))
+    assert core.current_claim(ctx, item.ref).revision == 1
+
+
+@pytest.mark.parametrize(
+    "raw", ["TEST-project 配色还是改成银色。", "I would like TEST-project 配色 to switch to 银色."]
+)
+def test_a_plain_correction_takes_the_value_its_replacement_names(app, raw):
+    """In 还是改成银色 the looser replacement word 是 stands too; the value is the word 改成 names."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "银色"
+
+
+def test_a_correction_naming_its_claim_by_ref_applies(app):
+    """A claim's ref (claim-…) is the surest name a person gives it; its "claim" is no one else's report."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    capture(core, ctx, f"TEST-project 配色这条 {item.ref} 写错了，改为银色。", when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "银色"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "TEST-project 配色下周换成银色。",
+        "TEST-project 配色会改成银色。",
+        "TEST-project 配色 will switch to 银色 next week.",
+    ],
+)
+def test_a_change_said_for_later_is_left_for_the_person_to_settle(app, raw):
+    """Capture dates a correction to its message; a change said for later keeps the raw update instead."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    source = capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "蓝色"
+    assert core.records.unresolved_updates(ctx)[0]["source_ref"] == source.ref
+
+
 def test_question_marked_preference_source_cannot_become_active_claim(app):
     core, ctx = app
     source = capture(core, ctx, "我喜欢蓝色吗？")

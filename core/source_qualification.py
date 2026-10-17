@@ -28,6 +28,15 @@ UNASSERTED_UNCERTAINTY = re.compile(
     r"reportedly|apparently|allegedly|rumou?red|unconfirmed|unverified)\b",
     re.I,
 )
+#: A condition or a supposition that what follows depends on ("要是值班表调整，就会改成 X", "if the rotation changes it
+#: would be X"): it says what would hold, not what holds.  "would like", "would prefer" and "would rather" ask for
+#: something instead.
+CONDITIONAL = re.compile(
+    r"如果|假如|假设|假使|假定|设想|要是|若是|倘若|万一|一旦|除非|的话|"
+    r"\b(?:if|unless|suppose|supposing|imagine|in\s+case|provided\s+that|as\s+long\s+as|hypothetically"
+    r"|would(?!\s+(?:like|love|prefer|rather)\b))\b",
+    re.I,
+)
 REPORTED_SPEECH = re.compile(
     r"他说|她说|他们说|同事说|朋友说|客户说|有人说|文档写|引用|原文|"
     r"\b(?:he|she|they|someone|customer|colleague|friend)\s+(?:said|says|wrote)|"
@@ -41,16 +50,23 @@ _UNASSERTED_CONTEXT = re.compile(
     r"customer said|may|might|maybe|perhaps|guess(?:ed)?|heard\s+that|reportedly)\b",
     re.I,
 )
-#: Someone else's words, or an example, around a first person: a named or unnamed speaker (``张三说：``,
-#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a quoted first person in double, CJK or single quotes (an
-#: apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a first person
-#: after a speaker's label (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
+#: A named or unnamed speaker other than the one writing, before what they said: ``张三说：``, ``张三说，``,
+#: ``Alice said``, ``the wiki says``, ``Everyone thinks``.  ``我说：`` and ``I said`` are the writer's own, and a
+#: verb that opens an identifier (``claim-4daf…``, a claim's ref) is no verb.
+_SAID_BY_ANOTHER = re.compile(
+    r"(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
+    r"|\b(?!I\b)\w+\s+(?:(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard)"
+    r"\b(?!-)|(?:told|tells)\s+\w+\b)",
+    re.I,
+)
+#: Someone else's words, or an example, around a first person: a speaker other than the writer
+#: (``_SAID_BY_ANOTHER``), a quoted first person in double, CJK or single quotes (an apostrophe inside a word,
+#: ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a first person after a speaker's label
+#: (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
 _REPORTED_SELF = re.compile(
-    r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)"
-    r"|(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
-    r"|\b(?!I\b)\w+\s+(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard"
-    r"|told\s+\w+|tells\s+\w+)\b"
-    r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
+    r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)|"
+    + _SAID_BY_ANOTHER.pattern
+    + r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
     r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
     r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
@@ -226,12 +242,19 @@ def _quote_open(text: str) -> bool:
     )
 
 
-def _pasted_at(content: str, position: int) -> bool:
-    """Labels and quotation marks are read outside fenced blocks: code's own (``x: int``, ``'"'``) mark no speaker."""
+def quoted_at(content: str, position: int) -> bool:
+    """Whether ``position`` stands in quoted text: inside a fenced block, inside a quotation still open, or on a quoted
+    line (``> ...``).  Quotation marks are read outside fenced blocks: code's own (``'"'``) open none."""
     before = content[:position]
     fenced, outside = _outside_fences(before)
     line = before[before.rfind("\n") + 1 :]
-    return fenced or _SPEAKER_LABEL.search(outside) is not None or _quote_open(outside) or line.lstrip().startswith(">")
+    return fenced or _quote_open(outside) or line.lstrip().startswith(">")
+
+
+def _pasted_at(content: str, position: int) -> bool:
+    """Quoted text (``quoted_at``), or text after a speaker's label; labels are read outside fenced blocks too: code's
+    own (``x: int``) marks no speaker."""
+    return quoted_at(content, position) or _SPEAKER_LABEL.search(_outside_fences(content[:position])[1]) is not None
 
 
 def in_pasted_text(content: str, quote: str) -> bool:
@@ -333,6 +356,12 @@ def is_transient_request(content):
     if type(content) is not str or not content.strip():
         return False
     return bool(_DIRECT_REQUEST.search(content) and not _DURABLE_DIRECTIVE.search(content))
+
+
+def said_by_another(content: str) -> bool:
+    """Whether the text names a speaker other than its writer as saying something (``_SAID_BY_ANOTHER``), outside
+    the writer's own framing (``老实说，``, ``That said,``)."""
+    return _SAID_BY_ANOTHER.search(_OWN_FRAMING.sub("", content)) is not None
 
 
 def first_person_reference(content):

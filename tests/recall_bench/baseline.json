@@ -5,7 +5,7 @@
   "world": "a17b0621a0d2353b5aeea47db8d2728437dd256789a93ef52f9eb0ee94258a41",
   "tolerance": 0.02,
   "facts": {
-    "hypothetical": 1,
+    "hypothetical": 0,
     "quoted": 0,
     "negated": 12,
     "assistant": 0,
