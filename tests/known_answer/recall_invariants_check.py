@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Known-answer check for three scope-recall invariants, on a fresh store with synthetic data.
 
-The invariants, as stated for 3.7.x on #179:
+The invariants:
 
   A. A fact needs a human source and a worker pass before it is served as a fact.
   B. revise and forget need the person's own request, in the same session, naming the
@@ -19,7 +19,7 @@ How it runs:
   * Every run starts from an empty temp directory and deletes it afterwards.
 
 Usage, against an installed release (expected_answers.json is read from beside this file):
-    python -m pip install "hermes-scope-recall==3.8.0"    # or: pip install . from a main checkout
+    python -m pip install "hermes-scope-recall==<version>"    # or: pip install . from a main checkout
     python recall_invariants_check.py                      # compares with expected_answers.json
     python recall_invariants_check.py --json observed.json
 
@@ -52,7 +52,7 @@ from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, Lanc
 
 try:  # 3.8.0 and later: a whole-store re-embed into a new space (respace-embeddings)
     from scope_recall.runtime.vector_upkeep import respace_if_due
-except ImportError:  # 3.7.x has no whole-store re-embed (#200), so the rebuild checks are skipped there
+except ImportError:  # 3.7.x has no whole-store re-embed, so the rebuild checks are skipped there
     respace_if_due = None
 from scope_recall.vector.store import build_vector_store
 
