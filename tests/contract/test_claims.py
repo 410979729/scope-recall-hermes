@@ -11,7 +11,7 @@ from threading import Barrier
 import pytest
 from scope_recall.contracts import ContractError, ImportProvenance, TrustedSourcePrincipal, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.claims import Qualification, negates, qualify
+from scope_recall.core.claims import Qualification, is_denial, negates, qualify
 from v11_support import context, source_event
 
 
@@ -401,21 +401,71 @@ def test_a_dislike_of_something_else_leaves_the_preference_its_slot_holds(app, s
 
 
 @pytest.mark.parametrize(
+    "value,denial",
+    [
+        *((value, False) for value in ("不错", "不过", "没问题", "不客气", "不同意 TEST-X", "不知道", "不用谢")),
+        *((value, False) for value in ("not bad", "don't know", "not sure", "isn't it TEST-X?")),
+        ("not only TEST-X but TEST-Y", False),
+        *((value, True) for value in ("不是 CircleCI", "不吃辣", "不喜欢用 PowerShell", "没有车", "从不抽烟")),
+        *((value, True) for value in ("不再用 Jenkins", "讨厌香菜", "一点也不喜欢喝咖啡", "现在不吃辣了")),
+        *((value, True) for value in ("not CircleCI", "isn't Jenkins", "don't have a car", "never drink coffee")),
+        *((value, True) for value in ("no longer uses Jenkins", "can't stand PowerShell", "really don't like X")),
+    ],
+)
+def test_a_denial_is_a_negation_with_what_it_negates(value, denial):
+    """不错 and "not bad" praise, 不过 and "not only ... but" contrast, 不同意 disagrees, 不知道, "don't know" and "not
+    sure" tell what the person does not know, and "isn't it X?" asks: none says what its slot is not."""
+    assert is_denial({"kind": "preference", "value_text": value}) is denial
+    assert is_denial({"kind": "constraint", "value_text": value}) is False
+
+
+@pytest.mark.parametrize(
+    "stated,said,predicate",
+    [
+        (("TEST-project 部署状态 有故障。", "有故障"), ("TEST-project 部署状态 没问题。", "没问题"), "部署状态"),
+        (
+            ("The TEST-project deploy status is shaky.", "shaky"),
+            ("The TEST-project deploy status is not bad.", "not bad"),
+            "deploy status",
+        ),
+    ],
+)
+def test_a_value_that_opens_with_a_negator_word_updates_its_slot(app, stated, said, predicate):
+    """没问题 and "not bad" deny nothing: said later, each replaces the value held as any other value does."""
+    core, ctx = app
+    held = _stated(core, ctx, *stated, predicate=predicate)
+    update = _stated(core, ctx, *said, _LATER, predicate=predicate)
+    assert (update.ref, update.state, update.disposition) == (held.ref, "active", "inserted")
+    assert core.current_claim(ctx, held.ref).payload["value_text"] == said[1]
+
+
+@pytest.mark.parametrize(
     "denied,held,same",
     [
         ("不吃辣", "爱吃辣", True),
-        ("不吃辣", "吃辣", True),
+        ("不吃辣了", "吃辣", True),
+        ("不是周三", "周三下午", True),
+        ("不是周三下午", "周三", False),
         ("don't like PowerShell", "PowerShell", True),
         ("don't drink coffee", "drinks coffee", True),
         ("NOT ＣｉｒｃｌｅＣＩ", "circleci", True),
+        ("not v3.1", "v3.1", True),
+        ("not v3", "v3.1", False),
+        ("not 14 GB", "14 GB", True),
+        ("not 4 GB", "14 GB", False),
+        ("not #ops-pager", "#ops-pager", True),
         ("not CircleCI", "Jenkins", False),
-        ("not 4 GB", "1 GB", False),
         ("not MySQL", "SQL", False),
+        ("不喜欢喝红茶", "红茶", True),
+        ("不喜欢喝红茶", "茶", False),
+        ("don't drive a car", "have a car", False),
         ("don't like having meetings early in the morning", "late in the morning", False),
     ],
 )
-def test_a_denial_negates_a_value_one_of_them_holds_as_whole_words(denied, held, same):
-    """The same value: compared as the store compares values, word by word, one holds the other."""
+def test_a_denial_negates_a_value_that_holds_all_it_denies(denied, held, same):
+    """Compared as the store compares values, identifiers whole: the held value holds all the denial denies, or the
+    denial denies the held value itself under a verb of liking or doing.  A longer denial narrows what it denies, so
+    不是周三下午 leaves 周三, as "not v3" leaves v3.1, standing."""
     assert negates({"kind": "fact", "value_text": denied}, {"value_text": held}) is same
 
 
