@@ -89,7 +89,7 @@ def validate_claims(tx, value, scope_id: str, *, ungrounded_values: list[int] | 
     # path that accepts a proposal: consolidation, candidate re-evaluation and
     # the host-facing proposal surface all come through here.  Spans naming
     # anything outside this map are left untouched and the strict checks that
-    # follow reject them exactly as before.
+    # follow reject them.
     resolve_evidence_quotes(result, {(s.ref, s.revision): s.content for s in snapshots})
     return validate_proposal_references(result, tuple(snapshots), tx.context, ungrounded_values=ungrounded_values)
 
@@ -492,8 +492,8 @@ def _record_revision(tx, clock, head, updated, qualification, request, authority
     mutation = Mutation(saved.ref, saved.revision, "retracted" if authority.retraction else "revised", saved.state)
     register_applied_candidate(tx, mutation, now)
     # The ambiguity this claim was a candidate for has now been answered by an
-    # authorized revision of it.  Without this, ``unresolved_updates`` only ever
-    # grew: ``resolved`` had no writer anywhere in the codebase.
+    # authorized revision of it.  Without this, ``unresolved_updates`` would only
+    # ever grow: nothing else writes ``resolved``.
     tx.claims.resolve_updates(mutation.ref, resolved_at=now)
     return mutation
 
@@ -654,8 +654,8 @@ def capture_correction(tx, source, clock) -> Mutation | None:
             pass
     candidates = tuple(v.ref for v in (matches or heads))
     # With no claim to place it against there is no ambiguity to keep: a row naming none could never be closed
-    # (``resolve_updates`` needs one of its candidates revised), and 36 such rows on the pilot were handed to every
-    # read for good.  The message itself is stored and consolidated as any other.
+    # (``resolve_updates`` needs one of its candidates revised), and each such row would be handed to every read for
+    # good.  The message itself is stored and consolidated as any other.
     if candidates:
         tx.claims.unresolved(source.ref, source.revision, candidates, recorded_at=clock.utc_now())
     return None

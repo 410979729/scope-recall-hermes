@@ -1,13 +1,12 @@
 """An oversized source must still get a vector, not be silently unsearchable.
 
 Covers ``core/embedding_budget.py`` and the bound it puts on
-``encode_embedding_text``.  Six sources on alpha were permanently
-unembeddable -- 16,505 to 65,536 characters, rejected with ``http_400``, which
-is not auto-recoverable -- so their content was in SQLite and in the lexical
-index but never in the vector index, for the life of the instance.  #125 found
-the same for ordinary Chinese sources under the old character bound: providers
-count tokens, and a Chinese character is about one.  #151 found it for
-digit-dense ASCII, one token a character, under an estimate of three.
+``encode_embedding_text``.  A source of 16,505 to 65,536 characters is rejected
+with ``http_400``, which is not auto-recoverable, so its content would be in
+SQLite and in the lexical index but never in the vector index.  The same holds
+for ordinary Chinese sources under a character bound: providers count tokens,
+and a Chinese character is about one.  And for digit-dense ASCII, one token a
+character, under an estimate of three.
 """
 
 from __future__ import annotations
@@ -22,14 +21,14 @@ from scope_recall.core.embedding_budget import (
 )
 from scope_recall.core.recall_policy import claim_embedding_text, encode_embedding_text
 
-#: The observed failure floor on alpha.  The bound has to stay under it.
+#: The shortest source observed to fail.  The bound has to stay under it.
 LOWEST_OBSERVED_FAILURE = 16505
-#: Zhipu embedding-3's documented and measured limit per input (#125).
+#: Zhipu embedding-3's documented and measured limit per input.
 PROVIDER_TOKENS = 3072
 #: Gemini's embedding limit per input, the other provider in use.
 GEMINI_TOKENS = 2048
 #: Characters a token for each class of text, measured against embedding-3 by bisecting to the longest accepted
-#: prefix and reading ``usage.prompt_tokens`` (#151); Chinese from #125.
+#: prefix and reading ``usage.prompt_tokens``.
 MEASURED_CHARS_PER_TOKEN = {
     "letters": ("a", 4.0),
     "hex": ("deadbeef", 2.66),
@@ -51,7 +50,8 @@ def test_the_bound_holds_for_the_densest_text_measured():
 
 @pytest.mark.parametrize("kind", sorted(MEASURED_CHARS_PER_TOKEN))
 def test_what_the_bound_keeps_of_any_measured_class_fits_the_provider(kind):
-    """#151: 6,000 digits passed the old estimate as 2,000 tokens and cost 6,000; embedding-3 refused them for good."""
+    """6,000 digits cost 6,000 tokens, which embedding-3 refuses for good, however few an estimate of three characters
+    a token would count."""
     unit, chars_per_token = MEASURED_CHARS_PER_TOKEN[kind]
     body, truncated = bounded_embedding_text(unit * (20000 // len(unit)))
     assert truncated and estimated_tokens(body) <= EMBEDDING_INPUT_TOKENS
@@ -110,15 +110,16 @@ def _mixed(length: int, chinese_share: float) -> str:
     ],
 )
 def test_what_the_bound_keeps_fits_under_every_measured_provider_limit(length, chinese_share, largest_safe_prefix):
-    """#125's measurements against a 3,072-token provider: the old 8,000-character bound kept all of
-    these whole and every one failed with http_400."""
+    """Measurements against a 3,072-token provider: an 8,000-character bound would keep all of
+    these whole, and every one would fail with http_400."""
     body, _truncated = bounded_embedding_text(_mixed(length, chinese_share))
     assert len(body.removesuffix(TRUNCATION_MARKER)) <= largest_safe_prefix
     assert estimated_tokens(body) <= EMBEDDING_INPUT_TOKENS
 
 
 def test_every_character_counts_as_a_token_whatever_the_script():
-    """Three ASCII characters a token held for prose and let digits through at a third of their cost (#151)."""
+    """Every character counts as a token whatever the script: three ASCII characters a token holds for prose but lets
+    digits through at a third of their cost."""
     assert estimated_tokens("测" * 3000) == estimated_tokens("1" * 3000) == estimated_tokens("a" * 3000) == 3000
     assert estimated_tokens("abc") == 3 and estimated_tokens("测试") == 2 and estimated_tokens("") == 0
 

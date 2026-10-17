@@ -198,7 +198,7 @@ def test_unthreaded_mapping_requires_explicit_string(hermes_home, initialize_kwa
 
 
 def _gateway_rows(user_id: str, workspace: str) -> list[dict[str, object]]:
-    """Weixin DM rows as #124 found them: the host's real key nowhere, one row per kind of thread."""
+    """Weixin DM rows: the host's real key nowhere, one row per kind of thread."""
     dm = {
         "platform": "weixin",
         "user_id": user_id,
@@ -238,8 +238,8 @@ def _gateway_rows(user_id: str, workspace: str) -> list[dict[str, object]]:
 
 
 def test_a_row_naming_no_session_key_matches_the_key_a_gateway_sends(hermes_home, initialize_kwargs):
-    """#124: a gateway sends a session key on every session and the rows leave it empty, so
-    every weixin, feishu and desktop route failed closed; the other six fields still decide."""
+    """A gateway sends a session key on every session and the rows leave it empty, so an empty key matches any:
+    otherwise every weixin, feishu and desktop route would fail closed; the other six fields still decide."""
     workspace = initialize_kwargs["agent_workspace"]
     _binding, core = install_hermes_scope_recall(
         hermes_home,
@@ -271,7 +271,7 @@ def test_a_row_naming_no_session_key_matches_the_key_a_gateway_sends(hermes_home
 
 def test_a_row_that_differs_only_in_the_plain_thread_is_named_not_granted(hermes_home, initialize_kwargs):
     """The host sends an empty thread for a plain chat; a row copied with the CLI's "main" still
-    grants nothing there (the two are different routes), but the gap now says which field."""
+    grants nothing there (the two are different routes), but the gap says which field."""
     workspace = initialize_kwargs["agent_workspace"]
     _binding, core = install_hermes_scope_recall(
         hermes_home,

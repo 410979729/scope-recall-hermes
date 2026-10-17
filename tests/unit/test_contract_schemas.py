@@ -2,9 +2,9 @@
 
 Kimi Code's k3 endpoint validates a tool's parameters as "moonshot flavored
 json schema": an enum or const without an explicit type is refused, and since
-every tool travels with every request, one untyped property failed all chat
-after the upgrade that added the trace tool (#89).  The rule is checked for
-every contract, not only the ones that reach a provider today.
+every tool travels with every request, one untyped property fails all chat.
+The rule is checked for every contract, not only the ones that reach a provider
+today.
 """
 
 import json

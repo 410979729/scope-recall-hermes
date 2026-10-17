@@ -1,15 +1,14 @@
 """A prompt's recall answered by the client's own MCP server, warm for as long as the client is open.
 
-Claude Code and Codex start a new process for every hook, and a prompt hook that started LanceDB for its recall was
-often not ready before the recall's budget ran out: on the pilot 6 of 8 cold Claude Code prompts recalled by words
-alone (``helper_request_deadline``).  The client's MCP server lives exactly as long as the client, so it keeps a
-LanceDB helper ready and answers the entry's prompt hooks on this machine with the prompt's recall (``serve``).
+Claude Code and Codex start a new process for every hook, and a prompt hook that starts LanceDB for its recall is often
+not ready before the recall's budget runs out: measured, 6 of 8 cold Claude Code prompts recalled by words alone
+(``helper_request_deadline``).  The client's MCP server lives exactly as long as the client, so it keeps a LanceDB
+helper ready and answers the entry's prompt hooks on this machine with the prompt's recall (``serve``).
 
-Only the recall is asked for, and the server writes nothing.  The hook stores the prompt itself, as before, and asks
-for the recall after (``handler._resident_answer``), with all of its time; if the server has not answered when 1.5 s
-are left, the hook recalls as well and uses the answer that ran its vector search, and one that comes after the hook
-is done is dropped.  A first version had the server store the prompt as well: one that answered after the hook stopped waiting
-left the prompt stored twice.
+Only the recall is asked for, and the server writes nothing.  The hook stores the prompt itself and asks for the recall
+after (``handler._resident_answer``), with all of its time; if the server has not answered when 1.5 s are left, the hook
+recalls as well and uses the answer that ran its vector search, and one that comes after the hook is done is dropped.  A
+server that stored the prompt as well would, answering after the hook stopped waiting, leave the prompt stored twice.
 
 A hook asks the newest server of its entry, host and version (``Recaller``).  Servers name themselves in a folder of
 the user's own profile (``endpoints``), not in the entry's home, which may sit on a drive every account can read:
@@ -97,7 +96,7 @@ MAX_CONCURRENT = 8
 ADVERTISE_SECONDS = 2.0
 #: Minutes a client's resident recall server (``resident_entry``) stays up without a recall when the entry's runtime
 #: config names none (``resident_recall_minutes``).  WorkBuddy starts the entry's MCP server with each conversation's
-#: agent process, so a prompt that started one met a server still opening its vector store: a cold server answered
+#: agent process, so a prompt that starts one meets a server still opening its vector store: a cold server answered
 #: with its vector search 12.7 s after its start (measured), past the prompt hook's 6 s.  Claude Code and
 #: Codex keep their server for as long as the client runs, and keep none.
 RESIDENT_DEFAULT_MINUTES = {"workbuddy": 120, "dsh": 120}
@@ -444,13 +443,13 @@ class KeptRecaller:
     """One handler kept across a long-lived server's prompt recalls, with the vector store and embedding worker its
     runtime keeps open.
 
-    A server that made a handler for each recall opened the LanceDB table (about 2.3 s) and started the embedding
-    worker and its connection (about 1 s) for every prompt: on the pilot a warm server's recall took 3.9-4.1 s and
-    two of five lost their vector search to the time; with the handler kept, 1.6-2.1 s with it.  The handler
-    only recalls (``resident_recall_for``), which writes nothing.  One recall uses it at a time: another at the same
-    moment gets None, and its caller recalls as it did before.  It is made anew when ``stamp`` changes (the files it
-    was made from), after a recall that raised, and while its runtime is not attached from a readable config; the
-    handler it replaces is closed after, not within, the recall that replaced it.  Once closed it answers nothing."""
+    A server that made a handler for each recall would open the LanceDB table (about 2.3 s) and start the embedding
+    worker and its connection (about 1 s) for every prompt: measured, a warm server's recall took 3.9-4.1 s that way and
+    two of five lost their vector search to the time; with the handler kept, 1.6-2.1 s with it.  The handler only
+    recalls (``resident_recall_for``), which writes nothing.  One recall uses it at a time: another at the same moment
+    gets None, and its caller recalls without it.  It is made anew when ``stamp`` changes (the files it was made from),
+    after a recall that raised, and while its runtime is not attached from a readable config; the handler it replaces is
+    closed after, not within, the recall that replaced it.  Once closed it answers nothing."""
 
     def __init__(self, build: Callable[[], Any], stamp: Callable[[], object] = tuple) -> None:
         self._build = build
@@ -471,10 +470,10 @@ class KeptRecaller:
         """Make the handler and warm its vector store in the background, when the server starts, then keep it warm
         (``_keep_warm``) until the recaller is closed.
 
-        Made at the first prompt, the handler attached its runtime, started the vector helper, opened the table and
-        read the index inside that prompt's recall, and the first prompt after every start recalled by words alone:
-        for Claude Code that is every session.  A recall that comes meanwhile waits for this (``__call__``) instead
-        of making a second handler.  It writes nothing."""
+        Made at the first prompt, the handler would attach its runtime, start the vector helper, open the table and read
+        the index inside that prompt's recall, and the first prompt after every start would recall by words alone: for
+        Claude Code that is every session.  A recall that comes meanwhile waits for this (``__call__``) instead of
+        making a second handler.  It writes nothing."""
         done = threading.Event()
         self._warming = done
         keep = not self._keeping
@@ -490,7 +489,7 @@ class KeptRecaller:
                     self._handler, self._made_with = self._build(), stamp
                     try:
                         self._handler.warm_vectors(seconds)
-                    except Exception:  # noqa: BLE001 - the first recall opens what is not open, as before
+                    except Exception:  # noqa: BLE001 - the first recall opens what is not open
                         pass
                     # The query embedding route too, at the start only: warmed by the store alone, a cold server's
                     # first recalls lose their vector search to the embedding's time (measured).
@@ -536,12 +535,12 @@ class KeptRecaller:
                     try:
                         self._handler.warm_vectors(seconds)
                         break
-                    except Exception:  # noqa: BLE001 - tried once more, then left to the next recall as before
+                    except Exception:  # noqa: BLE001 - tried once more, then left to the next recall
                         continue
                 self._used = time.monotonic()
             finally:
-                # Cleared before the recaller is looked at, both under the lock: a close that saw the search still
-                # running left the handler to it, and one that did not finds the lock free or the handler closed.
+                # Cleared before the recaller is looked at, both under the lock: a close that sees the search still
+                # running leaves the handler to it, and one that does not finds the lock free or the handler closed.
                 self._searching = False
                 if self._closed:
                     self._discard(later=True)
@@ -585,7 +584,7 @@ class KeptRecaller:
             diagnostics["capability_gaps"] = list(diagnostics.get("capability_gaps") or ())
             if diagnostics.get("recall_vectors") is True:
                 # Only a recall that searched the index puts off the next keep-warm search: one whose query embedding
-                # failed (a provider or proxy outage) never reached it, and an hour of such prompts left it cold.
+                # failed (a provider or proxy outage) never reaches it, and an hour of such prompts would leave it cold.
                 self._used = time.monotonic()
             if not getattr(handler, "runtime_ready", False):
                 self._discard(later=True)
@@ -760,7 +759,7 @@ class HookEndpoint:
         while not self._stopped.wait(ADVERTISE_SECONDS):
             # A hook removed the name of a server that did not prove itself in time.  It names itself again once
             # none of its recalls is stuck and its own check comes back within ``SELF_CHECK_SECONDS``, counted by the
-            # clock: from inside the server, the time its own busy threads held Python's lock did not count against
+            # clock: from inside the server, the time its own busy threads hold Python's lock would not count against
             # the socket's, and a server hooks could not reach in time would name itself again.
             if self.path.exists() or self._stuck():
                 continue
@@ -883,8 +882,8 @@ def resident_lock(home: Path | str, host: str) -> Path:
 
 def resident_record(home: Path | str, host: str) -> Path:
     """Where the running resident server keeps its process id, start and version, beside its lock.  A hook removes the
-    name of a server that did not prove itself in time, and ``resident stop`` saw nothing until it named itself again;
-    no hook removes this.  Not a ``.json``: it is not a name hooks ask."""
+    name of a server that did not prove itself in time, and ``resident stop`` would see nothing until it named itself
+    again; no hook removes this.  Not a ``.json``: it is not a name hooks ask."""
     return endpoints(home) / f"resident-{host}.pid"
 
 
@@ -961,14 +960,13 @@ def ensure_resident(
     ``started``, ``replaced:<version>`` (one of another version was stopped and this version's started) or ``failed``.
 
     ``replace`` is the prompt hook's.  Hooks ask only a server of their own version, and one of another version that
-    held the entry's lock (an installation in another venv, a canary, a build from before its self-exit) kept every
-    prompt cold for as long as the client ran, while every hook and MCP server marked it in use.  None marks it
-    now.  The hook stops one it can prove and end, and starts its own; the version an entry's hooks run then wins,
-    and hooks of two versions against one entry switch it at most once a minute.  A client's MCP server never stops
-    one.  The server is started apart from this process, which the client may
-    end at once (WorkBuddy stops a conversation's processes): in a new process group, broken away from the client's job
-    where Windows allows it, with no window and no console of its own.  It writes nothing to the store; two started at
-    once settle on one."""
+    holds the entry's lock (an installation in another venv, a canary, a build from before its self-exit) would keep
+    every prompt cold for as long as the client runs if hooks and MCP servers marked it in use; none marks it.  The hook
+    stops one it can prove and end, and starts its own; the version an entry's hooks run then wins, and hooks of two
+    versions against one entry switch it at most once a minute.  A client's MCP server never stops one.  The server is
+    started apart from this process, which the client may end at once (WorkBuddy stops a conversation's processes): in a
+    new process group, broken away from the client's job where Windows allows it, with no window and no console of its
+    own.  It writes nothing to the store; two started at once settle on one."""
     from ...core.file_lock import advisory_file_lock
 
     if minutes <= 0:
@@ -1000,13 +998,13 @@ def ensure_resident(
     try:
         folder.mkdir(parents=True, exist_ok=True)
         # The look at the stamps, the stop, the removal of a stale stamp and the new one under one lock: two starters
-        # that both found the stamp stale both started a server.
+        # that both find the stamp stale would otherwise both start a server.
         with advisory_file_lock(folder / f"resident-{host}.start.lock", timeout_seconds=1.0):
             if other is not None:
                 if _recent(switched):
                     return f"running:{other}"
-                # A stop that failed (a server this account may not end) said ``replaced`` at every prompt, and started
-                # one that gave way each time.
+                # A stop that failed (a server this account may not end) would say ``replaced`` at every prompt, and
+                # start one that gives way each time.
                 if not stop_residents(home, host, other_versions=True):
                     return f"unstoppable:{other}"
                 switched.write_text(str(os.getpid()), encoding="ascii")
@@ -1056,8 +1054,7 @@ def _recent(stamp: Path) -> bool:
 def package_upgrading() -> bool:
     """Whether ``package-upgrade`` is replacing this environment's package now (its lock in the venv is held): a server
     started meanwhile could import part of either version, and once the new ``_version.py`` was in place it would not
-    end.  The client should be quit for an upgrade; its MCP servers' keeping made this
-    reachable without a prompt."""
+    end.  The client should be quit for an upgrade; its MCP servers' keeping makes this reachable without a prompt."""
     from ...core.file_lock import advisory_file_lock
 
     lock = Path(sys.prefix) / ".scope-recall-package-upgrade.lock"
@@ -1078,9 +1075,9 @@ def keep_resident(
     """For a client's MCP server, for as long as it runs: ``ensure_resident`` now and after every ``every`` seconds
     (``RESIDENT_KEEP_SECONDS``), in a daemon thread; set the event returned to stop.  The resident server then ends
     ``resident_recall_minutes`` after the client's last process, not its last prompt: WorkBuddy keeps a conversation's
-    process long after its prompts, and a resident that ended meanwhile left that conversation's next prompt colder
-    than the conversation's own server had kept it.  The minutes are read each time, so at 0 this
-    starts none.  Nothing it meets ends the MCP server, which serves its tools whatever this does."""
+    process long after its prompts, and a resident that ended meanwhile would leave that conversation's next prompt
+    colder than the conversation's own server would have kept it.  The minutes are read each time, so at 0 this starts
+    none.  Nothing it meets ends the MCP server, which serves its tools whatever this does."""
     stopped = threading.Event()
     every = RESIDENT_KEEP_SECONDS if every is None else every
 

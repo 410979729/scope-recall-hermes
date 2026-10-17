@@ -716,8 +716,8 @@ def _epoch_fenced_packet(core, ctx, reader):
 
 def test_p09_an_epoch_move_that_withdrew_nothing_keeps_the_verified_items(app):
     """Every capture moves the epoch.  With several entries writing to one store a recall rarely
-    finished without a move, and each emptied the packet: on the pilot an agent asked about what the
-    owner had just told another one while the worker was writing it down, and got nothing."""
+    finishes without a move, and a move that emptied the packet would leave an agent asking about what the
+    owner had just told another one, while the worker is writing it down, with nothing."""
     core, ctx = app
     packet = _epoch_fenced_packet(core, ctx, EpochFlipStorage(clock=FixedClock()))
     assert packet["items"], packet["gaps"]
@@ -792,8 +792,8 @@ def test_p09_diagnostics_channel_is_sanitized_and_bounded(app):
 
 
 def test_p09_a_packet_s_diagnostic_ref_can_be_inspected_by_the_session_that_recalled(app):
-    """The ref a packet hands out named a record this process keeps, never a stored object, and inspect answered it
-    SOURCE_MISSING every time (yuheng's audit of 3.4.2).  The recalling session reads its counts and gap codes;
+    """The ref a packet hands out names a record this process keeps, never a stored object, so inspect must not answer
+    it SOURCE_MISSING every time.  The recalling session reads its counts and gap codes;
     another session, or a ref this process no longer holds, reads nothing."""
     core, ctx = app
     capture(core, ctx, "P09 diagnostics inspected by their own session.", key="TEST-p09/diag-inspect")

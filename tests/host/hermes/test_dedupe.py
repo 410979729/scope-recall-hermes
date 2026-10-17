@@ -309,7 +309,7 @@ def test_a_notice_whose_pre_llm_call_was_not_taken_is_still_the_host_s(adapter, 
 def test_a_late_sync_of_the_person_s_turn_keeps_their_words_theirs(adapter, hermes_home):
     """Hermes runs ``sync_turn`` on its memory worker, after the reply, and the adapter names the turn by the one
     active then: the next turn, a notice whose ``pre_llm_call`` a busy session left untaken, may have begun.  The
-    person's message written then is still theirs (review of 3.7.2)."""
+    person's message written then is still theirs."""
     provider, _clock = adapter
     said = "TEST 帮我看一下日志"
     provider._calls.busy(
@@ -364,9 +364,8 @@ def _folded(own, summary="TEST 摘要：之前在后台跑构建。", *, leading
 
 
 def test_a_notice_hermes_folded_a_summary_into_is_the_host_s(adapter, hermes_home):
-    """A compression at the turn's start folded its summary into the notice that opened the turn, which then held
-    more than its text and was not last: one of tianshu's three delegation results on 2026-10-05 was stored as the
-    owner's that way."""
+    """A compression at the turn's start folds its summary into the notice that opened the turn, which then holds
+    more than its text and is not last: a delegation result would be stored as the owner's that way."""
     from scope_recall.adapters.hermes.hooks import _global_callback
 
     provider, _clock = adapter
@@ -391,8 +390,8 @@ def test_a_notice_hermes_folded_a_summary_into_is_the_host_s(adapter, hermes_hom
 
 
 def test_only_a_folded_message_s_own_words_make_it_the_turn_s():
-    """A summary quotes the person's messages word for word, and the first version took a folded notice merely
-    holding the turn's text for the turn's own: the person's words were stored as the host's (review of 3.7.3)."""
+    """A summary quotes the person's messages word for word, so a folded notice that merely holds the turn's text is
+    not the turn's own; otherwise the person's words would be stored as the host's."""
     from scope_recall.adapters.hermes.boundary import host_notice
 
     tail = [{"role": "assistant", "content": "TEST 上一步"}]
@@ -451,8 +450,7 @@ def test_a_folded_notice_is_read_as_hermes_reads_it_back():
 
 def test_a_notice_a_to_do_list_was_appended_to_is_still_the_host_s():
     """A compression appends the open to-do list to the last user message Hermes counts as a real one, a
-    delegation's result included (``_fold_todo_snapshot``); read back without it, the notice is still found (review
-    of 3.7.3)."""
+    delegation's result included (``_fold_todo_snapshot``); read back without it, the notice is still found."""
     from scope_recall.adapters.hermes.boundary import host_notice
 
     notice = {"role": "user", "content": _DELEGATED + "\n\n" + _TODO, "display_kind": "internal_notification"}
@@ -461,8 +459,8 @@ def test_a_notice_a_to_do_list_was_appended_to_is_still_the_host_s():
 
 def test_a_note_before_the_person_s_message_keeps_an_unanswered_notice_from_taking_it():
     """Hermes puts a note of its own before the person's message (a model switch, a timestamp) and hands
-    ``pre_llm_call`` their words alone.  An unanswered notice before it with the same words took them, folded or not:
-    the latest user message with words of its own decides (third review of 3.7.3; 3.7.2's plain notices too)."""
+    ``pre_llm_call`` their words alone.  An unanswered notice before it with the same words does not take them, folded
+    or not: the latest user message with words of its own decides."""
     from scope_recall.adapters.hermes.boundary import host_notice
 
     reply = {"role": "assistant", "content": "TEST 好。"}
@@ -621,10 +619,9 @@ def _stored_times(core) -> dict[str, tuple[str, str]]:
 def test_reused_turn_number_keeps_its_own_witnessed_time(installed_core, initialize_kwargs):
     """A restarted gateway numbers turns from 1 again inside the same session.
 
-    beta's rc32 test report was written on 09-17 under turn number 8, which an
-    unrelated turn of the same session had used on 09-16.  Storage re-keyed the
-    new messages, but the adapter had already copied the older turn's time onto
-    them, so the newest report in memory claimed to be a day old.
+    A message written under a turn number that an unrelated, older turn of the same
+    session used is re-keyed by storage.  The adapter must not copy the older turn's
+    time onto it, or the newest messages in memory would carry that turn's time.
     """
     core, clock = installed_core
     _sync_after_restart(
@@ -681,8 +678,8 @@ def test_replayed_turn_keeps_its_first_witnessed_time(installed_core, initialize
 
 def test_a_busy_store_met_by_a_session_s_capture_retry_says_pending(adapter, installed_core, monkeypatch):
     """A busy store met by a Hermes session's retry of its captures (at its end, before a compression) stops the
-    replay with a receipt that says so, where it used to raise; the session's gap had come only from the raise
-    (review of rc10)."""
+    replay with a receipt that says so, and does not raise; the session's gap comes from the receipt, not from a
+    raise."""
     from contextlib import closing
 
     from scope_recall.adapters.hermes.identity import host_scope_payload

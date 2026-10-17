@@ -52,7 +52,7 @@ RECORD_SCHEMA = "scope-recall.running-code.v1"
 MAX_RECORDS = 64
 
 #: A modification stamp further ahead than this is not believed. Small skew is
-#: ordinary; the failure this guards against was four hours.
+#: ordinary; what this guards against is a stamp hours ahead (four, in one case).
 FUTURE_TOLERANCE_SECONDS = 60
 
 
@@ -256,7 +256,7 @@ def stale_records(
     its own environment, so a record that names another package folder is
     judged against that folder: upgrading one entry says nothing about the
     code another entry's process loaded.  When that folder's version cannot be
-    read, the record is compared with ``disk_version`` alone, as before.
+    read, the record is compared with ``disk_version`` alone.
 
     Each entry names its reason so a reader does not have to re-derive it.
     """

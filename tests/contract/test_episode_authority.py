@@ -40,7 +40,7 @@ def test_terminal_state_requires_affirmative_assertion_in_actual_core(app, text,
 @pytest.mark.parametrize(
     "origin,text",
     [
-        # The exact shape behind alpha's 32 failed episode versions: the word is
+        # The exact shape of a failed episode version: the word is
         # an adjective on something else, deep inside a long tool transcript.
         (
             "tool_observation",
@@ -371,8 +371,8 @@ def test_omitted_same_label_version_prevents_candidate_uniqueness(app, tmp_path)
 
 def test_only_a_complete_tool_output_s_exit_code_ends_a_task():
     """The exit-code arm reads a tool output's own report of how it ended.  One stored partial -- a call that failed,
-    was stopped or came back cut off, which Hermes keeps since 3.7.8 -- tells its own outcome, not the task's: a grep
-    that finds nothing exits 1 (review of 3.7.8)."""
+    was stopped or came back cut off, which Hermes keeps -- tells its own outcome, not the task's: a grep
+    that finds nothing exits 1."""
     from types import SimpleNamespace
 
     def tool(content, state):

@@ -93,7 +93,7 @@ def test_revocation_and_deletion_cancel_pending_ingress(worker_app):
     receipt = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: frozenset())[0]
     assert receipt.disposition == "cancelled" and core.status(ctx).sources == 0
     source = capture(core, ctx, "TEST 已有资料。")
-    # A capture of the deleted words waiting in the inbox is cancelled with them; another is stored (rc13).
+    # A capture of the deleted words waiting in the inbox is cancelled with them; another is stored.
     copy = source_event(source_event_key="TEST-copy", content="TEST 已有资料。")
     capture_inbox.enqueue(core.storage, clock, ctx, copy, scope_id="TEST-scope", host_scope=None)
     capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
@@ -134,9 +134,9 @@ def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
 
 
 def test_a_row_an_older_release_left_as_source_missing_is_replayed_once(worker_app, monkeypatch):
-    """Before 3.4.0rc10 a capture into a task whose episode was deleted failed as a bare ``SOURCE_MISSING`` and stayed
-    in the inbox for good (three rows on the pilot, a doctor gap every day).  Such a row is replayed once more; a
-    missing source is now written with its field, so a failure after that replay stays final."""
+    """A capture into a task whose episode was deleted, left by an older release as a bare ``SOURCE_MISSING``, would
+    stay in the inbox for good and show as a doctor gap every day.  Such a row is replayed once more; a missing
+    source is written with its field, so a failure after that replay stays final."""
     core, ctx, clock = worker_app
     stored = source_event(source_event_key="TEST-legacy-missing", content="TEST 删完以后接着聊。")
     failing = source_event(source_event_key="TEST-legacy-failing", content="TEST 还是存不进去。")
@@ -410,8 +410,8 @@ def test_key_collided_capture_is_stored_under_its_own_identity(worker_app):
 
 def test_every_message_sent_into_one_running_turn_is_stored(worker_app):
     """Codex gives a message sent into a running turn that turn's id.  The second such message conflicts with the first
-    and waits in the inbox for a key of its own; a third sent before that pass came under the second's place in the
-    inbox, was refused as changed evidence and lost (the work computer lost two that way on 2026-09-30)."""
+    and waits in the inbox for a key of its own; a third sent before that pass would come under the second's place in
+    the inbox, be refused as changed evidence and lost."""
     core, ctx, clock = worker_app
     first = source_event(source_event_key="TEST-turn-7", content="TEST 先看一下日志")
     assert (
@@ -430,7 +430,7 @@ def test_every_message_sent_into_one_running_turn_is_stored(worker_app):
         core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5
     )
     assert [receipt.durability for receipt in stored] == ["persisted", "persisted"]
-    # A hook sent again with the same words (the work computer's client resends what the store was too busy for)
+    # A hook sent again with the same words (a client resends what the store was too busy for)
     # finds the message it stored.
     again = capture_inbox.durable_record_event(
         core.storage, clock, ctx, later[1], scope_id="TEST-scope", host_scope=None
@@ -482,8 +482,8 @@ def _first_of_the_turn_waits(core, clock, ctx, monkeypatch, key):
 
 
 def test_a_message_sent_while_the_turn_s_first_still_waits_is_stored(worker_app, monkeypatch):
-    """Before 3.4.6 the second message was refused while the first waited; now both are stored, the first under a key
-    of its own once its turn comes (review of 3.4.6)."""
+    """A second message sent while the turn's first still waits is not refused: both are stored, the first under a key
+    of its own once its turn comes."""
     core, ctx, clock = worker_app
     _first_of_the_turn_waits(core, clock, ctx, monkeypatch, "TEST-turn-9")
     _a_pass(core, clock, ctx)
@@ -495,8 +495,9 @@ def test_a_message_sent_while_the_turn_s_first_still_waits_is_stored(worker_app,
 
 def test_deleting_one_message_keeps_another_waiting_under_its_key(worker_app, monkeypatch):
     """A delete cancels a waiting capture that holds the deleted message, not every capture of its source group: the
-    turn's first message, still waiting when the second, stored under the key, was deleted, was cancelled with it and
-    lost, never deleted itself (review of 3.4.6).  A later version of the deleted message is still cancelled."""
+    turn's first message, still waiting when the second, stored under the key, is deleted, is not cancelled with it,
+    since it would be lost without ever being deleted itself.  A later version of the deleted message is still
+    cancelled."""
     core, ctx, clock = worker_app
     deleted = _first_of_the_turn_waits(core, clock, ctx, monkeypatch, "TEST-turn-10")
     later = source_event(source_event_key="TEST-turn-10", source_revision=2, content="TEST 第二句（改）")
@@ -538,8 +539,8 @@ def test_the_same_words_sent_twice_into_one_turn_before_the_pass_are_kept_once(w
 
 
 def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_app):
-    """Given a new key, each segment of a long message kept the first message's group, met it again and was never
-    stored (review of 3.4.0rc10).  The segments now move into one new group."""
+    """Given a new key, the segments of a long message move into one new group; each keeping the first message's
+    group would meet it again and never be stored."""
     core, ctx, clock = worker_app
     first = source_event(source_event_key="TEST-turn-77", content="TEST 第一条很长的消息。" * 6000)
     assert (
@@ -570,9 +571,9 @@ def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_a
 
 
 def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are_stored(worker_app, monkeypatch):
-    """A row whose stored capture raised on revalidation stopped its whole page, on every pass.  Made final instead,
-    a row this release merely could not read yet (a newer release's field, an installation being reinstalled) was
-    never stored (reviews of 3.4.0rc10).  It is put off, and the replay that put it off takes it again in a minute."""
+    """A row whose stored capture raises on revalidation must not stop its whole page, on every pass.  Made final
+    instead, a row this release merely cannot read yet (a newer release's field, an installation being reinstalled)
+    would never be stored.  It is put off, and the replay that put it off takes it again in a minute."""
     core, ctx, clock = worker_app
     other = replace(ctx, session_id="TEST-session-2")
     for key in ("TEST-turn-50", "TEST-turn-51"):
@@ -632,8 +633,8 @@ def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are
 
 
 def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
-    """A row put off was tried again every hour for ever (review of 3.4.0rc10), and after a reinstall an hour was
-    long to wait.  It is tried after a minute, doubling to an hour, and given up after a day's worth of tries."""
+    """A row put off is not tried again every hour for ever, and after a reinstall an hour is long to wait.  It is
+    tried after a minute, doubling to an hour, and given up after a day's worth of tries."""
     from datetime import datetime, timezone
 
     now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
@@ -647,8 +648,8 @@ def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
     assert given_up == f"GAVE_UP|{inbox_rules.__version__}|25|replay|RuntimeError", "its failures, the first too"
     assert inbox_rules.given_up(given_up)
     assert not inbox_rules.replayable(given_up, now) and not inbox_rules.waiting(given_up)
-    # Given up for every release, and the tries another release made count: a new release reset them, so a row
-    # that failed under each was tried for ever (review of 3.4.0rc10).
+    # Given up for every release, and the tries another release made count: if a new release reset them, a row
+    # that failed under each would be tried for ever.
     assert not inbox_rules.replayable("GAVE_UP|0.0.1|24|replay|RuntimeError", now)
     other = f"DEFERRED|0.0.1|2026-09-28T11:00:00Z|{inbox_rules.DEFER_ATTEMPTS}|replay|TypeError"
     assert inbox_rules.deferral(other, RuntimeError("TEST"), now, path="replay").startswith("GAVE_UP|")
@@ -665,11 +666,11 @@ def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
 
 def test_a_delete_keeps_a_waiting_row_unless_it_holds_the_deleted_words(worker_app):
     """A delete cancels its partition's pending captures that hold a deleted message, so that a delayed one cannot
-    undo it.  Every other row is kept: a row put off waits for hours (review of 3.4.0rc10), and a capture of another
-    client waiting for the next pass was cancelled with the whole partition, words nothing had forgotten (rc13).
+    undo it.  Every other row is kept: a row put off waits for hours, and a capture of another
+    client waiting for the next pass is not cancelled with the whole partition, words nothing has forgotten.
     Under the deleted message's key, a later version is cancelled and another message is kept, as storage takes them
-    when they come after the delete (``storage.refuse_under_a_deleted_key``): the whole source group was cancelled,
-    and Codex sends every message of a running turn under the turn's key (review of 3.4.6)."""
+    when they come after the delete (``storage.refuse_under_a_deleted_key``): cancelling the whole source group would
+    lose messages, and Codex sends every message of a running turn under the turn's key."""
     core, ctx, clock = worker_app
     later = f"DEFERRED|{inbox_rules.__version__}|2026-09-06T13:00:00Z|1|replay|RuntimeError"
     given_up = f"GAVE_UP|{inbox_rules.__version__}|24|rekey|RuntimeError"
@@ -736,9 +737,9 @@ def _keys_like(core, prefix):
 
 
 def test_a_copy_of_a_deleted_message_under_its_key_leaves_the_inbox(worker_app):
-    """A copy of a deleted message under that message's key is refused for good.  It stayed in the inbox with its
-    code, and kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by hand
-    (rc13).  It leaves the inbox, and the hook and the pass are told it was cancelled.  The words spaced otherwise are
+    """A copy of a deleted message under that message's key is refused for good.  Staying in the inbox with its
+    code, it would keep the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by
+    hand.  It leaves the inbox, and the hook and the pass are told it was cancelled.  The words spaced otherwise are
     the same words while the deleted text is kept, as a delete compares them (``inbox_rules.holds``)."""
     from scope_recall.runtime.worker_entry import _ingress_report
 
@@ -779,7 +780,7 @@ def test_a_copy_of_a_deleted_message_under_its_key_leaves_the_inbox(worker_app):
 
 def test_another_message_under_a_deleted_message_s_key_is_stored_under_its_own(worker_app):
     """A restarted Hermes gateway numbers its turns from 1 again, and a delete removes its own command's key: the next
-    message at that turn was refused, and with rc13's first version dropped without a trace (review of rc13).  It is
+    message at that turn must not be refused, nor dropped without a trace.  It is
     a key collision, stored under a key of its own, before the delete is purged and after; once purged, the deleted
     message's digest still refuses a copy."""
     core, ctx, clock = worker_app
@@ -847,8 +848,8 @@ def test_a_host_check_that_raises_puts_off_that_row_only(worker_app):
 
 
 def test_a_row_the_rekey_path_put_off_is_taken_again_by_that_path_alone_and_its_tries_count(worker_app, monkeypatch):
-    """A row put off while it was given a new key was due for the plain replay, which met the old collision and wrote
-    it back as a bare conflict: its tries began again each round, and it was never given up (review of 3.4.0rc10).
+    """A row put off while it is given a new key is not due for the plain replay, which would meet the old collision
+    and write it back as a bare conflict: its tries would begin again each round, and it would never be given up.
     Only the rekey path takes it again, once its time is up, and it counts on."""
     core, ctx, clock = worker_app
     first = source_event(source_event_key="TEST-turn-60", content="TEST first TEST-turn-60")
@@ -900,7 +901,7 @@ def test_a_row_the_rekey_path_put_off_is_taken_again_by_that_path_alone_and_its_
 
 
 def test_retry_failures_returns_a_given_up_capture_to_the_replay(worker_app):
-    """A row given up stayed in the inbox with nothing to take it once its cause was fixed (review of 3.4.0rc10).
+    """A row given up stays in the inbox, and once its cause is fixed nothing else takes it.
     ``retry-failures`` counts such rows, and with ``--apply`` returns them to the replay, their tries anew."""
     core, ctx, clock = worker_app
     token, _prepared = capture_inbox.enqueue(
@@ -931,10 +932,10 @@ def test_retry_failures_returns_a_given_up_capture_to_the_replay(worker_app):
 
 
 def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refused(worker_app):
-    """Compared part by part, a long deleted message sent again with its first character changed was stored under a
-    new key, and its second part, word for word, was found again; a later version of a deleted message was stored; a
-    copy spaced otherwise came back once the delete was purged; and a message of another length under a deleted
-    message's key was dropped (review of rc13).  The whole message is compared, a version the deleted group never had
+    """Compared part by part, a long deleted message sent again with its first character changed would be stored under
+    a new key, and its second part, word for word, would be found again; a later version of a deleted message would
+    be stored; a copy spaced otherwise would come back once the delete was purged; and a message of another length
+    under a deleted message's key would be dropped.  The whole message is compared, a version the deleted group never had
     is refused, the purge keeps the forms of the deleted words, and another message is a key collision."""
     core, ctx, clock = worker_app
     long_text = "".join(f"TEST 第{i}句要删的长话。" for i in range(6000))
@@ -981,11 +982,10 @@ def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refuse
     assert [receipt.durability for receipt in receipts] == ["persisted", "persisted"] and _inbox_rows(core) == 0
 
 
-def test_a_message_purged_before_rc13_still_refuses_what_comes_under_its_key(worker_app):
-    """A purge before rc13 kept no digests of the deleted words, and hashed a long message's group key once for each of
-    its parts.  Nothing kept tells a near copy under such a key from another message, so whatever comes under it is
-    refused, as every release before rc13 refused it: a copy spaced otherwise is not stored as another message (review
-    of rc13)."""
+def test_a_message_purged_by_an_earlier_release_still_refuses_what_comes_under_its_key(worker_app):
+    """A purge by an earlier release kept no digests of the deleted words, and hashed a long message's group key once
+    for each of its parts.  Nothing kept tells a near copy under such a key from another message, so whatever comes
+    under it is refused, as that release refused it: a copy spaced otherwise is not stored as another message."""
     from scope_recall.core.delete_storage import purged_group_key
 
     core, ctx, clock = worker_app
@@ -1024,9 +1024,9 @@ def test_a_message_purged_before_rc13_still_refuses_what_comes_under_its_key(wor
 
 
 def test_a_deleted_message_with_no_text_is_not_taken_for_an_old_purge(worker_app):
-    """A message with attachments alone has no text.  Deleted and not purged yet, it had no text and no kept forms, as
-    a row purged before rc13, and every other message under its key was refused until the purge ran (review of rc13).
-    Only a purged row counts as an old purge."""
+    """A message with attachments alone has no text.  Deleted and not purged yet, it has no text and no kept forms, like
+    a row purged by an earlier release, and must not have every other message under its key refused until the purge
+    runs.  Only a purged row counts as an old purge."""
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST 带附件的一条。", key="TEST-attachments")
     authorize(core, ctx, source)
@@ -1048,9 +1048,9 @@ def test_a_deleted_message_with_no_text_is_not_taken_for_an_old_purge(worker_app
 
 
 def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_version_once(worker_app, monkeypatch):
-    """A restore purges its file again: written over from the empty text, the digests a first purge kept were lost,
-    and a copy spaced otherwise came back.  And a long message's words were joined and read again for each part, so
-    that its purge grew with the square of its parts under the writer lease (review of rc13)."""
+    """A restore purges its file again: written over from the empty text, the digests a first purge kept would be lost,
+    and a copy spaced otherwise would come back.  And a long message's words must not be joined and read again for each
+    part, which makes its purge grow with the square of its parts under the writer lease."""
     core, ctx, clock = worker_app
     short, long_text = "TEST 要删的 一句话。", "".join(f"TEST 第{i}句要删的长话。" for i in range(6000))
     stored = [capture(core, ctx, short, key="TEST-short"), capture(core, ctx, long_text, key="TEST-long")]
@@ -1094,9 +1094,9 @@ def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_versio
 
 
 def test_retry_failures_returns_a_capture_an_earlier_release_refused_to_the_replay(worker_app):
-    """A capture an earlier release refused as ACCESS_DENIED, most often one under a deleted message's key, stayed in
-    the inbox for good with doctor's ``capture_ingress_blocked`` up, and nothing but a hand removed it (review of
-    rc13).  ``retry-failures --apply`` returns it to the replay, which now stores another message under a key of its
+    """A capture an earlier release refused as ACCESS_DENIED, most often one under a deleted message's key, stays in
+    the inbox for good with doctor's ``capture_ingress_blocked`` up, and nothing but a hand removes it.
+    ``retry-failures --apply`` returns it to the replay, which stores another message under a key of its
     own and cancels a copy."""
     core, ctx, clock = worker_app
     token, _prepared = capture_inbox.enqueue(
@@ -1124,7 +1124,7 @@ def test_retry_failures_returns_a_capture_an_earlier_release_refused_to_the_repl
 
 def test_a_delete_keeps_a_row_that_took_the_deleted_message_s_key_for_other_words(worker_app):
     """A row being given a new key is another message that took a stored one's key: matched by that key, deleting the
-    first message cancelled the second, whose words nobody deleted (review of rc10).  Its words still count."""
+    first message would cancel the second, whose words nobody deleted.  Its words still count."""
     core, ctx, clock = worker_app
     first = capture(core, ctx, "TEST 第一条，要删掉。", key="TEST-taken")
     rekey = f"DEFERRED|{inbox_rules.__version__}|2026-09-06T13:00:00Z|1|rekey|IDENTITY_UNBOUND:TEST-host"
@@ -1159,8 +1159,8 @@ def test_a_delete_keeps_a_row_that_took_the_deleted_message_s_key_for_other_word
 
 def test_a_delete_cancels_a_collision_that_holds_the_deleted_message(worker_app):
     """A key collision is kept across a delete unless it holds the deleted message; compared by digest alone, the
-    same words with a line break more, or a long message with a character before it, were kept and stored after the
-    delete, and no test guarded the collisions that had to go (review of rc10)."""
+    same words with a line break more, or a long message with a character before it, would be kept and stored after
+    the delete."""
     core, ctx, clock = worker_app
     capture(core, ctx, "TEST 要删掉的这一句，里面有私事，早先的说法。", key="TEST-collided-short")
     short = capture(core, ctx, "TEST 要删掉的这一句，里面有私事。", key="TEST-collided-short", revision=2)
@@ -1205,9 +1205,9 @@ def test_a_delete_cancels_a_collision_that_holds_the_deleted_message(worker_app)
 
 
 def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(worker_app):
-    """Deleting "好" or "ok" cancelled every waiting row that held those characters among other words, and comparing
-    letters and digits alone made "C++" cancel "C#" and a 22-character sentence with its punctuation too short to be
-    its own (reviews of rc10).  A distinct text (24 characters, whitespace aside) cancels any row holding it whole; a
+    """Deleting "好" or "ok" must not cancel every waiting row that holds those characters among other words, and
+    comparing letters and digits alone would make "C++" cancel "C#" and a 22-character sentence with its punctuation
+    too short to be its own.  A distinct text (24 characters, whitespace aside) cancels any row holding it whole; a
     shorter one a row that is it with at most a tenth more, whitespace aside, or with four or more letters and digits
     the same ones with at most a tenth more, punctuation and case aside."""
     core, ctx, clock = worker_app
@@ -1282,7 +1282,7 @@ def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(w
 
 def test_a_delete_cancels_what_holds_a_deleted_segment_or_cannot_be_read(worker_app):
     """A row whose first or second segment is a deleted one, the rest another's, holds no deleted text whole: only its
-    segment says so.  A row that cannot be read is cancelled, as every row a delete cannot look into (review of rc10)."""
+    segment says so.  A row that cannot be read is cancelled, as every row a delete cannot look into."""
     core, ctx, clock = worker_app
     long_text = "TEST 很长的要删掉的消息。" * 6000
     long_ = capture(core, ctx, long_text, key="TEST-segment-deleted")
@@ -1325,8 +1325,8 @@ def test_a_delete_cancels_what_holds_a_deleted_segment_or_cannot_be_read(worker_
 
 
 def test_a_delete_puts_each_deleted_text_together_once_and_only_when_it_needs_it(worker_app, monkeypatch):
-    """Each version of a deleted message was put together for every one of its segments, and for an empty inbox too:
-    a delete of four long messages took seconds under the writer lease (review of rc10)."""
+    """Each version of a deleted message is put together once, not for every one of its segments, and not for an empty
+    inbox: a delete of four long messages would otherwise take seconds under the writer lease."""
     core, ctx, clock = worker_app
     calls = []
     real = inbox_rules.without_whitespace
@@ -1355,8 +1355,8 @@ def test_a_delete_puts_each_deleted_text_together_once_and_only_when_it_needs_it
 
 
 def test_a_passing_failure_keeps_a_row_on_its_path(worker_app, monkeypatch):
-    """A store error that passes (the store busy) was written over a collision's code, which took it off the rekey
-    path and out of what a delete keeps (review of rc10)."""
+    """A store error that passes (the store busy) is not written over a collision's code, which would take it off the
+    rekey path and out of what a delete keeps."""
     core, ctx, clock = worker_app
     first = source_event(source_event_key="TEST-turn-70", content="TEST first TEST-turn-70")
     capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
@@ -1386,8 +1386,7 @@ def test_a_passing_failure_keeps_a_row_on_its_path(worker_app, monkeypatch):
 
 
 def test_a_commit_left_for_the_next_pass_says_so_and_a_refused_one_does_not(worker_app, monkeypatch):
-    """Only a busy store was tested: a commit whose time ran out said nothing either, and a refusal must not say it
-    is pending (review of rc10)."""
+    """Not only a busy store: a commit whose time ran out is said too, and a refusal must not say it is pending."""
     from scope_recall.core.capture import CaptureReceipt
 
     core, ctx, clock = worker_app
@@ -1418,8 +1417,8 @@ def test_a_commit_left_for_the_next_pass_says_so_and_a_refused_one_does_not(work
 
 
 def test_a_suppress_leaves_the_inbox_alone(worker_app):
-    """A suppress cancelled the partition's inbox as a delete does, and then every waiting row that held its words:
-    a quote with news in it, the message's next version, a row it could not read (reviews of rc10).  The contract
+    """A suppress that cancelled the partition's inbox as a delete does, and then every waiting row that holds its
+    words, would take a quote with news in it, the message's next version, a row it could not read.  The contract
     keeps them: what comes of the same message, or restates a suppressed claim, is suppressed as it is stored."""
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST 别再主动提这件私事，说过很多次了。", key="TEST-suppressed")
@@ -1450,8 +1449,8 @@ def test_a_suppress_leaves_the_inbox_alone(worker_app):
 
 def test_a_collided_copy_of_a_suppressed_message_is_stored_suppressed(worker_app):
     """A message sent again under a key another message held is stored under a new key, a group of its own that the
-    first message's suppression did not reach: a suppressed message came back to automatic recall that way (rc13).
-    A copy of a suppressed message is stored suppressed; other words under the same key are not."""
+    first message's suppression would not reach, and a suppressed message would come back to automatic recall that
+    way.  A copy of a suppressed message is stored suppressed; other words under the same key are not."""
     core, ctx, clock = worker_app
     text, plain = "TEST 别再主动提这件私事，说过很多次了。", "TEST 一句没有被压下的话。"
     capture(core, ctx, plain, key="TEST-plain")
@@ -1481,7 +1480,7 @@ def test_a_collided_copy_of_a_suppressed_message_is_stored_suppressed(worker_app
         )
     # A copy of words that were never suppressed is not suppressed either.
     assert stored == {text: 1, "TEST 同一个键上的另一句话。": 0, plain: 0}
-    # The same words said again under a key of their own are a new message, stored as before (3.4.0rc10).
+    # The same words said again under a key of their own are a new message, and are stored.
     capture(core, replace(ctx, session_id="TEST-session-later"), text, key="TEST-said-again")
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute(
@@ -1490,9 +1489,9 @@ def test_a_collided_copy_of_a_suppressed_message_is_stored_suppressed(worker_app
 
 
 def test_a_collided_copy_is_compared_as_a_delete_compares_and_its_group_suppressed_whole(worker_app):
-    """Compared by each part's exact digest, a collided copy spaced otherwise came back to automatic recall, and so
-    did the last part of a long copy that differed in one character, while its first part was suppressed (review of
-    rc13).  The words of the message whose key it took are compared as a delete compares them, and a source group is
+    """Compared by each part's exact digest, a collided copy spaced otherwise would come back to automatic recall, and
+    so would the last part of a long copy that differed in one character, while its first part is suppressed.  The
+    words of the message whose key it took are compared as a delete compares them, and a source group is
     suppressed whole.  A copy of another role, or in another project, is not the suppressed message's."""
     core, ctx, clock = worker_app
     # Two parts, whose words do not repeat: each part is compared on its own.
@@ -1551,8 +1550,8 @@ def test_a_collided_copy_is_compared_as_a_delete_compares_and_its_group_suppress
 
 
 def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
-    """Returned by what a config could see, rows of other partitions went back to a replay that never takes them;
-    and a row put off is not retry-failures' to return (review of rc10)."""
+    """Returned by what a config can see, rows of other partitions would go back to a replay that never takes them;
+    and a row put off is not retry-failures' to return."""
     from scope_recall.contracts import TrustedContext
 
     core, cfg, _path = fixture(tmp_path)
@@ -1564,7 +1563,7 @@ def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
         "put off": (own, put_off),
         "unset": (TrustedContext(cfg.binding, "TEST-session", frozenset({"TEST-a"}), "human_direct"), given_up),
         "other project": (replace(own, project_id="TEST-other"), given_up),
-        # One an earlier release refused, returned as well, from this partition alone (rc13).
+        # One an earlier release refused, returned as well, from this partition alone.
         "refused": (own, "ACCESS_DENIED"),
         "refused elsewhere": (replace(own, project_id="TEST-other"), "ACCESS_DENIED"),
     }
@@ -1599,8 +1598,8 @@ def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
 
 
 def test_a_stored_context_this_release_cannot_read_is_named(worker_app):
-    """A field a newer release wrote into a stored context left the row's code ending in a bare TypeError, which named
-    nothing to look at (review of rc10)."""
+    """A field a newer release wrote into a stored context must not leave the row's code ending in a bare TypeError,
+    which names nothing to look at."""
     core, ctx, clock = worker_app
     token, _prepared = capture_inbox.enqueue(
         core.storage,
@@ -1625,8 +1624,8 @@ def test_a_stored_context_this_release_cannot_read_is_named(worker_app):
 
 
 def test_a_stored_context_is_named_whatever_part_fails_and_its_own_contract_errors_kept(worker_app):
-    """Only a newer field was tested: a context with its scopes missing, or not an object at all, and a contract error
-    raised inside, which keeps its own code, went untested (review of rc10)."""
+    """Not only a newer field: a context with its scopes missing, or not an object at all, is named too, and a
+    contract error raised inside keeps its own code."""
     core, ctx, clock = worker_app
 
     def put_off_as(change):
@@ -1663,8 +1662,8 @@ def test_a_stored_context_is_named_whatever_part_fails_and_its_own_contract_erro
 
 
 def test_a_busy_store_at_the_commit_or_at_a_deferral_is_said_as_pending(tmp_path, monkeypatch):
-    """A pass whose commit met a busy writer said nothing, and a deferral the store did not take was reported as put
-    off or given up, and reported again at the next pass (review of rc10)."""
+    """A pass whose commit meets a busy writer says so, and a deferral the store did not take is not reported as put
+    off or given up, nor reported again at the next pass."""
     from scope_recall.core.capture import CaptureReceipt
     from scope_recall.core.writer_lease import TruthWriterBusyError
     from scope_recall.runtime.instance import RuntimeInstance
@@ -1708,8 +1707,8 @@ def test_a_busy_store_at_the_commit_or_at_a_deferral_is_said_as_pending(tmp_path
 
 
 def test_a_pass_says_pending_when_its_replay_stopped_or_raised_a_store_error(tmp_path, monkeypatch):
-    """Neither a pass reading the gap from its replay's receipts nor one catching a SQLite error from the first replay
-    was tested (review of rc10)."""
+    """A pass says pending when its replay stopped, whether it reads the gap from its replay's receipts or catches a
+    SQLite error from the first replay."""
     import sqlite3 as sqlite
 
     from scope_recall.core.writer_lease import TruthWriterBusyError
@@ -1746,8 +1745,8 @@ def test_a_pass_says_pending_when_its_replay_stopped_or_raised_a_store_error(tmp
 
 
 def test_a_given_up_row_of_the_rekey_path_goes_back_to_it(worker_app):
-    """Returned as never tried, a row the rekey path gave up met the old collision on the plain replay, and one put
-    off there was matched by a delete through the key it had taken (review of rc10)."""
+    """Returned as never tried, a row the rekey path gave up would meet the old collision on the plain replay, and one
+    put off there would be matched by a delete through the key it had taken."""
     core, ctx, clock = worker_app
     token, _prepared = capture_inbox.enqueue(
         core.storage,
@@ -1769,8 +1768,8 @@ def test_a_given_up_row_of_the_rekey_path_goes_back_to_it(worker_app):
 
 
 def test_a_busy_store_halfway_through_a_replay_keeps_what_it_did(worker_app, monkeypatch):
-    """Met on the second row, a busy store raised out of the replay: the first row's deferral went unsaid, and the
-    replay of collided keys after it did not run (review of rc10)."""
+    """A busy store met on the second row must not raise out of the replay, leaving the first row's deferral unsaid
+    and the replay of collided keys after it unrun."""
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
     core, ctx, clock = worker_app
@@ -1799,7 +1798,7 @@ def test_a_busy_store_halfway_through_a_replay_keeps_what_it_did(worker_app, mon
 
 
 def test_a_pass_runs_both_replays_whatever_the_first_met(tmp_path, monkeypatch):
-    """A pass whose first replay raised skipped the replay of collided keys (review of rc10)."""
+    """A pass whose first replay raises does not skip the replay of collided keys."""
     from scope_recall.core.capture import CaptureReceipt
     from scope_recall.runtime.instance import RuntimeInstance
 
@@ -1820,8 +1819,8 @@ def test_a_pass_runs_both_replays_whatever_the_first_met(tmp_path, monkeypatch):
 
 
 def test_a_pass_says_and_keeps_what_its_replays_put_off_and_gave_up(tmp_path):
-    """Only the counting was tested: a pass that left the counts or the gaps out of its report, or a status file that
-    dropped them, passed; and doctor did not show them (review of rc10)."""
+    """A pass says and keeps what its replays put off and gave up: the counts and the gaps are in its report and in its
+    status file, and doctor shows them."""
     import time
 
     from scope_recall.core.capture import CaptureReceipt
@@ -1894,7 +1893,7 @@ def test_a_pass_counts_the_inbox_rows_it_put_off_and_gave_up():
 
 def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):
     """Once a delete is purged, a named message's rows no longer carry its key, and a Stop's read of the session
-    record stored the words again under a key of the record's: deleted words came back (review of 3.4.0rc10)."""
+    record must not store the words again under a key of the record's: deleted words would come back."""
     core, ctx, _clock = worker_app
     source = capture(core, ctx, "TEST 要删掉的一句话。", key="TEST-named-deleted")
     authorize(core, ctx, source)
@@ -1996,8 +1995,8 @@ def test_a_long_message_waiting_in_the_inbox_counts_as_said(worker_app):
 
 
 def test_a_capture_that_conflicts_again_under_its_new_key_stays_final(worker_app, monkeypatch):
-    """Written back as a bare conflict, such a row was given the same new key and refused on every pass, and it
-    woke the worker every 30 s (review of 3.4.0rc10)."""
+    """Written back as a bare conflict, such a row would be given the same new key and refused on every pass, and wake
+    the worker every 30 s."""
     core, ctx, clock = worker_app
     first = source_event(source_event_key="TEST-turn-43", content="TEST first message")
     capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
@@ -2022,8 +2021,8 @@ def test_a_capture_that_conflicts_again_under_its_new_key_stays_final(worker_app
 
 
 def test_the_parts_of_a_delete_s_comparison_each_hold(worker_app):
-    """Each part of the comparison was left to the others in the tests, so a floor, a tenth or the case could change
-    unnoticed (review of rc10): here each decides a row alone."""
+    """The parts of a delete's comparison each hold: a floor, a tenth or the case cannot change unnoticed, since here
+    each decides a row alone."""
     core, ctx, clock = worker_app
     deleted = {
         text: capture(core, ctx, text, key=f"TEST-part-{index}")

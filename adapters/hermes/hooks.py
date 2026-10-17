@@ -83,10 +83,10 @@ def _active_adapter(kwargs: dict[str, Any]) -> Any | None:
             # ambiguous session identifier.
             return None
         # Hermes rebuilds an agent its cache evicted: a new provider binds the same session, and the old one, retired
-        # but not shut down, stays registered.  Chosen by the lower id(), the hooks often went to the old one:
-        # pre_llm_call stored the message there under the turn's id, while on_turn_start and sync_turn reached the
-        # new one, which stored the message again under an ordinal and the reply with it (the first turn after each
-        # rebuild).  The adapter that bound it last is the host's.
+        # but not shut down, stays registered.  Chosen by the lower id(), the hooks would often go to the old one:
+        # pre_llm_call would store the message there under the turn's id, while on_turn_start and sync_turn reach the
+        # new one, which would store the message again under an ordinal and the reply with it (the first turn after
+        # each rebuild).  The adapter that bound it last is the host's.
         return max(matches, key=lambda item: _BOUND.get(item, 0))
 
 
@@ -111,8 +111,8 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
         # small lock, which also drops it when a session switch has cleared the turn meanwhile.
         adapter.observe_post_llm_call(**kwargs)
         return adapter
-    # The hook waits for its own session only so long: waited out past the host's timeout, it is abandoned and the
-    # host skips this hook for every session (tool hooks queued behind their session's prefetch did that).  One it
+    # The hook waits for its own session only so long: waited out past the host's timeout, it is abandoned and the host
+    # skips this hook for every session (a tool hook queued behind its session's prefetch can wait that long).  One it
     # cannot wait for is counted and said.
     if not adapter._lock.acquire(timeout=wait):
         adapter._calls.busy(event, kwargs)

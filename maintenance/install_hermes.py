@@ -112,10 +112,9 @@ def wrapper_pyproject(version: str = __version__) -> str | None:
     """The ``pyproject.toml`` beside the wrapper in ``home_plugin_dir``: the same core, vector extra included.
 
     Hermes's package manager builds the environment it runs plugins in from each plugin's declaration, and a
-    ``pyproject.toml`` there wins over ``plugin.yaml``.  One written there by hand pinned the core without
-    ``[lancedb]``, and every recall of one installation ran without vectors for two days (2026-10-11 to 10-13).
-    Written by the install, it says what the manifest says; a release not on PyPI declares nothing
-    (``wrapper_manifest``).
+    ``pyproject.toml`` there wins over ``plugin.yaml``.  One written there by hand can pin the core without
+    ``[lancedb]``, and every recall of that installation then runs without vectors.  Written by the install, it
+    says what the manifest says; a release not on PyPI declares nothing (``wrapper_manifest``).
     """
     release = Version(version)
     if release.is_prerelease or release.is_devrelease or release.local is not None:

@@ -1,10 +1,9 @@
 """What a pass pays to know its database is the right one.
 
-A pass called ``status()`` twice: once for its receipt, and once only to prove the database it
-opened was the bound one.  That second call ran six whole-store aggregates and a JSON scan of
-every source -- measured at 4.4 seconds on an instance with 150,000 queued items -- and threw
-the answer away.  Proving the binding is one indexed row; the scans belong to the diagnostics
-that are about sources.
+A pass calls ``status()`` once, for its receipt.  Proving that the database it opened is the
+bound one is one indexed row, not a second call, which would run six whole-store aggregates and
+a JSON scan of every source -- 4.4 seconds on a queue of 150,000 items -- and throw the answer
+away.  The scans belong to the diagnostics that are about sources.
 """
 
 from __future__ import annotations
@@ -25,8 +24,8 @@ def _sources(core, ctx, count, *, tag):
 def test_proving_the_bound_database_is_one_indexed_row(app):
     """What a pass pays to know its database is the right one.
 
-    It used to call ``status()``, whose six whole-store aggregates and JSON scan of every
-    source cost 4.4 seconds on a queue of 150,000 -- and then discarded the answer.
+    It does not call ``status()``, whose six whole-store aggregates and JSON scan of every
+    source cost 4.4 seconds on a queue of 150,000 -- and then discard the answer.
     """
     core, ctx = app
     _sources(core, ctx, 3, tag="statements")

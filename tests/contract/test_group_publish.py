@@ -1,8 +1,7 @@
 """A pass writes its group's vectors in one fenced commit.
 
-The store's write API is plural and the adapter used it one row at a time, so a pass paid a
-lock-held handshake and a dataset commit per source -- measured at nine times the cost of one
-commit carrying all 32, on a real store at real dimensions.
+The store's write API is plural, so a pass pays one lock-held handshake and one dataset commit for
+its group, not one of each per source -- about nine times the cost of one commit carrying all 32.
 
 The fence is what must not move.  A grouped commit is guarded once for the whole group, the
 guard answers for every member while the helper holds the lock, and a group it refuses writes
@@ -134,8 +133,8 @@ def test_a_source_superseded_before_the_commit_stops_the_group_not_the_rest(app,
 def test_the_runtime_boundary_offers_the_group_commit_it_bounds():
     """The worker probes the port it is handed, which is the bounded one.
 
-    rc40 shipped a batch the worker could not see because the wrapper's method
-    list did not name it; the group commit must not repeat that.
+    A wrapper whose method list does not name the group commit hides it from the
+    worker, so the boundary's list must name it.
     """
     from scope_recall.runtime.instance import _BoundedEmbed
 

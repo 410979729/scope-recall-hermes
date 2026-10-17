@@ -56,7 +56,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\baws_secret_access_key\s*(?:=|:)\s*[\"']?[A-Za-z0-9/+=]{32,}",
         re.IGNORECASE,
     ),
-    # Spacing within the line only: ``\s*`` ran on across every following blank line from each line start,
+    # Spacing within the line only: ``\s*`` would run on across every following blank line from each line start,
     # 4.3 s for 20 kB of blank lines.
     "cookie_header": re.compile(
         r"^[ \t]*(?:cookie|set-cookie)[ \t]*:[ \t]*[^=\n;,\s]+=[^\n]+$",
@@ -65,7 +65,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
     # A bot's id stands alone, or follows ``bot`` in an API URL (``/bot<id>:<secret>/getMe``).  A digit
     # run glued to other letters is part of something else: a Codex source key ends its hex installation
     # id in eight digits about once in 45 installations and runs on into a session UUID
-    # (``...00de02721985:92051813-c57b-...``), which read as a token and refused every capture of that
+    # (``...00de02721985:92051813-c57b-...``), which would read as a token and refuse every capture of that
     # installation as a secret.
     "telegram_bot_token": re.compile(
         r"(?:(?<![A-Za-z0-9_-])|(?<=[Bb][Oo][Tt]))\d{8,12}:[A-Za-z0-9_-]{30,}(?![A-Za-z0-9_-])"
@@ -89,12 +89,12 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 #: What follows a credential word without being a credential, kept narrow on purpose: a password can be any
-#: word in any script, so only what cannot be one is let through.  Every message that said
-#: ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is required" was refused
-#: as a secret and never stored, and a model request carrying one was refused as ``sensitive_request``.
+#: word in any script, so only what cannot be one is let through.  Without these exemptions every message that
+#: says ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is required" would
+#: be refused as a secret and never stored, and a model request carrying one refused as ``sensitive_request``.
 #: A value runs to its first space or the end of the text.  Not a value when it is all of that, in matching quotes
-#: or none, with closing punctuation only after it (an exemption that stopped earlier let through what followed
-#: it: ``<b>Xk9#mP2q</b>``, ``Changed!2024``, ``My.Secret.Pass#99``):
+#: or none, with closing punctuation only after it (an exemption that stops earlier would let through what
+#: follows it: ``<b>Xk9#mP2q</b>``, ``Changed!2024``, ``My.Secret.Pass#99``):
 #: - a placeholder: ``<your-key>``, ``${...}``, ``$UPPER_NAME``, ``%NAME%``, ``{name}``, ``[REDACTED...]``, the
 #:   bracketed names without digits (``<hunter2>`` and ``{hunter2}`` count);
 #: - a mask (``***``, ``xxxx``), or an opening brace or bracket alone (``"credentials": {``);
@@ -112,7 +112,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
 #: exemption judged by how it begins (``password: Mr.Smith(1985)``, ``love()you``, a YAML ``|`` block), and a
 #: value of punctuation alone (``!@#$%^&*``).
 #: The quantifiers that meet another run of the same characters are possessive (``*+``, ``++``, ``{3,}+``): greedy,
-#: a run of dots after a key word was given back one dot at a time and the end tried again at each, 2.9 s for
+#: a run of dots after a key word would be given back one dot at a time and the end tried again at each, 2.9 s for
 #: 20 kB and 7.5 s with 64 key starts.  Taking a run whole never changes a verdict: a shorter run is followed by
 #: another of its characters, where a space or the end of the text is needed.
 _END = r"""(?=[,;:.)\]}>"'`|]*+(?:\s|$))"""
@@ -158,7 +158,7 @@ _IS_NOT_A_WORD = (
 )
 _SEPARATOR = r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+" + _IS_NOT_A_WORD + r")"
 
-#: ``credential``'s suffix is bounded: unbounded, a run of "credential" repeats was tried at every length from
+#: ``credential``'s suffix is bounded: unbounded, a run of "credential" repeats would be tried at every length from
 #: every repeat, 1 s for 20 kB.
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?:api[_ \t-]?key|secret|password|passwd|"
@@ -167,7 +167,7 @@ SECRET_ASSIGNMENT_RE = re.compile(
 )
 
 #: The name before ``token`` is at most 128 characters: unbounded, a long hyphenated line (a generated id, a
-#: kebab-case slug) was tried from every hyphen to its end, 18 s for 60,000 characters.
+#: kebab-case slug) would be tried from every hyphen to its end, 18 s for 60,000 characters.
 TOKEN_ASSIGNMENT_RE = re.compile(
     r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]{0,126}[_-])?token)[\"']?"
     + _SEPARATOR
@@ -203,8 +203,8 @@ class SecretTextMatch:
     text: str
 
 
-#: From the first backslash of a run only: from every one, a long run with no break after it was tried to its end
-#: again and again, 1.4 s for 20 kB of backslashes.
+#: From the first backslash of a run only: from every one, a long run with no break after it would be tried to its
+#: end again and again, 1.4 s for 20 kB of backslashes.
 _ESCAPED_BREAK_RE = re.compile(r"(?<!\\)\\+([nrt])")
 _ESCAPED_BREAKS = {"n": "\n", "r": "\r", "t": "\t"}
 
@@ -214,12 +214,12 @@ def secret_scan_shadow(value: Any) -> str:
 
     A serialised line break (the two characters ``\\n``) counts as the break it
     stands for.  Serialised into a model request, a document template with an
-    empty credential slot ("AppSecret:" and nothing after it) had the next line
-    swallowed as its value and would be refused as ``sensitive_request`` (369
+    empty credential slot ("AppSecret:" and nothing after it) would have the next
+    line swallowed as its value and be refused as ``sensitive_request`` (369
     candidate evaluations in one store, none holding a secret).  Text that
     was serialised more than once (a tool output that is itself JSON holding
     JSON) writes the same break as ``\\\\n``; treating only the last two
-    characters as the break left a backslash after the slot, which then read
+    characters as the break would leave a backslash after the slot to be read
     as its value, so the whole run of backslashes belongs to the break.  The
     substitution keeps the length, so every match position stays valid.
     """

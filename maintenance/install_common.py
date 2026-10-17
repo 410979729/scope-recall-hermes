@@ -41,9 +41,9 @@ RECEIPT_FILENAME = ".scope-recall-install-receipt.json"
 BACKUP_DIRNAME = ".scope-recall-backups"
 #: What a store's runtime-config.json may weigh, for the shared commands that write it and the doctor that
 #: reads it.  The shared worker's lists every scope of the store twice (its binding and its allowed scopes),
-#: about 120 bytes a scope: the pilot's 221 scopes made 58 KB, and one more instance passed the 64 KB this once
-#: was, so the next attach refused the store's own worker config.  At MAX_SHARED_SCOPES, 1024 scopes, that is
-#: about 250 KB; the limit leaves room for longer scope ids.
+#: about 120 bytes a scope: 221 scopes make 58 KB, so a 64 KB limit would refuse the store's own worker config
+#: an entry or two later.  At MAX_SHARED_SCOPES, 1024 scopes, that is about 250 KB; the limit leaves room for
+#: longer scope ids.
 RUNTIME_CONFIG_LIMIT = 1024 * 1024
 _MAX_IDENTIFIER_LEN = 240
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -336,9 +336,9 @@ def manifest_version(version: str = PACKAGE_VERSION) -> str:
     """Semver spelling of the PEP 440 package version for host plugin manifests."""
     if ".dev" in version:
         return version.replace(".dev", "-dev.", 1)
-    # Unanchored on purpose: a trailing ``$`` stopped matching the moment a
-    # post-release suffix appeared, and ``3.1.0rc10.post16`` reached a plugin
-    # manifest verbatim.  The X.Y.Z prefix keeps the pattern specific enough.
+    # Unanchored on purpose: with a trailing ``$`` a post-release suffix
+    # (``X.Y.ZrcN.postM``) would stop the match and reach a plugin manifest
+    # verbatim.  The X.Y.Z prefix keeps the pattern specific enough.
     return re.sub(r"(\d+\.\d+\.\d+)rc(\d+)", r"\1-rc.\2", version)
 
 

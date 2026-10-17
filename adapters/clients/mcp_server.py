@@ -124,8 +124,8 @@ def _refusals_said(method):
     """``method`` as a tool whose contract refusals reach the model as what they are.
 
     mcp 2 shows the model ``Error executing tool <name>`` and nothing else for any exception but its own ``ToolError``,
-    so a refused call gave no reason to correct: an ``inspect`` asked for 40 lines where 24 is the most, a scope the
-    caller may not write.  A ``ContractError`` says only its code and the field it refused, never what was in it.
+    so a refused call would give no reason to correct: an ``inspect`` asked for 40 lines where 24 is the most, a scope
+    the caller may not write.  A ``ContractError`` says only its code and the field it refused, never what was in it.
     """
 
     @functools.wraps(method)
@@ -228,8 +228,9 @@ class CodexMCPServer:
     def _register_tools(self) -> None:
         for name, description, hints in _TOOLS:
             if name in _MUTATIONS and self.host not in _THREAD_META:
-                # Claude Code, WorkBuddy and dsh name no conversation with a tool call, so each of these was refused
-                # on every call (#245).  The person makes such a change through an agent that names its conversation.
+                # Claude Code, WorkBuddy and dsh name no conversation with a tool call, so each of these would be
+                # refused on every call: it is not offered.  The person makes such a change through an agent that names
+                # its conversation.
                 continue
             self.server.tool(name=name, description=description, annotations=hints, structured_output=True)(
                 _refusals_said(getattr(self, name))

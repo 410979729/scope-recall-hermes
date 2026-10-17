@@ -37,10 +37,10 @@ class HostBackpressure:
     def busy(self, kind: str, kwargs: dict[str, Any] | None = None) -> None:
         """A host call this session was too busy to take within its bound: counted and said, never waited out.
 
-        Waited out past Hermes' hook timeout, the call was abandoned and Hermes skipped that hook for every session
-        of the gateway for a minute (Hermes 0.21.5): Scope Recall registers one callback per hook.  A skipped
-        ``pre_llm_call`` leaves its turn id for the turn's start: post_llm_call names the turn's interim messages
-        and steers by it, and without it they were dropped.
+        Waited out past Hermes' hook timeout, the call would be abandoned and Hermes would skip that hook for every
+        session of the gateway for a minute (Hermes 0.21.5): Scope Recall registers one callback per hook.  A
+        skipped ``pre_llm_call`` leaves its turn id for the turn's start: post_llm_call names the turn's interim
+        messages and steers by it, and without it they would be dropped.
         """
         holder = self._adapter._holder
         if kind == "pre_llm_call":

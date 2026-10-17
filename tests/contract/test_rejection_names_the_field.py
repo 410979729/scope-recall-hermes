@@ -1,9 +1,10 @@
 """A rejected payload says which field to fix.
 
-Beta asked for a day's memory with ``mode=as_of`` and got ``INPUT_INVALID`` / ``format``:
-the accepted spelling is UTC only, the name ``as_of`` was already in the error's own path,
-and the keyword was reported instead.  The same field is what a failed derivation hands back
-to the model for its one repair attempt, where ``required`` told it nothing either.
+A day's memory asked for with ``mode=as_of`` and an instant in a refused spelling (the
+accepted one is UTC only) is answered ``INPUT_INVALID`` with the field ``as_of``, which is
+already in the error's own path, not with the keyword ``format``.  The same field is what a
+failed derivation hands back to the model for its one repair attempt, where ``required``
+would tell it nothing either.
 """
 
 from __future__ import annotations

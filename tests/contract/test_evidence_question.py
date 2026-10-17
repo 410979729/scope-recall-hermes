@@ -2,12 +2,11 @@
 
 Covers ``core/evidence_question.py`` and the dedup key it produces.  The
 ``UNIQUE(candidate, revision, evidence_fingerprint, rule_version)`` guard
-already existed to stop a question being asked twice; it never collided,
-because the key was a recency window that one arriving tool observation
-reshuffled.  Measured across Alpha's six most re-judged candidates, 830
-evidence arrivals sat between consecutive verdicts -- 679 tool observations
-against 74 first-hand statements -- and 93% of the verdicts bought were
-``insufficient_evidence`` again.
+stops a question being asked twice, which it can only do if the key is the
+question and not a recency window that one arriving tool observation
+reshuffles: the guard would never collide, and tool observations far outnumber
+first-hand statements between consecutive verdicts, so most verdicts bought
+would be ``insufficient_evidence`` again.
 """
 
 from __future__ import annotations
@@ -73,8 +72,8 @@ def test_testimony_order_does_not_matter():
 
 
 def test_accumulating_tool_output_is_never_a_new_question():
-    """Replayed over Alpha, re-judgements bought by growing non-first-hand
-    support came to 955 model calls and exactly one conclusion."""
+    """Growing non-first-hand support must not buy re-judgements: they cost
+    model calls and reach no new conclusion."""
     assert question_digest([_tool(n) for n in range(4)]) == question_digest([_tool(n) for n in range(64)])
 
 
@@ -141,8 +140,8 @@ def test_a_person_speaking_is_judged_at_once(app):
 
 def test_a_person_s_imported_words_are_in_the_window_as_testimony(app):
     """An agent's store brought into a shared store arrives as imports that keep the origin their
-    provenance verified.  The window ranked by the stored column, so such a message sat behind every
-    newer tool output, and the question it posed did not count it (the 3.2.0 audit)."""
+    provenance verified.  The window must not rank by the stored column, which would put such a message behind every
+    newer tool output, so that the question it poses would not count it."""
     from test_candidate_debounce import _register
 
     core, ctx = app
@@ -210,9 +209,9 @@ def _unanswerable(payload, evidence):
 
 
 def test_a_value_nobody_wrote_down_cannot_be_promoted():
-    """Measured on alpha: 46% of one day's evaluations carried evidence that
-    never contained the candidate's value, and qualification needs the value
-    inside a quote of the supplied sources."""
+    """Qualification needs the value inside a quote of the supplied sources, so
+    an evaluation whose evidence never contained the candidate's value cannot
+    succeed."""
     evidence = [_said("TEST-project 配色还没定。"), _said("工具输出：配色文件已保存。", origin="tool_observation")]
     assert _unanswerable(_payload(), evidence) == "value_not_in_evidence"
 

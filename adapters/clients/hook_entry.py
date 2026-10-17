@@ -145,8 +145,8 @@ def _keep_a_resident_server(home: Path, host: str, env_file: Path | None) -> Non
 def _prestart_vector_helper(raw: bytes) -> None:
     """Start the vector search's helper while the prompt is being stored (``vector.process_store.prestart``).
 
-    Each hook is a new process, and a helper started when the recall reached its vector search spent the rest of
-    the recall's budget importing LanceDB: Claude Code and Codex recalled from words alone.
+    Each hook is a new process, and a helper started when the recall reaches its vector search would spend the
+    rest of the recall's budget importing LanceDB: Claude Code and Codex would recall from words alone.
     """
     if sys.platform != "win32" or len(raw) > 65536:
         return

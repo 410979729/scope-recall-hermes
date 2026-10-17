@@ -133,8 +133,9 @@ def test_a_drain_queues_and_embeds_an_import_s_history(tmp_path: Path):
 
 def test_a_drain_s_backfill_makes_room_only_for_evaluations_the_pass_would_take(tmp_path: Path, monkeypatch):
     """The backfill keeps half a pass of embeddings while a candidate evaluation is ready, which the worker takes
-    after embeddings (rc10: 251 waited behind it).  Only one this pass would take counts: none without an
-    evaluator, under a provider hold, or in a pass that only purges, where making room would slow it for nothing."""
+    after embeddings, so evaluations would otherwise wait behind them.  Only one this pass would take counts: none
+    without an evaluator, under a provider hold, or in a pass that only purges, where making room would slow it for
+    nothing."""
     from scope_recall.runtime import instance as instance_module
     from scope_recall.runtime import model_budget
 

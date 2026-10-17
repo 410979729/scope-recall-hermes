@@ -102,7 +102,7 @@ class RecordReader:
                 return
         if self._hook.host == "claude-code":
             # Read here or sent by a client on another machine, of any version: the record keeps the reminders
-            # Claude's desktop app puts in a person's message, and they are not the person's (#248).
+            # Claude's desktop app puts in a person's message, and they are not the person's.
             lines = [(end, _person_words(entry)) for end, entry in lines]
         said = [entry for _end, entry in lines if entry is not None]
         # WorkBuddy's record names no turn: a person's message there is the turn its prompt hook kept for the same words,

@@ -141,7 +141,7 @@ def trusted_context(
         raise ValueError("session_id is required")
     shared = isinstance(config, SharedClientConfig)
     # A shared entry's mutations are bounded by what it may write; a local
-    # installation's by its visible scopes, as before.
+    # installation's by its visible scopes.
     scopes = audience.writable_scope_ids if shared and mutation else audience.allowed_scope_ids
     if not scopes:
         raise ValueError("allowed_scope_ids is required")

@@ -1,9 +1,9 @@
 """Tool-output vectors expire after the retention window; the rest of the memory stays.
 
-On a busy instance four in five captured sources were tool output, each
-carrying a 12 KB vector -- the bulk of daily growth -- while a few hundred of
-170,000 sources ever became claim evidence.  The window lets that bulk go
-without touching the text, the lexical index, or anything derived from it.
+On a busy instance most captured sources are tool output, each carrying a
+12 KB vector -- the bulk of daily growth -- while very few ever become claim
+evidence.  The window lets that bulk go without touching the text, the lexical
+index, or anything derived from it.
 """
 
 import sqlite3
@@ -172,7 +172,7 @@ def test_the_doctor_counts_expired_vectors_and_names_the_window(app, tmp_path):
 
 
 def test_a_repeated_or_withheld_tool_output_loses_its_vector_at_once(app, tmp_path):
-    """What the intake gate now keeps as sources only, older releases embedded:
+    """What the intake gate keeps as sources only, older releases embedded:
     the pass clears those whatever their age.  The earliest copy of a repeat
     keeps its vector."""
     core, ctx = app

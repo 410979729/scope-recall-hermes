@@ -575,7 +575,7 @@ def test_a_store_the_3_1_2_release_wrote_opens_at_1110_with_every_source_its_own
         assert conn.execute("SELECT count(*) FROM entries").fetchone()[0] == 0
 
 
-# --- A migration's destination is written whole before its store (#231) ---------------------------------------------
+# --- A migration's destination is written whole before its store ----------------------------------------------------
 
 _OLD_CLI = "platform:3:cli|workspace:6:hermes|agent:7:default|user:5:local"
 _OLD_DESKTOP = "platform:7:desktop|workspace:6:hermes|agent:7:default|user:11:srdesk_TEST"
@@ -645,9 +645,9 @@ def _owner_rows() -> list[dict[str, object]]:
 
 
 def test_a_destination_written_whole_takes_every_old_scope_as_itself(tmp_path: Path) -> None:
-    """#231's migration, done the supported way: the destination's manifest names the gateway owner, its DM and every
-    old scope before its store exists, so each old scope maps to itself and the owner reads all of them on each
-    surface, while another Feishu user reads nothing."""
+    """A migration done the supported way: the destination's manifest names the gateway owner, its DM and every old
+    scope before its store exists, so each old scope maps to itself and the owner reads all of them on each surface,
+    while another Feishu user reads nothing."""
     from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
     from scope_recall.adapters.hermes.installation import approve_local_platforms, load_installation_manifest
     from scope_recall.maintenance.upgrade import prepare_upgrade
@@ -689,9 +689,9 @@ def test_a_destination_written_whole_takes_every_old_scope_as_itself(tmp_path: P
 
 
 def test_a_manifest_rewritten_after_its_store_was_made_is_named(tmp_path: Path, capsys) -> None:
-    """#231: the destination was installed first, its store made with the owner's scope alone, and then given a
-    manifest naming more scopes, which no longer opens that store.  ``migrate prepare`` answered only
-    ``invalid_or_unavailable_input``; it now says what happened and what to do, and writes no job."""
+    """A destination installed first, its store made with the owner's scope alone, and then given a manifest naming
+    more scopes no longer opens that store.  ``migrate prepare`` says what happened and what to do, not only
+    ``invalid_or_unavailable_input``, and writes no job."""
     from scope_recall.adapters.hermes import install_hermes_scope_recall
     from scope_recall.adapters.hermes.installation import build_installation_manifest, write_installation_manifest
     from scope_recall.maintenance import upgrade_cli
@@ -785,7 +785,7 @@ def test_the_cli_runs_from_a_source_checkout():
     assert result.stdout.startswith("usage:")
 
 
-# --- 2.0 stores the migration job ended on (3.10.4) ------------------------------------------------------------------
+# --- 2.0 stores the migration job ended on ---------------------------------------------------------------------------
 
 _SHAPED_SCHEMA = """
 CREATE TABLE journal_entries (id INTEGER PRIMARY KEY, scope_id TEXT NOT NULL, shared_scope_id TEXT,
@@ -1214,10 +1214,10 @@ def test_a_record_sqlite_refuses_is_named_by_its_table_and_event_id(tmp_path: Pa
 def test_a_refusal_is_told_only_when_its_text_cannot_carry_a_row(
     tmp_path: Path, capsys, monkeypatch, kind, told_as_is
 ) -> None:
-    """The job answered ``invalid_or_unavailable_input`` for a CHECK that SQLite had named.  A constraint failure in
-    the forms SQLite gives one names a constraint, table or column of the schema, and the converter's refusals are
-    fixed phrases, so they are told; any other text stays masked, whatever its class, for an SQLite error can quote a
-    cell that is not UTF-8.  And the workflow names the reader contract the converter accepts (it named another)."""
+    """A CHECK failure that SQLite has named is told, not masked as ``invalid_or_unavailable_input``.  A constraint
+    failure in the forms SQLite gives one names a constraint, table or column of the schema, and the converter's
+    refusals are fixed phrases, so they are told; any other text stays masked, whatever its class, for an SQLite error
+    can quote a cell that is not UTF-8.  And the workflow names the reader contract the converter accepts."""
     from scope_recall.maintenance import upgrade_cli
     from scope_recall.maintenance.legacy_v2_compat import MEMORY_READER_CONTRACT, LegacyCompatibilityError
 

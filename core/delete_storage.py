@@ -54,9 +54,9 @@ def purge_work_ref(operation_id: str, scope_id: str) -> str:
 def purge_work_parts(ref: str) -> tuple[str, str]:
     """``(operation_id, scope_id)`` of a purge work subject.
 
-    The operation id holds no colon and a scope id may hold several (``workspace:6:hermes|agent:7:...``): the
-    subject splits at its first colon.  The worker split it at the last, found no such operation, and marked every
-    delete's purge on such a store obsolete, leaving the deleted text and its vectors on disk behind the read block.
+    The operation id holds no colon and a scope id may hold several (``workspace:6:hermes|agent:7:...``): the subject
+    splits at its first colon.  Split at the last, it names no such operation, and the worker would mark every delete's
+    purge on such a store obsolete, leaving the deleted text and its vectors on disk behind the read block.
     """
     operation_id, _colon, scope_id = str(ref).partition(":")
     return operation_id, scope_id
@@ -320,11 +320,11 @@ class Deletions:
     def requeue_unfinished_purges(self, *, now: str, limit: int = 8) -> int:
         """Give once more the purge a worker marked obsolete before it removed anything.
 
-        Up to 3.4.0rc8 the worker read a purge's operation id at the last colon of its subject (see
-        ``purge_work_parts``), so every delete's purge on a store whose scope ids hold colons was marked obsolete
-        and the operation's physical layers stayed pending.  Such a row, obsolete within three attempts, whose
-        delete operation still has a layer to remove, goes back to pending under a new lease token; each try counts
-        an attempt, so one that keeps ending obsolete stops being queued.
+        A purge whose operation id was read at the last colon of its subject (see ``purge_work_parts``) names no
+        operation on a store whose scope ids hold colons: it was marked obsolete with the operation's physical
+        layers still pending.  Such a row, obsolete within three attempts, whose delete operation still has a layer
+        to remove, goes back to pending under a new lease token; each try counts an attempt, so one that keeps
+        ending obsolete stops being queued.
         """
         conn = self._tx._check(write=True)
         # The obsolete purges looked at, not the ones queued, are bounded: a row that never qualifies must not hide
@@ -386,8 +386,9 @@ class Deletions:
         texts: list[frozenset[tuple[str, str]]] = []
 
         def forgotten_texts() -> frozenset[tuple[str, str]]:
-            # Each version of a deleted message is put together once, and only when a waiting row is looked into:
-            # put together for each of its segments, under the writer lease, a delete of long messages took seconds.
+            # Each version of a deleted message is put together once, and only when a waiting row is looked into: put
+            # together for each of its segments under the writer lease, it would make a delete of long messages take
+            # seconds.
             if not texts:
                 texts.append(
                     frozenset(
@@ -518,7 +519,7 @@ class Deletions:
             if kind == "event":
                 lexical_index.forget(conn, ref)
                 # A row already purged keeps what it has: a restore purges its file again, and written over from its
-                # empty text, the digests a first purge kept would be lost; a row an older release purged keeps
+                # empty text, the digests a first purge kept would be lost; a row purged without them keeps
                 # having none.
                 for (revision,) in conn.execute(
                     "SELECT DISTINCT source_revision FROM source_events WHERE event_id=?", (ref,)

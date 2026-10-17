@@ -34,15 +34,15 @@ from .tool_surface import TOOL_NAMES
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
 
-#: The adapter's log name, which these lines carried before the adapter was split: a host writes it into each line,
-#: and a logging configuration may name it.
+#: The adapter's log name, the provider module's, which this module logs under as well: a host writes it into each
+#: line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 
 #: Turns whose opening message ``pre_llm_call`` stored, remembered across a compression's session switch.
 _USER_CAPTURED_TURNS = 64
 #: What one turn showed between tool calls, written message by message after the reply: the first ones are
 #: kept, the answer is always written, and a turn past this says so (``capture_gap:interim_limit``).  With no
-#: bound a turn of three hundred tool steps held the adapter lock for minutes while each waited for the store.
+#: bound a turn of three hundred tool steps would hold the adapter lock for minutes while each waited for the store.
 _INTERIM_PER_TURN = 64
 #: Steers this process wrote or found stored, by their key: read again at every turn's end, compression and session
 #: end, each is looked up and written once.
@@ -102,9 +102,9 @@ def _is_scope_recall_tool_name(tool_name: object) -> bool:
 
 #: Hermes' own tools that hand back what was already said or remembered: its search over past
 #: sessions and its built-in memory notes.  Their output is recall, not a new observation.  Captured
-#: as one, a session search on the pilot came back as a page of old conversation, and consolidation
-#: turned it into six new facts that then filled the next automatic recall.  Like Scope Recall's own
-#: output it is kept as a source only.
+#: as one, a session search comes back as a page of old conversation, and consolidation would turn
+#: it into new facts (six from one search in one store) that then fill the next automatic recall.
+#: Like Scope Recall's own output it is kept as a source only.
 _HOST_MEMORY_TOOL_NAMES = frozenset({"session_search", "memory"})
 
 
@@ -210,8 +210,9 @@ class TurnCapture:
 
         A call that failed is kept as well, as Codex's are.  Hermes calls a result failed for a non-zero exit code or
         an error field, and what such a call printed (a traceback, a failing test) is what the agent saw and acted
-        on; dropped as having no scope, it was about 6% of the five instances' tool results, each logged as a
-        failed capture.  It is stored ``partial``, which also keeps it from ending its task (``core/episodes.py``).
+        on; dropped as having no scope, such results were about 6% of the tool results of five installations, each
+        logged as a failed capture.  It is stored ``partial``, which also keeps it from ending its task
+        (``core/episodes.py``).
         """
         identity = self._adapter._require_identity()
         if identity.read_only or not identity.runtime_audience.allowed_scope_ids:
@@ -274,8 +275,8 @@ class TurnCapture:
 
         Hermes calls this once, when a turn that has an answer ends, with a copy of the conversation, and
         before it sends the reply.  It reads that copy and writes nothing, so it takes only ``_said_lock``: under
-        the adapter lock the reply waited behind whatever held it, a capture on a busy store or a recall, and
-        a callback Hermes gave up on was then skipped for a minute, for every session (Hermes 0.21.5).
+        the adapter lock the reply would wait behind whatever held it, a capture on a busy store or a recall, and
+        a callback Hermes gives up on is then skipped for a minute, for every session (Hermes 0.21.5).
         """
         identity = self._adapter._require_identity()
         if identity.read_only or not identity.runtime_audience.allowed_scope_ids:
@@ -300,18 +301,18 @@ class TurnCapture:
 
         Hermes runs this on its memory worker after the reply, with no time limit, while the next turn may already
         start.  Held for the whole turn (up to 64 interim messages, the steers, the reply and the retries, each
-        waiting up to 1 s for a busy store) it kept the next turn's hooks, its start and its prefetch waiting.
+        waiting up to 1 s for a busy store) it would keep the next turn's hooks, its start and its prefetch waiting.
         The captures keep the binding the turn was said under (``bound``).  One turn is written at a time, and a
-        shutdown waits for it (the adapter's ``_sync_lock``): one that came between two captures closed the runtime
-        under the rest of the turn, the reply included.
+        shutdown waits for it (the adapter's ``_sync_lock``): one that came between two captures would close the
+        runtime under the rest of the turn, the reply included.
         """
         adapter = self._adapter
         with adapter._lock:
             identity = adapter._require_identity()
             if identity.read_only:
                 return
-            # The turn's message and reply are dated when its writing begins: dated as each was reached, the reply
-            # came after the next turn's message, written between this turn's captures.
+            # The turn's message and reply are dated when its writing begins: dated as each is reached, the reply
+            # could come after the next turn's message, written between this turn's captures.
             said_at = adapter._utc_now()
             effective_session = adapter._effective_session_id(session_id)
             active_turn = adapter._active_turn_id

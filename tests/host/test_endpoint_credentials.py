@@ -193,10 +193,9 @@ def _responses(endpoint, **more):
 
 
 def test_a_consolidation_route_reaches_a_model_server_on_this_machine(tmp_path, monkeypatch):
-    """#244: the embedding route has reached a model server on this machine over plain HTTP since 3.9.7, but the
-    consolidation route still required https://, so a local-first setup could embed against its loopback server and
-    not consolidate against the same one.  Both chat dialects now go there through the real worker, and the key still
-    never leaves over plain HTTP."""
+    """The consolidation route reaches a model server on this machine over plain HTTP, as the embedding route does,
+    so a local-first setup can embed and consolidate against the same loopback server.  Both chat dialects go there
+    through the real worker, and the key never leaves over plain HTTP."""
     from scope_recall.runtime.auxiliary import build_auxiliary_runtime
 
     replies = {
@@ -266,9 +265,9 @@ def test_a_consolidation_route_reaches_a_model_server_on_this_machine(tmp_path, 
 
 @pytest.mark.parametrize("shape", [_chat, _responses])
 def test_the_consolidation_route_holds_the_embedding_route_s_endpoint_rule(tmp_path, shape):
-    """#244: plain HTTP to a model server on this machine needs no opt-in, every spelling of it; another host needs
+    """Plain HTTP to a model server on this machine needs no opt-in, every spelling of it; another host needs
     the literal ``allow_insecure_endpoint``, as the embedding route's, and the transport that sends holds it.  What the
-    sending boundary refused anyway (a credential in the URL, user-info, another scheme) is refused at load now."""
+    sending boundary refused anyway (a credential in the URL, user-info, another scheme) is refused at load."""
     from scope_recall.runtime.auxiliary import build_auxiliary_runtime
 
     folder = iter(tmp_path / f"TEST-{index}" for index in range(100))

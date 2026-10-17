@@ -456,7 +456,7 @@ def _held_capture(provider, monkeypatch, call_id: str):
 
 def _held_message(provider, monkeypatch):
     """A message's capture holds its session while its store write waits until ``release`` is set: pre_llm_call
-    writes with the session held, as a tool hook no longer does."""
+    writes with the session held, unlike a tool hook."""
     entered, release = _held_capture(provider, monkeypatch, "turn-held")
     done, _, thread = _in_thread(
         lambda: provider.observe_pre_llm(
@@ -479,9 +479,9 @@ def _tool_rows(hermes_home) -> int:
 
 
 def test_a_hook_does_not_wait_out_its_busy_session(adapter, monkeypatch, caplog):
-    """A hook waited for its own session without a limit.  Past Hermes' hook timeout (30 s) the call was abandoned
-    and Hermes 0.21.5 then skipped that hook for a minute for every session, Scope Recall registering one callback
-    per hook (tianji 2026-09-26: three tool hooks behind their session's prefetch)."""
+    """A hook does not wait for its own session without a limit.  Past Hermes' hook timeout (30 s) the call is
+    abandoned and Hermes 0.21.5 then skips that hook for a minute for every session, Scope Recall registering one
+    callback per hook."""
     provider, _clock = adapter
     monkeypatch.setattr(hooks, "_SESSION_WAIT_CAP_S", 0.05, raising=False)
     entered, release, first, first_thread = _held_message(provider, monkeypatch)
@@ -504,9 +504,9 @@ def test_a_hook_does_not_wait_out_its_busy_session(adapter, monkeypatch, caplog)
 
 
 def test_a_steps_tool_results_are_written_side_by_side(adapter, hermes_home, monkeypatch):
-    """Hermes calls the hook for each of a step's parallel tool calls at once.  A capture held the session across its
-    store write (1.4-4.4 s on the shared store), and the hooks behind it past their bound were not taken: yuheng 6
-    and tianji 2 tool results on 2026-10-03.  The write now runs without the session."""
+    """Hermes calls the hook for each of a step's parallel tool calls at once.  A capture that held the session across
+    its store write (1.4-4.4 s on the shared store) would keep the hooks behind it past their bound, and their tool
+    results would not be taken.  The write runs without the session."""
     provider, _clock = adapter
     monkeypatch.setattr(hooks, "_SESSION_WAIT_CAP_S", 0.05, raising=False)
     entered, release = _held_capture(provider, monkeypatch, "slow-call")
@@ -554,8 +554,8 @@ def test_a_shutdown_waits_for_a_tool_result_being_written(adapter, hermes_home, 
 
 
 def test_a_tool_result_outliving_the_shutdowns_wait_is_counted_not_raised(adapter, hermes_home, monkeypatch):
-    """Past the shutdown's bounded wait the write still lands; its bookkeeping, done in a closed session, raised
-    into the host's hook runner (review of 3.5.1)."""
+    """Past the shutdown's bounded wait the write still lands; its bookkeeping, done in a closed session, is counted
+    and does not raise into the host's hook runner."""
     provider, _clock = adapter
     monkeypatch.setattr(provider_module, "_CAPTURE_DRAIN_WAIT_S", 0.3)
     entered, release = _held_capture(provider, monkeypatch, "slow-call")
@@ -578,8 +578,8 @@ def test_a_tool_result_outliving_the_shutdowns_wait_is_counted_not_raised(adapte
 
 
 def test_a_turns_retry_pass_leaves_a_tool_result_being_written_alone(adapter, hermes_home, monkeypatch, caplog):
-    """A capture sat in the retry buffer while it wrote; once its write ran without the session, a turn's retry
-    pass wrote it a second time, and one of the two was logged as not stored (review of 3.5.1)."""
+    """A capture that sits in the retry buffer while it writes is left alone by a turn's retry pass, which would
+    otherwise write it a second time and log one of the two as not stored."""
     provider, _clock = adapter
     real = provider._core.record_host_event
     entered, release = threading.Event(), threading.Event()
@@ -617,7 +617,7 @@ def test_a_turns_retry_pass_leaves_a_tool_result_being_written_alone(adapter, he
 @pytest.mark.parametrize("switch", ["session", "audience"])
 def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(adapter, hermes_home, monkeypatch, switch):
     """The write runs without the session, so a session or audience switch can come in meanwhile: the capture
-    keeps the session and scope it was said in, and stays out of the new session's fence (review of 3.5.1)."""
+    keeps the session and scope it was said in, and stays out of the new session's fence."""
     provider, _clock = adapter
     before = provider._identity
     real = provider._core.source_by_event_key
@@ -668,8 +668,8 @@ def test_prefetch_does_not_wait_out_its_busy_session(adapter, monkeypatch):
 
 
 def test_prefetch_does_not_hold_its_session_while_it_recalls(adapter, hermes_home, monkeypatch):
-    """Hermes gives a prefetch 8 s and goes on with the turn; held through the recall, the session kept the turn's
-    tool hooks waiting behind it (tianxuan 2026-09-30: the prefetch timed out, the tool hook 33 s later)."""
+    """Hermes gives a prefetch 8 s and goes on with the turn; held through the recall, the session would keep the
+    turn's tool hooks waiting behind it."""
     provider, _clock = adapter
     provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-1", user_message="TEST where does orca42 run")
     real = provider._core.recall_packet
@@ -725,8 +725,8 @@ def test_a_prefetch_given_up_on_leaves_the_next_turn_its_own(adapter, monkeypatc
 
 
 def test_the_next_turn_starts_while_the_last_one_is_written(adapter, monkeypatch):
-    """sync_turn runs on Hermes' memory worker after the reply.  Holding the session for the whole turn, it kept the
-    next turn's start waiting on it (3.56 s behind 14 writes of 0.25 s, measured on 3.4.9)."""
+    """sync_turn runs on Hermes' memory worker after the reply.  Holding the session for the whole turn would keep
+    the next turn's start waiting on it."""
     provider, _clock = adapter
     provider.on_turn_start(10, "TEST 跑三步", turn_id="turn-10")
     history = [{"role": "user", "content": "TEST 跑三步"}]
@@ -782,7 +782,7 @@ def test_a_hook_past_the_host_timeout_is_said_and_counted(adapter, monkeypatch, 
         time.sleep(0.1)  # past the shortened host timeout by several 15.6 ms clock ticks
         return observe(**kwargs)
 
-    # The dispatcher calls the unlocked observer, the seam that must be slowed (review of 3.5.1).
+    # The dispatcher calls the unlocked observer, the seam that must be slowed.
     monkeypatch.setattr(provider, "_observe_post_tool_call", slow_observe)
     _register_adapter_instance(provider)
     try:
@@ -796,7 +796,7 @@ def test_a_hook_past_the_host_timeout_is_said_and_counted(adapter, monkeypatch, 
 
 def test_a_host_that_never_times_out_a_hook_hears_of_no_skip(adapter, monkeypatch, caplog):
     """Hermes reads a hook timeout of 0 or less as none: it waits for the hook and skips nothing, so nothing may say
-    that it does (review of 3.4.10)."""
+    that it does."""
     provider, _clock = adapter
     monkeypatch.setattr(hooks, "host_hook_timeout", lambda: None)
     _register_adapter_instance(provider)
@@ -834,8 +834,8 @@ def _turn_with_interim(provider, turn: str, steps: int) -> None:
 
 
 def test_a_shutdown_waits_for_the_turn_being_written(adapter, monkeypatch):
-    """sync_turn gives the session back between its captures; a shutdown that came in between closed the runtime
-    under the rest of the turn, and the reply was never written (review of 3.4.10).  It waits, as on 3.4.9."""
+    """sync_turn gives the session back between its captures; a shutdown that comes in between must not close the
+    runtime under the rest of the turn, or the reply is never written.  It waits."""
     provider, _clock = adapter
     _turn_with_interim(provider, "turn-10", 3)
     keys = []
@@ -870,8 +870,8 @@ def test_a_shutdown_waits_for_the_turn_being_written(adapter, monkeypatch):
 
 
 def test_a_turn_is_dated_when_its_writing_begins(adapter, monkeypatch):
-    """The next turn's hooks may write between this turn's captures; dated as each was reached, the reply was said
-    after the next turn's message (review of 3.4.10)."""
+    """The next turn's hooks may write between this turn's captures; dated as each is reached, the reply would be
+    said after the next turn's message."""
     provider, _clock = adapter
     _turn_with_interim(provider, "turn-10", 2)
     times = iter(f"2026-10-01T12:00:{second:02d}Z" for second in range(60))
@@ -890,8 +890,9 @@ def test_a_turn_is_dated_when_its_writing_begins(adapter, monkeypatch):
 
 
 def test_a_skipped_pre_llm_call_leaves_its_turn_id_for_the_turn(adapter, monkeypatch):
-    """Hermes 0.21.5 starts a turn without its id: a pre_llm_call that could not wait for its session was the only
-    call to bring it, and the interim messages post_llm_call names by it were dropped (review of 3.4.10)."""
+    """Hermes 0.21.5 starts a turn without its id: a pre_llm_call that cannot wait for its session is the only call
+    to bring it, so it leaves the id for the turn; otherwise the interim messages post_llm_call names by it would be
+    dropped."""
     provider, _clock = adapter
     monkeypatch.setattr(hooks, "_SESSION_WAIT_CAP_S", 0.05)
     _register_adapter_instance(provider)
@@ -922,8 +923,7 @@ def test_another_session_never_waits_for_this_one(adapter, installed_core, initi
     """Each Hermes session has an adapter and a lock of its own, and a hook goes to the one bound to its session."""
     provider, _clock = adapter
     other = _another_session(installed_core, initialize_kwargs)
-    # Held by a message's capture, which keeps its session through its write, as a tool result's no longer does
-    # (review of 3.5.1: held by a tool capture, one lock shared by both sessions passed).
+    # Held by a message's capture, which keeps its session through its write, unlike a tool result's.
     entered, release, first, first_thread = _held_message(provider, monkeypatch)
     _register_adapter_instance(provider)
     _register_adapter_instance(other)
@@ -1003,9 +1003,9 @@ def _until(predicate, seconds=_PROMPTLY):
 
 def test_a_buffered_tool_result_is_written_again_without_a_turn_s_end(adapter, hermes_home, monkeypatch):
     """Hermes runs ``sync_turn`` only after a turn with a message and a reply: after a turn it injected, interrupted
-    or got no reply for, a buffered tool result waited; an idle agent evicted from Hermes' cache keeps its adapter
-    without a shutdown, and a gateway restart then dropped it (tianji, 10 tool results on 2026-10-04).  The retry
-    thread writes it, and ends once the buffer is empty."""
+    or got no reply for, a buffered tool result waits; an idle agent evicted from Hermes' cache keeps its adapter
+    without a shutdown, and a gateway restart would then drop it.  The retry thread writes it, and ends once the
+    buffer is empty."""
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)  # held until the capture is seen kept
     _busy_store(provider, monkeypatch, 1)
@@ -1051,9 +1051,9 @@ def test_a_retry_pass_writes_every_buffered_capture_it_has_time_for(adapter, her
 
 
 def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_home, monkeypatch, caplog):
-    """Kept for good, a capture of a full inbox, or of an installation whose scopes changed under a running gateway,
-    was retried every 30 s for the life of the process, and its thread held an evicted agent's adapter (review of
-    3.6.1).  Past its time it is dropped and logged as lost, and the thread ends."""
+    """A capture of a full inbox, or of an installation whose scopes changed under a running gateway, is not kept for
+    good: retried every 30 s for the life of the process, its thread would hold an evicted agent's adapter.  Past its
+    time it is dropped and logged as lost, and the thread ends."""
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.2)
@@ -1077,8 +1077,8 @@ def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_h
 
 
 def test_a_retry_pass_that_raises_still_gives_up_what_is_past_its_time(adapter, hermes_home, monkeypatch, caplog):
-    """A manifest that is JSON but not an object raised past the pass's own handling, before any capture's give-up:
-    the thread retried for good and held an evicted agent's adapter (review of 3.6.1)."""
+    """A manifest that is JSON but not an object does not raise past the pass's own handling, before any capture's
+    give-up, which would have the thread retry for good and hold an evicted agent's adapter."""
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.2)
@@ -1124,8 +1124,8 @@ def test_the_adapter_s_parts_log_under_its_name():
 
 
 def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes_home, monkeypatch, caplog):
-    """Each failed retry said its line again: driven by the thread, a line per capture every 30 s, idle or not
-    (review of 3.6.1).  It is said once when it is kept, and once when it is stored."""
+    """A failed retry does not say its line again, which driven by the thread would be a line per capture every
+    30 s, idle or not.  It is said once when it is kept, and once when it is stored."""
     import logging
 
     caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes.provider")
@@ -1146,8 +1146,8 @@ def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes
 
 
 def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, hermes_home, monkeypatch):
-    """On a writer held past every budget a shutdown spent a whole 5 s pass for each adapter that kept anything,
-    holding up a gateway's planned stop (review of 3.6.1)."""
+    """On a writer held past every budget a shutdown spends at most its short pass, not a whole 5 s pass for each
+    adapter that kept anything, which would hold up a gateway's planned stop."""
     from scope_recall.contracts import ContractError
 
     provider, _clock = adapter
@@ -1167,8 +1167,8 @@ def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, herme
 
 
 def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(adapter, hermes_home, monkeypatch):
-    """A turn's own message and reply were written only after a 5 s retry of a capture the store could not take,
-    holding Hermes' single memory worker that long (review of 3.6.1)."""
+    """A turn's own message and reply are not written only after a 5 s retry of a capture the store cannot take,
+    which would hold Hermes' single memory worker that long."""
     from scope_recall.contracts import ContractError
 
     provider, _clock = adapter
@@ -1194,8 +1194,8 @@ def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(a
 def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_end(
     adapter, hermes_home, monkeypatch, caplog
 ):
-    """A replay that outlived the shutdown's drain was written once more by the shutdown's pass; and its end, once
-    it came, was never said (reviews of 3.6.1)."""
+    """A replay that outlives the shutdown's drain is left to its thread, not written once more by the shutdown's
+    pass; and its end, once it comes, is said."""
     import logging
 
     caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes.provider")
@@ -1264,8 +1264,8 @@ def test_a_session_switch_keeps_the_buffer_and_writes_it_in_the_session_it_was_s
 
 
 def test_a_capture_whose_scope_was_taken_away_is_dropped_and_said(adapter, hermes_home, monkeypatch, caplog):
-    """The scope the capture was said in is no longer granted: nothing is written to it, and the drop is logged,
-    where it used to leave a gap only in the process's memory."""
+    """The scope the capture was said in is no longer granted: nothing is written to it, and the drop is logged, not
+    left as a gap only in the process's memory."""
     from dataclasses import replace
 
     provider, _clock = adapter
@@ -1290,8 +1290,8 @@ def test_a_capture_whose_scope_was_taken_away_is_dropped_and_said(adapter, herme
 def test_a_shutdown_writes_the_buffer_once_more_and_says_what_it_could_not(
     adapter, installed_core, initialize_kwargs, hermes_home, monkeypatch, caplog
 ):
-    """A shutdown reported the buffer as pending in memory and dropped it: every gateway restart lost what it held
-    (2026-10-04)."""
+    """A shutdown writes the buffer once more and says what it could not, instead of reporting it as pending in
+    memory and dropping it, which would lose what it held at every gateway restart."""
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)

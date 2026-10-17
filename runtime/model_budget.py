@@ -612,8 +612,8 @@ _HOLD_LOOKBACK_ROWS = 32
 _NO_ANSWER_PREFIXES = (_RESERVED, "network_error", "timeout")
 #: Refusals that started this close together were in flight at the same time --
 #: one group's concurrent requests -- and are one refusal, not several in a row.
-#: Counted one by one, a single wave of four refused requests held the model for
-#: eight minutes instead of one.
+#: Counted one by one, a single wave of four refused requests would hold the model
+#: for eight minutes instead of one.
 _SAME_WAVE_NS = 1_000_000_000
 
 

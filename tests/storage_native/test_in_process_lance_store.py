@@ -1,11 +1,10 @@
 """The in-process LanceDB store can be published to and purged through the runtime's two seams.
 
-This is the store every LanceDB install off Windows runs (``build_vector_store``), and until #99 it
-could do neither: see ``tests/contract/test_every_store_meets_the_runtime.py``, which holds the
-behaviour and runs it against the SQLite companion.  It is driven directly here rather than through
-``build_vector_store``, which hands Windows the helper-process store, so that the in-process one is
-exercised wherever this tier runs.  LanceDB needs a socket and a child process to load, which is why
-these cases live in the native tier and not beside the others.
+This is the store every LanceDB install off Windows runs (``build_vector_store``).  The behaviour is
+held in ``tests/contract/test_every_store_meets_the_runtime.py``, which runs it against the SQLite
+companion.  It is driven directly here rather than through ``build_vector_store``, which hands
+Windows the helper-process store, so that the in-process one is exercised wherever this tier runs.  LanceDB needs a
+socket and a child process to load, which is why these cases live in the native tier and not beside the others.
 """
 
 from __future__ import annotations

@@ -3,6 +3,14 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.11.0] - 2026-10-17
+
+**The documentation, the code's comments and the tests' descriptions say what holds now.** Process notes, incident stories, trial logs, release-candidate numbers, dates, the names of particular installations and issue numbers are gone from them; what they recorded stays in the commit history and in this changelog. Statements that no longer matched the code were corrected on the way: `daily_work_limit` defaults to 0 (no cap), not 256; recall's `budget_tokens` counts estimated tokens, not UTF-8 bytes; a tool output's vector is kept for `tool_output_retention_days`, not for good; an explicit correction or confirmation changes a fact as it is captured; and the JSON schemas are checked at run time by `contracts.py`.
+
+### Upgrading from 3.10.6
+
+Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110).
+
 ## [3.10.6] - 2026-10-17
 
 Three reports, each with a test that failed on 3.10.5 before its fix; thanks to everyone who sent them.

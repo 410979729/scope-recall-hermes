@@ -60,7 +60,7 @@ def _cited_pairs(resume) -> tuple[tuple[str, int], ...]:
 
 def _source_states(conn, pairs) -> dict:
     """Visibility, liveness and capture gaps of the given source versions, in one query and one row: read row by row,
-    an episode's 200 members cost a busy Hermes gateway a GIL handoff each inside a capture's write
+    an episode's 200 members would cost a busy Hermes gateway a GIL handoff each inside a capture's write
     (``lexical_index.index_terms``)."""
     if not pairs:
         return {}
@@ -102,7 +102,7 @@ class Episodes:
         # is derived from those sources, and an uncited member that changed
         # does not invalidate it.  Without one every member counts.  Either way
         # the sources are judged in one query, not loaded one by one: a
-        # 200-member episode cost 200 source loads per read, on every listing.
+        # 200-member episode would cost 200 source loads per read, on every listing.
         judged = _cited_pairs(resume) if resume else tuple((r[0], r[1]) for r in links)
         gaps = []
         states = _source_states(conn, judged)

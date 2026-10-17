@@ -105,7 +105,7 @@ def main() -> None:
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     # LanceDB is imported now rather than on the first request: a helper started ahead of its store
     # (``process_store.prestart``) has then spent its 2 s of importing while its host stored the message.
-    # A failed import is left to that request, which reports it as before.
+    # A failed import is left to that request, which reports it.
     try:
         with contextlib.redirect_stdout(sys.stderr):
             native_modules()

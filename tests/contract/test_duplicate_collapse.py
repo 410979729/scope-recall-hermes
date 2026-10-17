@@ -1,11 +1,11 @@
 """A packet slot must not be spent saying the same thing twice.
 
 Covers ``core/duplicate_collapse.py`` and its use in the retrieval pipeline.
-The pipeline de-duplicated on ``(kind, ref, revision)`` -- identity, not
-content -- which is correct for rows and wrong for packets: on Alpha, where a
-legacy import re-delivered the same bodies under fresh identities, one document
-took four of six delivered slots and the document that answered the question
-was never delivered at all.
+De-duplicating on ``(kind, ref, revision)`` -- identity, not content -- is
+correct for rows and wrong for packets: where a legacy import re-delivers the
+same bodies under fresh identities, one document would take four of six
+delivered slots and the document that answers the question would never be
+delivered at all.
 """
 
 from __future__ import annotations

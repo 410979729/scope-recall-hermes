@@ -24,8 +24,8 @@ from .identity import HermesIdentity, HermesRuntimeScope, host_scope_payload, tr
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
 
-#: The adapter's log name, which these lines carried before the adapter was split: a host writes it into each line,
-#: and a logging configuration may name it.
+#: The adapter's log name, the provider module's, which this module logs under as well: a host writes it into each
+#: line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 
 #: How long one capture waits for the store's writer lease.
@@ -136,8 +136,8 @@ class CaptureWriter:
 
     def _snapshot(self, context, event: dict, identity, gaps, scope_id: str, bound: HermesIdentity):
         """What a failed write would keep to try again, made now and kept only once a write failed for a reason that
-        may pass.  Kept before the write, a capture whose store I/O runs without the lock sat in the buffer while it
-        wrote, and a retry pass of the same session wrote it a second time."""
+        may pass.  Kept before the write, a capture whose store I/O runs without the lock would sit in the buffer while
+        it wrote, and a retry pass of the same session would write it a second time."""
         if identity is None or identity in self._adapter._retry.captures:
             return None
         if len(json.dumps(event, ensure_ascii=False).encode("utf-8")) > _RETRY_EVENT_BYTES:
@@ -163,9 +163,8 @@ class CaptureWriter:
         holder = adapter._holder
         if release:
             # The store I/O without the lock, which the caller (``sync_turn``, a tool hook) holds exactly once.  Held
-            # across the write, it was taken straight back by this thread as it released it: the next turn's start
-            # got in after 2 of 14 such captures (measured on 3.4.9).  Only the store is touched until it is taken
-            # again.
+            # across the write, it would be taken straight back by this thread as it released it: measured, the next
+            # turn's start got in after 2 of 14 such captures.  Only the store is touched until it is taken again.
             adapter._captures_in_flight += 1
             adapter._holder = None
             adapter._lock.release()
@@ -226,8 +225,8 @@ class CaptureWriter:
 
     def _closed_meanwhile(self, identity, outcome: CaptureReceipt | Exception, replay: bool):
         """A shutdown stopped waiting for this write and closed the session meanwhile.  The write itself may well
-        have landed (the store is not closed with the session); its bookkeeping belongs to a closed session, and
-        raised into the host's hook runner."""
+        have landed (the store is not closed with the session); its bookkeeping belongs to a closed session, and done
+        there it would raise into the host's hook runner."""
         adapter = self._adapter
         receipt = None if isinstance(outcome, Exception) else outcome
         stored = receipt is not None and receipt.durability in ("persisted", "queued")
@@ -259,8 +258,8 @@ class CaptureWriter:
         adapter = self._adapter
         adapter._retry.captures.pop(identity, None)
         if identity is not None:
-            # Durably queued: the worker stores it from the inbox.  Left pending, it held one of the
-            # ledger's 64 slots until the session ended, and a full ledger refused every capture.
+            # Durably queued: the worker stores it from the inbox.  Left pending, it would hold one of the
+            # ledger's 64 slots until the session ended, and a full ledger refuses every capture.
             adapter._ledger.confirm(identity)
             if replay:
                 _log.info("scope-recall: queued on retry: %s", label(identity))
@@ -325,9 +324,10 @@ class CaptureWriter:
         retried = identity in adapter._retry.captures
         if retried:
             adapter._merge_gaps(("capture_gap:retry_memory_only", "capability_gap:durable_capture_ingress_unavailable"))
-        # The source's key and the failure's code only, never its content: a capture that failed used to leave
-        # no trace outside this process's memory.  A retry that fails again, and is still kept, is not said again:
-        # driven by the retry thread, that was a line per capture every 30 s; its end is said (stored, dropped, lost).
+        # The source's key and the failure's code only, never its content: without this line, a capture that failed
+        # would leave no trace outside this process's memory.  A retry that fails again, and is still kept, is logged at
+        # debug level only: as a warning, the retry thread would write a line per capture every 30 s.  Its end is said
+        # (stored, dropped, lost).
         (_log.debug if replay and retried else _log.warning)(
             "scope-recall: not stored (%s)%s: %s", reason, ", kept to retry" if retried else "", name[:200]
         )

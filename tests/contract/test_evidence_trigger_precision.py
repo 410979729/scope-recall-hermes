@@ -1,9 +1,8 @@
 """A source becomes a candidate's evidence when it can speak to that candidate.
 
-Any shared term used to be enough. On alpha that had attached 116,000 sources to 1,215 live candidates, and
-6% of them restated the candidate they were attached to: tool transcripts sharing one bigram with nearly every
-candidate, each owing pages of trigger work and crowding the evidence an evaluation is shown. First-hand
-testimony keeps the old rule, because a person can confirm a value without repeating it.
+A shared term is not enough: tool transcripts sharing one bigram with nearly every candidate would attach to
+all of them, each owing pages of trigger work and crowding the evidence an evaluation is shown. First-hand
+testimony needs only a shared term, because a person can confirm a value without repeating it.
 """
 
 from __future__ import annotations

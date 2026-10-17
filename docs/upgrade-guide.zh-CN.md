@@ -42,11 +42,11 @@ Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际�
 
 ## 支持与验收
 
-当前转换器支持已验证的官方 578b SQLite 基线及明确实现的兼容扩展。
+转换器支持已验证的官方 578b SQLite 基线及明确实现的兼容扩展。
 2.0.1 旧库的记忆读取语义需要 Agent 核对后显式选用对应契约
 （`--legacy-reader-contract legacy-2.0.1/memories-physical-scope-in-accessible-scopes`）。
-旧向量目录不直接导入；SQLite 是真值，向量由现有 worker 重建。
-未知表、未知列、无法无损表达的事实或权限仍需兼容工作，不能宣称任意旧版都完美迁移。
+旧向量目录不直接导入；SQLite 是真值，向量由 worker 重建。
+未知表、未知列、无法无损表达的事实或权限会阻止切换，不能宣称任意旧版都完美迁移。
 
 离线迁移通过、wheel 安装成功、实际宿主已加载、真实旧记忆可用分别记录；
 只完成前两项不能报告后两项成功。

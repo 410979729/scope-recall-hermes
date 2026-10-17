@@ -234,12 +234,12 @@ def _available_types(tx, scope_id, policy, important, candidates=WORK_TYPES):
 def _repeated_tool_output(tx, scope_id, text) -> bool:
     """Whether an earlier, still readable tool output in this scope has exactly this content.
 
-    Measured in one store, 77% of 132,000 tool outputs were byte-identical to
-    an earlier one, and each was embedded again.  The earlier copy already carries
-    the vector and the lexical index lists both, so a repeat is kept as a
-    source only.  An earlier copy that was itself kept as a source only (recall
-    output, a repeat, a withheld summary) carries no vector and does not count.
-    Text from a person is never a repeat: saying it again is new.
+    Measured in one store, 77% of 132,000 tool outputs were byte-identical to an
+    earlier one.  The earlier copy already carries the vector and the lexical
+    index lists both, so a repeat is kept as a source only.  An earlier copy that
+    was itself kept as a source only (recall output, a repeat, a withheld summary)
+    carries no vector and does not count.  Text from a person is never a repeat:
+    saying it again is new.
     """
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return (
@@ -394,9 +394,9 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
 
     Fresh conversation -- a human_direct or tool_observation source inside the
     worker's fresh lane window -- is refilled first, oldest first, and may use
-    the important reserve.  Oldest-first alone left a message typed now behind
-    every older deferred source, and behind important ones for good while they
-    kept the reserve full.  The ceilings themselves are unchanged.
+    the important reserve.  Oldest-first alone would leave a message typed now
+    behind every older deferred source, and behind important ones for good
+    while they keep the reserve full.
     """
     if type(limit) is not int or not 1 <= limit <= 64:
         raise ContractError("INPUT_INVALID", "deferred_limit")
@@ -410,8 +410,8 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
     # again there by ``_schedule`` (its revision, visibility and the queue's room).  Under the lease the scan held
     # it 9.8 s on a large store with nothing deferred; with one deferred source that had no room, or an older
     # revision's marker the page never selects, it would run on every pass and select nothing.  The probe asks
-    # for the newest revision as the page does: nothing clears an older revision's marker, so one was
-    # enough to start the page's scan on every pass, forever.
+    # for the newest revision as the page does: nothing clears an older revision's marker, so one
+    # would be enough to start the page's scan on every pass, forever.
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         waiting = (
             tx._check()
@@ -453,7 +453,8 @@ def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tup
     # The queue is counted once for every scope, not once per scope and
     # type: a shared store binds hundreds of scopes, and with 32,000 items
     # queued after an import the 442 separate counts took 90 s of a 120 s
-    # pass, so the watchdog ended every pass before it embedded anything.
+    # pass, and the watchdog would end every pass before it embedded
+    # anything.
     kinds = sorted(WORK_TYPES)
     queued = {
         (scope, kind): count
@@ -474,8 +475,8 @@ def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tup
                 continue
             # A tool output is owed an embedding only (``wanted_work_types``), so it never holds
             # a consolidation.  It is picked for one only once its embedding is queued, to settle
-            # a marker written before that rule; picked while its embedding waited for room, it
-            # came first on every pass and held the page.
+            # a marker written before that rule; picked while its embedding waits for room, it
+            # would come first on every pass and hold the page.
             owed = (
                 ""
                 if kind in TOOL_OUTPUT_WORK_TYPES

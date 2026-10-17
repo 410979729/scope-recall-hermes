@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 #: How long a capture waits for the writer lease.
 CAPTURE_TIMEOUT_S = 1.0
 #: The owner's own message may wait longer for the writer lease: another agent's long reply can hold it 1-2 s
-#: while it is matched against the candidates, and in the work computer's first day 12 of its 55 prompts
+#: while it is matched against the candidates, and on one machine's first day 12 of its 55 prompts
 #: waited their one second and were not stored.  It takes at most half of what the hook has left, and never
 #: less than the one second every other capture waits, so a 6 s budget waits 2 s and a 2 s one still 1 s.
 _PROMPT_CAPTURE_TIMEOUT_S = 2.0
@@ -127,10 +127,10 @@ class HookEvents:
         current_refs, capture_gaps = self._hook.capture(
             context, audience, event, deadline=deadline, gaps=gaps, wait=wait
         )
-        # The vector search comes with the runtime.  A prompt the store was too busy to take is recalled by
-        # meaning as well: six on the work computer's two entries in one night were recalled by words alone.  One
-        # the capture refused, or that holds a credential however the capture ended, goes without it, so that
-        # nothing of it reaches an embedding provider.
+        # The vector search comes with the runtime.  A prompt the store was too busy to take is recalled by meaning as
+        # well: without it, six on one machine's two entries in one night were recalled by words alone.  One the
+        # capture refused, or that holds a credential however the capture ended, goes without it, so that nothing of it
+        # reaches an embedding provider.
         vectors = (
             self._hook.call.captured
             or (
@@ -147,8 +147,8 @@ class HookEvents:
             return {}
         if event is not None and not current_refs and not self._hook.call.queued:
             self._hook.note("capture_failed", gaps=capture_gaps)
-        # The turn is recalled whether or not its message was stored; skipping here left it without memory
-        # whenever the store was busy, which is when a writer holds the lease.  A message that failed or still
+        # The turn is recalled whether or not its message was stored; skipping here would leave it without memory
+        # whenever the store is busy, which is when a writer holds the lease.  A message that failed or still
         # waits in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
         # out.  One refused (a credential) attached no runtime above, so its recall has no vector channel and
         # nothing of it goes to an embedding provider.
@@ -210,7 +210,7 @@ class HookEvents:
             notice = self._hook.host == "claude-code" and is_task_notification(prompt)
         if notice:
             # Claude Code's own notice that a background task finished: recorded as the owner's words it
-            # became a message they never wrote, and a recall on it answers nothing they asked.  WorkBuddy
+            # would become a message they never wrote, and a recall on it answers nothing they asked.  WorkBuddy
             # hands its model the same notice (its ``BackgroundTaskNotifier``), and a Stop hook's or a goal's
             # request to go on.
             self._hook.note("task_notification")
@@ -278,7 +278,7 @@ class HookEvents:
     def _workbuddy_error_reply(self, session_id: str, payload: dict[str, Any], reply: str) -> bool:
         """Whether a WorkBuddy Stop's reply is an error its record marks (``transcript.workbuddy_error_reply``).  A client
         on another machine judges it from its own record and says so (this side never opens a record for a request); a
-        record that cannot be found or read says no, and the reply is stored as before."""
+        record that cannot be found or read says no, and the reply is stored."""
         if not self._hook.call.local_record:
             return self._hook.call.client_error_reply
         try:

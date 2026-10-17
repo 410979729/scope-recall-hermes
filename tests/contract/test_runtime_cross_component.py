@@ -131,7 +131,7 @@ def test_explicit_transition_preserves_new_value_and_rejects_unproven_frames(app
 @pytest.mark.parametrize("status", ["503", "529"])
 @pytest.mark.parametrize("always_rejected", [False, True])
 def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limit(app, always_rejected, status):
-    """529 is a provider saying it is overloaded: one failed a candidate evaluation for good on 2026-09-28."""
+    """529 is a provider saying it is overloaded: one must not fail a candidate evaluation for good."""
     from scope_recall.runtime.models import AuxiliaryModelError
 
     core, ctx = app
@@ -160,11 +160,10 @@ def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limi
         core.initialize()
         core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     _, evaluations, work = _candidate_rows(core)
-    # 3.1.0rc18 stopped charging the item for the provider's capacity: an
-    # http_503 refunds the attempt and spaces the retry instead of spending one
+    # An http_503 refunds the attempt and spaces the retry instead of spending one
     # of a fixed three, so a provider that never recovers leaves the item
-    # pending for as long as the outage lasts rather than abandoning it. This
-    # test asserted the older contract, where the third rejection was terminal.
+    # pending for as long as the outage lasts rather than abandoning it. The
+    # third rejection is not terminal.
     assert evaluator.attempts == 2
     assert work[0]["state"] == ("pending" if always_rejected else "done")
     assert evaluations[0]["state"] == ("queued" if always_rejected else "resolved")

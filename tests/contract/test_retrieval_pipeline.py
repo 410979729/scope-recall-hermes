@@ -128,10 +128,10 @@ def test_cursor_encoding_is_validated_before_scope_binding(app):
 def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
     """A term matching most of the corpus costs the most and tells the least.
 
-    Measured on alpha: ten terms cleared 10% document frequency, every one a
-    JSON field name from tool-observation envelopes (`tool`, `summary`,
-    `omitted`, `exit_code`, ...), together 10.3% of the whole index. A query
-    containing one walked an 18,000-row posting list to learn nothing.
+    Terms that clear 10% document frequency are JSON field names from
+    tool-observation envelopes (`tool`, `summary`, `omitted`, `exit_code`, ...),
+    together about a tenth of the whole index. A query containing one would walk
+    an 18,000-row posting list to learn nothing.
     """
     from scope_recall.core.retrieval_storage import (
         _LEXICAL_DF_FLOOR,
@@ -160,8 +160,8 @@ def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
 
 
 def test_P08_a_long_prompt_searches_its_rarest_terms_within_a_posting_budget(monkeypatch):
-    """The lexical statement groups every posting of every kept term: on the shared store a 2,000-character prompt's
-    80 terms held 273,000 postings and took 9 s, longer than the prompt's whole recall (2026-09-29).  The rarest terms
+    """The lexical statement groups every posting of every kept term: on a large shared store a 2,000-character prompt's
+    80 terms can hold 273,000 postings and take 9 s, longer than the prompt's whole recall.  The rarest terms
     are searched, as many as the posting budget allows beyond the first few; a short question is left as it was."""
     from scope_recall.core import retrieval_storage
 
@@ -189,9 +189,9 @@ def test_P08_a_long_prompt_searches_its_rarest_terms_within_a_posting_budget(mon
 
 
 def test_P08_a_long_prompt_s_related_memory_is_admitted_with_the_terms_the_budget_left_out(app, monkeypatch):
-    """Searched with its rarest terms alone, a long prompt counted a found memory's matches among those alone, and
-    admission, which weighs matches against the whole prompt, turned away a memory sharing its topic words (review
-    of 3.4.2: 3 of the 12 matches required).  What a found row holds of the terms left out still counts."""
+    """Searched with its rarest terms alone, a long prompt must not count a found memory's matches among those alone,
+    or admission, which weighs matches against the whole prompt, turns away a memory sharing its topic words (3 of
+    the 12 matches required).  What a found row holds of the terms left out still counts."""
     from scope_recall.core import retrieval_storage
 
     core, ctx = app
@@ -241,10 +241,10 @@ def test_P08_the_lexical_channel_keeps_its_terms_within_the_posting_budget(app, 
 
 def test_P08_the_lexical_statement_starts_from_the_query_s_terms_however_many_there_are(app, monkeypatch):
     """A store has no planner statistics, so SQLite weighs the query's terms against the audience's scopes by rule of
-    thumb, and past some thirty terms it started from the scope index instead: every event of the audience read, one
-    by one.  On the shared store a Telegram message of 72 characters took 21 s that way and its recall came back
-    empty at every stage's deadline; so did most messages over 80 characters on three instances (baseline of 3.4.2,
-    2026-09-30).  The scope filter never drives the statement, and what it finds is the same."""
+    thumb, and past some thirty terms it would start from the scope index instead: every event of the audience read, one
+    by one.  On a large shared store a Telegram message of 72 characters would take 21 s that way and its recall
+    come back empty at every stage's deadline.  The scope filter never drives the statement, and what it finds is
+    the same."""
     from scope_recall.core import retrieval_storage
 
     core, ctx = app
@@ -282,8 +282,8 @@ def test_P08_the_lexical_statement_starts_from_the_query_s_terms_however_many_th
 
 def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(app, monkeypatch):
     """The recent channel offers this session's messages still waiting to be consolidated.  With no planner
-    statistics SQLite read every consolidate item by its work type, done ones included, which the queue keeps (3,070
-    on the shared store and growing), or with one scope every event of it.  It starts from the pending rows."""
+    statistics SQLite would read every consolidate item by its work type, done ones included, which the queue keeps,
+    or with one scope every event of it.  It starts from the pending rows."""
     import time as _time
 
     from scope_recall.core import retrieval_storage
@@ -324,8 +324,8 @@ def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(
 
 
 def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeypatch):
-    """A statement cannot see the recall's deadline: the lexical one ran 18-21 s for a long Telegram message on the
-    shared store (3.4.2), and the recall came back empty long after its deadline.  Past the deadline a candidate
+    """A statement cannot see the recall's deadline: the lexical one can run 18-21 s for a long Telegram message on a
+    large shared store, and the recall would come back empty long after its deadline.  Past the deadline a candidate
     statement is interrupted and the recall returns, saying so."""
     import time as _time
 
@@ -354,7 +354,7 @@ def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeyp
 def test_P08_what_the_channels_before_an_interrupted_one_found_still_answers(app, monkeypatch):
     """The exact ref is found before the lexical statement is interrupted, and is still delivered: the interrupt is
     taken off once the candidate statements end, so hydration's own statements, past the deadline too, run to the
-    end.  Left on, the first of them was interrupted and the recall came back empty (review of 3.4.5)."""
+    end.  Left on, the first of them would be interrupted and the recall would come back empty."""
     from scope_recall.core import recall as recall_module
     from scope_recall.core import retrieval_storage
 
@@ -387,7 +387,7 @@ def test_P08_what_the_channels_before_an_interrupted_one_found_still_answers(app
 
 def test_P08_a_locked_store_past_the_deadline_is_reported_as_the_error(app, monkeypatch):
     """Only the interrupt reads as the deadline: another statement error raised past it is still reported as that
-    error (review of 3.4.5)."""
+    error."""
     import sqlite3
     import time as _time
 
@@ -410,7 +410,7 @@ def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
 
     With 65 sources naming ``rc28`` the term clears the document-frequency
     floor.  Pruned in favour of the query's rarer (here unindexed) terms, SQL
-    matched nothing hydration would admit: 63 sources were found, 64 were not.
+    would match nothing hydration would admit.
     """
     from scope_recall.core.retrieval_storage import _LEXICAL_DF_FLOOR
 
@@ -440,8 +440,8 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     """Hydration admits only sources naming the query's identifier, so the pool must reach them.
 
     Sixty sources share six generic query terms but not ``rc28``; the one that
-    names it matches fewer terms.  Ranked by hits alone it fell outside the
-    47-row first-round pool and every mode answered nothing.
+    names it matches fewer terms.  Ranked by hits alone it would fall outside the
+    47-row first-round pool and every mode would answer nothing.
     """
     from scope_recall.core.retrieval_storage import RetrievalStorage
 

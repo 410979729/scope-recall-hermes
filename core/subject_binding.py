@@ -15,8 +15,8 @@ different things at once:
 The 48 are the mismatch.  A source says "此测试项目的名称为 SRLIVE-… 。… 不要写
 业务文件"; the constraint quotes the directive clause, while its subject was
 established a sentence earlier in the same message.  Nothing was inferred and
-nothing was invented -- the evidence simply spans two sentences, and the check
-looked at one.
+nothing was invented -- the evidence simply spans two sentences, and a check
+of the quote alone looks at one.
 
 Widening all the way to "anywhere in the source" would be wrong, and the same
 measurement says so.  Sorted by distance between the subject and its quote, the
@@ -42,14 +42,13 @@ sat verbatim right beside its quote and would have passed on distance alone.
 Nothing can ever be recalled *about* either of those, so both are refused at
 any distance.
 
-Monotone, like ``evidence_quote``: rung one is exactly today's rule, so nothing
-that passes now can begin to fail, and rung two returns a real slice of the
+Monotone, like ``evidence_quote``: rung one is exactly the literal rule, so
+nothing that passes it can fail here, and rung two returns a real slice of the
 stored source rather than anything derived.
 
-Replaying ``qualify`` over all 92 on a shadow of the live database: 41 now get
-past the subject gate, 51 still do not, and 2 reach ``active``.  The other 39
-stop at the next gate -- 27 of them at ``fact_entailment_unproved``.  That is
-the real bottleneck, and it is a different repair.
+Replayed through ``qualify`` on a copy of that store, 41 of the 92 get past the
+subject gate with both rungs and 51 do not; 2 reach ``active``, and the other
+39 stop at the next gate -- 27 of them at ``fact_entailment_unproved``.
 """
 
 from __future__ import annotations
@@ -177,8 +176,8 @@ def quote_neighbourhood(content: object, quote: object) -> str:
 def subject_binding(subject: object, *, quote: object, content: object) -> str | None:
     """Which rung binds this subject, or ``None`` if none does.
 
-    ``"quote"`` is today's rule.  ``"neighbourhood"`` is the widened one, and is
-    only ever reached for a subject that names something.
+    ``"quote"`` is the literal rule.  ``"neighbourhood"`` is the widened one, and
+    is only ever reached for a subject that names something.
     """
     if type(subject) is not str or not subject:
         return None
@@ -196,8 +195,8 @@ def neighbourhood_binds(subject: object, pairs) -> bool:
     """True when the second rung alone binds the subject for some cited span.
 
     ``pairs`` yields ``(quote, stored_content)`` for the spans a proposal cites.
-    Kept separate from rung one so the caller's first rung stays literally the
-    rule it has today -- the widened rule can only ever be reached as an
+    Kept separate from rung one so the caller's first rung stays exactly the
+    literal rule -- the widened rule can only ever be reached as an
     additional ``or``, never as a replacement.
     """
     for quote, content in pairs:

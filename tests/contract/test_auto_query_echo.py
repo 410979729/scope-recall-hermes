@@ -116,7 +116,7 @@ def test_auto_followup_keeps_original_query_filter(app):
 )
 def test_an_older_copy_is_the_same_words_whatever_closes_them(older, query, same):
     """Only the closing marks and surrounding spaces may differ, and the two must both end asking or both not: a
-    statement asked back as a question is not a copy of it, however long (review of 3.7.1).  The words, their letter
+    statement asked back as a question is not a copy of it, however long.  The words, their letter
     case included, may not differ."""
     from scope_recall.core.recall_policy import same_message
 
@@ -124,8 +124,8 @@ def test_an_older_copy_is_the_same_words_whatever_closes_them(older, query, same
 
 
 def test_closing_marks_are_read_from_the_end_once():
-    """A long run of spaces or marks inside a message costs one pass: a pattern anchored at the end tried it again from
-    every position of the run, seconds for one candidate (review of 3.7.1)."""
+    """A long run of spaces or marks inside a message costs one pass, not a pattern anchored at the end that tries it
+    again from every position of the run, which takes seconds for one candidate."""
     import time
 
     from scope_recall.core.recall_policy import same_message
@@ -137,7 +137,7 @@ def test_closing_marks_are_read_from_the_end_once():
     assert time.monotonic() - started < 1.0
 
 
-# -- what the asking model still holds (#249) ---------------------------------------------------------------------
+# -- what the asking model still holds ----------------------------------------------------------------------------
 # A host that keeps the whole session in its model's context (Claude Code until it compacts) says since when; an
 # automatic recall then leaves out what stands only on this session's turns since that moment, and other memories
 # take the slots.
@@ -278,9 +278,9 @@ def test_what_the_model_holds_still_leads_to_what_is_related_to_it(app):
 
 
 def test_hits_too_large_for_any_packet_leave_the_owner_s_background_room(tmp_path):
-    """An automatic recall whose every hit is larger than any packet kept six of them, the compiler refused each, and
-    the packet came back empty; the owner's background was cut with them.  One stays as the hint that it can be
-    expanded.  Leaving out what the model holds made this likelier (#249)."""
+    """An automatic recall whose every hit is larger than any packet would keep six of them, the compiler would refuse
+    each, and the packet would come back empty, cutting the owner's background with them.  One stays as the hint
+    that it can be expanded.  Leaving out what the model holds makes this likelier."""
     from tests.contract.test_autonomous_context import packet, preference
 
     ctx = replace(context(tmp_path / "TEST-p249-oversized"), project_id="TEST-project", branch_id="TEST-main")
@@ -297,7 +297,7 @@ def test_hits_too_large_for_any_packet_leave_the_owner_s_background_room(tmp_pat
 
 def test_the_owner_s_background_the_model_holds_is_left_out_too(tmp_path):
     """A standing preference the owner stated in this session since its last compaction is in the model's context
-    already; background is not admitted like a hit, and it was delivered again (the replay's last ten copies)."""
+    already; background is not admitted like a hit, so it is left out too, not delivered again."""
     from tests.contract.test_autonomous_context import packet, preference
 
     ctx = replace(context(tmp_path / "TEST-p249-background"), project_id="TEST-project", branch_id="TEST-main")

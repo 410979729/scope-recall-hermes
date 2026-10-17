@@ -99,10 +99,10 @@ def version_suffixes(text: str) -> frozenset[str]:
     return frozenset(_VERSION_SUFFIX.findall(unicodedata.normalize("NFKC", text).casefold()))
 
 
-#: The placeholder an earlier release's capture filter left for a tool output it withheld ("Tool execution summary
-#: (terminal): tool=terminal; output_chars=377; exit_code=0; output_preview=omitted"), and the form the report filter
-#: writes today (``capture_filters.sanitize_report_text``, on no capture path).  Such lines can be most of a store:
-#: 132,000 of a Hermes store's 168,000 sources, each embedded, and 212,773 of the shared store's (68%).
+#: The placeholder stored in place of a tool output a capture filter withheld ("Tool execution summary (terminal):
+#: tool=terminal; output_chars=377; exit_code=0; output_preview=omitted"), and the form the report filter writes
+#: (``capture_filters.sanitize_report_text``, on no capture path).  Such lines can be most of a store: 132,000 of a
+#: Hermes store's 168,000 sources, each embedded, and 212,773 of a shared store's (68%).
 _WITHHELD_TOOL_OUTPUT = re.compile(r"Tool execution summary\b.*\b(?:output omitted|output_preview=omitted)\b", re.S)
 #: The same placeholders as a condition on ``source_events e``, cheap enough to test before the role.  Leading
 #: whitespace is passed over as ``withheld_tool_output`` passes it over.
@@ -110,7 +110,7 @@ WITHHELD_TOOL_OUTPUT_SQL = (
     "ltrim(e.content, char(32,9,10,13)) LIKE 'Tool execution summary%' AND "
     "(e.content LIKE '%output omitted%' OR e.content LIKE '%output_preview=omitted%')"
 )
-#: The tool's own error text, the one part of a placeholder that is the output's: 4,348 of the shared store's carry
+#: The tool's own error text, the one part of a placeholder that is the output's: 4,348 of a shared store's carry
 #: one ("...; error=<up to 160 characters>; output_preview=omitted").
 _WITHHELD_ERROR = re.compile(r";\s*error=(.*);\s*output_preview=", re.S)
 
@@ -146,7 +146,8 @@ def lexical_terms(text: str) -> tuple[str, ...]:
 
 
 #: Terms a query searches for.  A longer query keeps the ones it reaches first: refused whole, a prompt of about 150
-#: Chinese characters (129 distinct bigrams and up) got no recall at all, by words or by meaning, and nothing said so.
+#: Chinese characters (129 distinct bigrams and up) would get no recall at all, by words or by meaning, and nothing
+#: would say so.
 MAX_QUERY_TERMS = 128
 
 

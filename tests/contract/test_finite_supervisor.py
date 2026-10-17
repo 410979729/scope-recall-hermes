@@ -112,10 +112,10 @@ def test_next_due_preserves_audience_cooldown_budget_and_purge(tmp_path):
 
 
 def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
-    """The wake counted rows never tried and two passing failures, so a row an older release left as a bare
-    ``SOURCE_MISSING`` (replayed once more since 3.4.0rc10) waited for a pass something else started.  A key
+    """The wake counts rows never tried and two passing failures, so a row an older release left as a bare
+    ``SOURCE_MISSING`` (replayed once more) does not wait for a pass something else started.  A key
     collision wakes it too: its pass gives it a new key, and one its new key cannot store either is final
-    (``VERSION_CONFLICT:rekeyed``), which wakes nothing (reviews of rc10).  Nor does a row whose failure is final."""
+    (``VERSION_CONFLICT:rekeyed``), which wakes nothing.  Nor does a row whose failure is final."""
     from scope_recall._version import __version__
     from scope_recall.core import capture_inbox
 
@@ -140,8 +140,8 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
         )
         with core.storage.write(cfg.context()) as tx:
             tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
-    # A row of another partition (here none at all) is not this worker's to replay: counted, it woke a pass that
-    # never took it (review of rc10).
+    # A row of another partition (here none at all) is not this worker's to replay: counted, it would wake a pass that
+    # never takes it.
     elsewhere = TrustedContext(cfg.binding, "TEST-session", frozenset({"TEST-a"}), "human_direct")
     capture_inbox.enqueue(
         core.storage,
@@ -434,9 +434,8 @@ os._exit(0)
 def test_an_edited_setting_is_taken_up_without_failing_the_supervisor(tmp_path):
     """Editing the pass size or the interval is operating a store, not breaking it.
 
-    A supervisor that met an edited config raised: each edit read as a failed supervisor to the
-    doctor and the patrol, and the store had none until the next scheduled wake, up to five
-    minutes later.  Seen on the pilot, four times in one morning, while its rebuild was sped up.
+    A supervisor that meets an edited config must not raise: each edit would read as a failed supervisor to the
+    doctor and the patrol, and the store would have none until the next scheduled wake, up to five minutes later.
     """
     core, cfg, path = fixture(tmp_path)
     queue(core, cfg, ref="TEST-first")

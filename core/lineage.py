@@ -57,8 +57,8 @@ def link(
 ) -> None:
     """Record that ``ref@revision`` derives from ``source_ref@source_revision``.
 
-    ``once`` lets a repeated link pass silently; without it a duplicate is the
-    integrity error it always was.
+    ``once`` lets a repeated link pass silently; without it a duplicate is an
+    integrity error.
     """
     conn.execute(
         f"INSERT INTO evidence_links({_EVIDENCE_COLUMNS},location) VALUES (?,?,?,?,?,?,?,?)"
@@ -109,8 +109,9 @@ def link_unless_carried(
 def evidence(conn, kind: str, ref: str, revision: int) -> list[tuple[str, int]]:
     """The source versions ``ref@revision`` derives from, ordered and once each.
 
-    Read in one row: an episode holds up to 200, and each row read on its own cost a busy Hermes gateway a GIL handoff
-    inside a capture's write (``lexical_index.index_terms``).  Python orders the refs as SQLite's binary collation does.
+    Read in one row: an episode holds up to 200, and each row read on its own would cost a busy Hermes gateway a GIL
+    handoff inside a capture's write (``lexical_index.index_terms``).  Python orders the refs as SQLite's binary
+    collation does.
     """
     row = conn.execute(
         f"SELECT json_group_array(json_array(source_ref,source_revision)) FROM (SELECT DISTINCT source_ref,source_revision "

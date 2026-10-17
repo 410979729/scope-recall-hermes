@@ -173,8 +173,8 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
     # Sources lead the input.  Providers cache prompts by prefix, and the system
     # text above is byte-identical on every call, so the longest prefix two
     # requests can share is that text followed by the same sources.  The refs and
-    # watermark differ as soon as any one source does; placed first, they ended
-    # the shared prefix before a single source.  Replayed over one store's 1,850
+    # watermark differ as soon as any one source does; placed first, they would
+    # end the shared prefix before a single source.  Replayed over one store's 1,850
     # candidate evaluations of a day, an ideal prefix cache could reuse 68% of
     # prompt tokens in this order against 54% in the other.
     body = dict(
@@ -196,8 +196,8 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
 
 #: Candidate re-evaluation carries the whole consolidation prompt (about 11.5 KB
 #: of instruction prose and inlined schema) plus a candidate block of its own,
-#: so the shared 16 KB consolidation ceiling left roughly 3.4 KB for evidence.
-#: Measured against one instance's live database that admitted none of the 115
+#: so the shared 16 KB consolidation ceiling would leave roughly 3.4 KB for
+#: evidence.  Measured against one live store, that admitted none of the 115
 #: oversized evaluations: the smallest was already 2,892 characters of evidence.
 #: This ceiling counts all message contents, including the candidate block.
 #: The transport's separate byte cap must also allow JSON escaping and its
@@ -208,7 +208,7 @@ CANDIDATE_EVALUATION_INPUT_BUDGET = 64000
 #: A source longer than this reaches a candidate evaluation as a window around
 #: the candidate's first verified saved quote, falling back to its value or
 #: subject when no saved quote matches this source version.
-#: Tool output dominated the evidence: replayed over one instance's evaluations, the
+#: Tool output dominated the evidence: replayed over one store's evaluations, the
 #: calls still made after the verdict limit carried 28 M characters, and windows
 #: of this size keep 44% of them.  Qualification reads the complete stored source
 #: around each quote, so a window changes what the model reads, never what a
@@ -343,8 +343,8 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
             raise ContractError("DERIVATION_INVALID", "source_refs")
         tx.claims.require_live_source(*parse_source_ref(ref))
     # Captures and unrelated writes move memory_epoch without touching anything
-    # this result was derived from.  Only a changed dependency rejects it, with
-    # the same retryable conflict the epoch comparison raised.  A non-final
+    # this result was derived from.  Only a changed dependency rejects it, as
+    # the retryable ``VERSION_CONFLICT`` (``memory_epoch``).  A non-final
     # page only stages its summaries; the final page applies all of them.
     applies_summaries = fence.chunk is None or fence.chunk.final
     if (
@@ -425,8 +425,8 @@ def accept_consolidation(
                 claim_refs.update(item.ref for item in applied)
                 items.extend(applied)
         except ContractError as exc:
-            # A rejection caused by a claim written during the call stays the
-            # retryable conflict the epoch comparison used to report first.
+            # A rejection caused by a claim written during the call is the
+            # retryable ``VERSION_CONFLICT`` (``memory_epoch``) as well.
             if work_fence is not None and claims_changed(tx, work_fence.dependencies, until=mark):
                 raise ContractError("VERSION_CONFLICT", "memory_epoch") from exc
             raise

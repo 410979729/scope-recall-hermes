@@ -258,11 +258,11 @@ class _Draft:
         """Record an epoch move; ``True`` means the verified set is no longer released.
 
         Every capture moves the epoch.  With several entries writing to one store a recall rarely
-        finished without a move, and each one emptied the packet: on the pilot an agent asked about
-        something the owner had just told another agent while the worker was writing it down, and
-        got nothing.  Only a deletion or suppression in the recall's own scopes withdraws what was
-        verified (``retracted``, given the epoch of the last read); any other change is caught item
-        by item by the fresh reads.  Without ``retracted`` every move withdraws, as before.
+        finishes without a move, and withdrawing at each would empty the packet: an agent asking
+        about something the owner has just told another agent, while the worker is writing it down,
+        would get nothing.  Only a deletion or suppression in the recall's own scopes withdraws
+        what was verified (``retracted``, given the epoch of the last read); any other change is
+        caught item by item by the fresh reads.  Without ``retracted`` every move withdraws.
         """
         if self.memory_epoch is None or epoch == self.memory_epoch:
             return False

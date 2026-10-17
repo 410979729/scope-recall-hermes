@@ -106,7 +106,7 @@ def test_a_failed_import_embedding_backfill_is_reported_beside_the_store(tmp_pat
 
 def test_a_backfill_no_worker_looks_at_any_more_is_not_the_store_s_outcome(tmp_path):
     """Each worker partition keeps its own state: one whose worker no longer runs (a retry lane, a workspace used
-    once) would have kept the store at its last outcome for good."""
+    once) would otherwise keep the store at its last outcome for good."""
     from datetime import datetime, timedelta, timezone
 
     space = tmp_path / "vectors" / "TEST-space"
@@ -127,7 +127,7 @@ def test_a_backfill_no_worker_looks_at_any_more_is_not_the_store_s_outcome(tmp_p
             filename=vc.embed_backfill_filename(scopes, None, None),
             schema=vc.EMBED_BACKFILL_STATE_SCHEMA,
         )
-    # An rc10 test store's single file is not a partition's.
+    # A single state file, as an earlier release stored it, is not a partition's.
     vc.write_state(
         space,
         {"checked_at": now.isoformat(), "outcome": "failed"},
@@ -335,9 +335,9 @@ def _vectors(tmp_path, dimensions: int = 3072):
 
 
 def test_an_index_is_built_once_the_table_needs_one_and_the_pass_has_the_time(tmp_path):
-    """The pilot's store: 78,403 rows of 3,072 dimensions, built in 7.7 s on a copy when quiet and 25.6 s when not;
-    the estimate is twice the slow rate.  A pass that could not finish it is not started on it: the watchdog would
-    end the pass and the build would start over."""
+    """A store of 78,403 rows of 3,072 dimensions takes 7.7 s to index when quiet and 25.6 s when not; the estimate is
+    twice the slow rate.  A pass that could not finish it is not started on it: the watchdog would end the pass and
+    the build would start over."""
     from scope_recall.vector.store import VECTOR_INDEX_MIN_ROWS
 
     now = datetime.now(timezone.utc)
@@ -423,8 +423,8 @@ def _spread_rows(count: int, dimensions: int = 8) -> list[dict]:
 
 @pytest_native
 def test_the_index_is_built_used_and_kept_current(tmp_path):
-    """Without the index every search read every vector (750 ms over the pilot's 78,000).  With it a search returns
-    the same nearest rows, the hit carries only what the port reads, and compaction adds what came after."""
+    """Without the index every search reads every vector.  With it a search returns the same nearest rows, the hit
+    carries only what the port reads, and compaction adds what came after."""
     from scope_recall.vector.store import LanceVectorStore
 
     rows = _spread_rows(1200)
@@ -450,8 +450,8 @@ def test_the_index_is_built_used_and_kept_current(tmp_path):
 
 @pytest_native
 def test_a_vector_index_of_another_kind_is_replaced(tmp_path):
-    """The pilot's store was first indexed with HNSW by hand.  Half its rows share their vector with another row, and
-    over such duplicates the graph missed nearest rows and once returned 2 rows for 10: the kept index is IVF_SQ."""
+    """A vector index of another kind is replaced by IVF_SQ.  Half the rows here share their vector with another row,
+    and over such duplicates an HNSW graph misses nearest rows and can return 2 rows for 10."""
     from scope_recall.vector.store import LanceVectorStore
 
     rows = _spread_rows(1200)
@@ -509,7 +509,7 @@ pytest_windows_helper = pytest.mark.skipif(
 def test_a_helper_started_ahead_is_the_one_the_store_uses(tmp_path):
     """A Claude Code or Codex hook starts the helper when the hook starts; the store takes that helper instead of
     starting its own when its recall reaches the vector search.  None is kept ready after it: a server's runtimes
-    share the store that took it (3.4.9)."""
+    share the store that took it."""
     from scope_recall.vector import process_store
     from scope_recall.vector.store import LanceVectorStore
 

@@ -25,11 +25,11 @@ _COLUMNS = ("id", "scope_id", "source", "target", "content", "summary", "updated
 #: Lance index types under which ``id = '...'`` is an indexed probe, not a scan.
 _SCALAR_INDEX_TYPES = frozenset({"bitmap", "btree", "label_list", "scalar"})
 #: What a nearest-neighbour search returns: the columns ``runtime.lance_port`` reads from a hit.  With every column the
-#: 3,072 floats of each of 40 hits crossed the helper's pipe as JSON on every search, and nothing read them.
+#: 3,072 floats of each of 40 hits would cross the helper's pipe as JSON on every search, and nothing reads them.
 _HIT_COLUMNS = ["id", "scope_id", "source", "target", "_distance"]
 #: A search through the index re-ranks this many times its limit by exact distance, and probes every partition
 #: (LanceDB takes the partitions there are), so the index only makes each comparison cheaper and never decides which
-#: rows are compared.  On the pilot's 78,000 vectors of 3,072 dimensions: 10-40 ms against 748 ms, and in 6,600
+#: rows are compared.  On one store's 78,000 vectors of 3,072 dimensions: 10-40 ms against 748 ms, and in 6,600
 #: checks against the exact scan under three entries' filters (one a single scope) no nearest row was missed.  An exact scan ignores both.
 _REFINE_FACTOR = 5
 _ALL_PARTITIONS = 100_000
@@ -37,8 +37,8 @@ _ALL_PARTITIONS = 100_000
 #: costs about 100 ms, and an index would only be one more thing to keep current.
 VECTOR_INDEX_MIN_ROWS = 10_000
 #: Index segments above which the index is built again as one.  Each compaction that indexes new rows adds a
-#: segment and nothing merged them: at 120 segments a search over 78,000 vectors took 78 ms warm instead of 47, at
-#: 301 over 20,000 it took 297 ms instead of 16.
+#: segment, and nothing else merges them: at 120 segments a search over 78,000 vectors took 78 ms warm instead
+#: of 47, at 301 over 20,000 it took 297 ms instead of 16.
 MAX_INDEX_SEGMENTS = 16
 
 
@@ -65,8 +65,8 @@ def _segments(table: Any, index: Any) -> int:
 def _create_vector_index(table: Any, metric: str, *, replace: bool) -> None:
     """IVF over 8-bit quantized vectors, by whichever API the installed LanceDB has.
 
-    Not HNSW: half the pilot's rows share their vector with another row (the same words in several scopes and
-    revisions), and over such duplicates the graph left rows unreachable.  It missed 10 of 600 nearest rows and
+    Not HNSW: in one store half the rows share their vector with another row (the same words in several scopes and
+    revisions), and over such duplicates the graph leaves rows unreachable: it missed 10 of 600 nearest rows and
     once returned 2 rows for 10, whatever its search width.
     """
     try:
@@ -187,8 +187,8 @@ class LanceVectorStore(VectorStore):
         """The table at its newest committed version, for every read and write.
 
         An open Lance table pins the version it was opened at.  Without this a
-        long-running host that opened the store once never saw a vector the
-        worker published afterwards, and only a restart fixed it.  It also lets
+        long-running host that opened the store once would never see a vector
+        the worker published afterwards, until a restart.  It also lets
         compaction drop superseded versions without stranding a pinned reader.
         Cost: about 1 ms against a 30-140 ms search.
         """
@@ -374,8 +374,8 @@ class LanceVectorStore(VectorStore):
         """Build the nearest-neighbour index once the table is large enough to need one.  Idempotent.
 
         Without it every search reads every vector: 750 ms over 78,000 of them.  A Claude Code or Codex hook starts
-        its helper for each prompt, and with that on top the vector search never finished inside the recall's
-        budget, so those hosts' automatic recall answered from words alone.  ``compact`` keeps the index current.
+        its helper for each prompt, and with that on top the vector search would never finish inside the recall's
+        budget, so those hosts' automatic recall would answer from words alone.  ``compact`` keeps the index current.
         ``timeout_seconds`` bounds the helper's wait in ``ProcessLanceVectorStore``; in process the caller has
         already sized the build to its time (``runtime/vector_upkeep.index_if_due``).  ``build=False`` only reports
         what the index needs (``needs_build``, ``needs_rebuild``), so that a caller sizes only a build that is due.
@@ -398,7 +398,7 @@ class LanceVectorStore(VectorStore):
                     "rows": rows,
                     **({"segments": segments} if segments is not None else {}),
                 }
-            # A vector index of another kind (an HNSW one built by hand on the pilot) is replaced.
+            # A vector index of another kind (an HNSW one built by hand, say) is replaced.
             started = time.monotonic()
             _create_vector_index(table, self.metric, replace=bool(existing))
             return {

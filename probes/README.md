@@ -1,6 +1,6 @@
 # probes
 
-`probes/hermes/` is the P11 real-host A2A test kit: it prepares an isolated
+`probes/hermes/` is the real-host A2A test kit: it prepares an isolated
 TEST Hermes home, starts and stops a TEST gateway, and sends synthetic A2A
 requests.  `tests/host/hermes/test_a2a_prepare.py` covers the preparation
 step.  Run each script with the Hermes runtime's interpreter, from the

@@ -1,8 +1,9 @@
 """A pass embeds its ready sources in one request, and publishes each on its own fence.
 
 Both embedding dialects take an array -- Google's endpoint is literally
-``batchEmbedContents`` -- and the adapter sent arrays of one, so a store of 167,000 sources
-was 167,000 requests to rebuild: days of wall clock for minutes of tokens.  Sharing the
+``batchEmbedContents`` -- so a pass sends its ready sources as one array, not arrays of one:
+a store of 167,000 sources would be 167,000 requests to rebuild, days of wall clock for
+minutes of tokens.  Sharing the
 request changes what the provider is asked and nothing else: every item is still read,
 fenced, published and finished by itself.  A group whose request fails for what it carried
 falls back to one request each rather than inventing a failure of its own; a group the
@@ -105,11 +106,11 @@ def test_a_group_that_fails_for_its_payload_leaves_each_item_to_ask_for_itself(a
 
 
 def test_one_text_a_request_cannot_carry_does_not_cost_the_group_one_request_each(app):
-    """A message holding something shaped like a key is never sent, and failed the whole request.
+    """A message holding something shaped like a key is never sent, and it must not fail the whole request.
 
-    Seen on the pilot's rebuild: one such message in a group of sixteen made all sixteen ask for
-    themselves, and a group of five hundred would have spent its lease the same way and met the
-    same text again the next pass.  Halving leaves it alone with one neighbour.
+    One such message in a group of sixteen would make all sixteen ask for themselves, and a group of
+    five hundred would spend its lease the same way and meet the same text again the next pass.
+    Halving leaves it alone with one neighbour.
     """
     core, ctx = app
     made = _sources(core, ctx, 8, tag="guard")
@@ -127,9 +128,9 @@ def test_one_text_a_request_cannot_carry_does_not_cost_the_group_one_request_eac
 def test_a_group_the_provider_refuses_goes_back_whole_and_unspent(app):
     """A capacity refusal says "ask less"; asking once per member is the same refusal times the group.
 
-    On the pilot one request of a group of five hundred was refused with 429, every member then
-    asked for itself, and the pass spent its two minutes on sixty-seven of them while the rest of
-    the group's leases ran out.
+    If one request of a group of five hundred is refused with 429 and every member then asks for
+    itself, the pass spends its two minutes on only some of them while the rest of the group's
+    leases run out.
     """
     core, ctx = app
     _sources(core, ctx, 4, tag="refused")
@@ -218,9 +219,8 @@ def test_the_batch_has_a_ceiling():
 def test_the_runtime_boundary_offers_the_batch_it_bounds():
     """The worker probes the port it is handed, which is the bounded one.
 
-    The first version of this change listed four methods on that wrapper and
-    not the fifth, so the capability existed everywhere except where it is
-    asked for, and every request carried one document.
+    A wrapper that lists four methods and not the fifth hides the capability
+    where it is asked for, and every request carries one document.
     """
     from scope_recall.runtime.instance import _BoundedEmbed
 

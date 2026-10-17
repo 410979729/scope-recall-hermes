@@ -1,11 +1,10 @@
-"""A tool output is kept and embedded, but never a derivation root (3.2.0rc6).
+"""A tool output is kept and embedded, but never a derivation root.
 
-One 2.5-hour task on the pilot left 787 claims derived from what the agent read or ran -- file
-sizes, paths, ports -- and 93% of the store's claims rested on tool output alone, while not one
-of the owner's 30 real questions was answered by one.  These tests pin where the rule lives:
+Claims derived from what the agent read or ran -- file sizes, paths, ports -- rest on tool output
+alone and answer none of the owner's real questions.  These tests pin where the rule lives:
 admission queues an embedding only, consolidation shows the model no tool output, and work
-queued before the change finishes without a model call.  ``test_retire_rootless_claims.py``
-covers the claims derived before it.
+queued by an earlier release finishes without a model call.  ``test_retire_rootless_claims.py``
+covers the claims derived before the rule.
 """
 
 from __future__ import annotations
@@ -115,7 +114,7 @@ def _span(source, quote):
 
 
 def test_a_proposal_tool_output_alone_supports_is_never_put_to_the_model(app):
-    """Until 3.2.0 such a proposal was queued for evaluation, and a verdict could make it active."""
+    """Such a proposal is not queued for evaluation, so no verdict can make it active."""
     core, ctx = app
     read = capture(core, ctx, "entity-disk property-disk 42GB。", origin="tool_observation")
     saved, registration = _proposal_from(core, ctx, read)
@@ -129,7 +128,8 @@ def test_a_proposal_tool_output_alone_supports_is_never_put_to_the_model(app):
 
 
 def test_an_evaluation_queued_before_the_upgrade_settles_without_a_model_call(app, monkeypatch):
-    """Queued under the old rule, it reached the model after the upgrade and could promote the proposal."""
+    """Queued under an earlier release's rule, it must not reach the model after the upgrade, where it could promote
+    the proposal."""
     import scope_recall.core.candidate_intake as intake
 
     core, ctx = app

@@ -153,7 +153,7 @@ def _job_for(process: subprocess.Popen) -> int | None:
 
     ``taskkill /T`` walks the process table through WMI: on a host with 800
     processes it took 3.2 s, past the bound the fallback below still carries,
-    which reported a plain timeout as ``codex_start_failed`` and left the
+    which would report a plain timeout as ``codex_start_failed`` and leave the
     tree running.  A job needs no enumeration.  None when no job can be made
     (a Windows before 8 already holding this process in one), and the
     taskkill walk remains the fallback.

@@ -1,11 +1,11 @@
 """Keep one copy of each distinct body, and say how many were folded away.
 
 The retrieval pipeline de-duplicates on ``(kind, ref, revision)``, which is
-*identity*, not content.  A legacy import that re-delivered the same bodies
-under fresh identities let one document hold most of a packet's slots and
-pushed the answer out entirely; collapsing copies was the only change that
-fixed that (inverse-document-frequency weighting was measured alongside it
-and made both recall and abstention worse, so the scoring was left alone).
+*identity*, not content.  A legacy import that re-delivers the same bodies
+under fresh identities would let one document hold most of a packet's slots
+and push the answer out entirely.  Collapsing copies prevents that;
+inverse-document-frequency weighting, measured alongside it, made both
+recall and abstention worse.
 
 Collapsing is not truncation.  The surviving copy is byte-identical to the
 ones removed, so no content is lost and coverage is not reduced; that is why

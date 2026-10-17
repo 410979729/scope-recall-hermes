@@ -782,8 +782,8 @@ def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -
     audience = resolve_runtime_audience(config, str(project))
     human = trusted_context(config, audience, session_id=str(uuid4()), actor_origin="human_direct")
     fat = "TEST-BUDGET " + ("房间号启用窗口核对令牌封存舱" * 8)
-    # Three, so a clipped packet is still visibly shorter than a full one now
-    # that an episode with no summary no longer takes a slot of its own.
+    # Three, so a clipped packet is still visibly shorter than a full one: an episode
+    # with no summary takes no slot of its own.
     for index, suffix in enumerate(("ALPHA", "BETA", "GAMMA"), start=1):
         event: SourceEvent = {
             "protocol_version": "1.1",

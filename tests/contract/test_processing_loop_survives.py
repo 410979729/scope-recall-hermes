@@ -1,16 +1,15 @@
 """The processing loop survives one bad pass, says when it did not, and can be handed credentials.
 
-Two ways the queue stopped moving without anyone being told.
+Two ways the queue could stop moving without anyone being told.
 
-A supervisor that met any worker exit outside (0, 75, 124) marked itself non-accepting and
-returned, so the loop stopped until the next five-minute wake.  Found by reading a control file
-by hand on a live instance: ``state=failed reason=worker_failed drains=217``, 180 items still
-queued, and nothing in any report mentioned it.
+A supervisor that met any worker exit outside (0, 75, 124) and marked itself non-accepting would
+return, so the loop would stop until the next five-minute wake, with items still queued and
+nothing in any report mentioning it (``state=failed reason=worker_failed``).
 
-And a pass started by hand reached every provider with no credentials -- the scheduled wake
-carries them in its environment and this entry point had no way to be given them -- so it
-refused each item with ``credential_missing``, stood the work types down, and exited 0.  An
-operator watching that receipt saw a success that had done nothing.
+And a pass started by hand would reach every provider with no credentials -- the scheduled wake
+carries them in its environment and this entry point needs a way to be given them -- so it would
+refuse each item with ``credential_missing``, stand the work types down, and exit 0.  An
+operator watching that receipt would see a success that had done nothing.
 """
 
 from __future__ import annotations

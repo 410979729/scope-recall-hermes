@@ -58,8 +58,8 @@ EMBED_BACKFILL_STATE_SCHEMA = "scope-recall.embed-backfill.v1"
 
 def embed_backfill_filename(scope_ids, project_id: str | None, branch_id: str | None) -> str:
     """The backfill state of one worker partition: each worker queues only its own imports (its scopes, project and
-    branch), so one file for the store let a worker with none write ``finished`` for another's, which then waited a
-    day and went on from the wrong place."""
+    branch), so one file for the store would let a worker with none write ``finished`` for another's, which would
+    then wait a day and go on from the wrong place."""
     key = json.dumps([sorted(scope_ids), project_id, branch_id], separators=(",", ":"))
     return f"embed-backfill-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}.json"
 
@@ -158,11 +158,11 @@ _BACKFILL_NAME = re.compile(r"embed-backfill-[0-9a-f]{16}\.json")
 
 
 def _backfill_report(space: Path, now: datetime) -> dict[str, Any]:
-    """The import backfill's outcome for one vector store.  A backfill that failed was written down, tried again on
-    every pass and read by nothing.  Each worker partition keeps its own state (``embed_backfill_filename``): the
-    store's outcome is a failed one's, else the latest.  A partition no worker has looked at for
-    ``EMBED_BACKFILL_CURRENT`` (a retry lane, a workspace used once) is left out of it, or its last failure would
-    stand for good."""
+    """The import backfill's outcome for one vector store.  Without it a backfill that failed would be written down,
+    tried again on every pass and read by nothing.  Each worker partition keeps its own state
+    (``embed_backfill_filename``): the store's outcome is a failed one's, else the latest.  A partition no worker has
+    looked at for ``EMBED_BACKFILL_CURRENT`` (a retry lane, a workspace used once) is left out of it, or its last
+    failure would stand for good."""
     states = [
         state
         for state in (

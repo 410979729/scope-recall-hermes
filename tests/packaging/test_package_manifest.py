@@ -1,7 +1,6 @@
 """The version and the wheel module list must be derived, not retyped.
 
-Six of the eight packaging failures on 2026-09-13 were new modules missing from
-a hand-copied allowlist, plus three version strings that had drifted apart.
+A hand-copied allowlist misses new modules, and version strings drift apart.
 These tests make both conditions loud and tell the reader the one command that
 fixes them.
 """
@@ -97,8 +96,8 @@ def _read(name: str) -> str:
 
 
 def test_the_readme_names_the_version_being_shipped() -> None:
-    """It said rc10 while the package said rc11: the first thing a reader
-    checks was the one thing nothing verified."""
+    """The version the README names is the package's: the first thing a reader checks is the one thing nothing
+    else verifies."""
     version = inventory.source_version(REPO_ROOT)
     readme = _read("README.md")
     assert f"`{version}`" in readme, f"README.md does not mention {version}; update it when bumping _version.py"
@@ -111,8 +110,8 @@ def test_the_readme_does_not_still_advertise_an_older_candidate() -> None:
 
 
 def test_the_readme_installs_the_vector_extra_and_no_older_release() -> None:
-    """It said ``pip install hermes-scope-recall==3.9.3``, without ``[lancedb]`` and linking v3.9.3, four releases
-    on: whoever followed the first page (PyPI shows it too) got an old release and recall without vectors."""
+    """The README's install commands carry ``[lancedb]`` and pin no older release: whoever follows the first page
+    (PyPI shows it too) gets the current release and recall with vectors."""
     import re
 
     version = inventory.source_version(REPO_ROOT)
@@ -150,11 +149,9 @@ def _git(*args):
 
 
 def test_a_tagged_version_is_not_reused_for_a_different_tree():
-    """rc23 was tagged and installed, then a behaviour change was committed under
-    the same version. For about an hour the repository and the live instance ran
-    different code behind the identical string `3.1.0rc23`, and nothing on the
-    instance could tell them apart -- the divergence was found by hashing a file.
-    A version that already names a tree may not name a second one."""
+    """A version that already names a tree may not name a second one: a behaviour change committed under a tagged
+    and installed version leaves the repository and the live instance running different code behind the
+    identical string, with nothing on the instance to tell them apart."""
     from scope_recall._version import __version__
 
     code, _ = _git("rev-parse", "--git-dir")

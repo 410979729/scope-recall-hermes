@@ -13,9 +13,9 @@ from datetime import datetime, timedelta
 from .._version import __version__
 from ..contracts import ContractError
 
-#: What a release before 3.4.0rc10 wrote for every missing source, which names none.  One of its causes is gone: a
-#: task whose episode was deleted refused every later capture of the task (``EpisodeStore.attach``).  Such a row is
-#: replayed once more; a missing source is now written with its field (``_terminal_code``), so a failure after that
+#: A bare ``SOURCE_MISSING``, a row's code for a missing source that does not say which.  Such a row is replayed once
+#: more: one of its causes, a task whose episode was deleted refusing every later capture of the task, cannot recur
+#: (``EpisodeStore.attach``).  A missing source is written with its field (``_terminal_code``), so a failure after that
 #: replay stays final.
 LEGACY_SOURCE_MISSING = "SOURCE_MISSING"
 #: Inbox rows a replay still stores, besides those never tried: a passing failure (``replay_inbox``), a row from
@@ -29,8 +29,8 @@ RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
 #: A row whose stored capture a replay could not check again is put off:
 #: ``DEFERRED|<release>|<until>|<attempt>|<path>|<code>``.  A newer release's field in its context, a host whose check
 #: fails for now, a secret screen that differs between releases: each can clear.  Given a final code at once, such a
-#: row was never stored, and a Claude Code Stop that had counted it as waiting did not store the words either; left in
-#: place, it stopped every row after it on every pass.  It is tried again after a minute,
+#: row would never be stored, and a Claude Code Stop that counted it as waiting would not store the words either;
+#: left in place, it would stop every row after it on every pass.  It is tried again after a minute,
 #: doubling to an hour, by whichever release runs, and the tries are counted across releases: when its
 #: ``DEFER_ATTEMPTS``-th try again fails the row is given up (``GAVE_UP|<release>|<failures>|<path>|<code>``), where
 #: doctor and the patrol show it, and ``retry-failures --apply`` returns it to the replay once its cause is fixed.  ``path`` is the replay
@@ -111,11 +111,11 @@ def deferred_path(code: object) -> str | None:
 
 
 def replayable(code: object, now: datetime) -> bool:
-    """Whether a pass now stores a row with this code: never tried, a passing failure, a bare ``SOURCE_MISSING`` an
-    older release left, or a row put off whose time has come.
+    """Whether a pass now stores a row with this code: never tried, a passing failure, a bare ``SOURCE_MISSING``,
+    or a row put off whose time has come.
 
     What wakes the worker, and all the doctor does not call blocked, is read from here, so the two cannot disagree on
-    which codes are retried: a row an older release left as ``SOURCE_MISSING`` is one.  A key collision
+    which codes are retried: a row left as a bare ``SOURCE_MISSING`` is one.  A key collision
     (``VERSION_CONFLICT``) is taken by the next pass's ``resolve_conflicted_ingress``, which stores it under a new
     key, finds it final (``VERSION_CONFLICT:rekeyed``) or puts it off, so its wake is never in vain; counted blocked,
     a collision, and a given-up row returned to the rekey path, would wait for a pass something else started."""

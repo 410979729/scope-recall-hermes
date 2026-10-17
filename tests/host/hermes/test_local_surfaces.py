@@ -2,10 +2,9 @@
 
 Hermes Desktop's chat panel and ``hermes --tui`` hand a memory provider the dashboard login as
 ``user_id``, and nothing when nobody logged in (``tui_gateway/server.py``: platform ``desktop`` or
-``tui``).  2.x minted a Desktop principal for that case.  3.x binds only what the installation
-manifest approves, so every such session failed with ``user principal required for non-cli
-platform`` and the provider never initialised (issue #94).  The approval is the installer's:
-``apply-install --local-platform desktop``.
+``tui``).  Only what the installation manifest approves is bound, so every such session fails
+with ``user principal required for non-cli platform`` and the provider does not initialise.
+The approval is the installer's: ``apply-install --local-platform desktop``.
 """
 
 from __future__ import annotations
@@ -141,7 +140,7 @@ def test_a_login_on_an_approved_surface_is_a_user_like_any_other(hermes_home, in
 
 
 def test_a_host_that_names_its_user_local_on_a_surface_nobody_approved_keeps_no_route(hermes_home, initialize_kwargs):
-    """Only a login is routed as a one-to-one chat with itself (#175).  ``local`` sent by the host on a surface the
+    """Only a login is routed as a one-to-one chat with itself.  ``local`` sent by the host on a surface the
     owner never approved keeps the empty route it was sent with, so no row written for an approved surface's
     route, nor one written by hand, can match it."""
     _install(hermes_home, initialize_kwargs)
@@ -216,9 +215,9 @@ def _approve_login_by_hand(hermes_home, initialize_kwargs, *, platform="desktop"
 
 
 def test_a_login_the_owner_approved_is_the_owner_on_that_surface_and_nowhere_else(hermes_home, initialize_kwargs):
-    """#175: Hermes passes a dashboard login as ``user_id`` and no chat at all.  The session kept that empty
-    route, which no owner row can name (an owner_private row is an explicit private chat), so even a login
-    the owner approved bound nothing.  There a session is a one-to-one chat with the login it names."""
+    """Hermes passes a dashboard login as ``user_id`` and no chat at all.  Kept as that empty route, which no owner
+    row can name (an owner_private row is an explicit private chat), even a login the owner approved would bind
+    nothing.  So there a session is a one-to-one chat with the login it names."""
     _install(hermes_home, initialize_kwargs)
     _approve_login_by_hand(hermes_home, initialize_kwargs)
 
@@ -264,9 +263,9 @@ def test_what_an_approved_login_says_is_captured_as_the_owners(hermes_home, init
 def test_a_session_that_binds_nothing_says_so_once_in_the_host_log_and_never_what_was_said(
     hermes_home, initialize_kwargs, caplog
 ):
-    """#175: the sessions of a login nobody approved wrote nothing for days, and nothing said so: no warning,
-    no gap the host reads, doctor green.  Such a session still binds nothing; the host log now names its
-    route, its gaps and the approval, once."""
+    """The sessions of a login nobody approved write nothing, and must not do so silently, with no warning, no gap
+    the host reads and doctor green.  Such a session still binds nothing; the host log names its route, its gaps
+    and the approval, once."""
     _binding, core = _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
     caplog.set_level(logging.WARNING, logger="scope_recall")
     said, answer = "TEST 这句话只在会话里。", "TEST 这句回答也是。"
@@ -303,7 +302,7 @@ def test_an_unmapped_gateway_chat_says_nothing_and_a_login_cannot_break_the_line
     hermes_home, initialize_kwargs, caplog
 ):
     """A gateway chat left unmapped is the owner's choice: a line for each would name its users, some by phone
-    number.  And whatever a login holds stays in the one line it is named in (review of 3.4.10)."""
+    number.  And whatever a login holds stays in the one line it is named in."""
     _binding, core = _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
     caplog.set_level(logging.WARNING, logger="scope_recall")
     for session, given in (
@@ -332,8 +331,8 @@ def test_an_unmapped_gateway_chat_says_nothing_and_a_login_cannot_break_the_line
 
 
 def test_an_owner_login_is_never_a_reserved_name_in_any_case():
-    """``desktop=Unknown`` passed the check and failed later with a traceback; ``desktop=LOCAL`` became a principal
-    of its own beside the local owner (review of 3.4.10)."""
+    """``desktop=Unknown`` is refused by the check, not passed to fail later with a traceback; ``desktop=LOCAL``
+    does not become a principal of its own beside the local owner."""
     for value in ("desktop=local", "desktop=LOCAL", "tui=Unknown", "desktop=*"):
         with pytest.raises(HermesIdentityError, match="an owner login is"):
             normalize_owner_logins([value])
@@ -342,7 +341,7 @@ def test_an_owner_login_is_never_a_reserved_name_in_any_case():
 
 def test_a_platform_that_names_its_chats_keeps_the_route_it_sent(hermes_home, initialize_kwargs):
     """Only a local surface that names no chat is read as a one-to-one chat.  Gateways send their own chat
-    fields, a weixin DM even an empty chat id (#124), and those routes stay exactly as sent."""
+    fields, a weixin DM even an empty chat id, and those routes stay exactly as sent."""
     _install(hermes_home, initialize_kwargs)
     for platform in ("weixin", "telegram", "a2a"):
         sent = bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, platform, user_id="TEST-user"))

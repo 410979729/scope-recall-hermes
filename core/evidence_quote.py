@@ -16,7 +16,7 @@ not in anticipation.  Whitespace tolerance in particular would trade away the
 verbatim guarantee the whole quoting contract rests on.
 
 Resolution is monotone.  Rung 1 is exactly the plain substring rule, so
-nothing that passes now can begin to fail.  Every later rung returns a slice
+nothing that passes it can fail here.  Every later rung returns a slice
 of the stored content itself, which is why the callers stay byte-strict: by
 the time they run, the quote already *is* a literal substring.
 """

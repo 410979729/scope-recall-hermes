@@ -15,14 +15,13 @@ memories are recalled by their words.
 Three things cannot be copied as they are.
 
 * Source ids are derived from the store's keys, and legacy migrations gave
-  different stores the same keys for different content: three pilot stores
-  shared 13,073 ids.  Every imported source gets an id of its own,
+  different stores the same keys for different content: three stores of one
+  owner shared 13,073 ids.  Every imported source gets an id of its own,
   ``event-sha256(["import", entry, old id])``, and every reference to it --
   columns, JSON and the work that names it -- is rewritten; keys and group keys
   take the prefix ``import:<entry>:``, and sessions ``<entry>:``, as a live
   capture's do.  An id is renamed where the old store has it, whatever its
-  form: 85,112 of the pilot's sources were ``event-legacy-<32 hex>``, which
-  3.2.0rc3 renamed in columns but not in JSON or queued work.
+  form: 85,112 of one store's sources were ``event-legacy-<32 hex>``.
 * Integer ids local to a store -- ``source_id``, episode sequences, lexical
   term ids, authorization payload ids -- are renumbered.
 * A group block's digest includes the installation id; it is recomputed for
@@ -355,7 +354,7 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
 
     # A deletion is recorded at the epoch it moved its store to, and ``retraction_after`` compares that
     # with the epoch a read was made at.  The old store's numbers mean nothing here: one above this
-    # store's read as a deletion after every read in its scopes -- recall emptied, derived work failed
+    # store's would read as a deletion after every read in its scopes -- recall emptied, derived work failed
     # with memory_epoch_changed -- until this store's own epoch passed it.  Here they happen at the
     # import, so they carry the epoch the import moves the store to.
     imported_epoch = conn.execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0] + 1
@@ -420,7 +419,7 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
     )
     conn.execute("DROP TABLE temp.import_terms")
     # A withheld tool output's placeholder is indexed by its error text alone, when it carries one; the rest of the
-    # postings an older release gave it stay behind.
+    # postings the source store holds for it stay behind.
     withheld: dict[int, tuple[str, ...]] = {}
     for source_id, role, content in src.execute(
         f"SELECT e.source_id, e.role, e.content FROM source_events e WHERE e.role='tool' AND {OMITTED_TOOL_OUTPUT}"
@@ -496,8 +495,8 @@ def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
     """Take back the imported tool outputs' embeddings that vector retention would expire at once.
 
     A summary the capture filter left for an output it withheld, and a repeat of an earlier tool
-    output in the same scope, are what the intake gate keeps as sources only.  A store from an
-    earlier release embedded them anyway, and its embed history would queue them again: thousands
+    output in the same scope, are what the intake gate keeps as sources only.  A store can have
+    embedded them anyway, and its embed history would queue them again: thousands
     in front of the shared worker, each embedded and then deleted by retention within the hour.
     They are recorded as expired, under the reason retention gives, and never asked for; the text
     and everything drawn from it stay, recalled by their words.

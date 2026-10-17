@@ -1,8 +1,8 @@
 """The release's last step can run, and this version has notes to publish.
 
-``.github/scripts/extract_changelog_release_notes.py`` imported a module removed with the
-2.x tooling, so the release workflow's final step raised ``ModuleNotFoundError`` at import
-time.  No gate ran the script, so nothing noticed for the whole 3.1.0 candidate series.
+``.github/scripts/extract_changelog_release_notes.py`` must import without a module the 2.x
+tooling removed, or the release workflow's final step raises ``ModuleNotFoundError`` at
+import time; these tests run the script so that such a failure shows before a release.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def _module():
     # module through sys.modules while the class body runs.
     sys.modules[spec.name] = module
     try:
-        spec.loader.exec_module(module)  # the import that used to fail
+        spec.loader.exec_module(module)  # the import the release workflow's final step makes
     except BaseException:
         sys.modules.pop(spec.name, None)
         raise

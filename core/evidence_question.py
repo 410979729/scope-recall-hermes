@@ -1,24 +1,24 @@
 """What makes this a different question, as opposed to more of the same answer.
 
-A candidate is re-judged when its evidence set changes.  Keying that set on a
-recency window (``ORDER BY observed_at DESC LIMIT 16``) meant every new tool
-observation displaced an older one, so the fingerprint always differed and the
-``UNIQUE(candidate, revision, fingerprint, rule)`` guard -- which exists to
-stop a question being asked twice -- could never collide.  Nearly every
-verdict bought that way was ``insufficient_evidence`` again.
+A candidate is re-judged when its evidence set changes.  Keyed on a recency
+window (``ORDER BY observed_at DESC LIMIT 16``), that set would change with
+every new tool observation displacing an older one, so the fingerprint would
+always differ and the ``UNIQUE(candidate, revision, fingerprint, rule)`` guard
+-- which exists to stop a question being asked twice -- could never collide.
+Nearly every verdict bought that way is ``insufficient_evidence`` again.
 
-The doubling *timer* this replaces was the wrong instrument: it made a
-candidate wait out a clock even when it had just received exactly the
-evidence that would settle it.  Nothing here limits how much work an instance
-may do; it decides whether there is a *new question* to ask, and a candidate
-holding unjudged new testimony is always asked immediately.
+A doubling *timer* is the wrong instrument: it makes a candidate wait out a
+clock even when it has just received exactly the evidence that would settle
+it.  Nothing here limits how much work an instance may do; it decides whether
+there is a *new question* to ask, and a candidate holding unjudged new
+testimony is always asked immediately.
 
 One thing makes a question new: **first-hand testimony changed** -- a person
 said something this candidate had not heard.  That is what the qualification
-gates are waiting for.  Accumulating non-first-hand support was tried as a
-second trigger and, replayed over a live history, produced hundreds of model
-calls and exactly one conclusion; a trigger that cannot answer the question is
-not worth asking, which is a statement about yield, not a budget.
+gates are waiting for.  Accumulating non-first-hand support as a second
+trigger, replayed over a live history, produced hundreds of model calls and
+exactly one conclusion; a trigger that cannot answer the question is not worth
+asking, which is a statement about yield, not a budget.
 
 Not responsible for: choosing which evidence the model sees.  The selection
 still sends the newest that fits; this only decides whether that selection is
@@ -46,11 +46,11 @@ FIRST_HAND_ORIGINS = frozenset({"human_direct"})
 #: (``worker_consolidation``); the evaluator asks nothing of a candidate none of them speaks to
 #: (``rootless``) and writes no version their words do not carry (``rooted_verdict``).  Tool
 #: output is not one.  A tool output is what an agent read or ran while working, and derived
-#: claims from it were almost all file sizes, paths, ports and timestamps: one 2.5-hour task on
-#: the pilot left 787 of them, 93% of the store's 3,175 claims rested on tool output alone, and
-#: not one of the owner's 30 real questions was answered by one.  The host distils how a task was
-#: done into skills; tool output stays a searchable source.
-#: ``requalify.retire_rootless_proposals`` retires the unconfirmed claims derived before this changed.
+#: claims from it were almost all file sizes, paths, ports and timestamps: in one store a 2.5-hour
+#: task left 787 of them, 93% of the store's 3,175 claims rested on tool output alone, and not one of
+#: the owner's 30 real questions was answered by one.  The host distils how a task was done into
+#: skills; tool output stays a searchable source.  ``requalify.retire_rootless_proposals`` retires
+#: unconfirmed claims derived from tool output alone.
 DERIVATION_ROOT_ORIGINS = frozenset({"human_direct", "external_document", "imported"})
 #: Why a candidate nothing in ``DERIVATION_ROOT_ORIGINS`` speaks to is set aside.
 NO_DERIVATION_ROOT_REASON = "no_derivation_root"
@@ -79,7 +79,7 @@ def question_digest(evidence: object) -> str:
 # carried evidence on which no verdict could pass ``claims.qualify``: the
 # candidate's value appeared in none of the supplied sources, or no supplied
 # source could lend the authority its kind needs.  Of all 10,602 evaluations the
-# instance had run, none of the 27 that promoted a fact was among them.
+# store had run, none of the 27 that promoted a fact was among them.
 #
 # Each rule below is a necessary condition of ``claims.qualify``, checked no
 # more strictly than qualification checks it, so it only skips calls whose
@@ -137,11 +137,11 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
 
 # --- claims rest on what a person or a document said -------------------------
 #
-# Since 3.2.0 tool output is no derivation root: consolidation never shows it to
-# the model.  The evaluator is the other automatic writer, and the two rules below
-# hold it to the same line.  ``claims.qualify`` alone would not: it lends a tool
-# output authority and reads a value from any quote it cites, so a verdict quoting
-# a tool output's value beside any fragment of a person's message was written as
+# Tool output is no derivation root: consolidation never shows it to the model.
+# The evaluator is the other automatic writer, and the two rules below hold it to
+# the same line.  ``claims.qualify`` alone would not: it lends a tool output
+# authority and reads a value from any quote it cites, so a verdict quoting a tool
+# output's value beside any fragment of a person's message would be written as
 # that person's report.
 
 
@@ -149,8 +149,8 @@ def rootless(cited_origins: Iterable[str], evidence: Iterable[EvidenceText]) -> 
     """``NO_DERIVATION_ROOT_REASON`` for a candidate nothing a claim may be derived from speaks to.
 
     Neither the sources it cites (imports resolved) nor its evidence hold a person's or a
-    document's words: a proposal an earlier release derived from tool output alone, which no
-    verdict may now confirm.  It waits for a person, without a model call.  A candidate whose
+    document's words: a proposal derived from tool output alone, which no
+    verdict may confirm.  It waits for a person, without a model call.  A candidate whose
     own words are cited is never set aside here, whatever its evidence window holds.
     """
     origins = set(cited_origins) | {item.origin for item in evidence}
