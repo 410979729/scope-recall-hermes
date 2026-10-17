@@ -5,6 +5,8 @@ longer text this file once held is in its history.
 
 ## [3.10.6] - 2026-10-17
 
+Three reports, each with a test that failed on 3.10.5 before its fix; thanks to everyone who sent them.
+
 **A Hermes on a package-manager environment recalled by words alone** (#251, fixed in #252 by panxuewen0101). Such a gateway boots a bundled interpreter and injects the environment it built into `sys.path` at run time ([install.md](docs/install.md) §1). Before opening the in-process LanceDB store, recall rehearses `import lancedb, pyarrow` in a child of that interpreter, and the child saw only the bundled environment: the rehearsal failed, the store never opened, and every recall reported `lance_not_installed` while capture, embedding and the store's own writes kept working. The child is now handed the directories this process imports its dependencies from, as the isolated helper already was.
 
 **Failed work that no command could re-open** (#255). An embedding route whose endpoint served another model for an hour answered with vectors of another width, and the embeddings of the messages captured meanwhile failed as `vector_dimension_mismatch` after their three attempts. `retry-failures` re-opened only failures whose code it listed, while the doctor and the worker count every failure that is not by design as one to clear: those rows, and any other with a code it did not list (`vector_zero`, `unsupported_response_shape` and more), stayed failed for good, with `work_failed` up and the messages without vectors. A run also read only eight failed rows for each one it could re-open, so enough older failures it leaves alone hid the rest. `retry-failures --apply` now re-opens every failure but the by-design ones (`derivation_invalid`, `input_invalid` and `sensitive_request`, still behind `--include-terminal`), reads past any number of rows it leaves alone, and gives each row it re-opens the attempts of new work: a re-opened row used to fail again at its first timeout. The worker still leaves such failures to the command, since the same answer comes back until someone changes the model or the configuration.
@@ -13,7 +15,7 @@ longer text this file once held is in its history.
 
 ### Upgrading from 3.10.5
 
-Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110).
+Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. Then run `scope-recall retry-failures --config <file> --apply` for each store until it reports `retried: 0` (it re-opens 64 rows a run unless given `--limit`): failures an earlier release could not re-open, such as embeddings that failed with `vector_dimension_mismatch`, are worked on again. For a Codex entry, `doctor --host codex` names the requests for suggestions and their answers an earlier release stored (`owner_words_from_host_request`); forget them by ref as the install guide says. The schema is unchanged (1110).
 
 ## [3.10.5] - 2026-10-15
 
