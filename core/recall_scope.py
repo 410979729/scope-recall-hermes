@@ -3,12 +3,13 @@
 "What did I say about the Orchard release on September 18?" names a subject and a day, and every note on the subject
 holds its words: by words alone the newest note comes first, and one of that day holding fewer of them may not come at
 all.  The time a question names (``query_time``) is a day, a range of days, a month, last or this week or month, or
-the days before or since one of them, each a run of whole days up to today.  It is read for any recall of what holds
-now (a historical or as-of read is left as it was), and it only adds: the time is searched for what else the question
-asks (``RetrievalStorage.dated``), and what was said in it goes before what was said at other times
-(``RetrievalPipeline._rank_hydrated``), none of which is left out, since it often answers.  It is read by rule and only
-from what a question plainly writes, since a time misread moves the answer down; a question that names no time has
-none, and is recalled as if this reading did not exist.
+the days before or since one of them, each a run of whole days up to today: the past days a message could have been
+said on, never a part of a day ("tonight", "今早"), a day still to come or a date inside an identifier
+("release-2026-09-18").  It is read for any recall of what holds now (a historical or as-of read is left as it was),
+and it only adds: the time is searched for what else the question asks (``RetrievalStorage.dated``), and what was said
+in it goes before what was said at other times (``RetrievalPipeline._rank_hydrated``), none of which is left out,
+since it often answers.  It is read by rule and only from what a question plainly writes, since a time misread moves
+the answer down; a question that names no time has none, and is recalled as if this reading did not exist.
 
 "9月29日工作机 Claude Code 聊了什么" asks for one entry's conversation on one day.  Searched by its words, the date and
 the entry's name match nothing useful ("聊了", "工作", "29") and the recall answers from other days and other entries:
@@ -224,10 +225,15 @@ _ACK_WORDS = frozenset(
 )
 _CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿\U00020000-\U0003134f]")
 
-#: A day written as a date: "2026-09-29", "2026年9月29日", "9月29日", "9月29号".
-_FULL_DATE = re.compile(
-    r"(?<!\d)(?P<year>\d{4})\s*[-/年]\s*(?P<month>\d{1,2})\s*[-/月]\s*(?P<day>\d{1,2})\s*[日号]?(?!\d)"
+#: A day written as a date: "2026-09-29", "2026/09/29", "2026年9月29日", "9月29日", "9月29号".  A date inside an
+#: identifier is none: joined to it by "-", "_", "." or "/" ("release-2026-09-18", "build_2026-09-18",
+#: "2026-09-18.log") or run into by a Latin word ("id2026-09-18"), which only the scope reads, since an entry's name
+#: may run into its day ("Codex2026-09-29", ``_name_pattern``).
+_ISO_DATE = re.compile(
+    r"(?<![\d_\-./])(?P<year>\d{4})\s*[-/]\s*(?P<month>\d{1,2})\s*[-/]\s*(?P<day>\d{1,2})"
+    r"(?![A-Za-z\d_\-]|[./][A-Za-z\d_])"
 )
+_CN_DATE = re.compile(r"(?<!\d)(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*[日号]?(?!\d)")
 _MONTH_DAY = re.compile(r"(?<![\d.])(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*[日号]?(?![\d.])")
 #: A month written in English, by its name or the usual abbreviation ("Sep", "Sept", "Sep."); its first three
 #: letters say which (``_EN_MONTHS``).
@@ -264,7 +270,8 @@ _EN_RANGE_TAIL = re.compile(
 #: Each way a day is written, in the order read (characters read once are not read again), and the end of a range
 #: that may follow it.
 _DATE_FORMS = (
-    (_FULL_DATE, _RANGE_TAIL),
+    (_ISO_DATE, _RANGE_TAIL),
+    (_CN_DATE, _RANGE_TAIL),
     (_MONTH_DAY, _RANGE_TAIL),
     (_EN_MONTH_DAY, _EN_RANGE_TAIL),
     (_EN_DAY_MONTH, None),
@@ -295,20 +302,22 @@ _BEFORE = re.compile(r"(?<![a-z])(?:before|prior\s+to)\s+$", re.IGNORECASE)
 _SINCE = re.compile(r"(?<![a-z])(?:after|since)\s+$", re.IGNORECASE)
 _BEFORE_ZH = re.compile(r"\s*(?:之前|以前)")
 _SINCE_ZH = re.compile(r"\s*(?:之后|以后|以来)")
-#: Days before today each relative word names.
+#: Days before today each relative word names, and whether it names part of that day only ("昨晚", "今早", "tonight"),
+#: which only the scope reads: the time a question names is the past days a message could have been said on, and a
+#: part of today is often still to come ("今晚做什么菜").
 _RELATIVE = (
-    ("大前天", 3),
-    ("前天", 2),
-    ("昨天", 1),
-    ("昨日", 1),
-    ("昨晚", 1),
-    ("昨夜", 1),
-    ("今天", 0),
-    ("今日", 0),
-    ("今早", 0),
-    ("今晨", 0),
-    ("今晚", 0),
-    ("今夜", 0),
+    ("大前天", 3, False),
+    ("前天", 2, False),
+    ("昨天", 1, False),
+    ("昨日", 1, False),
+    ("昨晚", 1, True),
+    ("昨夜", 1, True),
+    ("今天", 0, False),
+    ("今日", 0, False),
+    ("今早", 0, True),
+    ("今晨", 0, True),
+    ("今晚", 0, True),
+    ("今夜", 0, True),
 )
 #: A character before which a relative word is part of another word: 如今 ("如今天下"), 往前 ("往前天数"), 之前,
 #: 以前, 目前 ("目前天天都在做什么"), 至今.
@@ -316,6 +325,7 @@ _NOT_A_DAY_AFTER = frozenset("如往向提之以目至")
 #: Places a message may name days in before it is a list or a log, not a question about a day.
 _MAX_DAY_MENTIONS = 16
 _RELATIVE_EN = re.compile(r"(?<![A-Za-z])(today|yesterday|last night|tonight|this morning)(?![A-Za-z])", re.IGNORECASE)
+_EN_PARTS_OF_DAY = frozenset({"last night", "tonight", "this morning"})
 #: Words naming whole days back from today (``_period``): last and this week, a week starting on Monday, and last and
 #: this month.  上 is no "last" in 早上, 晚上, 马上, 线上, 网上, 路上, 加上 or 以上 ("马上周末了"), nor 周 a week in
 #: 周期, 周边 or 周围 ("这周边").  The last few days ("最近", "recently") are no span: the recent channel reads the
@@ -465,10 +475,14 @@ def _period(name: str, today: date) -> tuple[date, date]:
     }[name]
 
 
-def _dates(text: str, today: date) -> Iterator[_Named]:
-    """The days the text writes as dates (``_DATE_FORMS``), each with the end of a range written after it."""
+def _dates(text: str, today: date, *, scope: bool) -> Iterator[_Named]:
+    """The days the text writes as dates (``_DATE_FORMS``), each with the end of a range written after it; with
+    ``scope``, also a date a Latin word runs into (``_ISO_DATE``)."""
     for pattern, tail in _DATE_FORMS:
         for match in pattern.finditer(text):
+            before = text[match.start() - 1 : match.start()]
+            if pattern is _ISO_DATE and before.isascii() and before.isalpha() and not scope:
+                continue
             first = _day_of(match, today)
             end = tail.match(text, match.end()) if tail is not None else None
             if end is None:
@@ -477,19 +491,21 @@ def _dates(text: str, today: date) -> Iterator[_Named]:
                 yield _Named((match.start(), end.end()), *_range_of(first, end), False)
 
 
-def _words(text: str, today: date) -> Iterator[_Named]:
+def _words(text: str, today: date, *, scope: bool) -> Iterator[_Named]:
     """The days and spans of days the text names in words: today, yesterday and the days before ("前天"), a month
-    ("9月", "in September"), and the words of ``_PERIODS``."""
-    for word, back in _RELATIVE:
-        start = text.find(word)
+    ("9月", "in September"), and the words of ``_PERIODS``; with ``scope``, also a part of a day (``_RELATIVE``)."""
+    for word, back, part in _RELATIVE:
+        start = text.find(word) if scope or not part else -1
         while start >= 0:
             if not (start and text[start - 1] in _NOT_A_DAY_AFTER):
                 day = today - timedelta(days=back)
                 yield _Named((start, start + len(word)), day, day, True)
             start = text.find(word, start + len(word))
     for match in _RELATIVE_EN.finditer(text):
-        day = today - timedelta(days=1 if match.group(1).lower() in {"yesterday", "last night"} else 0)
-        yield _Named(match.span(), day, day, True)
+        word = match.group(1).lower()
+        if scope or word not in _EN_PARTS_OF_DAY:
+            day = today - timedelta(days=1 if word in {"yesterday", "last night"} else 0)
+            yield _Named(match.span(), day, day, True)
     for pattern in (_MONTH, _EN_MONTH_ALONE):
         for match in pattern.finditer(text):
             yield _Named(match.span(), *_month_span(match, today), False)
@@ -498,11 +514,11 @@ def _words(text: str, today: date) -> Iterator[_Named]:
             yield _Named(match.span(), *_period(name, today), False)
 
 
-def _mentions(text: str, today: date) -> list[_Named]:
-    """Every time the text names, in its order: what ``_dates`` reads, then what ``_words`` reads of the rest.  More
-    than ``_MAX_DAY_MENTIONS`` is a log (``_NoScope``)."""
+def _mentions(text: str, today: date, *, scope: bool = False) -> list[_Named]:
+    """Every time the text names, in its order: what ``_dates`` reads, then what ``_words`` reads of the rest, with
+    ``scope`` what only the scope reads as well.  More than ``_MAX_DAY_MENTIONS`` is a log (``_NoScope``)."""
     found: list[_Named] = []
-    for named in itertools.chain(_dates(text, today), _words(text, today)):
+    for named in itertools.chain(_dates(text, today, scope=scope), _words(text, today, scope=scope)):
         if any(named.span[0] < other.span[1] and other.span[0] < named.span[1] for other in found):
             continue
         found.append(named)
@@ -552,9 +568,10 @@ def _bounded(text: str, named: _Named, today: date) -> _Named:
 
 
 def _named_days(text: str, today: date) -> tuple[list[date], list[tuple[int, int]]] | None:
-    """The days the text names that can hold a conversation, and where it names them; None when it names a range or
-    another span of days, or more than three days, counting those that hold none."""
-    named = _mentions(text, today)
+    """The days the text names that can hold a conversation, and where it names them, parts of days and dates an
+    entry's name runs into included (``_mentions``); None when it names a range or another span of days, or more than
+    three days, counting those that hold none."""
+    named = _mentions(text, today, scope=True)
     if not all(item.day for item in named) or len(_joined(text, named)) < len(named):
         return None
     if len({item.first or item.span for item in named}) > MAX_SCOPE_DAYS:

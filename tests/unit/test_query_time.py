@@ -148,6 +148,49 @@ def test_a_question_that_names_no_time_has_none(query):
 @pytest.mark.parametrize(
     "query",
     (
+        "What's in release-2026-09-18?",
+        "build_2026-09-18 failed again",
+        "Open 2026-09-18.log for me",
+        "id2026-09-18 是哪个",
+        "v2.2026-09-18 是哪个版本",
+        "2026-09-18-hotfix 修了什么",
+        "2026-09-18T10:00:00Z 的告警是什么",
+        "What should we cook tonight?",
+        "What did we discuss this morning?",
+        "What did we decide last night?",
+        "今晚做什么菜",
+        "今早聊了什么",
+        "今晨的会",
+        "今夜的部署",
+        "昨晚说的那个方案",
+        "昨夜的告警",
+        "What is planned for tomorrow?",
+        "明天的发布",
+        "后天的会",
+        "下周的计划",
+        "What is planned next week?",
+        "下个月的预算",
+        "What is the budget for next month?",
+    ),
+)
+def test_a_date_inside_an_identifier_a_part_of_a_day_or_a_day_to_come_names_no_time(query):
+    """The time a question names is the past days a message could have been said on.  A date joined to an identifier
+    or run into one is a name; a part of a day is often still to come ("今晚做什么菜"), and the scope alone reads it
+    (``query_scope``); tomorrow and next week hold nothing yet."""
+    assert query_time(query, now=NOW, zone=UTC) is None
+
+
+@pytest.mark.parametrize(
+    "query", ("We shipped on 2026-09-18.", "那次发布（2026-09-18）", "2026-09-18聊了什么", "2026/09/18 的发布")
+)
+def test_a_date_between_marks_or_words_is_read(query):
+    time = query_time(query, now=NOW, zone=UTC)
+    assert time is not None and time.windows == (_window("2026-09-18", "2026-09-18"),), query
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
         "10月1日的会",
         "valid_to 的默认值 9999-12-31 是什么意思",
         "0001-01-01 是什么意思",
