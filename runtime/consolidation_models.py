@@ -56,12 +56,12 @@ def _reject_secrets_outside_contents(build_body: Callable[[list[dict]], bytes], 
     """The body gate: everything a request carries besides its message contents.
 
     ``validate_chat_messages`` has already scanned every content as it was
-    written.  Scanning the serialised body scanned each of them again through
+    written.  Scanning the serialised body would scan each of them again through
     one more layer of escaping, where a line break inside a content reads
     ``\\\\n``: the scanner's break rule restored the break and left a backslash
     behind it, which an empty credential slot ("AppSecret:" and nothing after
     it) then took as its value: 124 of 124 candidate evaluations in one store
-    passed the contents gate and were refused here, none holding a secret.
+    passed the contents gate and were refused that way, none holding a secret.
     The same builder is run on the same messages with their contents blanked,
     so the model, the route's fields and the message roles are still scanned,
     and each text is scanned once.
@@ -288,7 +288,7 @@ class ConsolidationRouteConfig:
     stream: bool = False
     n: int = 1
     headers: Mapping[str, str] | None = None
-    #: Permission for plaintext HTTP beyond this machine, as the embedding route has it (#244).
+    #: Permission for plaintext HTTP beyond this machine, as the embedding route has it.
     allow_insecure_endpoint: bool = False
 
     def __post_init__(self) -> None:
@@ -322,7 +322,7 @@ def _validate_route_target(
     The endpoint follows the embedding route's rule (``core.endpoint_policy``), the one the transport that sends holds
     too: HTTPS to any host, plain HTTP to a model server on this machine, and to another host only with the literal
     opt-in.  Plain HTTP never carries the key.  Required HTTPS here alone, a local model server could embed and not
-    consolidate (#244)."""
+    consolidate."""
     if type(model) is not str or not model:
         raise ValueError("model")
     if type(allow_insecure_endpoint) is not bool:
@@ -474,7 +474,7 @@ def _responses_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
     ``max_output_tokens`` bounds), so reasoning is never billed a second time --
     the anomaly guard that charges output outside ``completion_tokens`` on the
     chat route does not apply here.  An absent or malformed block returns
-    ``None`` and the caller keeps the reserved charge, exactly as before.
+    ``None`` and the caller keeps the reserved charge.
     """
     candidate = payload.get("usage")
     if not isinstance(candidate, dict):

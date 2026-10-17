@@ -40,7 +40,7 @@ FINALIZE_MARGIN_SECONDS = 2.0
 #: against it and the supervisor that plans from it.  It rejects a corrupt file;
 #: it is not a daily cap: ``daily_work_limit`` goes to 1,000,000 and the uncapped
 #: default still counts what every pass keeps.  A smaller planner-only bound
-#: stopped supervision and autostart for the rest of a busy UTC day.
+#: would stop supervision and autostart for the rest of a busy UTC day.
 DAILY_COUNTER_MAX = 100_000_000
 
 
@@ -149,8 +149,8 @@ def _receipt_payload(config: RuntimeInstanceConfig, receipt: Any, capability_gap
     ]
     idle = bool(getattr(receipt, "idle", False))
     # A run that met only by-design terminal outcomes did its job; counting
-    # them as degraded made the worker disagree with the doctor, which uses
-    # the same classification.
+    # them as degraded would make the worker disagree with the doctor, which
+    # uses the same classification.
     degraded = (
         bool(capability_gaps)
         or int(getattr(receipt, "retried", 0)) > 0
@@ -200,8 +200,8 @@ def worker_metadata_path(config: RuntimeInstanceConfig, name: str) -> Path:
 #: On Windows a file cannot be opened for the instant ``os.replace`` swaps it
 #: in, and cannot be replaced while a reader holds it open; either side gets
 #: ``PermissionError``.  The supervisor reads its control file beside the wake
-#: that rewrites it, outside the control lock, so the refusal ended a
-#: supervisor now and then (and a nightly CI run, which is how it was seen).
+#: that rewrites it, outside the control lock, so the refusal would end a
+#: supervisor now and then.
 #: The window is well under a millisecond, so both sides simply try again; a
 #: file that is really forbidden still fails, a fifth of a second later.
 _SHARING_RETRIES = 20
@@ -690,10 +690,11 @@ def run_retry_failed(
 def load_credential_environment(config_path: str | Path, env_file: str | Path) -> int:
     """Put the credential names this instance's config declares into this process.
 
-    A pass started by hand reaches every provider with nothing: the scheduled wake
-    carries the environment, and this entry point had no way to be given it.  So the
-    pass refused each item with ``credential_missing``, stood the work types down, and
-    exited 0 -- an operator watching a receipt saw a success that had done nothing.
+    Without this, a pass started by hand would reach every provider with nothing: the
+    scheduled wake carries the environment, and this entry point has no other way to
+    be given it.  The pass would refuse each item with ``credential_missing``, stand
+    the work types down, and exit 0 -- an operator watching a receipt would see a
+    success that had done nothing.
 
     Reads under the same contract as the autostart wake and the Codex hook: only the
     names the trusted runtime config declares, never an interpolated dotenv, and never
