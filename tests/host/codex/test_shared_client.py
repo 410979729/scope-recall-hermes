@@ -1029,11 +1029,11 @@ def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store
 
 
 def test_the_doctor_names_owner_words_stored_with_a_reminder(store, monkeypatch):
-    """#248: what an earlier release stored with the app's reminder is counted for the entry and named by ref, never
-    by its text, until the owner forgets it.  The owner's own words about such a block are no finding."""
+    """What an earlier release stored with the app's reminder is counted for the entry and named by ref, never by its
+    text, until the owner forgets it.  The owner's own words about such a block are no finding."""
     from scope_recall.adapters.clients import hook_events
     from scope_recall.maintenance.doctor_report import DoctorReport
-    from scope_recall.maintenance.doctor_store import check_client_reminders
+    from scope_recall.maintenance.doctor_store import check_owner_words
 
     root, _homes, client, _capture = store
     hook = _hook(client)
@@ -1049,21 +1049,21 @@ def test_the_doctor_names_owner_words_stored_with_a_reminder(store, monkeypatch)
         root, "SELECT event_id,source_revision FROM source_events WHERE content LIKE '%以前的版本%'"
     )
     report = DoctorReport(host="claude-code", status="ok")
-    check_client_reminders(report, root, "claude-code")
+    check_owner_words(report, "claude-code", root, "claude-code")
     assert report.capability_gaps == ["owner_words_with_client_reminder"]
     assert report.checks == [{"name": "owner_words", "result": "client_reminders", "detail": f"1: {event}@{revision}"}]
     for entry in ("tianshu", None):
         other = DoctorReport(host="claude-code", status="ok")
-        check_client_reminders(other, root, entry)
+        check_owner_words(other, "claude-code", root, entry)
         assert other.capability_gaps == [] and other.checks == [], "another entry's, or another store's"
     with closing(sqlite3.connect(root / "memory.sqlite3")) as connection, connection:
         connection.execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (event,))
     forgotten = DoctorReport(host="claude-code", status="ok")
-    check_client_reminders(forgotten, root, "claude-code")
+    check_owner_words(forgotten, "claude-code", root, "claude-code")
     assert forgotten.capability_gaps == []
-    monkeypatch.setattr("scope_recall.maintenance.doctor_store._REMINDER_SCAN_S", -1.0)  # already over
+    monkeypatch.setattr("scope_recall.maintenance.doctor_store._OWNER_WORDS_SCAN_S", -1.0)  # already over
     stopped = DoctorReport(host="claude-code", status="ok")
-    check_client_reminders(stopped, root, "claude-code")
+    check_owner_words(stopped, "claude-code", root, "claude-code")
     assert [check["result"] for check in stopped.checks] == ["unfinished"], "a read cut short never reads as clean"
     assert stopped.capability_gaps == ["owner_words_unchecked"], "and the report says to look"
 
@@ -1098,10 +1098,42 @@ def test_codex_s_request_for_suggestions_is_told_from_the_owner_s_words():
     assert len(note) >= 8000 and not is_codex_suggestions_prompt(note)
 
 
-def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, tmp_path):
-    """Codex sends its request for suggestions of what to do next through the prompt hook.  On the pilot four were
-    stored as the owner's words, 11,000 to 15,000 characters each, claims were drawn from them as if the owner had
-    said them, and nine of the model's JSON answers were stored as replies."""
+SUGGESTED_MESSAGE_PROMPT = (
+    "This is an app-generated request for a suggested next user message. The user did not write this message.\n\n"
+    "TEST Read the conversation so far and write the one message the user is most likely to send next.\n"
+    + "- TEST rule about what the suggested message must and must not be.\n" * 16
+    + '\nAnswer with a JSON object of one key: {"suggestion": "<message>"}.'
+)
+
+
+def test_codex_s_request_for_a_suggested_message_is_told_from_the_owner_s_words():
+    """The desktop app's request for one next message opens with Codex saying the user did not write it; that opening
+    tells it, short as it is, and its answer is told by its one key.  The owner quoting it, or answering in JSON of
+    their own, stays theirs."""
+    from scope_recall.adapters.clients.boundary import is_codex_suggestions_prompt, is_codex_suggestions_reply
+
+    assert len(SUGGESTED_MESSAGE_PROMPT) < 8000 and is_codex_suggestions_prompt(SUGGESTED_MESSAGE_PROMPT)
+    assert is_codex_suggestions_prompt("\n  " + SUGGESTED_MESSAGE_PROMPT.replace("message. The", "message.\nThe"))
+    assert not is_codex_suggestions_prompt(f"TEST 为什么这段会被存成我说的话？\n\n{SUGGESTED_MESSAGE_PROMPT}")
+    assert not is_codex_suggestions_prompt("This is an app-generated request for a suggested next user message.")
+    assert is_codex_suggestions_reply('{"suggestion": "TEST 我的测试暗号是什么？"}')
+    assert is_codex_suggestions_reply(' {"suggestions": [{"title": "TEST 建议"}]}\n')
+    for answer in ('{"suggestion": ["TEST"]}', '{"suggestion": "TEST", "why": "TEST"}', '"TEST"', "TEST 收到"):
+        assert not is_codex_suggestions_reply(answer), answer
+
+
+@pytest.mark.parametrize(
+    ("host_request", "answer"),
+    [
+        (SUGGESTIONS_PROMPT, '{"suggestions":[{"title":"TEST 建议"}]}'),
+        (SUGGESTED_MESSAGE_PROMPT, '{"suggestion":"TEST 我的测试暗号是什么？"}'),
+    ],
+    ids=["suggestions", "suggested-message"],
+)
+def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, tmp_path, host_request, answer):
+    """Codex sends its requests for what the owner might do next through the prompt hook, in a thread of their own.
+    Stored as the owner's words, claims would be drawn from them as if the owner had said them, and the model's JSON
+    answers, stored as replies, would come back in recall."""
     root, _homes, _client, _capture = store
     codex = _codex_client(root, tmp_path)
     hook = CodexHookHandler.from_home(str(codex), "codex")
@@ -1112,7 +1144,7 @@ def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, t
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "TEST-codex-session",
                     "turn_id": "TEST-turn-1",
-                    "prompt": SUGGESTIONS_PROMPT,
+                    "prompt": host_request,
                     "cwd": "C:/TEST",
                 }
             )
@@ -1126,7 +1158,7 @@ def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, t
                     "session_id": "TEST-codex-session",
                     "turn_id": "TEST-turn-1",
                     "cwd": "C:/TEST",
-                    "last_assistant_message": '{"suggestions":[{"title":"TEST 建议"}]}',
+                    "last_assistant_message": answer,
                 }
             )
             == {}
@@ -1140,7 +1172,7 @@ def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, t
                     "session_id": "TEST-unmarked-session",
                     "turn_id": "TEST-turn-1",
                     "cwd": "C:/TEST",
-                    "last_assistant_message": '{"suggestions":[{"title":"TEST 建议"}]}',
+                    "last_assistant_message": answer,
                 }
             )
             == {}
@@ -1209,6 +1241,47 @@ def test_the_rest_of_codex_s_suggestions_thread_is_not_stored_either(store, tmp_
     hook({**tool, "session_id": "TEST-owner-thread", "turn_id": "TEST-turn-1", "tool_use_id": "TEST-tool-2"})
     stored = _rows(root, "SELECT role FROM source_events WHERE entry_id='codex'")
     assert stored == [("tool",)]
+
+
+def test_the_doctor_names_codex_s_requests_stored_as_the_owner_s_words(store, tmp_path, monkeypatch):
+    """What an earlier release stored of Codex's requests for suggestions, and of the model's answers, is counted for
+    the Codex entry and named by ref, never by its text.  The owner's own words that mention such an answer are no
+    finding, and neither is another entry's."""
+    from scope_recall.adapters.clients import hook_events
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_owner_words
+
+    root, _homes, _client, _capture = store
+    codex = _codex_client(root, tmp_path)
+    # As an earlier release stored them: neither the request nor its answer was told apart.
+    monkeypatch.setattr(hook_events, "is_codex_suggestions_prompt", lambda prompt: False)
+    monkeypatch.setattr(hook_events, "is_codex_suggestions_reply", lambda message: False)
+    turns = (
+        (SUGGESTED_MESSAGE_PROMPT, '{"suggestion":"TEST 我的测试暗号是什么？"}'),
+        ('TEST 我自己的话：上次的回答是 {"suggestion": "TEST"}。', "TEST 好的。"),
+    )
+    hook = CodexHookHandler.from_home(str(codex), "codex")
+    try:
+        for number, (prompt, reply) in enumerate(turns, start=1):
+            thread = {"session_id": f"TEST-thread-{number}", "turn_id": "TEST-turn-1", "cwd": "C:/TEST"}
+            hook.handle_payload({"hook_event_name": "UserPromptSubmit", **thread, "prompt": prompt})
+            hook.handle_payload({"hook_event_name": "Stop", **thread, "last_assistant_message": reply})
+    finally:
+        hook.close()
+    written_by_codex = _rows(
+        root,
+        """SELECT event_id,source_revision FROM source_events WHERE entry_id='codex'
+        AND (content LIKE 'This is an app-generated request%' OR content LIKE '{"suggestion":%') ORDER BY rowid""",
+    )
+    assert len(written_by_codex) == 2
+    report = DoctorReport(host="codex", status="ok")
+    check_owner_words(report, "codex", root, "codex")
+    assert report.capability_gaps == ["owner_words_from_host_request"]
+    refs = ",".join(f"{event}@{revision}" for event, revision in written_by_codex)
+    assert report.checks == [{"name": "owner_words", "result": "host_requests", "detail": f"2: {refs}"}]
+    other = DoctorReport(host="codex", status="ok")
+    check_owner_words(other, "codex", root, "tianshu")
+    assert other.capability_gaps == [] and other.checks == [], "another entry's"
 
 
 def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):
