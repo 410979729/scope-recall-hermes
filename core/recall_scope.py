@@ -2,12 +2,12 @@
 
 "What did I say about the Orchard release on September 18?" names a subject and a day, and every note on the subject
 holds its words: by words alone the newest note comes first, and one of that day holding fewer of them may not come at
-all.  The time a question names (``query_time``) is a day, a range of days, a month, last or this week, the last few
-days, or the days before or since one of them, each a run of whole days up to today.  It is read for any question, and
-it only adds: the time is searched for what else the question asks (``RetrievalStorage.dated``), and what was said in
-it goes before what was said at other times (``RetrievalPipeline._rank_hydrated``), none of which is left out, since
-it often answers.  It is read by rule and only from what a question plainly writes, since a time misread moves the
-answer down; a question that names no time has none, and is recalled as if this reading did not exist.
+all.  The time a question names (``query_time``) is a day, a range of days, a month, last or this week or month, or
+the days before or since one of them, each a run of whole days up to today.  It is read for any question, and it only
+adds: the time is searched for what else the question asks (``RetrievalStorage.dated``), and what was said in it goes
+before what was said at other times (``RetrievalPipeline._rank_hydrated``), none of which is left out, since it often
+answers.  It is read by rule and only from what a question plainly writes, since a time misread moves the answer
+down; a question that names no time has none, and is recalled as if this reading did not exist.
 
 "9月29日工作机 Claude Code 聊了什么" asks for one entry's conversation on one day.  Searched by its words, the date and
 the entry's name match nothing useful ("聊了", "工作", "29") and the recall answers from other days and other entries:
@@ -47,8 +47,6 @@ MAX_SCOPE_DAYS = 3
 #: asked on 9月30日 is a day with no conversation yet.  A month without a year reaches as far back from its last day:
 #: "10月" asked in September is the October to come.
 _MONTH_DAY_REACH = timedelta(days=183)
-#: The last few days ("最近", "recently", "这几天"): the seven that end today.
-_RECENT_DAYS = 7
 #: The earliest day read, and where a span before a named time begins: an older date is a placeholder or an example
 #: ("0001-01-01"), and a day before this one cannot be turned into a time the store holds on every machine.  Windows
 #: places no instant before 1970 in the machine's zone, and finding a midnight's offset looks a day earlier: east of
@@ -317,9 +315,10 @@ _NOT_A_DAY_AFTER = frozenset("如往向提之以目至")
 #: Places a message may name days in before it is a list or a log, not a question about a day.
 _MAX_DAY_MENTIONS = 16
 _RELATIVE_EN = re.compile(r"(?<![A-Za-z])(today|yesterday|last night|tonight|this morning)(?![A-Za-z])", re.IGNORECASE)
-#: Words naming whole days back from today (``_period``): last and this week, a week starting on Monday; last and
-#: this month; the last few days.  上 is no "last" in 早上, 晚上, 马上, 线上, 网上, 路上, 加上 or 以上 ("马上周末了"),
-#: nor 周 a week in 周期, 周边 or 周围 ("这周边"), nor 最近 recent in 最近邻 ("最近邻搜索").
+#: Words naming whole days back from today (``_period``): last and this week, a week starting on Monday, and last and
+#: this month.  上 is no "last" in 早上, 晚上, 马上, 线上, 网上, 路上, 加上 or 以上 ("马上周末了"), nor 周 a week in
+#: 周期, 周边 or 周围 ("这周边").  The last few days ("最近", "recently") are no span: the recent channel reads the
+#: session's latest messages, and 最近 is as often "nearest" ("最近距离").
 _PERIODS = (
     (
         "last_week",
@@ -334,14 +333,6 @@ _PERIODS = (
     ),
     ("last_month", re.compile(r"上个月|(?<![a-z])last\s+month(?![a-z])", re.IGNORECASE)),
     ("this_month", re.compile(r"(?:本|这个)月|(?<![a-z])this\s+month(?![a-z])", re.IGNORECASE)),
-    (
-        "recent",
-        re.compile(
-            r"最近(?!邻)|近期|近来|近几天|这几天|这两天|前几天|前两天"
-            r"|(?<![a-z])(?:recently|lately|(?:the\s+)?(?:past|last)\s+(?:few|couple\s+of)\s+days)(?![a-z])",
-            re.IGNORECASE,
-        ),
-    ),
 )
 #: Characters an entry's name may be written with or without between its own: spaces, and "的" ("工作机的 Codex").
 _NAME_GAP = r"[\s的]*"
@@ -465,7 +456,6 @@ def _period(name: str, today: date) -> tuple[date, date]:
         "this_week": (monday, today),
         "last_month": ((month - timedelta(days=1)).replace(day=1), month - timedelta(days=1)),
         "this_month": (month, today),
-        "recent": (today - timedelta(days=_RECENT_DAYS - 1), today),
     }[name]
 
 

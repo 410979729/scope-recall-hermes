@@ -54,10 +54,6 @@ def _window(first: str, last: str) -> tuple[str, str]:
         ("上个月的账单", "2026-08-01", "2026-08-31"),
         ("What did we spend last month?", "2026-08-01", "2026-08-31"),
         ("本月的账单", "2026-09-01", "2026-09-30"),
-        ("最近发布怎么样", "2026-09-24", "2026-09-30"),
-        ("这几天发布怎么样", "2026-09-24", "2026-09-30"),
-        ("What changed recently?", "2026-09-24", "2026-09-30"),
-        ("What did we do the past few days?", "2026-09-24", "2026-09-30"),
         ("9月18日之前用的是哪个端口", "1970-01-03", "2026-09-17"),
         ("Which port did we use before September 18?", "1970-01-03", "2026-09-17"),
         ("What changed after September 18?", "2026-09-18", "2026-09-30"),
@@ -114,13 +110,16 @@ def test_two_named_days_are_two_windows():
         "这周边有什么好吃的",
         "本周期的指标",
         "如今天下太平",
-        "最近邻搜索怎么做",
+        "最近发布怎么样",
+        "最近距离是多少",
+        "What changed recently?",
+        "What did we do the past few days?",
     ),
 )
 def test_a_question_that_names_no_time_has_none(query):
     """A month's name that is a word ("May I", "may change"), an ordinal that names no day, a version, a span of
-    time that is no date ("3个月"), and the characters of a time word inside another word (马上周末, 周边, 周期,
-    如今天下, 最近邻) name no time."""
+    time that is no date ("3个月"), the characters of a time word inside another word (马上周末, 周边, 周期, 如今天下),
+    and the last few days ("最近", "recently"), which are no span, name no time."""
     assert query_time(query, now=NOW, zone=UTC) is None
 
 
