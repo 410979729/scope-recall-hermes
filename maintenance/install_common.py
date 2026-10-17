@@ -337,7 +337,7 @@ def manifest_version(version: str = PACKAGE_VERSION) -> str:
     if ".dev" in version:
         return version.replace(".dev", "-dev.", 1)
     # Unanchored on purpose: with a trailing ``$`` a post-release suffix
-    # (``3.1.0rc10.post16``) would stop the match and reach a plugin manifest
+    # (``X.Y.ZrcN.postM``) would stop the match and reach a plugin manifest
     # verbatim.  The X.Y.Z prefix keeps the pattern specific enough.
     return re.sub(r"(\d+\.\d+\.\d+)rc(\d+)", r"\1-rc.\2", version)
 

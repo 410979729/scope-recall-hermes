@@ -2,19 +2,18 @@
 
 The v3 wheel ships a deliberate subset of this repository: the 2.x modules
 (``provider.py``, ``cli.py``, ``config_schema.py`` and friends) still live here
-and must stay out.  That subset used to be a hand-copied list of 120 paths in
-``packaging/v11-module-allowlist.json``, and the predictable thing happened --
-six of the eight packaging failures on 2026-09-13 were new modules nobody had
-remembered to add, found only because the packaging tier finally ran.
+and must stay out.  Kept as a hand-copied list of paths, that subset would miss
+every new module nobody remembered to add, found only when the packaging tier
+runs.
 
 The subset is not arbitrary, though: it is exactly what the v3 entry points can
 reach by import.  So it can be computed, and the committed allowlist becomes a
 reviewed artifact that a test compares against the computation rather than a
-list somebody retypes.  The safety property is unchanged -- a stray module still
+list somebody retypes.  The safety property holds -- a stray module still
 cannot enter the wheel silently, because it can only enter by being imported
 from an entry point, and the diff is shown to a human either way.
 
-The same reasoning covers the version string, which lived in four files.
+The same reasoning covers the version string, which four files carry.
 ``_version.py`` is the source; everything else is stamped from it.
 
 Not responsible for: building the wheel (``packaging_hooks/v11_build.py``) or
@@ -64,9 +63,9 @@ _DATA_ONLY = ("_lance_worker.py",)
 #: Files whose version line is stamped from ``_version.py``.
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
-#: The Codex manifest carries the *semver* spelling instead, and was the one
-#: nobody thought to update: it still read 3.1.0-rc.10 while the package was at
-#: 3.1.0rc10.post17.  Stamping it from the same source is the whole point.
+#: The Codex manifest carries the *semver* spelling instead (``X.Y.Z-rc.N`` for
+#: ``X.Y.ZrcN``), which a hand-kept copy would let drift from the package's
+#: version.  Stamping it from the same source is the whole point.
 CODEX_MANIFEST = "distribution/codex/scope-recall/.codex-plugin/plugin.json"
 
 
