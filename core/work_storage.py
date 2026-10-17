@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +28,8 @@ MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
 #: Work items one explicit operator retry may name.
 MAX_OPERATOR_PAGE = 8
+#: Failed rows ``retry_failed`` reads at a time (``WorkItems._failed_rows``).
+RETRY_SCAN_PAGE = 512
 #: Failed rows one pass may reopen.  Reopening a failure is not the same kind of
 #: work as claiming a ready item: each reopened row becomes a model call later,
 #: so it keeps its own page however large a pass of cheap work may be.  It was
@@ -875,7 +878,10 @@ class WorkItems:
         request covers are counted (``already_retried``, the first ids in
         ``already_retried_work_ids``): each failed again after this release
         re-opened it, and a run that re-opens nothing says so rather than
-        nothing.
+        nothing.  However many failed rows a run passes over, by design or
+        already re-opened, it reads on to the rows it may re-open
+        (``_failed_rows``), and each row it re-opens starts its attempts afresh
+        (``_reopen_failed``).
         """
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
@@ -883,13 +889,6 @@ class WorkItems:
         # A preview must be able to run inside a read transaction, which is what
         # makes "look before you touch production" the cheap option.
         conn = self._tx._check(write=not dry_run)
-        visible, params = self._visible_filter()
-        rows = conn.execute(
-            f"""SELECT work_id, work_type, last_error_code FROM work_items
-                WHERE state='failed' AND {visible} ORDER BY work_id LIMIT ?""",
-            (*params, max(limit * 8, limit)),
-        ).fetchall()
-
         report = {
             "examined": 0,
             "retried": 0,
@@ -898,7 +897,7 @@ class WorkItems:
             "already_retried": 0,
             "already_retried_work_ids": [],
         }
-        for row in rows:
+        for row in self._failed_rows(conn):
             if report["retried"] >= limit:
                 break
             report["examined"] += 1
@@ -918,7 +917,7 @@ class WorkItems:
             report["retried"] += 1
         # The automatic recovery read every embed's subject as a source, so a claim embed a provider failed was made
         # obsolete instead of reopened (``_embed_retry_reason``).  A readable head it left without a vector is worked
-        # on again, and one an earlier conversion never queued is queued.
+        # on again, with the attempts of new work, and one an earlier conversion never queued is queued.
         heads = self._claim_heads_without_vectors(limit=limit)
         report["claim_embeds_reopened"] = sum(1 for work_id, _ref, _revision in heads if work_id is not None)
         report["claim_embeds_queued"] = sum(1 for work_id, _ref, _revision in heads if work_id is None)
@@ -928,7 +927,7 @@ class WorkItems:
                     self.enqueue("embed", ref, revision, available_at=now)
                 else:
                     conn.execute(
-                        """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+                        """UPDATE work_items SET state='pending',attempt=0,available_at=?,lease_owner=NULL,
                                     lease_until=NULL,last_error_code=? WHERE work_id=? AND state='obsolete'""",
                         (now, marked("authority_revoked", generation=RETRY_GENERATION), work_id),
                     )
@@ -969,6 +968,26 @@ class WorkItems:
                 "UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(row[0],) for row in refused]
             )
         return report
+
+    def _failed_rows(self, conn) -> Iterator:
+        """Every failed row of this context, ``RETRY_SCAN_PAGE`` at a time, in the order ``work_ready`` keeps them (by
+        when each failed): a run reaches the rows it may re-open however many come before them.
+
+        A page is read whole before the caller changes a row, and the next one starts after the last row read: a row
+        the caller re-opened has left the failed rows, and no row is read twice or passed over."""
+        visible, params = self._visible_filter()
+        last = ("", 0)
+        while True:
+            page = conn.execute(
+                f"""SELECT work_id, work_type, last_error_code, available_at FROM work_items
+                    WHERE state='failed' AND (available_at, work_id)>(?,?) AND {visible}
+                    ORDER BY available_at, work_id LIMIT ?""",
+                (*last, *params, RETRY_SCAN_PAGE),
+            ).fetchall()
+            yield from page
+            if len(page) < RETRY_SCAN_PAGE:
+                return
+            last = (page[-1]["available_at"], page[-1]["work_id"])
 
     def _claim_heads_without_vectors(self, *, limit: int) -> list[tuple[int | None, str, int]]:
         """Readable claim heads of this context whose vector work was made obsolete or never queued: (the obsolete
@@ -1158,16 +1177,21 @@ class WorkItems:
         return {"outcome": "complete" if below < 1 else "progress", "reopened": len(ids), "next_work_id": below}
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
-        """Move one failed row, and its sibling tables when it has any."""
+        """Move one failed row, and its sibling tables when it has any.
+
+        An operator's re-look starts the row's attempts afresh, as new work's: left at the count that failed it, the
+        row would fail again at its first transient fault.  The derivation retry keeps the count; it is one extra
+        attempt (``recover_invalid_derivations``)."""
         conn = self._tx._check(write=True)
         reason = "derivation_retry" if automatic else "operator_retry"
         if work_type == "evaluate_candidate" and not self._tx.candidates.reopen_evaluation(
             work_id, now=now, reason=reason
         ):
             return False
+        attempts = "attempt" if automatic else "0"
         return (
             conn.execute(
-                """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+                f"""UPDATE work_items SET state='pending',attempt={attempts},available_at=?,lease_owner=NULL,
                lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
                 (
                     now,

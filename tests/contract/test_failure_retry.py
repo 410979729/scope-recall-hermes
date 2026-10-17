@@ -9,12 +9,13 @@ is not re-run by accident, and nothing can loop.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta
 
 import pytest
 from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
 from scope_recall.core.failure_retry import (
-    ACTIONABLE_FAILURES,
+    AUTO_RECOVERABLE_ERRORS,
     RETRY_GENERATION,
     RETRY_MARKER,
     TERMINAL_FAILURES,
@@ -24,8 +25,9 @@ from scope_recall.core.failure_retry import (
     retry_class,
     selects,
 )
+from scope_recall.runtime.models import AuxiliaryModelError
 from test_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
-from test_claims import app
+from test_claims import app, capture
 from test_consolidation_chunks import FIRST, LAST, claims, long_source, proposal, row
 from test_worker import FakeConsolidation, consolidation_payload, worker_app
 
@@ -50,12 +52,6 @@ def test_the_kind_is_the_last_segment(code, kind):
     assert failure_kind(code) == kind
 
 
-@pytest.mark.parametrize("kind", sorted(ACTIONABLE_FAILURES))
-def test_faults_are_retried_by_default(kind):
-    assert retry_class(kind) == "actionable"
-    assert selects(kind, include_terminal=False, generation=RETRY_GENERATION) is True
-
-
 @pytest.mark.parametrize("kind", sorted(TERMINAL_FAILURES))
 def test_by_design_outcomes_need_the_explicit_flag(kind):
     assert retry_class(kind) == "terminal"
@@ -63,10 +59,29 @@ def test_by_design_outcomes_need_the_explicit_flag(kind):
     assert selects(kind, include_terminal=True, generation=RETRY_GENERATION) is True
 
 
-@pytest.mark.parametrize("code", ["something_else", "capture_error", "", None])
-def test_an_unknown_failure_is_never_retried(code):
-    assert retry_class(code) is None
-    assert selects(code, include_terminal=True, generation=RETRY_GENERATION) is False
+@pytest.mark.parametrize(
+    "code",
+    [
+        # An embedding route's unusable answer (``runtime/embedding_models.py``).
+        "vector_dimension_mismatch",
+        "vector_nonfinite",
+        "vector_zero",
+        "unsupported_response_shape",
+        # The HTTP helper's and a model client's own codes, a status and codes no list names, one with history.
+        "transport_worker_protocol",
+        "invalid_json",
+        "http_4220",
+        "something_else",
+        "auto_retry:2|a_code_no_release_has_written",
+        "",
+        None,
+    ],
+)
+def test_a_failure_no_list_names_is_a_fault(code):
+    """Only by-design outcomes are listed.  The worker records whatever code an adapter raises, and the status counts
+    every failed row outside that list as a fault: one this command could not select stayed failed for good."""
+    assert retry_class(code) == "actionable"
+    assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is True
 
 
 def test_the_re_look_is_the_release_s():
@@ -470,6 +485,148 @@ def test_the_page_is_bounded(app, limit):
 
 
 # --------------------------------------------------------------------------
+# Every failure the status counts is one a run can reach
+# --------------------------------------------------------------------------
+
+#: Codes of every kind a writer records on a failed row: the worker's transient set; by-design outcomes in the case and
+#: with the history their writers leave; refusals of a route, a size or an account; an interrupted attempt; an
+#: embedding route's unusable answers; the HTTP helper's own code; codes no list names; an empty and a missing code.
+_WRITTEN_CODES = (
+    *sorted(AUTO_RECOVERABLE_ERRORS),
+    "derivation_invalid",
+    "DERIVATION_INVALID",
+    "derivation_retry:1|derivation_invalid",
+    "budget_checked:1110|input_invalid",
+    "chunk_checked:1106|INPUT_INVALID",
+    "sensitive_request",
+    "http_400",
+    "http_404",
+    "http_402",
+    "request_too_large",
+    "candidate_attempt_interrupted",
+    "vector_dimension_mismatch",
+    "retried:0.0.1|auto_retry:2|vector_zero",
+    "unsupported_response_shape",
+    "transport_worker_protocol",
+    "a_code_no_release_has_written",
+    "",
+    None,
+)
+
+
+def _insert_failed(core, ctx, codes):
+    """Failed embedding rows of this context, one per code in this order, their attempts spent."""
+    capture(core, ctx, "TEST 这一条只是为了让存储有它的范围。")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.executemany(
+            """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,state,
+                   attempt,available_at,last_error_code) VALUES ('embed',?,1,'TEST-scope',?,?,'failed',3,?,?)""",
+            [
+                (f"TEST-event-{index:05d}", ctx.project_id, ctx.branch_id, "2026-09-06T11:00:00Z", code)
+                for index, code in enumerate(codes)
+            ],
+        )
+
+
+def test_every_failure_the_status_counts_is_one_a_run_re_opens(app):
+    """The worker and the doctor read the store's status: a failed row it does not count as terminal holds the
+    instance at ``degraded`` until someone clears it, so a plain run must reach it, and a run with
+    ``--include-terminal`` every failed row, whatever wrote its code."""
+    core, ctx = app
+    _insert_failed(core, ctx, _WRITTEN_CODES)
+    status = core.status(ctx)
+    assert status.failed_work == len(_WRITTEN_CODES) and 0 < status.terminal_failed_work < status.failed_work
+    plain = core.operations.retry_failed_work(ctx, limit=256, dry_run=True)
+    assert plain["retried"] == status.failed_work - status.terminal_failed_work
+    every = core.operations.retry_failed_work(ctx, limit=256, include_terminal=True, dry_run=True)
+    assert every["retried"] == status.failed_work
+
+
+@pytest.mark.parametrize("ahead", ["derivation_invalid", f"retried:{RETRY_GENERATION}|timeout"])
+def test_failures_a_run_passes_over_never_hide_the_ones_behind_them(app, ahead):
+    """A run read eight failed rows for each one it could re-open and looked no further: more older rows than that it
+    passes over, by design or already re-opened by this release, hid every fault behind them."""
+    core, ctx = app
+    _insert_failed(core, ctx, [ahead] * 600 + ["timeout"])
+    report = core.operations.retry_failed_work(ctx, limit=1, dry_run=False)
+    assert (report["retried"], report["by_kind"], report["examined"]) == (1, {"timeout": 1}, 601)
+    with sqlite3.connect(core.storage.path) as conn:
+        states = dict(conn.execute("SELECT subject_ref,state FROM work_items WHERE subject_ref LIKE 'TEST-event-%'"))
+    assert states.pop("TEST-event-00600") == "pending" and set(states.values()) == {"failed"}
+
+
+class _Embedding:
+    """An embedding port that answers each request with the next of ``answers`` and every later one with the last: a
+    code, raised as the route's adapter raises it, or None for a vector."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.written = []
+
+    def prepare_source(self, source, *, remaining_seconds=1.0):
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if answer is not None:
+            raise AuxiliaryModelError(answer)
+        return (0.25, 0.5, 0.75)
+
+    def publish_source(self, prepared, *, source, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
+        assert lease_guard()
+        self.written.append(source.ref)
+
+
+def _embed_row(core, source):
+    with sqlite3.connect(core.storage.path) as conn:
+        return conn.execute(
+            """SELECT state,attempt,last_error_code FROM work_items WHERE work_type='embed' AND subject_ref=?
+               AND subject_revision=?""",
+            (source.ref, source.revision),
+        ).fetchone()
+
+
+def _embed_passes(core, ctx, port, *, passes=1):
+    """Worker passes with the embedding route alone, five minutes apart: past each retry's backoff, inside the hour
+    the automatic recovery waits."""
+    for _ in range(passes):
+        later = datetime.fromisoformat(core.clock.now.replace("Z", "+00:00")) + timedelta(minutes=5)
+        core.clock.now = later.strftime("%Y-%m-%dT%H:%M:%SZ")
+        core.drain_worker(ctx, max_items=8, remaining_seconds=10, embed=port)
+
+
+@pytest.mark.parametrize(
+    "code", ["vector_dimension_mismatch", "vector_nonfinite", "vector_zero", "unsupported_response_shape"]
+)
+def test_an_embedding_a_route_answered_unusably_is_re_opened_and_embedded(app, code):
+    """A captured message's embedding failed three times on answers its route could not use (another model behind
+    the endpoint answers with another width).  Once the route answers well, a run re-opens it, and the worker embeds
+    it."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST 我的显示器是 27 寸的。")
+    _embed_passes(core, ctx, _Embedding(code), passes=3)
+    assert _embed_row(core, source) == ("failed", 3, code)
+    preview = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
+    assert (preview["retried"], preview["by_kind"]) == (1, {code: 1})
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["by_kind"] == {code: 1}
+    port = _Embedding(None)
+    _embed_passes(core, ctx, port)
+    assert _embed_row(core, source)[0] == "done" and port.written == [source.ref]
+
+
+def test_a_re_opened_row_is_not_failed_again_by_one_transient_fault(app):
+    """Re-opened with the attempts that had failed it, a row had none left: the first timeout of its re-look failed it
+    again, for the rest of the release."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST 我的键盘是 87 键的。")
+    _embed_passes(core, ctx, _Embedding("timeout"), passes=3)
+    assert _embed_row(core, source)[:2] == ("failed", 3)
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["by_kind"] == {"timeout": 1}
+    _embed_passes(core, ctx, _Embedding("network_error"))
+    assert _embed_row(core, source)[:2] == ("pending", 1)
+    port = _Embedding(None)
+    _embed_passes(core, ctx, port)
+    assert _embed_row(core, source)[0] == "done" and port.written == [source.ref]
+
+
+# --------------------------------------------------------------------------
 # What the status counts as a terminal failure
 # --------------------------------------------------------------------------
 
@@ -541,18 +698,13 @@ def test_a_queued_row_s_last_error_is_kept_apart_from_the_failures(app):
 
 
 # --------------------------------------------------------------------------
-# The two lists of "failures that may pass" must not drift apart again
+# What the worker retries by itself, an operator can clear too
 # --------------------------------------------------------------------------
 
 
 def test_every_transient_failure_the_worker_knows_is_operator_actionable():
-    """They drifted once: ``model_unavailable`` was auto-recoverable but absent
-    here, so four rows from one outage pinned a live instance at degraded with
-    nobody able to clear them."""
-    from scope_recall.core.failure_retry import AUTO_RECOVERABLE_ERRORS
-
-    # Compared on the normalised kind, which is what ``retry_class`` is given.
-    assert {code.lower() for code in AUTO_RECOVERABLE_ERRORS} <= ACTIONABLE_FAILURES
+    """A code the worker retries by itself is a fault, never a by-design outcome: rows one outage left behind once
+    pinned a live instance at degraded with nobody able to clear them."""
     assert all(retry_class(code) == "actionable" for code in AUTO_RECOVERABLE_ERRORS), (
         "a code the worker retries automatically must also be clearable by hand"
     )
@@ -597,16 +749,9 @@ def test_a_refused_request_can_be_cleared_once_its_cause_is_fixed(code):
     a way the worker does not recover by itself, so nothing retries it by itself, but an operator who fixed the cause
     may re-open it, as ``http_400``.  The HTTP worker's own refusals of a route or a size are its own codes, not a
     status (a 5xx, and ``http_redirect``, left out at first: reviews of 3.7.3)."""
-    from scope_recall.core.failure_retry import AUTO_RECOVERABLE_ERRORS
-
     assert retry_class(code) == "actionable"
     assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is True
     assert code not in AUTO_RECOVERABLE_ERRORS
-
-
-@pytest.mark.parametrize("code", ["http_4", "http_4220", "xhttp_422", "http_422x", "http_600", "http_099"])
-def test_only_a_whole_http_status_counts(code):
-    assert retry_class(code) is None
 
 
 @pytest.mark.parametrize("code", ["http_401", "http_402", "http_403"])
@@ -628,19 +773,6 @@ def test_an_account_refusal_row_reopens_through_real_storage(app):
     assert report["by_kind"].get("http_402") == 1
     work, evaluations = _states(core)
     assert not work.get("failed") and not evaluations.get("failed")
-
-
-def test_a_terminal_failure_is_never_also_actionable():
-    assert not (ACTIONABLE_FAILURES & TERMINAL_FAILURES)
-
-
-def test_the_operator_only_extras_are_not_auto_recoverable():
-    """They are listed by hand, so each must have a reason to be: a code the
-    worker would have retried itself does not belong in that list."""
-    from scope_recall.core.failure_retry import _OPERATOR_ONLY_FAILURES, AUTO_RECOVERABLE_ERRORS
-
-    normalised = {code.lower() for code in AUTO_RECOVERABLE_ERRORS}
-    assert not (_OPERATOR_ONLY_FAILURES & normalised)
 
 
 def test_a_transient_failure_clears_through_real_storage(app):

@@ -556,9 +556,6 @@
   "core/fact_temporal_semantics.py": {
    "E501": 1
   },
-  "core/failure_retry.py": {
-   "E501": 2
-  },
   "core/file_lock.py": {
    "B009": 3,
    "PLR0912": {
