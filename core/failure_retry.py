@@ -26,23 +26,22 @@ re-opened once before such a fix could not be re-opened after it.
 
 Two classes, because they answer different questions:
 
-* **actionable** -- every code the worker already treats as transient
-  (``AUTO_RECOVERABLE_ERRORS``), plus the few that are not auto-recoverable but
-  are still an operator's to clear (``_OPERATOR_ONLY_FAILURES``, and any HTTP
-  status not named there).  These are faults.  They drive "degraded" and
-  clearing them is how an instance gets back to healthy.
 * **terminal** -- ``TERMINAL_FAILURES``.  These are by-design outcomes that
   never clear; the store's status counts the failed rows among them
   (``StoreStatus.terminal_failed_work``) for the worker and the doctor alike.
   Re-running them is a judgement that something upstream changed, so it takes
   an explicit flag rather than happening by default.
+* **actionable** -- every other failure, whatever its code.  These are faults.
+  They drive "degraded" and clearing them is how an instance gets back to
+  healthy.
 
-The actionable set is *derived* from the worker's own transient set rather than
-listed again here.  Keeping two hand-written lists of "failures that may pass"
-is how they drift.  ``model_unavailable`` is auto-recoverable, so the worker
-retries it until its automatic budget runs out and then fails the row; missing
-from this list, no operator could clear it either, and rows left over from one
-outage would pin an installation at ``degraded`` with nothing anyone could do.
+Only the terminal class is a list.  The worker records whatever code a provider
+adapter or a port raises (``worker_outcomes.model_exception_outcome``), so a
+list of the failures that may pass cannot be complete, while the status counts
+every failed row outside the terminal list as a fault: a fault missing from
+such a list would hold an installation at ``degraded`` with nothing anyone
+could do.  A by-design outcome missing from the terminal list costs one re-look
+per release instead, which its next attempt answers.
 
 Not responsible for: deciding whether the upstream fix actually works -- the
 next attempt decides that, and a row that fails again is failed again with its
@@ -62,7 +61,9 @@ DERIVATION_RETRY_MARKER = "derivation_retry:1"
 # Invalid derivations and rejected authority remain terminal and inspectable.
 # ``http_protocol`` is the transport failing mid-reply (a connection closed or a malformed answer), and is treated as
 # ``network_error`` is: it says nothing about the payload.  Missing here, consolidation and embedding work failing
-# with it would never be recovered, and no work failing with it would be clearable by ``retry-failures``.
+# with it would never be recovered.  An answer the route cannot use (a vector of another width, say) is not here: it
+# comes back until someone changes the model or the configuration, and a recovery gated by time alone cannot tell
+# when they have, so ``retry-failures`` re-opens it.
 AUTO_RECOVERABLE_ERRORS = frozenset(
     {
         "model_unavailable",
@@ -94,45 +95,10 @@ AUTO_RECOVERABLE_ERRORS = frozenset(
 #: candidate evaluations outright.
 ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
 
-#: Faults an operator may clear even though the worker's automatic budget is
-#: spent.  None is auto-recoverable, and each is here for a stated reason:
-#: ``http_400`` came from unbounded embedding input, which now has a bound;
-#: ``candidate_attempt_interrupted`` is the at-most-once fence firing after a
-#: crash, which the three-table reopen undoes; and an account refusal failed
-#: its item outright before the worker learned to park it, so the rows it left
-#: can only come back once someone has fixed the account.
-_OPERATOR_ONLY_FAILURES = (
-    frozenset(
-        {
-            "http_400",
-            "candidate_attempt_interrupted",
-            # The model client's own refusals of a route or a size (``runtime/_http_worker.py``, ``runtime/models.py``): a
-            # wrong or redirecting base URL, a request or an answer past its bound.  An operator fixes the route or the bound,
-            # then re-opens.
-            "endpoint_invalid",
-            "http_redirect",
-            "request_limit",
-            "response_limit",
-            # The spend ledger refusing a body over ``max_request_bytes`` before it is sent
-            # (``runtime/model_budget.py``), and a model the configuration does not approve.  The first fails its item
-            # outright, the second pauses it; either is cleared by fixing the configuration, so either must be
-            # re-openable: classed as neither, status counted it as a fault while no command could clear it.
-            "request_too_large",
-            "unsupported_model",
-        }
-    )
-    | ACCOUNT_REFUSALS
-)
-
-#: Faults.  Clearing these is what moves an instance from degraded to healthy.
-#: Derived from the worker's transient set so the two cannot drift apart again,
-#: and lower-cased to match what ``failure_kind`` produces -- the worker's set
-#: is matched against raw codes by SQL and carries a few in upper case.
-ACTIONABLE_FAILURES = frozenset(code.lower() for code in AUTO_RECOVERABLE_ERRORS) | _OPERATOR_ONLY_FAILURES
-
-#: By-design outcomes.  Re-running them asserts that something upstream changed.
-#: ``sensitive_request`` is the request guard refusing to send secret-like text
-#: to a model; the payload is what it is, so a retry can only refuse again.
+#: By-design outcomes, as ``failure_kind`` reads them.  Re-running them asserts
+#: that something upstream changed.  ``sensitive_request`` is the request guard
+#: refusing to send secret-like text to a model; the payload is what it is, so a
+#: retry can only refuse again.  Every failure not named here is actionable.
 TERMINAL_FAILURES = frozenset(
     {
         "derivation_invalid",
@@ -195,22 +161,10 @@ def already_retried(error_code: object, *, generation: str) -> bool:
     return generation in _MARKER_RE.findall(str(error_code or ""))
 
 
-#: Any other HTTP status a provider answered (``worker_outcomes`` records each as ``http_NNN``): a 4xx not named above
-#: (404, 409, 413, 422, ...), a 5xx the worker does not recover by itself (501, 520-524, ...).  The HTTP worker reports
-#: a redirect as ``http_redirect``, named above.  No automatic retry clears it, but an operator who has fixed the
-#: route, the model or a bound may re-open it, as ``http_400``.  Of neither class, such a failure would stay failed
-#: with no command able to clear it.
-_HTTP_STATUS = re.compile(r"http_[1-5]\d\d")
-
-
-def retry_class(error_code: object) -> str | None:
-    """``"actionable"``, ``"terminal"``, or ``None`` for anything else."""
-    kind = failure_kind(error_code)
-    if kind in ACTIONABLE_FAILURES or _HTTP_STATUS.fullmatch(kind):
-        return "actionable"
-    if kind in TERMINAL_FAILURES:
-        return "terminal"
-    return None
+def retry_class(error_code: object) -> str:
+    """``"terminal"`` for a by-design outcome (``TERMINAL_FAILURES``), and ``"actionable"`` for every other failure,
+    an empty code and one no release has written yet included."""
+    return "terminal" if failure_kind(error_code) in TERMINAL_FAILURES else "actionable"
 
 
 def marked(error_code: object, *, generation: str) -> str:
@@ -225,8 +179,7 @@ def marked(error_code: object, *, generation: str) -> str:
 
 def wanted(error_code: object, *, include_terminal: bool) -> bool:
     """Whether a request with or without ``include_terminal`` covers this failure, whatever its stamp."""
-    found = retry_class(error_code)
-    return found == "actionable" or (found == "terminal" and include_terminal)
+    return include_terminal or retry_class(error_code) == "actionable"
 
 
 def selects(error_code: object, *, include_terminal: bool, generation: str) -> bool:
@@ -243,7 +196,6 @@ def validate_page(limit: object) -> int:
 
 
 __all__ = [
-    "ACTIONABLE_FAILURES",
     "RETRY_GENERATION",
     "RETRY_MARKER",
     "TERMINAL_FAILURES",
