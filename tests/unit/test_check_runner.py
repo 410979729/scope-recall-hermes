@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
@@ -191,3 +194,29 @@ def test_pytest_and_cleanup_success_is_zero(monkeypatch, tmp_path: Path) -> None
     assert "pytest_completed_waiting_cleanup" in receipt["transition_history"]
     assert "cleanup_succeeded" in receipt["transition_history"]
     assert "cleanup_failed" not in log
+
+
+# --- one table says what each tier's runs may do ------------------------------
+
+
+def test_the_process_tiers_are_the_tiers_the_table_lists() -> None:
+    assert check.PROCESS_TIERS == frozenset(check.TIER_ALLOWS)
+    assert set(check.TIER_ALLOWS) <= set(check.SUITES)
+
+
+@pytest.mark.parametrize("tier", sorted(check.SUITES))
+def test_a_tier_gets_the_helpers_the_table_lets_it_use(tier) -> None:
+    allows = check.TIER_ALLOWS.get(tier, frozenset())
+
+    assert (check.packaging_helper_env(tier) != {}) <= ("build" in allows)
+    assert (check.node_helper_env(tier) != {}) <= ("node" in allows)
+
+
+def test_the_guard_takes_what_a_tier_may_do_from_the_table() -> None:
+    """A second copy of the table in the guard would let the runner select what the guard then refuses."""
+    tree = ast.parse((ROOT / "tests" / "v11_guard.py").read_text(encoding="utf-8"))
+    imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    strings = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+
+    assert "tier_allows" in imported
+    assert not strings & set(check.TIER_ALLOWS)
