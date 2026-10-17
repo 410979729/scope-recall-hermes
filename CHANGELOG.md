@@ -3,6 +3,14 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.10.6] - 2026-10-17
+
+**A Hermes on a package-manager environment recalled by words alone** (#251, fixed in #252 by panxuewen0101). Such a gateway boots a bundled interpreter and injects the environment it built into `sys.path` at run time ([install.md](docs/install.md) §1). Before opening the in-process LanceDB store, recall rehearses `import lancedb, pyarrow` in a child of that interpreter, and the child saw only the bundled environment: the rehearsal failed, the store never opened, and every recall reported `lance_not_installed` while capture, embedding and the store's own writes kept working. The child is now handed the directories this process imports its dependencies from, as the isolated helper already was.
+
+### Upgrading from 3.10.5
+
+Install the package with its `lancedb` extra, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110).
+
 ## [3.10.5] - 2026-10-15
 
 Five reports, each reproduced on 3.10.4 first; thanks to everyone who sent them.

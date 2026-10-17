@@ -140,21 +140,48 @@ def python_subprocess_options() -> dict[str, Any]:
     }
 
 
+def _probe_command_environment() -> dict[str, str] | None:
+    """The rehearsal child's environment: the parent's, plus the directories its host imports its dependencies from.
+
+    The child inherits ``os.environ``, and on a package-manager host that carries nothing about the environment the
+    package manager injected into this process's ``sys.path`` at run time (``docs/install.md`` §1) - the rehearsal
+    then fails although this process imports LanceDB and PyArrow fine.  The helper receives those directories as
+    arguments; the probe gets them on ``PYTHONPATH``, so it rehearses the import from where this process actually
+    imports it.  ``None`` means "inherit" (the host imports its dependencies from the interpreter's own paths).
+    """
+    roots = helper_import_roots()
+    if not roots:
+        return None
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join((*roots, existing)) if existing else os.pathsep.join(roots)
+    return env
+
+
 def native_import_is_safe() -> bool:
     """Whether ``import lancedb, pyarrow`` survives in a child process."""
     global _native_import_safe
     if _native_import_safe is None:
         try:
+            options = python_subprocess_options()
+            environment = _probe_command_environment()
+            if environment is not None:
+                options.setdefault("env", dict(os.environ))
+                # Only the roots move over: on Windows the options' env already carries the resolved
+                # launcher identity, which a whole-``os.environ`` spread would clobber.
+                options["env"]["PYTHONPATH"] = environment["PYTHONPATH"]
             completed = subprocess.run(
-                # The import this process is about to make, with this process's path: only the in-process store
-                # rehearses it (off Windows), and it imports from everywhere this process does.  The isolated
-                # helper's start-up sees only the directories handed to it, and failed layouts this import serves.
+                # The import this process is about to make, from where this process imports it: only the in-process
+                # store rehearses it (off Windows), and the child is handed this process's import roots (as the
+                # helper is), because a package-manager host injects its environment into ``sys.path`` at run time
+                # and a bare child of this interpreter would not see it.  The isolated helper's start-up sees only
+                # the directories handed to it, and failed layouts this import serves.
                 [sys.executable, "-c", "import lancedb, pyarrow"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=_PROBE_TIMEOUT_SECONDS,
                 check=False,
-                **python_subprocess_options(),
+                **options,
             )
             _native_import_safe = completed.returncode == 0
         except (OSError, subprocess.SubprocessError):

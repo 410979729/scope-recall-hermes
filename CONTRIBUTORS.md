@@ -19,7 +19,7 @@ Since 3.x, these contributors' code was merged:
 | Contributor | Contribution |
 | --- | --- |
 | [JohnYinl](https://github.com/JohnYinl) | The metered Responses API consolidation route ([#90](https://github.com/410979729/scope-recall-hermes/pull/90)), candidate evaluation windows anchored to saved evidence ([#91](https://github.com/410979729/scope-recall-hermes/pull/91)) and calendar-month auxiliary budgets ([#239](https://github.com/410979729/scope-recall-hermes/pull/239)). |
-| [panxuewen0101](https://github.com/panxuewen0101) | The plain-HTTP endpoint policy for loopback model servers, with an explicit opt-in for other hosts ([#226](https://github.com/410979729/scope-recall-hermes/issues/226), [#227](https://github.com/410979729/scope-recall-hermes/pull/227)). |
+| [panxuewen0101](https://github.com/panxuewen0101) | The plain-HTTP endpoint policy for loopback model servers, with an explicit opt-in for other hosts ([#226](https://github.com/410979729/scope-recall-hermes/issues/226), [#227](https://github.com/410979729/scope-recall-hermes/pull/227)), and the vector rehearsal that sees the import roots of a package-manager Hermes ([#251](https://github.com/410979729/scope-recall-hermes/issues/251), [#252](https://github.com/410979729/scope-recall-hermes/pull/252)). |
 | [Adam13y](https://github.com/Adam13y) | Known-answer tests for three recall invariants ([#213](https://github.com/410979729/scope-recall-hermes/issues/213), [#217](https://github.com/410979729/scope-recall-hermes/pull/217)). |
 
 And these reports, each with its reproduction, led to fixes:
