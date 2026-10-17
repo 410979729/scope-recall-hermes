@@ -472,12 +472,10 @@ class Deletions:
         # layer is owned by the native purge port and cannot be acknowledged by
         # a truth-database transaction.  A repeated call after the scrub is
         # therefore idempotent, while the durable purge item remains available
-        # for the physical phase.
+        # for the physical phase.  What the scrub replaces is overwritten with
+        # zeros (``truth_connection.require_secure_delete``).
         if receipt["layers"].get("sqlite_active") == "removed":
             return receipt
-        # This overwrites SQLite payload cells, not host logs, copies or SSD
-        # internals. VACUUM/checkpoint inventory remains explicit maintenance.
-        conn.execute("PRAGMA secure_delete=ON")
         members = conn.execute(
             "SELECT object_kind,object_ref FROM deletion_members WHERE operation_id=?", (operation_id,)
         ).fetchall()

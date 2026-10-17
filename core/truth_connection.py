@@ -14,6 +14,11 @@ An existing process-wide hardening marker with an unknown version or
 schema also fails closed and requires a process restart; it is not
 repaired or replaced while this process may already hold SQLite locks.
 
+A writable connection also overwrites with zeros what it deletes (SQLite's
+``secure_delete``, connection-local and off by default as well): otherwise a
+deleted row's bytes stay in the free space of its page, and in every later
+copy of that page.
+
 Live truth is the
 ASCII-case-insensitive ``memory.sqlite3`` basename, plus any existing
 same-directory filesystem alias or hardlink that ``os.path.samefile``
@@ -406,6 +411,20 @@ def require_query_only(conn: sqlite3.Connection) -> None:
         raise TruthDatabaseConnectionError(f"SQLite truth connection refused query-only enforcement: {enabled}")
 
 
+def require_secure_delete(conn: sqlite3.Connection) -> None:
+    """Enable and verify that the connection overwrites with zeros what it deletes.
+
+    A forget's purge relies on it, and so does every write that removes words a
+    later forget may name: a capture's inbox row, removed once the capture is
+    stored, would otherwise leave them in the free space of its page.
+    """
+
+    row = conn.execute("PRAGMA secure_delete=ON").fetchone()
+    enabled = int(row[0]) if row is not None else 0
+    if enabled != 1:
+        raise TruthDatabaseConnectionError(f"SQLite truth connection refused secure deletion: {enabled}")
+
+
 class _LeasedTruthConnection(sqlite3.Connection):
     """SQLite connection that owns a connection-level truth writer lease.
 
@@ -509,7 +528,8 @@ def connect_truth_database(
     isolation_level: str | None | object = _DEFAULT_ISOLATION_LEVEL,
     row_factory: Any = sqlite3.Row,
 ) -> sqlite3.Connection:
-    """Open one authoritative SQLite truth connection and verify FK=ON.
+    """Open one authoritative SQLite truth connection and verify FK=ON, and on a
+    writable one secure deletion.
 
     ``mode='ro'`` and ``mode='rw'`` require an existing database; ``rwc`` may
     create it.  The returned connection is a plain ``sqlite3.Connection`` ready
@@ -536,6 +556,8 @@ def connect_truth_database(
         require_foreign_keys(conn)
         if normalized_mode == "ro":
             require_query_only(conn)
+        else:
+            require_secure_delete(conn)
         conn.row_factory = row_factory
         return conn
     except BaseException as original:
@@ -554,4 +576,5 @@ __all__ = [
     "is_live_truth_database_path",
     "require_foreign_keys",
     "require_query_only",
+    "require_secure_delete",
 ]
