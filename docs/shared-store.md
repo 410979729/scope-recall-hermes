@@ -23,6 +23,8 @@ A home without a pointer keeps its own store and binds as its own installation s
 <home>\scope-recall\
   attachment.json             the pointer: the root, the entry id, its display name
   runtime-config.json         the entry's own model routes, used for query vectors at recall
+<home>\scope-recall-attachment.lock
+                              held by the command that reads or changes the pointer, while it runs
 ```
 
 The store's id is drawn once, when the store is made, and is not a path. A copied store opens
@@ -86,9 +88,12 @@ Attaching another agent later adds its scopes to the store. Agents already runni
 without a restart. A command that writes the store (`init-shared`, `attach`, `detach`, `adopt`,
 `import-entry`, and `grants` with `--grants-from`) holds its `commands.lock` from its first read
 to its last write, so no other writes in between. One that finds it held waits up to 10 s, then
-writes nothing and names the command that holds it: run it again once that one has finished. An
-`attach` run again from a home already attached (one that stopped, or after `adopt`) keeps the
-entry's grants as they are and needs no grant options
+writes nothing and names the command that holds it: run it again once that one has finished.
+`attach`, `detach` and `grants` hold the home's `scope-recall-attachment.lock` as well, taken
+before the store's, so that no other command points the home at another store meanwhile; `detach`
+and `grants` read the home's pointer again once they hold both, and refuse, writing nothing, when
+it names another store or entry by then. An `attach` run again from a home already attached (one
+that stopped, or after `adopt`) keeps the entry's grants as they are and needs no grant options
 ([Changing an entry's grants](#changing-an-entrys-grants)).
 
 ## Bringing an agent's memories along
@@ -363,8 +368,9 @@ binds change, keeping a copy of each file under `receipts\`, with `grants-before
 grants as they were: applied the same way, it puts them back. A write that fails, the receipt's
 included, puts the copies back (a file it could not put back is named with its copy, to copy by
 hand); run again, the command also rebinds an entry config that a failed run left behind. From
-reading the manifest to its last write it holds the store's `commands.lock`, so no other
-shared-store command writes in between ([above](#make-a-store-and-attach-the-first-agent)).
+reading the home's pointer to its last write it holds the home's lock and the store's
+`commands.lock`, so no other shared-store command writes in between
+([above](#make-a-store-and-attach-the-first-agent)).
 
 A row matches a session field by field, as at attach: `platform`, `user_id`, `chat_type`,
 `chat_id`, `thread_id`, `gateway_session_key` (empty does not pin the host's session key) and

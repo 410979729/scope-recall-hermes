@@ -24,7 +24,7 @@ from scope_recall.adapters.clients import remote_client
 from scope_recall.adapters.clients.config import load_shared_client
 from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity, shared_entries
 from scope_recall.adapters.hermes.shared_entries import CLIENT_HOSTS, read_attachment, read_shared_payload
-from scope_recall.maintenance import cli, install_dsh, install_workbuddy, shared, shared_run
+from scope_recall.maintenance import cli, install_codex, install_dsh, install_workbuddy, shared, shared_run
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, apply_uninstall, plan_install, plan_uninstall
 from scope_recall.maintenance.install_common import InstallError, InstallPlan
@@ -1507,8 +1507,8 @@ def test_a_command_finding_the_store_held_by_another_process_waits_then_refuses_
 
 @contextmanager
 def _held_elsewhere(lock, place, command="attach --host TEST --entry TEST"):
-    """``lock`` (``store_lock``) of ``place`` held by another thread, as by another command named ``command``,
-    until the block ends."""
+    """``lock`` (``store_lock`` or ``home_lock``) of ``place`` held by another thread, as by another command named
+    ``command``, until the block ends."""
     held, done = threading.Event(), threading.Event()
 
     def hold():
@@ -1552,6 +1552,88 @@ def test_each_command_that_writes_the_store_waits_for_its_lock_and_changes_nothi
     assert code == 2, result
     assert result["error"].startswith("attach --host TEST --entry TEST (process "), result
     assert ((root / "installation.json").read_bytes(), read_attachment(home)) == (manifest, pointer)
+
+
+@pytest.mark.parametrize("command", ["attach", "detach", "grants --apply"])
+def test_each_command_that_reads_or_changes_a_home_s_pointer_waits_for_the_home_s_lock(
+    tmp_path, capsys, root, monkeypatch, command
+):
+    """attach, detach and grants hold the lock of the home whose pointer they read or change, taken before the
+    store's: with another command holding it, each waits, refuses naming that command, and leaves the home's pointer
+    and the store as they were."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    [home] = _client_homes(tmp_path, "workbuddy").values()
+    code, result = _attach_client(capsys, root, home, host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    edit = tmp_path / "TEST-grants.json"
+    code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(edit))
+    assert code == 0, result
+    argv = {
+        "attach": ("attach", "--host", "workbuddy", "--instance-root", str(home), "--root", str(root)),
+        "detach": ("detach", "--instance-root", str(home)),
+        "grants --apply": ("grants", "--instance-root", str(home), "--grants-from", str(edit), "--apply"),
+    }[command]
+    if command == "attach":
+        argv += ("--entry", "workbuddy", "--display-name", "WorkBuddy")
+    manifest, pointer = (root / "installation.json").read_bytes(), read_attachment(home)
+    with _held_elsewhere(shared_run.home_lock, home, "detach --instance-root TEST"):
+        code, result = _run(capsys, *argv)
+    assert code == 2, result
+    assert result["error"].startswith("detach --instance-root TEST (process "), result
+    assert "is changing this home's attachment" in result["error"], result
+    assert ((root / "installation.json").read_bytes(), read_attachment(home)) == (manifest, pointer)
+
+
+def test_a_codex_home_detached_from_a_store_takes_a_store_of_its_own_as_an_empty_home_does(tmp_path, capsys, root):
+    """A home keeps the lock of its attachment beside where its pointer was, also once detached; a Codex install of a
+    store of its own does not take that lock for content of another installation."""
+    [home] = _client_homes(tmp_path, "codex").values()
+    code, result = _attach_client(capsys, root, home, host="codex", like=None, capture=None)
+    assert code == 0, result
+    code, result = _run(capsys, "detach", "--instance-root", str(home))
+    assert code == 0, result
+    assert [path.name for path in home.iterdir()] == [shared_run.HOME_LOCK_FILENAME]
+    assert install_codex.foreign_instance_entries(home) == []
+
+
+@pytest.mark.parametrize("command", ["detach", "grants --apply"])
+def test_a_command_whose_home_points_at_another_store_by_the_time_it_holds_the_locks_is_refused(
+    tmp_path, capsys, root, monkeypatch, command
+):
+    """detach and grants find the store from the home's pointer, then take that store's lock.  A pointer that names
+    another store by the time both locks are held, written by something that takes neither, is refused: neither store
+    is written and the pointer is left as it is, where detach would have removed the other store's pointer and grants
+    would have written the other store's manifest under this one's lock."""
+    [home] = _client_homes(tmp_path, "workbuddy").values()
+    code, result = _attach_client(capsys, root, home, host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    edit = tmp_path / "TEST-grants.json"
+    code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(edit))
+    assert code == 0, result
+    document = json.loads(edit.read_text(encoding="utf-8"))
+    _a_group_row(document)
+    edit.write_text(json.dumps(document), encoding="utf-8")
+    other = (tmp_path / "TEST-copied").resolve()
+    shutil.copytree(root, other)
+    code, result = _run(capsys, "adopt", "--root", str(other))
+    assert code == 0, result
+    argv = {
+        "detach": ("detach", "--instance-root", str(home)),
+        "grants --apply": ("grants", "--instance-root", str(home), "--grants-from", str(edit), "--apply"),
+    }[command]
+    lock, pointer = shared.store_lock, home / "scope-recall" / "attachment.json"
+
+    def pointed_elsewhere_meanwhile(*args, **kwargs):
+        monkeypatch.setattr(shared, "store_lock", lock)
+        pointer.write_text(json.dumps(dict(json.loads(pointer.read_text(encoding="utf-8")), root=str(other))))
+        return lock(*args, **kwargs)
+
+    monkeypatch.setattr(shared, "store_lock", pointed_elsewhere_meanwhile)
+    manifests = {store: (store / "installation.json").read_bytes() for store in (root, other)}
+    code, result = _run(capsys, *argv)
+    assert code == 2 and "pointer changed" in result["error"], result
+    assert read_attachment(home).root == other
+    assert {store: (store / "installation.json").read_bytes() for store in (root, other)} == manifests
 
 
 def test_a_command_holding_the_store_under_a_long_name_is_named_by_one_that_waits(tmp_path, capsys, root, monkeypatch):

@@ -41,6 +41,7 @@ from .install_common import (
     manifest_version,
     reject_symlink_chain,
 )
+from .shared_run import HOME_LOCK_FILENAME
 
 CODEX_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "Interrupt", "SessionEnd"})
 #: Seconds Codex waits for each hook (hooks.json).  Codex holds a prompt until its hook answers and allows 600 s
@@ -186,10 +187,12 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
 
 
 def foreign_instance_entries(instance_root: Path) -> list[str]:
-    """Anything beside the receipt and backups in a not-yet-initialized instance root."""
+    """Anything beside the receipt, the backups and the lock a home attached to a shared store keeps
+    (``shared_run.HOME_LOCK_FILENAME``) in a not-yet-initialized instance root."""
     if not instance_root.exists():
         return []
-    return [str(child) for child in instance_root.iterdir() if child.name not in {RECEIPT_FILENAME, BACKUP_DIRNAME}]
+    kept = {RECEIPT_FILENAME, BACKUP_DIRNAME, HOME_LOCK_FILENAME}
+    return [str(child) for child in instance_root.iterdir() if child.name not in kept]
 
 
 def initialize_instance(plan: InstallPlan) -> str:

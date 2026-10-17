@@ -29,6 +29,8 @@ import shutil
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +50,7 @@ from ..adapters.hermes.shared_entries import (
     CLIENT_HOSTS,
     ENTRY_HOSTS,
     GRANTS_SCHEMA,
+    Attachment,
     attach_shared_entry,
     attach_shared_record,
     attached_again,
@@ -70,7 +73,7 @@ from ..runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .install_common import RUNTIME_CONFIG_LIMIT
 from .install_hermes import DEFAULT_AGENT_WORKSPACE
 from .shared_import import import_entry
-from .shared_run import Run, SharedStoreError, encoded, replace_file, store_lock, write_json
+from .shared_run import Run, SharedStoreError, encoded, home_lock, replace_file, store_lock, write_json
 
 #: The shared worker's own names in its runtime config.  Hosts replace the
 #: session with theirs; the worker keeps these.
@@ -395,11 +398,12 @@ def attach(
 ) -> dict[str, Any]:
     now = now or _now()
     python = str(python_executable) if python_executable else None
-    # The entry's grants are taken from this manifest and checked against it, and written over it: no other command
-    # writes the store in between.
-    with store_lock(root, f"attach --host {host} --entry {entry_id}", now):
+    shape = f"attach --host {host} --entry {entry_id}"
+    _refuse_misfit(host, instance_root, grants_from, grants_like, capture_like)
+    # The entry's grants are taken from this manifest and checked against it, the manifest is written over and the
+    # home's pointer written: no other command writes the store or points the home elsewhere in between.
+    with home_lock(instance_root, shape, now), store_lock(root, shape, now):
         payload = read_shared_payload(root)
-        _refuse_misfit(host, instance_root, grants_from, grants_like, capture_like)
         source, notes = None, []
         # A home attached as the entry already keeps the grants the entry holds, and takes none of the options.
         record = attached_again(
@@ -484,13 +488,27 @@ def attach(
     return result
 
 
-def detach(*, instance_root: Path, now: str | None = None) -> dict[str, Any]:
-    now = now or _now()
+@contextmanager
+def _attached_home(instance_root: Path, command: str, now: str) -> Iterator[Attachment]:
+    """The home's pointer, held: the home's lock, then the lock of the store the pointer names.  Read again under both,
+    the pointer must still name that store and entry; one written meanwhile by something that takes neither lock, such
+    as an edit by hand, is refused, so that nothing is written to a store the home no longer points at, nor the pointer
+    of another store removed."""
     attachment = read_attachment(instance_root)
     if attachment is None:
         raise SharedStoreError("this home is not attached to a shared store")
-    root = attachment.root
-    with store_lock(root, f"detach --instance-root {instance_root}", now):
+    with home_lock(instance_root, command, now), store_lock(attachment.root, command, now):
+        if read_attachment(instance_root) != attachment:
+            raise SharedStoreError(
+                "this home's pointer changed while the command waited for its locks: nothing was written; run it again"
+            )
+        yield attachment
+
+
+def detach(*, instance_root: Path, now: str | None = None) -> dict[str, Any]:
+    now = now or _now()
+    with _attached_home(instance_root, f"detach --instance-root {instance_root}", now) as attachment:
+        root = attachment.root
         payload = read_shared_payload(root)
         record = next((entry for entry in payload["entries"] if entry["entry_id"] == attachment.entry_id), None)
         if record is None:
@@ -691,7 +709,8 @@ def grants(
     each file replaced and the entry's grants before the change (``grants-before.json``, which applied the same way
     puts them back) go with the receipt.  A write that fails puts the copies back; run again, the command also
     rebinds an entry config a failed run left behind.  Memories keep their scopes; nothing else is written.  The
-    change is planned and written holding the store's lock (``store_lock``), so no other command writes in between.
+    change is planned and written holding the home's lock and the store's (``_attached_home``), so no other command
+    writes the store or points the home elsewhere in between.
     """
     if grants_from is None:
         if apply:
@@ -700,11 +719,8 @@ def grants(
     if out is not None:
         raise SharedStoreError("--out writes the entry's grants to edit; with --grants-from nothing is written there")
     now = now or _now()
-    attachment = read_attachment(instance_root)
-    if attachment is None:
-        raise SharedStoreError("this home is not attached to a shared store")
     shape = f"grants --instance-root {instance_root}{' --apply' if apply else ''}"
-    with store_lock(attachment.root, shape, now):
+    with _attached_home(instance_root, shape, now):
         plan = _planned_grants(instance_root, grants_from)
         if not plan.manifest_changes and plan.entry_config is None:
             return {"status": "unchanged", **plan.change}

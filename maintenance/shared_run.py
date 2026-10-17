@@ -1,7 +1,7 @@
-"""What a shared-store write command holds and leaves behind: the store's lock while it runs (``store_lock``), the
-error it refuses with, the JSON files it writes (replaced in one step, retried while Windows refuses because a reader
-holds the file), and the receipt with the copies it kept (``Run``).  The commands live in ``shared`` and
-``shared_import``."""
+"""What a shared-store write command holds and leaves behind: the locks it holds while it runs, its home's
+(``home_lock``) and then its store's (``store_lock``), the error it refuses with, the JSON files it writes (replaced in
+one step, retried while Windows refuses because a reader holds the file), and the receipt with the copies it kept
+(``Run``).  The commands live in ``shared`` and ``shared_import``."""
 
 from __future__ import annotations
 
@@ -20,7 +20,10 @@ from ..core.file_lock import advisory_file_lock
 RECEIPTS_DIRNAME = "receipts"
 #: Beside the store's manifest: held by each shared-store command that writes, from its first read to its last write.
 LOCK_FILENAME = "commands.lock"
-#: How long a command waits for the one holding the lock before it refuses.
+#: In a home, beside its ``scope-recall`` directory, which ``detach`` removes when it is left empty: held by each
+#: command that reads the home's pointer or changes it, from that read to its last write.
+HOME_LOCK_FILENAME = "scope-recall-attachment.lock"
+#: How long a command waits for the one holding a lock before it refuses.
 LOCK_WAIT_SECONDS = 10.0
 #: What the holder's note after a lock's first byte, which the operating system locks, may weigh.  The command's words
 #: are shortened to ``_NOTE_WORDS`` characters and its moment to ``_NOTE_MOMENT``: at six bytes a character at most, as
@@ -39,21 +42,33 @@ def encoded(value: dict[str, Any]) -> str:
 
 
 @contextmanager
+def home_lock(home: Path, command: str, now: str) -> Iterator[None]:
+    """Hold the lock of ``home`` while ``command`` reads the home's pointer and acts on the store it names, or changes
+    the pointer: no other command points the home at another store meanwhile.  Every command that holds both locks takes
+    this one first and the store's after it, so two commands never wait for each other."""
+    with _held(home / HOME_LOCK_FILENAME, command, now, "is changing this home's attachment"):
+        yield
+
+
+@contextmanager
 def store_lock(root: Path, command: str, now: str) -> Iterator[None]:
     """Hold the lock of the shared store at ``root`` while ``command`` (its words as an operator runs it) reads what its
     change rests on and writes it: no other shared-store command writes in between, so a change is never written over
-    one made meanwhile nor checked against a manifest that is no longer the store's.  A command that finds the lock
-    held waits ``LOCK_WAIT_SECONDS`` and then refuses, naming the command that holds it from the note the holder keeps
-    after the lock's first byte."""
-    lock = root / LOCK_FILENAME
+    one made meanwhile nor checked against a manifest that is no longer the store's."""
+    with _held(root / LOCK_FILENAME, command, now, "is writing this store"):
+        yield
+
+
+@contextmanager
+def _held(lock: Path, command: str, now: str, doing: str) -> Iterator[None]:
+    """``lock`` held for ``command``, with a note after its first byte naming the command.  A command that finds it held
+    waits ``LOCK_WAIT_SECONDS`` and then refuses, naming the holder from its note."""
     with ExitStack() as held:
         try:
             held.enter_context(advisory_file_lock(lock, timeout_seconds=LOCK_WAIT_SECONDS))
         except TimeoutError:
             holder = _holder(lock) or "another shared-store command"
-            raise SharedStoreError(
-                f"{holder} is writing this store; run {command} again once it has finished"
-            ) from None
+            raise SharedStoreError(f"{holder} {doing}; run {command} again once it has finished") from None
         _note(lock, {"command": _shortened(command), "pid": os.getpid(), "since": now[:_NOTE_MOMENT]})
         held.callback(_note, lock, None)
         yield
