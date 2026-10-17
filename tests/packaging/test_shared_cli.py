@@ -1506,12 +1506,13 @@ def test_a_command_finding_the_store_held_by_another_process_waits_then_refuses_
 
 
 @contextmanager
-def _held_elsewhere(root):
-    """The store's lock held by another thread, as by another command, until the block ends."""
+def _held_elsewhere(lock, place, command="attach --host TEST --entry TEST"):
+    """``lock`` (``store_lock``) of ``place`` held by another thread, as by another command named ``command``,
+    until the block ends."""
     held, done = threading.Event(), threading.Event()
 
     def hold():
-        with shared_run.store_lock(root, "attach --host TEST --entry TEST", "2026-10-17T12:00:00Z"):
+        with lock(place, command, "2026-10-17T12:00:00Z"):
             held.set()
             done.wait(60)
 
@@ -1546,11 +1547,23 @@ def test_each_command_that_writes_the_store_waits_for_its_lock_and_changes_nothi
         "import-entry": ("import-entry", "--root", str(root), "--entry", "workbuddy", "--from", str(tmp_path)),
     }[command]
     manifest, pointer = (root / "installation.json").read_bytes(), read_attachment(home)
-    with _held_elsewhere(root):
+    with _held_elsewhere(shared_run.store_lock, root):
         code, result = _run(capsys, *argv)
     assert code == 2, result
     assert result["error"].startswith("attach --host TEST --entry TEST (process "), result
     assert ((root / "installation.json").read_bytes(), read_attachment(home)) == (manifest, pointer)
+
+
+def test_a_command_holding_the_store_under_a_long_name_is_named_by_one_that_waits(tmp_path, capsys, root, monkeypatch):
+    """The note that names the holder is JSON within its bound whatever the command's words weigh: a command named by
+    a home path of thousands of characters, not all of them ASCII, is named, shortened, to the command that waits."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    long = "grants --instance-root C:/TEST/" + "记忆-" * 700 + "home --apply"
+    with _held_elsewhere(shared_run.store_lock, root, long):
+        code, result = _run(capsys, "adopt", "--root", str(root))
+    assert code == 2, result
+    assert result["error"].startswith("grants --instance-root C:/TEST/记忆-"), result
+    assert "home --apply (process " in result["error"] and len(result["error"]) < 400, result
 
 
 def _a_group_row(document):

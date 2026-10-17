@@ -22,8 +22,12 @@ RECEIPTS_DIRNAME = "receipts"
 LOCK_FILENAME = "commands.lock"
 #: How long a command waits for the one holding the lock before it refuses.
 LOCK_WAIT_SECONDS = 10.0
-#: What the holder's note after the lock's first byte may weigh; the operating system locks that byte.
+#: What the holder's note after a lock's first byte, which the operating system locks, may weigh.  The command's words
+#: are shortened to ``_NOTE_WORDS`` characters and its moment to ``_NOTE_MOMENT``: at six bytes a character at most, as
+#: JSON escapes a control character, the note always fits.
 _NOTE_LIMIT = 1024
+_NOTE_WORDS = 100
+_NOTE_MOMENT = 40
 
 
 class SharedStoreError(RuntimeError):
@@ -50,28 +54,41 @@ def store_lock(root: Path, command: str, now: str) -> Iterator[None]:
             raise SharedStoreError(
                 f"{holder} is writing this store; run {command} again once it has finished"
             ) from None
-        _note(lock, {"command": command, "pid": os.getpid(), "since": now})
+        _note(lock, {"command": _shortened(command), "pid": os.getpid(), "since": now[:_NOTE_MOMENT]})
         held.callback(_note, lock, None)
         yield
 
 
+def _shortened(words: str) -> str:
+    """``words`` in at most ``_NOTE_WORDS`` characters: their start, and their end, where the options are."""
+    if len(words) <= _NOTE_WORDS:
+        return words
+    return words[: _NOTE_WORDS - 50] + "..." + words[-47:]
+
+
 def _note(lock: Path, note: dict[str, Any] | None) -> None:
-    with lock.open("r+b") as handle:
-        handle.seek(1)
+    """Write the holder's note after the lock's first byte, or clear it.  The file is cut first and the note written in
+    one write: a reader finds the note whole, none, or, while it is being written, part of it, and reads again.  A
+    character UTF-8 cannot encode (half of a surrogate pair from a path) is replaced, so the note stays JSON."""
+    with lock.open("r+b", buffering=0) as handle:
+        handle.truncate(1)
         if note is not None:
-            handle.write(json.dumps(note, ensure_ascii=False).encode("utf-8")[:_NOTE_LIMIT])
-        handle.truncate()
+            handle.seek(1)
+            handle.write(json.dumps(note, ensure_ascii=False).encode("utf-8", "replace"))
 
 
 def _holder(lock: Path) -> str:
-    """The command holding ``lock`` as its note names it, or nothing when the note is not written yet or unreadable."""
-    try:
-        with lock.open("rb") as handle:
-            handle.seek(1)
-            note = json.loads(handle.read(_NOTE_LIMIT).decode("utf-8"))
-        return f"{note['command']} (process {note['pid']}, since {note['since']})"
-    except (OSError, ValueError, KeyError, TypeError):
-        return ""
+    """The command holding ``lock`` as its note names it.  A note that does not read as one, because it is being
+    written, is read again a few times over a tenth of a second; then, or with none, nothing."""
+    for _attempt in range(5):
+        try:
+            with lock.open("rb") as handle:
+                handle.seek(1)
+                note = json.loads(handle.read(_NOTE_LIMIT).decode("utf-8"))
+            return f"{note['command']} (process {note['pid']}, since {note['since']})"
+        except (OSError, ValueError, KeyError, TypeError):
+            time.sleep(0.02)
+    return ""
 
 
 def replace_file(staged: Path, path: Path) -> None:
