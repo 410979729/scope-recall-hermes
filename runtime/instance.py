@@ -343,9 +343,9 @@ class RuntimeInstance:
         """Open the existing companion store and search it once, off any prompt's time.
 
         Made at its first prompt, a recall handler kept across prompts (adapters/clients/local_endpoint.KeptRecaller)
-        would start the helper, open the table and read the index inside that prompt's recall, which would then go by
-        words alone (``helper_request_deadline``) after every start of its server, which for Claude Code is every
-        session.  Warmed when the server starts, the first prompt finds them ready.  It writes nothing.
+        would start the helper, open the table and read the index inside that prompt's recall, and that recall would
+        answer by words alone (``helper_request_deadline``) after every start of its server, which for Claude Code is
+        every session.  Warmed when the server starts, the first prompt finds them ready.  It writes nothing.
         """
         self._ensure_open()
         if self.config.vector is None or self._vector_factory is None:

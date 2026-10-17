@@ -111,8 +111,8 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
         # small lock, which also drops it when a session switch has cleared the turn meanwhile.
         adapter.observe_post_llm_call(**kwargs)
         return adapter
-    # The hook waits for its own session only so long: waited out past the host's timeout, it is abandoned and the
-    # host skips this hook for every session (as tool hooks queued behind their session's prefetch would be).  One it
+    # The hook waits for its own session only so long: waited out past the host's timeout, it is abandoned and the host
+    # skips this hook for every session (a tool hook queued behind its session's prefetch can wait that long).  One it
     # cannot wait for is counted and said.
     if not adapter._lock.acquire(timeout=wait):
         adapter._calls.busy(event, kwargs)

@@ -238,9 +238,9 @@ TURN_REPLY_LIMIT = 3
 #: reach what it was told.  Nine in ten such follow-ups came within ten minutes; a later one may open a turn of its
 #: own.
 TURN_FOLLOWUP_SECONDS = 600
-#: Rows of one named day (and entries) the scoped channel reads before it chooses (``RetrievalStorage.scoped``), in
-#: time order.  A shared store's busiest day was 861 messages of every entry, 542 of one; read only to 400 rows,
-#: it would lose its evening.
+#: Rows of one named day (and entries) the scoped channel reads before it chooses (``RetrievalStorage.scoped``), in time
+#: order, one statement a day.  A shared store's busiest day was 861 messages of every entry, 542 of one: a day cut
+#: short loses its evening, so the bound sits well above that.
 _SCOPED_SCAN_ROWS = 2000
 #: Characters of a scoped message an automatic packet (4,096 units, six items) can still deliver beside others.
 _SCOPED_ITEM_CHARS = 600
@@ -672,10 +672,11 @@ class RetrievalStorage(RetrievalHydration):
         to the next window, which the scope's time index reads in order:
         unbounded, it would read every later row of the scope.
 
-        The same message stored again is not the person speaking again.  In
-        older releases a Hermes provider rebuilt with its agent stored a turn's
-        message a second time, with the reply, under the host's ordinal, and the
-        first copy would stop at the second before reaching the answer.  With
+        The same message stored again is not the person speaking again: a store
+        can hold a turn's message twice, the second copy with the reply under the
+        host's ordinal (a Hermes provider rebuilt with its agent stored it again),
+        and the first copy would otherwise stop at the second before reaching the
+        answer.  With
         ``join``, neither is what the person adds before the agent's first
         reply, within ``TURN_FOLLOWUP_SECONDS``: the reply often answers both.
         Only the replies a turn offers as candidates join (``turn_replies``),

@@ -146,7 +146,7 @@ def local_times(value: object, zone: tzinfo | None = None) -> object:
 
     Storage and the contracts keep UTC.  A model shown ``06:52:03+00:00``, whose
     prompt gives it only the date and its zone, would tell the user it was 6:52 in
-    the morning when the host's clock read 2:52; the same instant in the host's own
+    the morning when the host's clock reads 2:52; the same instant in the host's own
     zone needs no arithmetic.  ``None`` is this machine's zone.  Only time fields
     change, never what a memory says; an instant the zone cannot place stays UTC.
     """

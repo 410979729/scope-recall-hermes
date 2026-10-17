@@ -49,8 +49,8 @@ FIRST_HAND_ORIGINS = frozenset({"human_direct"})
 #: claims from it were almost all file sizes, paths, ports and timestamps: in one store a 2.5-hour
 #: task left 787 of them, 93% of the store's 3,175 claims rested on tool output alone, and not one of
 #: the owner's 30 real questions was answered by one.  The host distils how a task was done into
-#: skills; tool output stays a searchable source.  ``requalify.retire_rootless_proposals`` retires the
-#: unconfirmed claims older releases derived from it.
+#: skills; tool output stays a searchable source.  ``requalify.retire_rootless_proposals`` retires
+#: unconfirmed claims derived from tool output alone.
 DERIVATION_ROOT_ORIGINS = frozenset({"human_direct", "external_document", "imported"})
 #: Why a candidate nothing in ``DERIVATION_ROOT_ORIGINS`` speaks to is set aside.
 NO_DERIVATION_ROOT_REASON = "no_derivation_root"
@@ -149,7 +149,7 @@ def rootless(cited_origins: Iterable[str], evidence: Iterable[EvidenceText]) -> 
     """``NO_DERIVATION_ROOT_REASON`` for a candidate nothing a claim may be derived from speaks to.
 
     Neither the sources it cites (imports resolved) nor its evidence hold a person's or a
-    document's words: a proposal an earlier release derived from tool output alone, which no
+    document's words: a proposal derived from tool output alone, which no
     verdict may confirm.  It waits for a person, without a model call.  A candidate whose
     own words are cited is never set aside here, whatever its evidence window holds.
     """

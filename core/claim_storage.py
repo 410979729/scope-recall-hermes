@@ -711,9 +711,9 @@ class Claims:
     def close_unplaceable_updates(self, *, limit: int = 64) -> int:
         """Close open rows that name no candidate claim: nothing can ever settle them.
 
-        Older releases recorded a correction with no claim in scope as such a row (``capture_correction``), and
-        each one open is handed to every read.  They are marked ``obsolete``, the state a deletion leaves too,
-        since nothing was settled.
+        Such a row records a correction made with no claim in scope (``capture_correction``), and each one open
+        is handed to every read.  They are marked ``obsolete``, the state a deletion leaves too, since nothing
+        was settled.
         """
         if type(limit) is not int or not 1 <= limit <= 256:
             raise ContractError("INPUT_INVALID", "unresolved_limit")

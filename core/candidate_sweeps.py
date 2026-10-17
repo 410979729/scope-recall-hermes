@@ -80,9 +80,9 @@ class CandidateSweeps(CandidateIntake):
     ) -> tuple[tuple[str, int], ...]:
         """Pending candidates whose evidence was already put to the evaluator, found with reads only.
 
-        Older releases marked a candidate pending on any evidence, first-hand or not, and one whose question had
-        been asked already stayed pending with nothing to schedule it, which every agent reads as a backlog.
-        ``settle_stale_pending`` returns them to waiting for evidence.
+        A candidate marked pending on evidence that poses no new question (evidence that is not first-hand, or a
+        question already asked) has nothing to schedule it and would stay pending, which every agent reads as a
+        backlog.  ``settle_stale_pending`` returns such candidates to waiting for evidence.
         """
         if type(limit) is not int or not 1 <= limit <= 256:
             raise ContractError("INPUT_INVALID", "stale_pending_limit")

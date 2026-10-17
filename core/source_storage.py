@@ -295,10 +295,11 @@ class Sources:
 
         The deletion contract's least unit is a source group, with its later versions and missing parts: a revision the
         deleted group never stored, and a part sent without the message's first, are refused.  A whole message is
-        compared with the deleted one, all its parts together (part by part, a first part changed by one character would
-        let the second through, word for word): a part with a deleted part's digest; while the deleted words are kept,
-        all of them held or a near copy, as a delete compares waiting captures (``inbox_rules.holds_events``); after the
-        purge, the same words spaced, cased or punctuated otherwise (``inbox_rules.deleted_forms``).  A copy is refused
+        checked before any part is stored, its parts together (by its first part alone, a first part changed by one
+        character would let the second through, word for word).  It is a copy when any part has a deleted part's digest;
+        while the deleted words are kept, when its parts together hold all of them or a near copy, as a delete compares
+        waiting captures (``inbox_rules.holds_events``); after the purge, when its parts together have a form the purge
+        kept, the same words spaced, cased or punctuated otherwise (``inbox_rules.deleted_forms``).  A copy is refused
         (``source_unavailable``).  Anything else is a key collision (``VERSION_CONFLICT``), which the capture inbox
         stores under a key of its own: a restarted Hermes gateway numbers its turns from 1 again, and a delete removes
         its own command's key, so the next message at that turn would otherwise be refused.  After the purge, a copy
@@ -319,8 +320,8 @@ class Sources:
         if not hidden and not (block is not None and block["read_blocked"]):
             return
         # The deleted message's rows: under the refs this message's parts would take, under its key's own, and under its
-        # group key, before the purge or as the purge left it.  A long message an older release purged had its group
-        # key hashed once for each part and is under none of these: with nothing to compare, it refuses.
+        # group key, before the purge or as the purge left it.  A long message whose group key was hashed once for each
+        # part when it was purged is under none of these: with nothing to compare, it refuses.
         refs = sorted({*hidden, self._source_ref(group_key)})
         rows = conn.execute(
             f"""SELECT source_revision,segment_index,content,content_sha256,extra_json,
@@ -459,8 +460,8 @@ class Sources:
         identity = lexical_index.source_id(conn, ref, revision)
         terms = indexed_terms(source.event)
         if withheld_tool_output(source.event):
-            # A withheld output's placeholder is indexed by its error text alone; what an older release gave it
-            # beyond that goes.
+            # A withheld output's placeholder is indexed by its error text alone; any posting it holds beyond that
+            # goes.
             lexical_index.unindex_beyond(conn, identity, terms)
         lexical_index.index_terms(conn, identity, terms)
 

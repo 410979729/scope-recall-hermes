@@ -99,10 +99,10 @@ def version_suffixes(text: str) -> frozenset[str]:
     return frozenset(_VERSION_SUFFIX.findall(unicodedata.normalize("NFKC", text).casefold()))
 
 
-#: The placeholder an earlier release's capture filter left for a tool output it withheld ("Tool execution summary
-#: (terminal): tool=terminal; output_chars=377; exit_code=0; output_preview=omitted"), and the form the report filter
-#: writes (``capture_filters.sanitize_report_text``, on no capture path).  Such lines can be most of a store:
-#: 132,000 of a Hermes store's 168,000 sources, each embedded, and 212,773 of a shared store's (68%).
+#: The placeholder stored in place of a tool output a capture filter withheld ("Tool execution summary (terminal):
+#: tool=terminal; output_chars=377; exit_code=0; output_preview=omitted"), and the form the report filter writes
+#: (``capture_filters.sanitize_report_text``, on no capture path).  Such lines can be most of a store: 132,000 of a
+#: Hermes store's 168,000 sources, each embedded, and 212,773 of a shared store's (68%).
 _WITHHELD_TOOL_OUTPUT = re.compile(r"Tool execution summary\b.*\b(?:output omitted|output_preview=omitted)\b", re.S)
 #: The same placeholders as a condition on ``source_events e``, cheap enough to test before the role.  Leading
 #: whitespace is passed over as ``withheld_tool_output`` passes it over.

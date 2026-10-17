@@ -58,7 +58,7 @@ UNSURE_CHECKS = 2
 #: is started anew by the next look.
 STUCK_END_SECONDS = 300.0
 #: How long a starting server waits for the entry's lock.  A hook that looks whether one runs holds it for a moment
-#: (``local_endpoint.resident_running``); waiting a quarter of a second, a start would give way to a busy machine's
+#: (``local_endpoint.resident_running``); waiting only a quarter of a second, a start would give way to a busy machine's
 #: look, and the start stamp would then keep the entry without a server for a minute.  One of another version this
 #: server or a hook stopped holds it until the system has ended that process.
 LOCK_WAIT_SECONDS = 3.0

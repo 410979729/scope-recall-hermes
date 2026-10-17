@@ -419,7 +419,7 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
     )
     conn.execute("DROP TABLE temp.import_terms")
     # A withheld tool output's placeholder is indexed by its error text alone, when it carries one; the rest of the
-    # postings an older release gave it stay behind.
+    # postings the source store holds for it stay behind.
     withheld: dict[int, tuple[str, ...]] = {}
     for source_id, role, content in src.execute(
         f"SELECT e.source_id, e.role, e.content FROM source_events e WHERE e.role='tool' AND {OMITTED_TOOL_OUTPUT}"
@@ -495,8 +495,8 @@ def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
     """Take back the imported tool outputs' embeddings that vector retention would expire at once.
 
     A summary the capture filter left for an output it withheld, and a repeat of an earlier tool
-    output in the same scope, are what the intake gate keeps as sources only.  A store from an
-    earlier release embedded them anyway, and its embed history would queue them again: thousands
+    output in the same scope, are what the intake gate keeps as sources only.  A store can have
+    embedded them anyway, and its embed history would queue them again: thousands
     in front of the shared worker, each embedded and then deleted by retention within the hour.
     They are recorded as expired, under the reason retention gives, and never asked for; the text
     and everything drawn from it stay, recalled by their words.

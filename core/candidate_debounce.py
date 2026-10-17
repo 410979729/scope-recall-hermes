@@ -12,7 +12,7 @@ Replaying the real arrival times of all 11,667 evidence rows across 402
 candidates says what a quiet window is worth:
 
     inter-arrival within one candidate   p25 286s   p50 510s   p90 2,127s
-    quiet window   60s ->  11,234 evaluations   (98% of no window; useless)
+    quiet window   60s ->  11,234 evaluations   (98% of the count with no window; useless)
     quiet window  300s ->   8,664               (76%; the obvious guess, too short)
     quiet window  900s ->   3,736               (33%)
     quiet window 1800s ->   1,966               (17%, but p50 verdict latency 30 min)

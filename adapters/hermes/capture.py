@@ -324,10 +324,10 @@ class CaptureWriter:
         retried = identity in adapter._retry.captures
         if retried:
             adapter._merge_gaps(("capture_gap:retry_memory_only", "capability_gap:durable_capture_ingress_unavailable"))
-        # The source's key and the failure's code only, never its content: unsaid, a capture that failed would leave
-        # no trace outside this process's memory.  A retry that fails again, and is still kept, is not said again:
-        # driven by the retry thread, that would be a line per capture every 30 s; its end is said (stored, dropped,
-        # lost).
+        # The source's key and the failure's code only, never its content: without this line, a capture that failed
+        # would leave no trace outside this process's memory.  A retry that fails again, and is still kept, is logged at
+        # debug level only: as a warning, the retry thread would write a line per capture every 30 s.  Its end is said
+        # (stored, dropped, lost).
         (_log.debug if replay and retried else _log.warning)(
             "scope-recall: not stored (%s)%s: %s", reason, ", kept to retry" if retried else "", name[:200]
         )

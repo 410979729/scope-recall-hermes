@@ -105,8 +105,8 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
     """One page of withheld tool outputs' placeholders that hold postings beyond their own terms, in ``source_id``
     order, and those postings dropped unless ``dry_run``.
 
-    An older release, the 1109 upgrade and both imports indexed the whole placeholder; it is found by its error
-    text alone, when it carries one (``events.indexed_terms``).  The sources stay, and so do the postings of their
+    A placeholder whose every word was indexed holds postings beyond its own terms (``events.indexed_terms``:
+    those of its error text, when it carries one).  The sources stay, and so do the postings of their
     error text.  The scan walks ``source_id``: the ``+`` keeps SQLite from starting at the role and scope index and
     sorting every tool row while the page holds the writer lease.  A page cut short is found again,
     and ``next_after_id`` continues the scan.

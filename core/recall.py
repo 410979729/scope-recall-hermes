@@ -495,7 +495,7 @@ class RetrievalPipeline:
         if context.mode == "auto" and context.in_context_since is not None and _in_context(tx, obj, context):
             # The asking model still holds everything it stands on, word for word: delivered, it would be a second copy
             # in that model's context, and take a slot from what the model does not have.  Set aside in ``aside``, it
-            # still leads to what is related to it, as it would delivered: left out of that, a session's own messages
+            # still leads to what is related to it, as it would if delivered: left out of that, a session's own messages
             # would stop leading to the claims and procedures drawn from it before its last compaction.
             if aside is not None:
                 aside.held.append(candidate)
@@ -535,9 +535,9 @@ class RetrievalPipeline:
     #: What an object reached by relation may score against the hit it was reached from.
     #:
     #: Scored by its place in its own seed's list, the first object related to the
-    #: thirteenth hit would score 1/62, above every direct hit but the first.  A query
-    #: reaches some sixteen related objects, and scored that way they all rank with the
-    #: best hits: over one store's real questions the reply that answered each was in
+    #: thirteenth hit would score 1/62, above every direct hit but the first.  Measured,
+    #: a query reached about sixteen related objects, and scored that way they all ranked
+    #: with the best hits: over one store's real questions the reply that answered each was in
     #: the top five for 20 of 30, against 28 with this weight, while fact recall,
     #: no-match, supersession and question recall were the same either way.  Held to the
     #: smaller of its own score and its seed's, times this, it is 28 (0.8 gives the

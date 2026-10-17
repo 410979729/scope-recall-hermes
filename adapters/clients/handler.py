@@ -406,9 +406,10 @@ class CodexHookHandler:
 
     def _session_started(self, session_id: str, audience, deadline: float) -> dict[str, Any]:
         if isinstance(self.config, SharedClientConfig):
-            # An entry starts no worker, and its binding was checked when the config loaded.  The
-            # status a local installation reads here counts the whole store: 7-8 s on a
-            # shared store of 277,000 sources, past Codex's 2 s hook timeout at every session start.
+            # An entry starts no worker, and its binding was checked when the config loaded, so its session start
+            # returns at once.  The status a local installation's session start reads (``events.session_start``) counts
+            # the whole store: on a shared store of 277,000 sources, 7-8 s, past Codex's 2 s hook timeout at every
+            # session start.
             return {}
         if (
             self.events.session_start(session_id, audience, deadline)

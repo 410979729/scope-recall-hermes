@@ -338,7 +338,7 @@ def _recover_failed_work(
                 tx.candidates.schedule_settled_candidates(
                     now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items), refs=settled
                 )
-            # Pending with nothing new to ask, left by older releases (``stale_pending``).
+            # Pending with nothing new to ask (``stale_pending``) is returned to waiting for evidence.
             if stale:
                 tx.candidates.settle_stale_pending(stale, now=clock.utc_now())
             recovered += tx.candidates.reschedule_budget_blocked_candidates(

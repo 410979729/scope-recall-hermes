@@ -147,8 +147,8 @@ def prestart() -> None:
     every prompt, and a helper started when its recall reaches the vector search would not be ready before that search's
     budget ran out: those hosts' automatic recall would answer from words alone.  Started when the hook starts, the
     import runs while the message is stored and the words are searched.  A server that runs on starts one for the store
-    all its runtimes share (``share``) and keeps no spare: replaced each time one was taken, a spare would hold about
-    0.55 GB of committed memory idle once the shared store holds its helper.  A Hermes gateway asks for one each time it
+    all its runtimes share (``share``), and none once that store holds its helper: a spare replaced each time one was
+    taken would hold about 0.55 GB of committed memory idle.  A Hermes gateway asks for one each time it
     binds an agent (adapters/hermes/session_binding.py ``_start_vector_helper``); once the store its runtimes share
     holds its helper, that spare would never be taken, and none is started.
     """

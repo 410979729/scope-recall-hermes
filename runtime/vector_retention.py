@@ -130,7 +130,7 @@ def expire_tool_vectors(
     earlier tool output in the same scope (the earlier copy keeps its vector),
     and a summary the capture filter left in place of an output it withheld.
     Both are what the intake gate keeps as sources only; the pass clears
-    what older releases embedded.  Only sources whose embed work finished are
+    the vectors they still carry.  Only sources whose embed work finished are
     touched; one still waiting to be embedded is left for a later pass.
 
     The store goes first.  A pass that dies between the two steps leaves

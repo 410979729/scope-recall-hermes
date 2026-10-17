@@ -961,7 +961,7 @@ def ensure_resident(
 
     ``replace`` is the prompt hook's.  Hooks ask only a server of their own version, and one of another version that
     holds the entry's lock (an installation in another venv, a canary, a build from before its self-exit) would keep
-    every prompt cold for as long as the client ran if hooks and MCP servers marked it in use; none marks it.  The hook
+    every prompt cold for as long as the client runs if hooks and MCP servers marked it in use; none marks it.  The hook
     stops one it can prove and end, and starts its own; the version an entry's hooks run then wins, and hooks of two
     versions against one entry switch it at most once a minute.  A client's MCP server never stops one.  The server is
     started apart from this process, which the client may end at once (WorkBuddy stops a conversation's processes): in a

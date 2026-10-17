@@ -61,8 +61,8 @@ _ASKER = (
 #: A clock time has one reading: "5:00", "3点", "3点15分".  Read two ways ("5:00:00" as "5:00" and "0:00"), a list
 #: of twenty times took seconds to reject and doubled with each more.
 _CLOCK = r"\d{1,2}(?::\d{2}|点(?:\d{1,2}分?)?)(?!\d)"
-#: A part of the day with its time, or alone and followed by no digit: "上午1点" read as one time and as "上午"
-#: then "1点" would double the work of each more.
+#: A part of the day with its time, or alone and followed by no digit: read both as one time and as "上午" then
+#: "1点", "上午1点" would double the work with each more.
 _TIME_OF_DAY = (
     rf"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:{_CLOCK}|(?!\d))|{_CLOCK})"
     r"(?:左右|前后|之前|之后|以后|以前)?"

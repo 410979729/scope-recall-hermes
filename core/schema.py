@@ -467,11 +467,11 @@ def upgrade_1107(connection):
 def upgrade_1108(connection):
     """Keep each episode lineage row once, at the revision its source entered.
 
-    Older releases copied the previous revision's evidence links and
-    object dependencies onto the new revision at every attach, so a
-    200-event segment held 20,100 link rows for 200 sources.  Readers take
-    every row at or below the revision they ask for, which makes the
-    earliest copy the one to keep.
+    A store at the previous schema holds, at every revision of an episode,
+    a copy of the previous revision's evidence links and object
+    dependencies, so a 200-event segment holds 20,100 link rows for 200
+    sources.  Readers take every row at or below the revision they ask
+    for, which makes the earliest copy the one to keep.
 
     The same step adds the retention ledger, ``expired_vectors``, the content
     index a repeated tool output is looked up by, moves the migrated scope

@@ -13,10 +13,10 @@ from datetime import datetime, timedelta
 from .._version import __version__
 from ..contracts import ContractError
 
-#: What an older release wrote for every missing source, which names none.  Such a row is replayed once more: one
-#: of its causes, a task whose episode was deleted refusing every later capture of the task, cannot recur
-#: (``EpisodeStore.attach``).  A missing source is written with its field (``_terminal_code``), so a failure after
-#: that replay stays final.
+#: A bare ``SOURCE_MISSING``, a row's code for a missing source that does not say which.  Such a row is replayed once
+#: more: one of its causes, a task whose episode was deleted refusing every later capture of the task, cannot recur
+#: (``EpisodeStore.attach``).  A missing source is written with its field (``_terminal_code``), so a failure after that
+#: replay stays final.
 LEGACY_SOURCE_MISSING = "SOURCE_MISSING"
 #: Inbox rows a replay still stores, besides those never tried: a passing failure (``replay_inbox``), a row from
 #: before the missing source was named, or a key another message already took (``resolve_conflicted_ingress``
@@ -111,11 +111,11 @@ def deferred_path(code: object) -> str | None:
 
 
 def replayable(code: object, now: datetime) -> bool:
-    """Whether a pass now stores a row with this code: never tried, a passing failure, a bare ``SOURCE_MISSING`` an
-    older release left, or a row put off whose time has come.
+    """Whether a pass now stores a row with this code: never tried, a passing failure, a bare ``SOURCE_MISSING``,
+    or a row put off whose time has come.
 
     What wakes the worker, and all the doctor does not call blocked, is read from here, so the two cannot disagree on
-    which codes are retried: a row an older release left as ``SOURCE_MISSING`` is one.  A key collision
+    which codes are retried: a row left as a bare ``SOURCE_MISSING`` is one.  A key collision
     (``VERSION_CONFLICT``) is taken by the next pass's ``resolve_conflicted_ingress``, which stores it under a new
     key, finds it final (``VERSION_CONFLICT:rekeyed``) or puts it off, so its wake is never in vain; counted blocked,
     a collision, and a given-up row returned to the rekey path, would wait for a pass something else started."""
