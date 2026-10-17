@@ -110,7 +110,11 @@ route wheel-based installations through it.
    database rollback is NOT permitted; reconcile any new writes first. Once the
    new package has opened the store, the previous one may refuse it: 3.2's first
    open moves a 3.1 store to schema 1110, which 3.1 cannot open. Going back then
-   needs the external pre-upgrade backup, and writes made since are lost.
+   needs the external pre-upgrade backup, put back with `scope-recall restore`
+   (never by copying the file, which brings back what was forgotten since); other
+   writes made since are lost. Across a schema step, `restore` with the newer
+   package prepares and `restore` with the older one finishes (docs/install.md,
+   section 9); a snapshot below schema 1110 is refused.
 5. `package_verified` means only that package replacement and isolated import
    succeeded. Run existing plan-install/apply-install for the same binding and
    doctor, verify receipt/wrapper/package, then restore the original wake policy,
@@ -272,10 +276,14 @@ the auxiliary route is unavailable or a required identity mapping is unresolved.
 
 If conversion or host checks fail, leave/restart the old host using its verified
 original namespace/configuration. Preserve the failed job and exact error. If the
-new host has accepted writes, first freeze it and preserve its database and new
+new host has accepted writes, first stop it and preserve its database and new
 writes. Reconcile them before claiming a lossless rollback. Never overwrite the
-new database with an old snapshot. `scope-recall rollback` supplies the existing
-snapshot checks; it deliberately refuses unsafe replacement when new writes exist.
+new database with an old snapshot. The old host's own database is never written by
+the migration; `scope-recall backup --database <it> --output <new file>` makes a
+verified copy of it. Going back to it keeps nothing the new database received,
+deletions included: what was forgotten there since the migration is still in the
+old database. To go back to a snapshot of the new database itself, use
+`scope-recall restore`.
 After going back to an earlier release and forward again, run `scope-recall
 retry-failures --config <file>` (the shared worker's config for a shared store), and
 with `--apply` if it counts any `inbox_given_up`: a capture the earlier release could

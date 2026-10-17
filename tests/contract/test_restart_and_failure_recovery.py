@@ -318,24 +318,19 @@ def test_1106_failure_upgrade_preserves_history_and_requeues_exactly_once(worker
     assert row(core, source) == ("failed", 0, 3)
 
 
-def test_backup_and_rollback_cli_preview_is_readonly_and_protects_inbox(worker_app, tmp_path, capsys):
+def test_backup_cli_writes_a_verified_snapshot_beside_a_waiting_capture(worker_app, tmp_path, capsys):
     from scope_recall.maintenance.cli import main
 
     core, ctx, clock = worker_app
+    capture_inbox.enqueue(
+        core.storage, clock, ctx, source_event(content="TEST pending ingress"), scope_id="TEST-scope", host_scope=None
+    )
     snapshot = tmp_path / "verified.sqlite3"
     assert main(["backup", "--database", str(core.storage.path), "--output", str(snapshot)]) == 0
     manifest = json.loads(snapshot.with_suffix(".sqlite3.json").read_text())
     assert manifest["quick_check"] == "ok"
-    capture_inbox.enqueue(
-        core.storage, clock, ctx, source_event(content="TEST pending ingress"), scope_id="TEST-scope", host_scope=None
-    )
-    before = core.storage.path.read_bytes()
-    assert main(["rollback", "--current-db", str(core.storage.path), "--snapshot", str(snapshot)]) == 0
-    assert (
-        core.storage.path.read_bytes() == before and not (ctx.binding.data_directory / "restore-required.json").exists()
-    )
-    assert main(["rollback", "--current-db", str(core.storage.path), "--snapshot", str(snapshot), "--apply"]) == 0
-    assert (ctx.binding.data_directory / "restore-required.json").is_file()
+    with sqlite3.connect(snapshot) as db:
+        assert db.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 1
     with sqlite3.connect(core.storage.path) as db:
         assert db.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 1
 

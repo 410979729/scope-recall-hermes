@@ -1,8 +1,10 @@
 """Explicit closed restore admission; no automatic import during normal reads.
 
-P15 wraps this with the backup/copy/identity-selection CLI. A checkpoint must be
-obtained independently from the latest authorized store, not from the old backup
-being restored. Ordinary open paths cannot clear the marker or accept a ledger.
+The ``restore`` maintenance command (``maintenance/restore.py``) drives it: the
+ledger is exported from the latest authorized store, never from the snapshot
+being restored, admission is closed, the snapshot is copied over the store and
+the ledger is replayed. Ordinary open paths cannot clear the marker or accept a
+ledger.
 """
 
 from __future__ import annotations
@@ -16,13 +18,21 @@ from ..contracts import ContractError, TrustedContext
 from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
 from .schema import SCHEMA_VERSION
 
+#: Beside ``memory.sqlite3`` while a restore is pending; every normal open refuses while it exists.
+MARKER_FILENAME = "restore-required.json"
+#: What a ledger holds, by name.  Every release that exports this format exports the same sections with the same
+#: fields, and a release replays a ledger of this format whatever schema the exporting release wrote: a ledger
+#: exported where the latest store lives is replayed by the release that reads the snapshot.  A release whose
+#: deletions need anything this format does not carry exports another one, which the releases before it refuse.
+LEDGER_FORMAT = "scope-recall-deletion-ledger/1"
+
 
 @dataclass(frozen=True)
 class InstallationMaintenance:
     """Runtime capability minted only by an explicit installation maintenance entry.
 
-    This is deliberately not a model DTO or an ordinary project context. P15's
-    maintenance CLI owns creation; normal source/recall/tool adapters must not.
+    This is deliberately not a model DTO or an ordinary project context. Only
+    the maintenance commands create it; source, recall and tool adapters never do.
     """
 
     context: TrustedContext
@@ -70,7 +80,7 @@ def _ledger_in_transaction(tx, context) -> dict:
         AND c.read_blocked=0 ORDER BY c.claim_id""")
     ]
     return dict(
-        format="scope-recall-deletion-ledger/1",
+        format=LEDGER_FORMAT,
         schema_version=SCHEMA_VERSION,
         memory_epoch=tx.status().memory_epoch,
         installation_id=context.binding.installation_id,
@@ -99,7 +109,7 @@ def begin_restore(storage, authority: InstallationMaintenance, *, expected_ledge
         or any(c not in "0123456789abcdef" for c in expected_ledger_sha256)
     ):
         raise ContractError("RESTORE_UNVERIFIED", "checkpoint_required")
-    marker = storage.binding.data_directory / "restore-required.json"
+    marker = storage.binding.data_directory / MARKER_FILENAME
     payload = dict(
         installation_id=context.binding.installation_id,
         agent_id=context.binding.agent_id,
@@ -113,51 +123,91 @@ def begin_restore(storage, authority: InstallationMaintenance, *, expected_ledge
             raise ContractError("RESTORE_UNVERIFIED", "restore_already_pending")
         if ledger_digest(_ledger_in_transaction(tx, context)) != expected_ledger_sha256:
             raise ContractError("RESTORE_UNVERIFIED", "checkpoint_changed")
-        # Closed admission is durable BEFORE P15 replaces/copies the database.
+        # Closed admission is durable before anything copies a snapshot over the store.
         with marker.open("x", encoding="utf-8") as stream:
             stream.write(canonical(payload) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
 
 
-def _restore_checkpoint(storage, context, ledger):
-    """The pending restore's marker and the ledger's checkpoint epoch, once the marker, the ledger and this
-    installation agree."""
-    marker = storage.binding.data_directory / "restore-required.json"
+def _pending_marker(storage, context):
+    """The pending restore's marker and what it holds, once it names this installation."""
+    marker = storage.binding.data_directory / MARKER_FILENAME
     if marker.is_symlink() or not marker.is_file() or marker.stat().st_size > 4096:
         raise ContractError("RESTORE_UNVERIFIED", "checkpoint_missing")
-    pending = json.loads(marker.read_text(encoding="utf-8"))
-    if (pending.get("installation_id"), pending.get("agent_id"), pending.get("data_directory")) != (
+    try:
+        pending = json.loads(marker.read_text(encoding="utf-8"))
+    except ValueError:
+        raise ContractError("RESTORE_UNVERIFIED", "checkpoint_missing") from None
+    if not isinstance(pending, dict) or (
+        pending.get("installation_id"),
+        pending.get("agent_id"),
+        pending.get("data_directory"),
+    ) != (
         context.binding.installation_id,
         context.binding.agent_id,
         str(context.binding.data_directory),
     ):
         raise ContractError("RESTORE_UNVERIFIED", "identity")
+    return marker, pending
+
+
+def _restore_checkpoint(storage, context, ledger):
+    """The pending restore's marker and the ledger's checkpoint epoch, once the marker, the ledger and this
+    installation agree."""
+    marker, pending = _pending_marker(storage, context)
     if ledger_digest(ledger) != pending.get("expected_ledger_sha256"):
         raise ContractError("RESTORE_UNVERIFIED", "ledger_incomplete")
-    if (
-        ledger.get("format"),
-        ledger.get("schema_version"),
-        ledger.get("installation_id"),
-        ledger.get("agent_id"),
-        ledger.get("scope_ids"),
-    ) != (
-        "scope-recall-deletion-ledger/1",
-        SCHEMA_VERSION,
+    sections = {
+        "format",
+        "schema_version",
+        "memory_epoch",
+        "installation_id",
+        "agent_id",
+        "scope_ids",
+        "operations",
+        "withdrawals",
+        "source_groups",
+        "absent_objects",
+    }
+    # Whatever schema the exporting release wrote: the format names what the ledger holds.
+    if set(ledger) != sections or ledger["format"] != LEDGER_FORMAT or type(ledger["schema_version"]) is not int:
+        raise ContractError("RESTORE_UNVERIFIED", "ledger_format")
+    if (ledger["installation_id"], ledger["agent_id"], ledger["scope_ids"]) != (
         context.binding.installation_id,
         context.binding.agent_id,
         sorted(context.allowed_scope_ids),
     ):
         raise ContractError("RESTORE_UNVERIFIED", "ledger_identity")
-    checkpoint_epoch = ledger.get("memory_epoch")
+    checkpoint_epoch = ledger["memory_epoch"]
     if type(checkpoint_epoch) is not int or not 0 <= checkpoint_epoch < 9223372036854775807:
         raise ContractError("RESTORE_UNVERIFIED", "ledger_epoch")
     return marker, checkpoint_epoch
 
 
+def pending_restore_ledger(storage, authority: InstallationMaintenance, ledger: dict | None = None) -> dict:
+    """The ledger the pending restore was fenced on, checked before anything replaces the store.
+
+    A ledger the caller kept, whichever release exported it, is returned once the marker, its format and this
+    installation accept it.  Without one, the ledger is read through the fence from the store itself, which the
+    marker accepts only while the store is still the one the fence was taken on.  Refused with
+    ``RESTORE_UNVERIFIED`` otherwise; nothing is written.
+    """
+    context = _maintenance_context(storage, authority)
+    if ledger is None:
+        with storage._transaction(context, writable=False, remaining_seconds=None, restoring=True) as tx:
+            ledger = _ledger_in_transaction(tx, context)
+        if ledger_digest(ledger) != _pending_marker(storage, context)[1].get("expected_ledger_sha256"):
+            raise ContractError("RESTORE_UNVERIFIED", "checkpoint_changed")
+    _restore_checkpoint(storage, context, ledger)
+    return ledger
+
+
 def _replay_operation(tx, conn, context, entry, checkpoint_epoch) -> int:
     """Replay one deletion operation of the ledger: the operation, its members' tombstones and, for a delete, the
     purge.  Returns how many objects it names."""
+    if set(entry) != {"operation", "members"}:
+        raise ContractError("RESTORE_UNVERIFIED", "operation_shape")
     row = entry["operation"]
     fields = tuple(row)
     allowed_fields = {
@@ -206,6 +256,8 @@ def _replay_operation(tx, conn, context, entry, checkpoint_epoch) -> int:
         )
     targets = []
     for member in entry["members"]:
+        if set(member) != {"object_kind", "object_ref", "scope_id", "project_id", "branch_id"}:
+            raise ContractError("RESTORE_UNVERIFIED", "member_shape")
         if member["scope_id"] not in context.allowed_scope_ids or member["object_kind"] not in OBJECT_TABLES:
             raise ContractError("RESTORE_UNVERIFIED", "member_scope")
         targets.append(
@@ -287,6 +339,19 @@ def _replay_source_group(conn, context, group) -> None:
 def _replay_withdrawal(conn, context, ledger, withdrawal) -> None:
     """Replay one withdrawn claim: its later revision when the restored file holds an older one, else a block on the
     claim the file does not hold."""
+    if set(withdrawal) != {
+        "claim_id",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "current_revision",
+        "valid_from",
+        "valid_to",
+        "recorded_from",
+        "state",
+        "intention_state",
+    }:
+        raise ContractError("RESTORE_UNVERIFIED", "withdrawal_shape")
     if withdrawal["scope_id"] not in context.allowed_scope_ids:
         raise ContractError("RESTORE_UNVERIFIED", "withdrawal_scope")
     old = conn.execute(
@@ -342,6 +407,9 @@ def _replay_withdrawal(conn, context, ledger, withdrawal) -> None:
 
 def _replay_absence(conn, context, absent) -> None:
     """Replay one block on an object the checkpoint says is absent."""
+    fields = {"object_kind", "object_ref", "scope_id", "project_id", "branch_id", "checkpoint_sha256", "reason"}
+    if set(absent) != fields:
+        raise ContractError("RESTORE_UNVERIFIED", "absent_shape")
     if absent["scope_id"] not in context.allowed_scope_ids or absent["object_kind"] != "claim":
         raise ContractError("RESTORE_UNVERIFIED", "absent_scope")
     conn.execute(
@@ -400,5 +468,5 @@ def replay_deletion_ledger(
         status="deletion_ledger_replayed",
         affected_objects=count,
         checkpoint_sha256=ledger_digest(ledger),
-        boundary="deletion and withdrawal admission only; P15 validates the complete restored dataset",
+        boundary="deletion and withdrawal admission only; the snapshot's integrity and identity are the caller's",
     )

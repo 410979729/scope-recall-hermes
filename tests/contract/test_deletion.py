@@ -7,13 +7,17 @@ from dataclasses import replace
 import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.delete_storage import canonical
 from scope_recall.core.restore import (
+    MARKER_FILENAME,
     InstallationMaintenance,
     begin_restore,
     export_deletion_ledger,
     ledger_digest,
+    pending_restore_ledger,
     replay_deletion_ledger,
 )
+from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.visibility import ObjectRef
 from test_claims import accept, app, capture, counts, draft, initial
 
@@ -474,6 +478,159 @@ def test_restore_failed_commit_keeps_marker_closed_and_replay_retries(app, tmp_p
         core.source(ctx, source.ref, 1)
     replay_deletion_ledger(core.storage, authority, ledger)
     assert core.source(ctx, source.ref, 1) is None and core.current_claim(ctx, item.ref) is None
+
+
+def test_the_ledger_of_a_pending_restore_reads_through_the_fence_until_the_store_is_replaced(app, tmp_path):
+    core, ctx = app
+    item, source = initial(core, ctx)
+    backup = tmp_path / "TEST-pending-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    authorize(core, ctx, source)
+    core.forget(ctx, request(source), remaining_seconds=10)
+    authority = InstallationMaintenance(ctx)
+    with pytest.raises(ContractError, match="checkpoint_missing"):
+        pending_restore_ledger(core.storage, authority)
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    assert pending_restore_ledger(core.storage, authority) == ledger
+    sqlite_backup(backup, core.storage.path)
+    with pytest.raises(ContractError, match="checkpoint_changed"):
+        pending_restore_ledger(core.storage, authority)
+    with pytest.raises(ContractError, match="ledger_incomplete"):
+        pending_restore_ledger(core.storage, authority, dict(ledger, operations=[]))
+    assert pending_restore_ledger(core.storage, authority, ledger) == ledger
+    assert (ctx.binding.data_directory / MARKER_FILENAME).is_file()
+
+
+def test_a_ledger_of_this_format_is_replayed_whatever_schema_wrote_it_and_another_shape_is_refused(app, tmp_path):
+    """The release that reads a snapshot replays the ledger the release that wrote the latest store exported; a
+    ledger that is not of this format, section by section, is refused and the store stays closed."""
+    core, ctx = app
+    item, _source = initial(core, ctx)
+    backup = tmp_path / "TEST-format-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    deleted = capture(core, ctx, "TEST 一句要删掉的话。")
+    authorize(core, ctx, deleted)
+    core.forget(ctx, request(deleted), remaining_seconds=10)
+    capture(core, ctx, "撤回 TEST-project 配色蓝色。", when="2026-09-03T12:00:00Z")
+    authority = InstallationMaintenance(ctx)
+    newer = dict(export_deletion_ledger(core.storage, authority), schema_version=SCHEMA_VERSION + 1)
+    marker = ctx.binding.data_directory / MARKER_FILENAME
+    binding = ctx.binding
+
+    def closed_on(ledger):
+        """The marker another release's ``begin_restore`` writes for ``ledger``."""
+        marker.write_text(
+            canonical(
+                dict(
+                    installation_id=binding.installation_id,
+                    agent_id=binding.agent_id,
+                    data_directory=str(binding.data_directory),
+                    expected_ledger_sha256=ledger_digest(ledger),
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return ledger
+
+    entry = newer["operations"][0]
+    others = [
+        (dict(newer, format="scope-recall-deletion-ledger/2"), "ledger_format"),
+        ({key: value for key, value in newer.items() if key != "absent_objects"}, "ledger_format"),
+        (dict(newer, schema_version="1111"), "ledger_format"),
+        (dict(newer, operations=[dict(entry, operation=dict(entry["operation"], TEST_column=1))]), "operation_shape"),
+        (dict(newer, operations=[dict(entry, members=[dict(entry["members"][0], TEST_column=1)])]), "member_shape"),
+        (dict(newer, withdrawals=[dict(newer["withdrawals"][0], TEST_column=1)]), "withdrawal_shape"),
+    ]
+    sqlite_backup(backup, core.storage.path)
+    for other, field in others:
+        with pytest.raises(ContractError, match=field):
+            replay_deletion_ledger(core.storage, authority, closed_on(other))
+        assert marker.is_file()
+    replay_deletion_ledger(core.storage, authority, closed_on(newer))
+    assert not marker.exists()
+    assert core.source(ctx, deleted.ref, 1) is None and core.current_claim(ctx, item.ref) is None
+
+
+def test_the_deletion_ledger_format_holds_these_sections_and_fields(app, tmp_path):
+    """Every release replays a ledger of its format, whichever release exported it (``LEDGER_FORMAT``): a change to
+    what the export holds is a new format, which the releases before it refuse."""
+    core, ctx = app
+    empty = tmp_path / "TEST-shape-backup.sqlite3"
+    sqlite_backup(core.storage.path, empty)
+    item, source = initial(core, ctx)
+    capture(core, ctx, "撤回 TEST-project 配色蓝色。", when="2026-09-03T12:00:00Z")
+    deleted = capture(core, ctx, "TEST 一句要删掉的话。")
+    authorize(core, ctx, deleted)
+    core.forget(ctx, request(deleted), remaining_seconds=10)
+    authority = InstallationMaintenance(ctx)
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    sqlite_backup(empty, core.storage.path)
+    replay_deletion_ledger(core.storage, authority, ledger)
+    restored = export_deletion_ledger(core.storage, authority)
+
+    assert ledger["format"] == "scope-recall-deletion-ledger/1"
+    assert set(ledger) == {
+        "format",
+        "schema_version",
+        "memory_epoch",
+        "installation_id",
+        "agent_id",
+        "scope_ids",
+        "operations",
+        "withdrawals",
+        "source_groups",
+        "absent_objects",
+    }
+    entry = ledger["operations"][0]
+    assert set(entry) == {"operation", "members"}
+    assert set(entry["operation"]) == {
+        "operation_id",
+        "request_sha256",
+        "mode",
+        "scope_ids_json",
+        "project_id",
+        "branch_id",
+        "requested_refs_json",
+        "expected_revisions_json",
+        "created_at",
+        "memory_epoch",
+        "layers_json",
+        "active_content_removed",
+    }
+    assert set(entry["members"][0]) == {"object_kind", "object_ref", "scope_id", "project_id", "branch_id"}
+    assert set(ledger["withdrawals"][0]) == {
+        "claim_id",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "current_revision",
+        "valid_from",
+        "valid_to",
+        "recorded_from",
+        "state",
+        "intention_state",
+    }
+    assert set(ledger["source_groups"][0]) == {
+        "group_sha256",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "read_blocked",
+        "suppressed",
+        "operation_id",
+    }
+    assert set(restored["absent_objects"][0]) == {
+        "object_kind",
+        "object_ref",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "checkpoint_sha256",
+        "reason",
+    }
 
 
 def test_a_capture_between_a_read_and_its_release_withdraws_nothing(app):

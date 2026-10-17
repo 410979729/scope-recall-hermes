@@ -1,5 +1,5 @@
-"""Consistent SQLite backup, plus the path, digest and atomic-write primitives
-the rest of the maintenance package builds on.
+"""Consistent SQLite backup, plus the path, digest, atomic-write and store-holding
+primitives the rest of the maintenance package builds on.
 
 The backup uses sqlite3.Connection.backup instead of copying a live main file,
 never overwrites a public backup, and emits only structural metadata (no row
@@ -14,12 +14,53 @@ import os
 import sqlite3
 import stat
 import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from scope_recall.core.file_lock import advisory_file_lock
+from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
 
 
 class BackupError(RuntimeError):
     pass
+
+
+def sqlite_busy(exc: sqlite3.OperationalError) -> bool:
+    text = str(exc).casefold()
+    return "busy" in text or "locked" in text
+
+
+@contextmanager
+def exclusive_store(data_directory: Path, *, busy: Callable[[str], Exception]) -> Iterator[None]:
+    """Hold the store's writer lease, its retained-files lock and its worker lock while the body runs.
+
+    Each is taken without waiting: another process writing, a worker pass or an attachment's I/O makes the caller
+    refuse with ``busy(what)``, ``what`` being ``truth_writer``, ``owned_lock`` or ``truth_database``.  The lease is
+    the one every Core writer takes, in its ``save_config`` role, so no other process writes the store meanwhile;
+    the Core's own writes in this process join it.
+    """
+    try:
+        snapshot = truth_writer_process_snapshot(data_directory)
+        if snapshot.get("same_process_holder_count", 0) or snapshot.get("connection_pin_count", 0):
+            raise busy("truth_writer")
+        with (
+            holding_truth_writer_lease(data_directory, role="save_config"),
+            advisory_file_lock(data_directory / "scope-recall-retained.lock", timeout_seconds=0),
+            advisory_file_lock(data_directory / "runtime-worker.lock", timeout_seconds=0),
+        ):
+            yield
+    except TimeoutError as exc:
+        raise busy("owned_lock") from exc
+    except sqlite3.OperationalError as exc:
+        if sqlite_busy(exc):
+            raise busy("truth_database") from exc
+        raise
+    except RuntimeError as exc:
+        if "truth_writer_busy" in str(exc):
+            raise busy("truth_writer") from exc
+        raise
 
 
 def first_link(path: Path) -> Path | None:

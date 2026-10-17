@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager, suppress
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Iterator
+from typing import Any
 
+from scope_recall.core.restore import MARKER_FILENAME
 from scope_recall.core.truth_connection import connect_truth_database
-from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
 
+from .backup import exclusive_store, sqlite_busy
 from .install_common import BACKUP_DIRNAME, InstallError, UninstallPlan, normalized_path, reject_symlink_chain
 
 
@@ -29,39 +30,10 @@ class _PurgeInventory:
     retained_backups: tuple[Path, ...]
 
 
-def _busy(exc: sqlite3.OperationalError) -> bool:
-    text = str(exc).casefold()
-    return "busy" in text or "locked" in text
-
-
-@contextmanager
-def purge_guard(data_directory: Path) -> Iterator[None]:
-    """Hold the cooperative writer and physical-retained locks for purge."""
-    from scope_recall.core.file_lock import advisory_file_lock
-
-    try:
-        snapshot = truth_writer_process_snapshot(data_directory)
-        if snapshot.get("same_process_holder_count", 0) or snapshot.get("connection_pin_count", 0):
-            raise InstallError("purge_busy:truth_writer")
-        # ``save_config`` is the existing exclusive maintenance role.  It uses
-        # the same OS lease as all Core writers and therefore makes a purge
-        # fail closed when a provider process still owns the store.
-        with (
-            holding_truth_writer_lease(data_directory, role="save_config"),
-            advisory_file_lock(data_directory / "scope-recall-retained.lock", timeout_seconds=0),
-            advisory_file_lock(data_directory / "runtime-worker.lock", timeout_seconds=0),
-        ):
-            yield
-    except TimeoutError as exc:
-        raise InstallError("purge_busy:owned_lock") from exc
-    except sqlite3.OperationalError as exc:
-        if _busy(exc):
-            raise InstallError("purge_busy:truth_database") from exc
-        raise
-    except RuntimeError as exc:
-        if "truth_writer_busy" in str(exc):
-            raise InstallError("purge_busy:truth_writer") from exc
-        raise
+def purge_guard(data_directory: Path) -> AbstractContextManager[None]:
+    """The store held for a purge (``exclusive_store``): a provider process that still owns it fails the purge
+    closed, with ``purge_busy:<what>``."""
+    return exclusive_store(data_directory, busy=lambda what: InstallError(f"purge_busy:{what}"))
 
 
 def purge_identity(host: ModuleType, plan: UninstallPlan, receipt: dict[str, Any]) -> tuple[Path, str, str, Path]:
@@ -134,7 +106,7 @@ def _expected_retained(db_path: Path, data_directory: Path, *, installation_id: 
                 raise InstallError("purge_refused:attachment_path")
             expected.add((data_directory / relative).resolve())
     except sqlite3.OperationalError as exc:
-        if _busy(exc):
+        if sqlite_busy(exc):
             raise InstallError("purge_busy:truth_database") from exc
         raise InstallError("purge_refused:database_read") from exc
     finally:
@@ -151,7 +123,7 @@ def purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, An
     if db_path.is_symlink() or not db_path.is_file():
         raise InstallError("purge_refused:database_missing")
     reject_symlink_chain(db_path)
-    if (data_directory / "restore-required.json").exists():
+    if (data_directory / MARKER_FILENAME).exists():
         raise InstallError("purge_refused:restore_pending")
 
     retained_files = _safe_owned_files(data_directory / "retained", label="retained")

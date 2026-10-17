@@ -20,6 +20,7 @@ from ..contracts import (
 from .delete_storage import Deletions
 from .failure_retry import failure_kind, retry_class
 from .registry_storage import Registry
+from .restore import MARKER_FILENAME
 from .schema import (
     APPLICATION_ID,
     SCHEMA_VERSION,
@@ -547,7 +548,7 @@ class SQLiteStorage:
                 raise ContractError("STORAGE_UNAVAILABLE", "connection_cleanup") from exc
             self.__pending_close.pop()
         self._path_check()
-        restore_marker = self.binding.data_directory / "restore-required.json"
+        restore_marker = self.binding.data_directory / MARKER_FILENAME
         if not restoring and (restore_marker.exists() or restore_marker.is_symlink()):
             raise ContractError("RESTORE_UNVERIFIED")
         timeout = self.timeout_seconds
@@ -590,7 +591,10 @@ class SQLiteStorage:
                 raise
             return conn
 
-    def _verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
+    def verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
+        """Refuse the database ``conn`` reads unless it is this binding's store at ``expected_schema``: its header,
+        its recorded schema, its kind, its identity and its scopes.  Its file need not be the store's own: a
+        snapshot of the store is checked the same way before it is copied over it (``maintenance/restore.py``)."""
         if (
             conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
             or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema
@@ -656,27 +660,27 @@ class SQLiteStorage:
                 # Verified as this store's own before anything is written, and
                 # switched to WAL first, so readers keep reading through a
                 # long upgrade instead of waiting on the rollback journal.
-                self._verify(conn, expected_schema=version)
+                self.verify(conn, expected_schema=version)
                 _ensure_wal(conn)
             conn.execute("BEGIN IMMEDIATE")
             exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone()
             if exists:
                 if conn.execute("PRAGMA user_version").fetchone()[0] == 1105:
-                    self._verify(conn, expected_schema=1105)
+                    self.verify(conn, expected_schema=1105)
                     upgrade_1105(conn)
                 if conn.execute("PRAGMA user_version").fetchone()[0] == 1106:
-                    self._verify(conn, expected_schema=1106)
+                    self.verify(conn, expected_schema=1106)
                     upgrade_1106(conn)
                 if conn.execute("PRAGMA user_version").fetchone()[0] == 1107:
-                    self._verify(conn, expected_schema=1107)
+                    self.verify(conn, expected_schema=1107)
                     upgrade_1107(conn)
                 if conn.execute("PRAGMA user_version").fetchone()[0] == 1108:
-                    self._verify(conn, expected_schema=1108)
+                    self.verify(conn, expected_schema=1108)
                     upgrade_1108(conn)
                 if conn.execute("PRAGMA user_version").fetchone()[0] == 1109:
-                    self._verify(conn, expected_schema=1109)
+                    self.verify(conn, expected_schema=1109)
                     upgrade_1109(conn)
-                self._verify(conn)
+                self.verify(conn)
             else:
                 if (
                     conn.execute("PRAGMA user_version").fetchone()[0] != 0
@@ -721,8 +725,8 @@ class SQLiteStorage:
         """Record this binding's directory as where a copied shared store now lives.
 
         A shared store is its fixed id, so a copy opens nowhere until this runs:
-        ``_verify`` refuses it with ``store_moved:run_adopt``.  Everything
-        ``_verify`` checks is checked here except the directory, which is then
+        ``verify`` refuses it with ``store_moved:run_adopt``.  Everything
+        ``verify`` checks is checked here except the directory, which is then
         written.  Returns the directory the store recorded before.  A local store
         is its directory and is never adopted.
         """
@@ -802,10 +806,10 @@ class SQLiteStorage:
         original = None
         try:
             conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
-            self._verify(conn)
+            self.verify(conn)
             # A restore can establish its fence while this connection waits
             # for the writer lease. Recheck after acquiring the transaction.
-            restore_marker = self.binding.data_directory / "restore-required.json"
+            restore_marker = self.binding.data_directory / MARKER_FILENAME
             if not restoring and (restore_marker.exists() or restore_marker.is_symlink()):
                 raise ContractError("RESTORE_UNVERIFIED")
             yield tx
