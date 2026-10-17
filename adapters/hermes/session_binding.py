@@ -25,8 +25,8 @@ from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, attach_
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
 
-#: The adapter's log name, which these lines carried before the adapter was split: a host writes it into each line,
-#: and a logging configuration may name it.
+#: The adapter's log name, the provider module's, which every part of the adapter logs under: a host writes it into
+#: each line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 _BOUNDED_MESSAGE_SCAN = 8
 
@@ -34,8 +34,8 @@ _BOUNDED_MESSAGE_SCAN = 8
 def _start_vector_helper(host_runtime) -> None:
     """Start the vector search's helper when a gateway first binds (``vector.process_store.prestart``).
 
-    The first search opened it then, and its LanceDB import (about 2 s) could outrun that recall's budget: a probe
-    run as a gateway's first turn after a start came back without its vector search (``helper_open_deadline``).
+    Left to the first search, its LanceDB import (about 2 s) could outrun that recall's budget: a probe run as a
+    gateway's first turn after a start came back without its vector search (``helper_open_deadline``).
     """
     runtime = getattr(host_runtime, "runtime", None)
     if sys.platform != "win32" or runtime is None or runtime.config.vector is None:
@@ -45,7 +45,7 @@ def _start_vector_helper(host_runtime) -> None:
 
         prestart()
     except OSError as exc:
-        # The first search starts its own helper, as before: slower, never a reason not to bind.
+        # The first search starts its own helper: slower, never a reason not to bind.
         _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
 
 
@@ -101,7 +101,7 @@ class SessionBinding:
             self._adapter._turns.reset_source_refs()
             self._adapter._current_task_message = ""
             # The buffer stays: each capture keeps the session, actor and scope it was said in, and is written under
-            # its own scope's grant (``_retry_pass``).  Cleared here, a session started again in this adapter dropped
+            # its own scope's grant (``_retry_pass``).  Cleared here, a session started again in this adapter would drop
             # tool results that had only met a busy store.
             self._adapter._diagnostics.capability_gaps = tuple(
                 dict.fromkeys((*fresh.runtime_audience.capability_gaps, *self._adapter._host_runtime.capability_gaps))
@@ -129,8 +129,8 @@ class SessionBinding:
         self._adapter._ledger.reset()
         self._adapter._turns.reset_source_refs()
         # A compression gives the conversation a new session id in the middle of a turn, and the turn goes on:
-        # its id and what it said on the way stay, or its post_llm_call no longer matched the turn and what it
-        # said between tool calls, and what the person sent meanwhile, was never recorded.
+        # its id and what it said on the way stay, or its post_llm_call would no longer match the turn, and what
+        # it said between tool calls, and what the person sent meanwhile, would never be recorded.
         if reset or kwargs.get("reason") != "compression":
             self._adapter._current_task_message = ""
             self._adapter._pre_llm_pending = False
@@ -166,11 +166,11 @@ class SessionBinding:
     def _say_if_unbound(self, identity: HermesIdentity) -> None:
         """Say once per session, in the host's log, that a desktop or tui session binds no scope.
 
-        Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this
-        adapter's diagnostics, so without this line a Desktop login's sessions wrote nothing for days and
-        nothing said so.  A gateway chat left unmapped is the owner's choice and says nothing, as before: a line
-        for each would name its users, some by phone number.  The platform, the login and the
-        gap codes only, never what was said, and nothing a login could make into a line of its own.
+        Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this adapter's
+        diagnostics, so without this line a Desktop login's sessions could write nothing for days with nothing
+        to say so.  A gateway chat left unmapped is the owner's choice and says nothing: a line for each would
+        name its users, some by phone number.  The platform, the login and the gap codes only, never what was
+        said, and nothing a login could make into a line of its own.
         """
         scope = identity.scope
         if (

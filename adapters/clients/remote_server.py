@@ -189,8 +189,8 @@ def _observed_at(value: object) -> datetime | None:
 def client_times(body: dict[str, Any]) -> tuple[str | None, RecordLines | None]:
     """The hook's time and the record lines a request carries, moved back together if the client's clock is ahead.
 
-    Clamped one at a time, a fast client's turn fell out of order: a reply said early in the turn kept its time,
-    the prompt after it was clamped to now, and the reply was joined to the next turn.
+    Clamped one at a time, a fast client's turn would fall out of order: a reply said early in the turn would keep
+    its time, the prompt after it be clamped to now, and the reply be joined to the next turn.
     """
     observed_at, record, _lead = client_times_and_lead(body)
     return observed_at, record
@@ -222,9 +222,9 @@ def client_times_and_lead(body: dict[str, Any]) -> tuple[str | None, RecordLines
 
 def _context_since_kept(payload: dict[str, Any], lead: timedelta) -> dict[str, Any]:
     """A Claude Code prompt's in-context moment, kept only from a client whose times are stored as it sent them.
-    Moved back with this request's lead, it was compared with messages earlier requests moved back by theirs, which
-    differ with the network's delay, and a message from before the compaction could read as held (#249); such a
-    client's recall leaves nothing out, as before 3.10.5."""
+    Moved back with this request's lead, it would be compared with messages earlier requests moved back by theirs,
+    which differ with the network's delay, and a message from before the compaction could read as held; such a
+    client's recall leaves nothing out."""
     if lead <= timedelta(0) or IN_CONTEXT_FIELD not in payload:
         return payload
     return {key: value for key, value in payload.items() if key != IN_CONTEXT_FIELD}
@@ -291,7 +291,7 @@ def handle_request(
     payload = {key: value for key, value in payload.items() if key != "transcript_path"}
     # The hook's own times are the client's (moved back if more than a minute ahead, see CLOCK_AHEAD_SECONDS), so a
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
-    # now are this machine's: a client clock a day fast held back a message's embedding by a day.
+    # now are this machine's: a client clock a day fast would hold back a message's embedding by a day.
     observed_at, record, lead = client_times_and_lead(body)
     payload = _context_since_kept(payload, lead)
     building = time.monotonic()
@@ -365,7 +365,7 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
         host=config.listen,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            # An IPv6 address comes in the Host header in brackets; unbracketed, every /mcp call got 421.
+            # An IPv6 address comes in the Host header in brackets; unbracketed, every /mcp call would get 421.
             allowed_hosts=[host_name, f"{host_name}:{config.port}"],
             allowed_origins=[],
         ),
@@ -436,8 +436,8 @@ _DRAIN_BYTES = 1 << 20
 
 
 async def _drain(receive) -> None:
-    """Read what a refused client sent, up to ``_DRAIN_BYTES``.  Answered first, the connection was closed with the
-    request unread, and Windows resets such a socket: the client got WinError 10053 instead of the 401."""
+    """Read what a refused client sent, up to ``_DRAIN_BYTES``.  Answered first, the connection would be closed with
+    the request unread, and Windows resets such a socket: the client would get WinError 10053 instead of the 401."""
     read = 0
     while read <= _DRAIN_BYTES:
         message = await receive()
@@ -490,7 +490,7 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
         os.environ.update(host_process_credential_environment(client.runtime_config_path, env_file))
     log_to_file(config.home)
     if sys.platform == "win32":
-        # Every request builds its handler afresh, and a vector helper started for it spent the recall's budget
+        # Every request builds its handler afresh, and a vector helper started for it would spend the recall's budget
         # importing LanceDB and opening the table: every handler of this process searches one store
         # (``vector.process_store.share``), whose helper is started now (``prestart``).
         from ...vector.process_store import prestart, share
@@ -499,7 +499,7 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
         try:
             prestart()
         except OSError as exc:
-            # Without it each recall starts its own helper, as before: slower, never a reason not to serve.
+            # Without it each recall starts its own helper: slower, never a reason not to serve.
             _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
 
     _log.info(

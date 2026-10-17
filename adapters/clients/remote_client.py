@@ -79,7 +79,7 @@ AWAY_SECONDS = 60.0
 LOG_BYTES = 256 * 1024
 _SPOOLED = frozenset({"UserPromptSubmit", "Stop", "SessionEnd", "Interrupt"})
 #: The server refused the request itself (malformed, too large): sent again it is refused again, so it is
-#: dropped and said in the log rather than kept at the head of the spool, where it stopped every later flush.
+#: dropped and said in the log rather than kept at the head of the spool, where it would stop every later flush.
 _REFUSED_FOR_GOOD = frozenset({400, 413})
 _MAX_STDIN = 65536
 
@@ -225,7 +225,7 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
             stale.unlink(missing_ok=True)
         if dropped:
             _log(config, f"spool full: dropped the {len(dropped)} oldest")
-        # The clock can read the same twice in a row, and a name taken twice replaced the hook kept under it.
+        # The clock can read the same twice in a row, and a name taken twice would replace the hook kept under it.
         name = f"{time.time_ns():020d}-{os.getpid()}-{next(_SPOOL_SEQUENCE):06d}.json"
         pending = folder / f"{name}.tmp"
         pending.write_text(
@@ -360,7 +360,7 @@ def _error_reply(payload: dict[str, Any]) -> bool:
 def _with_context_since(payload: dict[str, Any]) -> dict[str, Any]:
     """A Claude Code prompt's payload with since when the model here still holds the session's own turns, read from
     the session record on this machine (``transcript.context_since``): the server opens no path a request names, and
-    without it recalls them again (#249)."""
+    without it recalls them again."""
     kept = {key: value for key, value in payload.items() if key != IN_CONTEXT_FIELD}
     session_id = payload.get("session_id")
     if type(session_id) is not str or not session_id.strip():
@@ -406,8 +406,8 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
             # The record is here, not on the server: this side says whether the reply is an error WorkBuddy showed.
             body["error_reply"] = True
     # Kept before it is sent: Codex ends Interrupt and SessionEnd at 3 s, and with the interpreter's start and
-    # a connection that does not open that is all of it, so a hook that waited for the server was killed before
-    # it could keep anything.  An answer that stored it removes it again.
+    # a connection that does not open that is all of it, so a hook that waited for the server would be killed
+    # before it could keep anything.  An answer that stored it removes it again.
     spooled = _spool(config, payload, observed_at) if host == "codex" and event in _SPOOLED else None
     if _server_away(config):
         _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")

@@ -46,8 +46,8 @@ _TOTAL_BUDGET_S = 2.0
 _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "Interrupt", "SessionEnd"})
 #: Clients whose prompt hook may run the entry's ``hook_processing_seconds`` (at most 6 s) from the
 #: start.  Both wait 15 s for a prompt's hook (``maintenance/install_claude_code.py``,
-#: ``maintenance/install_codex.py``), and recall on the pilot's shared store took 2.7-5.7 s: with 2 s most
-#: automatic recalls came back empty, as Codex's did until 3.4.0rc5.  The budget bounds the work; the hook
+#: ``maintenance/install_codex.py``), and recall on a shared store took 2.7-5.7 s: with 2 s most
+#: automatic recalls would come back empty.  The budget bounds the work; the hook
 #: answers as soon as it is done.  WorkBuddy waits 60 s unless its hook says otherwise, and a prompt hook
 #: that runs past its wait blocks the prompt: the budget is what keeps it inside.
 _CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code", "codex", "workbuddy", "dsh"})
@@ -370,7 +370,7 @@ class CodexHookHandler:
             return self.events.prompt(session_id, audience, payload, deadline)
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
             # The rest of a thread Codex opened to ask the model for suggestions: its tool calls, its answer and its
-            # end are Codex's own activity.  On the pilot one thread left four tool outputs of 2-11 kB and an end
+            # end are Codex's own activity.  In one store such a thread left four tool outputs of 2-11 kB and an end
             # marker after its request and answer had been kept out.
             self.note("host_generated_thread")
             return {}
@@ -407,7 +407,7 @@ class CodexHookHandler:
     def _session_started(self, session_id: str, audience, deadline: float) -> dict[str, Any]:
         if isinstance(self.config, SharedClientConfig):
             # An entry starts no worker, and its binding was checked when the config loaded.  The
-            # status a local installation reads here counts the whole store: 7-8 s on the pilot's
+            # status a local installation reads here counts the whole store: 7-8 s on a
             # shared store of 277,000 sources, past Codex's 2 s hook timeout at every session start.
             return {}
         if (
@@ -561,8 +561,8 @@ class CodexHookHandler:
 
 
 #: What a runtime config that does not name ``hook_processing_seconds`` runs: the worker's default.  No
-#: installer writes the key, so without this an entry's hooks fell back to 2 s, and most automatic recalls
-#: came back empty.
+#: installer writes the key, so without this an entry's hooks would fall back to 2 s, and most automatic
+#: recalls would come back empty.
 _DEFAULT_CONFIGURED_BUDGET_S = RuntimeInstanceConfig.hook_processing_seconds
 
 
