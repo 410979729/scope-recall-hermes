@@ -416,9 +416,9 @@ def _untyped_properties(schema, trail=()):
 
 def test_every_tool_parameter_declares_a_type_for_a_strict_provider(adapter):
     """Kimi Code's k3 endpoint refuses a tool whose parameter has no explicit
-    type, and every tool travels with every request, so the trace tool's
-    untyped direction enum failed all chat on that route after the 3.1.0
-    upgrade (#89).  The tools a host receives are checked here as a set."""
+    type, and every tool travels with every request, so one untyped parameter
+    (the trace tool's direction enum, say) fails all chat on that route.  The
+    tools a host receives are checked here as a set."""
     provider, _clock = adapter
     for schema in provider.get_tool_schemas():
         assert _untyped_properties(schema["parameters"]) == [], schema["name"]

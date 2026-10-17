@@ -117,8 +117,8 @@ def test_missing_identity_fails_closed(initialize_kwargs, hermes_home):
 
 
 def test_an_alternate_user_id_is_the_same_sender_not_a_conflict(initialize_kwargs, hermes_home):
-    """#116: Feishu sends open_id as user_id and union_id as user_id_alt on every session.
-    Refusing the pair failed every Feishu session closed; the principal stays user_id."""
+    """Feishu sends open_id as user_id and union_id as user_id_alt on every session.
+    The pair is not refused, which would fail every Feishu session closed; the principal stays user_id."""
     install_hermes_scope_recall(
         hermes_home,
         agent_id=initialize_kwargs["agent_identity"],

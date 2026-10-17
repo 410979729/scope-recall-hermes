@@ -211,8 +211,8 @@ def _stored_tool_result(provider, call_id: str):
 def test_post_tool_call_that_failed_keeps_what_it_printed(adapter, status):
     """What a failed call printed is what the agent saw and acted on.
 
-    Hermes calls a result failed for a non-zero exit code or an error field; such results were refused as having no
-    scope, about 6% of the five instances' tool results, each logged as a failed capture.
+    Hermes calls a result failed for a non-zero exit code or an error field; such results must not be refused as
+    having no scope, which would log each as a failed capture.
     """
     provider, _clock = adapter
     printed = json.dumps(
@@ -242,9 +242,8 @@ def test_post_tool_call_that_failed_keeps_what_it_printed(adapter, status):
 
 
 def test_a_failed_tool_call_leaves_the_task_s_state_alone(adapter):
-    """A grep that finds nothing exits 1, a command the person stopped exits 130.  Kept, such a result matched the
-    exit-code rule and turned the open task failed, and resume offers only an open or an interrupted task (review of
-    3.7.8)."""
+    """A grep that finds nothing exits 1, a command the person stopped exits 130.  Kept, such a result would match the
+    exit-code rule and turn the open task failed, and resume offers only an open or an interrupted task."""
     provider, _clock = adapter
     provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-1", user_message="继续修 stage_orca42 的脚本")
     context = provider._identity.trusted_context(session_id="TEST-session-1")

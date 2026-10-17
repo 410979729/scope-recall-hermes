@@ -657,7 +657,7 @@ def _put_back(now: float) -> list[dict]:
 
 def test_messages_a_restarted_gateway_put_back_are_stored_once_whichever_hook_reads_them(telegram, hermes_home):
     """A gateway that stops while the person's messages wait for a busy agent puts them back when it starts and opens no
-    turn for them; their next message opens one after them (tianshu, 2026-10-05: two of the owner's lost)."""
+    turn for them; their next message opens one after them."""
     telegram.on_turn_start(6, "TEST 继续啊", turn_id="turn-6")
     history = _put_back(1790000200.0)
     telegram.on_pre_compress([dict(message) for message in history])
