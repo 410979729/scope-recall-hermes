@@ -505,7 +505,7 @@ INTEGRATION_STABLE_BASELINE = _dedupe(list(SUITES["native"]) + list(SUITES["host
 IMPACT_PATHS = {
     "quiet": ("verification/", "docs/", "fixtures/"),
     "tests": ("tests/",),
-    "selector": ("scripts/check.py",),
+    "selector": ("scripts/check.py", "scripts/tier_allows.py"),
     "packaging": ("pyproject.toml", "MANIFEST.in", "packaging/", "packaging_hooks/"),
     "host": ("adapters/", "runtime/"),
     "runtime": ("runtime/",),

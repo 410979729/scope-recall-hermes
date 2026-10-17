@@ -340,6 +340,16 @@ def test_a_change_to_the_native_boundary_calls_for_the_native_tier(path) -> None
     assert set(check.SUITES["native"]) <= set(check.select_tests("native", changed=[path])[0])
 
 
+@pytest.mark.parametrize("path", ["scripts/check.py", "scripts/tier_allows.py"])
+def test_a_change_to_the_selector_plans_its_tests_and_no_other_tier(path) -> None:
+    selected, details = check.select_tests("unit", changed=[path])
+
+    assert details["impacts"] == ["selector"]
+    assert details["unknown_files"] == []
+    assert details["required_tiers"] == ["unit"]
+    assert "tests/unit/test_check_runner.py" in selected
+
+
 @pytest.mark.parametrize("name", ["lance_process_store.py", "vector_store.py", "setup.py", "manifests.in"])
 def test_a_file_the_checkout_does_not_have_calls_for_nothing_by_its_name(name) -> None:
     _, details = check.select_tests("unit", changed=[name])
