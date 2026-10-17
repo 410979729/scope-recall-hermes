@@ -742,42 +742,58 @@ def _upward(edges: list[Edge], graph: dict[str, set[str]]) -> list[str]:
     return problems
 
 
-#: Words that leave work undone or undecided.  Whole words in their case, so a host's "to-do list" is no finding.
-MARKERS = re.compile(r"\b(?:TODO|FIXME|TBD)\b|待定|暂定|待确认")
-#: Trees kept as they were written: evidence and data.
-_KEPT_AS_WRITTEN = ("verification/", "fixtures/")
+#: Words that leave work undone or undecided.  The English ones are whole words of ASCII letters in capitals, so
+#: "TODOS" and a lower-case "todo" are none, and a capital one beside Chinese text still counts; the Chinese ones do
+#: not count inside 等待, which only says "wait" (等待确认, 等待定时器).
+MARKERS = re.compile(r"\b(?:TODO|FIXME|TBD)\b|(?<!等)待定|暂定|(?<!等)待确认", re.ASCII)
+#: Directories, at any depth, whose files are kept as they were written: evidence and data.
+_KEPT_AS_WRITTEN = frozenset({"verification", "fixtures"})
 
 
 def tracked(root: Path, *patterns: str) -> list[str]:
-    """The files git tracks under ``root`` that match ``patterns``, as posix paths relative to it."""
-    done = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *patterns], capture_output=True, check=True)
-    return [name for name in done.stdout.decode("utf-8").split("\0") if name]
+    """The files under ``root`` that match ``patterns`` and that git would commit: tracked ones still on disk and new
+    ones it does not ignore, as posix paths relative to ``root``."""
+    command = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *patterns]
+    try:
+        done = subprocess.run(command, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", "replace").strip()
+        raise SystemExit(f"quality: git cannot list the files of {root}: {detail}") from exc
+    except OSError as exc:
+        raise SystemExit(f"quality: git cannot list the files of {root}: {exc}") from exc
+    names = dict.fromkeys(name for name in done.stdout.decode("utf-8").split("\0") if name)
+    return [name for name in names if (root / name).is_file()]
 
 
 def _prose(source: str) -> Iterator[tuple[int, str]]:
-    """A module's comments and docstrings, each with the line it starts on."""
+    """A module's comments and docstrings as written in its source, each with the line it starts on: read from the
+    source rather than evaluated, so an escape or a line continuation in a docstring does not move its lines."""
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type == tokenize.COMMENT:
             yield token.start[0], token.string
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            docstring = ast.get_docstring(node, clean=False)
-            if docstring is not None:
-                yield node.body[0].lineno, docstring
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) or not node.body:
+            continue
+        first = node.body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+            yield first.value.lineno, ast.get_source_segment(source, first.value) or ""
 
 
 def marker_problems(root: Path, files: Iterable[str]) -> list[str]:
     """Each place in a comment, a docstring or a Markdown file where one of ``MARKERS`` stands, by file and line."""
-    problems = []
-    for name in sorted(files):
-        if name.startswith(_KEPT_AS_WRITTEN) or not name.endswith((".py", ".md")):
+    found: set[tuple[str, int, str]] = set()
+    for name in files:
+        if not name.endswith((".py", ".md")) or _KEPT_AS_WRITTEN.intersection(name.split("/")[:-1]):
             continue
-        text = (root / name).read_text(encoding="utf-8")
-        pieces = _prose(text) if name.endswith(".py") else [(1, text)]
+        source = (root / name).read_text(encoding="utf-8")
+        try:
+            pieces = list(_prose(source)) if name.endswith(".py") else [(1, source)]
+        except (SyntaxError, tokenize.TokenError) as exc:
+            raise SystemExit(f"quality: {name} does not parse: {exc}") from exc
         for first, piece in pieces:
-            for found in MARKERS.finditer(piece):
-                problems.append(f"{name}:{first + piece.count(chr(10), 0, found.start())}: {found.group()}")
-    return sorted(problems, key=lambda problem: (problem.rsplit(":", 2)[0], int(problem.rsplit(":", 2)[1])))
+            for match in MARKERS.finditer(piece):
+                found.add((name, first + piece.count("\n", 0, match.start()), match.group()))
+    return [f"{name}:{line}: {marker}" for name, line, marker in sorted(found)]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -785,6 +801,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--update", action="store_true", help="record the current findings as the baseline")
     parser.add_argument("--allow-more", action="store_true", help="with --update: record more than before")
     args = parser.parse_args(argv)
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        # A finding may quote Chinese text, which a console in a legacy code page cannot print.
+        sys.stdout.reconfigure(errors="backslashreplace")
     check_environment()
     recorded = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     findings = ruff_findings() + pyright_findings()
