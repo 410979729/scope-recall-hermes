@@ -20,7 +20,7 @@ from scope_recall.adapters.clients import remote_client
 from scope_recall.adapters.clients.config import load_shared_client
 from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
 from scope_recall.adapters.hermes.shared_entries import CLIENT_HOSTS, read_attachment, read_shared_payload
-from scope_recall.maintenance import cli, install_dsh, install_workbuddy
+from scope_recall.maintenance import cli, install_dsh, install_workbuddy, shared
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, apply_uninstall, plan_install, plan_uninstall
 from scope_recall.maintenance.install_common import InstallError, InstallPlan
@@ -824,8 +824,6 @@ def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_f
     """A write that fails after the manifest changed left the entry bound to its old scopes, and running the command
     again said unchanged (review of 3.10.5).  The copies go back on a failure; and a run that finds the manifest done
     but the entry's runtime config not rebinds it."""
-    from scope_recall.maintenance import shared
-
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
     before_manifest, before_entry = manifest.read_bytes(), entry.read_bytes()
@@ -864,8 +862,6 @@ def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_f
 def test_two_grants_changes_planned_from_one_manifest_cannot_both_be_written(tmp_path, capsys, root):
     """Each change carries the whole manifest: written over the other, the second undid the first (a revoked route
     came back; review of 3.10.5).  The second is refused and writes nothing."""
-    from scope_recall.maintenance import shared
-
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     mine = read_shared_payload(root)["entries"][0]["audience_scopes"]["owner_private"]
     plans = []
@@ -1078,8 +1074,6 @@ def test_a_grants_apply_puts_back_past_a_reader_and_names_what_it_could_not(tmp_
     a replace for, left the change half undone (review of 3.10.5).  It is tried again as every write is, and a file
     it still could not put back is named with its copy."""
     import os
-
-    from scope_recall.maintenance import shared
 
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     manifest, entry = root / "installation.json", first / "scope-recall" / "runtime-config.json"
@@ -1374,6 +1368,61 @@ def test_an_empty_hermes_home_a_store_began_with_detaches_and_its_clients_keep_t
     for name, home in homes.items():
         audience = load_shared_client(home, name).audience
         assert (audience.allowed_scope_ids, audience.capture_scope_id) == (frozenset({scope}), scope), name
+
+
+def _meanwhile(monkeypatch, capsys, *argv):
+    """Run the operator command ``argv`` once the next client attach has taken its grants, before it writes anything:
+    a command that lands in between.  The grants that attach took come back in the list returned."""
+    derive, taken = shared._client_grants, []
+
+    def then_another(*args, **kwargs):
+        monkeypatch.setattr(shared, "_client_grants", derive)
+        taken.append(derive(*args, **kwargs))
+        code, result = _run(capsys, *argv)
+        assert code == 0, result
+        return taken[-1]
+
+    monkeypatch.setattr(shared, "_client_grants", then_another)
+    return taken
+
+
+def test_an_attach_checked_against_a_manifest_another_command_has_since_written_is_refused(
+    tmp_path, capsys, root, monkeypatch
+):
+    """A client's grants are checked against the manifest as its attach read it.  A Hermes entry attached in between,
+    whose owner rows do not read the scope the client captures into, would not hear it: the attach is refused as a
+    grants change is and writes nothing, and run again it is checked against the entry attached meanwhile."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    apart, _options = _installed(tmp_path, "apart", workspace="TEST-elsewhere")
+    grants_from = _moved_aside(apart, _routes(apart)) / "installation.json"
+    hermes = ["attach", "--host", "hermes", "--instance-root", str(apart), "--root", str(root), "--entry", "apart"]
+    _meanwhile(monkeypatch, capsys, *hermes, "--display-name", "Apart", "--grants-from", str(grants_from))
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="workbuddy")
+    assert code == 2 and "manifest changed after this change was checked" in result["error"], result
+    assert read_attachment(homes["dsh"]) is None
+    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["workbuddy", "apart"]
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="all", capture="workbuddy")
+    assert code == 2 and "not read by these owner rows: apart:cli" in result["error"], result
+
+
+def test_two_first_clients_attached_at_once_take_one_owner_scope_and_the_later_write_is_refused(
+    tmp_path, capsys, root, monkeypatch
+):
+    """Two clients attached at once to a new store both find no entry to take grants like.  The owner scope a first
+    client brings is the agent's, the same whatever its home, so both took one scope; and the one that writes second
+    is refused, its manifest changed, rather than write grants checked against an empty store."""
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    dsh = ["attach", "--host", "dsh", "--instance-root", str(homes["dsh"]), "--root", str(root), "--entry", "dsh"]
+    taken = _meanwhile(monkeypatch, capsys, *dsh, "--display-name", "DeepSeek Harness")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 2 and "manifest changed after this change was checked" in result["error"], result
+    [(_allowed, _writable, scope)] = taken
+    assert read_shared_payload(root)["scope_ids"] == [scope]
+    assert load_shared_client(homes["dsh"], "dsh").audience.capture_scope_id == scope
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like="dsh", capture="dsh")
+    assert (code, result.get("new_scopes")) == (0, 0), result
 
 
 def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):

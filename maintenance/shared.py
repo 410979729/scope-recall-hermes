@@ -279,6 +279,27 @@ def _store_binding(payload: dict[str, Any], root: Path, scope_ids: frozenset[str
     )
 
 
+def _manifest_digest(store: Path) -> str:
+    try:
+        return hashlib.sha256((store / MANIFEST_FILENAME).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _refuse_if_changed(run: Run, digest: str, entry_id: str) -> None:
+    """Refuse a change checked against another manifest than the one ``run`` has just kept a copy of, the one it would
+    replace, writing nothing but the refusal's receipt.  Written over a manifest another command has written since, a
+    change undid that command's (two grants changes at once: a revoked route came back), or rested on grants never
+    checked against it (a client capturing where an entry attached meanwhile does not read).  A writer that lands
+    after this check is not seen; shared-store commands run one at a time."""
+    kept = run.folder / f"store-{MANIFEST_FILENAME}"
+    if not kept.is_file() or hashlib.sha256(kept.read_bytes()).hexdigest() != digest:
+        run.receipt({"status": "refused", "entry_id": entry_id, "reason": "manifest_changed"})
+        raise SharedStoreError(
+            "the store's manifest changed after this change was checked: nothing was written; run the command again"
+        )
+
+
 def init_shared(
     *, root: Path, agent_id: str = "default", test_mode: bool = False, now: str | None = None
 ) -> dict[str, Any]:
@@ -316,6 +337,8 @@ def attach(
     now: str | None = None,
 ) -> dict[str, Any]:
     now = now or _now()
+    # Grants are taken from and checked against this manifest; it must still be the one the attach replaces.
+    digest = _manifest_digest(root)
     payload = read_shared_payload(root)
     python = str(python_executable) if python_executable else None
     if host == "hermes":
@@ -402,6 +425,7 @@ def attach(
     run.keep(worker_path, "worker")
     run.keep(attachment_path(instance_root), "entry")
     run.keep(entry_path, "entry")
+    _refuse_if_changed(run, digest, record["entry_id"])
     if host == "hermes":
         view = attach_shared_entry(
             root, source, entry_id=entry_id, display_name=display_name, now=now, python_executable=python
@@ -720,13 +744,6 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
     return _GrantsPlan(store, before, updated, change, entry_path, entry_config, digest)
 
 
-def _manifest_digest(store: Path) -> str:
-    try:
-        return hashlib.sha256((store / MANIFEST_FILENAME).read_bytes()).hexdigest()
-    except OSError:
-        return ""
-
-
 def _client_route_holds(view: InstallationManifest) -> None:
     """Refuse grants under which a client entry's own route, bound as the client binds it (``load_shared_client``),
     has no owner row of an owner principal that reads and captures.  The client takes whoever types into it for the
@@ -757,15 +774,7 @@ def _applied_grants(plan: _GrantsPlan, now: str) -> dict[str, Any]:
     replaced = {plan.store / MANIFEST_FILENAME: "store", plan.entry_path: "entry"}
     for path, label in replaced.items():
         run.keep(path, label)
-    # Planned from one manifest, a change written over another undid what the other command had written (two runs at
-    # once: a revoked route came back).  The copy just kept is the manifest this run would replace.  A writer that
-    # lands between here and the replace is not seen; shared-store commands run one at a time.
-    kept = run.folder / f"store-{MANIFEST_FILENAME}"
-    if not kept.is_file() or hashlib.sha256(kept.read_bytes()).hexdigest() != plan.manifest_digest:
-        run.receipt({"status": "refused", "entry_id": plan.before["entry_id"], "reason": "manifest_changed"})
-        raise SharedStoreError(
-            "the store's manifest changed after this change was checked: nothing was written; run the command again"
-        )
+    _refuse_if_changed(run, plan.manifest_digest, plan.before["entry_id"])
     rollback = None
     if plan.manifest_changes:
         rollback = run.folder / "grants-before.json"

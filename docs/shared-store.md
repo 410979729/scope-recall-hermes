@@ -82,7 +82,9 @@ An entry never starts a worker of its own. Leave the instance's own autostart pa
 removed; the shared store's worker does all background work.
 
 Attaching another agent later adds its scopes to the store. Agents already running keep working
-without a restart.
+without a restart. Run one shared-store command at a time: an `attach` whose store manifest
+another command wrote after `attach` read it writes nothing and says so (`the store's manifest
+changed`), as `grants` does; run it again.
 
 ## Bringing an agent's memories along
 
