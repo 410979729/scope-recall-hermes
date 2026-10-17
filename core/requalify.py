@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts import ContractError
-from .claim_normalization import expand_frames, human_owner
+from .claim_normalization import expand_frames
 from .claims import (
     DENIAL_REASON,
     NOT_A_VALUE_REASON,
@@ -37,7 +37,6 @@ from .claims import (
     bind_claim_subject,
     evidence_refs,
     is_denial,
-    negates,
     qualify,
     same_assertion,
     select_effective,
@@ -47,7 +46,7 @@ from .confirmation import CONFIRMED_REASON
 from .corroboration import CORROBORATED_REASON
 from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS, NO_DERIVATION_ROOT_REASON
-from .mutate import apply_claim, register_applied_candidate
+from .mutate import apply_claim, denial_verdict, register_applied_candidate
 
 #: Page ceiling.  Matches ``repair_frames``: large enough to finish a real
 #: store in a few passes, small enough that one pass is an ordinary transaction.
@@ -237,19 +236,50 @@ def retire_rootless_proposals(
     return report
 
 
+def _denial_standing(tx, head, versions):
+    """What the slot held when ``head``, a denial, was written (``select_effective``), and why the denial is no value
+    of its slot there (``mutate.denial_verdict``, as writing it now would judge), or None where it is one."""
+    earlier = tuple(v for v in versions if v.revision < head.revision)
+    held = select_effective(earlier, head.recorded_from) if earlier else None
+    reason, _ends = denial_verdict(head.payload, held, tx.claims.roots(evidence_refs(head.payload)))
+    return held, reason
+
+
+def _settle_denial(tx, head, held, reason: str, *, now: str, dry_run: bool) -> dict[str, Any]:
+    """Withdraw ``head``, a denial at its claim's head that is no value of its slot (``_denial_standing``), with a
+    retracted version, so no read at any instant takes it for the value; and where it denied another value than the
+    one held, re-instate that value as it was, if it still holds (``valid_at``): an expired one is not.  Every version
+    stays."""
+    displaced = held if reason == DENIAL_REASON else None
+    restores = displaced if displaced is not None and valid_at(displaced, now, historical=False) else None
+    entry = {
+        "ref": head.ref,
+        "was": f"{head.state}:{head.reason}",
+        "now": f"retracted:{reason}",
+        "restores": None if restores is None else restores.revision,
+    }
+    if not dry_run:
+        saved = tx.claims.append(
+            head.scope_id, head.payload, Qualification("retracted", head.basis, reason), recorded_at=now, previous=head
+        )
+        if restores is not None:
+            verdict = Qualification(restores.state, restores.basis, restores.reason)
+            saved = tx.claims.append(head.scope_id, restores.payload, verdict, recorded_at=now, previous=saved)
+        tx.candidates.register(saved.ref, saved.revision, observed_at=now, schedule_initial=False)
+        entry["revision"] = saved.revision
+    return entry
+
+
 def restore_displaced_values(
     tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True
 ) -> RequalifyReport:
     """Withdraw each denial of one bounded page that holds its claim's head without being its slot's value, and give
     back the value it displaced.
 
-    A denial is its slot's value only as the person's own answer: in a preference or a fact about the person whose
-    words it cites, where the slot held no value when it was written or held the value it denies
-    (``mutate._denial_verdict``).  Any other denial at the head ("not CircleCI" over Jenkins, "not us-east-2" as a
-    project's region) reads as the slot's value: it is withdrawn with a retracted version, so no read at any instant
-    takes it for the value.  Where it denied another value than the one held (``claims.negates``), that value is
-    re-instated as it was, if it was the slot's value when the denial was written (``select_effective``) and still holds
-    now (``valid_at``); an expired value is not.  Every version stays in the history, and the report names refs and
+    A denial is its slot's value only as the person's own answer (``mutate.denial_verdict``): any other at the head
+    ("not CircleCI" over Jenkins, "not us-east-2" as a project's region) reads as the slot's value, and is settled as
+    ``_settle_denial`` says; the value a denial of another value displaced comes back if it was the slot's value when
+    the denial was written and holds still.  ``requalify_claims`` settles them the same way.  The report names refs and
     revisions only, never claim text.
     """
     refs = _page(tx, after_ref, limit)
@@ -261,29 +291,9 @@ def restore_displaced_values(
         if head is None or head.state not in {"active", "disputed"} or not is_denial(head.payload):
             continue
         report.examined += 1
-        earlier = tuple(v for v in versions if v.revision < head.revision)
-        held = select_effective(earlier, head.recorded_from) if earlier else None
-        displaced = held if held is not None and not negates(head.payload, held.payload) else None
-        roots = tx.claims.roots(evidence_refs(head.payload))
-        owned = head.payload["kind"] == "preference" or head.payload["subject"] == human_owner(roots)
-        if displaced is None and owned:
-            continue
-        restores = displaced if displaced is not None and valid_at(displaced, now, historical=False) else None
-        entry = {
-            "ref": ref,
-            "was": f"{head.state}:{head.reason}",
-            "restores": None if restores is None else restores.revision,
-        }
-        if not dry_run:
-            reason = NOT_A_VALUE_REASON if displaced is None else DENIAL_REASON
-            withdrawal = Qualification("retracted", head.basis, reason)
-            saved = tx.claims.append(head.scope_id, head.payload, withdrawal, recorded_at=now, previous=head)
-            if restores is not None:
-                verdict = Qualification(restores.state, restores.basis, restores.reason)
-                saved = tx.claims.append(head.scope_id, restores.payload, verdict, recorded_at=now, previous=saved)
-            tx.candidates.register(saved.ref, saved.revision, observed_at=now, schedule_initial=False)
-            entry["revision"] = saved.revision
-        report.changed.append(entry)
+        held, reason = _denial_standing(tx, head, versions)
+        if reason is not None:
+            report.changed.append(_settle_denial(tx, head, held, reason, now=now, dry_run=dry_run))
     return report
 
 

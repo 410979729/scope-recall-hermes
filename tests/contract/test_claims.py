@@ -456,13 +456,66 @@ def test_a_value_that_opens_with_a_negator_word_updates_its_slot(app, stated, sa
         ("不喜欢喝红茶", "茶", False),
         ("don't drive a car", "have a car", False),
         ("don't like having meetings early in the morning", "late in the morning", False),
+        ("不吃了", "爱吃辣", False),
     ],
 )
 def test_a_denial_negates_a_value_that_holds_all_it_denies(denied, held, same):
     """Compared as the store compares values, identifiers whole: the held value holds all the denial denies, or the
     denial denies the held value itself under a verb of liking or doing.  A longer denial narrows what it denies, so
-    不是周三下午 leaves 周三, as "not v3" leaves v3.1, standing."""
+    不是周三下午 leaves 周三, as "not v3" leaves v3.1, standing; a verb alone (不吃了) names nothing to deny."""
     assert negates({"kind": "fact", "value_text": denied}, {"value_text": held}) is same
+
+
+@pytest.mark.parametrize(
+    "value,denial,negated",
+    [
+        ("不是很喜欢 TEST-X", True, True),
+        ("不太喜欢 TEST-X", True, True),
+        ("不再用 TEST-X 改用 TEST-Y", True, True),
+        ("never use TEST-X again", True, True),
+        ("别再用 TEST-X", True, True),
+        ("不一定喜欢 TEST-X", False, False),
+        ("never again", True, False),
+        ("isn't any more", True, False),
+        ("not TEST-X but TEST-Y", True, True),
+    ],
+)
+def test_a_denial_is_read_as_its_negator_target_contrast_and_time(value, denial, negated):
+    """A denial is read as its negator, the target it denies, what it says holds instead and a word of time, each for
+    itself: the target of 不是很喜欢 X and of "never use X again" is X, 不一定喜欢 X doubts and denies nothing, and
+    "never again" names no target at all."""
+    assert is_denial({"kind": "preference", "value_text": value}) is denial
+    assert negates({"kind": "preference", "value_text": value}, {"value_text": "TEST-X"}) is negated
+
+
+@pytest.mark.parametrize(
+    "text,value,predicate",
+    [("我不吃了。", "不吃了", "饮食"), ("I don't drink any more.", "don't drink any more", "drink")],
+)
+def test_a_denial_that_names_nothing_is_never_its_slot_s_value(app, text, value, predicate):
+    """我不吃了 and "I don't drink any more" deny no value the person names: not even theirs becomes a slot's value."""
+    core, ctx = app
+    denial, owner = _preferred(core, ctx, text, value, predicate=predicate)
+    assert (denial.state, core.claim_history(owner, denial.ref)[-1].reason) == ("proposed", "denial_not_a_value")
+    assert core.current_claim(owner, denial.ref) is None
+
+
+@pytest.mark.parametrize(
+    "stated,switched",
+    [
+        (("我用 TEST-X。", "TEST-X"), ("我现在不用 TEST-X 了，而是用 TEST-Y。", "不用 TEST-X 了，而是用 TEST-Y")),
+        (("I use TEST-X.", "TEST-X"), ("I don't use TEST-X but TEST-Y now.", "don't use TEST-X but TEST-Y")),
+    ],
+)
+def test_a_denial_that_says_what_holds_instead_ends_the_value_and_is_none(app, stated, switched):
+    """不用 X 了，而是用 Y is two claims in one: it ends X, which it denies, and is no value itself, the person's own
+    included; Y is a claim of its own.  (Said with 改用, it is a correction too, and capture applies Y at once.)"""
+    core, ctx = app
+    tool, owner = _preferred(core, ctx, *stated, predicate="tool")
+    denial, _owner = _preferred(core, ctx, *switched, _LATER, predicate="tool")
+    assert (tool.state, denial.ref, denial.state) == ("active", tool.ref, "retracted")
+    assert core.current_claim(owner, tool.ref) is None
+    assert core.claim_history(owner, tool.ref)[-1].reason == "denial_not_a_value"
 
 
 @pytest.mark.parametrize(

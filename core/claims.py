@@ -140,15 +140,17 @@ _DENIED_VERB = (
     r"是|有(?!问题|关系|事)|喜欢|爱|想(?!到)|要(?!紧)|需要|用(?!谢)|使用|吃|喝|抽|吸|穿|戴|碰|玩|开|住|睡|养|信|怕"
     r"|在(?!乎|意)|去|做|坐|骑|买|选|看|听"
 )
-#: A denial's construction at the opening of a value: a negator with what it negates ("不是 CircleCI", "不吃辣",
-#: "从不抽烟", "不再用 X", "not CircleCI", "isn't X", "don't have a car", "never drink coffee", "no longer uses X") or
-#: an aversion ("讨厌 X", "受不了 X", "can't stand X", "dislikes X"), after the adverbs that may lead it
-#: ("一点也不喜欢", "really don't").  An English negator before a word of knowing, minding or contrast denies nothing
-#: ("not bad", "not only X but Y", "don't know", "not sure", "isn't it X").
-_DENIAL = re.compile(
+#: A denial's negator at the opening of a value, after the adverbs that may lead it ("一点也不喜欢", "really don't"):
+#: a Chinese negator with the degree or the time it carries (不是很, 不太, 不再, 别再) before a verb of being, having,
+#: liking or doing; an aversion ("讨厌 X", "受不了 X", "can't stand X", "dislikes X"); or an English negator ("not X",
+#: "isn't X", "don't have a car", "never drink coffee", "no longer uses X").  不一定 doubts rather than denies, and an
+#: English negator before a word of knowing, minding or contrast denies nothing ("not bad", "not only X but Y", "don't
+#: know", "not sure", "isn't it X").
+_NEGATOR = re.compile(
     r"^\s*(?:(?:一点[也都]|根本|完全|从来|从|向来|也|都|还|并|已经|再也|很|真|实在|一直|平时|现在)\s*)*"
     r"(?:(?:并非|绝非|讨厌|厌恶|反感|受不了)(?=\s*[^\s。，！？,.!?])"
-    rf"|(?:不|没|未曾|尚未|未)(?:太|大|怎么|常|再|一定|会|能)*(?=(?:{_DENIED_VERB})\s*[^\s。，！？,.!?]))"
+    r"|(?:不|没|别|未曾|尚未|未)(?:是(?=很|太|那么|特别))?(?:太|大|很|那么|特别|怎么|常|再|会|能)*"
+    rf"(?=(?:{_DENIED_VERB})\s*[^\s。，！？,.!?]))"
     r"|^\s*(?:(?:really|just|still|simply|definitely|absolutely|is|are|was|were|do|does|did)\s+)*"
     r"(?:(?:not|never|no\s+longer|cannot|can['’]?t|\w+n['’]t)\s+"
     r"(?!(?:bad|only|just|merely|sure|certain|know|knows|knew|think|mind|care|matter|remember|it|that|this|there"
@@ -156,11 +158,24 @@ _DENIAL = re.compile(
     r"|(?:dislikes?|hates?)\s+)(?=[^\s.,!?])",
     re.I,
 )
+#: Where a denial goes on to say what holds instead: "not X but Y", 不是 X 而是 Y, 不是 X，是 Y, 不再用 X 改用 Y.
+_CONTRAST = re.compile(
+    r"\s*(?:[，,;；]\s*(?:而是|是|改用|改为|改成|换成|换用|换为|用)|而是|改用|改为|改成|换成|换用|换为"
+    r"|,?\s*\b(?:but|instead)\b)",
+    re.I,
+)
+#: A particle or a word of time a denial may end its target with, which neither names nor narrows what it denies (了,
+#: "any more", "again").
+_SINCE = re.compile(
+    r"(?:\s*(?:了|啦|呀|啊|以后|now|already|anymore|any\s+(?:more|longer)|no\s+more|at\s+all|(?:ever\s+)?again"
+    r"|from\s+now\s+on))+[\s。.!！]*$",
+    re.I,
+)
 #: Kinds whose slot holds a value, so a denial can only say what it is not.  A constraint's negation is the rule
 #: itself ("never push to main"), and a decision not to do something is the decision.
 _VALUE_SLOT_KINDS = frozenset({"fact", "preference"})
-#: Why a denial's own version is a proposal: it denies another value than the one its slot holds; or it is a fact
-#: about something other than the person whose words it cites, which says what the slot is not and never what it is.
+#: Why a denial's own version is a proposal: it denies another value than the one its slot holds; or it is no value
+#: of its slot (``mutate.denial_verdict``).
 DENIAL_REASON = "denial_of_another_value"
 NOT_A_VALUE_REASON = "denial_not_a_value"
 #: Why a value ended: a source denies it.
@@ -169,10 +184,6 @@ DENIED_REASON = "value_denied"
 #: (v3.1, my_var, ops-pager, a/b, #ops-pager, @owner).
 _VALUE_WORD = re.compile(r"[\u3400-\u9fff]|[#@]?[^\W\u3400-\u9fff](?:[./-]?[^\W\u3400-\u9fff])*")
 _ARTICLES = frozenset({"a", "an", "the"})
-#: What a denial may say after what it denies without narrowing it: a particle or a word of time ("了", "any more").
-_SINCE = re.compile(
-    r"(?:\s*(?:了|啦|呀|啊|now|already|anymore|any\s+(?:more|longer)|no\s+more|at\s+all))+[\s。.!！]*$", re.I
-)
 
 
 def _value_words(text: str) -> tuple[str, ...]:
@@ -192,38 +203,61 @@ _DENYING_VERBS = _COPULA | frozenset(
 )
 
 
-def is_denial(payload) -> bool:
-    """Whether a claim's value says what its slot is not, in a denial's construction (``_DENIAL``) and asking nothing:
-    "not CircleCI", "不吃辣", "don't like PowerShell"; not 不错, 没问题, "not bad" or "isn't it X?"."""
+@dataclass(frozen=True)
+class Denial:
+    """A denial read from a claim's value (``read_denial``): the words of the target it denies, as ``_value_words``
+    gives them and without the time words after it, and whether it goes on to say what holds instead."""
+
+    target: tuple[str, ...]
+    contrast: bool
+
+    @property
+    def names_a_value(self) -> bool:
+        """Whether the target holds more than the verbs of its construction: 不吃了 and "never again" name nothing."""
+        return any(word not in _DENYING_VERBS for word in self.target)
+
+
+def read_denial(payload) -> Denial | None:
+    """The denial a claim's value is, or None: a fact's or a preference's value that opens with a negator
+    (``_NEGATOR``) and asks nothing ("isn't it X?" asks).  What follows the negator is its target, up to what it says
+    holds instead (``_CONTRAST``) and without a word of time after it (``_SINCE``): the target of 不是很喜欢 X and of
+    "never use X again" is X, and of "not X but Y" X."""
     value = str(payload.get("value_text") or "")
-    return (
-        payload.get("kind") in _VALUE_SLOT_KINDS
-        and _DENIAL.match(value) is not None
-        and AUTHORITY_QUESTION.search(value) is None
-    )
+    if payload.get("kind") not in _VALUE_SLOT_KINDS or AUTHORITY_QUESTION.search(value):
+        return None
+    negator = _NEGATOR.match(value)
+    if negator is None:
+        return None
+    rest = value[negator.end() :]
+    contrast = _CONTRAST.search(rest)
+    target = rest if contrast is None else rest[: contrast.start()]
+    return Denial(_value_words(_SINCE.sub("", target)), contrast is not None)
+
+
+def is_denial(payload) -> bool:
+    """Whether a claim's value says what its slot is not (``read_denial``): "not CircleCI", "不吃辣", "don't like
+    PowerShell"; not 不错, 没问题, 不一定喜欢 X, "not bad" or "isn't it X?"."""
+    return read_denial(payload) is not None
 
 
 def negates(denial, held) -> bool:
     """Whether the denial ``denial`` says that the claim ``held`` (a payload) does not hold.
 
-    What it denies is its value after the negator, without a particle or a word of time after it (了, "any more").
-    That and ``held``'s value are compared as the store compares values (NFKC, case-folded), word by word: a CJK
-    character is a word, an identifier is one word with its marks (v3.1, #ops-pager), a Latin word is taken by the stem
-    the fact gate gives a predicate's words, and an article is no word.  The denial negates the held value when the
-    held value holds all it denies after a copula (不是周三 negates 周三下午, 不吃辣 negates 爱吃辣, "don't drink
-    coffee" negates "drinks coffee"), or when it denies the held value itself under the verbs of the construction
-    ("don't like PowerShell" negates PowerShell, 不喜欢喝红茶 negates 红茶).  A longer denial does not negate a shorter
-    value: its other words narrow what it denies, so 不是周三下午 leaves 周三 standing, as "not v3" leaves v3.1, "not
-    4 GB" 14 GB and 不喜欢喝红茶 茶.
+    The target the denial denies (``read_denial``) and ``held``'s value are compared as the store compares values
+    (NFKC, case-folded), word by word: a CJK character is a word, an identifier is one word with its marks (v3.1,
+    #ops-pager), a Latin word is taken by the stem the fact gate gives a predicate's words, and an article is no word.
+    The denial negates the held value when the held value holds all the target after a copula (不是周三 negates
+    周三下午, 不吃辣 negates 爱吃辣, "don't drink coffee" negates "drinks coffee"), or when the target is the held
+    value itself under the verbs of the construction ("don't like PowerShell" negates PowerShell, 不喜欢喝红茶 negates
+    红茶).  A longer target does not negate a shorter value: its other words narrow what it denies, so 不是周三下午
+    leaves 周三 standing, as "not v3" leaves v3.1, "not 4 GB" 14 GB and 不喜欢喝红茶 茶.  A target of verbs alone
+    (不吃了) negates nothing.
     """
-    value = str(denial.get("value_text") or "")
-    opening = _DENIAL.match(value)
-    if opening is None:
-        return False
-    denied = _value_words(_SINCE.sub("", value[opening.end() :]))
+    read = read_denial(denial)
     holds = _value_words(str(held.get("value_text") or ""))
-    if not denied or not holds:
+    if read is None or not read.names_a_value or not holds:
         return False
+    denied = read.target
     named = denied[1:] if denied[0] in _COPULA and len(denied) > 1 else denied
     lead = len(denied) - len(holds)
     return _runs_within(holds, named) or (

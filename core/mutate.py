@@ -33,9 +33,9 @@ from .claims import (
     evidence_context,
     evidence_refs,
     grounded_time,
-    is_denial,
     negates,
     qualify,
+    read_denial,
     same_assertion,
     select_effective,
 )
@@ -217,20 +217,25 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     return qualification, True, ()
 
 
-def _denial_verdict(proposal, held, roots) -> tuple[str | None, bool]:
+def denial_verdict(proposal, held, roots) -> tuple[str | None, bool]:
     """Why a denial's own version is a proposal, if it is, and whether the value its slot holds (``held``) ends.
 
     A denial of another value than the one held ("not CircleCI" while Jenkins is, ``claims.negates``) leaves the slot
-    as it is.  Of the person's own slot, a preference or a fact about the person whose words it cites, a denial is
-    their answer where the slot holds nothing ("我不吃辣") and replaces the value it denies.  A fact about anything else
-    says what its slot is not and is never its value; when it denies the value held, that value ends.
+    as it is.  In the person's own slot, a preference or a fact about the person whose words it cites, a denial that
+    names a value and only denies it is their answer where the slot holds nothing ("我不吃辣") and replaces the value it
+    denies.  Any other denial says what its slot is not and is never its value: one in a fact about anything else, one
+    that names nothing (我不吃了, "never again", ``claims.Denial``) and one that goes on to say what holds instead
+    (不用 X 了，而是用 Y, "not X but Y"); when it denies the value held, that value ends.  Writing (``apply_claim``)
+    and re-judging the store (``requalify``) read a denial by this alone.
     """
-    if not is_denial(proposal):
+    denial = read_denial(proposal)
+    if denial is None:
         return None, False
     denies_held = held is not None and negates(proposal, held.payload)
     if held is not None and not denies_held:
         return DENIAL_REASON, False
-    if proposal["kind"] == "preference" or proposal["subject"] == human_owner(roots):
+    owned = proposal["kind"] == "preference" or proposal["subject"] == human_owner(roots)
+    if owned and denial.names_a_value and not denial.contrast:
         return None, False
     return NOT_A_VALUE_REASON, denies_held
 
@@ -269,7 +274,7 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
     history = tx.claims.slot(scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
     held = select_effective(history, now) if history else None
-    denial_reason, ends_held = _denial_verdict(proposal, held, roots)
+    denial_reason, ends_held = denial_verdict(proposal, held, roots)
     gated = qualification
     if denial_reason is not None and qualification.state != "proposed":
         qualification = Qualification("proposed", "inferred_suggestion", denial_reason)
@@ -389,6 +394,8 @@ _ASKED = re.compile(
     r"|(?:^|[.!?。！？\n]\s*)(?:do|does|did|is|are|was|were)\s+(?!not\b)\w",
     re.I,
 )
+
+
 #: An example, beside the words the evidence gates give to someone else (``attributed_to_another``).
 _EXAMPLE = re.compile(r"举例|示例|\b(?:for example|example:)", re.I)
 
