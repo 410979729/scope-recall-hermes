@@ -1,8 +1,8 @@
 """The packet's size estimate, counted without a Python step per character.
 
-The per-character loop cost 180 ms of a 2.5 s automatic recall on the shared store: the packet weighs every
-candidate it considers, 1.9 million characters in that recall.  The estimate itself must not move, so the
-rewrite is checked against the loop it replaced.
+A per-character loop would cost a visible share of an automatic recall: the packet weighs every candidate it
+considers, millions of characters in a recall on a large store.  The estimate itself must not move, so the count
+is checked against the per-character loop.
 """
 
 import random

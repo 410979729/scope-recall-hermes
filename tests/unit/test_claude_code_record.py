@@ -76,7 +76,7 @@ def test_only_entries_marked_as_the_person_s_are_the_person_s():
 
 
 #: What Claude's desktop app puts in the person's first message when a session starts without a project folder,
-#: shortened (#248).  Synthetic.
+#: shortened.  Synthetic.
 APP_REMINDER = (
     "<system-reminder>\nTEST The user started this session without choosing a project folder, so your working "
     "directory is a scratch workspace the app created for it.\n</system-reminder>"
@@ -84,8 +84,8 @@ APP_REMINDER = (
 
 
 def test_the_reminders_the_desktop_app_puts_in_a_message_are_not_the_person_s():
-    """#248: the reminder comes ahead of the typed text in one string (seen 09-12, Claude Code 2.1.260), or as a text
-    block of its own, which the record's reader joins with a line break; either way it was stored as the person's."""
+    """The reminder comes ahead of the typed text in one string, or as a text block of its own, which the record's
+    reader joins with a line break; either way it is not stored as the person's."""
     from scope_recall.adapters.clients.boundary import claude_code_person_text
 
     typed = "TEST 帮我看看这个仓库。"
@@ -108,8 +108,8 @@ def test_the_reminders_the_desktop_app_puts_in_a_message_are_not_the_person_s():
 
 
 def test_many_unclosed_reminders_cost_one_pass():
-    """A lazy match retried from every opening made a text of many unclosed openings quadratic: 3.5 s for 144 KB
-    (review of 3.10.5)."""
+    """A text of many unclosed openings is read in one pass, not by a lazy match retried from every opening, which is
+    quadratic."""
     import time
 
     from scope_recall.adapters.clients.boundary import claude_code_person_text
@@ -184,7 +184,7 @@ def _write(path, rows):
 
 
 def test_the_model_holds_the_session_since_its_last_compaction(tmp_path, monkeypatch):
-    """#249: what was said since the last compaction is still in the model's context, word for word; with none, the
+    """What was said since the last compaction is still in the model's context, word for word; with none, the
     whole session is.  A subagent's compaction is its own, and a record too long to read to its start without finding
     one says nothing."""
     record = tmp_path / "TEST-session.jsonl"
@@ -200,7 +200,7 @@ def test_the_model_holds_the_session_since_its_last_compaction(tmp_path, monkeyp
     # The person's own words naming a compaction are not one.
     _write(record, [*rows, _person('TEST "isCompactSummary":true "compact_boundary"')])
     assert transcript.context_since(record) == "2026-09-25T12:30:00.500000Z"
-    # A summary alone, written with spaces, as another writer may (review of 3.10.5).
+    # A summary alone, written with spaces, as another writer may.
     spaced = (
         json.dumps(first)
         + "\n"

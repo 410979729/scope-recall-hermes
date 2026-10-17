@@ -65,7 +65,7 @@ ORDINARY = [
     "require_password: true",
     "password: see the vault",
     "password: [REDACTED_SECRET]",
-    # Code and prose the final review of 2026-09-28 found still refused.
+    # More code and prose that must not be refused.
     'password = input("Password: ")',
     'token := os.Getenv("TOKEN")',
     "if token == nil {",
@@ -89,8 +89,8 @@ REAL = [
     "secret: 9f8e7d6c5b4a3f2e",
     "token: 8f14e45fceea167a5a36dedd4bea2543",
     "password = hunter2.backup9",
-    # Shapes the first narrowing let through (the core review of 2026-09-28): a password can be any word in any
-    # script, so only a placeholder's exact shape is exempt.
+    # Shapes a loose exemption would let through: a password can be any word in any script, so only a placeholder's
+    # exact shape is exempt.
     "password: $unshine2024",
     '"password": "$ecret99!"',
     "password: (Summer2024)",
@@ -104,8 +104,8 @@ REAL = [
     "password: correct horse battery staple",
     "password" + chr(0x662F) + chr(0x5929) + chr(0x738B) + chr(0x76D6) + chr(0x5730) + chr(0x864E),
     "password: " + "".join(chr(code) for code in (0x43F, 0x430, 0x440, 0x43E, 0x43B, 0x44C)),
-    # An exemption that stopped before the value's end let the rest through (the final review): a tag, a word
-    # with more after it, a dotted prefix, a quoted passphrase, an adverb after "is", a capital.
+    # An exemption that stops before the value's end lets the rest through: a tag, a word with more after it, a
+    # dotted prefix, a quoted passphrase, an adverb after "is", a capital.
     "Your temporary password: <b>Xk9#mP2q</b>",
     "password: Changed!2024",
     "password: none!2024",
@@ -115,8 +115,7 @@ REAL = [
     "the wifi password is now Sunflower2024",
     "the password is Strong!2024",
     "a" * 100 + "_token = abcdef1234567890",
-    # Found by running a generated corpus through the 3.3.0 screen and this one: a placeholder's shape with digits
-    # in it, a dotted name that is no code's, a null with more after it.
+    # A placeholder's shape with digits in it, a dotted name that is no code's, a null with more after it.
     "password: <hunter2>",
     "password: {hunter2}",
     "password: my.pass.word",
