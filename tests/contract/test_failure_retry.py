@@ -302,6 +302,28 @@ def test_a_refusal_by_the_providers_policy_is_asked_once_and_re_run_only_on_requ
     assert (every["retried"], every["by_kind"]) == (1, {"model_refused": 1})
 
 
+def test_a_candidate_evaluation_the_provider_interrupted_fails_once_and_a_plain_run_re_opens_it(app):
+    """A candidate evaluation is asked once; one the provider interrupted fails as the fault it is, and a plain run
+    moves its three tables back together."""
+
+    class Interrupted:
+        def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+            raise AuxiliaryModelError("model_output_interrupted")
+
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Interrupted())
+    assert list(_codes(core).values()) == ["model_output_interrupted"]
+    work, evaluations = _states(core)
+    assert (work.get("failed"), evaluations) == (1, {"failed": 1})
+    preview = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
+    assert (preview["retried"], preview["by_kind"]) == (1, {"model_output_interrupted": 1})
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 1
+    work, evaluations = _states(core)
+    assert not work.get("failed") and not evaluations.get("failed")
+
+
 def _codes(core):
     with sqlite3.connect(core.storage.path) as conn:
         return dict(conn.execute("SELECT work_id,last_error_code FROM work_items WHERE last_error_code IS NOT NULL"))

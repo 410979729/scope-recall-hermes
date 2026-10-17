@@ -1322,7 +1322,8 @@ def test_only_a_bounded_code_is_appended(code):
 
 
 @pytest.mark.parametrize(
-    "code", ["derivation_invalid", "DERIVATION_INVALID", "auto_retry:1|derivation_invalid", "input_invalid"]
+    "code",
+    ["derivation_invalid", "DERIVATION_INVALID", "auto_retry:1|derivation_invalid", "input_invalid", "model_refused"],
 )
 def test_a_by_design_terminal_outcome_is_not_actionable(code):
     from scope_recall.runtime.worker_entry import _is_actionable
@@ -1331,7 +1332,15 @@ def test_a_by_design_terminal_outcome_is_not_actionable(code):
 
 
 @pytest.mark.parametrize(
-    "code", ["timeout", "http_429", "model_unavailable", "candidate_attempt_interrupted", "something_new"]
+    "code",
+    [
+        "timeout",
+        "http_429",
+        "model_unavailable",
+        "model_output_interrupted",
+        "candidate_attempt_interrupted",
+        "something_new",
+    ],
 )
 def test_anything_an_operator_could_clear_is_actionable(code):
     from scope_recall.runtime.worker_entry import _is_actionable

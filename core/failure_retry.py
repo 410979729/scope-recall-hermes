@@ -61,13 +61,15 @@ DERIVATION_RETRY_MARKER = "derivation_retry:1"
 # Invalid derivations and rejected authority remain terminal and inspectable.
 # ``http_protocol`` is the transport failing mid-reply (a connection closed or a malformed answer), and is treated as
 # ``network_error`` is: it says nothing about the payload.  Missing here, consolidation and embedding work failing
-# with it would never be recovered.  An answer the route cannot use (a vector of another width, say) is not here: it
-# comes back until someone changes the model or the configuration, and a recovery gated by time alone cannot tell
-# when they have, so ``retry-failures`` re-opens it.
+# with it would never be recovered.  ``model_output_interrupted`` is the provider ending an answer for lack of capacity
+# or by interrupting it, which says nothing about the payload either.  An answer the route cannot use (a vector of
+# another width, say) is not here: it comes back until someone changes the model or the configuration, and a recovery
+# gated by time alone cannot tell when they have, so ``retry-failures`` re-opens it.
 AUTO_RECOVERABLE_ERRORS = frozenset(
     {
         "model_unavailable",
         "model_timeout",
+        "model_output_interrupted",
         "timeout",
         "network_error",
         "http_protocol",

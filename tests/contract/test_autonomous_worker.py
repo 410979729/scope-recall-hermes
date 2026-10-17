@@ -62,6 +62,32 @@ def test_transient_auto_recovery_is_cooled_and_has_lifetime_ceiling(worker_app):
     assert "auto_retry:2|" in work_rows(core)[0][6]
 
 
+def test_an_interrupted_answer_is_recovered_once_the_provider_can_answer(worker_app):
+    from scope_recall.runtime.models import AuxiliaryModelError
+    from test_worker import FakeConsolidation, consolidation_payload
+
+    class Interrupted:
+        calls = 0
+
+        def propose(self, *args, **kwargs):
+            self.calls += 1
+            raise AuxiliaryModelError("model_output_interrupted")
+
+    core, ctx, clock = worker_app
+    capture(core, ctx, "TEST 需要可靠记住的长期决定。")
+    _mark_embed_done(core)
+    model = Interrupted()
+    for iso in ("12:00:00", "12:00:03", "12:00:10"):
+        clock.advance(iso=f"2026-09-06T{iso}Z")
+        core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
+    assert model.calls == 3 and work_rows(core)[0][3] == "failed"
+    assert work_rows(core)[0][6] == "model_output_interrupted"
+    clock.advance(iso="2026-09-06T13:01:00Z")
+    answering = FakeConsolidation(lambda sources, **_: consolidation_payload(*sources))
+    receipt = core.drain_worker(ctx, consolidation=answering, max_items=1, remaining_seconds=5)
+    assert (receipt.recovered, receipt.completed) == (1, 1) and work_rows(core)[0][3] == "done"
+
+
 def test_permanent_failure_does_not_hide_later_recoverable_work(worker_app):
     core, ctx, clock = worker_app
     for n in range(4):
