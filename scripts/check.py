@@ -117,6 +117,8 @@ SCRIPT_GATE_TESTS = [
     "tests/packaging/test_release_notes.py",
     "tests/packaging/test_quality_gate.py",
 ]
+#: The tests that run git on the checkout, which only the tiers whose ``TIER_ALLOWS`` entry has ``git`` can pass.
+GIT_TESTS = ["tests/integration/test_guard_git.py"]
 SUITES = {
     "unit": [
         "tests/unit/test_trusted_context.py",
@@ -232,7 +234,7 @@ SUITES = {
     "integration": [
         "tests/contract/test_worker.py",
         "tests/contract/test_worker_incremental_batch.py",
-        "tests/integration/test_guard_git.py",
+        *GIT_TESTS,
         "tests/contract/test_runtime_auxiliary.py",
         "tests/contract/test_monthly_auxiliary_budget.py",
         "tests/contract/test_codex_cli_consolidation.py",
@@ -437,8 +439,6 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_autonomous_recall.py",
     "tests/contract/test_autonomous_worker.py",
     "tests/contract/test_comprehensive_storage_diagnostics.py",
-    "tests/contract/test_restart_and_failure_recovery.py",
-    "tests/contract/test_finite_supervisor.py",
     "tests/contract/test_http_proxy_boundary.py",
     "tests/contract/test_embedding_space_policy.py",
     "tests/contract/test_recall_packet_compiler.py",
@@ -471,9 +471,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_rejection_names_the_field.py",
     "tests/contract/test_embed_batch.py",
     "tests/contract/test_pass_statistics.py",
-    "tests/contract/test_group_publish.py",
     "tests/contract/test_pass_size.py",
-    "tests/contract/test_receipt_larger_than_a_pipe.py",
     "tests/contract/test_processing_loop_survives.py",
     "tests/contract/test_embed_group_bookkeeping.py",
     "tests/contract/test_tool_output_is_not_derived.py",
@@ -490,6 +488,10 @@ RUNTIME_BOUNDARY_TESTS = [
     "tests/contract/test_runtime_worker_entry.py",
     "tests/host/test_runtime_watchdog.py",
     "tests/host/test_runtime_wiring_common.py",
+    "tests/contract/test_finite_supervisor.py",
+    "tests/contract/test_group_publish.py",
+    "tests/contract/test_receipt_larger_than_a_pipe.py",
+    "tests/contract/test_restart_and_failure_recovery.py",
 ]
 # The host adapters' tests.  Some start child processes or open loopback sockets, so a process tier runs all of them.
 HERMES_HOST_TESTS = [path for path in SUITES["host"] if "/hermes/" in path]
@@ -644,38 +646,59 @@ def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
     return impacts, unknown
 
 
-def _if_processes_allowed(tier: str, tests: list[str]) -> list[str]:
-    """``tests``, which start child processes or open loopback sockets, for a tier whose runs allow both; none for any
-    other tier, which leaves them to the process tier that ``required_tiers`` names."""
-    return tests if tier in PROCESS_TIERS else []
+def _process_groups() -> list[tuple[str, list[str], frozenset[str]]]:
+    """The tests that start child processes, open loopback sockets, run git or drive the packaging helpers, as (the tier
+    that owns them, the tests, what a tier's runs must allow for them to pass).  A test in none of them is taken to
+    need nothing."""
+    process = frozenset({"process"})
+    return [
+        ("native", SUITES["native"], process),
+        ("host", SUITES["host"], process),
+        ("migration", SUITES["migration"], process),
+        ("packaging", SCRIPT_GATE_TESTS, process | {"git"}),
+        ("packaging", [path for path in SUITES["packaging"] if path not in SCRIPT_GATE_TESTS], process | {"build"}),
+        ("integration", RUNTIME_BOUNDARY_TESTS, process),
+        ("integration", GIT_TESTS, process | {"git"}),
+    ]
 
 
-def _process_tier_of(path: str) -> str | None:
-    """The process tier that owns a test: the one whose own suite (native, host, migration or packaging) lists it, or
-    integration for a runtime boundary test.  A test in none of them, including one no suite lists yet, has no owner."""
-    for tier in ("native", "host", "migration", "packaging"):
-        if path in SUITES[tier]:
-            return tier
-    return "integration" if path in RUNTIME_BOUNDARY_TESTS else None
+def needs(tests: list[str]) -> frozenset[str]:
+    """What a tier's runs must allow for ``tests`` to pass: the union over the groups they belong to."""
+    return frozenset().union(
+        *(wanted for _owner, group, wanted in _process_groups() if not set(group).isdisjoint(tests))
+    )
+
+
+def _runnable(tier: str, tests: list[str]) -> list[str]:
+    """``tests`` when ``tier``'s runs allow everything they need, else none: a list goes into a run whole or not at
+    all."""
+    return tests if needs(tests) <= TIER_ALLOWS.get(tier, frozenset()) else []
 
 
 def _split_changed_tests(tier: str, changed_tests: list[str]) -> tuple[list[str], list[str]]:
-    """The changed tests ``tier`` runs, and the process tiers that own the others.
+    """The changed tests ``tier`` can run, and the tiers that own the others.
 
-    A tier whose runs refuse child processes and sockets leaves a test that a process tier owns to that tier.
+    A test in a group whose needs ``tier``'s runs do not allow is left to the tier that owns the group.
     """
-    if tier in PROCESS_TIERS:
-        return changed_tests, []
-    owners = {path: owner for path in changed_tests if (owner := _process_tier_of(path))}
-    return [path for path in changed_tests if path not in owners], _dedupe(list(owners.values()))
+    if not changed_tests:
+        return [], []
+    allowed = TIER_ALLOWS.get(tier, frozenset())
+    groups = _process_groups()
+    left = {
+        path: owner
+        for path in changed_tests
+        for owner, group, wanted in groups
+        if path in group and not wanted <= allowed
+    }
+    return [path for path in changed_tests if path not in left], _dedupe(list(left.values()))
 
 
 def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[str], dict]:
     """Select a bounded suite and report why safety gates were added.
 
-    A run selects only tests its tier's process policy allows (``PROCESS_TIERS``).  The tests a change calls for that
-    start child processes or open loopback sockets go into a process tier's run; any other tier names the process tier
-    in ``required_tiers`` instead.  Every name there is a key of ``SUITES``.
+    A run selects only tests its tier's policy allows (``TIER_ALLOWS``): a list a change calls for goes into a run when
+    the policy allows everything its tests need (``needs``), and a changed test goes into a run the same way.  What is
+    left out is named by the tier that can run it in ``required_tiers``, whose names are keys of ``SUITES``.
     """
     changed = changed or []
     if tier == "release":
@@ -732,27 +755,27 @@ def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[s
             host_selected.extend(HERMES_HOST_TESTS)
         if "codex_host" in impacts or "host_both" in impacts:
             host_selected.extend(CODEX_HOST_TESTS)
-        host_tests = _if_processes_allowed(tier, host_selected)
+        host_tests = _runnable(tier, host_selected)
         selected = _dedupe(selected + host_tests + SAFETY_BASELINE)
         required_tiers.append("host")
         reasons.append(
             "host_specific_contract_and_core_safety_baseline" if host_tests else "core_safety_baseline_for_host_change"
         )
     if "runtime_boundary" in impacts:
-        selected = _dedupe(selected + _if_processes_allowed(tier, RUNTIME_BOUNDARY_TESTS))
+        selected = _dedupe(selected + _runnable(tier, RUNTIME_BOUNDARY_TESTS))
         required_tiers.append("integration")
         reasons.append("runtime_boundary_contracts")
     if "native" in impacts:
-        selected = _dedupe(selected + _if_processes_allowed(tier, SUITES["native"] + I_CORE_BASELINE))
+        selected = _dedupe(selected + _runnable(tier, SUITES["native"] + I_CORE_BASELINE))
         required_tiers.append("native")
         reasons.append("native_boundary_for_vector_change")
     if impacts.intersection({"packaging", "unknown_config"}):
         required_tiers.extend(["integration", "packaging"])
-        selected = _dedupe(selected + _if_processes_allowed(tier, SUITES["integration"] + SUITES["packaging"]))
+        selected = _dedupe(selected + _runnable(tier, SUITES["integration"]) + _runnable(tier, SUITES["packaging"]))
         reasons.append("integration_and_build_for_packaging_or_config")
     if unknown:
         required_tiers.extend(["integration", "packaging"])
-        selected = _dedupe(selected + _if_processes_allowed(tier, SUITES["integration"] + SUITES["packaging"]))
+        selected = _dedupe(selected + _runnable(tier, SUITES["integration"]) + _runnable(tier, SUITES["packaging"]))
         reasons.append("unknown_dependency_requires_conservative_integration_and_build")
     if changed and not unknown and not impacts and tier not in {"unit", "contract"}:
         # A changed test is still a valid direct selection; no silent empty

@@ -156,6 +156,16 @@ def test_process_tiers_are_explicitly_distinct_from_guarded_contract_tiers() -> 
 #: The tiers whose runs refuse child processes and sockets (``tests/v11_guard.py``).
 IN_PROCESS_TIERS = sorted(set(check.SUITES) - check.PROCESS_TIERS)
 
+#: The runtime tests that start child processes, which only the integration tier and the tiers above it run.
+RUNTIME_PROCESS_TESTS = [
+    "tests/contract/test_finite_supervisor.py",
+    "tests/contract/test_group_publish.py",
+    "tests/contract/test_receipt_larger_than_a_pipe.py",
+    "tests/contract/test_restart_and_failure_recovery.py",
+]
+#: The test of the guard's git rules, which only the tiers that may run git can pass.
+GIT_TEST = "tests/integration/test_guard_git.py"
+
 #: Changed files that between them reach every addition the selector makes.
 CHANGES = {
     "client": ["adapters/clients/mcp_server.py"],
@@ -170,27 +180,37 @@ CHANGES = {
     "selector": ["scripts/check.py"],
     "host test": ["tests/host/codex/test_remote.py"],
     "contract test": ["tests/contract/test_storage.py"],
+    "runtime process test": RUNTIME_PROCESS_TESTS[:1],
+    "git test": [GIT_TEST],
+    "build test": ["tests/packaging/test_clean_v11_wheel.py"],
 }
 
-#: What a change calls for beyond a tier's own suite and some of whose tests need a process, with the tiers that run it.
+_PROCESS = frozenset({"process"})
+_BUILD = frozenset({"process", "git", "build"})
+
+#: What a change calls for beyond a tier's own suite: the tests, the tiers that run them and what a tier's runs must
+#: allow for them to pass.
 PROCESS_ADDITIONS = {
-    "client": (CHANGES["client"], check.CODEX_HOST_TESTS, ["host"]),
-    "hermes": (CHANGES["hermes"], check.HERMES_HOST_TESTS, ["host"]),
+    "client": (CHANGES["client"], check.CODEX_HOST_TESTS, ["host"], _PROCESS),
+    "hermes": (CHANGES["hermes"], check.HERMES_HOST_TESTS, ["host"], _PROCESS),
     "runtime": (
         CHANGES["runtime"],
         [*check.RUNTIME_BOUNDARY_TESTS, *check.HERMES_HOST_TESTS, *check.CODEX_HOST_TESTS],
         ["host", "integration"],
+        _PROCESS,
     ),
-    "vector": (CHANGES["vector"], [*check.SUITES["native"], *check.I_CORE_BASELINE], ["native"]),
+    "vector": (CHANGES["vector"], [*check.SUITES["native"], *check.I_CORE_BASELINE], ["native"], _PROCESS),
     "packaging": (
         CHANGES["packaging"],
         [*check.SUITES["integration"], *check.SUITES["packaging"]],
         ["integration", "packaging"],
+        _BUILD,
     ),
     "unknown": (
         CHANGES["unknown"],
         [*check.SUITES["integration"], *check.SUITES["packaging"]],
         ["integration", "packaging"],
+        _BUILD,
     ),
 }
 
@@ -236,26 +256,93 @@ def test_a_host_change_selects_no_host_test_where_child_processes_are_refused(ti
     assert "host_specific_contract_and_core_safety_baseline" not in details["reasons"]
 
 
-@pytest.mark.parametrize("tier", IN_PROCESS_TIERS)
+@pytest.mark.parametrize("tier", sorted(check.SUITES))
 @pytest.mark.parametrize("change", PROCESS_ADDITIONS)
-def test_a_tier_that_refuses_child_processes_leaves_their_tests_to_the_tier_that_runs_them(tier, change) -> None:
-    changed, additions, named = PROCESS_ADDITIONS[change]
+def test_a_change_adds_its_tests_only_to_a_tier_whose_policy_allows_them(tier, change) -> None:
+    changed, additions, named, needs = PROCESS_ADDITIONS[change]
 
     selected, details = check.select_tests(tier, changed=changed)
 
-    assert not run_only_by_process_tiers(additions) & (set(selected) - set(check.SUITES[tier]))
+    if needs <= check.TIER_ALLOWS.get(tier, frozenset()):
+        assert set(additions) <= set(selected)
+    else:
+        assert not run_only_by_process_tiers(additions) & (set(selected) - set(check.select_tests(tier)[0]))
     assert set(named) <= set(details["required_tiers"])
 
 
-@pytest.mark.parametrize("tier", sorted(check.PROCESS_TIERS))
-@pytest.mark.parametrize("change", PROCESS_ADDITIONS)
-def test_a_process_tier_selects_the_tests_a_change_calls_for(tier, change) -> None:
-    changed, additions, named = PROCESS_ADDITIONS[change]
+@pytest.mark.parametrize("tier", sorted(check.SUITES))
+@pytest.mark.parametrize("changed", CHANGES.values(), ids=list(CHANGES))
+def test_a_run_selects_nothing_its_tier_cannot_run(tier, changed) -> None:
+    selected, _ = check.select_tests(tier, changed=changed)
 
-    selected, details = check.select_tests(tier, changed=changed)
+    assert check.needs(selected) <= check.TIER_ALLOWS.get(tier, frozenset())
 
-    assert set(additions) <= set(selected)
-    assert set(named) <= set(details["required_tiers"])
+
+@pytest.mark.parametrize("tier", sorted(check.SUITES))
+def test_a_tier_can_run_every_test_it_selects_when_nothing_has_changed(tier) -> None:
+    assert check.needs(check.select_tests(tier)[0]) <= check.TIER_ALLOWS.get(tier, frozenset())
+
+
+@pytest.mark.parametrize("name", ["SAFETY_BASELINE", "CONTRACT_I_BASELINE", "CLAIMS_TIME_CONTRACT_CLOSURE"])
+def test_a_baseline_every_tier_selects_needs_nothing(name) -> None:
+    assert check.needs(getattr(check, name)) == frozenset()
+
+
+@pytest.mark.parametrize("tier", ["host", "native", "migration"])
+def test_a_packaging_change_leaves_the_build_and_git_tests_to_the_tiers_that_have_them(tier) -> None:
+    selected, details = check.select_tests(tier, changed=CHANGES["packaging"])
+
+    for path in (
+        "tests/packaging/test_clean_v11_wheel.py",
+        "tests/packaging/test_source_manifest.py",
+        "tests/packaging/test_package_upgrade.py",
+        GIT_TEST,
+    ):
+        assert path not in selected
+    assert set(selected) == set(check.SUITES[tier])
+    assert {"integration", "packaging"} <= set(details["required_tiers"])
+
+
+def test_a_packaging_change_leaves_the_build_to_a_tier_that_has_the_packaging_helpers() -> None:
+    selected, details = check.select_tests("integration", changed=CHANGES["packaging"])
+
+    assert "tests/packaging/test_clean_v11_wheel.py" not in selected
+    assert "tests/packaging/test_source_manifest.py" in selected
+    assert GIT_TEST in selected
+    assert "packaging" in details["required_tiers"]
+
+
+@pytest.mark.parametrize("path", RUNTIME_PROCESS_TESTS)
+def test_a_changed_runtime_process_test_is_left_to_the_integration_tier(path) -> None:
+    selected, details = check.select_tests("unit", changed=[path])
+
+    assert path not in selected
+    assert details["required_tiers"] == ["unit", "integration"]
+    for tier in sorted(check.PROCESS_TIERS):
+        assert path in check.select_tests(tier, changed=[path])[0]
+
+
+@pytest.mark.parametrize("tier", ["unit", "host", "native", "migration"])
+def test_a_changed_git_test_is_left_to_a_tier_that_may_run_git(tier) -> None:
+    selected, details = check.select_tests(tier, changed=[GIT_TEST])
+
+    assert GIT_TEST not in selected
+    assert "integration" in details["required_tiers"]
+
+
+@pytest.mark.parametrize("tier", ["integration", "packaging", "release"])
+def test_a_changed_git_test_runs_in_a_tier_that_may_run_git(tier) -> None:
+    assert GIT_TEST in check.select_tests(tier, changed=[GIT_TEST])[0]
+
+
+@pytest.mark.parametrize("path", [*RUNTIME_PROCESS_TESTS, GIT_TEST])
+def test_the_integration_tier_selects_the_tests_that_need_a_process(path) -> None:
+    assert path in check.select_tests("integration")[0]
+
+
+@pytest.mark.parametrize("path", RUNTIME_PROCESS_TESTS)
+def test_the_release_tier_selects_the_runtime_process_tests(path) -> None:
+    assert path in check.select_tests("release")[0]
 
 
 def test_a_changed_test_is_left_to_the_process_tier_that_owns_it() -> None:
