@@ -17,7 +17,6 @@ from scope_recall.core.capture_inbox import DELETED_KEY
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from ..runtime_wiring import strict_hook_budget
-from . import transcript
 from .boundary import (
     is_workbuddy_agent_run,
     without_lone_surrogates,
@@ -83,6 +82,8 @@ class HookCall:
     queued: bool = False
     #: The turn a WorkBuddy Stop closed and the words of its reply, for the read of the record after it.
     closed_reply: tuple[str, str] | None = None
+    #: The id of the line holding the reply a dsh Stop stored, and its turn, for the read of the lines after it.
+    reply_line: tuple[str, str] | None = None
     #: Whether this hook may open the session record its payload names: a client on another machine sends its lines.
     local_record: bool = True
     #: That client's word that its Stop's reply is an error its record marks.
@@ -442,7 +443,7 @@ class CodexHookHandler:
         if self.host == "dsh" and record is None:
             # The turn's messages as dsh's plugin kept them (it has no record a hook could open), read as a remote
             # client's lines; the answer says how many are stored, so the plugin drops those and sends the rest again.
-            record = RecordLines(start=0, lines=transcript.dsh_lines(payload.get("record")))
+            record = RecordLines.from_dsh(payload)
         if event == "Stop":
             result = self.events.stop(session_id, audience, payload, deadline, record=record)
         else:
@@ -452,7 +453,13 @@ class CodexHookHandler:
         # opened here.
         if self.record_reader.reads(event) and (record is not None or local_record):
             self.record_reader.read(
-                session_id, audience, payload, deadline, remote=record, closed_reply=self.call.closed_reply
+                session_id,
+                audience,
+                payload,
+                deadline,
+                remote=record,
+                closed_reply=self.call.closed_reply,
+                reply_line=self.call.reply_line,
             )
         if self.host == "workbuddy" and event == "SessionEnd":
             forget_turns(self.config, session_id)

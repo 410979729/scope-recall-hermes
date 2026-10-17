@@ -161,8 +161,8 @@ moves back by that lead, so the latest is this machine's now and a turn keeps it
 dated after its now, so a message dated a day ahead would have stayed hidden for a day (a hook that such a client
 sends twice may then be stored twice). When it was stored, when its work falls due and a recall's now are
 this machine's clock, so a client clock that runs fast or slow does not hold back the work on its messages.
-That request-time adjustment covers the forwarder's hook time and file-record envelope; dsh's nested message
-timestamps follow dsh's own transcript handling. Keep the two machines' clocks synchronized.
+That covers the hook's own time and every message a request carries: a record's lines, and the turn's messages
+dsh's plugin sends inside its Stop. Keep the two machines' clocks synchronized.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP

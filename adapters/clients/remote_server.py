@@ -186,20 +186,28 @@ def _observed_at(value: object) -> datetime | None:
     return moment.astimezone(timezone.utc)
 
 
-def client_times(body: dict[str, Any]) -> tuple[str | None, RecordLines | None]:
+def client_times(body: dict[str, Any], host: str | None = None) -> tuple[str | None, RecordLines | None]:
     """The hook's time and the record lines a request carries, moved back together if the client's clock is ahead.
 
     Clamped one at a time, a fast client's turn would fall out of order: a reply said early in the turn would keep
-    its time, the prompt after it be clamped to now, and the reply be joined to the next turn.
+    its time, the prompt after it be clamped to now, and the reply be joined to the next turn.  dsh's plugin sends
+    the turn's messages inside its Stop's payload (``RecordLines.from_dsh``), any other client its record's lines
+    beside the payload.
     """
-    observed_at, record, _lead = client_times_and_lead(body)
+    observed_at, record, _lead = client_times_and_lead(body, host)
     return observed_at, record
 
 
-def client_times_and_lead(body: dict[str, Any]) -> tuple[str | None, RecordLines | None, timedelta]:
+def client_times_and_lead(
+    body: dict[str, Any], host: str | None = None
+) -> tuple[str | None, RecordLines | None, timedelta]:
     """``client_times``, and how far everything was moved back (nothing when the client's clock is not ahead)."""
     observed = _observed_at(body.get("observed_at"))
-    record = record_from_wire(body.get("record"))
+    if host == "dsh":
+        payload = body.get("payload")
+        record = RecordLines.from_dsh(payload) if isinstance(payload, dict) and "record" in payload else None
+    else:
+        record = record_from_wire(body.get("record"))
     times = [observed] if observed is not None else []
     if record is not None:
         times.extend(_moment(said.occurred_at) for _offset, said in record.lines if said is not None)
@@ -292,7 +300,7 @@ def handle_request(
     # The hook's own times are the client's (moved back if more than a minute ahead, see CLOCK_AHEAD_SECONDS), so a
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
     # now are this machine's: a client clock a day fast would hold back a message's embedding by a day.
-    observed_at, record, lead = client_times_and_lead(body)
+    observed_at, record, lead = client_times_and_lead({**body, "payload": payload}, config.host)
     payload = _context_since_kept(payload, lead)
     building = time.monotonic()
     handler = CodexHookHandler.from_home(

@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -245,6 +246,47 @@ def test_dsh_remote_record_recall_identity_and_bounds(remote, still_clocks):
     )
     assert TOKEN not in logs and "TEST-wrong-token" not in logs
     assert TOKEN not in json.dumps(bodies)
+
+
+def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one_stored(
+    remote, monkeypatch, still_clocks
+):
+    """A client whose clock runs ten minutes ahead has every time a request carries moved back by that request's lead
+    (``remote_server.client_times``), the turn's messages dsh's plugin sends inside its Stop with the hook's own: the
+    person's line is the prompt already stored, nothing is dated ahead of this machine's clock, and the reply sent again
+    with a later Stop, moved back by another lead, is the reply stored."""
+    root, _home, client, _bodies, _records = remote
+
+    def client_now():
+        return datetime.now(timezone.utc) + timedelta(minutes=10)
+
+    monkeypatch.setattr(remote_client, "_now", lambda: client_now().isoformat().replace("+00:00", "Z"))
+    _hook(
+        client, hook_event_name="UserPromptSubmit", session_id="TEST-fast", turn_id="1", prompt="TEST 时钟快了十分钟。"
+    )
+    said = int((client_now() - timedelta(seconds=5)).timestamp() * 1000)
+    stop = dict(
+        hook_event_name="Stop",
+        session_id="TEST-fast",
+        turn_id="1",
+        last_assistant_message="TEST 快钟那边的回答。",
+        reply_id="a1",
+        record=[
+            {"id": "u1", "role": "user", "text": "TEST 时钟快了十分钟。", "time": said - 2000},
+            {"id": "a1", "role": "assistant", "text": "TEST 快钟那边的回答。", "time": said},
+        ],
+    )
+    assert _hook(client, **stop) == {"through": 2}
+    assert _hook(client, **stop) == {"through": 2}, "sent again"
+    latest = datetime.now(timezone.utc) + timedelta(seconds=remote_server.CLOCK_AHEAD_SECONDS)
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        kept = db.execute(
+            "SELECT source_event_key, occurred_at FROM source_events WHERE source_event_key LIKE '%:TEST-fast:%'"
+        ).fetchall()
+        waiting = db.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
+    assert sorted(key.split(":TEST-fast:", 1)[1].rsplit("@", 1)[0] for key, _at in kept) == ["assistant:1", "user:1"]
+    assert all(datetime.fromisoformat(at.replace("Z", "+00:00")) <= latest for _key, at in kept), kept
+    assert waiting == 0, "nothing left for the store's worker to store under a key of its own"
 
 
 def test_dsh_remote_install_and_mcp(remote, tmp_path, capsys):

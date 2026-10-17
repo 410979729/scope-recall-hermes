@@ -5,9 +5,11 @@ The hook's state stays the handler's, reached through ``self._hook``; reading th
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import ContractError, Origin
+from scope_recall.core.events import stored_content_digest
 from scope_recall.core.secret_patterns import contains_secret_like_text
 
 from . import transcript
@@ -268,11 +270,13 @@ class HookEvents:
             # The model's answer to Codex's request for suggestions (``is_codex_suggestions_prompt``).
             self._hook.note("host_generated_reply")
             return {}
-        # dsh's plugin sends the reply again with each later Stop that carries its line: after one whose time ran out
-        # before all of the turn's lines were stored, and from its sweep after a store that failed.  Dated by each
-        # hook's moment, the reply sent again would be another message under the turn's key: refused (VERSION_CONFLICT),
-        # then stored a second time under a key of its own.  Dated by its own line, it is the one already stored.
-        said_at = record.said_at("assistant", message) if self._hook.host == "dsh" and record is not None else None
+        # dsh's plugin names the line that holds the reply (``reply_id``): the reply is said when that line was, and the
+        # read of the lines after this Stop holds that line as this reply.
+        line = None
+        if self._hook.host == "dsh" and record is not None:
+            line = record.reply(payload.get("reply_id"), message)
+        if line is not None:
+            self._hook.call.reply_line = (line.entry_id, turn_id)
         event, outcome_gaps = assistant_stop_source_event(
             installation_id=self._hook.config.installation_id,
             host=self._hook.host,
@@ -280,11 +284,35 @@ class HookEvents:
             turn_id=turn_id,
             message=message,
             recorded_at=self._hook.clock.utc_now(),
-            occurred_at=said_at,
+            occurred_at=line.occurred_at if line is not None else None,
         )
         context = self._hook.context(audience, session_id, "assistant_visible")
+        if self._hook.host == "dsh" and event is not None:
+            self._keep_stored_moment(context, event, deadline)
         self._hook.capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
         return {}
+
+    def _keep_stored_moment(self, context, event: dict[str, Any], deadline: float) -> None:
+        """A dsh reply already stored under its turn's key with the same words keeps the moment it was stored with.
+
+        The plugin sends the reply again with each later Stop that carries its line: after one whose time ran out
+        before all of the turn's lines were stored, and from its sweep after a store that failed.  With a moment of its
+        own it would be another message under the key, refused (VERSION_CONFLICT) and then stored a second time under a
+        key of its own: a reply whose line carries no moment is dated by each hook, one from a client whose clock runs
+        ahead by its line moved back by each request's lead, and one stored at its hook's moment by its line when sent
+        again.  A store that cannot be read now leaves the moment as it is, and the capture says what the store does."""
+        remaining = self._hook.remaining(deadline)
+        if remaining <= 0:
+            return
+        try:
+            stored = self._hook.core.source_by_event_key(
+                context, event["source_event_key"], remaining_seconds=remaining
+            )
+        except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            return
+        if stored is not None and stored.content_sha256 == stored_content_digest(event["content"]):
+            for field in ("occurred_at", "time_precision"):
+                event[field] = stored.event[field]
 
     def _workbuddy_error_reply(self, session_id: str, payload: dict[str, Any], reply: str) -> bool:
         """Whether a WorkBuddy Stop's reply is an error its record marks (``transcript.workbuddy_error_reply``).  A client

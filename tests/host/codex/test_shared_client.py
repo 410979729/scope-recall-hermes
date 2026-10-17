@@ -4142,6 +4142,103 @@ def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh, still
     assert diagnostics.capture_error_detail is None and _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
 
 
+def _dsh_kept(root):
+    """The dsh session's rows as (what each was stored as, its words, its moment): ``user:<turn>`` (the prompt hook),
+    ``assistant:<turn>`` (a Stop's reply) or ``record:<id>`` (a line of the turn's messages)."""
+    return sorted(
+        (key.split(f":{DSH_SESSION}:", 1)[1].rsplit("@", 1)[0], content, at)
+        for key, content, at in _rows(
+            root, "SELECT source_event_key, content, occurred_at FROM source_events WHERE entry_id='dsh'"
+        )
+    )
+
+
+def _dsh_resent_cleanly(diagnostics, root):
+    """Nothing refused and nothing left in the inbox, where the store's worker would store it under a key of its own."""
+    return diagnostics.capture_error_detail is None and _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
+
+
+def test_a_dsh_reply_whose_line_carries_no_moment_is_stored_once_when_sent_again(dsh, still_clocks):
+    """A line without a moment the store can read shows nothing, so the reply it holds is dated by the hook that first
+    stores it; a later Stop that sends the reply again keeps that moment, and is the reply already stored."""
+    root, home = dsh
+    at = _dsh_ms()
+    stop = {
+        "hook_event_name": "Stop",
+        "turn_id": "4",
+        "last_assistant_message": "TEST 这一行没有时间。",
+        "reply_id": "a1",
+        "record": [
+            {"id": "u1", "role": "user", "text": "TEST 这一行有时间。", "time": at(0)},
+            {"id": "a1", "role": "assistant", "text": "TEST 这一行没有时间。", "time": "TEST 不是时间"},
+        ],
+    }
+    assert _dsh(home, stop)[0] == {"through": 2}
+    stored = _dsh_kept(root)
+    result, diagnostics = _dsh(home, stop)
+    assert result == {"through": 2} and _dsh_resent_cleanly(diagnostics, root)
+    assert _dsh_kept(root) == stored and [key for key, *_rest in stored] == ["assistant:4", "record:u1"]
+
+
+def test_a_dsh_reply_stored_at_another_moment_is_the_one_a_later_stop_sends_again(dsh, still_clocks):
+    """A reply stored under its turn's key at a moment other than its line's (a Stop that names no line for its reply
+    dates it by the hook) is the reply a later Stop sends with its line: it keeps the moment it was stored with, and its
+    line is that reply, not a message of its own."""
+    root, home = dsh
+    at = _dsh_ms()
+    reply = "TEST 先存下的回答。"
+    _dsh(home, {"hook_event_name": "Stop", "turn_id": "5", "last_assistant_message": reply})
+    stored = _dsh_kept(root)
+    record = [{"id": "a1", "role": "assistant", "text": reply, "time": at(0)}]
+    result, diagnostics = _dsh(
+        home,
+        {
+            "hook_event_name": "Stop",
+            "turn_id": "5",
+            "last_assistant_message": reply,
+            "reply_id": "a1",
+            "record": record,
+        },
+    )
+    assert result == {"through": 1} and _dsh_resent_cleanly(diagnostics, root)
+    assert _dsh_kept(root) == stored and [key for key, *_rest in stored] == ["assistant:5"]
+
+
+def test_two_dsh_replies_alike_in_one_session_are_two_messages(dsh, still_clocks):
+    """The model said the same words at the end of a turn and again in the next, still running when the first one's
+    Stop was sent.  The Stop's reply is the line the plugin names (``reply_id``), never the last with its words, and
+    that line is held as the reply stored under the turn's key, whatever the moment the reply was stored with: each is
+    stored once, the reply under its turn and the other from its line."""
+    root, home = dsh
+    at = _dsh_ms()
+    reply = "TEST 好的。"
+    _dsh(home, {"hook_event_name": "Stop", "turn_id": "1", "last_assistant_message": reply})
+    record = [
+        {"id": "u1", "role": "user", "text": "TEST 第一轮的问题。", "time": at(0)},
+        {"id": "a1", "role": "assistant", "text": reply, "time": at(1)},
+        {"id": "u2", "role": "user", "text": "TEST 第二轮的问题。", "time": at(25)},
+        {"id": "a2", "role": "assistant", "text": reply, "time": at(28)},
+    ]
+    result, diagnostics = _dsh(
+        home,
+        {
+            "hook_event_name": "Stop",
+            "turn_id": "1",
+            "last_assistant_message": reply,
+            "reply_id": "a1",
+            "record": record,
+        },
+    )
+    assert result == {"through": 4} and _dsh_resent_cleanly(diagnostics, root)
+    kept = _dsh_kept(root)
+    assert [(key, words) for key, words, _at in kept] == [
+        ("assistant:1", reply),
+        ("record:a2", reply),
+        ("record:u1", "TEST 第一轮的问题。"),
+        ("record:u2", "TEST 第二轮的问题。"),
+    ]
+
+
 def test_a_dsh_turn_without_a_reply_stores_what_its_lines_show(dsh):
     """A turn that failed or was aborted has no reply, and the plugin sends what it kept of earlier turns the same way:
     no reply is stored, the lines are, and lines that are no message are counted with them."""
@@ -4339,7 +4436,8 @@ def test_a_turn_larger_than_one_stop_is_stored_in_several_within_the_hook_s_inpu
 @_NEEDS_NODE
 def test_a_stop_that_stores_part_of_its_lines_is_followed_by_the_next_without_waiting(dsh, tmp_path):
     """A Stop stores what fits in its time; the next one takes the rest at once, so a backlog is not left to the sweep's
-    waits (the stand-in hook stores one line each time)."""
+    waits (the stand-in hook stores one line each time).  The reply goes again with each Stop that carries its line,
+    named by the line's id."""
     _root, home = dsh
     log = tmp_path / "TEST-hook-log.jsonl"
     result = _run_plugin(
@@ -4347,11 +4445,14 @@ def test_a_stop_that_stores_part_of_its_lines_is_followed_by_the_next_without_wa
         env={"SR_FAKE_HOOK": str(DSH_HARNESS / "fake_hook.mjs"), "SR_FAKE_HOOK_LOG": str(log)},
     )
     stops = [
-        len(payload["record"])
+        payload
         for payload in map(json.loads, log.read_text(encoding="utf-8").splitlines())
         if payload["hook_event_name"] == "Stop"
     ]
-    assert stops == [3, 2, 1], "each Stop sends what is left"
+    assert [len(payload["record"]) for payload in stops] == [3, 2, 1], "each Stop sends what is left"
+    assert [
+        (payload.get("turn_id"), payload.get("reply_id"), payload.get("last_assistant_message")) for payload in stops
+    ] == [("1", "a-2", "TEST 它叫 Mochi。")] * 3
     assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None
     assert result["status"]["retryAfter"] is None
 
