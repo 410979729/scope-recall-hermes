@@ -611,6 +611,21 @@ def test_an_embedding_a_route_answered_unusably_is_re_opened_and_embedded(app, c
     assert _embed_row(core, source)[0] == "done" and port.written == [source.ref]
 
 
+def test_a_re_opened_row_is_not_failed_again_by_one_transient_fault(app):
+    """Re-opened with the attempts that had failed it, a row had none left: the first timeout of its re-look failed it
+    again, for the rest of the release."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST 我的键盘是 87 键的。")
+    _embed_passes(core, ctx, _Embedding("timeout"), passes=3)
+    assert _embed_row(core, source)[:2] == ("failed", 3)
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["by_kind"] == {"timeout": 1}
+    _embed_passes(core, ctx, _Embedding("network_error"))
+    assert _embed_row(core, source)[:2] == ("pending", 1)
+    port = _Embedding(None)
+    _embed_passes(core, ctx, port)
+    assert _embed_row(core, source)[0] == "done" and port.written == [source.ref]
+
+
 # --------------------------------------------------------------------------
 # What the status counts as a terminal failure
 # --------------------------------------------------------------------------

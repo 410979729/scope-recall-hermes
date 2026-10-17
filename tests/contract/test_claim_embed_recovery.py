@@ -120,6 +120,17 @@ def test_retry_failures_brings_back_the_vector_work_the_recovery_dropped(app):
     assert (again["claim_embeds_reopened"], again["claim_embeds_queued"]) == (0, 0)
 
 
+def test_a_reopened_head_is_not_failed_again_by_one_transient_fault(app):
+    """Reopened with the attempts that had failed it, a head's vector work had none left: the first network error of
+    its re-look failed it."""
+    core, ctx = app
+    item, _source = initial(core, ctx)
+    _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
+    assert _counts(core.operations.retry_failed_work(ctx, limit=64, dry_run=False)) == (1, 0)
+    core.drain_worker(ctx, max_items=64, remaining_seconds=30, owner_id="TEST-w", embed=Port(fail="network_error"))
+    assert _rows(core, item.ref)[0][1:] == ("pending", f"retried:{RETRY_GENERATION}|authority_revoked|network_error", 1)
+
+
 def test_retry_failures_queues_a_head_that_never_had_vector_work(app):
     core, ctx = app
     item, _source = initial(core, ctx)

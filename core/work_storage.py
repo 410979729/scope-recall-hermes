@@ -880,7 +880,8 @@ class WorkItems:
         re-opened it, and a run that re-opens nothing says so rather than
         nothing.  However many failed rows a run passes over, by design or
         already re-opened, it reads on to the rows it may re-open
-        (``_failed_rows``).
+        (``_failed_rows``), and each row it re-opens starts its attempts afresh
+        (``_reopen_failed``).
         """
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
@@ -916,7 +917,7 @@ class WorkItems:
             report["retried"] += 1
         # The automatic recovery read every embed's subject as a source, so a claim embed a provider failed was made
         # obsolete instead of reopened (``_embed_retry_reason``).  A readable head it left without a vector is worked
-        # on again, and one an earlier conversion never queued is queued.
+        # on again, with the attempts of new work, and one an earlier conversion never queued is queued.
         heads = self._claim_heads_without_vectors(limit=limit)
         report["claim_embeds_reopened"] = sum(1 for work_id, _ref, _revision in heads if work_id is not None)
         report["claim_embeds_queued"] = sum(1 for work_id, _ref, _revision in heads if work_id is None)
@@ -926,7 +927,7 @@ class WorkItems:
                     self.enqueue("embed", ref, revision, available_at=now)
                 else:
                     conn.execute(
-                        """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+                        """UPDATE work_items SET state='pending',attempt=0,available_at=?,lease_owner=NULL,
                                     lease_until=NULL,last_error_code=? WHERE work_id=? AND state='obsolete'""",
                         (now, marked("authority_revoked", generation=RETRY_GENERATION), work_id),
                     )
@@ -1176,16 +1177,21 @@ class WorkItems:
         return {"outcome": "complete" if below < 1 else "progress", "reopened": len(ids), "next_work_id": below}
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
-        """Move one failed row, and its sibling tables when it has any."""
+        """Move one failed row, and its sibling tables when it has any.
+
+        An operator's re-look starts the row's attempts afresh, as new work's: left at the count that failed it, the
+        row would fail again at its first transient fault.  The derivation retry keeps the count; it is one extra
+        attempt (``recover_invalid_derivations``)."""
         conn = self._tx._check(write=True)
         reason = "derivation_retry" if automatic else "operator_retry"
         if work_type == "evaluate_candidate" and not self._tx.candidates.reopen_evaluation(
             work_id, now=now, reason=reason
         ):
             return False
+        attempts = "attempt" if automatic else "0"
         return (
             conn.execute(
-                """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+                f"""UPDATE work_items SET state='pending',attempt={attempts},available_at=?,lease_owner=NULL,
                lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
                 (
                     now,
