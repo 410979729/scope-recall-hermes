@@ -917,9 +917,6 @@
    "B905": 1
   },
   "runtime/consolidation_models.py": {
-   "C901": {
-    "_responses_output_text": 16
-   },
    "UP037": 1
   },
   "runtime/embedding_retry.py": {

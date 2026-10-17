@@ -367,6 +367,16 @@ The default kind is an OpenAI-compatible chat-completions route
 | `headers` | mapping or absent | absent | Extra request headers, validated before use. A second `Authorization` cannot be smuggled in this way. |
 | `allow_insecure_endpoint` | literal `true` or `false` | `false` | Permits plaintext `http://` to a host that is not loopback, as in `auxiliary.embedding`. **What is consolidated, your memory, then crosses the network unencrypted: turn it on only for a server on a network you trust.** A model server on a loopback host needs no opt-in, and a quoted `"true"` is refused. |
 
+A chat answer is the text of the one choice's assistant message. One cut off at
+the output limit (`finish_reason: "length"`) fails as `DERIVATION_INVALID` on
+`model_output_truncated`. One the provider's policy stopped
+(`finish_reason: "content_filter"`, whatever text the message holds), or that
+the model refused (a `refusal` where the answer belongs), fails as
+`model_refused`: no output limit is involved, so the item is not asked again.
+It is a terminal failure (`retry-failures` in [install.md](install.md)), and
+`--include-terminal` runs it again once the model, the route or the provider's
+policy has changed.
+
 Setting `"kind": "openai_responses"` selects a Responses-API route instead of
 chat completions. It targets the documented contract of DeepSeek
 `POST https://api.deepseek.com/responses`; nothing about it is claimed for
@@ -396,11 +406,13 @@ including interleaved `system` messages. Text parts use `input_text` for `system
 and `user`, and `output_text` for `assistant`. A `tool` message is refused
 (`input_invalid`): function-call item pairs are not implemented by this adapter.
 
-Only a response whose own `status` is `completed` is an answer. `incomplete`
-fails as `DERIVATION_INVALID` on
-`model_output_truncated`, exactly like a chat answer cut off at the output
-limit (the diagnostic does not distinguish content filtering from the
-token limit); `failed` fails as `response_status_failed`. From a completed response the
+Only a response whose own `status` is `completed` is an answer. An `incomplete`
+one says why in `incomplete_details.reason`: `max_output_tokens`, or no reason
+at all, fails as `DERIVATION_INVALID` on `model_output_truncated`, exactly like
+a chat answer cut off at the output limit; `content_filter` fails as
+`model_refused`, like a chat answer the provider's policy stopped; any other
+reason fails as `unsupported_response_shape`. `failed` fails as
+`response_status_failed`. From a completed response the
 adapter reads only the `output_text` parts of `assistant` message items —
 `reasoning` items and `reasoning_text` parts are never treated as an answer, a
 refusal part fails as `model_refused`, and an answer with no text fails as

@@ -468,6 +468,64 @@ def test_truncated_reply_without_answer_text_keeps_its_shape_error(tmp_path, mon
     assert exc.value.error_type == "unsupported_response_shape"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'},
+        {"role": "assistant", "content": ""},
+        {"role": "assistant", "content": None},
+        {"role": "assistant"},
+        {},
+    ],
+    ids=["partial_text", "empty_text", "null_text", "no_text_field", "empty_message"],
+)
+def test_a_reply_the_content_filter_stopped_is_a_refusal_whatever_the_message_holds(tmp_path, monkeypatch, message):
+    """The provider's policy ended the answer, so the text left, if any, is incomplete and no proposal; the call is
+    still settled with the usage the provider reported."""
+    config, ledger, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "content_filter")))
+    )
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "model_refused"
+    with sqlite3.connect(ledger) as db:
+        assert db.execute("SELECT status,actual_output FROM requests").fetchall() == [("http_200", 512)]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "assistant", "content": None, "refusal": "I can't help with that."},
+        {"role": "assistant", "refusal": "I can't help with that."},
+        {"role": "assistant", "content": "", "refusal": "I can't help with that."},
+    ],
+    ids=["null_text", "no_text_field", "empty_text"],
+)
+def test_a_refusal_where_the_answer_belongs_is_a_refusal(tmp_path, monkeypatch, message):
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "stop")))
+    )
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "model_refused"
+
+
+@pytest.mark.parametrize("refusal", [None, "", "kept as metadata by a gateway"])
+def test_a_refusal_field_beside_answer_text_is_metadata(tmp_path, monkeypatch, refusal):
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    message = {"role": "assistant", "content": '{"protocol_version":"1.1"}', "refusal": refusal}
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "stop")))
+    )
+    answer = runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert answer == '{"protocol_version":"1.1"}'
+
+
 def test_consolidation_route_options_are_explicit(tmp_path, monkeypatch):
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")

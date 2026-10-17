@@ -96,18 +96,29 @@ def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     choice = choices[0]
     if not isinstance(choice, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
+    # "content_filter" means the provider's policy ended the answer, whatever
+    # the message still holds: the text left, if any, is incomplete.  It is
+    # named as a refusal instead of reaching the decoder as anonymous invalid
+    # JSON.
+    if choice.get("finish_reason") == "content_filter":
+        raise AuxiliaryModelError("model_refused")
     message = choice.get("message")
     if not isinstance(message, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
     if message.get("role") != "assistant":
         raise AuxiliaryModelError("unsupported_response_shape")
-    # OpenAI-compatible gateways may attach reasoning/refusal/annotation
-    # metadata to an assistant message.  It is not answer content and must be
-    # ignored; a tool request is a different protocol and cannot be silently
-    # treated as a text proposal.
+    # OpenAI-compatible gateways may attach reasoning, annotation and refusal
+    # fields to an assistant message; beside answer text they are not answer
+    # content and are ignored.  A tool request is a different protocol and
+    # cannot be silently treated as a text proposal.
     if message.get("tool_calls") or message.get("function_call"):
         raise AuxiliaryModelError("unsupported_response_shape")
     content = message.get("content")
+    # A model that declines puts its refusal where the answer belongs, so the
+    # message holds no answer text.
+    refusal = message.get("refusal")
+    if not content and type(refusal) is str and refusal:
+        raise AuxiliaryModelError("model_refused")
     if type(content) is not str:
         raise AuxiliaryModelError("unsupported_response_shape")
     # "length" means the provider stopped at the output limit: the text is a
@@ -489,24 +500,43 @@ def _responses_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
     return usage
 
 
+def _require_completed(payload: Mapping[str, Any]) -> None:
+    """Return for a ``completed`` response; any other status raises the outcome it names.
+
+    ``incomplete`` says why in ``incomplete_details.reason``.  ``max_output_tokens`` leaves a prefix cut off at the
+    output limit (the same named derivation failure the chat route raises for ``finish_reason: "length"``);
+    ``content_filter`` is the provider's policy stopping the answer, which no output limit changes.  The details are
+    nullable, and an ``incomplete`` that gives none is read as cut off at the limit; any other reason is a response
+    this route does not understand.  ``failed`` produced nothing usable.
+    """
+    status = payload.get("status")
+    if status == "completed":
+        return
+    if status == "incomplete":
+        details = payload.get("incomplete_details")
+        if details is not None and not isinstance(details, dict):
+            raise AuxiliaryModelError("unsupported_response_shape")
+        reason = (details or {}).get("reason")
+        if reason == "content_filter":
+            raise AuxiliaryModelError("model_refused")
+        if reason not in (None, "max_output_tokens"):
+            raise AuxiliaryModelError("unsupported_response_shape")
+        raise ContractError("DERIVATION_INVALID", "model_output_truncated")
+    if status == "failed":
+        raise AuxiliaryModelError("response_status_failed")
+    raise AuxiliaryModelError("unsupported_response_shape")
+
+
 def _responses_output_text(payload: Mapping[str, Any]) -> str:
     """The completed assistant answer, and nothing else.
 
-    Only a ``response`` whose own ``status`` is ``completed`` is an answer:
-    ``incomplete`` is a prefix cut off at the output limit (the same named
-    derivation failure the chat route raises for ``finish_reason: "length"``),
-    and ``failed`` produced nothing usable.  Reasoning items and
-    ``reasoning_text`` parts are never answer text, a refusal part is a refusal
-    rather than an empty proposal, and a tool-call item is a different protocol
-    that cannot be silently read as one.
+    Only a ``response`` whose own ``status`` is ``completed`` is an answer
+    (``_require_completed`` names the outcome of any other).  Reasoning items
+    and ``reasoning_text`` parts are never answer text, a refusal part is a
+    refusal rather than an empty proposal, and a tool-call item is a different
+    protocol that cannot be silently read as one.
     """
-    status = payload.get("status")
-    if status != "completed":
-        if status == "incomplete":
-            raise ContractError("DERIVATION_INVALID", "model_output_truncated")
-        if status == "failed":
-            raise AuxiliaryModelError("response_status_failed")
-        raise AuxiliaryModelError("unsupported_response_shape")
+    _require_completed(payload)
     output = payload.get("output")
     if not isinstance(output, list):
         raise AuxiliaryModelError("unsupported_response_shape")

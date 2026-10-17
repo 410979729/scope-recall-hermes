@@ -317,6 +317,52 @@ def test_reply_cut_off_at_output_limit_is_named_in_the_guided_retry(worker_app, 
     assert row[3] == "failed" and row[6].startswith("derivation_retry:1|")
 
 
+def test_reply_the_providers_policy_stopped_fails_the_item_at_once_as_a_terminal_failure(
+    worker_app, tmp_path, monkeypatch
+):
+    from scope_recall.core.worker import build_consolidation_model
+    from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+    from scope_recall.runtime.instance import _BoundedConsolidation
+    from test_runtime_auxiliary import FakeTransport, _chat_reply, _runtime_config
+
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST 输出被内容过滤停下。")
+    _mark_embed_done(core)
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    stopped = {"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'}
+    transport = FakeTransport(lambda **kwargs: (200, _chat_reply(stopped, "content_filter")))
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    model = _BoundedConsolidation(build_consolidation_model(runtime.consolidation), 3)
+    for attempt in range(1, 5):
+        clock.advance(seconds=65.0, iso=f"2026-09-06T12:{attempt:02d}:30Z")
+        core.drain_worker(ctx, consolidation=model, max_items=2, remaining_seconds=5)
+    # Asking again would send the same request to the same policy: it is asked once, and the failure is by design.
+    assert transport.calls == 1
+    row = next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
+    assert row[3] == "failed" and row[4] == 1 and row[6] == "model_refused"
+    with sqlite3.connect(core.storage.path) as db:
+        assert db.execute("SELECT error_code,error_field FROM work_error_details").fetchall() == [
+            ("model_refused", None)
+        ]
+    status = core.status(ctx)
+    assert (status.failed_work, status.terminal_failed_work) == (1, 1)
+    from scope_recall.maintenance import doctor
+
+    (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(doctor, "load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
+    report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    # By design, so no fault; named among the failures and the recent work errors, and no advice to raise the
+    # output limit.
+    assert "work_failed_terminal_only" in report.capability_gaps
+    assert not {"work_failed", "model_output_truncated"} & set(report.capability_gaps)
+    assert report.work_error_counts == {"model_refused": 1}
+    assert [(error["error_code"], error["error_field"]) for error in report.recent_work_errors] == [
+        ("model_refused", None)
+    ]
+
+
 def test_consolidation_accepts_only_transport_fence_and_null_optional_location(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 的公开代号是 TEST-ARCHIVE-V12-FLARE。")
