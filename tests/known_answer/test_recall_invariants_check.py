@@ -1,4 +1,4 @@
-"""Known answers for three recall invariants (#179, #213), in the storage tier.
+"""Known answers for three recall invariants, in the storage tier.
 
 The check is ``recall_invariants_check.py`` beside this file, which also runs on
 its own against an installed release.  Here it runs in process against this

@@ -2,9 +2,9 @@
 
 The at-most-once fence is committed before the model call, so a worker killed after it --
 a gateway stop, a lost lease, a machine restart -- leaves the candidate failed with nothing
-recorded: 24 of beta's candidates and 5 of alpha's sat there, and waiting for new
-evidence never comes for a candidate whose evidence is already in.  One extra attempt, with
-a durable marker, so a repeating interruption cannot become a loop of model calls.
+recorded, and waiting for new evidence never helps a candidate whose evidence is already
+in.  One extra attempt, with a durable marker, so a repeating interruption cannot become a
+loop of model calls.
 """
 
 from __future__ import annotations

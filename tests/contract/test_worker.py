@@ -527,7 +527,7 @@ def test_M31_procedure_reuse_requires_accepted_method(worker_app):
 
 
 def test_M32_single_success_does_not_generalize_without_acceptance(worker_app):
-    # Since 3.2.0rc6 a tool output is no derivation root: a single observed success is not even
+    # A tool output is no derivation root: a single observed success is not even
     # proposed as a method, and the model is never asked about it.
     core, ctx, clock = worker_app
     observed = capture(core, ctx, "TEST 导出成功，exit.code=0。", origin="tool_observation")
@@ -547,8 +547,7 @@ def test_M32_single_success_does_not_generalize_without_acceptance(worker_app):
 def test_M33_counterexample_kept_in_procedure(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST 导出前先检查透明背景；未安装设备时不适用。这是我认可的方法。")
-    # Reported by the person: a tool output is no derivation root since 3.2.0rc6, so the model is
-    # not shown one to cite.
+    # A tool output is no derivation root, so the model is not shown one to cite.
     counter = capture(core, ctx, "TEST 我试过，未安装设备时导出失败。", when="2026-09-02T13:00:00Z")
 
     def builder(sources, episode_ref=None):
@@ -1167,11 +1166,11 @@ def _restore(core, ctx, backup):
 def test_C10_restore_epoch_fences_late_consolidation(worker_app, tmp_path):
     """A restore during the model call that replays a suppression of the batch source.
 
-    This test used to bump ``memory_epoch`` by hand to stand in for a restore.
-    Every capture bumps it too, so a bare epoch move no longer discards a paid
-    result.  The restore is now performed for real -- backup, a suppression
-    recorded in the deletion ledger, restore and replay -- and the late result
-    is still discarded as a retryable ``memory_epoch_changed``.
+    The restore is performed for real -- backup, a suppression recorded in the
+    deletion ledger, restore and replay -- not by bumping ``memory_epoch`` by
+    hand: every capture bumps it too, so a bare epoch move does not discard a
+    paid result.  The late result is discarded as a retryable
+    ``memory_epoch_changed``.
     """
     from test_deletion import sqlite_backup
 
@@ -1225,7 +1224,7 @@ def test_restore_of_an_older_backup_during_extraction_fences_late_consolidation(
 
     Nothing the result cites changed: the source missing from the backup is in
     another project.  The rows the fence marked no longer exist, so the result
-    is still discarded as it was when any epoch move discarded it.
+    is discarded.
     """
     from dataclasses import replace
 
@@ -1481,8 +1480,8 @@ def test_deadline_expiry_returns_partial_receipt(worker_app):
 
 
 def test_a_purge_marked_obsolete_before_it_removed_anything_is_given_once_more(worker_app):
-    """Up to 3.4.0rc8 the worker read a purge's operation id at the last colon of its subject and a scope id holds
-    colons, so every delete's purge was marked obsolete and its layers stayed pending.  The next pass queues such a
+    """An earlier release read a purge's operation id at the last colon of its subject, and a scope id holds colons,
+    so every delete's purge was marked obsolete and its layers stayed pending.  The next pass queues such a
     purge once more; one that ends obsolete again stays so."""
     core, ctx, clock = worker_app
     doomed = capture(core, ctx, "TEST 一次删了没清的话。", key="TEST-requeue/doomed")
@@ -1579,7 +1578,7 @@ def test_model_work_is_claimed_only_while_the_pass_covers_one_bounded_request(wo
 
 
 def test_a_longer_model_ceiling_reserves_only_for_model_work(worker_app):
-    """#240: a consolidation model that reasons first gets its own ceiling.  A pass short of it still embeds, under
+    """A consolidation model that reasons first gets its own ceiling.  A pass short of it still embeds, under
     the ordinary ceiling, and claims consolidation only once it holds the longer request."""
     from scope_recall.core.worker import FINALIZE_MARGIN_SECONDS, WorkerConfig, drain_worker
 
@@ -1616,7 +1615,7 @@ def test_a_longer_model_ceiling_reserves_only_for_model_work(worker_app):
 
 
 def test_the_runtime_gives_consolidation_its_longer_ceiling(worker_app):
-    """#240: requests reach the model with up to ``model_request_seconds``, not the 45-second contract ceiling."""
+    """Requests reach the model with up to ``model_request_seconds``, not the 45-second contract ceiling."""
     from scope_recall.runtime.instance import RuntimeInstance
     from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
@@ -1827,9 +1826,9 @@ def test_M39_worker_expired_intention_without_valid_to_stays_proposed(worker_app
 
 
 def test_a_port_refusal_names_its_reason(worker_app):
-    """A companion without a fenced write refused every embed with
-    STORAGE_UNAVAILABLE and the field ``fenced_upsert_unsupported``; only the
-    code reached the operator (#85).  The field is recorded with it."""
+    """A companion without a fenced write refuses every embed with
+    STORAGE_UNAVAILABLE and the field ``fenced_upsert_unsupported``; the field
+    is recorded with the code, not the code alone reaching the operator."""
     core, ctx, clock = worker_app
     capture(core, ctx, "TEST 向量拒绝。")
     with sqlite3.connect(core.storage.path) as conn:

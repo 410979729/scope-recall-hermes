@@ -1,9 +1,8 @@
 """A claim's vector work comes back after a provider failed it.
 
-Every claim head is queued for the vector index, and the automatic recovery read every embed's subject as a source: a
-claim embed a provider failed was made obsolete instead of reopened.  On the shared store 114 readable heads had an
-obsolete embed and no vector, and one head an earlier conversion never queued had none either: recall reached those
-claims by their words alone (review of 3.7.4).
+Every claim head is queued for the vector index, and the automatic recovery reads an embed's subject as a claim as
+well as a source: a claim embed a provider failed is reopened, not made obsolete, and a head a conversion never queued
+gets its vector too.  Without them recall reaches those claims by their words alone.
 """
 
 from __future__ import annotations
@@ -228,8 +227,8 @@ def _clone_claim(core, ref: str, new_ref: str, *, project_id) -> None:
 
 
 def test_heads_another_context_owns_never_hide_one_this_context_takes(app):
-    """A page scanned claims in order and checked their context afterwards: eight heads with no project, ahead of an
-    eligible one, filled every page with refusals (review of 3.7.5)."""
+    """A page does not scan claims in order and check their context afterwards, where eight heads with no project,
+    ahead of an eligible one, would fill every page with refusals."""
     core, ctx = app
     item, _source = initial(core, ctx)
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
@@ -242,7 +241,7 @@ def test_heads_another_context_owns_never_hide_one_this_context_takes(app):
 
 
 def test_a_reopened_head_corrected_before_the_worker_reaches_it_is_embedded_at_both_revisions(app):
-    """The reopened row has held leases, so a correction spares it (3.7.4); the old revision costs one more vector."""
+    """The reopened row has held leases, so a correction spares it; the old revision costs one more vector."""
     core, ctx = app
     item, _source = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")

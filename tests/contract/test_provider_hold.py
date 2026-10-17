@@ -1,8 +1,8 @@
 """A provider that refused the calls just before is left alone until its hold ends.
 
-Through a monthly spend cap Google refused every embedding for seven hours while
-gamma, alpha and beta kept asking about 5,000 times a day: each pass stood
-the refused work type down, and the next pass asked again at once.
+Through a monthly spend cap a provider can refuse every embedding for hours: if each pass
+stands the refused work type down and the next pass asks again at once, the instances keep
+asking thousands of times a day.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def test_each_refusal_in_a_row_doubles_the_hold_up_to_half_an_hour(tmp_path):
 def test_one_wave_of_concurrent_refusals_is_one_refusal(tmp_path):
     """A group's requests go out together, so all of them refused is one refusal, not several in a row.
 
-    Counted one by one, a single wave of four refused requests held a pilot's embeddings for
+    Counted one by one, a single wave of four refused requests would hold embeddings for
     eight minutes (sixteen with the refusal before it) where one refusal earns one.
     """
     one = tmp_path / "one"

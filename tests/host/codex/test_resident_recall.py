@@ -56,7 +56,7 @@ def entry(tmp_path, monkeypatch):
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
-    # ``ensure_resident`` looks at the package-upgrade lock of the venv it runs from: not this test run's (review 3).
+    # ``ensure_resident`` looks at the package-upgrade lock of the venv it runs from: not this test run's.
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "TEST-venv"))
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
@@ -340,8 +340,8 @@ def test_a_client_starts_a_resident_server_once_and_not_while_one_runs(entry, mo
 
 
 def test_a_stamp_from_the_future_is_stale_and_of_two_starters_at_once_one_starts(entry, monkeypatch):
-    """A stamp written before the clock was set back held off every start until the clock passed it.  Two starters
-    that both looked before either wrote both started one (review of 3.6.0rc1)."""
+    """A stamp written before the clock was set back is stale, not a hold on every start until the clock passes it.
+    Of two starters that both look before either writes, one starts."""
     started = []
     monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     folder = local_endpoint.endpoints(entry)
@@ -404,7 +404,7 @@ def test_a_name_whose_process_id_another_process_took_is_neither_counted_nor_sto
 
 def test_a_resident_server_whose_identity_cannot_be_proven_is_never_stopped(entry, monkeypatch, capsys):
     """macOS gives no process start time: a name left by a server that died without removing it holds an id any of
-    the user's processes may have taken since, and ``resident stop`` sent that process SIGTERM (review of 3.6.0rc1)."""
+    the user's processes may have taken since, so ``resident stop`` must not send that process SIGTERM."""
     from scope_recall.maintenance import resident
     from scope_recall.runtime import process_probe
 
@@ -446,7 +446,7 @@ def test_a_resident_server_breaks_away_from_the_client_s_job_where_it_may(monkey
 
 def test_a_start_that_fails_otherwise_than_by_the_os_is_tried_once_more_or_reported(monkeypatch, tmp_path):
     """Popen can fail with more than OSError; the start is then tried without breaking away on Windows, and reported
-    as not started elsewhere, never raised into the MCP server or the hook (review of 3.6.0rc1)."""
+    as not started elsewhere, never raised into the MCP server or the hook."""
     seen = []
 
     def popen(command, creationflags=0, **kwargs):
@@ -463,8 +463,8 @@ def test_a_start_that_fails_otherwise_than_by_the_os_is_tried_once_more_or_repor
 
 
 def test_a_detached_start_starts_the_server_from_a_process_that_ends_at_once(entry, monkeypatch, tmp_path):
-    """Started by the MCP server, which lives as long as the conversation, the server was its child, and ending the
-    conversation's process tree ended it (measured 2026-10-03).  ``--detach`` starts it from a process that ends."""
+    """Started by the MCP server, which lives as long as the conversation, the server would be its child, and ending
+    the conversation's process tree would end it.  ``--detach`` starts it from a process that ends."""
     started = []
     monkeypatch.setattr(
         local_endpoint, "start_detached", lambda command, cwd: (started.append((command, cwd)), True)[1]
@@ -517,8 +517,9 @@ def test_a_resident_server_names_itself_resident_and_ends_when_idle(entry, monke
 
 
 def test_a_resident_server_ends_once_its_package_is_replaced_or_its_minutes_are_0(entry, monkeypatch):
-    """After an upgrade the old server kept the entry's lock against the new version's while hooks asked it nothing;
-    set to 0 to free its memory, it kept serving and every prompt put its end off (review of 3.6.0rc1)."""
+    """After an upgrade the old server ends rather than keep the entry's lock against the new version's while hooks
+    ask it nothing; set to 0 to free its memory, it ends rather than keep serving with every prompt putting its end
+    off."""
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
     _runtime_config(entry)
     replaced = threading.Event()
@@ -544,7 +545,7 @@ def test_a_resident_server_ends_once_its_package_is_replaced_or_its_minutes_are_
 
 def test_the_package_on_disk_is_the_one_a_server_runs_until_it_is_replaced(monkeypatch, tmp_path):
     """A version read that differs, or no ``_version.py`` at all, is a replaced package; one that could not be read
-    just now is not known, and one such read ended a warm server (review 2 of 3.6.0rc1)."""
+    just now is not known, and one such read does not end a warm server."""
     from scope_recall import _version
     from scope_recall.runtime import running_code
 
@@ -559,8 +560,8 @@ def test_the_package_on_disk_is_the_one_a_server_runs_until_it_is_replaced(monke
 
 
 def test_one_unsure_check_does_not_end_a_resident_server_and_two_in_a_row_do(entry, monkeypatch):
-    """A version file held for a moment, or a runtime config caught half saved, ended a warm server at once (review 2
-    of 3.6.0rc1).  Files gone for good end it a check later."""
+    """A version file held for a moment, or a runtime config caught half saved, does not end a warm server at once.
+    Files gone for good end it a check later."""
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
     _runtime_config(entry)
     states = ["same", "unknown", "same", "same", "unknown", "unknown", "same", "same"]
@@ -591,8 +592,8 @@ def test_an_entry_s_minutes_read_mid_save_are_not_known_and_a_missing_config_kee
 
 @NEEDS_START_TIME
 def test_a_starting_resident_server_stops_one_of_another_version(entry, tmp_path, monkeypatch):
-    """A server left from before an upgrade held the entry's lock, hooks skipped it as another version, and every
-    server of the new version gave way to it until its idle end (review of 3.6.0rc1)."""
+    """A server left from before an upgrade holds the entry's lock and hooks skip it as another version, so every
+    server of the new version would give way to it until its idle end; a starting server stops it."""
     from scope_recall.runtime.process_probe import probe_process
 
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
@@ -621,9 +622,9 @@ def test_a_starting_resident_server_stops_one_of_another_version(entry, tmp_path
 def test_a_prompt_hook_replaces_a_resident_server_of_another_version_and_an_mcp_server_leaves_it(
     entry, tmp_path, monkeypatch
 ):
-    """One of another version that held the entry's lock (an installation in another venv, a canary) was never
-    replaced: hooks and MCP servers said it ran, marked it in use, and asked it nothing (review 2 of 3.6.0rc1).  An MCP
-    server leaves it unmarked; the prompt hook stops it and starts its own, the start stamp notwithstanding."""
+    """One of another version that holds the entry's lock (an installation in another venv, a canary) is replaced, not
+    left with hooks and MCP servers saying it runs, marking it in use, and asking it nothing.  An MCP server leaves it
+    unmarked; the prompt hook stops it and starts its own, the start stamp notwithstanding."""
     from scope_recall.runtime.process_probe import probe_process
 
     started = []
@@ -686,7 +687,7 @@ def test_a_recall_puts_off_a_resident_server_s_idle_end(entry):
 def test_stopping_an_entry_s_resident_servers_ends_them_and_takes_their_names(entry, tmp_path):
     """For an upgrade or an uninstall: a resident server runs from the package that would be replaced.  Its name
     holds its own process id, as a server writes it, which a venv's launcher is not.  A hook removes the name of a
-    server that did not prove itself in time; its record beside the lock still says it (review of 3.6.0rc1)."""
+    server that did not prove itself in time; its record beside the lock still says it."""
     from scope_recall._version import __version__
     from scope_recall.runtime.process_probe import probe_process
 
@@ -768,9 +769,9 @@ def test_the_mcp_server_of_a_client_that_keeps_a_resident_server_keeps_one_and_a
 
 
 def test_a_client_s_live_mcp_server_keeps_a_resident_server_and_nothing_it_meets_ends_it(entry, monkeypatch, capsys):
-    """Ended an idle while after its last prompt, the resident left a still-open conversation's next prompt colder than
-    the conversation's own server had kept it; an error starting it ended the MCP server before it served a tool
-    (review of 3.6.0rc1).  The minutes are read at each pass."""
+    """A client's live MCP server keeps the resident server: it is not left to end an idle while after its last prompt,
+    which would leave a still-open conversation's next prompt colder than the conversation's own server keeps it, and
+    an error starting it does not end the MCP server before it serves a tool.  The minutes are read at each pass."""
     _runtime_config(entry)
     calls, reads = [], []
 
@@ -877,8 +878,8 @@ def test_a_hook_other_than_a_prompt_s_starts_no_resident_server(entry, monkeypat
 
 
 def test_a_server_s_start_warms_its_query_embedding_once_and_its_keep_warm_does_not(monkeypatch):
-    """Warmed by the store alone, a cold server's first two recalls lost their vector search to the embedding.  The
-    embedding's warming has its own short time: it holds the kept handler (review of 3.6.0rc1)."""
+    """Warmed by the store alone, a cold server's first two recalls would lose their vector search to the embedding.
+    The embedding's warming has its own short time: it holds the kept handler."""
     warmed = []
 
     class Handler:
@@ -1009,8 +1010,8 @@ def test_a_hook_that_starts_a_resident_server_closes_its_output_at_once(entry, t
 
 
 def test_a_resident_server_ends_once_a_recall_has_been_stuck_for_minutes(entry, monkeypatch):
-    """A server with a recall past its time tells every hook that it is busy; the marks of live client processes kept
-    it up, cold for every prompt, for as long as the client ran (review 2 of 3.6.0rc1)."""
+    """A server with a recall past its time tells every hook that it is busy; the marks of live client processes
+    would keep it up, cold for every prompt, for as long as the client ran, so it ends."""
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
     _runtime_config(entry)
     stuck = threading.Event()
@@ -1041,8 +1042,8 @@ def test_how_long_a_recall_has_been_past_its_time(entry):
 
 
 def test_a_start_waits_for_another_starter_s_look_at_the_stamp(entry, monkeypatch):
-    """The look at the start stamp, the removal of a stale one and the new one: two starters that both found the stamp
-    stale both started a server (review 2 of 3.6.0rc1)."""
+    """The look at the start stamp, the removal of a stale one and the new one are one step: two starters that both
+    find the stamp stale do not both start a server."""
     from scope_recall.core.file_lock import advisory_file_lock
 
     started = []
@@ -1069,8 +1070,9 @@ def test_a_start_waits_for_another_starter_s_look_at_the_stamp(entry, monkeypatc
 
 
 def test_a_start_waits_out_a_moment_s_hold_of_the_lock(entry, tmp_path, monkeypatch):
-    """A hook's look holds the lock for a moment; held a quarter of a second on a busy machine, it made a start give
-    way, and the stamp kept the entry without a server for a minute (review 2 of 3.6.0rc1)."""
+    """A hook's look holds the lock for a moment, and a start waits that out: held a quarter of a second on a busy
+    machine, it would otherwise make a start give way, and the stamp would keep the entry without a server for a
+    minute."""
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
     _runtime_config(entry)
     holder, _pid = _lock_holder(entry, tmp_path / "TEST-holder-pid", seconds=1.0)
@@ -1114,9 +1116,9 @@ def test_a_start_that_stopped_another_server_waits_for_its_lock_longer(entry, tm
 
 
 def test_no_resident_server_is_started_while_the_package_is_being_replaced(entry, monkeypatch, tmp_path):
-    """A server started while ``package-upgrade`` replaces the files could import part of either version, and once the
-    new ``_version.py`` was in place it would not end; the MCP servers' keeping made that reachable with the client
-    left running (review 2 of 3.6.0rc1)."""
+    """No server is started while ``package-upgrade`` replaces the files: it could import part of either version, and
+    once the new ``_version.py`` is in place it would not end; the MCP servers' keeping makes that reachable with the
+    client left running."""
     from scope_recall.core.file_lock import advisory_file_lock
 
     started = []
@@ -1143,7 +1145,7 @@ def test_no_resident_server_is_started_while_the_package_is_being_replaced(entry
 
 def test_a_record_whose_process_cannot_be_opened_is_another_s_and_removed(entry, monkeypatch):
     """Written with a start time, a file whose process id now belongs to a process this account cannot open (a
-    service, another user's) is not this server's: it was listed unverified for good (review 2 of 3.6.0rc1)."""
+    service, another user's) is not this server's, and is removed rather than listed unverified for good."""
     from scope_recall._version import __version__
     from scope_recall.runtime import process_probe
 
@@ -1163,7 +1165,7 @@ def test_a_record_whose_process_cannot_be_opened_is_another_s_and_removed(entry,
 
 def test_a_stop_that_leaves_a_server_holding_the_lock_says_so_and_fails(entry, capsys):
     """A server in its first moments, with no record and no name yet, or an unproven one, is not stopped; a stop that
-    said ok let an upgrade script go on (review 2 of 3.6.0rc1)."""
+    leaves a server holding the lock says so and fails, so an upgrade script does not go on."""
     from scope_recall.maintenance import resident
 
     holder = _Holder(entry)
@@ -1190,8 +1192,8 @@ def test_a_stop_waits_for_the_stopped_server_to_let_go_of_the_lock(entry, monkey
 def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and_nothing_starts(
     entry, tmp_path, monkeypatch
 ):
-    """A stop that failed (a server this account may not end, as one an elevated client started) said ``replaced``
-    at every prompt and started one that gave way each time (review 3 of 3.6.0rc1)."""
+    """A stop that fails (a server this account may not end, as one an elevated client started) is said unstoppable,
+    not ``replaced`` at every prompt with a new server started that gives way each time."""
     from scope_recall.runtime.process_probe import probe_process
 
     started = []
@@ -1221,8 +1223,8 @@ def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and
 def test_a_server_of_another_version_whose_identity_cannot_be_proven_is_neither_marked_nor_stopped(
     entry, tmp_path, monkeypatch
 ):
-    """Where no start time can be read (macOS) the hook may not stop one of another version; marked in use, it kept
-    the entry cold for as long as the client ran (review 3 of 3.6.0rc1).  Unmarked, it ends at its idle end."""
+    """Where no start time can be read (macOS) the hook may not stop one of another version; marked in use, it would
+    keep the entry cold for as long as the client ran.  Unmarked, it ends at its idle end."""
     from scope_recall.runtime import process_probe
 
     class _LiveNoStart:
@@ -1247,8 +1249,8 @@ def test_a_server_of_another_version_whose_identity_cannot_be_proven_is_neither_
 
 @NEEDS_START_TIME
 def test_hooks_of_two_versions_switch_an_entry_s_server_at_most_once_a_minute(entry, tmp_path, monkeypatch):
-    """Each prompt of the other side ended the running server and started its own, past the start stamp (review 3 of
-    3.6.0rc1).  The first replacement is at once; another within a minute waits."""
+    """The prompts of two versions' hooks do not each end the running server and start their own, past the start
+    stamp.  The first replacement is at once; another within a minute waits."""
     from scope_recall.runtime.process_probe import probe_process
 
     started = []
@@ -1275,8 +1277,8 @@ def test_hooks_of_two_versions_switch_an_entry_s_server_at_most_once_a_minute(en
 
 
 def test_a_running_server_takes_a_missing_runtime_config_as_not_known(entry, monkeypatch):
-    """An editor that saves by moving files leaves no runtime config for a moment; read as 0, that ended a warm server
-    (review 3 of 3.6.0rc1).  A start still takes a missing config as 0."""
+    """An editor that saves by moving files leaves no runtime config for a moment; read as 0, that would end a warm
+    server, so a running server takes it as not known.  A start still takes a missing config as 0."""
     path = _runtime_config(entry, resident_recall_minutes=30)
     path.unlink()
     assert local_endpoint.configured_minutes(entry, "workbuddy") == 0
@@ -1300,8 +1302,8 @@ def test_a_running_server_takes_a_missing_runtime_config_as_not_known(entry, mon
 
 
 def test_a_server_does_not_start_while_its_package_is_being_replaced(entry, monkeypatch):
-    """Launched just before ``package-upgrade`` took its lock, a server still imported during the replacement (review 3
-    of 3.6.0rc1)."""
+    """A server launched just before ``package-upgrade`` takes its lock does not go on to import during the
+    replacement."""
     _runtime_config(entry)
     monkeypatch.setattr(resident_entry, "package_upgrading", lambda: True)
     started = time.monotonic()
@@ -1312,8 +1314,8 @@ def test_a_server_does_not_start_while_its_package_is_being_replaced(entry, monk
 
 
 def test_a_server_stopped_once_does_not_wait_for_a_stuck_recall_again_at_exit(entry, monkeypatch):
-    """A server that ended for a stuck recall waited for it twice, once more at exit, and held its lock unseen for that
-    long (review 3 of 3.6.0rc1)."""
+    """A server that ends for a stuck recall does not wait for it a second time at exit, which would hold its lock
+    unseen for that long."""
     monkeypatch.setattr(local_endpoint, "CLOSE_WAIT_SECONDS", 0.5)
     endpoint = local_endpoint.serve(entry, "workbuddy", warm=False, resident=True)
     assert endpoint is not None

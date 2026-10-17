@@ -155,8 +155,8 @@ def _drain_refused(core, ctx, adapter):
 
 
 def test_an_oversize_candidate_fails_visibly_and_an_operator_can_reopen_it(app, monkeypatch, tmp_path):
-    """#237: an explicit cap below the request fails the evaluation instead of deferring it forever, and once the cap
-    is raised ``retry-failures`` re-opens it: a failure no command could clear left an installation degraded."""
+    """An explicit cap below the request fails the evaluation instead of deferring it forever, and once the cap
+    is raised ``retry-failures`` re-opens it: a failure no command could clear would leave an installation degraded."""
     core, ctx = app
     _candidate(core, ctx)
     _finish_source_work(core)

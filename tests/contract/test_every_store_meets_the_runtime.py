@@ -3,15 +3,15 @@
 The runtime reaches a vector store through two seams: ``LanceIndexWriter`` publishes through
 ``fenced_upsert_records(rows, guard=, remaining_seconds=)``, and ``LancePurgePort`` purges through
 ``purge_governed_members(..., remaining_seconds=)``.  ``build_vector_store`` picks the helper-process
-store on Windows and the in-process one everywhere else, and every fence and purge test drove the
-helper-process store, on Windows.  So three gaps shipped unseen:
+store on Windows and the in-process one everywhere else, so a fence or purge test that drives only the
+helper-process store, on Windows, leaves three gaps unseen:
 
-- the in-process LanceDB store had no ``fenced_upsert_records``: on Linux every publication failed with
-  ``fenced_upsert_unsupported`` and the index stayed empty (#99, reported from a production install);
-- its ``purge_governed_members`` took ``budget_seconds``, the name the Windows helper uses, and refused
+- an in-process LanceDB store without ``fenced_upsert_records``: on Linux every publication fails with
+  ``fenced_upsert_unsupported`` and the index stays empty;
+- a ``purge_governed_members`` that takes ``budget_seconds``, the name the Windows helper uses, and refuses
   the port's ``remaining_seconds`` with a ``TypeError`` the port reads as "not purged": a forget never
-  finished there;
-- the SQLite companion, publishable since #85, had no purge at all.
+  finishes there;
+- a SQLite companion with no purge at all.
 
 The first test asks each store class for the two calls by signature.  It needs no native code, so it
 runs on every platform and in this tier, which forbids the child process and the socket LanceDB needs

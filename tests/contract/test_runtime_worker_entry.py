@@ -397,9 +397,9 @@ class _ScopedStore:
 
 
 def test_a_recall_asks_for_its_query_embedding_before_the_sqlite_channels(tmp_path, monkeypatch):
-    """Asked for after the SQLite channels, the query embedding had three quarters of what they left: on 2026-09-29
-    the work computer's server recalled 4 of 9 prompts by words alone that way (AuxiliaryModelError:timeout).  Asked
-    for as the recall starts, it runs beside them: here they take 0.8 s of a 1.2 s window, and it takes 0.4 s."""
+    """Asked for after the SQLite channels, the query embedding would have three quarters of what they left, and a
+    server would recall many prompts by words alone (AuxiliaryModelError:timeout).  Asked for as the recall starts,
+    it runs beside them: here they take 0.8 s of a 1.2 s window, and it takes 0.4 s."""
     from scope_recall.core.retrieval_storage import RetrievalStorage
     from scope_recall.runtime.models import AuxiliaryModelError
 
@@ -459,10 +459,9 @@ class _VectorsSearched(_ScopedStore):
 @pytest.mark.parametrize("batched", [True, False], ids=["one-request", "one-at-a-time"])
 def test_a_question_naming_the_owner_is_embedded_both_ways_in_one_request(tmp_path, batched):
     """A question that names the owner is searched as asked and in their first person (``core/owner_view.py``).
-    Embedded one after the other, the second waited for the first on the one persistent connection, and a recall
-    tool's 2 s left it no time (2026-10-11, a copy of the shared store: 26 of 37 questions without vectors).  A route
-    that takes several queries is asked for both at the start, in one request; one that cannot embeds the second in
-    its own search, as before."""
+    Embedded one after the other, the second would wait for the first on the one persistent connection, and a recall
+    tool's 2 s would leave it no time.  A route that takes several queries is asked for both at the start, in one
+    request; one that cannot embeds the second in its own search."""
     embeddings = _Embeddings(batched=batched)
     store = _VectorsSearched()
     instance, binding = _vector_instance(tmp_path, store, embeddings)
@@ -482,8 +481,8 @@ def test_a_question_naming_the_owner_is_embedded_both_ways_in_one_request(tmp_pa
 
 
 def test_a_query_embedding_that_fails_while_the_table_opens_leaves_the_table_open(tmp_path):
-    """Raised inside the table's open, the embedding's failure closed the helper too, and the next prompt opened the
-    table cold again: the work computer's second prompt after its server restarted (2026-09-29 13:55:34)."""
+    """Raised inside the table's open, the embedding's failure must not close the helper too, which would have the
+    next prompt open the table cold again."""
     from scope_recall.runtime.models import AuxiliaryModelError
 
     class OverlapStore(_ScopedStore):
@@ -562,7 +561,7 @@ def test_an_embedding_back_with_no_time_left_to_search_is_a_gap(tmp_path):
 
         def result(self, deadline):
             # Past it, not at it: a sleep to the deadline itself can wake a tick early on Windows, and a search with
-            # a millisecond left is a search, not a gap (CI, 2026-09-29).
+            # a millisecond left is a search, not a gap.
             time.sleep(max(0.0, deadline - time.monotonic()) + 0.05)
             return (0.1, 0.2)
 
@@ -607,8 +606,8 @@ def test_warming_opens_the_store_and_searches_one_of_its_partitions(tmp_path):
 
 
 def test_a_server_s_start_asks_the_query_embedding_route_for_one_vector(tmp_path):
-    """Warmed by the store alone, a cold server's first recalls lost their vector search to the embedding's time
-    (measured 2026-10-03).  Its start asks the route once, with a fixed text and its own time; nothing is kept."""
+    """Warmed by the store alone, a cold server's first recalls would lose their vector search to the embedding's
+    time.  Its start asks the route once, with a fixed text and its own time; nothing is kept."""
     asked = []
 
     class Embedding:
@@ -625,10 +624,9 @@ def test_a_server_s_start_asks_the_query_embedding_route_for_one_vector(tmp_path
 
 
 def test_warming_searches_every_partition_a_recall_of_the_runtime_searches(tmp_path):
-    """Review of 3.5.0rc2: a search reads the index codes of the rows its filter keeps.  The warm search filtered on
-    the first allowed scope's partition only, which holds no rows for any of the five entries a kept handler serves
-    on the shared store; once the helper's cached index was paged out it touched 26 MB of the 306 MB the next
-    recall paged back in (copy of the store, 2026-10-02)."""
+    """A search reads the index codes of the rows its filter keeps.  A warm search filtered on the first allowed
+    scope's partition only would hold no rows for any of the five entries a kept handler serves on the shared store;
+    once the helper's cached index was paged out it would touch 26 MB of the 306 MB the next recall pages back in."""
 
     class Embedding:
         def embed_query(self, text, *, remaining_seconds):
@@ -1348,8 +1346,8 @@ def test_no_error_code_is_not_a_failure():
 
 
 def test_a_run_that_only_met_terminal_outcomes_is_not_degraded():
-    """A live instance reported the worker degraded while the doctor called the
-    same state "attention"; the disagreement was this classification."""
+    """The worker must not report degraded while the doctor calls the same state
+    "attention"; the disagreement lay in this classification."""
     from scope_recall.runtime.worker_entry import _receipt_payload
 
     class _Item:
@@ -1461,7 +1459,7 @@ def test_the_drain_page_ignores_the_refusal_list():
 
 
 def test_a_refusal_is_still_named_in_the_gaps():
-    """rc15's contribution stays: four hours of "degraded" with an empty gap list
+    """A refusal is named in the gaps: four hours of "degraded" with an empty gap list
     is what this reports against."""
     import inspect
 

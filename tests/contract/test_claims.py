@@ -393,8 +393,8 @@ def test_ambiguous_update_closes_once_the_user_settles_it_on_one_candidate(app):
 
 
 def test_a_correction_with_no_claim_to_place_it_against_keeps_no_open_row(app):
-    """A row naming no candidate could never be closed (``resolve_updates`` needs one revised): 36 such rows on the
-    pilot were handed to every read for good.  The message itself is stored like any other."""
+    """A row naming no candidate can never be closed (``resolve_updates`` needs one revised), so none is kept open:
+    it would be handed to every read for good.  The message itself is stored like any other."""
     core, ctx = app
     said = capture(core, ctx, "那个不对，改一下。", when="2026-09-03T12:00:00Z")
     assert core.records.unresolved_updates(ctx) == ()
@@ -746,9 +746,7 @@ def test_explicit_revision_cannot_borrow_unrelated_sentence_deadline(app):
 
 
 # The model is shown ``json.dumps(content, ensure_ascii=False)``, so a quote it
-# copies faithfully can be the escaped form rather than the stored bytes.  On
-# alpha, 109 of the 111 sources behind the evidence_span failures change under
-# that encoding.
+# copies faithfully can be the escaped form rather than the stored bytes.
 
 
 def test_encoded_origin_map_agrees_with_json_dumps_character_for_character():
@@ -821,7 +819,7 @@ def test_claim_quoted_from_the_encoded_source_is_accepted_and_stored_as_raw_byte
 
 
 def _escaped_envelope():
-    # The shape every one of alpha's 16 question_not_asserted rejections had:
+    # The shape of a question_not_asserted rejection:
     # a tool envelope stored as an escaped JSON body, so the only line breaks
     # are two-character \n sequences and the first *real* punctuation after the
     # quoted line is a question mark hundreds of characters away.

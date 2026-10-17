@@ -206,9 +206,9 @@ def configured_provider(hermes_home, initialize_kwargs):
 
 def test_every_runtime_a_hermes_process_attaches_searches_one_store_of_a_table(configured_provider):
     """A gateway attaches a runtime for every agent it makes, and Hermes does not always shut down the one it made
-    before: each runtime held a vector helper of its own, about 1.15 GB (yuheng's gateway held two on 2026-10-02, one
-    per registration of the provider).  Hermes' attach makes the process share one store of each table, as a server
-    does (``vector.process_store.share``), before the runtime builds its own."""
+    before: a runtime holding a vector helper of its own would cost about 1.15 GB each.  Hermes' attach makes the
+    process share one store of each table, as a server does (``vector.process_store.share``), before the runtime
+    builds its own."""
     import scope_recall.vector.process_store as process_store
 
     assert configured_provider._host_runtime is not None
@@ -223,7 +223,7 @@ def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves
     hermes_home, initialize_kwargs, monkeypatch
 ):
     """Both runtimes' stores, built through their real factories (nothing is opened, no helper starts), are views of
-    one store; a provider's shutdown leaves it to the process (review of 3.5.0rc4)."""
+    one store; a provider's shutdown leaves it to the process."""
     import scope_recall.vector.process_store as process_store
     from scope_recall.core.recall_policy import EMBEDDING_SPACE, embedding_space_id
 

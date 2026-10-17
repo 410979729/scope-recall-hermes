@@ -85,7 +85,7 @@ def linked_interpreter(directory: Path) -> Path | None:
     """A path to this interpreter that ``Path.resolve`` changes, or None.
 
     A venv's ``bin/python`` on POSIX is a symlink to the base interpreter; the
-    tests for #87 need such a path.  With symlink privilege it is a symlink to
+    tests that pass an interpreter path as given need such a path.  With symlink privilege it is a symlink to
     ``sys.executable``; a Windows account without it gets a directory junction
     to the interpreter's folder, which needs no privilege and which
     ``resolve`` follows the same way.

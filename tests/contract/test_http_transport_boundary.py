@@ -305,8 +305,8 @@ def _closing_transport(tmp_path, monkeypatch, *, idle_reuse=None, close=True):
 
 
 def test_the_helper_sends_nothing_on_a_connection_its_server_closed(tmp_path, monkeypatch):
-    """A worker kept between a server's prompts sent the next request on the connection the provider had closed
-    while it sat idle, and failed at once; the recall went without its vector search (review of rc12)."""
+    """A worker kept between a server's prompts does not send the next request on a connection the provider closed
+    while it sat idle, which would fail at once and leave the recall without its vector search."""
     transport, connections, server, thread = _closing_transport(tmp_path, monkeypatch)
     try:
         assert _persistent_post(transport) == (200, b"ok")

@@ -1,10 +1,9 @@
 """A truncated source trigger always finishes, and one pass finishes many of its pages.
 
-On 2026-09-17, with rc34 on alpha, worker passes still started back to back and
-processed nothing: the planner woke for 120 truncated candidate source triggers
-and each pass resumed one page.  56 of them named memory read back to the model,
-which is never evidence, so every page linked nothing and stayed open; the other
-64 owed 1,091 pages of sixteen candidates, at one page a pass.
+Otherwise worker passes start back to back and process nothing: the planner wakes for
+every truncated candidate source trigger and each pass resumes one page.  Triggers that
+name memory read back to the model, which is never evidence, link nothing on any page
+and stay open; the others owe many pages of sixteen candidates, at one page a pass.
 """
 
 from __future__ import annotations
@@ -127,8 +126,8 @@ def test_one_pass_finishes_every_page_a_source_owes(app):
 
 def test_a_page_matches_its_source_outside_the_writer_lease(app, monkeypatch):
     """Matching a source against every candidate that shares a term is most of a page: inside the page's write it
-    held the writer lease 0.5-7.4 s a page on the shared store (median 1.3 s), and a hook that waited its second
-    for the lease meanwhile lost its capture.  The pass finds the candidates in a read; the write only links."""
+    would hold the writer lease for seconds a page on the shared store, and a hook that waited its second for the
+    lease meanwhile would lose its capture.  The pass finds the candidates in a read; the write only links."""
     from scope_recall.contracts import ContractError
     from scope_recall.core.candidate_intake import CandidateIntake
 
@@ -188,10 +187,10 @@ def test_a_candidate_archived_after_the_page_was_read_takes_no_evidence(app):
 def test_the_page_queries_read_the_triggers_first(app):
     """Both page queries hold the page's write, so they must not start from every source of every scope.
 
-    On 2026-09-27 the shared store (8,819 triggers, 192 truncated, 379 scopes) took 2.7 s to count the pending
-    pages and 3.5 s to find the next one: SQLite started from ``source_events``, whose scope index it could use,
-    and looked up a trigger for every source.  A pass runs up to sixteen pages back to back, so the writer lease
-    was held for a minute at a time and every hook that waited its one second for it failed to capture.
+    A shared store of 8,819 triggers (192 truncated) over 379 scopes would take 2.7 s to count the pending pages
+    and 3.5 s to find the next one if SQLite started from ``source_events``, whose scope index it can use, and
+    looked up a trigger for every source.  A pass runs up to sixteen pages back to back, so the writer lease
+    would be held for a minute at a time and every hook that waited its one second for it would fail to capture.
     """
     core, ctx = app
     _candidates(core, ctx, SOURCE_MATCH_LIMIT + 4)
@@ -232,9 +231,9 @@ def test_a_pass_gives_a_waiting_writer_its_turn_between_pages(app, monkeypatch):
 
 
 def test_a_pass_stops_resuming_pages_once_their_time_is_spent(app, monkeypatch):
-    """A page on the shared store took 0.5-7 s under the writer lease (matching a long source against thousands of
-    candidates), so sixteen of them still held it for half a minute.  Past ``SOURCE_PAGE_SECONDS`` the pass leaves
-    the rest to the next one; the page that was running finishes."""
+    """A page on the shared store can take 0.5-7 s under the writer lease (matching a long source against thousands
+    of candidates), so sixteen of them would still hold it for half a minute.  Past ``SOURCE_PAGE_SECONDS`` the pass
+    leaves the rest to the next one; the page that was running finishes."""
     core, ctx = app
     monkeypatch.setattr(worker, "SOURCE_PAGE_SECONDS", 0.0)
     count = SOURCE_MATCH_LIMIT * 4 + 4

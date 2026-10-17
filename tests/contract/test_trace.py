@@ -289,9 +289,9 @@ def _embeds(core):
 
 
 def test_an_import_s_history_gets_the_embedding_its_store_never_had(app):
-    """An import queued an embedding only where its source store had one: on the pilot tianshu's history, 1,928 of
-    the owner's messages, 6,552 replies and 3,009 notes, could be found by their words alone.  Tool output is left
-    out (200,000 imported outputs), and so is what the admission rules keep without one."""
+    """An import queues an embedding for what its source store never embedded, which could otherwise be found by
+    its words alone (the owner's messages, replies and notes).  Tool output is left out, and so is what the
+    admission rules keep without one."""
     from scope_recall.core.index_rebuild import queue_import_embeddings
     from scope_recall.core.storage import SQLiteStorage
 
@@ -313,8 +313,8 @@ def test_an_import_s_history_gets_the_embedding_its_store_never_had(app):
 
 
 def test_the_backfill_queues_only_what_this_worker_embeds(app):
-    """An import in another project was queued where this worker neither counts nor claims it (84 of 84 in three
-    pages, the queue read empty); a deleted, a suppressed and a superseded import were never tested."""
+    """An import in another project is not queued where this worker neither counts nor claims it (the queue would
+    read empty page after page); nor is a deleted, a suppressed or a superseded one."""
     import sqlite3
 
     from scope_recall.core.index_rebuild import queue_import_embeddings
@@ -364,8 +364,8 @@ def test_the_backfill_queues_only_what_this_worker_embeds(app):
 
 
 def test_each_worker_partition_keeps_its_own_backfill_place(app, tmp_path):
-    """One state file for the store let a worker with no imports of its own write ``finished`` for another worker's,
-    which then waited a day before queueing its imports (review of 3.4.0rc10)."""
+    """One state file for the store would let a worker with no imports of its own write ``finished`` for another
+    worker's, which would then wait a day before queueing its imports."""
     import sqlite3
     from datetime import datetime, timedelta, timezone
     from types import SimpleNamespace
@@ -433,10 +433,10 @@ def test_the_drain_s_backfill_keeps_its_place_and_looks_again_after_a_day(app, t
 
 
 def test_the_backfill_leaves_room_for_candidate_evaluations(app, tmp_path):
-    """Embeddings are claimed before candidate evaluations, and the backfill kept a page of them waiting, so every
-    pass took embeddings alone: 251 evaluations waited on the pilot for the hours it ran (rc10).  Stopping for them
-    stopped it for as long as they could not be done (review of rc11).  While one it is told of is ready, it keeps
-    the queue to its yield ceiling and goes on; one not due yet changes nothing."""
+    """Embeddings are claimed before candidate evaluations, and a backfill that kept a page of them waiting would
+    have every pass take embeddings alone, so evaluations wait for as long as it runs.  Stopping for them would stop
+    it for as long as they could not be done.  While one it is told of is ready, it keeps the queue to its yield
+    ceiling and goes on; one not due yet changes nothing."""
     import sqlite3
     from types import SimpleNamespace
 
@@ -477,8 +477,8 @@ def test_the_backfill_leaves_room_for_candidate_evaluations(app, tmp_path):
 
 
 def test_a_page_never_takes_the_embedding_queue_past_its_ceiling(app):
-    """The queue was measured before a page of 64 joined it, so up to 127 embeddings waited (review of rc11).  A page
-    now looks at no more sources than can join, and is not taken for the last because it looked at fewer."""
+    """The queue is measured before a page of 64 joins it, so up to 127 embeddings could wait.  A page looks at no
+    more sources than can join, and is not taken for the last because it looked at fewer."""
     import sqlite3
 
     from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING, queue_import_embeddings

@@ -1,8 +1,8 @@
 """A pass that finds the truth writer held is busy, and a busy pass is retried after a pause.
 
-On 2026-09-17, while a maintenance command paged epsilon's embedding queue, a worker pass raised
-TruthWriterBusyError. The pass exited as failed, and a failed pass stops the supervisor until the next
-autostart wake five minutes later. Nothing had failed: another writer held the database.
+A worker pass that raises TruthWriterBusyError, say while a maintenance command pages the embedding
+queue, must not exit as failed: a failed pass stops the supervisor until the next autostart wake five
+minutes later, and nothing has failed, since another writer holds the database.
 """
 
 from __future__ import annotations

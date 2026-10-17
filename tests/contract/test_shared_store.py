@@ -414,8 +414,8 @@ def _busy_for(monkeypatch, attempts, times=None):
 
 
 def test_a_writer_waits_for_another_process_s_turn_to_end(monkeypatch, shared):
-    """Soak of 2026-09-22: three entries and a worker, one capture in ten failed at once on a lease
-    released milliseconds later, and waited in memory for a retry the process might never reach."""
+    """With three entries and a worker, a capture that meets a lease released milliseconds later must not fail at
+    once and wait in memory for a retry the process might never reach."""
     storage, binding = shared
     times: list[float] = []
     calls = _busy_for(monkeypatch, 3, times)

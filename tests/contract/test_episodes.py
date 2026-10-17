@@ -317,8 +317,8 @@ def test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_r
 
 def test_a_task_goes_on_in_a_new_episode_after_its_episode_is_deleted(app):
     """Deleting a source deletes the episode whose resume rests on it.  A task names its series outright, so the
-    task's next source landed on the deleted episode and was refused (``SOURCE_MISSING``, ``episode_unavailable``):
-    on the pilot every capture after a delete in that Codex thread failed for good."""
+    task's next source would land on the deleted episode and be refused (``SOURCE_MISSING``, ``episode_unavailable``),
+    and every capture after a delete in that Codex thread would fail for good."""
     core, ctx = app
     ctx = replace(ctx, task_anchor="TEST-deleted-task")
     work = capture(core, ctx, "TEST 下一步调整这张图的配色。")

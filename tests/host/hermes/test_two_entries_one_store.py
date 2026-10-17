@@ -302,7 +302,7 @@ def test_attach_refuses_an_entry_id_from_another_home_and_a_home_twice(tmp_path,
 
 def _old_store(home, scope_id, *said, installation_id="hermes-install:TEST-legacy", session="TEST-old-session"):
     """The store a home had before it attached, moved aside.  Two of these share an installation id,
-    as the legacy migration left the pilot's stores, so one key gives both the same source id."""
+    as the legacy migration leaves stores, so one key gives both the same source id."""
     from scope_recall.contracts import InstanceBinding, TrustedContext
     from scope_recall.core import CoreConfig, MemoryCore
     from v11_support import source_event
@@ -439,8 +439,8 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
 
 
 def test_a_legacy_source_id_is_renamed_wherever_the_old_store_names_it(root, entries):
-    """2.x migrations named sources event-legacy-<32 hex>; 3.2.0rc3 renamed them in columns only,
-    so their queued embeddings named no source and the worker dropped every one."""
+    """Sources a 2.x migration named event-legacy-<32 hex> are renamed in every table that names them, not in
+    columns only, or their queued embeddings name no source and the worker drops every one."""
     from scope_recall.maintenance.shared_import import _Names, import_entry
 
     tianshu, _tianquan = entries
@@ -469,9 +469,9 @@ def test_a_legacy_source_id_is_renamed_wherever_the_old_store_names_it(root, ent
 def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embedding(root, entries):
     """A withheld output's summary and a repeated tool output are sources only; an import does not embed them.
 
-    Stores from earlier releases embedded both, and their embed history queued them again: the
-    pilot's import put 12,953 of them in front of the shared worker, each embedded and then deleted
-    by retention within the hour.  They are recorded as expired under retention's own reason instead.
+    Stores from earlier releases embedded both, and their embed history would queue them again, each
+    embedded and then deleted by retention within the hour.  They are recorded as expired under
+    retention's own reason instead.
     """
     from dataclasses import replace
 
@@ -520,7 +520,7 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
                           ON CONFLICT(work_type,subject_ref,subject_revision) DO UPDATE SET state='done'""",
                 (ref.ref, ref.revision, scope),
             )
-        # And indexed every source by its words, the withheld output's summary too (#206).
+        # And indexed every source by its words, the withheld output's summary too.
         db.execute("INSERT OR IGNORE INTO lexical_terms(term) VALUES ('tool'),('summary'),('omitted')")
         for ref in (summary.ref, errored.ref):
             db.execute(

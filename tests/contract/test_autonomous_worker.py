@@ -127,7 +127,7 @@ def test_failed_work_is_reported_even_with_no_pending(worker_app, monkeypatch):
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
     assert result.pending_work == 0 and result.failed_work == 2
-    # The gap says which kind of failure since terminal classification landed:
+    # The gap says which kind of failure:
     # 'work_failed_terminal_only' is what an operator cannot act on, and it is
     # the difference between a fault and a by-design refusal.
     assert result.status == "degraded" and "work_failed_terminal_only" in result.capability_gaps
@@ -145,10 +145,10 @@ def test_idle_worker_receipt_still_reports_terminal_failures(worker_app, tmp_pat
     assert run_worker(path, output=output) == 0
     result = json.loads(output.getvalue())
     assert result["processed"] == 0 and result["failed_work"] == 2
-    # Still reported -- that is what this test is named for -- but no longer
+    # Still reported -- that is what this test is named for -- but not
     # "degraded". Both failures are by design, the doctor calls the same instance
     # "attention" for the same reason, and a worker that disagreed with it while
-    # offering no gap is what sent a watcher through two-day-old logs.
+    # offering no gap would send a watcher through old logs.
     assert result["status"] != "degraded"
     assert result["terminal_failed_work"] == 2
     assert "work_failed_terminal_only" in result["capability_gaps"]

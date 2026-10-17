@@ -1,14 +1,13 @@
 """A pass whose receipt is larger than a pipe still finishes, and is not called a timeout.
 
-A pipe holds a few kilobytes.  The owner spawned its pass with piped stdout, then waited for
-the process to exit before reading a byte -- so a pass that reported more items than fit in
-that pipe blocked in ``write`` with its work already committed, could never exit, and was
-killed at its deadline and reported as ``worker_watchdog_timeout``.
+A pipe holds a few kilobytes.  The owner spawns its pass with piped stdout and reads it while the
+process runs: waiting for the process to exit before reading a byte would block a pass that
+reported more items than fit in that pipe in ``write`` with its work already committed, so it
+could never exit, and would be killed at its deadline and reported as ``worker_watchdog_timeout``.
 
-Measured on a live instance before this fix: 200 items embedded and committed in 34.8 s, the
-owner returning 124 after 125.4 s.  Every background pass burned its whole 120-second window,
-so the queue moved at a sixth of the rate the pass itself was capable of, and the receipt that
-would have said so was the thing being swallowed.
+Every background pass would then burn its whole 120-second window, so the queue would move at a
+fraction of the rate the pass itself is capable of, and the receipt that would have said so would
+be the thing being swallowed.
 """
 
 from __future__ import annotations
@@ -66,11 +65,11 @@ def test_a_child_that_writes_more_than_a_pipe_still_exits(items):
 
 
 def test_without_reading_the_same_child_cannot_exit():
-    """What the fix is load-bearing for: the old shape, waiting before reading.
+    """What the reading is load-bearing for: the shape that waits before reading, where the same child cannot exit.
 
-    Kept as a test rather than a comment because the failure it describes was invisible from
-    the outside -- the work was done, the queue moved, and the only symptom was a timeout that
-    looked like a hung worker.
+    A test rather than a comment because the failure it describes is invisible from
+    the outside -- the work is done, the queue moves, and the only symptom is a timeout that
+    looks like a hung worker.
     """
     child = _child(2000)
     try:

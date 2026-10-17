@@ -143,7 +143,7 @@ def test_an_open_that_failed_after_its_caller_stopped_waiting_is_reopened(tmp_pa
 
 
 def test_work_that_failed_takes_the_open_only_if_it_has_come(tmp_path, monkeypatch):
-    """A query embedding that failed at once waited for a slow table open (1.56 s against 0.02 s, review of 3.4.1).
+    """A query embedding that fails at once does not wait for a slow table open.
     With nothing to search with, the open is taken if it has come and parked for the next request if not."""
     s = store(tmp_path, monkeypatch, delay=3.0)
     try:
@@ -199,8 +199,8 @@ def test_a_parked_answer_that_never_came_is_still_a_wedge(tmp_path, monkeypatch)
 
 
 def test_a_spare_helper_is_taken_once_and_not_replaced(monkeypatch):
-    """A server kept a spare as well, replaced each time one was taken: about 0.55 GB of committed memory idle once
-    the store all its runtimes share holds its helper (3.4.9)."""
+    """A server's spare helper is taken once and not replaced: a replacement would sit idle, holding memory, once the
+    store all its runtimes share holds its own helper."""
     spawned = []
 
     class Alive:
@@ -244,8 +244,8 @@ def _sharing(tmp_path, monkeypatch, *, fail_first_open=False, open_delay=0.0):
 
 
 def test_a_server_s_runtimes_search_one_store_with_one_helper(tmp_path, monkeypatch):
-    """A handler made for a prompt the kept handler was busy with started a helper of its own, and lost its vector
-    search to that helper's start: bursts of parallel sub-agents on the work computer (2026-09-30)."""
+    """A handler made for a prompt while the kept handler is busy shares the store's helper and starts none of its own,
+    so its vector search is not lost to a helper's start, as when parallel sub-agents prompt in bursts."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     kept = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     made = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
@@ -265,8 +265,8 @@ def test_a_server_s_runtimes_search_one_store_with_one_helper(tmp_path, monkeypa
 
 
 def test_a_spare_is_not_started_once_the_shared_store_serves(tmp_path, monkeypatch):
-    """A Hermes gateway asks for a helper ahead each time it binds an agent, and shares its stores since 3.5.0rc4: once
-    the shared store holds its helper, a spare started for a later agent would never be taken (about 0.55 GB idle)."""
+    """A Hermes gateway asks for a helper ahead each time it binds an agent and shares its stores: once the shared
+    store holds its helper, no spare is started for a later agent, since none would be taken."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     native.prestart()  # the first agent's, which the shared store's open takes
     assert spawned == [1] and native._spare is not None, "nothing serves yet: the spare is started"
@@ -282,7 +282,7 @@ def test_a_spare_is_not_started_once_the_shared_store_serves(tmp_path, monkeypat
 
 
 def test_a_bind_after_the_shared_helper_failed_starts_a_spare_that_the_reopen_takes(tmp_path, monkeypatch):
-    """The guard asks whether a shared store holds a live helper, not whether one is registered (review of 3.5.0rc4)."""
+    """The guard asks whether a shared store holds a live helper, not whether one is registered."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     try:
@@ -303,7 +303,7 @@ def test_a_bind_after_the_shared_helper_failed_starts_a_spare_that_the_reopen_ta
 
 def test_a_bind_while_the_shared_store_starts_its_helper_starts_no_spare(tmp_path, monkeypatch):
     """The store takes the spare before it asks for its table: a bind in that instant (another agent made at the first
-    recall) started a spare nothing would take, about 0.55 GB until the process ended (review of 3.5.0rc4)."""
+    recall) starts no spare, since nothing would take it before the process ends."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     native.prestart()  # the first agent's bind
     assert spawned == [1]
@@ -326,9 +326,9 @@ def test_a_bind_while_the_shared_store_starts_its_helper_starts_no_spare(tmp_pat
 
 
 def test_a_bind_after_the_shared_helper_ended_unnoticed_starts_a_spare(tmp_path, monkeypatch):
-    """A helper that ended outside any request (a crash, a failed allocation near the commit limit) still looked open
-    until a request met it: a bind in between started no spare, and every session's reopen started cold (review of
-    3.5.0rc4)."""
+    """A helper that ended outside any request (a crash, a failed allocation near the commit limit) is not counted as
+    live while it still looks open: a bind before a request meets it starts a spare, so a session's reopen need not
+    start cold."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     try:
@@ -379,9 +379,8 @@ def test_the_shared_stores_are_stopped_when_the_process_ends(tmp_path, monkeypat
 
 
 def test_a_shared_store_whose_open_failed_is_opened_again(tmp_path, monkeypatch):
-    """A helper that could not open the table held none, and every search it answered said so until the server
-    restarted: a store a runtime owned alone was closed and made anew, one its process shares was not (review of
-    3.4.9)."""
+    """A shared store whose helper could not open the table is opened again, as a store a runtime owns alone is closed
+    and made anew; its searches do not keep saying the table is not open until the server restarts."""
     log, spawned = _sharing(tmp_path, monkeypatch, fail_first_open=True)
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     try:
@@ -397,8 +396,8 @@ def test_a_shared_store_whose_open_failed_is_opened_again(tmp_path, monkeypatch)
 
 
 def test_a_reopen_that_ran_out_of_time_before_its_helper_started_is_opened_by_the_next_request(tmp_path, monkeypatch):
-    """The store looked open with no helper: the next search started one, which held no table, and every runtime of
-    the process searched it until the process ended (review of 3.4.9)."""
+    """A reopen that runs out of time before its helper starts leaves the store needing a reopen, not looking open
+    with no helper: the next request opens it, so no runtime of the process searches a helper that holds no table."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     try:
@@ -418,8 +417,8 @@ def test_a_reopen_that_ran_out_of_time_before_its_helper_started_is_opened_by_th
 
 
 def test_a_search_starts_no_helper(tmp_path, monkeypatch):
-    """A helper a search started held no table and answered every search so, and the store looked open (review of
-    3.4.9).  A helper is started to open the table, or to say whether LanceDB is installed."""
+    """A search starts no helper: one started that way would hold no table, answer every search so, and leave the
+    store looking open.  A helper is started to open the table, or to say whether LanceDB is installed."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     try:
@@ -435,7 +434,7 @@ def test_a_search_starts_no_helper(tmp_path, monkeypatch):
 
 
 def test_a_table_not_made_yet_starts_no_helper_for_a_shared_store(tmp_path, monkeypatch):
-    """Each prompt started a helper to learn the table was missing, about 2 s each with no spare (review of 3.4.9)."""
+    """A prompt starts no helper just to learn that the table is not made yet."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     (tmp_path / "lancedb" / "PUBLIC.lance").rmdir()
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
@@ -462,8 +461,8 @@ def test_a_shared_store_is_made_once_by_the_runtimes_that_may_make_it(tmp_path, 
 
 
 def test_the_drain_s_open_of_a_shared_store_says_it_ran_out_of_time(tmp_path, monkeypatch):
-    """A store of its own raises it, and the drain reports the gap; the shared store returned as if it had opened
-    (review of 3.4.9)."""
+    """A store of its own raises it, and the drain reports the gap; the shared store does the same and does not return
+    as if it had opened."""
     _log, spawned = _sharing(tmp_path, monkeypatch)
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     try:
@@ -476,8 +475,8 @@ def test_the_drain_s_open_of_a_shared_store_says_it_ran_out_of_time(tmp_path, mo
 
 
 def test_a_helper_asked_only_whether_lancedb_is_installed_holds_no_table(tmp_path, monkeypatch):
-    """It counted as serving: the open was skipped, and every search said the table was not open (review of
-    3.4.9)."""
+    """A helper asked only whether LanceDB is installed does not count as serving: the open is not skipped, and
+    searches do not say the table is not open."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     view = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     try:
@@ -491,7 +490,7 @@ def test_a_helper_asked_only_whether_lancedb_is_installed_holds_no_table(tmp_pat
 
 
 def test_two_runtimes_that_open_the_shared_store_together_open_it_once(tmp_path, monkeypatch):
-    """Both saw it closed and both opened it, the second while every search waited (review of 3.4.9)."""
+    """Two runtimes that both find the store closed open it once, and no search waits on a second open."""
     log, spawned = _sharing(tmp_path, monkeypatch, open_delay=0.3)
     views = [native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2) for _ in range(2)]
     work = []
@@ -512,8 +511,8 @@ def test_two_runtimes_that_open_the_shared_store_together_open_it_once(tmp_path,
 
 
 def test_the_opening_runtime_s_embedding_does_not_hold_the_others_searches(tmp_path, monkeypatch):
-    """Overlapped with the open, the opener's embedding held the store's lock, and another prompt's search with a
-    second left timed out on it (review of 3.4.9).  The embedding is asked for when its recall starts anyway."""
+    """Overlapped with the open, the opener's embedding does not hold the store's lock: another prompt's search with a
+    second left does not time out on it.  The embedding is asked for when its recall starts anyway."""
     _log, _spawned = _sharing(tmp_path, monkeypatch)
     opener = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)
     other = native.store_for(tmp_path / "lancedb", table_name="PUBLIC", dimensions=2)

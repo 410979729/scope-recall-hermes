@@ -306,8 +306,8 @@ def test_interrupt_and_session_end_are_host_generated_without_model_calls(handle
 
 
 def test_a_recall_that_found_the_store_unreadable_says_so(handler, installed):
-    """A recall whose store could not be read returned an empty packet that read as nothing found: an entry's server
-    answering so was taken over the hook's own recall (review of rc11)."""
+    """A recall whose store cannot be read says so, not an empty packet that reads as nothing found: an entry's server
+    answering so is not taken over the hook's own recall."""
     _hook, project_root, config = handler
     _, core, clock, _ = installed
 
@@ -335,9 +335,9 @@ def test_a_recall_that_found_the_store_unreadable_says_so(handler, installed):
 
 
 def test_a_recall_whose_read_did_not_finish_ranks_as_without_its_vector_search(handler, installed):
-    """A recall whose time ran out at its release, with its vector search run, came back empty and still ranked as one
-    with vectors: a hook's own such answer beat the entry's server's finished one, and a server's was final (reviews of
-    rc11)."""
+    """A recall whose time runs out at its release, with its vector search run, comes back empty and ranks as one
+    without its vector search: a hook's own such answer does not beat the entry's server's finished one, and a
+    server's is not final."""
     _hook, project_root, config = handler
     _, core, clock, _ = installed
 
@@ -357,8 +357,8 @@ def test_a_recall_whose_read_did_not_finish_ranks_as_without_its_vector_search(h
 
 
 def test_a_recall_whose_time_ran_out_after_its_packet_ranks_as_without_its_vector_search(handler, installed):
-    """A recall whose packet was whole, vector search included, but whose time ran out before it was rendered came
-    back empty and still ranked as one with its vector search (review of rc11)."""
+    """A recall whose packet is whole, vector search included, but whose time runs out before it is rendered comes
+    back empty and ranks as one without its vector search."""
     _hook, project_root, config = handler
     _, core, clock, _ = installed
 

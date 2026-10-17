@@ -1,10 +1,9 @@
 """A worker pass that can do nothing is not started again at once.
 
-On 2026-09-17 two instances ran passes that could make no progress, back to back:
-alpha every ~20 seconds, woken for one failed candidate evaluation the planner
-counted as recoverable and the worker never recovers; delta every ~7.5 seconds,
-each pass parking one of 2,548 embed items for want of a credential and the next
-pass starting at once for the item after it.
+Passes that can make no progress must not run back to back: one woken for a failed
+candidate evaluation the planner counts as recoverable and the worker never recovers,
+or one parking an embed item for want of a credential with the next pass starting at
+once for the item after it.
 """
 
 from __future__ import annotations

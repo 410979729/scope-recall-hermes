@@ -166,10 +166,9 @@ def test_worker_preserves_distinct_page_goals_and_finishes_offset(worker_app, en
 
 
 def test_a_page_whose_summary_is_not_its_own_words_keeps_its_claims_and_the_rest_of_the_message(worker_app):
-    """Long messages failed for good on a page whose resume proposal put a decision in the model's own words
-    (``fragment_resume``): the page's claims were lost with it and no later page was read.  Re-run on 3.10.1, about
-    half of 24 such items on the shared store failed again the same way.  The summary is dropped, named in the work's
-    details and in its outcome; the claims stay and the message is read to its end."""
+    """A long message must not fail for good on a page whose resume proposal puts a decision in the model's own words
+    (``fragment_resume``), losing the page's claims with it and leaving no later page read.  The summary is dropped,
+    named in the work's details and in its outcome; the claims stay and the message is read to its end."""
     core, ctx, _clock = worker_app
     first, last = "TEST-project 配色 蓝色。", "TEST-project 主题 深色。"
     source = long_source(core, ctx, first + "\n" + "这是一段归档资料；" * 700 + "\n" + last)

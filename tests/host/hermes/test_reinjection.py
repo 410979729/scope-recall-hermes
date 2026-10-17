@@ -61,11 +61,11 @@ def test_scope_recall_tool_result_is_memory_reinjection_and_external_tool_stays_
 
 
 def test_hermes_own_memory_tools_are_recall_not_observation(adapter):
-    """A session search hands back old conversation; consolidated as news it made facts out of echoes.
+    """A session search hands back old conversation; consolidated as news it would make facts out of echoes.
 
-    On the pilot an agent searched its past sessions for "cat" and got a page of unrelated old
-    conversation; consolidation turned that page into six new facts which then filled the next
-    automatic recall.  Hermes' own memory tools are kept as sources only, like Scope Recall's.
+    An agent that searches its past sessions for "cat" gets a page of unrelated old conversation;
+    consolidation would turn that page into new facts which then fill the next automatic recall.
+    Hermes' own memory tools are kept as sources only, like Scope Recall's.
     """
     provider, _clock = adapter
     for call_id, name in (("session-search-1", "session_search"), ("memory-notes-1", "memory")):

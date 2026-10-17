@@ -169,8 +169,8 @@ def _stamp_header(path, version, *, application_id=None):
 
 
 def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsys):
-    """#117: every table and row is 3.x and instance_meta records the schema, but the header says
-    10815, so every open failed closed and upgrade-store called the store unsupported."""
+    """Every table and row is 3.x and instance_meta records the schema, but the header says
+    10815, so every open would fail closed and upgrade-store would call the store unsupported."""
     import pytest
     from scope_recall.contracts import ContractError
     from scope_recall.core.storage import SQLiteStorage

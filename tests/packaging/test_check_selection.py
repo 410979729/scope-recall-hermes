@@ -183,11 +183,11 @@ def test_a_bigger_selection_gets_more_room() -> None:
 
 
 def test_the_real_integration_selection_is_not_at_its_own_limit() -> None:
-    """The regression this replaced: the gate timed out instead of reporting."""
+    """The budget for the real integration selection is not its own limit: the gate reports instead of timing out."""
     selected, _details = check.select_tests("integration", changed=[])
     budget = check.pytest_watchdog_seconds("integration", len(selected))
-    # The GitHub Windows receipt: 600s fired with the suite 25% done and still
-    # printing progress; the whole baseline needs tens of minutes there.
+    # On the GitHub Windows runner the whole baseline needs tens of minutes: 600s
+    # would end it a quarter of the way through, while it is still printing progress.
     assert budget >= check.INTEGRATION_WATCHDOG_SECONDS
 
 
@@ -232,9 +232,8 @@ def test_an_interpreter_that_does_not_exist_is_not_installed() -> None:
 
 
 def test_release_refuses_early_with_a_named_gap_and_a_remedy(monkeypatch, capsys) -> None:
-    """The regression this replaced: a fresh checkout failed release on
-    ``assert 'entry_point_missing' == 'host_config_missing'``, which names
-    neither the cause nor the cure."""
+    """A fresh checkout is refused early with the missing gate and a remedy, not failed on
+    ``assert 'entry_point_missing' == 'host_config_missing'``, which names neither the cause nor the cure."""
     monkeypatch.setattr(check, "distribution_is_installed", lambda *a, **k: False)
     monkeypatch.setattr(sys, "argv", ["check.py", "--tier", "release"])
 
@@ -262,10 +261,8 @@ UNGATED_CONTRACTS_BY_DESIGN: set[str] = set()
 
 
 def test_every_contract_file_is_selected_by_some_tier():
-    """Twenty-eight of them were not, and nothing said so: about 350 passing
-    assertions that protected nothing, and four failures no one could see --
-    including a contract rc18 changed deliberately, which should have turned its
-    file red the day it changed."""
+    """A contract file no tier selects runs nowhere: its passing assertions protect nothing and its failures are
+    not seen, even when a deliberate change to the contract should turn the file red."""
     import pathlib
 
     from check import SUITES, select_tests
@@ -294,8 +291,7 @@ def test_the_exclusions_are_real_files():
 def test_release_selects_everything_integration_selects():
     """``release`` is built from unit/contract/native/host/migration/packaging and
     not from SUITES["integration"], so a file added only to the integration tier
-    runs in CI and not in the gate that decides whether something ships. That is
-    exactly what happened to these contract files before they were moved."""
+    runs in CI and not in the gate that decides whether something ships."""
     from check import select_tests
 
     integration = set(select_tests("integration")[0])
