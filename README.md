@@ -11,14 +11,13 @@ are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
 `pip install -U`, `apply-install` and a host restart, and the store's schema does not change; on a shared store in
 the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
 ([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the
-first time it is opened, after which a 3.1 process cannot open it.
-3.1 is a rebuild rather than a patch on 2.0: production
-code went from 141,044 lines to 48,289, memory now accumulates evidence before a
-fact is written rather than judging one sentence on sight, and hosts sit behind
-adapters instead of the core being shaped around Hermes. Section 9 of the
+first time it is opened, after which a 3.1 process cannot open it. Section 9 of the
 [3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
-migration procedure for a 2.0.1 memory database. SQLite remains the only fact
-authority; host adapters share the same contracts.
+migration procedure for a 2.0.1 memory database.
+Facts are drawn from accumulated evidence rather than judged one sentence on
+sight; only the owner's explicit correction or confirmation changes a fact as it
+is captured. SQLite is the only fact authority; host adapters share the same
+contracts.
 
 **What is not verified.** `scripts/check.py --tier release` runs about 3,600 tests with
 none failing. They check contracts, storage and the hosts' wiring; none of them
@@ -119,7 +118,7 @@ On Windows, choose a short data directory such as `C:\ScopeRecall\my-agent`. Lan
 
 ## Profile and entity read views
 
-3.1.0 adds two shared read-only Core methods, `profile` and `entity`, and exposes them on both Hermes tools and Codex MCP. They return a deterministic categorized current-fact view, or an exact one-hop statement view, over admitted consolidated claims only. Raw chat is never silently turned into a profile. Incoming relations match the full scalar `value_text` only and keep recorded conditions and validity. Explicit project-name aliases may resolve when they are already admitted and still live; person aliases are not generalized. A `budget_tokens` value too small for even the minimal truthful envelope is a validation error, not an oversized view. See [docs/profile-entity.zh-CN.md](docs/profile-entity.zh-CN.md). An older installed wheel does not gain these tools until 3.1.0 is installed.
+Two shared read-only Core methods, `profile` and `entity`, are exposed as Hermes tools and on Codex MCP. They return a deterministic categorized current-fact view, or an exact one-hop statement view, over admitted consolidated claims only. Raw chat is never silently turned into a profile. Incoming relations match the full scalar `value_text` only and keep recorded conditions and validity. Explicit project-name aliases may resolve when they are already admitted and still live; person aliases are not generalized. A `budget_tokens` value too small for even the minimal truthful envelope is a validation error, not an oversized view. See [docs/profile-entity.zh-CN.md](docs/profile-entity.zh-CN.md).
 
 ## Bounded multi-hop evidence paths
 
@@ -135,7 +134,7 @@ joined. Node, path, time and explicit byte budgets bound its cost. See
 Several agents can share one store instead of each keeping its own: each attaches as an
 entry, every memory is marked with the agent it came in through, and a deletion through
 any of them applies to all. Moving the memory to another machine is copying one directory.
-Hermes homes attach as entries, and from 3.3.0 so do Codex and Claude Code
+Hermes homes attach as entries, and so do Codex and Claude Code
 (`attach --host codex|claude-code`). See [docs/shared-store.md](docs/shared-store.md).
 WorkBuddy and dsh attach the same way (`attach --host workbuddy|dsh`).
 
@@ -160,5 +159,3 @@ The package root holds only the entry (`__init__.py`), the version and the proto
 ## Development checks
 
 The clean wheel must be tested outside the source checkout. At minimum, verify both CLI aliases, a read-only doctor result, Core capture and recall against a temporary installation, and the stdlib HTTP helper's bounded invalid-input response. Host registration, real gateway lifecycle, and production data are separate acceptance boundaries.
-
-Historical release notes and the former v2 packaging contract remain available in the repository history at the `v2.0.1` tag. They are not current v3 usage instructions.

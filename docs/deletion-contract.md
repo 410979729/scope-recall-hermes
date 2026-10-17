@@ -1,8 +1,7 @@
 # Deletion and suppression contract
 
-The P06 implementation owns online event/Claim governance in the same SQLite
-transaction as its deletion operation, dependency blocks, epoch change and late
-work invalidation. It does not claim final P15 maintenance or P18 host acceptance.
+Online event/Claim governance runs in the same SQLite transaction as its
+deletion operation, dependency blocks, epoch change and late work invalidation.
 
 `forget` requires current captured human authorization, the exact target versions,
 scope/project/branch ownership and explicit references for a batch. Unknown and
@@ -14,8 +13,7 @@ project/branch, affected object count, minimum content unit and each cleanup lay
 `suppress` blocks automatic use and preserves explicitly requested reads. It does
 not become a permanent unsuppress when a later conversation discusses the object.
 Dependent captures and proposals inherit suppression; an exact scoped fresh mention
-of a suppressed Claim also stays suppressed for automatic retrieval. Semantic
-paraphrase handling belongs to the subsequent consolidation/recall implementation.
+of a suppressed Claim also stays suppressed for automatic retrieval.
 
 `delete` immediately denies all existing event/Claim representations, source
 expansion and historical reads. The minimum captured content unit is a complete
@@ -42,8 +40,8 @@ as another message. A delete purged before 3.4.0 kept no such digests, and
 whatever comes under its key is refused. A copy of a suppressed or deleted message stored under a new key,
 after its key collided with another message's, is stored suppressed, its whole
 source group with it.
-Future Episode, reference and artifact repositories must extend the dependency
-closure before accepting their object types; currently unknown types fail closed.
+The dependency closure also covers episodes, artifacts and references; a
+dependency of any other kind fails closed (`unresolved_dependency_kind`).
 
 All content exits rehydrate SQLite objects. `release_objects` refuses what was read
 before a deletion or suppression in the reader's scopes was recorded
@@ -56,7 +54,7 @@ not. An epoch move alone refuses nothing, since every capture moves it; it is no
 count of visible items either.
 Text already delivered to the host lies outside a later local transaction.
 
-Physical SQLite cleanup runs separately after online blocking, under the existing
+Physical SQLite cleanup runs separately after online blocking, under the store's
 writer boundary. It clears active raw content, source keys/extras, Claim payloads,
 evidence quotations/locations and lexical rows. Minimal opaque dependency IDs and
 governance records remain, with digests of the deleted words (as stored, without
@@ -65,7 +63,7 @@ key is refused. A cleanup failure rolls back physical changes while the
 earlier read block remains effective. SQLite history, vector active/history files,
 attachments, backup inventory and host-owned sources each retain their actual
 pending, unknown or external state. No SSD erasure or complete physical removal is
-claimed; P15 performs explicit checkpoint/VACUUM and file inventory work.
+claimed: the cleanup runs no checkpoint or VACUUM and takes no file inventory.
 
 Restore admission is an explicit installation maintenance capability, separate
 from an ordinary `TrustedContext`, even when that context contains all scopes.
@@ -82,11 +80,5 @@ a missing human source or ordinary correction history. Physical cleanup is repea
 on the restored file; status from the latest file is not treated as evidence about
 the old copy. The resulting epoch exceeds both snapshot and latest-checkpoint
 epochs, preventing cache ABA. Failed replay or commit leaves admission closed and
-permits retry. P15 still owns the complete backup identity/manifest, snapshot copy,
-ordinary data completeness and operator-facing restore workflow.
-
-The isolated tests retain actual failures and reruns. They cover online C08/C09/
-C10/C11/C20/C30 paths, missing late segments, terminal intentions, withdrawal
-restoration, project/branch isolation, cleanup/commit failure and retry. They use
-real SQLite backup/transactions and controlled raw sources; no model or host
-semantic acceptance is inferred from these tests.
+permits retry. The operator's backup and restore are the `backup` and `rollback`
+commands.
