@@ -675,7 +675,7 @@
    "E501": 2
   },
   "core/source_storage.py": {
-   "E501": 9
+   "E501": 8
   },
   "core/storage.py": {
    "B010": 1,

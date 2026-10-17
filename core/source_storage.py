@@ -489,19 +489,6 @@ class Sources:
         )
         return lexical, semantic
 
-    def source_authorization(self, ref: str, revision: int) -> dict | None:
-        """The scope authorization a migrated source was admitted under, or ``None``."""
-        row = (
-            self._tx._check()
-            .execute(
-                """SELECT p.payload FROM source_authorizations a JOIN authorization_payloads p ON p.authorization_id=a.authorization_id
-               WHERE a.event_id=? AND a.source_revision=?""",
-                (ref, revision),
-            )
-            .fetchone()
-        )
-        return None if row is None else json.loads(row[0])
-
     def search_sources(
         self, query: str, *, limit: int = 20, history: bool = False, automatic: bool = False
     ) -> tuple[StoredSource, ...]:
