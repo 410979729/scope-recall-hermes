@@ -181,6 +181,60 @@ def test_the_dated_channel_does_no_more_work_than_the_plain_search(app):
     assert {"august"}.isdisjoint(of_the_day[0].matched_query_terms)
 
 
+def test_a_message_the_asking_model_holds_is_not_brought_back_by_its_time(app, monkeypatch):
+    """A message of the asking session said within the time it names is found by its words, within the time and by the
+    recent channel.  When the host says its model still holds the session, it is left out all the same and another
+    session's note of that week answers first.  When the host says nothing, it keeps its place against that note as
+    with no time read: the time weighs both alike."""
+    from scope_recall.core import recall as recall_module
+
+    core, ctx = app
+    asking, earlier = replace(ctx, session_id="TEST-time-asking"), replace(ctx, session_id="TEST-time-earlier")
+    answer = _say(
+        core,
+        earlier,
+        "P249 release status: rolled back after error rates spiked.",
+        origin="human_direct",
+        role="user",
+        when="2026-09-03T10:00:00Z",
+        key="TEST-time/answer",
+    )
+    held = _say(
+        core,
+        asking,
+        "P249 release status: checking the dashboard now.",
+        origin="human_direct",
+        role="user",
+        when="2026-09-06T09:00:00Z",
+        key="TEST-time/held",
+    )
+    reader = core.recall_pipeline.storage_reader
+    recent = reader.recent
+    offered: list[str] = []
+
+    def spy(tx, context, *, limit):
+        found = recent(tx, context, limit=limit)
+        offered.extend(candidate.ref for candidate in found)
+        return found
+
+    monkeypatch.setattr(reader, "recent", spy)
+
+    def refs(**host) -> list[str]:
+        request = recall_request(query="P249 release status this week?")
+        packet = core.recall_packet(asking, request, deadline_seconds=5, zone=UTC, **host)
+        return [item["ref"] for item in packet["items"]]
+
+    holds = refs(in_context_since="2026-09-06T08:00:00Z")
+    assert held.ref in offered and held.ref not in holds and holds[:1] == [answer.ref]
+    told_nothing = refs()
+    monkeypatch.setattr(recall_module, "query_time", lambda *_args, **_kwargs: None)
+    unread = refs()
+    assert {held.ref, answer.ref} <= set(told_nothing) & set(unread)
+    assert (told_nothing.index(held.ref) < told_nothing.index(answer.ref)) == (
+        unread.index(held.ref) < unread.index(answer.ref)
+    )
+
+
 def test_the_identifier_a_day_is_written_with_is_not_asked_of_its_notes(app):
     """ "on the 2nd" holds an identifier ("2nd") that every other candidate has to repeat; a note found within the
     time it names does not, since its time is what the identifier says."""
