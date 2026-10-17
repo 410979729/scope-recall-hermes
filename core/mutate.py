@@ -619,16 +619,23 @@ def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds:
 _WORD_VALUE = r"[#@]?[\w./+-]{1,120}"
 #: Where such a word ends: a space, a clause's punctuation, a full stop before a space or the end, or the end.
 _WORD_END = r"(?=[\s。！？；，,;!?]|\.(?:\s|$)|$)"
-#: An explicit replacement and the value it names.  After a Chinese verb the value is the rest of its clause, spaces
-#: included, without a closing particle ("改成 90 天了" names "90 天"); after "change to" or "switch to" it is a word.
-_EXPLICIT_REPLACEMENT = re.compile(
-    r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为)[\s:：]*"
+#: The value a replacement names: the rest of its clause, spaces included, without a closing particle ("改成 90 天了"
+#: names "90 天", "switch to Jenkins for CI" names "Jenkins for CI").
+_CLAUSE_VALUE = (
     r"([^\s。！？；，,;!?][^。！？；，,;!?\n]{0,119}?)\s*(?:了|啦|吧|呢)?(?=[。！？；，,;!?\n]|\.(?:\s|$)|$)"
-    rf"|\b(?:change|switch) to\s+({_WORD_VALUE}){_WORD_END}",
-    re.I,
+)
+_EXPLICIT_REPLACEMENT = re.compile(
+    r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为|\b(?:change|switch)\s+to\b)[\s:：]*" + _CLAUSE_VALUE, re.I
 )
 #: The looser words that put a value in place too: "用 X", "是 X".
 _LOOSE_REPLACEMENT = re.compile(rf"(?:用|是)\s*({_WORD_VALUE}){_WORD_END}")
+#: A value the fast path applies as it is said: one word (an identifier, a #mark or an @name, or CJK text alone) or
+#: a number with its unit ("90 天", "2 GB", "30 分钟").  Anything longer may hold more than the value ("Jenkins 来跑
+#: CI"), and is left for the person or the worker to settle.
+_UNAMBIGUOUS_VALUE = re.compile(
+    r"[#@]?(?:[^\W\u3400-\u9fff]|[./+-])+|[\u3400-\u9fff]+"
+    r"|\d+(?:\.\d+)?\s*(?:%|[^\W\d_\u3400-\u9fff]{1,8}|[\u3400-\u9fff]{1,3})"
+)
 
 
 def _may_correct(source, raw: str) -> bool:
@@ -684,24 +691,25 @@ def _correction_targets(tx, source, raw: str):
 def _replacement_words(raw: str, matches) -> tuple[list[str], list[str]]:
     """The words a message puts in a value's place, and the explicit replacements among them; with one claim matched,
     "replace OLD with NEW" counts as both.  A sentence-final ASCII full stop is punctuation, not part of the value."""
-    replacements = [found.group(1) or found.group(2) for found in _EXPLICIT_REPLACEMENT.finditer(raw)]
+    replacements = _EXPLICIT_REPLACEMENT.findall(raw)
     tokens = [*replacements, *_LOOSE_REPLACEMENT.findall(raw)]
     if len(matches) == 1:
         old = re.escape(matches[0].payload["value_text"])
-        english = re.findall(rf"(?i:\breplace)\s+{old}\s+(?i:with)\s+({_WORD_VALUE}){_WORD_END}", raw)
+        english = re.findall(r"(?i:\breplace)\s+" + old + r"\s+(?i:with)\s+" + _CLAUSE_VALUE, raw)
         tokens.extend(english)
         replacements.extend(english)
     return [token.rstrip(".") for token in tokens], [token.rstrip(".") for token in replacements]
 
 
-def _plain_correction(raw: str, matches, tokens, replacements) -> bool:
+def _plain_correction(raw: str, matches, tokens, replacements, new_value) -> bool:
     """Whether the message corrects or retracts one claim plainly enough to apply at once: one claim, at most one
-    explicit replacement, a value or a retraction, nothing limited to a time or relative to the moment, and asserted
-    (``_not_asserted``)."""
+    explicit replacement, a value or a retraction, the value unambiguous (``_UNAMBIGUOUS_VALUE``), nothing limited to
+    a time or relative to the moment, and asserted (``_not_asserted``)."""
     return (
         len(matches) == 1
         and len(replacements) <= 1
         and bool(tokens or _RETRACT.search(raw))
+        and (new_value is None or _UNAMBIGUOUS_VALUE.fullmatch(new_value) is not None)
         and not (_NO_FAST_PATH.search(raw) or RELATIVE_SCOPE.search(raw) or _not_asserted(raw))
     )
 
@@ -713,21 +721,22 @@ def capture_correction(tx, source, clock) -> Mutation | None:
         return None
     heads, matches, fallback_context = _correction_targets(tx, source, raw)
     tokens, replacements = _replacement_words(raw, matches)
-    if not fallback_context and _plain_correction(raw, matches, tokens, replacements):
+    # An explicit replacement ("改成 X") names the value; a looser word ("是", "用") can stand inside another word
+    # ("还是改成 X" yields "改成").
+    replacement = replacements[-1] if replacements else None
+    new_value = replacement if _RETRACT.search(raw) else (replacement or (tokens[-1] if tokens else None))
+    if not fallback_context and _plain_correction(raw, matches, tokens, replacements, new_value):
         target = matches[0]
         source_time = canonical_time(source.event["occurred_at"])
         target_time = canonical_time(target.valid_from)
         if source_time is not None and target_time is not None and source_time < target_time:
             tx.claims.unresolved(source.ref, source.revision, (target.ref,), recorded_at=clock.utc_now())
             return None
-        # An explicit replacement ("改成 X") names the value; a looser word ("是", "用") can stand inside another word
-        # ("还是改成 X" yields "改成").
-        replacement = replacements[-1] if replacements else None
         request = dict(
             protocol_version="1.1",
             target_ref=target.ref,
             expected_revision=target.current_revision,
-            new_value=replacement if _RETRACT.search(raw) else (replacement or tokens[-1]),
+            new_value=new_value,
             conditions=target.payload["conditions"],
             source_evidence_refs=[f"{source.ref}@{source.revision}"],
             valid_from=source.event["occurred_at"],

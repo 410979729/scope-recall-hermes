@@ -992,16 +992,32 @@ def test_a_plain_correction_takes_the_value_its_replacement_names(app, raw):
     "held,raw,value",
     [
         ("30 天", "TEST-project 配色改成 90 天了。", "90 天"),
+        ("1 GB", "TEST-project 配色换成 2 GB。", "2 GB"),
+        ("10 分钟", "TEST-project 配色调整为 30 分钟。", "30 分钟"),
+        ("30 days", "TEST-project 配色: change to 90 days.", "90 days"),
         ("#night-shift", "TEST-project 配色换成 #ops-pager。", "#ops-pager"),
     ],
 )
 def test_a_correction_takes_the_whole_value_it_names(app, held, raw, value):
-    """A value with a space in it (90 天), or opening with the mark a channel's name carries (#ops-pager), is all of
-    the value."""
+    """A number with its unit (90 天, 2 GB), or a word opening with the mark a channel's name carries (#ops-pager), is
+    all of the value."""
     core, ctx = app
     item, _ = initial(core, ctx, value=held)
     capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
     assert core.current_claim(ctx, item.ref).payload["value_text"] == value
+
+
+@pytest.mark.parametrize(
+    "raw", ["TEST-project 配色改成 Jenkins 来跑 CI。", "TEST-project 配色: switch to Jenkins for the nightly runs."]
+)
+def test_a_replacement_that_names_more_than_a_value_is_left_for_the_person_to_settle(app, raw):
+    """A replacement that may say more than which value ("Jenkins 来跑 CI") leaves the claim its value, and the change
+    waits, unresolved."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    source = capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "蓝色"
+    assert core.records.unresolved_updates(ctx)[0]["source_ref"] == source.ref
 
 
 def test_a_correction_naming_its_claim_by_ref_applies(app):
