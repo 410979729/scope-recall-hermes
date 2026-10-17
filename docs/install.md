@@ -190,16 +190,26 @@ provider unselected, which `doctor` reports as `host_registration_incomplete`
 
 `--agent-id` must equal the `agent_identity` the host sends on `initialize`: the
 adapter compares them and raises `agent_identity conflict` when they differ
-(`adapters/hermes/identity.py`). `--agent-workspace` defaults to `hermes`, which
-is the value the host's memory-provider init contract uses; override it only if
-your host really sends something else, and then pass the same value to plan and
-apply. A mismatch still installs, but capture is refused later because the
-audience cannot be mapped.
+(`adapters/hermes/identity.py`). Hermes sends the name of the profile that owns
+`HERMES_HOME`: `default` for the default home (`%LOCALAPPDATA%\hermes` on
+Windows, `~/.hermes` elsewhere) and for any home outside it, `<name>` for a home
+at `<root>\profiles\<name>`, and `custom` for any other directory inside the
+default home. Read it for your home with the Python of Hermes's own environment,
+the one the `hermes` command runs:
 
-TODO(verify): which identity string your host actually sends is decided by the
-host's own active-profile lookup, which is not in this source tree. Read it from
-the host rather than guessing; on an isolated home it is commonly `default`, but
-this repository cannot confirm that.
+```powershell
+$env:HERMES_HOME = "C:\path\to\hermes-home"
+& "C:\path\to\hermes\venv\Scripts\python.exe" -c "from hermes_cli.profiles import get_active_profile_name as n; print(n())"
+Remove-Item Env:HERMES_HOME
+```
+
+```bash
+HERMES_HOME=/path/to/hermes-home /path/to/hermes/venv/bin/python -c "from hermes_cli.profiles import get_active_profile_name as n; print(n())"
+```
+
+Hermes always sends `hermes` as `agent_workspace`, which is what
+`--agent-workspace` defaults to: leave it. Another value still installs, but
+capture is refused later because the audience cannot be mapped.
 
 ```powershell
 $Instance = "C:\path\to\hermes-home"
@@ -413,7 +423,7 @@ to purely lexical. Usually the same file is passed to `autostart enable`.
 - `.codex-plugin\plugin.json`
 - `hooks\hooks.json` and `hooks\scope-recall-hook.cmd` (the Windows launcher)
 - `.mcp.json`, defining the MCP server named `scope-recall`
-- `skills\scope-recall-setup\SKILL.md`
+- `skills\scope-recall-setup\SKILL.md` and `skills\scope-recall-memory\SKILL.md`
 
 The installer owns these files exclusively. Do not hand-edit them or add your own
 scripts to that directory: the next `plan-install` will report them as
@@ -424,27 +434,41 @@ keeps the edit (`kept` in the plan) and installs the rest; once a release change
 that skill, the edit is a conflict again.
 
 Six native hook events are registered, each invoking
-`scope_recall.adapters.codex.hook_entry` through the isolated interpreter with a
-2-second timeout: `Interrupt`, `PostToolUse`, `SessionEnd`, `SessionStart`,
-`Stop`, `UserPromptSubmit`.
+`scope_recall.adapters.codex.hook_entry` through the isolated interpreter. Codex
+waits at most this many seconds for each: `SessionStart` 5, `UserPromptSubmit`
+15, `PostToolUse` 2, `Stop` 10, `Interrupt` 3, `SessionEnd` 3. These are
+ceilings, not waits: a hook answers as soon as its work is done.
 
 **Then enable it in Codex:**
 
-1. Trust the written `hooks\hooks.json` in Codex. The installer generates files;
-   it cannot approve them for you.
-2. For the MCP tools, confirm the wheel was installed with the `[codex]` extra,
-   and allow the server `scope-recall` through Codex's own MCP configuration. Its
-   tools are `recall`, `inspect`, `profile`, `trace`, `entity`,
-   `propose_memory`, `revise`, `forget` and `status`.
+1. List the plugin directory in a Codex marketplace (the personal one is
+   `~/.agents/plugins/marketplace.json`; `source.path` must stay inside the
+   marketplace root). Install and enable the plugin from the Plugins page (in the
+   CLI, `/plugins`), restart the desktop app after any change to the plugin
+   files, and start a new session.
+2. Trust the six hooks. Installing or enabling the plugin does not trust them:
+   Codex skips a plugin's hooks until the current definition of each has been
+   reviewed. In the CLI, answer the start-up prompt "Hooks need review" with
+   **Review hooks** or **Trust all and continue**, or open `/hooks` and press
+   `t`. In the desktop app, open Settings → Hooks (or the plugin's page, or
+   **Review hooks** in the composer) and choose **Trust** or **Trust all**. After
+   a later `apply-install`, check again: Codex marks a hook whose definition
+   changed "review required" and does not run it.
+3. The MCP server needs no approval of its own. `.mcp.json` belongs to the
+   plugin, so Codex starts `scope-recall` once the plugin is enabled, provided the
+   wheel was installed with the `[codex]` extra; do not add a
+   `[mcp_servers.scope-recall]` entry to `config.toml`, which would define a
+   second server. `/mcp` lists it in the CLI, and Settings → MCP servers → From
+   plugins in the desktop app. Its tools are `recall`, `inspect`, `profile`,
+   `trace`, `entity`, `propose_memory`, `revise`, `forget` and `status`. To turn
+   only this server off, set `enabled = false` under
+   `[plugins."<plugin>@<marketplace>".mcp_servers.scope-recall]`;
+   `default_tools_approval_mode` in the same table (`auto`, `prompt`, `writes`,
+   `approve`) sets how Codex asks before a tool call.
 
 `hook_trust_status` stays `pending` in a read-only diagnosis; this project ships
 no GUI and no separate trust command. Whether hooks really run is visible only in
 Codex's own behaviour.
-
-TODO(verify): the concrete Codex-side steps for trusting a plugin's native hooks
-and allowing an MCP server are defined by Codex, not by this repository, and are
-not derivable from this source tree. Follow Codex's own documentation for the
-version you run; this installer only writes the files those steps consume.
 
 The Core data directory is `<instance-root>\data\`, holding `memory.sqlite3`.
 
