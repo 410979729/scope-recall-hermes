@@ -24,12 +24,14 @@ How it runs:
 
 An item answers a part of a question when it is that part's message, or a claim drawn from it that states what the
 message says (``credits``): a claim that cites the message but names another value, denies it or quotes it answers
-nothing.  Per path and task the report gives the share of each question's answer in the first 1, 3, 6 and 10 items,
-MRR, nDCG@10, how often a replaced value ranked above the current one (and each other kind of hard negative above the
-answer), the share of answerable questions answered and of the others met with ``unknown``, and over all questions
-their balanced accuracy, items from a scope the asking entry does not read, packet size in the packet's own units,
-latency, and the channel that found the first item that answered.  It also gives the state each kind of message's
-claims reached in the store.  ``test_recall_bench.py`` beside this file runs the dev split in the retrieval tier.
+nothing, and an item held in a scope the asking entry does not read answers nothing and is a leak.  Per path and task
+the report gives the share of each question's answer in the first 1, 3, 6 and 10 items, MRR, nDCG@10, how often a
+replaced value ranked above the current one (and each other kind of hard negative above the answer), the share of
+answerable questions answered and of the others met with ``unknown``, and over all questions their balanced accuracy,
+items from a scope the asking entry does not read, packet size in the packet's own units, latency, and the channel
+that found the first item that answered.  It also gives how many messages of each kind a claim made a fact, and how
+many active claims stand on each kind.  ``test_recall_bench.py`` beside this file runs the dev split in the retrieval
+tier.
 
 The vector channel here hashes words: it finds what shares a question's words, not what means the same, so a
 paraphrased question measures what the store finds without a model.
@@ -41,10 +43,12 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import shutil
 import sys
 import tempfile
 import time
+import types
 import unicodedata
 from collections import Counter
 from collections.abc import Mapping
@@ -56,6 +60,11 @@ HERE = Path(__file__).resolve().parent
 for _folder in (HERE, HERE.parent / "known_answer", HERE.parent / "contract"):
     if str(_folder) not in sys.path:
         sys.path.insert(0, str(_folder))
+if "scope_recall" not in sys.modules:
+    # The package is the checkout this file sits in, bound as tests/conftest.py binds it for the suite: what a run
+    # measures and records is never an installed copy, which may be older.
+    sys.modules["scope_recall"] = types.ModuleType("scope_recall")
+    sys.modules["scope_recall"].__path__ = [str(HERE.parents[1])]
 
 from bench_world import TASKS, Question, World, build_world, local_day  # noqa: E402
 from recall_invariants_check import DIMS, VECTOR_THRESHOLD  # noqa: E402
@@ -65,7 +74,8 @@ from scope_recall.core import CoreConfig, MemoryCore  # noqa: E402
 from scope_recall.core.events import lexical_terms  # noqa: E402
 from scope_recall.core.recall_packet import envelope_tokens  # noqa: E402
 from scope_recall.core.recall_policy import RecallPolicy  # noqa: E402
-from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, optional_json  # noqa: E402
+from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, CollectionQuery, optional_json  # noqa: E402
+from scope_recall.core.retrieval_storage import scope_digest  # noqa: E402
 from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort  # noqa: E402
 from scope_recall.vector.store import build_vector_store  # noqa: E402
 
@@ -103,8 +113,8 @@ LOWER_IS_BETTER = frozenset({"outdated_above_current"})
 #: the largest task moves its recall@k by 0.028, past the margin.
 TOLERANCE = 0.02
 #: Kinds of hard negative a careful extractor marks, or the store refuses by their source: none should become a
-#: fact.  The baseline holds how many of each did (``facts``) as a ceiling, with no margin: the store may refuse more
-#: of them, and a change that lets one more through fails.
+#: fact.  The baseline holds how many active claims stand on each kind (``facts``) as a ceiling, with no margin: the
+#: store may refuse more of them, and a change that lets one more through fails.
 NEVER_FACTS = ("hypothetical", "quoted", "negated", "assistant", "tool")
 
 
@@ -261,17 +271,27 @@ def ndcg(credited: tuple[frozenset[str], ...], parts: int, cutoff: int = 10) -> 
 
 @dataclass(frozen=True)
 class Answer:
-    """One recall: the gold messages each delivered item gives, every message it stands on, the channel that found
-    it, and what it cost.  ``seen_before`` is whether the question's revoked scopes still showed in its packet a
-    moment before."""
+    """One recall: the gold messages each delivered item gives, every message it stands on, the scope it is held in
+    itself, the channel that found it, and what it cost.  ``seen_before`` is whether the question's revoked scopes
+    still showed in its packet a moment before."""
 
     packet: dict
     credited: tuple[frozenset[str], ...]
     carried: tuple[frozenset[str], ...]
+    scopes: tuple[str | None, ...]
     channels: tuple[str | None, ...]
     tokens: int
     ms: float
     seen_before: bool | None = None
+
+
+def message_roles(world: World) -> dict[str, str]:
+    """Each message a question names: ``answer``, or the kind of hard negative it is first named as."""
+    roles: dict[str, str] = {}
+    for question in world.questions:
+        roles.update((key, kind) for kind, key in question.negatives if key not in roles)
+        roles.update((key, "answer") for key in question.gold)
+    return roles
 
 
 class BenchStore:
@@ -309,6 +329,7 @@ class BenchStore:
         self.scope_of = {message.key: message.scope for message in world.messages}
         self.text_of = {message.key: message.text for message in world.messages}
         self.frames = {message.key: self._frames(message) for message in world.messages}
+        self.claim_scopes: dict[str, str | None] = {}
         with self.core.storage.write(self.worker) as tx:
             tx.registry.register_scopes(world.scopes)
             for entry in world.entries:
@@ -420,6 +441,7 @@ class BenchStore:
             packet,
             tuple(credits(item, question.gold, self.key_of, self.frames) for item in items),
             tuple(self._carried(item) for item in items),
+            tuple(self._scope(item) for item in items),
             tuple(found.get((kind, item["ref"], item["revision"])) for kind, item in zip(kinds, items, strict=True)),
             envelope_tokens(packet),
             ms,
@@ -432,6 +454,19 @@ class BenchStore:
         self.last_result = None
         return dict(self.core.recall_packet(context, body, zone=self.world.zone, **call))
 
+    def _scope(self, item: dict) -> str | None:
+        """The scope an item is held in itself: its message's, or its claim's as the store holds it (read once per
+        claim, under the worker's context, which reads every scope).  None for any other kind, which no packet here
+        holds: one would count as a leak until this learns where it is held."""
+        if item["kind"] == "event":
+            return self.scope_of.get(self.key_of.get(item["ref"], "?"))
+        if item["kind"] not in {"claim", "procedure"}:
+            return None
+        if item["ref"] not in self.claim_scopes:
+            versions = self.core.claim_history(self.worker, item["ref"])
+            self.claim_scopes[item["ref"]] = versions[0].scope_id if versions else None
+        return self.claim_scopes[item["ref"]]
+
     def _carried(self, item: dict) -> frozenset[str]:
         """The messages an item stands on (a message's evidence is itself).  A ref no message of the world was
         captured as reads as ``?``, which the leak count takes for another scope's."""
@@ -440,29 +475,53 @@ class BenchStore:
     def qualification(self) -> dict[str, dict[str, int]]:
         """For each kind of message a question names (its answer, each kind of hard negative): how many of them a
         claim drawn from them made a fact (``active``), how many only had claims left unqualified, and how many had
-        none.  Read through the store's claim accessor, under the worker's context, which reads every scope."""
-        roles: dict[str, str] = {}
-        for question in self.world.questions:
-            roles.update((key, kind) for kind, key in question.negatives if key not in roles)
-            roles.update((key, "answer") for key in question.gold)
+        none.  Every claim version the store holds is read, whatever its slot."""
+        roles = message_roles(self.world)
         states: dict[str, set[str]] = {}
-        slots = {(claim.kind, claim.predicate) for claims in self.world.claims.values() for claim in claims}
-        with self.core.storage.read(self.worker) as tx:
-            for kind, predicate in sorted(slots):
-                for ref in tx.claims.list_refs(kind=kind, predicate=predicate, limit=200):
-                    for version in tx.claims.versions(ref):
-                        for span in version.payload["evidence_spans"]:
-                            key = self.key_of.get(span["source_ref"])
-                            states.setdefault(key, set()).add(version.state)
+        for obj in self._claim_versions():
+            state = dict(obj.metadata).get("state")
+            for ref in obj.evidence_refs:
+                states.setdefault(self.key_of.get(ref.rsplit("@", 1)[0], "?"), set()).add(state)
         table: dict[str, Counter] = {}
         for key, role in roles.items():
-            if not self.world.claims.get(self.text_of[key]):
-                continue
             found = states.get(key, set())
             table.setdefault(role, Counter())[
                 "active" if "active" in found else "unqualified" if found else "none"
             ] += 1
         return {role: dict(sorted(counts.items())) for role, counts in sorted(table.items())}
+
+    def active_claims_on(self) -> dict[str, int]:
+        """For each kind of message a question names: how many active claims cite one as evidence, each claim
+        counted once however many of its versions do.  Every version the store holds is read, in every slot and with
+        no cap; for the ``NEVER_FACTS`` kinds this is what the baseline caps."""
+        roles = message_roles(self.world)
+        claims: dict[str, set[str]] = {role: set() for role in roles.values()}
+        for obj in self._claim_versions():
+            if dict(obj.metadata).get("state") != "active":
+                continue
+            for ref in obj.evidence_refs:
+                role = roles.get(self.key_of.get(ref.rsplit("@", 1)[0], "?"))
+                if role is not None:
+                    claims[role].add(obj.ref)
+        return {role: len(refs) for role, refs in sorted(claims.items())}
+
+    def _claim_versions(self):
+        """Every version of every claim, paged through ``MemoryCore.collection`` in history mode under the worker's
+        context, which reads every scope."""
+        query = CollectionQuery(
+            "claim",
+            page_size=100,
+            memory_epoch=self.core.memory_epoch(self.worker),
+            scope_digest=scope_digest(self.worker),
+            mode="history",
+        )
+        cursor = None
+        while True:
+            page = self.core.collection(self.worker, query, cursor=cursor)
+            yield from page.items
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
 
     def close(self) -> None:
         self.companion.close()
@@ -493,33 +552,39 @@ class Outcome:
 
 
 def outcome(question: Question, answer: Answer, scope_of: dict[str, str]) -> Outcome:
-    """Where the answer's parts and each kind of hard negative first came, and what came from outside the reads."""
+    """Where the answer's parts and each kind of hard negative first came, and what came from outside the reads: an
+    item held in a scope the entry does not read, or standing on a message of one, is a leak and answers nothing."""
+    inside = tuple(scope in question.reads for scope in answer.scopes)
+    credited = tuple(keys if held else frozenset() for keys, held in zip(answer.credited, inside, strict=True))
 
     def first_where(test) -> int | None:
-        return next((place for place in range(1, len(answer.credited) + 1) if test(place - 1)), None)
+        return next((place for place in range(1, len(credited) + 1) if test(place - 1)), None)
 
-    first = first_where(lambda index: answer.credited[index])
+    first = first_where(lambda index: credited[index])
     kinds = sorted({kind for kind, _key in question.negatives})
     labels = {key: kind for kind, key in question.negatives}
 
     def label(index: int) -> str:
-        if answer.credited[index]:
+        if credited[index]:
             return "gold"
         return "+".join(sorted({labels.get(key, "other") for key in answer.carried[index]})) or "other"
 
     return Outcome(
-        ranks=tuple(first_where(lambda index, key=key: key in answer.credited[index]) for key in question.gold),
+        ranks=tuple(first_where(lambda index, key=key: key in credited[index]) for key in question.gold),
         first=first,
         channel=answer.channels[first - 1] if first else None,
-        ndcg=ndcg(answer.credited, len(question.gold)) if question.gold else None,
+        ndcg=ndcg(credited, len(question.gold)) if question.gold else None,
         negatives=tuple(
             (kind, first_where(lambda index, kind=kind: any(labels.get(key) == kind for key in answer.carried[index])))
             for kind in kinds
         ),
-        leaks=sum(any(scope_of.get(key) not in question.reads for key in carried) for carried in answer.carried),
+        leaks=sum(
+            not held or any(scope_of.get(key) not in question.reads for key in carried)
+            for held, carried in zip(inside, answer.carried, strict=True)
+        ),
         answerability=answer.packet["answerability"],
         tokens=answer.tokens,
-        items=tuple(f"{label(index)}:{answer.channels[index]}" for index in range(len(answer.credited))),
+        items=tuple(f"{label(index)}:{answer.channels[index]}" for index in range(len(credited))),
         seen_before=answer.seen_before,
     )
 
@@ -599,6 +664,7 @@ def report(world: World, store: BenchStore, outcomes: dict[str, list[Outcome]]) 
             "build_seconds": round(store.build_seconds, 1),
         },
         "qualification": store.qualification(),
+        "active_claims_on": store.active_claims_on(),
         "leaks": sum(blocks["all"]["leaks"] for blocks in paths.values()),
         "revoked_seen_before": {"asked": len(revoked), "seen": sum(revoked)},
         "paths": paths,
@@ -665,17 +731,17 @@ def gated(report: dict) -> dict:
 
 
 def facts(report: dict) -> dict[str, int]:
-    """How many hard negatives of each ``NEVER_FACTS`` kind a claim made a fact."""
-    return {kind: report["qualification"].get(kind, {}).get("active", 0) for kind in NEVER_FACTS}
+    """How many active claims stand on hard negatives of each ``NEVER_FACTS`` kind."""
+    return {kind: report["active_claims_on"].get(kind, 0) for kind in NEVER_FACTS}
 
 
 def regressions(report: dict, baseline: dict) -> list[str]:
     """Each gated metric further than the tolerance on the wrong side of its recorded value, and each kind of hard
-    negative of which more became facts than recorded."""
+    negative more active claims stand on than recorded."""
     if report["world"] != baseline["world"]:
         return [f"the world is not the one {BASELINE.name} was measured on: the templates or the generator changed"]
     problems = [
-        f"{kind} messages that became facts: {count} (baseline {baseline['facts'].get(kind, 0)})"
+        f"active claims standing on {kind} messages: {count} (baseline {baseline['facts'].get(kind, 0)})"
         for kind, count in facts(report).items()
         if count > baseline["facts"].get(kind, 0)
     ]
@@ -700,7 +766,23 @@ def record_baseline(report: dict) -> None:
         "facts": facts(report),
         "metrics": gated(report),
     }
-    BASELINE.write_bytes((json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    # Replaced whole: a reader or a crash never sees half a baseline, and a hard link to the old one keeps the old one.
+    handle = tempfile.NamedTemporaryFile(dir=BASELINE.parent, prefix=".baseline-", suffix=".json", delete=False)
+    try:
+        with handle:
+            handle.write((json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        os.replace(handle.name, BASELINE)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+
+
+def is_baseline(path: Path, baseline: Path = BASELINE) -> bool:
+    """Whether ``path`` names the baseline file: by its resolved name, or, where both exist, as the same file under
+    another name (a hard link)."""
+    if path.resolve() == baseline.resolve():
+        return True
+    return path.exists() and baseline.exists() and os.path.samefile(path, baseline)
 
 
 # ---------------------------------------------------------------- the summary
@@ -719,6 +801,7 @@ def summary(report: dict) -> str:
             f"{role} {counts.get('active', 0)}/{sum(counts.values())}"
             for role, counts in report["qualification"].items()
         ),
+        "active claims standing on them: " + ", ".join(f"{k} {n}" for k, n in report["active_claims_on"].items()),
     ]
     columns = ("recall@1", "recall@3", "recall@6", "recall@10", "mrr", "ndcg@10")
     for path, blocks in report["paths"].items():
@@ -767,7 +850,7 @@ def main() -> int:
     measured_as_baseline = (args.split, args.scale, args.no_vectors) == ("dev", 1, False)
     if args.update and not measured_as_baseline:
         parser.error("the baseline is the dev split at scale 1, with vectors")
-    if args.json and Path(args.json).resolve() == BASELINE.resolve():
+    if args.json and is_baseline(Path(args.json)):
         parser.error(f"--json would overwrite {BASELINE.name}; --update is what records it")
     result = run(args.split, scale=args.scale, vectors=not args.no_vectors, latency=not args.no_latency)
     print(summary(result))
@@ -776,13 +859,18 @@ def main() -> int:
     if args.json:
         Path(args.json).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.update:
-        return _update(result, baseline, problems, allow_worse=args.allow_worse)
+        return update_baseline(result, baseline, problems, allow_worse=args.allow_worse)
     if problems:
         print("\nbelow the baseline:\n  " + "\n  ".join(problems))
     return 1 if problems or result["leaks"] else 0
 
 
-def _update(result: dict, baseline: dict | None, problems: list[str], *, allow_worse: bool) -> int:
+def update_baseline(result: dict, baseline: dict | None, problems: list[str], *, allow_worse: bool) -> int:
+    """Record ``result`` as the baseline, unless it has a leak or, on the same world, falls below it unasked."""
+    if result["leaks"]:
+        # Never recorded, whatever else is asked: a baseline is only taken of a store that keeps its scopes apart.
+        print(f"\nnot recorded: {result['leaks']} items came from a scope the asking entry does not read")
+        return 1
     # A changed world has nothing to be worse than; on the same world, recording a drop is asked for in words.
     if problems and baseline is not None and result["world"] == baseline["world"] and not allow_worse:
         print("\nnot recorded, below the baseline (--allow-worse records it):\n  " + "\n  ".join(problems))
