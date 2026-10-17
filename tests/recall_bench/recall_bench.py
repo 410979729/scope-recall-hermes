@@ -116,6 +116,10 @@ TOLERANCE = 0.02
 #: fact.  The baseline holds how many active claims stand on each kind (``facts``) as a ceiling, with no margin: the
 #: store may refuse more of them, and a change that lets one more through fails.
 NEVER_FACTS = ("hypothetical", "quoted", "negated", "assistant", "tool")
+#: How long one page of the claim walk may take on the store's clock: ``MemoryCore.collection``'s deadline.  The
+#: collection may stop a page at its deadline before it examines a claim and then names no next page, as the last
+#: page does; a page without a next one that took this long fails the walk (``BenchStore._claim_versions``).
+CLAIM_PAGE_SECONDS = 2.0
 
 
 # ---------------------------------------------------------------- the model seams
@@ -507,7 +511,11 @@ class BenchStore:
 
     def _claim_versions(self):
         """Every version of every claim, paged through ``MemoryCore.collection`` in history mode under the worker's
-        context, which reads every scope."""
+        context, which reads every scope.  A page cut short at its deadline before it examined a claim names no next
+        page, as the last page does, and its coverage cannot tell them apart (every page after the first is
+        ``partial``); so a page without a next one that took the whole deadline on the store's clock fails the walk,
+        since one that stops early counts short and lets more hard negatives through.  A slow page that names the
+        next one is resumed from it."""
         query = CollectionQuery(
             "claim",
             page_size=100,
@@ -517,7 +525,13 @@ class BenchStore:
         )
         cursor = None
         while True:
-            page = self.core.collection(self.worker, query, cursor=cursor)
+            started = self.core.clock.monotonic()
+            page = self.core.collection(self.worker, query, cursor=cursor, deadline_seconds=CLAIM_PAGE_SECONDS)
+            if page.next_cursor is None and self.core.clock.monotonic() - started >= CLAIM_PAGE_SECONDS:
+                raise RuntimeError(
+                    f"the claim walk's last page took its whole deadline ({CLAIM_PAGE_SECONDS} s on the store's"
+                    " clock) and names no next page: the collection may have cut it short, and the counts with it"
+                )
             yield from page.items
             if page.next_cursor is None:
                 return
@@ -640,7 +654,9 @@ def metrics(pairs: list[tuple[Question, Outcome]]) -> dict:
     return block
 
 
-def report(world: World, store: BenchStore, outcomes: dict[str, list[Outcome]]) -> dict:
+def report(world: World, store: BenchStore, outcomes: dict[str, list[Outcome]], claims: dict) -> dict:
+    """The report of one run.  ``claims`` is what the store's claims came to (``qualification`` and
+    ``active_claims_on``), read before any latency pass, on the store's own clock."""
     paths = {}
     for path, results in outcomes.items():
         pairs = list(zip(world.questions, results, strict=True))
@@ -663,8 +679,8 @@ def report(world: World, store: BenchStore, outcomes: dict[str, list[Outcome]]) 
             "failed_work": status.failed_work,
             "build_seconds": round(store.build_seconds, 1),
         },
-        "qualification": store.qualification(),
-        "active_claims_on": store.active_claims_on(),
+        "qualification": claims["qualification"],
+        "active_claims_on": claims["active_claims_on"],
         "leaks": sum(blocks["all"]["leaks"] for blocks in paths.values()),
         "revoked_seen_before": {"asked": len(revoked), "seen": sum(revoked)},
         "paths": paths,
@@ -703,13 +719,15 @@ def run(split: str = "dev", *, scale: int = 1, vectors: bool = True, latency: bo
             outcomes = {
                 path: [outcome(q, store.ask(q, path), store.scope_of) for q in world.questions] for path in PATHS
             }
+            # Counted on the store's own clock, as everything scored is: the latency pass leaves it on the real one.
+            claims = {"qualification": store.qualification(), "active_claims_on": store.active_claims_on()}
             if latency:
                 store.clock.realtime = True
                 outcomes = {
                     path: [replace(o, ms=store.ask(q, path).ms) for q, o in zip(world.questions, results, strict=True)]
                     for path, results in outcomes.items()
                 }
-            return report(world, store, outcomes)
+            return report(world, store, outcomes, claims)
         finally:
             store.close()
     finally:

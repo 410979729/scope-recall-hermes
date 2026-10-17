@@ -172,26 +172,94 @@ def test_an_item_held_in_another_scope_answers_nothing_and_is_a_leak(bench) -> N
     assert (elsewhere.first, elsewhere.leaks) == (None, 1)
 
 
-def test_every_active_claim_on_a_hard_negative_counts_once_whatever_its_slot(bench) -> None:
-    """The ceiling reads every claim version the store holds, with no list of slots and no cap: each active claim
-    citing a hard negative counts once, however many of its versions cite it, and a claim not active does not."""
-    negated = "dev/00002"
+NEGATED = "dev/00002"
+
+
+class _ClaimHistory:
+    """A store's claim history as ``MemoryCore.collection`` serves it: page after page, each naming the next one's
+    cursor, on a clock that moves only when a page in ``slow`` takes its whole deadline.  Each request is checked
+    for what the walk must ask: every version of every claim, under the worker's context."""
+
+    EPOCH = 7
+
+    def __init__(self, bench, worker, pages, *, slow=()) -> None:
+        self.bench, self.worker, self.pages, self.slow = bench, worker, pages, frozenset(slow)
+        self.cursors: list[str | None] = []
+        self.now = 0.0
+        self.clock = SimpleNamespace(monotonic=lambda: self.now)
+
+    def memory_epoch(self, context) -> int:
+        assert context is self.worker
+        return self.EPOCH
+
+    def collection(self, context, query, *, cursor=None, deadline_seconds=2.0):
+        assert context is self.worker, "read under the worker's context, which reads every scope"
+        assert (query.object_kind, query.mode) == ("claim", "history"), "every version of every claim"
+        assert (query.memory_epoch, query.scope_digest) == (self.EPOCH, self.bench.scope_digest(self.worker))
+        if cursor is None:
+            self.cursors = []
+        index = len(self.cursors)
+        assert cursor == (f"after-{index}" if index else None), "each page asked from where the last one ended"
+        self.cursors.append(cursor)
+        if index in self.slow:
+            self.now += deadline_seconds
+        last = index == len(self.pages) - 1
+        return SimpleNamespace(
+            items=tuple(self.pages[index]),
+            next_cursor=None if last else f"after-{index + 1}",
+            # The collection calls every page after the first partial, the last one included.
+            coverage="complete_for_query" if index == 0 and last else "partial",
+            memory_epoch=self.EPOCH,
+        )
+
+
+def _version(ref: str, revision: int = 1, state: str = "active", cites: str = "event-negated"):
+    return SimpleNamespace(ref=ref, revision=revision, metadata={"state": state}, evidence_refs=(f"{cites}@1",))
+
+
+def _history_store(bench, pages, *, slow=()):
+    """A bench store whose claims are ``pages`` of history, for a question answered by GOLD beside a denial."""
+    worker = SimpleNamespace(
+        binding=SimpleNamespace(agent_id="bench", installation_id="bench"),
+        allowed_scope_ids=("mira-home",),
+        project_id=None,
+        branch_id=None,
+    )
     question = bench.Question(
-        "q", "single_fact", "attribute", "en", "desk", frozenset({"mira-home"}), "?", (GOLD,), (("negated", negated),)
+        "q", "single_fact", "attribute", "en", "desk", frozenset({"mira-home"}), "?", (GOLD,), (("negated", NEGATED),)
     )
+    store = bench.BenchStore.__new__(bench.BenchStore)
+    store.world = SimpleNamespace(questions=(question,))
+    store.key_of = {"event-negated": NEGATED, "event-gold": GOLD}
+    store.worker = worker
+    store.core = _ClaimHistory(bench, worker, pages, slow=slow)
+    return store
 
-    def version(ref: str, revision: int = 1, state: str = "active", cites: str = "event-negated"):
-        return SimpleNamespace(ref=ref, revision=revision, metadata={"state": state}, evidence_refs=(f"{cites}@1",))
 
-    # More claims than the 200 a listing of one slot returned.
-    versions = [version(f"claim-{n}") for n in range(250)]
-    versions += [version("claim-0", revision=2), version("claim-lead", state="proposed"), version("g", cites="gold")]
-    store = SimpleNamespace(
-        world=SimpleNamespace(questions=(question,)),
-        key_of={"event-negated": negated, "gold": GOLD},
-        _claim_versions=lambda: iter(versions),
+def test_every_active_claim_on_a_hard_negative_counts_once_whatever_page_holds_it(bench) -> None:
+    """The ceiling counts each active claim that cites a hard negative once, however many of its versions cite it
+    and on whatever page of the store's claim history they come; a version not active counts for nothing."""
+    store = _history_store(
+        bench,
+        [
+            [_version("claim-a", state="proposed"), _version("claim-b"), _version("claim-c", cites="event-gold")],
+            [_version("claim-a", revision=2), _version("claim-b", revision=2)],
+            [_version("claim-d")],
+        ],
     )
-    assert bench.BenchStore.active_claims_on(store) == {"answer": 1, "negated": 250}
+    assert store.active_claims_on() == {"answer": 1, "negated": 3}
+    assert store.core.cursors == [None, "after-1", "after-2"]
+    assert store.qualification() == {"answer": {"active": 1}, "negated": {"active": 1}}
+
+
+def test_a_claim_walk_the_collection_may_have_cut_short_fails_the_run(bench) -> None:
+    """A page that took its whole deadline and names no next page may have stopped before a claim it holds: the
+    walk fails rather than count short.  One that took as long but names the next page is resumed from it."""
+    cut_short = _history_store(bench, [[_version("claim-a")], []], slow={1})
+    with pytest.raises(RuntimeError, match="deadline"):
+        cut_short.active_claims_on()
+    resumed = _history_store(bench, [[_version("claim-a")], [_version("claim-b")], [_version("claim-c")]], slow={1})
+    assert resumed.active_claims_on() == {"answer": 0, "negated": 3}
 
 
 def test_ndcg_weighs_each_delivered_item_once(bench) -> None:
