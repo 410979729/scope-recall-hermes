@@ -1,11 +1,11 @@
-"""The native helper imports its dependencies from where its host does, and one that cannot start says why (#176).
+"""The native helper imports its dependencies from where its host does, and one that cannot start says why.
 
 Hermes Desktop's package manager boots a bundled CPython and puts the environment it built on PYTHONPATH, so no
-environment owns the interpreter.  The helper runs isolated (``-I``), which drops PYTHONPATH: it died at
-``import jsonschema`` before its first answer, every embed and every vector search failed as ``worker_failed``, and
-its stderr went nowhere.  The host here is an environment with no packages of its own, given this suite's
-site-packages on PYTHONPATH and this checkout as a directory plugin, so the interpreter hint of #139 resolves
-nothing.  LanceDB is not needed: the import the helper died on is ``jsonschema``.
+environment owns the interpreter.  The helper runs isolated (``-I``), which drops PYTHONPATH: without the host's import
+roots it dies at ``import jsonschema`` before its first answer, every embed and every vector search fails as
+``worker_failed``, and its stderr goes nowhere.  The host here is an environment with no packages of its own, given
+this suite's site-packages on PYTHONPATH and this checkout as a directory plugin, so the interpreter hint resolves
+nothing.  LanceDB is not needed: the import the helper dies on is ``jsonschema``.
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ def test_the_same_host_on_the_base_interpreter(tmp_path) -> None:
 
 
 def test_a_helper_handed_nothing_is_said_to_miss_jsonschema(empty_host, tmp_path) -> None:
-    """The start-up run once more names the module the helper died on in #176, and nothing longer."""
+    """The start-up run names the module the helper dies on, and nothing longer."""
     line = _run(empty_host, _START_DRIVER, tmp_path)["line"]
 
     assert line == "ModuleNotFoundError: No module named 'jsonschema'"
