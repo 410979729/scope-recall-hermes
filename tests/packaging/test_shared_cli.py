@@ -1645,6 +1645,46 @@ def test_a_command_holding_the_store_under_a_long_name_is_named_by_one_that_wait
     assert "home --apply (process " in result["error"] and len(result["error"]) < 400, result
 
 
+@pytest.mark.parametrize("held", ["home", "store"])
+def test_grants_shown_waits_for_the_home_and_its_store_and_writes_no_copy_meanwhile(
+    tmp_path, capsys, root, monkeypatch, held
+):
+    """grants without --grants-from reads the home's pointer and the store's manifest, and writes --out, holding the
+    home's lock and then the store's: with another command holding either, it waits, refuses naming that command, and
+    writes no copy; once that one has ended it shows the grants."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    [home] = _client_homes(tmp_path, "workbuddy").values()
+    code, result = _attach_client(capsys, root, home, host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    out = tmp_path / "TEST-grants.json"
+    with _held_elsewhere(*((shared_run.home_lock, home) if held == "home" else (shared_run.store_lock, root))):
+        code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(out))
+    assert code == 2 and result["error"].startswith("attach --host TEST --entry TEST (process "), result
+    assert not out.exists()
+    code, result = _run(capsys, "grants", "--instance-root", str(home), "--out", str(out))
+    assert (code, result.get("status"), out.is_file()) == (0, "shown", True), result
+
+
+def test_entries_reads_each_home_s_pointer_holding_that_home_s_lock(tmp_path, capsys, root, monkeypatch):
+    """entries reads each home's pointer holding that home's lock, one home at a time: with another command holding a
+    home's lock, it waits and refuses naming that command.  A home that is gone gets no lock file and is not made
+    again; its pointer counts as absent."""
+    monkeypatch.setattr(shared_run, "LOCK_WAIT_SECONDS", 0.2)
+    homes = _client_homes(tmp_path, "workbuddy", "dsh")
+    code, result = _attach_client(capsys, root, homes["workbuddy"], host="workbuddy", like=None, capture=None)
+    assert code == 0, result
+    code, result = _attach_client(capsys, root, homes["dsh"], host="dsh", like="workbuddy", capture="workbuddy")
+    assert code == 0, result
+    with _held_elsewhere(shared_run.home_lock, homes["dsh"]):
+        code, result = _run(capsys, "entries", "--root", str(root))
+    assert code == 2 and result["error"].startswith("attach --host TEST --entry TEST (process "), result
+    homes["dsh"].rename(homes["dsh"].with_name("TEST-dsh-home-moved"))
+    code, listing = _run(capsys, "entries", "--root", str(root))
+    assert code == 0, listing
+    shown = [(row["entry_id"], row["pointer_present"]) for row in listing["entries"]]
+    assert shown == [("workbuddy", True), ("dsh", False)] and not homes["dsh"].exists()
+
+
 def _a_group_row(document):
     """A grants change: a group chat on the owner row's route, reading what it reads."""
     owner = next(row for row in document["audiences"] if row["kind"] == "owner_private")

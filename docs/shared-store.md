@@ -85,7 +85,7 @@ removed; the shared store's worker does all background work.
 
 Attaching another agent later adds its scopes to the store. Agents already running keep working
 without a restart. A command that writes the store (`init-shared`, `attach`, `detach`, `adopt`,
-`import-entry`, and `grants` with `--grants-from`) holds its `commands.lock` from its first read
+`import-entry`), and `grants`, holds its `commands.lock` from its first read
 to its last write, so no other writes in between. One that finds it held waits up to 10 s, then
 writes nothing and names the command that holds it: run it again once that one has finished.
 `attach`, `detach` and `grants` hold the home's `scope-recall-attachment.lock` as well, taken
@@ -332,7 +332,8 @@ scope-recall doctor --host hermes --instance-root <home>
 ```
 
 `entries` lists each entry, whether its home still points here, and when the store last heard
-from it. `doctor` on an attached home reports the shared store it belongs to, the store's health
+from it; it reads each home's pointer holding that home's lock, one home at a time. `doctor` on an
+attached home reports the shared store it belongs to, the store's health
 and the shared worker's registration.
 
 ## Changing an entry's grants

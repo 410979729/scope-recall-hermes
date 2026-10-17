@@ -709,18 +709,18 @@ def grants(
     each file replaced and the entry's grants before the change (``grants-before.json``, which applied the same way
     puts them back) go with the receipt.  A write that fails puts the copies back; run again, the command also
     rebinds an entry config a failed run left behind.  Memories keep their scopes; nothing else is written.  The
-    change is planned and written holding the home's lock and the store's (``_attached_home``), so no other command
-    writes the store or points the home elsewhere in between.
+    grants are read, and a change planned and written, holding the home's lock and the store's (``_attached_home``),
+    so no other command writes the store or points the home elsewhere in between.
     """
-    if grants_from is None:
-        if apply:
-            raise SharedStoreError("--apply needs --grants-from, the entry's grants as edited")
-        return _shown_grants(instance_root, out)
-    if out is not None:
+    if grants_from is None and apply:
+        raise SharedStoreError("--apply needs --grants-from, the entry's grants as edited")
+    if grants_from is not None and out is not None:
         raise SharedStoreError("--out writes the entry's grants to edit; with --grants-from nothing is written there")
     now = now or _now()
     shape = f"grants --instance-root {instance_root}{' --apply' if apply else ''}"
     with _attached_home(instance_root, shape, now):
+        if grants_from is None:
+            return _shown_grants(instance_root, out)
         plan = _planned_grants(instance_root, grants_from)
         if not plan.manifest_changes and plan.entry_config is None:
             return {"status": "unchanged", **plan.change}
@@ -863,7 +863,18 @@ def _put_back(run: Run, replaced: dict[Path, str]) -> list[str]:
     return left
 
 
-def entries(*, root: Path) -> dict[str, Any]:
+def _pointer_of(home: Path, now: str) -> Attachment | None:
+    """A home's pointer, read holding the home's lock, so that no command is midway through changing it.  The lock is
+    held for that read alone, never beside another home's; a home that is no directory has no pointer, and gets no
+    lock file."""
+    if not home.is_dir():
+        return None
+    with home_lock(home, "entries", now):
+        return read_attachment(home)
+
+
+def entries(*, root: Path, now: str | None = None) -> dict[str, Any]:
+    now = now or _now()
     payload = read_shared_payload(root)
     seen: dict[str, dict[str, str]] = {}
     store = "empty"
@@ -881,7 +892,7 @@ def entries(*, root: Path) -> dict[str, Any]:
     for record in payload["entries"]:
         home = Path(record["home"])
         try:
-            pointer = read_attachment(home)
+            pointer = _pointer_of(home, now)
             here = pointer is not None and pointer.entry_id == record["entry_id"] and pointer.root == root
         except HermesIdentityError:
             here = False
