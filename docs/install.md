@@ -637,7 +637,7 @@ Things that look wrong in a healthy report and are not:
 | `owner_words_with_client_reminder` | Claude Code only. Messages stored as the owner's words before 3.10.5 that hold a `<system-reminder>` block Claude's desktop app put in them (#248): claims drawn from them read as things the owner said, and a recall can bring the block back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a session that has `forget` (Codex, a Hermes chat), ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New messages are stored without the block. |
 | `owner_words_from_host_request` | Codex only. Codex's own requests for suggestions of what to do next, stored as the owner's words, and the model's answers to them, stored as replies: the desktop app's request for one suggested next message (it opens by saying the user did not write it) and the longer request for several suggestions. Claims drawn from them read as things the owner said, and recall brings the answers back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a Codex session, ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New requests and their answers are not stored. |
 | `owner_words_unchecked` | Claude Code and Codex. The read for `owner_words_with_client_reminder` or `owner_words_from_host_request` stopped after 10 s before it reached the end of the store; the `owner_words` check says how many it found by then. `attention`. | Run `doctor` again when the store is less busy. |
-| `work_failed` | At least one recoverable failure is queued. | Fix the cause, then `scope-recall retry-failures --config <file> --apply`. |
+| `work_failed` | At least one item failed for a reason that is not by design: any code but `derivation_invalid`, `input_invalid` and `sensitive_request`, such as an embedding its provider answered with vectors of another width (`vector_dimension_mismatch`). | Fix the cause, then `scope-recall retry-failures --config <file> --apply`, which re-opens every such item. |
 | `work_failed_terminal_only` / `work_needs_review` | All failures are by design, or were already retried once. `attention`. | Inspect them; `--include-terminal` re-runs them only if you mean to. |
 | `work_backlog_stalled` | Work is pending and the worker has not succeeded for more than twice `supervisor_seconds`. | The worker is not running. See the next section. |
 | `worker_capability_unavailable` | Work is pending and the last pass reported work types it could not do. `attention`. | Usually a missing model route, credential or budget. |
@@ -763,14 +763,21 @@ If an external route is configured, pass its credentials file with `--env-file`
 (absolute), as the wake does, or export the variable named by `credential_env`
 into your shell before running it.
 
-To re-open failures after shipping a fix:
+To re-open failures once their cause is fixed, by a release or at the provider:
 
 ```bash
 scope-recall retry-failures --config /path/to/instance-root/scope-recall/runtime-config.json --apply
 ```
 
-Without `--apply` nothing is written. `--include-terminal` also re-runs failures
-that are terminal by design. Each release gives a failure one re-look: a row this
+Without `--apply` nothing is written. A run re-opens every failure that is not
+terminal by design, whatever its code, up to `--limit`, reading past any number of
+failed rows it leaves alone, and each row it re-opens has the attempts of new work.
+`--include-terminal` also re-runs the terminal ones (`derivation_invalid`,
+`input_invalid`, `sensitive_request`). The worker re-opens a transient failure by
+itself (`max_auto_recoveries`), but not one that would come back until someone
+changes something: an embedding its provider answered with vectors of another width
+while another model served the endpoint (`vector_dimension_mismatch`) waits for this
+command. Each release gives a failure one re-look: a row this
 release re-opened that failed again is left by a later run in the same release,
 which counts it (`already_retried`, the first eight ids in
 `already_retried_work_ids`). To re-run such a row within the release, name it:
