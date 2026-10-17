@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import sys
 from pathlib import Path
@@ -351,6 +352,24 @@ def test_every_path_an_impact_names_exists_in_the_checkout() -> None:
             path = ROOT / entry
             assert path.is_dir() if entry.endswith("/") else path.is_file(), (kind, entry)
     assert list((ROOT / "adapters").rglob("runtime_wiring.py")), "no runtime wiring module for the impact to name"
+
+
+def test_the_source_distribution_ships_the_modules_the_checker_imports() -> None:
+    shipped = {
+        line.split(maxsplit=1)[1].strip()
+        for line in (ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
+        if line.startswith("include ")
+    }
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse((SCRIPTS / "check.py").read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    beside_it = {f"scripts/{name}.py" for name in imported if (SCRIPTS / f"{name}.py").is_file()}
+
+    assert {"scripts/test_directories.py", "scripts/tier_allows.py"} <= beside_it
+    assert {"scripts/check.py", *beside_it} <= shipped
 
 
 @pytest.mark.parametrize("path", RUNTIME_PROCESS_TESTS)
