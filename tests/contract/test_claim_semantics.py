@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.claims import RootEvidence, qualify
+from scope_recall.core.claims import DENIAL_REASON, RootEvidence, is_denial, qualify
 from scope_recall.core.source_qualification import conditions_match, self_report_bound
 
 from tests.contract.test_claims import Clock, capture, initial, revise_request
@@ -72,6 +72,16 @@ def test_condition_wrappers_preserve_assertion_and_identity():
         assert not conditions_match([condition], query), (condition, query)
 
 
+def _owns(text, value):
+    """The verdict on the speaker's own report: active, or kept a proposal as a denial (``is_denial``) once the
+    subject is bound."""
+    verdict = qualification(text, value=value)
+    denial = is_denial({"kind": "preference", "value_text": value})
+    return (verdict.state, verdict.reason) == (
+        ("proposed", DENIAL_REASON) if denial else ("active", "explicit_scoped_source")
+    )
+
+
 def test_self_report_does_not_promote_third_party_or_team_to_user():
     for text, value in (
         ("我喜欢蓝色。", "蓝色"),
@@ -81,7 +91,7 @@ def test_self_report_does_not_promote_third_party_or_team_to_user():
         ("我不喜欢蓝色。", "不喜欢蓝色"),
         ("I do not like blue.", "do not like blue"),
     ):
-        assert qualification(text, value=value).state == "active", text
+        assert _owns(text, value), text
     for text, value in (
         ("我的同事喜欢蓝色。", "蓝色"),
         ("我们喜欢蓝色。", "蓝色"),
@@ -100,7 +110,8 @@ def test_self_report_does_not_promote_third_party_or_team_to_user():
 
 def test_an_everyday_self_report_is_the_speaker_s():
     """我不吃辣 is the speaker's own as 我喜欢蓝色 is, after their own framing too (老实说，That said, a list
-    marker).  Said of someone else, quoted, reported, or with the value away from the verb, it is not."""
+    marker).  Said of someone else, quoted, reported, or with the value away from the verb, it is not.  Their own, a
+    value that says what they do not do still states none of its slot and stays a proposal (``_owns``)."""
     said = "我登陆了，我不吃辣，预算40以下都可以，尽量20左右，但是超出也没事，不超过40最好，除非那菜特别好"
     assert self_report_bound(said, "不吃辣", kind="preference")
     assert not self_report_bound("客户说" + said, "不吃辣", kind="preference")
@@ -137,8 +148,7 @@ def test_an_everyday_self_report_is_the_speaker_s():
         ("I never drink coffee.\nUpdate: the rest is done.", "never drink coffee"),
         ("https://example.com/menu\nI never drink coffee.", "never drink coffee"),
     ):
-        verdict = qualification(text, value=value)
-        assert verdict.state == "active", (text, verdict.reason)
+        assert _owns(text, value), (text, qualification(text, value=value).reason)
     for text, value in (
         ("客户说我不吃辣。", "不吃辣"),
         ("她说：“我不吃辣。”", "不吃辣"),

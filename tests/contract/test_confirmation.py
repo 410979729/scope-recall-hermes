@@ -203,6 +203,21 @@ def test_an_ambiguous_confirmation_adopts_nothing(app):
     assert _head(core, ctx, second)[0] == "proposed"
 
 
+def test_adopting_a_denial_does_not_make_it_the_slot_s_value(app):
+    """A denial (不是 SN-1) says which serial number the instrument does not have; adopted, it would answer for the
+    slot."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST-instrument 的序列号不是 SN-1。", key="TEST-confirm/denial")
+    denial = draft(
+        source, "不是 SN-1", kind="fact", subject="TEST-instrument", predicate="序列号", statement_kind="assertion"
+    )
+    ref = accept(core, ctx, denial).items[0].ref
+    assert _head(core, ctx, ref)[0] == "proposed"
+    capture(core, ctx, "记住 TEST-instrument 的序列号。", key="TEST-confirm/denial-yes")
+    assert _head(core, ctx, ref)[0] == "proposed" and core.current_claim(ctx, ref) is None
+    assert core.records.unresolved_updates(ctx)[0]["candidate_refs"] == (ref,)
+
+
 def test_a_refusal_to_remember_adopts_nothing(app):
     core, ctx = app
     ref = _claim(core, ctx)

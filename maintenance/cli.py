@@ -177,6 +177,19 @@ def _retire_rootless(args: argparse.Namespace) -> int:
     )
 
 
+def _restore_displaced(args: argparse.Namespace) -> int:
+    return _run_core(
+        args,
+        lambda core, config: core.operations.restore_displaced_values(
+            config.context(),
+            after_ref=args.after_ref,
+            limit=args.limit,
+            dry_run=not args.apply,
+            remaining_seconds=config.request_seconds,
+        ),
+    )
+
+
 #: Seconds between two pages of ``unindex-withheld-outputs --until-done``.
 _UNINDEX_PAGE_PAUSE = 0.2
 
@@ -641,6 +654,12 @@ _COMMANDS: tuple[
         "retire a bounded page of proposed claims no derivation root supports (tool output alone)",
         _add_requalify_arguments,
         _retire_rootless,
+    ),
+    (
+        "restore-displaced-values",
+        "give a bounded page of claims back the value a denial took their head from",
+        _add_requalify_arguments,
+        _restore_displaced,
     ),
     (
         "unindex-withheld-outputs",

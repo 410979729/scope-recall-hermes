@@ -10,6 +10,8 @@ Claim slot 由 scope、project、branch、kind、subject、predicate 及条件�
 
 资格规则保守保留 proposed。证据所在句及关联前置标题参与否定、假设、条件和时间判断，不能通过裁掉“假设/不”晋升，也不因另一个无关句子的假设降级。相同短引文有过多不确定位置时拒绝。未知、缺段、不完整来源不能独自建立 active。procedure 的方法步骤、反例字段和核验依据受来源限制；intention 的完成/取消需要对应来源，不因助手提醒或回注而完成；未解析的 alias 目标保持 proposed。
 
+否认只说明 slot 不取何值：fact 与 preference 的取值以否定或厌恶开头（“不是 X”“not X”“不喜欢 X”“讨厌 X”）时，即使忠实保留了否定也保持 proposed，重复或第二个来源都不能使其晋升。它不推进 head，不取代 slot 现有的取值，也不能经确认成为 slot 的取值；只有否认的 slot 没有有效取值。constraint 的否定是规则本身，decision 的“不做某事”是决定本身，二者不在此列。
+
 ## 两条时间轴
 
 `valid_from/to` 是原断言的有效区间，采用 UTC 半开区间；未知保持 null。`recorded_from/to` 是此版本取得/失去 head 地位的记录时间。旧有效区间不被原地改写；`replaces_revision`、单一 head 指针和区间选择共同计算给定时点的有效版本。这保留了事后更正前系统曾知道什么，`known_at` 是额外的只读知识时间边界。

@@ -131,6 +131,30 @@ _COMPLETION = re.compile(r"已经完成|已完成|检查完成|完成了|\b(?:co
 _CANCELLATION = re.compile(r"取消|撤销|作废|\b(?:cancel|revoke|withdraw)\b", re.I)
 _NEGATED_COMPLETION = re.compile(r"未完成|没[有]?完成|尚未完成|提醒|\b(?:not done|not completed|remind)\b", re.I)
 _NEGATION = re.compile(r"不是|并非|没有|未曾|不喜欢|讨厌|\b(?:not|never|dislike)\b", re.I)
+#: The opening of a value that says what its slot is not: a negation ("not CircleCI", "isn't X", "不是 7012",
+#: "don't like PowerShell", "从不抽烟") or an aversion ("can't stand X", "讨厌 X", "受不了 X"), after the adverbs that
+#: may lead it ("一点也不喜欢", "really don't like").  A careful extractor keeps a denial's negation in its value.
+_DENIAL = re.compile(
+    r"^\s*(?:(?:一点[也都]|根本|完全|从来|向来|也|都|还|并|已经|再也|很|真|实在)\s*)*"
+    r"(?:不|没|并非|绝非|从未|尚未|还未|未曾|讨厌|厌恶|反感|受不了)"
+    r"|^\s*(?:(?:really|just|still|simply|definitely|absolutely|is|are|was|were|do|does|did)\s+)*"
+    r"(?:not|never|no\s+longer|cannot|can['’]?t\s+stand|\w+n['’]t|dislikes?|hates?)\b",
+    re.I,
+)
+#: Kinds whose slot holds a value, so a denial can only say what it is not.  A constraint's negation is the rule
+#: itself ("never push to main"), and a decision not to do something is the decision.
+_VALUE_SLOT_KINDS = frozenset({"fact", "preference"})
+DENIAL_REASON = "denial_states_no_value"
+
+
+def is_denial(payload) -> bool:
+    """Whether a claim's value says what its slot is not, rather than what it is.
+
+    "The CI service is not CircleCI" leaves the CI service unknown, and "I don't like PowerShell" does not say which
+    shell the person prefers.  Such a value is no version of the slot's value: it must not replace the one the slot
+    holds, nor be read as it.
+    """
+    return payload.get("kind") in _VALUE_SLOT_KINDS and bool(_DENIAL.match(str(payload.get("value_text") or "")))
 
 
 def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
@@ -543,6 +567,11 @@ def _procedure_proved(c: _Cited) -> str | None:
     return None
 
 
+def _states_a_value(c: _Cited) -> str | None:
+    """A denial stays a proposal: repeating it, or a second witness, cannot make it state the slot's value."""
+    return DENIAL_REASON if is_denial(c.proposal) else None
+
+
 def _fact_entailed(c: _Cited) -> str | None:
     """Ordinary durable facts keep the claim-frame support check."""
     if c.kind != "fact" or c.explicit_attribute_correction:
@@ -635,6 +664,7 @@ _REFUSALS = (
     _subject_binds,
     _intention_proved,
     _procedure_proved,
+    _states_a_value,
     _fact_entailed,
     _value_preserved,
     _time_scope_known,

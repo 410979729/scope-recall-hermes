@@ -30,6 +30,7 @@ from .claims import (
     evidence_context,
     evidence_refs,
     grounded_time,
+    is_denial,
     qualify,
     same_assertion,
     select_effective,
@@ -244,7 +245,11 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
             return Mutation(saved.ref, saved.revision, "inserted", saved.state)
         return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
     advance, conflicts = True, ()
-    if previous is not None and previous.state != "proposed":
+    if previous is not None and is_denial(proposal):
+        # A denial says what the slot's value is not: it takes the head from no version, a proposal included, and is
+        # kept beside it.
+        advance = False
+    elif previous is not None and previous.state != "proposed":
         if qualification.state == "proposed":
             advance = False
         else:
@@ -688,7 +693,8 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
         and v.scope_id == source.scope_id
         and (v.project_id, v.branch_id) == (source.project_id, source.branch_id)
     ]
-    matches = confirmation_targets(raw, heads, bound_literal=bound_literal)
+    # Adopting a denial would make it the slot's value, which it can never state (``is_denial``).
+    matches = [v for v in confirmation_targets(raw, heads, bound_literal=bound_literal) if not is_denial(v.payload)]
     if len(matches) != 1:
         if heads:
             tx.claims.unresolved(source.ref, source.revision, tuple(v.ref for v in heads), recorded_at=clock.utc_now())

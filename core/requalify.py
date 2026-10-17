@@ -30,7 +30,15 @@ from typing import Any
 
 from ..contracts import ContractError
 from .claim_normalization import expand_frames
-from .claims import Qualification, bind_claim_subject, evidence_refs, qualify, same_assertion
+from .claims import (
+    DENIAL_REASON,
+    Qualification,
+    bind_claim_subject,
+    evidence_refs,
+    is_denial,
+    qualify,
+    same_assertion,
+)
 from .confirmation import CONFIRMED_REASON
 from .corroboration import CORROBORATED_REASON
 from .episodes import source_origin
@@ -223,12 +231,69 @@ def retire_rootless_proposals(
     return report
 
 
+def restore_displaced_values(
+    tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True
+) -> RequalifyReport:
+    """Give each claim of one bounded page back the value a denial took its head from.
+
+    A denial says what a slot's value is not (``claims.is_denial``) and no longer takes a head; one written before
+    holds its claim's head and reads as the slot's value.  Such a head is withdrawn with a retracted version, so no
+    read at any instant takes it for the value, and the last version before it that states one is re-instated as it
+    was; with none, the denial is kept as the proposal a new one is.  Every version stays in the history, and the
+    report names refs and revisions only, never claim text.
+    """
+    refs = _page(tx, after_ref, limit)
+    report = RequalifyReport(applied=not dry_run)
+    for ref in refs:
+        report.last_ref = ref
+        versions = tx.claims.versions(ref)
+        head = next((v for v in versions if v.revision == v.current_revision), None)
+        if head is None or head.state not in {"active", "disputed"} or not is_denial(head.payload):
+            continue
+        report.examined += 1
+        stated = _stated_before(versions, head)
+        entry = {"ref": ref, "was": f"{head.state}:{head.reason}", "restores": stated.revision if stated else None}
+        if not dry_run:
+            withdrawn = tx.claims.append(
+                head.scope_id,
+                head.payload,
+                Qualification("retracted", head.basis, DENIAL_REASON),
+                recorded_at=now,
+                previous=head,
+            )
+            kept, verdict = (
+                (stated.payload, Qualification(stated.state, stated.basis, stated.reason))
+                if stated is not None
+                else (head.payload, Qualification("proposed", "inferred_suggestion", DENIAL_REASON))
+            )
+            saved = tx.claims.append(head.scope_id, kept, verdict, recorded_at=now, previous=withdrawn)
+            tx.candidates.register(saved.ref, saved.revision, observed_at=now, schedule_initial=False)
+            entry["revision"] = saved.revision
+        report.changed.append(entry)
+    return report
+
+
+def _stated_before(versions, head):
+    """The last version before ``head`` among the claim's heads that states a value, or None; a retraction ends the
+    search, since nothing was held from then on."""
+    by_revision = {version.revision: version for version in versions}
+    version = head
+    while version.replaces_revision is not None:
+        version = by_revision[version.replaces_revision]
+        if version.state == "retracted":
+            return None
+        if not is_denial(version.payload):
+            return version
+    return None
+
+
 __all__ = [
     "MAX_PAGE",
     "REQUALIFIABLE_STATES",
     "ROOTLESS_REASON",
     "RequalifyReport",
     "requalify_claims",
+    "restore_displaced_values",
     "retire_rootless_proposals",
 ]
 
