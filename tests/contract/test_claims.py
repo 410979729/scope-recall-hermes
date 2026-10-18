@@ -718,6 +718,51 @@ def test_requalify_reads_a_denial_at_the_head_as_writing_does(app):
     assert core.operations.requalify_claims(ctx, limit=32, dry_run=False)["changed"] == []
 
 
+@pytest.mark.parametrize(
+    "stated,correction,value,reason",
+    [
+        (
+            ("TEST-project CI service 是 Jenkins。", "Jenkins"),
+            "更正：TEST-project CI service 不是 CircleCI。",
+            "不是 CircleCI",
+            "denial_of_another_value",
+        ),
+        (
+            ("TEST-project CI service 是 Jenkins。", "Jenkins"),
+            "更正：TEST-project CI service 不是 Jenkins 了。",
+            "不是 Jenkins",
+            "denial_not_a_value",
+        ),
+        (
+            ("TEST-project CI service 不是 CircleCI。", "不是 CircleCI"),
+            "更正：TEST-project CI service 不是 CircleCI。",
+            "不是 CircleCI",
+            "denial_not_a_value",
+        ),
+    ],
+)
+def test_a_revision_never_makes_a_denial_about_anything_but_the_person_a_value(app, stated, correction, value, reason):
+    """A denial about anything but the person is no value of its slot (``mutate.denial_verdict``), and no revision makes
+    it one: correcting TEST-project's CI service to 不是 CircleCI or to 不是 Jenkins 了, or a denial kept a proposal to
+    itself, is refused, and the claim stays as it was."""
+    core, ctx = app
+    claim = _stated(core, ctx, *stated)
+    before = core.claim_history(ctx, claim.ref)
+    source = capture(core, ctx, correction, when=_LATER)
+    with pytest.raises(ContractError, match=reason):
+        core.revise(ctx, revise_request(claim, source, value), remaining_seconds=10)
+    assert core.claim_history(ctx, claim.ref) == before
+
+
+def test_a_revision_to_the_person_s_own_denial_replaces_what_it_denies(app):
+    """The person's own 不吃辣 corrects their 爱吃辣, as saying it replaces it."""
+    core, ctx = app
+    held, owner = _preferred(core, ctx, "我爱吃辣。", "爱吃辣")
+    source = capture(core, owner, "更正：饮食上我现在不吃辣了。", when=_LATER)
+    assert core.revise(owner, revise_request(held, source, "不吃辣"), remaining_seconds=10).items[0].state == "active"
+    assert core.current_claim(owner, held.ref).payload["value_text"] == "不吃辣"
+
+
 @pytest.mark.parametrize("origin", ["assistant_visible", "host_generated", "memory_reinjection", "origin_unknown"])
 def test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering(app, origin):
     core, ctx = app

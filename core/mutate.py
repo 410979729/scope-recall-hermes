@@ -536,8 +536,10 @@ def _revision_proof(head, updated, authority: _Authority) -> str:
     return proof
 
 
-def _revision_qualification(tx, updated, proof: str, authority: _Authority) -> Qualification:
-    """The revised claim's qualification: a retraction is the person's report; a correction must qualify active."""
+def _revision_qualification(tx, updated, proof: str, authority: _Authority, held) -> Qualification:
+    """The revised claim's qualification: a retraction is the person's report; a correction must qualify active and
+    be a value of its slot, given ``held``, the value the slot holds: a denial the denial rule keeps a proposal
+    (``denial_verdict``) is none."""
     roots = tx.claims.roots(evidence_refs(updated))
     roots = tuple(replace(root, content=evidence_context(root.content, proof)) for root in roots)
     if not all(grounded_time(updated[field], roots) for field in ("valid_from", "valid_to")):
@@ -559,6 +561,9 @@ def _revision_qualification(tx, updated, proof: str, authority: _Authority) -> Q
     # polarity, conditions, source identity or temporal checks.
     if qualification.state != "active":
         raise ContractError("DERIVATION_INVALID", qualification.reason)
+    denial_reason, _ends_held = denial_verdict(updated, held, roots)
+    if denial_reason is not None:
+        raise ContractError("DERIVATION_INVALID", denial_reason)
     return qualification
 
 
@@ -611,7 +616,9 @@ def _revise_in_transaction(tx, clock, request) -> Mutation:
         reference_proposals=[],
     )
     validate_claims(tx, result, head.scope_id)
-    qualification = _revision_qualification(tx, updated, proof, authority)
+    history = tx.claims.slot(head.scope_id, updated)
+    held = select_effective(history, clock.utc_now()) if history else None
+    qualification = _revision_qualification(tx, updated, proof, authority, held)
     return _record_revision(tx, clock, head, updated, qualification, request, authority)
 
 
