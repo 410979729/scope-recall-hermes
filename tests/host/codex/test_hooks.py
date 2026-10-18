@@ -241,7 +241,15 @@ def test_path_traversal_cwd_does_not_bind_foreign_root(handler, installed, tmp_p
     assert hook.handle_payload(_payload(Path(cwd), "UserPromptSubmit", prompt="hello")) == {}
 
 
-def test_stop_never_loops_and_records_only_present_assistant_text(handler, installed):
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_stop_never_loops_and_records_only_present_assistant_text(handler, installed, slow_capture_store, pace):
+    """A Stop stores the assistant text that is present, and an empty one adds no row.
+
+    ``slow`` delays the next real write after this body starts. That delay is store time, so the
+    same source row is committed.
+    """
+    if pace == "slow":
+        slow_capture_store()
     hook, project_root, config = handler
     assert hook.handle_payload(_payload(project_root, "Stop", last_assistant_message="final answer")) == {}
     assert hook.handle_payload(_payload(project_root, "Stop", turn="turn-blank", last_assistant_message="")) == {}

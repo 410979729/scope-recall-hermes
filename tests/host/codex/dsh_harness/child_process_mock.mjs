@@ -1,10 +1,12 @@
 // Test-only stand-in: keep isolated Python, bind this checkout explicitly, and discard host editable bridges.
 // SR_FAKE_HOOK still selects the small failure stand-in (fake_hook.mjs).
+// SR_DSH_SLOW_CAPTURE and SR_DSH_SLOW_CAPTURE_DELAY together delay one named capture's next rw open
+// after that connection is open. Without both, the child runs this bootstrap unchanged.
 import { spawn as realSpawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url))
-const bootstrap = `import importlib.util, runpy, sys, types
+const bootstrap = `import importlib.util, os, runpy, sys, types
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 args = sys.argv[2:]
@@ -17,6 +19,30 @@ at = args.index('-m')
 module = args[at + 1]
 assert Path(importlib.util.find_spec(module).origin).resolve().is_relative_to(root)
 sys.argv = [module, *args[at + 2:]]
+text = os.environ.get("SR_DSH_SLOW_CAPTURE")
+delay = os.environ.get("SR_DSH_SLOW_CAPTURE_DELAY")
+if text and delay:
+    import time
+    from scope_recall.core import MemoryCore
+    from scope_recall.core.storage import SQLiteStorage
+    record = MemoryCore.record_host_event
+    opened = SQLiteStorage._open
+    state = {"selected": False, "delayed": False}
+    seconds = float(delay)
+    def tagged(self, context, value, **kwargs):
+        state["selected"] = value.get("content") == text
+        try:
+            return record(self, context, value, **kwargs)
+        finally:
+            state["selected"] = False
+    def slow_open(self, mode, *args, **kwargs):
+        connection = opened(self, mode, *args, **kwargs)
+        if state["selected"] and mode == "rw" and not state["delayed"]:
+            state["delayed"] = True
+            time.sleep(seconds)
+        return connection
+    MemoryCore.record_host_event = tagged
+    SQLiteStorage._open = slow_open
 runpy.run_module(module, run_name='__main__')
 `
 

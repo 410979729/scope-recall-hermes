@@ -4447,9 +4447,7 @@ _NEEDS_NODE = pytest.mark.skipif(not _node_ok(), reason="node 20.6 or later is n
 
 
 def _run_plugin(config: dict, scenario: str = "turn", env: dict | None = None) -> dict:
-    # The plugin ends a prompt hook at 9 s, answered or not.  On a slow Windows runner one outlived that before it
-    # stored the prompt, which the Stop then stored from the turn's messages (``record:u-0``, not ``user:1``); the
-    # plugin takes the answer as soon as it is whole, so the longest wait it allows costs a test nothing.
+    # Use the plugin's maximum prompt wait; a complete answer returns immediately.
     config = {"recallTimeoutMs": 30_000, **config}
     process = subprocess.run(
         [
@@ -4494,8 +4492,45 @@ def _plugin_keys(root):
     )
 
 
+def _received_plugin_rows(root):
+    """Read committed rows and pending events, checking the pending entry and session before replay."""
+    held = []
+    for (payload,) in _rows(root, "SELECT payload_json FROM capture_inbox"):
+        packet = json.loads(payload)
+        assert packet["context"]["entry_id"] == "dsh"
+        assert packet["context"]["session_id"] == "dsh:session-TEST-plugin"
+        held.extend(packet["events"])
+    return _plugin_rows(root), held
+
+
+def _replay_received_plugin_inbox(home):
+    """Commit the plugin session's durable inbox and return the receipts.
+
+    The caller reads the spool, the source rows and the pending payloads first. This writes only what that
+    session already received, on its entry and its authorized scopes.
+    """
+    hook = CodexHookHandler.from_home(str(home), "dsh")
+    try:
+        context = hook.context(hook.audience_of({"cwd": "C:/TEST/work"}), "session-TEST-plugin", "human_direct")
+        return replay_inbox(
+            hook.core.storage,
+            hook.core.clock,
+            context,
+            authorize=lambda scope: context.allowed_scope_ids,
+            admission_policy=hook.core.config.admission_policy,
+            remaining_seconds=10,
+        )
+    finally:
+        hook.close()
+
+
 @_NEEDS_NODE
-def test_the_plugin_recalls_before_the_first_step_and_stores_the_turn_at_its_end(dsh, tmp_path):
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_the_plugin_recalls_before_the_first_step_and_stores_the_turn_at_its_end(dsh, tmp_path, pace):
+    """Recall before a prompt, then materialize each completed turn capture once.
+
+    An accepted reply may wait in the durable inbox after the plugin's spool is empty.
+    """
     root, home = dsh
     _dsh(
         home,
@@ -4511,26 +4546,31 @@ def test_the_plugin_recalls_before_the_first_step_and_stores_the_turn_at_its_end
             "version": "TEST",
             "prompt": "TEST 我的猫叫什么名字？",
             "queued": "TEST 先说一句：我在家。",
-        }
+        },
+        env={"SR_DSH_SLOW_CAPTURE": "TEST 它叫 Mochi。", "SR_DSH_SLOW_CAPTURE_DELAY": "0.6"} if pace == "slow" else {},
     )
     assert result["warnings"] == []
     assert result["decisionKept"], "the step's own messages and flags are passed on"
     assert result["injected"] is not None and "Mochi" in result["injected"]["text"]
     assert (result["injected"]["kind"], result["injected"]["form"]) == ("plugin:scope-recall", "recall")
-    assert result["spool"] == [], "the turn was stored and nothing is left on disk"
+    assert result["spool"] == [], "the turn was accepted and nothing remains in the plugin spool"
     assert result["status"]["lastRecall"]["outcome"] == "recalled"
     assert result["status"]["lastStore"]["error"] is None and result["status"]["backlog"] == 0
-    assert _plugin_rows(root) == sorted(
+    expected = sorted(
         [
             ("user", "human_direct", "TEST 先说一句：我在家。"),
             ("user", "human_direct", "TEST 我的猫叫什么名字？"),
             ("assistant", "assistant_visible", "TEST 我先查一下记忆。"),
             ("assistant", "assistant_visible", "TEST 它叫 Mochi。"),
         ]
-    ), (
-        "the prompt (the step's last message of the person's) and the reply once each, the message taken with the "
-        "prompt and what was said in between from the record, and none of dsh's own context"
     )
+    stored, held = _received_plugin_rows(root)
+    assert sorted(stored + [(event["role"], event["origin"], event["content"]) for event in held]) == expected
+    if pace == "slow":
+        assert any(event["content"] == "TEST 它叫 Mochi。" for event in held)
+    _replay_received_plugin_inbox(home)
+    assert _plugin_rows(root) == expected
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
     assert _plugin_keys(root) == ["assistant:1", "record:a-1", "record:u-1", "user:1"], (
         "the reply is the turn's",
         result["status"],
@@ -4550,24 +4590,48 @@ def test_a_turn_that_did_not_complete_has_no_reply_and_keeps_what_was_said(dsh, 
 
 
 @_NEEDS_NODE
-def test_a_message_that_comes_while_a_turn_is_stored_is_kept_and_stored_with_the_next(dsh, tmp_path):
-    """The person's next message, and the next turn, come while the first turn's Stop runs: the store rewrites the spool
-    from what it holds then, not from what it read before, and stores the rest when that turn ends."""
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_a_message_that_comes_while_a_turn_is_stored_is_kept_and_stored_with_the_next(dsh, tmp_path, pace):
+    """The plugin retains messages added during a Stop and sends them when their turn ends.
+
+    An empty spool acknowledges durable receipt. ``slow`` delays the second reply's next real write so that it
+    waits in the inbox. Source rows and pending events together hold the complete turn before authorized replay;
+    afterward five distinct source rows remain, with the reply under its original key.
+    """
     root, home = dsh
-    # Each Stop is a process of its own; on a slow runner the 2 s a test entry's hooks get stored a line or two a Stop,
-    # and the turns' lines outlasted the harness's wait.  The entry's hooks get the 6 s a real entry's have, and no
-    # resident recall server, as without a runtime config: one kept running holds its lock past the test's end.
+    # Use the configured hook budget without a resident recall server; each Stop owns its process and resources.
     (home / "scope-recall" / "runtime-config.json").write_text(
         json.dumps({"hook_processing_seconds": 6, "resident_recall_minutes": 0}), "utf-8"
     )
+    reply = "TEST 第二轮的回答。"
+    env = {"SR_DSH_SLOW_CAPTURE": reply, "SR_DSH_SLOW_CAPTURE_DELAY": "0.6"} if pace == "slow" else {}
     result = _run_plugin(
-        {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "overlap": True}
+        {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "overlap": True},
+        env=env,
     )
     assert result["spool"] == [] and result["warnings"] == []
+    expected = sorted(
+        [
+            ("user", "human_direct", "TEST 我的猫叫什么名字？"),
+            ("assistant", "assistant_visible", "TEST 我先查一下记忆。"),
+            ("assistant", "assistant_visible", "TEST 它叫 Mochi。"),
+            ("user", "human_direct", "TEST 第二轮的问题。"),
+            ("assistant", "assistant_visible", reply),
+        ]
+    )
+    stored, held = _received_plugin_rows(root)
+    assert sorted(stored + [(event["role"], event["origin"], event["content"]) for event in held]) == expected
+    if pace == "slow":
+        assert any(event["content"] == reply and event["source_event_key"].endswith(":assistant:2@1") for event in held)
+    receipts = _replay_received_plugin_inbox(home)
     rows = _plugin_rows(root)
-    assert ("user", "human_direct", "TEST 第二轮的问题。") in rows
-    assert ("assistant", "assistant_visible", "TEST 第二轮的回答。") in rows
+    assert rows == expected
     assert len(rows) == len(set(rows)) == 5
+    assert _plugin_keys(root).count("assistant:2") == 1
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
+    assert [receipt.disposition for receipt in receipts] == ["inserted"] * len(held)
+    source_keys = [key for (key,) in _rows(root, "SELECT source_event_key FROM source_events")]
+    assert all(source_keys.count(event["source_event_key"]) == 1 for event in held)
 
 
 @_NEEDS_NODE

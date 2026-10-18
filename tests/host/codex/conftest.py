@@ -82,7 +82,13 @@ def project_root(tmp_path) -> Path:
 
 
 @pytest.fixture
-def installed(project_root, tmp_path):
+def installed(project_root, tmp_path, still_clocks):
+    """Build a semantic install while preserving explicit hook-clock advances.
+
+    The inbox's clock excludes physical SQL time; ``FixedClock._mono`` controls the hook's
+    deadline. Lease and non-SQL waits retain their real cost, and budget tests can replace the
+    zero transaction charge through ``metered_store(cost)``.
+    """
     clock = FixedClock()
     config, core = install_codex_scope_recall(tmp_path / "install", project_root=project_root, clock=clock)
     return config, core, clock, project_root
