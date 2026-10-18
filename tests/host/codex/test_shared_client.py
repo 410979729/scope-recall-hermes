@@ -4038,7 +4038,8 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
     """A WorkBuddy prompt hook that runs past its wait blocks the prompt, and what counts is the time the host waits.
     The prompt's capture waits out a busy store as long as it may (2 s of the 6 s an entry's runtime config may give,
     1 s of the 2 s default), and the entry's server and the hook's own recall need more than is left: the hook still
-    answers within its budget."""
+    answers within its budget.  The runtime is not attached here: attaching it takes what it takes, not a share of
+    the hook's time."""
     import threading
 
     from scope_recall.adapters.clients import handler as handler_module
@@ -4046,6 +4047,7 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    monkeypatch.setattr(CodexHookHandler, "ensure_runtime", lambda self, audience=None: None)
     _root, home, _projects = workbuddy
     if configured is not None:
         (home / "scope-recall" / "runtime-config.json").write_text(
