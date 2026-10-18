@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -111,7 +110,7 @@ def test_handler_and_mcp_share_runtime_core(codex_install):
     handler.close()
 
 
-def test_session_end_launches_owned_worker_without_foreground_model(codex_install):
+def test_session_end_launches_owned_worker_without_foreground_model(codex_install, still_clocks):
     config, _core, project, runtime_path = codex_install
     handler = CodexHookHandler.from_config_path(
         str(config.config_path),
@@ -151,7 +150,7 @@ def test_session_end_without_runtime_config_does_not_launch_worker(codex_install
         launch_worker.assert_not_called()
 
 
-def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install):
+def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install, still_clocks):
     config, _core, project, runtime_path = codex_install
     handler = CodexHookHandler.from_config_path(
         str(config.config_path),
@@ -166,7 +165,6 @@ def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install
             "prompt": "persist before owned watchdog",
         }
     )
-    started = time.monotonic()
     handler.handle_payload(
         {
             "hook_event_name": "SessionEnd",
@@ -179,10 +177,12 @@ def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install
     assert host_runtime is not None
     worker = host_runtime._owned_worker
     assert worker is not None
+    # The hook has returned, and the watchdog it started still runs: it is not waited for, however long the store
+    # took.  Closing the hook leaves it be, and it ends on its own, with nothing to do.
+    assert worker.poll() is None
     ephemeral = (worker.config_path,)
     handler.close()
 
-    assert time.monotonic() - started < 2.0
     assert worker.wait(timeout=30.0) == 0
     stdout, _stderr = worker.communicate(timeout=5.0)
     assert stdout == ""
