@@ -12,6 +12,7 @@ import json
 
 from scope_recall.core.capture_filters import redact_secret_like_text
 from scope_recall.core.secret_patterns import contains_secret_like_text, secret_scan_shadow
+from v11_support import slowdown
 
 
 def test_an_escaped_line_break_ends_a_value_like_a_real_one():
@@ -161,45 +162,39 @@ def test_a_telegram_token_is_still_caught_where_one_appears():
         assert contains_secret_like_text(text), text
 
 
-def test_a_long_hyphenated_line_scans_in_linear_time():
-    """The name before ``token`` was unbounded: a 60,000-character kebab-case line was tried from every hyphen to
-    its end, 18 s in one scan, inside a capture or a model request."""
-    import time
+def _scanned(text):
+    contains_secret_like_text(text)
+    redact_secret_like_text(text)
 
-    line = "a-" * 30000
-    started = time.monotonic()
+
+def test_a_long_hyphenated_line_scans_in_linear_time():
+    """The name before ``token`` is bounded: unbounded, a kebab-case line would be tried from every hyphen to its end,
+    seconds for 60,000 characters in one scan, inside a capture or a model request.  Four times the line takes about
+    four times as long (``slowdown``)."""
+    line = "a-" * 30_000
     assert not contains_secret_like_text(line)
-    assert time.monotonic() - started < 2.0
+    assert slowdown(contains_secret_like_text, "a-" * 7_500, line) < 8
 
 
 def test_adversarial_text_scans_in_linear_time():
-    """Four patterns backtracked quadratically: ``^\\s*`` over blank lines (4.3 s for 20 kB), a backslash run with
-    no break after it (1.4 s), repeated "credential" (1.0 s), and repeated PEM BEGIN markers (14 s for 100 kB),
-    inside a capture or a model request."""
-    import time
-
-    for text in ("\n" * 20000, chr(92) * 20000, "credential" * 2000, "-----BEGIN " * 9000):
-        started = time.monotonic()
-        contains_secret_like_text(text)
-        redact_secret_like_text(text)
-        assert time.monotonic() - started < 1.5, (text[:20], time.monotonic() - started)
+    """No pattern backtracks over a long run: ``^\\s*`` over blank lines, a backslash run with no break after it,
+    repeated "credential" and repeated PEM BEGIN markers each take seconds for 20-100 kB in a pattern that does, inside
+    a capture or a model request.  Four times the run takes about four times as long (``slowdown``)."""
+    for run, count in (("\n", 20_000), (chr(92), 20_000), ("credential", 2_000), ("-----BEGIN ", 9_000)):
+        assert slowdown(_scanned, run * (count // 4), run * count) < 8, run
 
 
 def test_a_run_of_punctuation_after_a_key_word_scans_in_linear_time():
-    """A value's end was greedy over dots, and so was a mask: a run of dots after a key word was given back one at a
-    time, 2.9 s for 20 kB, and 7.5 s to scan with 64 key starts before it."""
-    import time
-
+    """A value's end is not greedy over dots, and neither is a mask: given back one at a time, a run of dots after a
+    key word takes seconds for 20 kB, and longer with 64 key starts before it.  Four times the run takes about four
+    times as long (``slowdown``)."""
     for text in (
-        "password: " + "." * 20000 + "a",
-        "a-" * 63 + "token: " + "." * 4000 + "! " + "the quick brown fox. " * 800,
-        "token: " + "*.-_x" * 4000 + "a",
-        "secret = " + "!" * 20000 + "a",
+        lambda count: "password: " + "." * count + "a",
+        lambda count: "a-" * 63 + "token: " + "." * (count // 5) + "! " + "the quick brown fox. " * (count // 25),
+        lambda count: "token: " + "*.-_x" * (count // 5) + "a",
+        lambda count: "secret = " + "!" * count + "a",
     ):
-        started = time.monotonic()
-        contains_secret_like_text(text)
-        redact_secret_like_text(text)
-        assert time.monotonic() - started < 0.5, (text[:20], time.monotonic() - started)
+        assert slowdown(_scanned, text(5_000), text(20_000)) < 8, text(20)
 
 
 def test_two_secrets_side_by_side_are_both_redacted():

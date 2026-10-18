@@ -40,14 +40,15 @@ INTEGRATION_WATCHDOG_SECONDS = 2700
 #: the release budget.
 WATCHDOG_SECONDS_PER_FILE = 20
 #: Test files that build a whole store before their first test, and the
-#: seconds each adds to its tier's watchdog on top of the twenty a file.  The
-#: recall bench captures weeks of a synthetic shared store through the public
-#: core and asks it every question twice, then builds a smaller world twice
-#: more to compare a slow clock with a steady one: about a minute of work on a
-#: Linux runner, and minutes on GitHub's Windows runner, ten times the twenty
-#: seconds a file is given.  Its four minutes are more than that work takes
-#: there; the release budget still caps the sum, so a hang stays bounded.
-HEAVY_FILE_SECONDS = {"tests/recall_bench/test_recall_bench.py": 240}
+#: seconds each adds to its tier's watchdog.  The allowance comes after the
+#: release budget has capped the twenty seconds a file, so the cap that bounds
+#: a tier of many files never cuts it, and a hang stays bounded by the sum.
+#: The recall bench's file builds a synthetic shared store of four weeks
+#: through the real capture, worker and recall paths, and a two-day one twice:
+#: about 60 s under this gate on a local SSD, and up to six and a half times
+#: that on GitHub's Windows runners, whose file operations are the slowest it
+#: meets.  Its 600 s are that and half as much again.
+HEAVY_FILE_SECONDS = {"tests/recall_bench/test_recall_bench.py": 600}
 
 
 def pytest_watchdog_seconds(
@@ -57,10 +58,11 @@ def pytest_watchdog_seconds(
 
     Release and integration keep their own fixed budgets: release's 600s,
     integration's 2700s sized to the GitHub Windows runner's measured need for
-    the 118-file baseline. Every other tier keeps 180s as a floor and adds room
-    for what it actually runs -- twenty seconds a file, and what
-    ``HEAVY_FILE_SECONDS`` gives each of ``selected_paths`` it names -- capped
-    at the release budget so no run -- hung or merely large -- waits forever.
+    the 118-file baseline. Every other tier keeps 180s as a floor and adds
+    twenty seconds a file it runs, capped at the release budget so no run --
+    hung or merely large -- waits forever; each of ``selected_paths`` that
+    builds a whole store then adds its own allowance (``HEAVY_FILE_SECONDS``),
+    which the cap does not cut.
     """
 
     if tier == "release":
@@ -75,8 +77,8 @@ def pytest_watchdog_seconds(
         return INTEGRATION_WATCHDOG_SECONDS
     paths = selected_paths if isinstance(selected_paths, (list, tuple)) else ()
     heavy = sum(HEAVY_FILE_SECONDS.get(path, 0) for path in {str(path).replace("\\", "/") for path in paths})
-    scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files + heavy
-    return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS)
+    scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
+    return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS) + heavy
 
 
 def distribution_is_installed(python_executable: str | None = None) -> bool:
@@ -1010,6 +1012,29 @@ def main() -> int:
     return _execute(args, selected, selection)
 
 
+def pytest_command(selected: list[str], junit: Path) -> list[str]:
+    """Keep each directory's files together so pytest's conftest fixtures and their users share a collector.
+
+    Re-entering a directory after selecting a file in its parent can create another collector for it. Normalize
+    separators before sorting so Windows selections form the same contiguous subtrees as POSIX selections.
+    """
+    return [
+        sys.executable,
+        "-B",
+        "-m",
+        "pytest",
+        *sorted({path.replace("\\", "/") for path in selected}),
+        "-q",
+        "--import-mode=importlib",
+        "-p",
+        "v11_guard",
+        "-p",
+        "no:cacheprovider",
+        "--durations=10",
+        f"--junitxml={junit}",
+    ]
+
+
 def _execute(args, selected: list[str], selection: dict) -> int:
     """Run the selected files under the watchdog, always clean up, always write a receipt.
 
@@ -1049,21 +1074,7 @@ def _execute(args, selected: list[str], selection: dict) -> int:
         isolated = Path(directory.name if hasattr(directory, "name") else directory)
         env = _test_environment(args.tier, isolated)
         junit = isolated / "junit.xml"
-        command = [
-            sys.executable,
-            "-B",
-            "-m",
-            "pytest",
-            *selected,
-            "-q",
-            "--import-mode=importlib",
-            "-p",
-            "v11_guard",
-            "-p",
-            "no:cacheprovider",
-            "--durations=10",
-            f"--junitxml={junit}",
-        ]
+        command = pytest_command(selected, junit)
         transitions.append("pytest_started")
         start = time.perf_counter()
         try:

@@ -55,7 +55,7 @@ def codex_install(tmp_path):
     return config, core, project, runtime_path
 
 
-def test_session_start_wakes_existing_pending_work_without_new_capture(codex_install):
+def test_session_start_wakes_existing_pending_work_without_new_capture(codex_install, still_clocks):
     config, _core, project, runtime_path = codex_install
     handler = CodexHookHandler.from_config_path(
         str(config.config_path),
@@ -78,7 +78,7 @@ def test_session_start_wakes_existing_pending_work_without_new_capture(codex_ins
     handler.close()
 
 
-def test_stop_persists_assistant_before_waking_worker(codex_install):
+def test_stop_persists_assistant_before_waking_worker(codex_install, still_clocks):
     config, _core, project, runtime_path = codex_install
     handler = CodexHookHandler.from_config_path(
         str(config.config_path),

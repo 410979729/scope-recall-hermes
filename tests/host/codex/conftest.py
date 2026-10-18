@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
+from scope_recall.adapters.clients.handler import SystemHookClock
+from scope_recall.core.composition import SystemClock
 
 
 @pytest.fixture(scope="session")
@@ -42,6 +45,39 @@ class FixedClock:
 
     def monotonic(self) -> float:
         return self._mono
+
+
+# A hook's budget runs on its clock (``SystemHookClock`` unless a test gives it another), and a write to a real store
+# has no bound in time: on a slow disk one can take a hook's whole budget.  These keep a test's outcome from depending
+# on how long the store takes.  A test of the budget itself stores nothing and injects its delays, and reads the time a
+# host would wait (``test_shared_client.busy_store``).
+
+
+@pytest.fixture
+def still_clocks(monkeypatch):
+    """Every hook's clock stands still, and so does that of every ``MemoryCore`` given none: no hook runs out of its
+    budget and no recall out of its time.  For a test of what a hook stores and answers, not of when its budget ends."""
+    now = time.monotonic()
+    monkeypatch.setattr(SystemHookClock, "monotonic", lambda _clock: now)
+    monkeypatch.setattr(SystemClock, "monotonic", lambda _clock: now)
+
+
+@pytest.fixture
+def storing_takes_no_hook_time(monkeypatch):
+    """A hook's clock stands still while the hook stores what it was sent, and runs otherwise: for a test of what a
+    hook does with the entry's server once it has stored, not of how long a host waits for it."""
+    stored = [0.0]
+    capture = CodexHookHandler.capture
+
+    def timed(self, *args, **kwargs):
+        started = time.monotonic()
+        try:
+            return capture(self, *args, **kwargs)
+        finally:
+            stored[0] += time.monotonic() - started
+
+    monkeypatch.setattr(CodexHookHandler, "capture", timed)
+    monkeypatch.setattr(SystemHookClock, "monotonic", lambda _clock: time.monotonic() - stored[0])
 
 
 @pytest.fixture

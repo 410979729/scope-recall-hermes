@@ -1,4 +1,7 @@
+import gc
 import json
+import math
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -202,3 +205,25 @@ def downgrade_store(path, version: int) -> None:
         conn.execute("UPDATE instance_meta SET schema_version=? WHERE singleton=1", (version,))
         conn.execute(f"PRAGMA user_version={int(version)}")
         conn.commit()
+
+
+def slowdown(work, small, large, *, runs: int = 5) -> float:
+    """How many times as long ``work(large)`` takes as ``work(small)`` on this machine: the shortest of ``runs`` turns
+    of each, taken in turn with the garbage collector off, so that a machine slow or busy throughout changes neither.
+
+    For a test that work grows linearly with its input, which no bound in seconds can say on every machine: four
+    times the input takes about four times as long, where work quadratic in it takes sixteen."""
+    best = [math.inf, math.inf]
+    collecting = gc.isenabled()
+    gc.collect()
+    gc.disable()
+    try:
+        for _ in range(runs):
+            for index, value in enumerate((small, large)):
+                started = time.perf_counter()
+                work(value)
+                best[index] = min(best[index], time.perf_counter() - started)
+    finally:
+        if collecting:
+            gc.enable()
+    return best[1] / best[0]

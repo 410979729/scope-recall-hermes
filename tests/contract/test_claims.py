@@ -859,12 +859,18 @@ def test_two_real_writers_with_same_expected_revision_have_exactly_one_winner(ap
         try:
             return core.revise(ctx, request, remaining_seconds=5).items[0].revision
         except Exception as exc:
+            # Threads share the process's writer lease; SQLite can reject the loser before revision checking.
+            if (
+                isinstance(exc, sqlite3.OperationalError)
+                and getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+            ):
+                return "SQLITE_BUSY"
             return getattr(exc, "code", type(exc).__name__)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: write(), range(2)))
-    assert results.count(2) == 1 and len(core.claim_history(ctx, item.ref)) == 2
-    assert any(x in {"VERSION_CONFLICT", "TruthWriterBusyError"} for x in results if x != 2)
+    assert results.count(2) == 1 and len(core.claim_history(ctx, item.ref)) == 2, results
+    assert any(x in {"VERSION_CONFLICT", "TruthWriterBusyError", "SQLITE_BUSY"} for x in results if x != 2), results
 
 
 def test_old_human_quote_and_agent_echo_cannot_authorize_new_revision(app):

@@ -393,9 +393,8 @@ def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
 # --- writers in separate processes take turns ----------------------------------------------
 
 
-def _busy_for(monkeypatch, attempts, times=None):
-    """Another process holds the writer lease for the next ``attempts`` writable opens; ``times`` gets when each
-    writable open was tried."""
+def _busy_for(monkeypatch, attempts):
+    """Another process holds the writer lease for the next ``attempts`` writable opens."""
     from scope_recall.core import storage as module
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
@@ -404,8 +403,6 @@ def _busy_for(monkeypatch, attempts, times=None):
     def connect(path, *, mode, **kwargs):
         if mode != "ro":
             calls.append(mode)
-            if times is not None:
-                times.append(time.monotonic())
             if attempts is None or len(calls) <= attempts:
                 raise TruthWriterBusyError(role="truth_connection", scope="other_process")
         return real(path, mode=mode, **kwargs)
@@ -414,29 +411,58 @@ def _busy_for(monkeypatch, attempts, times=None):
     return calls
 
 
+class _StoreClock:
+    """A clock a test gives the store: only the store's sleeps move it, each by what it asked, so a writer's waits for
+    the lease are counted and timed exactly, on a machine slow or fast."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def _on_a_stepped_clock(monkeypatch, binding) -> tuple[SQLiteStorage, _StoreClock]:
+    """The shared store opened on a ``_StoreClock``, and that clock."""
+    from scope_recall.core import storage as module
+
+    clock = _StoreClock()
+    monkeypatch.setattr(module.time, "sleep", clock.sleep)
+    return SQLiteStorage(binding, clock=clock.monotonic), clock
+
+
 def test_a_writer_waits_for_another_process_s_turn_to_end(monkeypatch, shared):
     """With three entries and a worker, a capture that meets a lease released milliseconds later must not fail at
-    once and wait in memory for a retry the process might never reach."""
-    storage, binding = shared
-    times: list[float] = []
-    calls = _busy_for(monkeypatch, 3, times)
+    once and wait in memory for a retry the process might never reach.  Between the refused opens it waits the
+    lease's polls, 10 ms each, not the open's one-second timeout."""
+    from scope_recall.core import storage as module
+
+    _storage, binding = shared
+    storage, clock = _on_a_stepped_clock(monkeypatch, binding)
+    calls = _busy_for(monkeypatch, 3)
     saved = put(storage, shared_context(binding, "tianshu"), "TEST-turns/1")
     assert saved.disposition == "inserted" and len(calls) == 4
-    # The lease's polls (10 ms apart), not the open's one-second timeout: from the first refused open to the one that
-    # succeeded, without the write's own time.
-    assert times[-1] - times[0] < 0.5
+    assert clock.slept == [module._LEASE_POLL_SECONDS] * 3
 
 
 def test_a_writer_gives_up_when_the_turn_outlasts_its_deadline(monkeypatch, shared):
+    """A writer whose lease another process keeps polls for it until its own time is up: its 0.1 s, not the store's
+    one second."""
+    from scope_recall.core import storage as module
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
-    storage, binding = shared
+    _storage, binding = shared
+    storage, clock = _on_a_stepped_clock(monkeypatch, binding)
     _busy_for(monkeypatch, None)
-    started = time.monotonic()
     with pytest.raises(TruthWriterBusyError):
         with storage.write(shared_context(binding, "tianshu"), remaining_seconds=0.1):
             pass
-    assert 0.05 <= time.monotonic() - started < 0.5
+    assert set(clock.slept) == {module._LEASE_POLL_SECONDS} and 0.08 < sum(clock.slept) < 0.11
     with storage.read(shared_context(binding)) as tx:
         assert tx.status() is not None, "a reader never waits for the writer lease"
 

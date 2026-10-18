@@ -1165,7 +1165,7 @@
   "tests/host/codex/test_shared_client.py": {
    "B023": 2,
    "E501": 5,
-   "UP017": 9
+   "UP017": 7
   },
   "tests/host/hermes/test_a2a_prepare.py": {
    "E402": 7,

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from scope_recall._version import __version__
 from scope_recall.maintenance import doctor
+from scope_recall.runtime import process_probe
 from scope_recall.runtime import running_code as rc
 from scope_recall.runtime.model_budget import REFUSAL_WINDOW_SECONDS, provider_refusals
 from scope_recall.runtime.process_probe import is_same_process, probe_process
@@ -64,6 +67,36 @@ def test_probe_rejects_values_that_are_not_process_ids():
     for bad in (0, -1, True, "123", 1.0):
         with pytest.raises(ValueError):
             probe_process(bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("pid", [1 << (struct.calcsize("i") * 8 - 1), 0xFFFFFFF0])
+def test_posix_unrepresentable_pids_are_dead_without_a_system_probe(monkeypatch, pid):
+    def unexpected_probe(*args):
+        raise AssertionError("an unrepresentable pid must not reach os.kill")
+
+    monkeypatch.setattr(process_probe, "os", SimpleNamespace(name="posix", kill=unexpected_probe))
+
+    assert probe_process(pid).running is False
+    assert is_same_process(pid, None) is False
+
+
+@pytest.mark.parametrize(
+    ("error", "live"),
+    [
+        (ProcessLookupError, False),
+        (PermissionError, True),
+        (OSError, False),
+        (OverflowError, False),
+        (ValueError, False),
+    ],
+)
+def test_process_identity_handles_probe_errors(monkeypatch, error, live):
+    def failed_probe(*args):
+        raise error("TEST process probe failure")
+
+    monkeypatch.setattr(process_probe, "os", SimpleNamespace(name="posix", kill=failed_probe))
+
+    assert is_same_process(123, None) is live
 
 
 def test_record_states_the_version_this_process_loaded(tmp_path):

@@ -676,7 +676,9 @@ def test_replayed_turn_keeps_its_first_witnessed_time(installed_core, initialize
     assert times["TEST 整理好了。"] == ("2026-09-06T13:15:04Z", "2026-09-06T13:15:04Z")
 
 
-def test_a_busy_store_met_by_a_session_s_capture_retry_says_pending(adapter, installed_core, monkeypatch):
+def test_a_busy_store_met_by_a_session_s_capture_retry_says_pending(
+    adapter, installed_core, monkeypatch, retry_passes_have_time
+):
     """A busy store met by a Hermes session's retry of its captures (at its end, before a compression) stops the
     replay with a receipt that says so, and does not raise; the session's gap comes from the receipt, not from a
     raise."""
