@@ -809,13 +809,14 @@ def test_requalify_reads_a_denial_at_the_head_as_writing_does(app):
 def test_a_revision_never_makes_a_denial_about_anything_but_the_person_a_value(app, stated, correction, value, reason):
     """A denial about anything but the person is no value of its slot (``mutate.denial_verdict``), and no revision makes
     it one: correcting TEST-project's CI service to 不是 CircleCI or to 不是 Jenkins 了, or a denial kept a proposal to
-    itself, is refused, and the claim stays as it was."""
+    itself, is refused, and the claim stays as it was.  The refusal tells the model what it can do instead."""
     core, ctx = app
     claim = _stated(core, ctx, *stated)
     before = core.claim_history(ctx, claim.ref)
     source = capture(core, ctx, correction, when=_LATER)
-    with pytest.raises(ContractError, match=reason):
+    with pytest.raises(ContractError, match=reason) as refused:
         core.revise(ctx, revise_request(claim, source, value), remaining_seconds=10)
+    assert "give the value that holds" in str(refused.value) and "new_value null" in str(refused.value)
     assert core.claim_history(ctx, claim.ref) == before
 
 

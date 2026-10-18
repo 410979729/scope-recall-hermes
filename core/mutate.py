@@ -540,6 +540,10 @@ def _revision_proof(head, updated, authority: _Authority) -> str:
     return proof
 
 
+#: What a correction refused because its value is a denial that is no value of its slot can do instead.
+_DENIAL_REVISION_HINT = "give the value that holds instead, or withdraw the claim with new_value null"
+
+
 def _revision_qualification(tx, updated, proof: str, authority: _Authority, held) -> Qualification:
     """The revised claim's qualification: a retraction is the person's report; a correction must qualify active and
     be a value of its slot, given ``held``, the value the slot holds: a denial the denial rule keeps a proposal
@@ -567,7 +571,7 @@ def _revision_qualification(tx, updated, proof: str, authority: _Authority, held
         raise ContractError("DERIVATION_INVALID", qualification.reason)
     denial_reason, _ends_held = denial_verdict(updated, held, roots)
     if denial_reason is not None:
-        raise ContractError("DERIVATION_INVALID", denial_reason)
+        raise ContractError("DERIVATION_INVALID", denial_reason, hint=_DENIAL_REVISION_HINT)
     return qualification
 
 
