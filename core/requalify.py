@@ -68,7 +68,8 @@ def _preserved_reasons() -> frozenset[str]:
     silently undo them.  Every user confirmation would be withdrawn by the next
     maintenance pass.  A denial's verdict answers another still: whether it is
     its slot's value, given what the slot held when it was written.  The text
-    gate alone would promote it.
+    gate alone would promote it.  None of them is above the denial rule, which
+    is no text gate: a vouched-for denial that is no value is still withdrawn.
 
     Imported lazily so this module stays free of import cycles with ``mutate``.
     """
@@ -127,7 +128,8 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
     """Re-judge one bounded page of stored claims.  Returns what moved.
 
     A denial is judged as writing judges it (``mutate.denial_verdict``): one at the head that is no value of its slot
-    is withdrawn (``_settle_denial``), and one the text gate alone would promote stays a proposal."""
+    is withdrawn (``_settle_denial``), whatever made it active, a second witness or a confirmation too; and one the
+    text gate alone would promote stays a proposal."""
     refs = _page(tx, after_ref, limit)
     preserved = _preserved_reasons()
     report = RequalifyReport(applied=not dry_run)
@@ -137,12 +139,13 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
         head = next((v for v in versions if v.revision == v.current_revision), None)
         if head is None or head.state not in REQUALIFIABLE_STATES:
             continue
-        if head.reason in preserved:
+        held, denial_reason = _denial_standing(tx, head, versions) if is_denial(head.payload) else (None, None)
+        settles = denial_reason is not None and head.state != "proposed"
+        if head.reason in preserved and not settles:
             report.skipped.append({"ref": ref, "why": f"not_text_derived:{head.reason}"})
             continue
         report.examined += 1
-        held, denial_reason = _denial_standing(tx, head, versions) if is_denial(head.payload) else (None, None)
-        if denial_reason is not None and head.state != "proposed":
+        if settles:
             entry = _settle_denial(tx, head, held, denial_reason, now=now, dry_run=dry_run)
             payload = head.payload
             entry.update(

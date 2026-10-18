@@ -12,7 +12,8 @@ from dataclasses import replace
 
 import pytest
 from scope_recall.contracts import TrustedSourcePrincipal
-from scope_recall.core.claims import RootEvidence
+from scope_recall.core.claims import Qualification, RootEvidence
+from scope_recall.core.confirmation import CONFIRMED_REASON
 from scope_recall.core.corroboration import (
     CORROBORATED_REASON,
     CORROBORATION_ELIGIBLE_REASONS,
@@ -376,3 +377,19 @@ def test_the_person_s_own_denial_said_in_two_sessions_stays_their_value(app):
         refs.append(accept(core, session, preference).items[0].ref)
     assert refs[0] == refs[1] and _state(core, owner, refs[0])[0] == "active"
     assert core.current_claim(owner, refs[0]).payload["value_text"] == "不吃辣"
+
+
+@pytest.mark.parametrize("command", ["requalify_claims", "restore_displaced_values"])
+@pytest.mark.parametrize("reason", [CORROBORATED_REASON, CONFIRMED_REASON])
+def test_a_denial_about_something_else_made_a_value_is_withdrawn(app, command, reason):
+    """One a store already holds as its slot's value, by a second witness or a confirmation, is withdrawn by either
+    command; the slot then holds no value, and every version stays."""
+    core, ctx = app
+    source = capture(core, ctx, DENIAL, key="TEST-deny/held")
+    with core.storage.write(ctx) as tx:
+        made = Qualification("active", "direct_report", reason)
+        ref = tx.claims.append("TEST-scope", _denial(source), made, recorded_at=core.clock.utc_now()).ref
+    report = getattr(core.operations, command)(ctx, limit=32, dry_run=False)
+    assert [item["ref"] for item in report["changed"]] == [ref]
+    assert core.current_claim(ctx, ref) is None
+    assert [version.state for version in core.claim_history(ctx, ref)] == ["active", "retracted"]
