@@ -122,18 +122,18 @@ def test_the_answer_said_on_another_day_is_still_delivered(app):
 
 
 def test_a_note_of_the_time_asked_about_is_found_by_what_else_the_question_asks(app):
-    """ "What did I say about the Orchard release schedule on September 2?" holds four words a note can answer by,
-    and the note of that day holds two of them: searched by words, the question would need three.  Within the time it
-    names, two of what else it asks find it; a note of another day that holds the same two does not come, nor does a
-    note of the day that shares one word."""
+    """ "What did I say about the Orchard release on September 2?" holds four words a note can answer by, and the
+    note of that day holds two of them: searched by words, the question would need three.  Within the time it names,
+    two of what else it asks find it; a note of another day that holds the same two does not come, nor does a note
+    of the day that shares one word."""
     core, ctx = app
     cut = _note(
         core, ctx, "We cut the Orchard release branch and froze the schema.", "2026-09-02T10:00:00Z", "TEST-time/cut"
     )
     lunch = _note(core, ctx, "Lunch with the Orchard team.", "2026-09-02T12:00:00Z", "TEST-time/lunch")
     signed = _note(core, ctx, "QA signed off on the Orchard release candidate.", "2026-09-05T10:00:00Z", "TEST-time/qa")
-    assert cut.ref not in _refs(core, ctx, "What did I say about the Orchard release schedule?")
-    refs = _refs(core, ctx, "What did I say about the Orchard release schedule on September 2?")
+    assert cut.ref not in _refs(core, ctx, "What did I say about the Orchard release?")
+    refs = _refs(core, ctx, "What did I say about the Orchard release on September 2?")
     assert refs[:1] == [cut.ref]
     assert lunch.ref not in refs and signed.ref not in refs
 

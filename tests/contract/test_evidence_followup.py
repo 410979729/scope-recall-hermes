@@ -11,7 +11,7 @@ from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.claims import Qualification
 from scope_recall.core.events import lexical_terms
-from scope_recall.core.recall_needs import Answers, answering, unmet_needs
+from scope_recall.core.recall_needs import Answers, answering, asks_to_resume, unmet_needs
 from scope_recall.core.recall_policy import (
     SPACE_ID,
     RecallPolicy,
@@ -343,14 +343,23 @@ def test_a_request_to_be_told_about_a_named_thing_is_answered_by_any_item_naming
         assert answering(request, (said, zh, port, port_zh)) == Answers(True, (answer,)), request
 
 
-def test_words_in_single_quotes_are_left_out_and_an_apostrophe_quotes_nothing():
-    """Single quotation marks around words, straight or curly, hold someone else's words or a value the writer quotes,
-    as double ones do; an apostrophe inside a word or before a decade opens no quotation."""
+def test_a_quoted_clause_is_someone_s_words_and_a_quoted_term_the_writer_s_own():
+    """Between quotation marks of any kind, a clause is someone's words, read out as a whole: with an apostrophe in it
+    (users'), with a quotation nested in it, single or double, straight or curly.  A single term, a name or a value in
+    quotation marks is the writer's own: the marks set off what it names, and their statement still answers.  An
+    apostrophe inside a word, after a plural's s or before a decade opens no quotation."""
     question = "What port does Orchard run on?"
     for quoted in (
         "The runbook says 'Orchard runs on port 8443'.",
         "The wiki still has ‘Orchard runs on port 8443’ on its front page.",
         "('Orchard runs on port 8443') was the old note.",
+        "The old deck says ‘Orchard's users' port is 8443’, but nobody checked.",
+        "The old deck says ‘Orchard runs on ‘production’ port 8443’, but nobody checked.",
+        "The old deck says ‘Orchard runs on ‘operations’ port 8443’, but nobody checked.",
+        "The old deck says \"Orchard runs on 'production' port 8443\", but nobody checked.",
+        "The old deck says ‘Orchard Runs On Port 8443’.",
+        "The old deck says 'Orchard uses its users’ port 8443'.",
+        'The old deck says "Orchard runs on\nport 8443".',
     ):
         assert answering(question, (_recalled("event-quoted", quoted),)) == Answers(True, ()), quoted
     for said in (
@@ -358,10 +367,21 @@ def test_words_in_single_quotes_are_left_out_and_an_apostrophe_quotes_nothing():
         "We don't run Orchard on 8080; it runs on port 8443.",
         "In the '90s we ran Orchard on port 80.",
         "We set the flag to 'on', and Orchard runs on port 8443 now.",
+        "The service key is 'Orchard'; it runs on port 8443.",
+        'We call it "Orchard"; it runs on port 8443.',
     ):
         item = _recalled("event-said", said)
         assert answering(question, (item,)) == Answers(True, (item,)), said
-    assert unquoted("It's Orchard's 'new' port, the '90s one.") == "It's Orchard's   port, the '90s one."
+    named = _recalled("event-named", "我们的项目叫“Orchard”，端口 8443。")
+    assert answering("Orchard 的端口是多少？", (named,)) == Answers(True, (named,))
+    blue = _recalled("event-blue", 'We call it "Blue Ocean"; its port is 8443.')
+    assert answering("What port does Blue Ocean use?", (blue,)) == Answers(True, (blue,))
+    assert unquoted("It's Orchard's 'new' port, the '90s one.") == "It's Orchard's 'new' port, the '90s one."
+    assert unquoted("Ops wrote “部署区域 eu-central-1” on it.") == "Ops wrote   on it."
+    assert unquoted("‘我不吃辣’") == " "
+    assert unquoted("'Orchard runs'") == " "
+    for term in ("is", "Orchard", "Blue Ocean", "8443", "host:8443", "v3.1", "eu-west-1"):
+        assert unquoted(f'We call it "{term}".') == f'We call it "{term}".'
 
 
 def test_only_a_grounded_task_s_resume_answers_and_only_a_question_that_asks_to_resume():
@@ -378,6 +398,8 @@ def test_only_a_grounded_task_s_resume_answers_and_only_a_question_that_asks_to_
     assert answering("Continue the Orchard migration", (grounded,)) == Answers(True, (grounded,))
     assert answering("继续 Orchard 的迁移", (grounded,)) == Answers(True, (grounded,))
     assert answering("Continue the Lantern migration", (grounded,)) == Answers(True, ())
+    for practice in ("Should we continue using Orchard?", "继续用 Orchard 吗？", "Should we discontinue Orchard?"):
+        assert answering(practice, (grounded,)) == Answers(True, ()), practice
     ungrounded = _recalled(
         "episode-goal", json.dumps({"goal": resume["goal"]}), kind="episode", origin="derived_summary"
     )
@@ -387,6 +409,74 @@ def test_only_a_grounded_task_s_resume_answers_and_only_a_question_that_asks_to_
     reference = _recalled("reference-orchard", json.dumps(binding), kind="reference", origin="derived_summary")
     for item in (artifact, reference):
         assert answering("What is Orchard port?", (item,)) == Answers(True, ()), item.kind
+
+
+def test_only_a_request_to_resume_a_task_reads_as_one():
+    """Resuming a task is asked in so many words: continue, resume or pick up the task, where were we, 继续 what is to
+    go on, 接着做, 恢复上次的.  Continuing a practice asks whether to keep it (continue using Jenkins, 继续用 Jenkins
+    吗), and discontinue or restoring a database resumes nothing.  The resume need reads a question as what answers it
+    does."""
+    for request in (
+        "Continue the Orchard migration",
+        "Resume the Orchard migration",
+        "Pick up the Orchard migration",
+        "Where were we on Orchard?",
+        "continue",
+        "继续",
+        "继续 Orchard 的迁移",
+        "继续上次的工作",
+        "接着做",
+        "恢复上次的任务",
+        "恢复 Orchard 的迁移",
+    ):
+        assert asks_to_resume(request), request
+    for other in (
+        "Should we continue using Jenkins?",
+        "继续用 Jenkins 吗？",
+        "继续使用 Jenkins 吗",
+        "Should we discontinue Jenkins?",
+        "怎么恢复数据库？",
+        "Will the outage continue?",
+    ):
+        assert not asks_to_resume(other), other
+    assert "resume_state" in unmet_needs("继续", ())
+    assert "resume_state" not in unmet_needs("继续用 Jenkins 吗？", ())
+    assert "resume_state" not in unmet_needs("Should we continue using Jenkins?", ())
+
+
+@pytest.mark.parametrize(
+    ("question", "text"),
+    (("show me the summary", "Summary: the deployment ended at noon."), ("说说你的进展", "进展：迁移已完成。")),
+)
+def test_request_framing_words_still_find_lexical_candidates(app, question, text):
+    core, ctx = app
+    said = capture(core, ctx, text, key="TEST-framing/message")
+    for mode in ("auto", "current"):
+        search = SearchContext.from_request(
+            recall_request(query=question, mode=mode), ctx, now=core.clock.utc_now(), deadline=100
+        )
+        with core.storage.read(ctx) as tx:
+            found = RetrievalStorage(clock=core.clock).lexical(tx, search, limit=10)
+        assert said.ref in {candidate.ref for candidate in found}
+
+
+@pytest.mark.parametrize(
+    ("question", "resume"),
+    (
+        ("Continue the Jenkins migration", True),
+        ("接着做 Jenkins 的迁移", True),
+        ("Should we continue using Jenkins?", False),
+        ("继续用 Jenkins 吗？", False),
+        ("discontinue Jenkins", False),
+    ),
+)
+def test_only_task_resumption_triggers_a_resume_followup(app, question, resume):
+    core, ctx = app
+    vectors = RoundTrackingVectors()
+    core.recall_pipeline.vector_port = vectors
+    result = _recall(core, ctx, query=question, mode="current")
+    assert ("resume_state" in result.unmet_needs) == resume
+    assert len(vectors.calls) == (2 if resume else 1)
 
 
 def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgement():

@@ -18,13 +18,34 @@ from .claims import is_denial
 from .corroboration import CORROBORATION_ELIGIBLE_REASONS
 from .events import lexical_terms, version_suffixes
 from .fact_evidence import stem
-from .recall_policy import QUESTION_MAX_CHARS, asks_without_answering, hard_identifiers, meaningful_query_terms
+from .recall_policy import (
+    QUESTION_MAX_CHARS,
+    asked_terms,
+    asks_without_answering,
+    hard_identifiers,
+    meaningful_query_terms,
+)
 from .retrieval import STALE_RESUME_GAPS, RetrievedObject, SearchContext, optional_json
 from .source_qualification import FENCE, UNASSERTED_CONTEXT, unquoted
 
 COMPARE_MARKERS = ("比较", "对比", "差异", "哪个更", "compare", "versus", " vs ")
 WHY_MARKERS = ("为什么", "为何", "原因", "why", "reason")
-RESUME_MARKERS = ("继续", "接着", "恢复", "resume", "continue")
+_RESUME_QUERY_TERMS = frozenset({"继续", "接着", "恢复", "resume", "continue", "pick", "up"})
+#: A request to resume a task (``asks_to_resume``), read with word boundaries: continue, resume or pick up the task,
+#: with it, on it, working on it or where it was left off; "where were we", "where did we leave off"; continue or
+#: resume alone; 继续 with what is to go on (继续 Orchard 的迁移, 继续上次的工作) or alone; 接着 doing it (接着做,
+#: 接着上次的); 恢复 a task or the last one (恢复 Orchard 的迁移, 恢复上次的工作).  Continuing a practice asks whether
+#: to keep it, not to resume a task
+#: (continue using Jenkins, 继续用 Jenkins 吗), and discontinue, continued or 恢复数据库 resume nothing.
+_RESUME_REQUEST = re.compile(
+    r"\b(?:continue|resume|pick\s+up)\s+(?:(?:with|on|working\s+on)\s+\S|(?:the|our|my|this|that|where)\b)"
+    r"|\bwhere\s+(?:were\s+we|did\s+(?:we|i)\s+leave\s+off)\b"
+    r"|^\W*(?:please\s+)?(?:continue|resume)\W*(?:please\W*)?$"
+    r"|继续(?!\s*(?:用|使用|采用|沿用|保持|维持|留))"
+    r"|接着(?:做|干|来|弄|写|改|上次|刚才|之前)"
+    r"|恢复(?:上次|之前|刚才|昨天)|恢复\s*(?:[\w.-]+\s*的?)?(?:任务|工作|迁移|部署)",
+    re.I,
+)
 CHOICE_MARKERS = ("哪个", "哪一个", "which", "choose")
 _CAUSAL = re.compile(r"因为|由于|原因是|because|reason is|due to", re.I)
 _NEGATED = re.compile(
@@ -38,6 +59,13 @@ _GROUNDED_NEXT_STEP_BASES = frozenset({"user_requested", "tool_observation", "ob
 def mentions(query: str, markers: tuple[str, ...]) -> bool:
     text = query.casefold()
     return any(marker in text for marker in markers)
+
+
+def asks_to_resume(query: str) -> bool:
+    """Whether ``query`` asks to resume a task (``_RESUME_REQUEST``), which its grounded resume answers.  The resume
+    need and its follow-up, the order of a resume packet, its background task and what answers it read a query this
+    one way."""
+    return _RESUME_REQUEST.search(unicodedata.normalize("NFKC", query)) is not None
 
 
 def evidence_roots(item: object) -> frozenset[str]:
@@ -194,7 +222,7 @@ def _resume_unmet(items: tuple[object, ...]) -> bool:
 
 def _resume_query(query: str, items: tuple[object, ...]) -> str:
     # One directed pass only, within the original shared budgets.
-    terms = tuple(term for term in meaningful_query_terms(query) if term.casefold() not in RESUME_MARKERS)
+    terms = tuple(term for term in meaningful_query_terms(query) if term.casefold() not in _RESUME_QUERY_TERMS)
     return f"{' '.join(terms[:3])} 未完成任务 下一步".strip()
 
 
@@ -323,21 +351,22 @@ def answering(question: str, items: tuple[RetrievedObject, ...]) -> Answers:
     """What answers ``question``: judged when it names one thing or two (``_question_names``), unjudged, with every
     item, when it names nothing.
 
-    An item answers when what it says (``_answer_text``) holds one of the names and one more of the question's
-    words, in any of that word's inflections (``stem``): another project's value shares every word of a question but
-    its name, and the named project's other attributes share the name alone.  A question that asks nothing past its
-    names ("What is Orchard?") is answered by any item that names them.  Every name must stand in an answering item,
-    though not all in one, so that the two sides of a comparison answer it side by side; when one stands in none,
-    nothing answers.  A grounded task's resume answers a question that asks to resume it by naming it alone: its words
-    are the task's, not the question's ("Continue the Orchard migration" for a task its person called moving Orchard).
+    An item answers when what it says (``_answer_text``) holds one of the names and one more of the words the
+    question asks (``asked_terms``), in any of that word's inflections (``stem``): another project's value shares
+    every word of a question but its name, and the named project's other attributes share the name alone.  A question
+    that asks nothing past its names ("What is Orchard?", "Tell me about Orchard") is answered by any item that names
+    them.  Every name must stand in an answering item, though not all in one, so that the two sides of a comparison
+    answer it side by side; when one stands in none, nothing answers.  A grounded task's resume answers a question
+    that asks to resume it (``asks_to_resume``) by naming it alone: its words are the task's, not the question's
+    ("Continue the Orchard migration" for a task its person called moving Orchard).
     """
     names = _question_names(question)
     if not names:
         return Answers(False, items)
-    resume = mentions(question, RESUME_MARKERS)
+    resume = asks_to_resume(question)
     named = {name: frozenset(lexical_terms(name)) for name in names}
     in_names = {stem(term) for parts in named.values() for term in parts}
-    asked = {stem(term) for term in meaningful_query_terms(question)} - in_names
+    asked = {stem(term) for term in asked_terms(question)} - in_names
     found: list[RetrievedObject] = []
     covered: set[str] = set()
     for item in items:
@@ -380,7 +409,7 @@ def unmet_needs(query: str, items: tuple[object, ...]) -> tuple[str, ...]:
         needs.append("comparison_second_side")
     if mentions(query, WHY_MARKERS) and _why_unmet(query, items):
         needs.append("reason_evidence")
-    if mentions(query, RESUME_MARKERS) and _resume_unmet(items):
+    if asks_to_resume(query) and _resume_unmet(items):
         needs.append("resume_state")
     return tuple(needs)
 

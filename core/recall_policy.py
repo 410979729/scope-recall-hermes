@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import math
@@ -410,52 +409,12 @@ def query_is_specific(
 #: and no answer does -- and "你现在是什么模型呀" would come back as the best match.
 #: A bigram holding one of these asks rather than names, so it proves nothing.
 #: The few nouns built on them (酒吧, 哪吒) are the price of that rule.
-_ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥谁")
-#: What a question is read without (``meaningful_query_terms``), so that the bigrams joining a Chinese one to its
-#: neighbours go with it (是多 in 端口是多少, 绍一 and 一下 in 介绍一下):
-#:
-#: - Chinese words that ask, whose characters also appear in naming words: 怎 in 怎样 only, but 多 in 多少 and 多个, 是
-#:   in 是否 and 于是.
-#: - Words that only frame a request about what the question names, which an answer need not say: it names what it
-#:   answers (介绍一下, 说说, 告诉, 关于, 知道, 怎么样, 进展, 消息 ...).  情况 frames "X 的情况" but not 情况下, a
-#:   condition an answer says too.
-#: - The person a request to be told is addressed to: tell me, 给我讲讲, and me or us closing a request
-#:   ("Explain Orchard to me").  Elsewhere they name whom the request is about (contact me, seat me, 给我订), and an
-#:   answer says them.
-_ASKING_PHRASES = re.compile(
-    "|".join(
-        (
-            "怎么样",
-            "怎样",
-            "如何",
-            "为何",
-            "多少",
-            "是否",
-            "何时",
-            "几时",
-            "(?:给我|跟我|帮我)?(?:介绍|说说|讲讲|谈谈|聊聊|看看)",
-            "告诉我?",
-            "一下",
-            "关于",
-            "知道",
-            "还记得",
-            "记得",
-            "情况(?!下)",
-            "进展",
-            "消息",
-            "最新",
-            "动态",
-            r"\b(?:tell|show|give|remind) (?:me|us)\b",
-            r"\b(?:let (?:me|us) know|fill (?:me|us) in|catch (?:me|us) up|walk (?:me|us) through)\b",
-            r"\b(?:to|for) (?:me|us)\b(?=\W*$)",
-        )
-    ),
-    re.I,
-)
-#: English words that ask, help or only frame a request about what the question names ("Describe Orchard", "Any
-#: updates on Orchard?"): in a question they carry no subject matter, and an answer need not say them.  status names
-#: something itself (a status page, a status code) and stays a word.
-_ASKING_ENGLISH = frozenset(
+_RETRIEVAL_ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥谁")
+#: Asking words whose characters also appear in naming words (怎 in 怎样 only,
+#: but 多 in 多少 and 多个, 是 in 是否 and 于是).
+_RETRIEVAL_ASKING_WORDS = frozenset({"怎样", "如何", "为何", "多少", "是否", "何时", "几时"})
+#: English asking and helper words: in a question they carry no subject matter.
+_RETRIEVAL_ASKING_ENGLISH = frozenset(
     {
         "what",
         "which",
@@ -488,6 +447,23 @@ _ASKING_ENGLISH = frozenset(
         "by",
         "with",
         "about",
+    }
+)
+
+
+def _asks_only(term: str) -> bool:
+    if term in _RETRIEVAL_ASKING_WORDS or term in _RETRIEVAL_ASKING_ENGLISH:
+        return True
+    return _CJK_TEXT.search(term) is not None and any(char in _RETRIEVAL_ASKING_CHARACTERS for char in term)
+
+
+#: English words that only frame a request to be told about what a question names ("Describe Orchard", "Any updates
+#: on Orchard?"), which an answer need not say: it names what it answers.  Read by ``asked_terms`` alone: recall
+#: searches them as it searches any word (``meaningful_query_terms``), since a message that says one may be what was
+#: asked for ("show me the summary" finds "Summary: the deployment ended at noon.").  status names something itself
+#: (a status page, a status code) and is none of them.
+_FRAMING_ENGLISH = frozenset(
+    {
         "please",
         "tell",
         "show",
@@ -519,12 +495,47 @@ _ASKING_ENGLISH = frozenset(
         "details",
     }
 )
+#: What ``asked_terms`` reads a question without, whole, so that the bigrams joining a Chinese one to its neighbours go
+#: with it (是多 in 端口是多少, 绍一 and 一下 in 介绍一下): the Chinese words that ask
+#: (``_RETRIEVAL_ASKING_WORDS``); the Chinese
+#: words that only frame a request (介绍一下, 说说, 告诉, 关于, 知道, 怎么样, 进展, 消息 ...), where 情况 frames
+#: "X 的情况" but not 情况下, a condition an answer says too; and the person a request to be told is addressed to:
+#: tell me, 给我讲讲, and me or us closing a request ("Explain Orchard to me").  Elsewhere me and 我 name whom a
+#: request is about (contact me, 给我订), and an answer says them.  Recall reads the question with all of them.
+_FRAMING_PHRASES = re.compile(
+    "|".join(
+        (
+            *sorted(_RETRIEVAL_ASKING_WORDS),
+            "怎么样",
+            "(?:给我|跟我|帮我)?(?:介绍|说说|讲讲|谈谈|聊聊|看看)",
+            "告诉我?",
+            "一下",
+            "关于",
+            "知道",
+            "还记得",
+            "记得",
+            "情况(?!下)",
+            "进展",
+            "消息",
+            "最新",
+            "动态",
+            r"\b(?:tell|show|give|remind) (?:me|us)\b",
+            r"\b(?:let (?:me|us) know|fill (?:me|us) in|catch (?:me|us) up|walk (?:me|us) through)\b",
+            r"\b(?:to|for) (?:me|us)\b(?=\W*$)",
+        )
+    ),
+    re.I,
+)
 
 
-def _asks_only(term: str) -> bool:
-    if term in _ASKING_ENGLISH:
-        return True
-    return _CJK_TEXT.search(term) is not None and any(char in _ASKING_CHARACTERS for char in term)
+def asked_terms(question: str) -> tuple[str, ...]:
+    """The terms a question asks an answer to say (``recall_needs.answering``): its meaningful terms
+    (``meaningful_query_terms``) read without what asks or only frames a request (``_FRAMING_PHRASES``,
+    ``_FRAMING_ENGLISH``).  "Tell me about Orchard" asks nothing past its name, as "What is Orchard?" does; "What do you
+    know about Orchard's port?" asks for its port."""
+    return tuple(
+        term for term in meaningful_query_terms(_FRAMING_PHRASES.sub(" ", question)) if term not in _FRAMING_ENGLISH
+    )
 
 
 #: Longest text still read as a bare question rather than a message that also
@@ -595,21 +606,10 @@ def same_message(text: str, other: str) -> bool:
 
 
 def meaningful_query_terms(query: str) -> tuple[str, ...]:
-    """Terms that can establish lexical relevance for one candidate: the query's own, read without what asks or frames
-    a request (``_ASKING_PHRASES``), but for weak ones, single characters and words that ask or frame
-    (``_asks_only``)."""
-    # Without those phrases a query is shorter: what ``query_terms`` refuses is refused as asked.
-    query_terms(query)
-    return _meaningful_terms(query)
+    """Terms that can establish lexical relevance for one candidate."""
 
-
-@functools.lru_cache(maxsize=64)
-def _meaningful_terms(query: str) -> tuple[str, ...]:
-    """A recall asks for these as often as for its terms (``query_terms``)."""
     return tuple(
-        term
-        for term in query_terms(_ASKING_PHRASES.sub(" ", query))
-        if term not in _WEAK_QUERY and len(term) > 1 and not _asks_only(term)
+        term for term in query_terms(query) if term not in _WEAK_QUERY and len(term) > 1 and not _asks_only(term)
     )
 
 

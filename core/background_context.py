@@ -15,7 +15,7 @@ from .claims import select_effective
 from .coverage import note_truncation
 from .delete_storage import canonical
 from .events import lexical_terms
-from .recall_needs import RESUME_MARKERS, mentions
+from .recall_needs import asks_to_resume
 from .recall_policy import meaningful_query_terms
 from .retrieval import CandidateRef, RetrievedObject, SearchContext
 from .source_qualification import conditions_match
@@ -230,7 +230,7 @@ def background_candidates(
     if context.mode != "auto" or not context.trusted_context.allowed_scope_ids:
         return ()
     if not (query_evidence or context.background_without_evidence):
-        task = current_task_candidate(tx, context, reader, clock) if mentions(context.query, RESUME_MARKERS) else None
+        task = current_task_candidate(tx, context, reader, clock) if asks_to_resume(context.query) else None
         return () if task is None else ((task[0], mark_background(task[1])),)
     selected: list[tuple[CandidateRef, RetrievedObject]] = []
     choices = []

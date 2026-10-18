@@ -219,6 +219,7 @@ def test_a_transcript_s_label_outside_the_quote_s_sentence_still_names_someone_e
         ("Alice sent this.\n'Hello.\nMy preference is blue.\n'", preference),
         ("Alice wrote ‘Hello.\nMy preference is blue.\n’", preference),
         ("Alice wrote 'Hello.\nMy preference is blue.\n'", preference),
+        ("Alice sent ‘The users' choices include ‘blue’.\nMy preference is blue.\n’", preference),
         ("Alice sent this.\n```\n```python\nMy preference is blue.\n```", preference),
         ("[2026-10-10 Saturday] Alice Wonderland-Smith:\nMy preference is blue.", preference),
     ):
@@ -238,6 +239,8 @@ def test_a_transcript_s_label_outside_the_quote_s_sentence_still_names_someone_e
         "'Hi.\nBye.'\nMy preference is blue.",
         "Alice said ‘hi’.\nMy preference is blue.",
         "It's done, and the students' books are back.\nMy preference is blue.",
+        "‘The service runs’\nMy preference is blue.",
+        "We call it 'Cypress' and use blue. My preference is blue.",
         "```inline``` is code.\nMy preference is blue.",
         "Here is a short summary of where things stand this week:\nMy preference is blue.",
     ):

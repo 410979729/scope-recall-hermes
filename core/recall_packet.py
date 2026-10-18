@@ -25,7 +25,7 @@ from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_
 from .background_context import is_background, mark_background
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
-from .recall_needs import RESUME_MARKERS, mentions, unmet_needs
+from .recall_needs import asks_to_resume, unmet_needs
 from .resume_compaction import (
     compact_episode_variants,
     next_step_provenance_supported,
@@ -179,7 +179,7 @@ def fits_packet_schema(obj: RetrievedObject) -> bool:
 
 def prioritize_resume_evidence(context: SearchContext, verified: list[Pair]) -> list[Pair]:
     """Keep a complete current episode ahead of incidental relation hits."""
-    if not mentions(context.query, RESUME_MARKERS):
+    if not asks_to_resume(context.query):
         return verified
     return sorted(
         verified,
@@ -216,7 +216,7 @@ def prioritize_current_claims(context: SearchContext, verified: list[Pair]) -> l
     evidence event is competing for the same packet.  Explicit refs and
     historical/method queries keep their original relevance order.
     """
-    if context.mode not in {"auto", "current"} or mentions(context.query, RESUME_MARKERS):
+    if context.mode not in {"auto", "current"} or asks_to_resume(context.query):
         return verified
     if any(candidate.source == "exact_ref" for candidate, _obj in verified):
         return verified
