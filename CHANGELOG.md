@@ -5,6 +5,8 @@ longer text this file once held is in its history.
 
 ## [3.11.0] - 2026-10-17
 
+**Combined test tiers keep their directory fixtures.** Selecting a parent directory's test between two descendant groups could give pytest separate collectors for one directory, so integration tests lost fixtures that were available in their own tier. The runner normalizes path separators and groups each selected subtree before invoking pytest; duplicate paths run once.
+
 **The concurrent revision check distinguishes a busy writer from an unexpected failure.** Threads in one process share its writer lease, so a losing writer can receive SQLite's busy result before it can check the expected revision. The test recognizes that exact error code while still requiring one successful revision and one added history entry; other failures report the observed outcomes.
 
 **The documentation, the code's comments and the tests' descriptions say what holds now.** Process notes, incident stories, trial logs, release-candidate numbers, dates, the names of particular installations and issue numbers are gone from them; what they recorded stays in the commit history and in this changelog. Statements that no longer matched the code were corrected on the way: `daily_work_limit` defaults to 0 (no cap), not 256; recall's `budget_tokens` counts estimated tokens, not UTF-8 bytes; a tool output's vector is kept for `tool_output_retention_days`, not for good; an explicit correction or confirmation changes a fact as it is captured; and the JSON schemas are checked at run time by `contracts.py`.
