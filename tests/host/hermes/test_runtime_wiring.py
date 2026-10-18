@@ -270,7 +270,10 @@ def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves
             provider.shutdown()
 
 
-def test_session_end_detaches_bounded_worker_without_shared_drain(configured_provider, monkeypatch):
+def test_session_end_detaches_bounded_worker_without_shared_drain(configured_provider, monkeypatch, metered_store):
+    """A session's end launches the bounded worker detached and its shutdown waits for no drain: it is done within
+    half a second on a clock that counts each store transaction 0.01 s, however long the runner's store takes."""
+    clock = metered_store(0.01)
     provider = configured_provider
     host_runtime = provider._host_runtime
     runtime = host_runtime.runtime
@@ -293,7 +296,9 @@ def test_session_end_detaches_bounded_worker_without_shared_drain(configured_pro
         provider.on_session_end([])
         assert GAP_WORKER_BUSY in provider.diagnostics.capability_gaps
         provider.on_session_switch("TEST-session-2")
+        started = clock()
         provider.shutdown()
+        assert clock() - started < 0.5, clock() - started
         assert not entered.is_set()
         runtime.drain.assert_not_called()
         close.assert_called_once()

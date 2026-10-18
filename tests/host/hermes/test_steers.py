@@ -498,15 +498,21 @@ def test_a_steer_without_a_time_carried_into_the_next_session_is_stored_once(ada
     assert said.count("TEST 继续") == 1
 
 
-def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(telegram, hermes_home, monkeypatch):
+def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(
+    telegram, hermes_home, monkeypatch, metered_store
+):
     """On a busy store each write waits its full time.  A compression hook's retry pass and its steers share one
     budget: once it is spent the hook stops waiting, and keeps each steer it could not write to retry rather than
-    drop it."""
+    drop it.  The hook's clock moves on by what each write waits, and by 0.01 s for each read of the store however long
+    the runner's store takes; everything else the hook does counts as long as it takes."""
+    from scope_recall.adapters.hermes import turn_capture
+
+    clock = metered_store(0.01)
     real, budgets = telegram._core.record_host_event, []
 
     def held(context, event, **kwargs):
         budgets.append(kwargs["remaining_seconds"])
-        time.sleep(kwargs["remaining_seconds"])
+        clock.advance(kwargs["remaining_seconds"])
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(telegram._core, "record_host_event", held)
@@ -515,10 +521,12 @@ def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(telegram,
     assert telegram._retry.captures, "a capture the busy store refused is kept to retry"
     budgets.clear()
     rows = [_row(_steer(f"TEST 第{n}条", message_id=str(300 + n))) for n in range(8)]
+    started = clock()
     telegram.on_pre_compress([dict(row) for row in rows])
     # The retry pass and the steers wait the hook's two seconds between them at most, beside the next to nothing a
-    # write is given once they are spent: a slow runner only shortens what is left.
-    assert sum(budgets) <= 2.0 + 0.001 * len(budgets) + 0.01, budgets
+    # write is given once they are spent, and the hook ends soon after: its reads of the store and its own work.
+    assert sum(budgets) <= turn_capture._STEERS_SECONDS + 0.001 * len(budgets) + 0.01, budgets
+    assert clock() - started < turn_capture._STEERS_SECONDS + 0.5, clock() - started
     monkeypatch.setattr(telegram._core, "record_host_event", real)
     wanted = {f"TEST 第{n}条" for n in range(8)} | {"TEST 先前没写成的"}
     # Each pass of the retry buffer writes what its second allows, and at least the first capture it holds: on a store
