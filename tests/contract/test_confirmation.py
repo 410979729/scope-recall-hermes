@@ -173,6 +173,35 @@ def test_naming_a_proposal_adopts_it(app):
     assert _head(core, ctx, ref) == ("active", CONFIRMED_REASON)
 
 
+def test_adopting_a_denial_about_something_else_does_not_make_it_a_value(app):
+    """记住 names the denial about TEST-instrument, which says what its serial is not and is never its value
+    (``mutate.denial_verdict``): it stays a proposal, and the confirmation waits as an unresolved update."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST-instrument：不是 SN-4471。", key="TEST-confirm/denial")
+    denial = draft(
+        source, "不是 SN-4471", kind="fact", subject="TEST-instrument", predicate="序列号", statement_kind="assertion"
+    )
+    ref = accept(core, ctx, denial).items[0].ref
+    assert _head(core, ctx, ref)[0] == "proposed"
+    confirmation = capture(core, ctx, "记住 TEST-instrument 的序列号。", key="TEST-confirm/denial-yes")
+    assert _head(core, ctx, ref)[0] == "proposed" and core.current_claim(ctx, ref) is None
+    assert confirmation.ref in {row["source_ref"] for row in core.records.unresolved_updates(ctx)}
+
+
+def test_adopting_a_term_in_capitals_makes_it_the_value(app):
+    """NOT NULL names TEST-instrument's constraint as a keyword is written, and denies nothing: 记住 adopts it."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST-instrument：NOT NULL。", key="TEST-confirm/term")
+    term = draft(
+        source, "NOT NULL", kind="fact", subject="TEST-instrument", predicate="约束", statement_kind="assertion"
+    )
+    ref = accept(core, ctx, term).items[0].ref
+    assert _head(core, ctx, ref)[0] == "proposed"
+    capture(core, ctx, "记住 TEST-instrument 的约束。", key="TEST-confirm/term-yes")
+    assert _head(core, ctx, ref) == ("active", CONFIRMED_REASON)
+    assert core.current_claim(ctx, ref).payload["value_text"] == "NOT NULL"
+
+
 def test_a_bare_confirmation_adopts_nothing(app):
     """Guessing which proposal somebody meant is the inference this refuses."""
     core, ctx = app

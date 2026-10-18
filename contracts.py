@@ -254,10 +254,12 @@ class ConsolidationResult(TypedDict):
 
 
 class ContractError(ValueError):
-    def __init__(self, code: str, field: str = "payload") -> None:
+    def __init__(self, code: str, field: str = "payload", hint: str | None = None) -> None:
         self.code = code
         self.field = field
-        super().__init__(f"{code}: invalid {field}")
+        #: What the caller can do instead, where the refusal knows: a fixed sentence, never what was refused.
+        self.hint = hint
+        super().__init__(f"{code}: invalid {field}" if hint is None else f"{code}: invalid {field}: {hint}")
 
 
 _SCHEMAS = frozenset(

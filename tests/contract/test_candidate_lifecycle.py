@@ -14,7 +14,7 @@ from scope_recall.core.consolidate import candidate_evaluation_messages
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor
 from scope_recall.runtime.scheduling import next_wake
-from test_claims import app, capture, draft
+from test_claims import accept, app, capture, draft
 from test_deletion import authorize, request
 from test_finite_supervisor import NOW
 from test_finite_supervisor import fixture as supervisor_fixture
@@ -199,6 +199,30 @@ def test_r1_candidate_new_evidence_wakes_once_and_duplicate_capture_does_not_exp
     assert evaluations[0]["evidence_fingerprint"] != evaluations[1]["evidence_fingerprint"]
     assert len(json.loads(evaluations[1]["evidence_refs_json"])) == 2
     assert _sweep(core, ctx) == 0, "and an unchanged evidence set schedules nothing further"
+
+
+def test_an_evaluation_with_a_second_witness_leaves_a_denial_about_something_else_a_proposal(app):
+    """The evaluator's verdict on a denial about TEST-instrument, citing a second session's restatement, is applied as
+    any claim is (``apply_claim``): a second witness, and still no value of its slot."""
+    core, ctx = app
+    text = "TEST-instrument：不是 SN-4471。"
+    first = capture(core, ctx, text, key="TEST-deny/1")
+    denial = draft(
+        first, "不是 SN-4471", kind="fact", subject="TEST-instrument", predicate="序列号", statement_kind="assertion"
+    )
+    ref = accept(core, ctx, denial).items[0].ref
+    second = capture(core, replace(ctx, session_id="TEST-session-2"), text, key="TEST-deny/2")
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    _settle_evidence(core)
+    assert _sweep(core, ctx) == 1
+    restated = dict(source_ref=second.ref, source_revision=second.revision, quote=text)
+    verdict = {**denial, "evidence_spans": [*denial["evidence_spans"], restated]}
+    evaluator = Evaluator(verdict)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+    assert core.current_claim(ctx, ref) is None
+    assert core.claim_history(ctx, ref)[-1].state == "proposed"
 
 
 def test_r1_candidate_worker_applies_through_fact_path_without_manual_approval(app):
