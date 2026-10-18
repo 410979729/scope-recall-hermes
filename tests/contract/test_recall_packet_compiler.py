@@ -29,6 +29,7 @@ from scope_recall.core.retrieval import CandidateRef, RetrievalResult, Retrieved
 from scope_recall.core.retrieval_storage import RetrievalStorage
 
 from tests.contract.test_claims import accept, capture, draft
+from tests.contract.test_episodes import apply, resume
 from tests.v11_support import context, recall_request
 
 
@@ -1840,6 +1841,46 @@ def test_a_claim_and_the_message_it_was_drawn_from_are_one_answer_not_a_choice(a
     assert once.answerability_hint == "supported"
     capture(core, ctx, "We also tried the red colour scheme for Orchard.", key="TEST-answerability/choice-other")
     assert asked().answerability_hint == "ambiguous"
+
+
+@pytest.mark.parametrize(
+    ("said", "question", "answerability"),
+    [
+        ("Orchard keeps its staging database on port 6543.", "what port is the redis staging database on?", "partial"),
+        ("我的护照放在书房的抽屉里，护照的有效期到明年三月。", "我的护照号码是多少？", "partial"),
+        (
+            "Orchard keeps its staging database on port 6543.",
+            "What port is the Orchard staging database on?",
+            "supported",
+        ),
+    ],
+)
+def test_a_packet_is_supported_only_when_its_evidence_was_held_to_what_the_question_names(
+    app, said, question, answerability
+):
+    """A question that names nothing, in lower case or in Chinese without a Latin word, cannot be held to what its
+    evidence names: whatever matched it is partial, another project's port or a passport's drawer among it.  Named,
+    what names it is supported."""
+    core, ctx = app
+    source = capture(core, ctx, said, key="TEST-answerability/judged")
+    packet = _packet(core, ctx, query=question, mode="current", request_id="TEST-answerability-judged")
+    assert [item["ref"] for item in packet["items"]] == [source.ref]
+    assert packet["answerability"] == answerability
+
+
+def test_asked_to_resume_a_task_its_grounded_resume_answers_by_naming_it(app):
+    """The person called the work moving Orchard.  Asked to continue the Orchard migration, the grounded task's resume
+    answers by naming Orchard, though neither it nor the message says migration."""
+    core, ctx = app
+    ctx = replace(ctx, task_anchor="TEST-answerability-task")
+    said = "We are moving Orchard to the new cluster; the database is done and the cache is not."
+    source = capture(core, ctx, said, key="TEST-answerability/resume-said")
+    refs = [f"{source.ref}@{source.revision}"]
+    apply(core, ctx, resumes=[resume(source, open_items=[{"text": "the cache is not", "evidence_refs": refs}])])
+    resumed = _packet(core, ctx, query="Continue the Orchard migration", mode="auto", request_id="TEST-resume")
+    assert sorted(item["kind"] for item in resumed["items"]) == ["episode", "event"]
+    assert resumed["unmet_needs"] == []
+    assert resumed["answerability"] == "supported"
 
 
 def test_p09_renderer_dedupes_same_installation_session_request(app):

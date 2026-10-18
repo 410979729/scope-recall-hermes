@@ -20,6 +20,7 @@ from .owner_view import OwnerView, owner_names, owner_view
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import (
     CHOICE_MARKERS,
+    Answers,
     answering,
     directed_followup_query,
     evidence_roots,
@@ -1067,27 +1068,28 @@ class RetrievalPipeline:
         question: str,
     ) -> RetrievalResult:
         """The search's result and its verdict on its query evidence: unknown without any, partial with a need left
-        open, unknown when none answers what the question names (``answering``), ambiguous when what answers a
-        question that asks to choose rests on more than one source (``evidence_roots``: a claim and the message it was
-        drawn from say one thing once), else supported.  ``question`` is the question without the owner's name, which
-        their own words never carry.  A question about a day names its days and entries, not what answers it
-        (``recall_scope``), and is judged as one that names nothing."""
+        open.  Then a question that names what answers it (``answering``) is unknown when nothing does, ambiguous when
+        what answers a question that asks to choose rests on more than one source (``evidence_roots``: a claim and the
+        message it was drawn from say one thing once), else supported.  One that names nothing is ambiguous by the same
+        rule, else partial: what matched it was never held to the question.  ``question`` is the question without the
+        owner's name, which their own words never carry.  A question about a day names its days and entries, not what
+        answers it (``recall_scope``), and is left unjudged."""
         items = tuple(obj for _candidate, obj in ranked)
         needs = unmet_needs(working.query, query_items)
         if items and not query_items:
             needs = (*needs, "query_evidence_missing")
-        answers = query_items if working.scope is not None else answering(question, query_items)
-        sources = {root for item in answers for root in evidence_roots(item)}
+        answers = answering(question, query_items) if working.scope is None else Answers(False, query_items)
+        sources = {root for item in answers.items for root in evidence_roots(item)}
         if not query_items:
             answerability = "unknown"
         elif needs:
             answerability = "partial"
-        elif not answers:
+        elif answers.judged and not answers.items:
             answerability = "unknown"
         elif len(sources) > 1 and mentions(working.query, CHOICE_MARKERS):
             answerability = "ambiguous"
         else:
-            answerability = "supported"
+            answerability = "supported" if answers.judged else "partial"
         return RetrievalResult(
             tuple(candidate for candidate, _obj in ranked),
             items,

@@ -465,6 +465,14 @@ class RecallPacketCompiler:
         probe = getattr(self.storage_reader, "retracted_since", None)
         return None if probe is None else (lambda since: probe(tx, context, since))
 
+    def _prefetch(self, tx, context: SearchContext, pairs: list[Pair]) -> None:
+        """Load what rehydrating these candidates reads, together, as the retrieval loaded it
+        (``RetrievalStorage.prefetch``): one by one, each claim's judgement and each source would cost statements of
+        their own in every read."""
+        prefetch = getattr(self.storage_reader, "prefetch", None)
+        if prefetch is not None and self._remaining_ms(context) > 0:
+            prefetch(tx, tuple(candidate for candidate, _obj in pairs), context)
+
     def _verify(self, storage, draft: _Draft, ranked: list[Pair]) -> list[Pair]:
         """Rehydrate every candidate in one fresh read; a withdrawal in its scopes empties it."""
         context = draft.context
@@ -473,6 +481,7 @@ class RecallPacketCompiler:
             with self._read(storage, context) as tx:
                 retracted = self._retracted(tx, context)
                 draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed", retracted=retracted)
+                self._prefetch(tx, context, ranked)
                 for candidate, item in ranked:
                     if self._remaining_ms(context) == 0:
                         draft.gaps.append("deadline_exceeded_release")
@@ -505,6 +514,7 @@ class RecallPacketCompiler:
                 retracted = self._retracted(tx, context)
                 if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence", retracted=retracted):
                     return draft.discard(verified)
+                self._prefetch(tx, context, verified)
                 for candidate, obj in verified:
                     if self._recheck(tx, context, candidate, obj, draft.gaps) is None:
                         return draft.discard(verified, "release_delete_fence")

@@ -258,8 +258,18 @@ def _outside_fences(before: str) -> tuple[bool, str]:
 
 #: Quotation marks that open and close as a pair; a straight double quote does both.
 _QUOTE_PAIRS = (("“", "”"), ("「", "」"), ("『", "』"))
-#: Text between quotation marks: a pair's (``_QUOTE_PAIRS``), or straight double quotes on one line.
-_QUOTATION = re.compile("|".join((r'"[^"\n]*"', *(f"{start}[^{end}]*{end}" for start, end in _QUOTE_PAIRS))))
+#: Single quotation marks around words on one line.  They open at a ``‘``, or at a ``'`` at the line's start or after a
+#: space or an opening bracket, before a word (never before a decade or a year cut to two digits: the '90s, class of
+#: '99), and close at the first ``’`` or ``'`` after text that a space, punctuation or the line's end follows.  An
+#: apostrophe inside a word (Orchard's, don't) opens and closes none.
+_SINGLE_QUOTATION = (
+    r"(?:‘|(?:^|(?<=[\s(\[{（【]))')(?![\s'’]|\d\ds?\b)[^\n]*?(?<=\S)[’'](?=[\s.,!?;:)\]}。，！？；：）】」』\"”]|$)"
+)
+#: Text between quotation marks: a pair's (``_QUOTE_PAIRS``), straight double quotes on one line, or single ones
+#: (``_SINGLE_QUOTATION``).
+_QUOTATION = re.compile(
+    "|".join((r'"[^"\n]*"', *(f"{start}[^{end}]*{end}" for start, end in _QUOTE_PAIRS), _SINGLE_QUOTATION)), re.M
+)
 
 
 def unquoted(text: str) -> str:

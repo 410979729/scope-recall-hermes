@@ -690,9 +690,10 @@ def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_p
     assert asked("9月2日聊了什么") == {*said["tianshu"], *said["tianxuan"]}
 
 
-def test_a_day_question_naming_an_entry_is_answered_by_that_day_s_messages(tmp_path):
-    """A question about a day names its day and its entries, not what answers it: the entry's messages of that day
-    answer it, though none of them says the entry's name."""
+def test_a_day_question_naming_an_entry_is_not_judged_by_the_names_it_gives(tmp_path):
+    """A question about a day names its day and its entries, not what answers it: the entry's messages of that day are
+    its evidence, though none of them says the entry's name, and since nothing held them to the question they are
+    partial, never unknown."""
     import time as _time
 
     from scope_recall.core.recall import recall
@@ -730,7 +731,7 @@ def test_a_day_question_naming_an_entry_is_answered_by_that_day_s_messages(tmp_p
     )
     result = recall(context, storage=storage)
     assert {item.ref for item in result.items} == said
-    assert result.answerability_hint == "supported"
+    assert result.answerability_hint == "partial"
 
 
 @pytest.mark.parametrize(

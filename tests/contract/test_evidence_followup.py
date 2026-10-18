@@ -11,7 +11,7 @@ from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.claims import Qualification
 from scope_recall.core.events import lexical_terms
-from scope_recall.core.recall_needs import answering, unmet_needs
+from scope_recall.core.recall_needs import Answers, answering, unmet_needs
 from scope_recall.core.recall_policy import (
     SPACE_ID,
     RecallPolicy,
@@ -20,6 +20,7 @@ from scope_recall.core.recall_policy import (
 )
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext, SearchLimits
 from scope_recall.core.retrieval_storage import RetrievalStorage, scope_digest
+from scope_recall.core.source_qualification import unquoted
 
 from tests.contract.test_candidate_lifecycle import Evaluator, _finish_source_work
 from tests.contract.test_claims import Clock, capture, draft
@@ -283,24 +284,81 @@ def test_an_item_answers_by_naming_what_the_question_names_and_saying_more_of_wh
     fact = json.dumps({"kind": "fact", "subject": "Fennel", "predicate": "alert channel", "value_text": "#ops-pager"})
     active = _recalled("claim-fennel", fact, kind="claim", state="active")
     other = _recalled("event-maple", "The Maple alert channel is #night-shift.")
-    assert answering("Where are the Fennel alerts posted?", (other, active)) == (active,)
+    assert answering("Where are the Fennel alerts posted?", (other, active)) == Answers(True, (active,))
     keys = _recalled("event-keys", "We rotated the Orchard API keys on Monday.")
-    assert answering("What did I say about the Orchard API keys on Sep 3?", (keys,)) == (keys,)
-    assert answering("What did I say about the Lantern API keys on Sep 3?", (keys,)) == ()
-    assert answering("What's the plan for the Orchard keys?", (keys,)) == (keys,)
+    assert answering("What did I say about the Orchard API keys on Sep 3?", (keys,)).items == (keys,)
+    assert answering("What did I say about the Lantern API keys on Sep 3?", (keys,)) == Answers(True, ())
+    assert answering("What's the plan for the Orchard keys?", (keys,)).items == (keys,)
     assets = _recalled("event-assets", "Put the Flint assets behind Akamai for a week.")
-    assert answering("What CDNs did we test with Flint's assets?", (assets,)) == (assets,)
+    assert answering("What CDNs did we test with Flint's assets?", (assets,)).items == (assets,)
     # A sentence that supposes, and words in quotation marks, are left out; the rest of the message still answers.
     port = "What is the staging database port for Orchard?"
     said = _recalled("event-said", "The Orchard staging database port is 6543. If we split the cluster, it would move.")
     supposed = _recalled("event-supposed", "If we split the cluster, the Orchard staging database port would move.")
-    assert answering(port, (said, supposed)) == (said,)
+    assert answering(port, (said, supposed)).items == (said,)
     labelled = _recalled("event-labelled", "旧架构图上把 Cinder 标成“部署区域 eu-central-1”，但那张图是迁移之前画的。")
-    assert answering("Cinder 的部署区域是哪里？", (labelled,)) == ()
+    assert answering("Cinder 的部署区域是哪里？", (labelled,)) == Answers(True, ())
     sides = (_recalled("event-h100", "H100 使用第一套部署配置。"), _recalled("event-h200", "H200 使用第二套部署配置。"))
-    assert answering("比较 H100 和 H200 部署配置", sides) == sides
-    assert answering("比较 H100 和 H300 部署配置", sides) == ()
-    assert answering("我下午喜欢喝什么？", (other,)) == (other,)
+    assert answering("比较 H100 和 H200 部署配置", sides) == Answers(True, sides)
+    assert answering("比较 H100 和 H300 部署配置", sides) == Answers(True, ())
+    assert answering("我下午喜欢喝什么？", (other,)) == Answers(False, (other,))
+    assert answering("what port does redis use?", (said,)) == Answers(False, (said,))
+
+
+def test_a_question_that_asks_nothing_past_its_names_is_answered_by_any_item_naming_them():
+    """A question that asks nothing past its names ("What is Orchard?") asks for whatever is said about them: an item
+    that names them answers, whatever else it says.  Holding it to another of the question's words would only meet
+    such a question with a false unknown."""
+    said = _recalled("event-orchard", "Orchard is the billing service the shop runs on.")
+    assert answering("What is Orchard?", (said,)) == Answers(True, (said,))
+    assert answering("Orchard 是什么？", (said,)) == Answers(True, (said,))
+    assert answering("What is Lantern?", (said,)) == Answers(True, ())
+
+
+def test_words_in_single_quotes_are_left_out_and_an_apostrophe_quotes_nothing():
+    """Single quotation marks around words, straight or curly, hold someone else's words or a value the writer quotes,
+    as double ones do; an apostrophe inside a word or before a decade opens no quotation."""
+    question = "What port does Orchard run on?"
+    for quoted in (
+        "The runbook says 'Orchard runs on port 8443'.",
+        "The wiki still has ‘Orchard runs on port 8443’ on its front page.",
+        "('Orchard runs on port 8443') was the old note.",
+    ):
+        assert answering(question, (_recalled("event-quoted", quoted),)) == Answers(True, ()), quoted
+    for said in (
+        "Orchard's service runs on port 8443.",
+        "We don't run Orchard on 8080; it runs on port 8443.",
+        "In the '90s we ran Orchard on port 80.",
+        "We set the flag to 'on', and Orchard runs on port 8443 now.",
+    ):
+        item = _recalled("event-said", said)
+        assert answering(question, (item,)) == Answers(True, (item,)), said
+    assert unquoted("It's Orchard's 'new' port, the '90s one.") == "It's Orchard's   port, the '90s one."
+
+
+def test_only_a_grounded_task_s_resume_answers_and_only_a_question_that_asks_to_resume():
+    """An episode's resume is a summary drawn from messages that answer for themselves: asked a fact, it answers
+    nothing; asked to resume, a grounded task's resume answers by naming the task, in its own words.  An artifact's
+    label and a reference answer nothing."""
+    refs = ["event-moving@1"]
+    resume = {
+        "goal": {"text": "Moving Orchard to the new cluster", "evidence_refs": refs},
+        "open_items": [{"text": "Orchard port is 8443 until the cache moves", "evidence_refs": refs}],
+    }
+    grounded = _recalled("episode-orchard", json.dumps(resume), kind="episode", origin="derived_summary")
+    assert answering("What is Orchard port?", (grounded,)) == Answers(True, ())
+    assert answering("Continue the Orchard migration", (grounded,)) == Answers(True, (grounded,))
+    assert answering("继续 Orchard 的迁移", (grounded,)) == Answers(True, (grounded,))
+    assert answering("Continue the Lantern migration", (grounded,)) == Answers(True, ())
+    ungrounded = _recalled(
+        "episode-goal", json.dumps({"goal": resume["goal"]}), kind="episode", origin="derived_summary"
+    )
+    assert answering("Continue the Orchard migration", (ungrounded,)) == Answers(True, ())
+    artifact = _recalled("artifact-orchard", "Orchard port diagram", kind="artifact", origin="observed")
+    binding = {"mention": "the Orchard port diagram", "resolution": "resolved", "resolved_ref": "artifact-orchard@1"}
+    reference = _recalled("reference-orchard", json.dumps(binding), kind="reference", origin="derived_summary")
+    for item in (artifact, reference):
+        assert answering("What is Orchard port?", (item,)) == Answers(True, ()), item.kind
 
 
 def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgement():
@@ -330,9 +388,9 @@ def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgeme
         claim("claim-denial", "not #ops-pager", state="proposed", reason="fact_entailment_unproved"),
     )
     for item in answers:
-        assert answering(question, (item,)) == (item,), item.ref
+        assert answering(question, (item,)) == Answers(True, (item,)), item.ref
     for item in held_back:
-        assert answering(question, (item,)) == (), item.ref
+        assert answering(question, (item,)) == Answers(True, ()), item.ref
     own = {
         "kind": "preference",
         "subject": "principal:human:alice",
@@ -340,7 +398,7 @@ def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgeme
         "value_text": "don't drink coffee",
     }
     answer = _recalled("claim-own", json.dumps(own), kind="claim", state="active", reason="explicit_scoped_source")
-    assert answering("Does Alice drink coffee?", (answer,)) == (answer,)
+    assert answering("Does Alice drink coffee?", (answer,)) == Answers(True, (answer,))
 
 
 def test_a_proposal_the_evaluator_found_insufficient_no_longer_answers(app):
@@ -366,19 +424,19 @@ def test_a_proposal_the_evaluator_found_insufficient_no_longer_answers(app):
         return item
 
     waiting = hydrated()
-    assert answering(question, (waiting,)) == (waiting,)
+    assert answering(question, (waiting,)) == Answers(True, (waiting,))
     evaluator = Evaluator()
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     judged = hydrated()
     assert evaluator.calls == 1
     assert dict(judged.metadata)["state"] == "proposed"
-    assert answering(question, (judged,)) == ()
+    assert answering(question, (judged,)) == Answers(True, ())
 
 
-def test_a_prompt_that_does_not_read_as_a_question_about_named_things_is_judged_as_before():
+def test_a_prompt_that_does_not_read_as_a_question_about_named_things_is_not_judged():
     """A pasted traceback, a code block and a long message hold capitalised words that are not things a question
-    names, and a short prompt naming more than two things is a list: each is judged as before, every item answering.
-    The question that ends the long message, asked alone, is judged."""
+    names, and a short prompt naming more than two things is a list: none is judged, and every item stays its
+    evidence.  The question that ends the long message, asked alone, is judged."""
     item = _recalled("event-region", "We moved the deploy region to eu-west-1 last week.")
     traceback = (
         "Why does the worker keep failing?\n"
@@ -394,8 +452,8 @@ def test_a_prompt_that_does_not_read_as_a_question_about_named_things_is_judged_
     )
     listed = "Do Orchard, Lantern and Basalt share one deploy region?"
     for prompt in (traceback, code, prose, listed):
-        assert answering(prompt, (item,)) == (item,), prompt
-    assert answering("What did I say about the Basalt migration?", (item,)) == ()
+        assert answering(prompt, (item,)) == Answers(False, (item,)), prompt
+    assert answering("What did I say about the Basalt migration?", (item,)) == Answers(True, ())
 
 
 def test_followup_blocked_after_initial_round_when_shared_deadline_expires(tmp_path):

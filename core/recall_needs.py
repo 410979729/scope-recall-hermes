@@ -2,15 +2,17 @@
 
 A comparison needs both named sides, a "why" needs a reason clause that names
 the target, a resume needs a grounded open episode.  A question that names
-something is answered only by an item that names it too and says more of what
-the question asks (``answering``).  These are read off the query and the
-hydrated items; nothing here searches, and a need never manufactures evidence.
+something is judged: only an item that names it too and says more of what the
+question asks answers it (``answering``); one that names nothing is not.  These
+are read off the query and the hydrated items; nothing here searches, and a need
+never manufactures evidence.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 
 from .claims import is_denial
 from .corroboration import CORROBORATION_ELIGIBLE_REASONS
@@ -166,24 +168,28 @@ def _grounded(entries: object) -> bool:
     return any(isinstance(entry, dict) and entry.get("text") and entry.get("evidence_refs") for entry in entries or ())
 
 
+def _resumes(item: object) -> bool:
+    """Whether an item is a grounded task's resume: an episode whose resume names its goal and holds progress, an open
+    item or a next step on a basis that grounds it, each with the evidence it was drawn from, and that no gap marks
+    stale (``STALE_RESUME_GAPS``)."""
+    if getattr(item, "kind", "") != "episode":
+        return False
+    gaps = optional_json(dict(getattr(item, "metadata", ())).get("gaps")) or ()
+    if any(gap in gaps for gap in STALE_RESUME_GAPS):
+        return False
+    resume = optional_json(getattr(item, "content", ""))
+    if type(resume) is not dict:
+        return False
+    goal = resume.get("goal")
+    if type(goal) is not dict or not goal.get("text") or not goal.get("evidence_refs"):
+        return False
+    basis = str(resume.get("next_step_basis") or "").casefold()
+    grounded_next_step = bool(resume.get("next_step") and basis in _GROUNDED_NEXT_STEP_BASES)
+    return _grounded(resume.get("verified_progress")) or _grounded(resume.get("open_items")) or grounded_next_step
+
+
 def _resume_unmet(items: tuple[object, ...]) -> bool:
-    for item in items:
-        if getattr(item, "kind", "") != "episode":
-            continue
-        gaps = optional_json(dict(getattr(item, "metadata", ())).get("gaps")) or ()
-        if any(gap in gaps for gap in STALE_RESUME_GAPS):
-            continue
-        resume = optional_json(getattr(item, "content", ""))
-        if type(resume) is not dict:
-            continue
-        goal = resume.get("goal")
-        if type(goal) is not dict or not goal.get("text") or not goal.get("evidence_refs"):
-            continue
-        basis = str(resume.get("next_step_basis") or "").casefold()
-        grounded_next_step = bool(resume.get("next_step") and basis in _GROUNDED_NEXT_STEP_BASES)
-        if _grounded(resume.get("verified_progress")) or _grounded(resume.get("open_items")) or grounded_next_step:
-            return False
-    return True
+    return not any(_resumes(item) for item in items)
 
 
 def _resume_query(query: str, items: tuple[object, ...]) -> str:
@@ -270,16 +276,22 @@ def _asserted(content: str) -> str:
     )
 
 
-def _answer_text(item: RetrievedObject) -> str | None:
-    """What an item answers with: a person's own words (``human_direct``) as they assert them (``_asserted``), a
-    claim's statement, another kind's content.  A claim answers when it is active, or when a person said it, its
-    qualification stopped only at the strength of its one source (``CORROBORATION_ELIGIBLE_REASONS``) and its first
-    judgement has not reached it (``judgement``, ``retrieval_hydration``): such a proposal waits to be judged.  One the
-    evaluator found insufficient, one asleep or blocked, and one held back for what it is (a supposition, a quotation,
-    a subject its quote does not bind, a condition it drops) answer nothing, nor does a proposed denial
-    (``claims.is_denial``): the store holds a denial as active only as the person's own answer
-    (``mutate.denial_verdict``), and any other says what its slot is not.  An assistant's or a tool's message answers
-    nothing either: what a tool observed answers through a claim drawn from it."""
+def _answer_text(item: RetrievedObject, *, resume: bool) -> str | None:
+    """What an item answers with: a person's own words (``human_direct``) as they assert them (``_asserted``), or a
+    claim's statement.  A claim answers when it is active, or when a person said it, its qualification stopped only at
+    the strength of its one source (``CORROBORATION_ELIGIBLE_REASONS``) and its first judgement has not reached it
+    (``judgement``, ``retrieval_hydration``): such a proposal waits to be judged.  One the evaluator found
+    insufficient, one asleep or blocked, and one held back for what it is (a supposition, a quotation, a subject its
+    quote does not bind, a condition it drops) answer nothing, nor does a proposed denial (``claims.is_denial``): the
+    store holds a denial as active only as the person's own answer (``mutate.denial_verdict``), and any other says what
+    its slot is not.  An assistant's or a tool's message answers nothing either: what a tool observed answers through a
+    claim drawn from it.
+
+    An episode answers only a question that asks to resume (``resume``), with the resume of a grounded task
+    (``_resumes``): the task's state is what such a question asks for.  Asked anything else it answers nothing, since
+    its resume is a summary drawn from messages that answer for themselves, the assistant's and a tool's among them.
+    An artifact's label, a name a tool observed, and a reference, an alias resolution drawn from the messages it cites,
+    answer nothing."""
     if item.kind in {"claim", "procedure"}:
         metadata = dict(item.metadata)
         payload = optional_json(item.content)
@@ -293,21 +305,36 @@ def _answer_text(item: RetrievedObject) -> str | None:
         return statement_text(item) if metadata.get("state") == "active" or waits else None
     if item.kind == "event":
         return _asserted(item.content) if item.origin == "human_direct" else None
-    return item.content
+    if item.kind == "episode" and resume and _resumes(item):
+        return item.content
+    return None
 
 
-def answering(question: str, items: tuple[RetrievedObject, ...]) -> tuple[RetrievedObject, ...]:
-    """The items that answer what ``question`` names (``_question_names``); every item when it names nothing.
+@dataclass(frozen=True)
+class Answers:
+    """What answers a question (``answering``).  A judged question names what answers it, and ``items`` are the items
+    that name it, perhaps none; an unjudged one names nothing to hold them to, and ``items`` are all of them."""
+
+    judged: bool
+    items: tuple[RetrievedObject, ...]
+
+
+def answering(question: str, items: tuple[RetrievedObject, ...]) -> Answers:
+    """What answers ``question``: judged when it names one thing or two (``_question_names``), unjudged, with every
+    item, when it names nothing.
 
     An item answers when what it says (``_answer_text``) holds one of the names and one more of the question's
     words, in any of that word's inflections (``stem``): another project's value shares every word of a question but
-    its name, and the named project's other attributes share the name alone.  Every name must stand in an answering
-    item, though not all in one, so that the two sides of a comparison answer it side by side; when one stands in
-    none, nothing answers.
+    its name, and the named project's other attributes share the name alone.  A question that asks nothing past its
+    names ("What is Orchard?") is answered by any item that names them.  Every name must stand in an answering item,
+    though not all in one, so that the two sides of a comparison answer it side by side; when one stands in none,
+    nothing answers.  A grounded task's resume answers a question that asks to resume it by naming it alone: its words
+    are the task's, not the question's ("Continue the Orchard migration" for a task its person called moving Orchard).
     """
     names = _question_names(question)
     if not names:
-        return items
+        return Answers(False, items)
+    resume = mentions(question, RESUME_MARKERS)
     named = {name: frozenset(lexical_terms(name)) for name in names}
     in_names = {stem(term) for parts in named.values() for term in parts}
     asked = {stem(term) for term in meaningful_query_terms(question)} - in_names
@@ -319,17 +346,22 @@ def answering(question: str, items: tuple[RetrievedObject, ...]) -> tuple[Retrie
         written = unicodedata.normalize("NFKC", item.content).casefold()
         if not any(all(part in written for part in parts) for parts in named.values()):
             continue
-        text = _answer_text(item)
+        text = _answer_text(item, resume=resume)
         if not text:
             continue
         terms = frozenset(lexical_terms(text))
-        if asked and asked.isdisjoint(terms) and asked.isdisjoint(stem(term) for term in terms):
-            continue
+        # An episode answers only as a resume, which a question that asks to resume it needs to name alone.
+        says_more = (
+            not asked
+            or item.kind == "episode"
+            or not asked.isdisjoint(terms)
+            or not asked.isdisjoint(stem(term) for term in terms)
+        )
         held = {name for name, parts in named.items() if parts <= terms}
-        if held:
+        if says_more and held:
             found.append(item)
             covered |= held
-    return tuple(found) if len(covered) == len(named) else ()
+    return Answers(True, tuple(found) if len(covered) == len(named) else ())
 
 
 # -- public -------------------------------------------------------------------
