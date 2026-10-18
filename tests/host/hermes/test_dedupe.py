@@ -185,7 +185,6 @@ def test_a_rebuilt_agent_s_provider_gets_its_session_s_hooks(
     message a second time under an ordinal with the reply.  The adapter that bound the session last gets its hooks."""
     from scope_recall.adapters.hermes.hooks import _global_callback
 
-    slow_capture_store()
     core, clock = installed_core
     pair = sorted(
         (ScopeRecallHermesAdapter(core=core, clock=clock), ScopeRecallHermesAdapter(core=core, clock=clock)), key=id
@@ -193,6 +192,7 @@ def test_a_rebuilt_agent_s_provider_gets_its_session_s_hooks(
     old, new = pair  # the newer binding has the higher id(), so the lower id() would pick the old one
     old.initialize("TEST-session-1", **initialize_kwargs)
     new.initialize("TEST-session-1", **initialize_kwargs)
+    slow_capture_store()
     try:
         _global_callback("pre_llm_call")(
             session_id="TEST-session-1", turn_id="turn-rebuilt", platform="cli", user_message="TEST 开始长任务"

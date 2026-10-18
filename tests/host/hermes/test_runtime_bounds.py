@@ -624,6 +624,7 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(
     """The write runs without the session, so a session or audience switch can come in meanwhile: the capture
     keeps the session and scope it was said in, and stays out of the new session's fence."""
     provider, _clock = adapter
+    monkeypatch.setattr(provider._retry, "start", lambda: None)
     before = provider._identity
     real = provider._core.source_by_event_key
     entered, release = threading.Event(), threading.Event()
@@ -652,6 +653,8 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(
     assert "error" not in first_box and "error" not in switch_box, (first_box, switch_box)
     # Waiting for the switch can consume the capture's admission time. Its retry must keep the original audience
     # even though the provider now serves another session; only committed sources satisfy the assertion below.
+    if deferred:
+        assert len(provider._retry.captures) == 1
     provider._retry.write_observed()
     with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
         rows = conn.execute("SELECT session_id, scope_id, origin FROM source_events WHERE role='tool'").fetchall()

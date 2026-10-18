@@ -70,9 +70,11 @@ def test_compression_defers_steers_within_shared_budget(telegram, monkeypatch, m
     monkeypatch.setattr(telegram._retry, "start", lambda: None)
     clock = metered_store(per_operation)
     assert clock is metered_store(per_operation), "semantic and budget fixtures share one transaction clock"
+    before = clock.operations
     started = telegram._core.clock.monotonic()
     with telegram._core.storage.read(telegram._require_identity().trusted_context()):
         pass
+    assert clock.operations == before + 1, "one transaction is charged once"
     assert per_operation <= telegram._core.clock.monotonic() - started <= per_operation + 0.1
     rows = [_row(_steer(f"TEST steer {number}", message_id=str(300 + number))) for number in range(8)]
     started = clock()
