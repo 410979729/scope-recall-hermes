@@ -284,39 +284,53 @@ def test_ndcg_weighs_each_delivered_item_once(bench) -> None:
     assert bench.ndcg((frozenset({"a"}),), 2) == pytest.approx(1 / (1 + 1 / math.log2(3)))
 
 
+#: The slow-machine check's questions, by key, and their tasks: a value that was updated, asked with the value it
+#: replaced still in the store; a named day, beside the same words said on other days; a single fact beside its hard
+#: negatives; and a question asked once while its entry still read a scope and once after that read was revoked.
+SLOW_MACHINE_QUESTIONS = {
+    "dev-knowledge_update-091": "knowledge_update",
+    "dev-temporal-067": "temporal",
+    "dev-single_fact-007": "single_fact",
+    "dev-cross_scope-173": "cross_scope",
+}
+
+
 def test_a_slow_machine_scores_what_a_fast_one_does(bench, monkeypatch) -> None:
     """The store's waits for its lease, the worker's passes and every recall read the bench's clock: a machine so
-    slow that a minute of real time passes between two readings builds the same store and gets the same packets.
-    Two days of the dev world show it (a worker pass between them and one at the end, claims, vectors, both recall
-    paths), asked the first question of each task and form the two days answer, a revoked scope's among them."""
+    slow that a minute of real time passes between two readings builds the same store and gets the same packets
+    from the same channels.  The world is the questions above and the messages they stand on, their answers and hard
+    negatives, said over several days with a worker pass after each; every question is asked on both paths."""
     world = bench.build_world("dev")
-    messages = world.messages[:80]
-    kept = {message.key for message in messages}
-    first: dict = {}
-    for question in world.questions:
-        if set(question.gold) <= kept:
-            first.setdefault((question.task, question.form), question)
-    small = replace(world, messages=messages, questions=tuple(first.values()))
-    assert len({bench.local_day(message.at, world.zone) for message in messages}) == 2
-    assert any(question.revoked for question in small.questions)
+    asked = tuple(question for question in world.questions if question.id in SLOW_MACHINE_QUESTIONS)
+    assert {question.id: question.task for question in asked} == SLOW_MACHINE_QUESTIONS
+    needed = {key for question in asked for key in (*question.gold, *(key for _kind, key in question.negatives))}
+    messages = tuple(message for message in world.messages if message.key in needed)
+    assert len({bench.local_day(message.at, world.zone) for message in messages}) >= 2
+    small = replace(world, messages=messages, questions=asked)
     steady = _scored(bench, small)
+    assert any("vector" in channels for channels in steady["channels"]), "no item came from the vector channel"
+    assert True in steady["seen_before"], "the revoked scope never showed, so its absence after proves nothing"
     readings = itertools.count()
     monkeypatch.setattr(time, "monotonic", lambda: next(readings) * 60.0)
     assert _scored(bench, small) == steady
 
 
-def _scored(bench, world):
+def _scored(bench, world) -> dict:
+    """Everything a build and its questions on both paths come to: each packet's items, the channel that found each,
+    whether a revoked scope showed before the revocation, the work left, and what the store's claims came to."""
     root = Path(tempfile.mkdtemp(prefix="scope-recall-bench-clock-"))
     try:
         store = bench.BenchStore(world, root)
         try:
-            packets = [
-                [(item["ref"], item["revision"]) for item in store.ask(question, path).packet["items"]]
-                for question in world.questions
-                for path in bench.PATHS
-            ]
+            answers = [store.ask(question, path) for question in world.questions for path in bench.PATHS]
             status = store.core.status(store.worker)
-            return packets, status.pending_work, status.failed_work, store.qualification(), store.active_claims_on()
+            return {
+                "packets": [[(item["ref"], item["revision"]) for item in answer.packet["items"]] for answer in answers],
+                "channels": [answer.channels for answer in answers],
+                "seen_before": [answer.seen_before for answer in answers],
+                "work": (status.pending_work, status.failed_work),
+                "claims": (store.qualification(), store.active_claims_on()),
+            }
         finally:
             store.close()
     finally:
