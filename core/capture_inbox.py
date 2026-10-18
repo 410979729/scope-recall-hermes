@@ -21,6 +21,7 @@ from ..contracts import (
     TrustedSourcePrincipal,
 )
 from .capture import CaptureReceipt, record_event
+from .deadline import fits
 from .delete_storage import canonical
 from .events import PreparedCapture, prepare_capture, segment_key
 from .inbox_rules import (
@@ -52,7 +53,8 @@ def _terminal_code(exc: ContractError) -> str:
     return exc.code
 
 
-def _context_payload(context):
+def context_payload(context):
+    """Serialize capture authority without its binding; replay supplies and revalidates that binding."""
     if context.import_provenance is not None or context.actor_origin == "imported":
         raise ContractError("ACCESS_DENIED", "ingress_import_attestation")
     payload = dict(
@@ -85,7 +87,7 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
         return None, prepared
     if host_scope is None and not context.binding.test_mode:
         raise ContractError("ACCESS_DENIED", "ingress_host_authority")
-    body = dict(events=prepared.events, gaps=prepared.gaps, context=_context_payload(context), host_scope=host_scope)
+    body = dict(events=prepared.events, gaps=prepared.gaps, context=context_payload(context), host_scope=host_scope)
     encoded = canonical(body)
     if len(encoded.encode("utf-8")) > 2097152:
         raise ContractError("INPUT_INVALID", "ingress_item_budget")
@@ -152,7 +154,8 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
 def durable_record_event(
     storage, clock, context, value, *, scope_id, host_scope, admission_policy=None, remaining_seconds=1.0
 ):
-    deadline = time.monotonic() + remaining_seconds
+    started = time.monotonic()
+    deadline = started + remaining_seconds
     token, prepared = enqueue(
         storage, clock, context, value, scope_id=scope_id, host_scope=host_scope, remaining_seconds=remaining_seconds
     )
@@ -160,7 +163,18 @@ def durable_record_event(
         return CaptureReceipt(
             "rejected", (), "not_persisted", "not_indexed", "not_scheduled", prepared.gaps, prepared.rejection
         )
+    # The commit is a second write.  Started with less time left than the inbox write took, on a store that slow it
+    # would run past the capture's time: the capture is durable in the inbox already, and the worker's replay, or the
+    # next one a host runs, commits it.
+    if not fits(deadline, time.monotonic() - started):
+        return _waiting(prepared, "DEADLINE_EXCEEDED")
     return _commit(storage, clock, context, token, prepared, scope_id, admission_policy, deadline)
+
+
+def _waiting(prepared, code: str) -> CaptureReceipt:
+    """The receipt of a capture the inbox keeps for the next pass, which says so: without the gap a pass that met a
+    busy writer, or ran out of time, would say nothing."""
+    return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, INGRESS_PENDING_GAP), code)
 
 
 def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline, *, rekeyed=False):
@@ -172,16 +186,22 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
             {},
             scope_id=scope_id,
             admission_policy=policy,
-            remaining_seconds=max(0.001, deadline - time.monotonic()),
+            remaining_seconds=deadline - time.monotonic(),
             _prepared=prepared,
             _inbox_token=token,
         )
         if receipt.disposition in {"conflict", "cancelled"}:
             # A capture that conflicts under the key it was given for its content stays final: written back as a
-            # bare conflict, it would be given the same key and refused again on every pass.
+            # bare conflict, it would be given the same key and refused again on every pass.  With no time left for
+            # that write the next pass meets the same refusal and writes it then.
             code = _REKEYED_CONFLICT if rekeyed and receipt.disposition == "conflict" else receipt.error_code
-            with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
-                tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+            try:
+                with storage.write(context, remaining_seconds=deadline - time.monotonic()) as tx:
+                    tx._check(write=True).execute(
+                        "UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token)
+                    )
+            except (*_TRANSIENT, ContractError):
+                pass
             return receipt
         if receipt.durability == "persisted":
             return receipt
@@ -195,7 +215,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         # tries and its place across a delete.
         if code not in _PASSING:
             try:
-                with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+                with storage.write(context, remaining_seconds=deadline - time.monotonic()) as tx:
                     tx._check(write=True).execute(
                         "UPDATE capture_inbox SET last_error_code=? WHERE token=?", (_terminal_code(exc), token)
                     )
@@ -203,9 +223,9 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
                 pass
     except _TRANSIENT:
         code = "STORAGE_UNAVAILABLE"
-    # A row the next pass takes again says so, or a pass that met a busy writer here would say nothing.
-    pending = (INGRESS_PENDING_GAP,) if code in _PASSING else ()
-    return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, *pending), code)
+    if code in _PASSING:
+        return _waiting(prepared, code)
+    return CaptureReceipt("queued", (), "queued", "pending", "pending", prepared.gaps, code)
 
 
 #: How storage refuses a copy of a deleted message under that message's key, or a later version or part of the deleted
@@ -221,7 +241,7 @@ def _refused_for_a_delete(storage, context, token, prepared, deadline) -> Captur
     inbox with its code, the copy would keep the doctor's ``capture_ingress_blocked`` up until someone removed it by
     hand; it leaves the inbox, and the pass counts it among the rows it cancelled."""
     try:
-        with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+        with storage.write(context, remaining_seconds=deadline - time.monotonic()) as tx:
             tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (token,))
     except (*_TRANSIENT, ContractError):
         # Not removed: the next pass meets the same refusal and removes it then.
@@ -376,52 +396,55 @@ def _page(storage, clock, context, limit, remaining_seconds, condition, params, 
 
 def _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, *, rekey):
     receipts = []
+    took = 0.0
     for row in rows:
-        if time.monotonic() >= deadline:
+        # A row is reckoned by the one before it: started with less time left than that one took, on a store that slow
+        # its commit would run past the replay's time.  The rest of the page waits for the next pass.
+        if not fits(deadline, took):
             break
-        try:
-            revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=False)
-            stored = None
-            if rekey and revalidated is not None:
-                stored = _as_stored(storage, clock, *revalidated, row, admission_policy, deadline)
-                if stored is None:
-                    revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=True)
-        except _TRANSIENT:
-            # The store itself: the rest of the page waits for the next pass.  Raised, it would lose what this replay
-            # had done, and the rekey replay after it would not run.
-            receipts.append(
-                CaptureReceipt(
-                    "queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,), "STORAGE_UNAVAILABLE"
-                )
-            )
+        began = time.monotonic()
+        receipt, stop = _replay_row(storage, clock, context, row, authorize, admission_policy, deadline, rekey=rekey)
+        receipts.append(receipt)
+        if stop:
             break
-        except (ContractError, KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
-            # A host's check that raises (Hermes' identity errors are RuntimeErrors) put off this row only.
-            receipts.append(_defer(storage, clock, context, row, exc, deadline, path="rekey" if rekey else "replay"))
-            continue
-        if stored is not None:
-            receipts.append(stored)
-            continue
-        if revalidated is None:
-            receipts.append(
-                CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED")
-            )
-            continue
-        original, prepared = revalidated
-        receipts.append(
-            _commit(
-                storage,
-                clock,
-                original,
-                row["token"],
-                prepared,
-                row["scope_id"],
-                admission_policy,
-                deadline,
-                rekeyed=rekey,
-            )
-        )
+        took = time.monotonic() - began
     return tuple(receipts)
+
+
+def _replay_row(storage, clock, context, row, authorize, admission_policy, deadline, *, rekey):
+    """One row of a replay's page: its receipt, and whether the rest of the page waits for the next pass."""
+    try:
+        revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=False)
+        stored = None
+        if rekey and revalidated is not None:
+            stored = _as_stored(storage, clock, *revalidated, row, admission_policy, deadline)
+            if stored is None:
+                revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=True)
+    except _TRANSIENT:
+        # The store itself: the rest of the page waits for the next pass.  Raised, it would lose what this replay had
+        # done, and the rekey replay after it would not run.
+        return _waiting(PreparedCapture((), ()), "STORAGE_UNAVAILABLE"), True
+    except ContractError as exc:
+        if exc.code == "DEADLINE_EXCEEDED":
+            # The store refused a call the replay had no time left for: this row waits with the rest, its tries
+            # untouched, as it would behind a busy writer.
+            return _waiting(PreparedCapture((), ()), exc.code), True
+        return _defer(storage, clock, context, row, exc, deadline, path="rekey" if rekey else "replay"), False
+    except (KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
+        # A host's check that raises (Hermes' identity errors are RuntimeErrors) puts off this row only.
+        return _defer(storage, clock, context, row, exc, deadline, path="rekey" if rekey else "replay"), False
+    if stored is not None:
+        return stored, False
+    if revalidated is None:
+        return (
+            CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"),
+            False,
+        )
+    original, prepared = revalidated
+    receipt = _commit(
+        storage, clock, original, row["token"], prepared, row["scope_id"], admission_policy, deadline, rekeyed=rekey
+    )
+    return receipt, False
 
 
 def _as_stored(storage, clock, context, prepared, row, policy, deadline) -> CaptureReceipt | None:
@@ -434,7 +457,7 @@ def _as_stored(storage, clock, context, prepared, row, policy, deadline) -> Capt
     holds nothing or other words, or the capture differs in more than its moment: a key collision, which is re-keyed.
     """
     events = []
-    with storage.read(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+    with storage.read(context, remaining_seconds=deadline - time.monotonic()) as tx:
         for event in prepared.events:
             stored = tx.sources.source_by_event_key(event["source_event_key"], event["source_revision"])
             words = hashlib.sha256(event["content"].encode("utf-8")).hexdigest()
@@ -460,26 +483,17 @@ def _as_stored(storage, clock, context, prepared, row, policy, deadline) -> Capt
     return None if receipt.disposition == "conflict" else receipt
 
 
-def _revalidated(storage, context, row, authorize, deadline, *, rekey):
-    """One row's stored capture, checked again: ``(its context, the capture)``, or None when the host no longer grants
-    its scope (the row is then removed).  Raises when the stored envelope no longer passes."""
-    body = json.loads(row["payload_json"])
+def stored_context(binding, payload, *, allowed_scope_ids: frozenset[str] | None = None) -> TrustedContext:
+    """The context a waiting capture was said in, from what ``context_payload`` kept, under ``binding``, with the
+    scopes ``allowed_scope_ids`` names (those it kept, when None)."""
     try:
-        raw = dict(body["context"])
-        stored = frozenset(raw.pop("allowed_scope_ids"))
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ContractError("INPUT_INVALID", "ingress_context") from exc
-    allowed = stored & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
-    if row["scope_id"] not in allowed:
-        with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
-            tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (row["token"],))
-        return None
-    try:
+        raw = dict(payload)
+        kept = frozenset(raw.pop("allowed_scope_ids"))
         snapshot = raw.pop("display_snapshot")
         principal = raw.pop("source_principal", None)
-        original = TrustedContext(
-            context.binding,
-            allowed_scope_ids=allowed,
+        return TrustedContext(
+            binding,
+            allowed_scope_ids=kept if allowed_scope_ids is None else allowed_scope_ids,
             display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"]))
             if snapshot
             else None,
@@ -492,6 +506,23 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
         # A field a newer release wrote into the stored context, or one this release needs and it lacks: named, where
         # a bare TypeError would say nothing of where to look.
         raise ContractError("INPUT_INVALID", "ingress_context") from exc
+
+
+def _revalidated(storage, context, row, authorize, deadline, *, rekey):
+    """One row's stored capture, checked again: ``(its context, the capture)``, or None when the host no longer grants
+    its scope (the row is then removed).  Raises when the stored envelope no longer passes."""
+    body = json.loads(row["payload_json"])
+    try:
+        raw = dict(body["context"])
+        stored = frozenset(raw.pop("allowed_scope_ids"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ContractError("INPUT_INVALID", "ingress_context") from exc
+    allowed = stored & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
+    if row["scope_id"] not in allowed:
+        with storage.write(context, remaining_seconds=deadline - time.monotonic()) as tx:
+            tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (row["token"],))
+        return None
+    original = stored_context(context.binding, body["context"], allowed_scope_ids=allowed)
     # Revalidate the stored envelope; trust is from the captured context,
     # never inferred from a payload role or text claiming to be a user.
     capture = _capture_fingerprint(body["events"]) if rekey else ""
@@ -516,7 +547,7 @@ def _defer(storage, clock, context, row, exc, deadline, *, path) -> CaptureRecei
     """Put off a row whose stored capture a replay could not check again (``DEFERRED``), or give it up."""
     code = deferral(row["last_error_code"], exc, _utc(clock), path=path)
     try:
-        with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+        with storage.write(context, remaining_seconds=deadline - time.monotonic()) as tx:
             tx._check(write=True).execute(
                 "UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, row["token"])
             )

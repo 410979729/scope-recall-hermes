@@ -17,6 +17,7 @@ from ..contracts import (
     InstanceBinding,
     TrustedContext,
 )
+from .deadline import remaining_seconds as request_remaining_seconds
 from .delete_storage import Deletions
 from .failure_retry import failure_kind, retry_class
 from .registry_storage import Registry
@@ -535,9 +536,22 @@ class SQLiteStorage:
         if not context.allowed_scope_ids:
             raise ContractError("ACCESS_DENIED")
 
+    def _timeout(self, remaining_seconds: float | None) -> float:
+        """Refuse expired callers, including a request whose positive lock wait outlives its deadline."""
+        timeout = self.timeout_seconds
+        for remaining in (remaining_seconds, request_remaining_seconds()):
+            if remaining is None:
+                continue
+            if type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0:
+                raise ContractError("DEADLINE_EXCEEDED")
+            timeout = min(timeout, remaining)
+        return timeout
+
     def _open(
         self, mode: TruthDatabaseMode, remaining_seconds: float | None = None, *, restoring: bool = False
     ) -> sqlite3.Connection:
+        # Commit, rollback and connection/lease cleanup finish outside this entry check.
+        timeout = self._timeout(remaining_seconds)
         # A failed close cannot silently abandon an acquired writer lease. No
         # new connection is opened until the prior close succeeds.
         while self.__pending_close:
@@ -550,15 +564,6 @@ class SQLiteStorage:
         self._path_check()
         if not restoring and restore_pending(self.binding.data_directory):
             raise ContractError("RESTORE_UNVERIFIED")
-        timeout = self.timeout_seconds
-        if remaining_seconds is not None:
-            if (
-                type(remaining_seconds) not in (int, float)
-                or not math.isfinite(remaining_seconds)
-                or remaining_seconds <= 0
-            ):
-                raise ContractError("DEADLINE_EXCEEDED")
-            timeout = min(timeout, remaining_seconds)
         # The writer lease is taken without blocking and held for one
         # transaction, so writers in separate processes -- a host and its
         # worker, the entries of a shared store -- take turns.  A turn ends in
@@ -574,6 +579,8 @@ class SQLiteStorage:
         while True:
             try:
                 left = timeout if deadline is None else max(0.0, deadline - self.monotonic())
+                if left <= 0:
+                    raise TruthWriterBusyError()
                 conn = connect_truth_database(self.path, mode=mode, timeout=left, isolation_level=None)
             except TruthWriterBusyError:
                 now = self.monotonic()
