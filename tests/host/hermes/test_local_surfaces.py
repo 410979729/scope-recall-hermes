@@ -594,7 +594,7 @@ def test_a_shared_entry_is_told_to_add_its_row_with_grants_never_with_apply_inst
     assert "apply-install" not in str(refused.value)
 
 
-def test_routes_that_are_no_conversation_of_the_transport_bind_as_they_did(
+def test_routes_that_are_no_conversation_of_the_transport_keep_their_routes_and_grants(
     hermes_home, initialize_kwargs, this_account
 ):
     """The CLI that runs its agent in its own process, a dashboard login that names no chat, a gateway's direct chat,

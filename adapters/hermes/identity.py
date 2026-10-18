@@ -124,7 +124,7 @@ def host_account_principal() -> str | None:
     client's token (``sid:<SID>``), elsewhere the socket peer's uid (``uid:<uid>``).  It serves no peer of another
     account, and a peer may name anyone else only in a dashboard login's form (``auth:v1:[...]``).  The agent, and this
     adapter with it, runs in the gateway's process, so a session that names this account comes from the gateway's own
-    account: the person at this machine, whom the CLI has always taken for the owner.
+    account: the person at this machine, whom the CLI takes for the owner.
     """
     if sys.platform != "win32":
         return f"uid:{os.getuid()}"

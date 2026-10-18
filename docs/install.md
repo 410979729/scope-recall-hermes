@@ -272,8 +272,8 @@ conversation comes as a direct chat of its own: `chat_type` `dm`, `chat_id`
 session key `agent:<profile>:local:dm:<chat id>`, no thread. The adapter takes the
 gateway's own account for the person at this machine and binds such a
 conversation as it binds a session that names no user there: on an approved
-surface it gets the owner's private scope, under the same principal as before the
-host moved its conversations, with nothing to do; the CLI binds as it always has.
+surface it gets the owner's private scope under that surface's owner principal,
+with nothing to do, and the CLI's binds as the CLI does.
 The conversation is never a route, and neither is its session key. On a surface
 not yet approved such a session is not refused: it binds no scope, and the host
 log says once what approves it:
