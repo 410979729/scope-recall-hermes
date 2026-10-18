@@ -675,6 +675,22 @@ def test_restore_withdraws_a_denial_that_is_no_value_and_gives_back_what_it_disp
     assert core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"] == []
 
 
+def test_requalify_keeps_the_person_s_own_claims_as_they_were(app):
+    """The person's own claims are stored under their principal, bound from their 我 when written: re-judging binds
+    them the same way and changes none, nor does restoring displaced values."""
+    core, ctx = app
+    preference, owner = _preferred(core, ctx, "我爱吃辣。", "爱吃辣")
+    fact = _stated(core, owner, "I have a car.", "a car", predicate="have", subject="user")
+    denial = _stated(core, owner, "我没有车。", "没有车", predicate="车", subject="user")
+    refs = (preference.ref, fact.ref, denial.ref)
+    before = [core.claim_history(owner, ref) for ref in refs]
+    assert [version[-1].state for version in before] == ["active"] * 3
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=False)
+    assert (report["changed"], report["skipped"], report["examined"]) == ([], [], 3)
+    assert core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"] == []
+    assert [core.claim_history(owner, ref) for ref in refs] == before
+
+
 def test_requalify_reads_a_denial_at_the_head_as_writing_does(app):
     """Re-judging the store settles a denial as writing would (``mutate.denial_verdict``): one an older rule made the
     head of TEST-project's CI service is withdrawn and Jenkins, which it displaced, comes back; one that became the

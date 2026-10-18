@@ -301,15 +301,18 @@ def _unresolved_subject(proposal: ClaimProposal, roots: tuple[RootEvidence, ...]
 def bind_claim_subject(
     proposal: ClaimProposal,
     roots: tuple[RootEvidence, ...],
+    *,
+    stored: bool = False,
 ) -> tuple[ClaimProposal, bool, str | None]:
     """Bind a first-person model label to C1 evidence, or isolate it safely.
 
     The model may repeat ``我`` or a legacy self label, but it cannot mint an
     authority key. Unresolved sources receive a source-specific non-authority
     slot so different speakers in one shared scope cannot collapse together.
+    A claim already in the store (``stored``) carries the principal its self
+    label was bound to when it was written, and is bound from that label again,
+    so re-judging reads the person's own claims as writing did.
     """
-    if proposal["subject"].casefold() not in SELF_SUBJECTS:
-        return proposal, False, None
     relevant = tuple(
         root
         for root in roots
@@ -319,6 +322,9 @@ def bind_claim_subject(
             for span in proposal["evidence_spans"]
         )
     )
+    written = stored and {verified_human_ref(root) for root in relevant} == {proposal["subject"]}
+    if proposal["subject"].casefold() not in SELF_SUBJECTS and not written:
+        return proposal, False, None
     bound = deepcopy(proposal)
 
     def spans_of(root):

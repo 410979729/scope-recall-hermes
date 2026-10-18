@@ -152,7 +152,7 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
             continue
         try:
             roots = tx.claims.roots(evidence_refs(head.payload))
-            proposal, subject_bound, binding_issue = bind_claim_subject(head.payload, roots)
+            proposal, subject_bound, binding_issue = bind_claim_subject(head.payload, roots, stored=True)
             verdict = (
                 Qualification("proposed", "inferred_suggestion", binding_issue)
                 if binding_issue is not None
