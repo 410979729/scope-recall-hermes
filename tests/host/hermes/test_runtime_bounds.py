@@ -1135,8 +1135,9 @@ def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.02)
     provider._retry.wake.set()
-    # The row is in the store a moment before its line is said, on the retry thread.
-    assert _until(lambda: any("stored on retry" in record.getMessage() for record in caplog.records))
+    # The row is in the store a moment before its line is said, on the retry thread: after seven tries of the store,
+    # each as slow as this store is, so its line is waited for as long as a slow one takes.
+    assert _until(lambda: any("stored on retry" in record.getMessage() for record in caplog.records), seconds=60)
     assert _tool_rows(hermes_home) == 1
     lines = [record for record in caplog.records if "busy-call" in record.getMessage()]
     assert [(record.levelname, record.getMessage().split(":")[1].strip()) for record in lines] == [
@@ -1145,50 +1146,56 @@ def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes
     ], lines
 
 
-def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, hermes_home, monkeypatch):
+def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, hermes_home, monkeypatch, metered_store):
     """On a writer held past every budget a shutdown spends at most its short pass, not a whole 5 s pass for each
-    adapter that kept anything, which would hold up a gateway's planned stop."""
+    adapter that kept anything, which would hold up a gateway's planned stop.  The writer's wait moves the clock on by
+    what it was given, and each read of the store by 0.01 s, however long the runner's store takes."""
     from scope_recall.contracts import ContractError
 
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "held-call", "TEST tool output held")
+    clock = metered_store(0.01)
 
     def held(context, event, *, remaining_seconds=1.0, **kwargs):
-        time.sleep(remaining_seconds)  # waits out its whole time on the writer, as a held lease makes it
+        clock.advance(remaining_seconds)  # waits out its whole time on the writer, as a held lease makes it
         raise ContractError("DEADLINE_EXCEEDED", "TEST writer held")
 
     monkeypatch.setattr(provider._core, "record_host_event", held)
-    started = time.monotonic()
+    started = clock()
     provider.shutdown()
-    assert time.monotonic() - started < capture_retry.SHUTDOWN_RETRY_SECONDS + 1.5
+    assert clock() - started < capture_retry.SHUTDOWN_RETRY_SECONDS + 0.5, clock() - started
     assert capture_retry.SHUTDOWN_RETRY_SECONDS == 2.0
 
 
-def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(adapter, hermes_home, monkeypatch):
+def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(
+    adapter, hermes_home, monkeypatch, metered_store
+):
     """A turn's own message and reply are not written only after a 5 s retry of a capture the store cannot take,
-    which would hold Hermes' single memory worker that long."""
+    which would hold Hermes' single memory worker that long.  The held writer's wait moves the clock on by what it was
+    given, and each store transaction by 0.01 s, however long the runner's store takes."""
     from scope_recall.contracts import ContractError
 
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "held-call", "TEST tool output held")
+    clock = metered_store(0.01)
     real = provider._core.record_host_event
     first_own = []
 
     def record_host_event(context, event, *, remaining_seconds=1.0, **kwargs):
         if "held-call" in event["source_event_key"]:
-            time.sleep(remaining_seconds)  # a writer held past the retry's whole time
+            clock.advance(remaining_seconds)  # a writer held past the retry's whole time
             raise ContractError("DEADLINE_EXCEEDED", "TEST writer held")
-        first_own.append(time.monotonic())
+        first_own.append(clock())
         return real(context, event, remaining_seconds=remaining_seconds, **kwargs)
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
-    started = time.monotonic()
+    started = clock()
     provider.sync_turn("TEST user words", "TEST reply words", session_id="TEST-session-1")
-    assert first_own and first_own[0] - started < capture.CAPTURE_TIMEOUT_S + 1.5, first_own
+    assert first_own and first_own[0] - started < capture.CAPTURE_TIMEOUT_S + 0.5, [t - started for t in first_own]
 
 
 def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_end(

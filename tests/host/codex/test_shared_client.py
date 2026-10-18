@@ -280,19 +280,21 @@ def test_a_client_s_prompt_runs_the_entry_s_budget(store, tmp_path):
         hook.close()
 
 
-def test_a_prompt_answers_when_its_work_is_done_not_at_its_ceiling(store, tmp_path):
+def test_a_prompt_answers_when_its_work_is_done_not_at_its_ceiling(store, tmp_path, metered_store):
     """The budget bounds a prompt's capture and recall; it is not a wait.  A small store answers in well under
-    the 6 s a hook may take, and the client's prompt goes on as soon as it does."""
+    the 6 s a hook may take, and the client's prompt goes on as soon as it does.  Each store transaction counts 0.05 s
+    on the hook's clock, however long the runner's store takes, and everything else as long as it takes."""
     root, _homes, _client, _capture = store
     codex = _codex_client(root, tmp_path)
     # What attach writes: the routes, and no hook budget of its own.
     (codex / "scope-recall" / "runtime-config.json").write_text(
         json.dumps({"auto_recall_seconds": 5.0}), encoding="utf-8"
     )
+    clock = metered_store(0.05)
     hook = CodexHookHandler.from_home(str(codex), "codex")
     try:
         assert hook._hook_budget() == 6.0
-        started = datetime.now(timezone.utc)
+        started = clock()
         hook.handle_payload(
             {
                 "hook_event_name": "UserPromptSubmit",
@@ -302,7 +304,7 @@ def test_a_prompt_answers_when_its_work_is_done_not_at_its_ceiling(store, tmp_pa
                 "cwd": "C:/anywhere",
             }
         )
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        elapsed = clock() - started
     finally:
         hook.close()
     assert hook.diagnostics.last_reason is None, hook.diagnostics.last_reason
@@ -4009,26 +4011,30 @@ def test_a_workbuddy_prompt_whose_server_answers_too_late_is_stored_once(
 
 
 @pytest.fixture
-def busy_store(monkeypatch):
+def busy_store(monkeypatch, metered_store):
     """Another process holds the store's writer lease and the store is slow to read: each write a hook makes waits all
     it may (what it asks, up to its core's write timeout) and fails as a busy store does, and each recall takes all the
-    time it is given.  Nothing reaches the store, so a hook takes as long on a slow machine as on a fast one: a test of
-    its budget reads the time a host waits for it."""
+    time it is given.  Those waits move the hook's clock on rather than sleep, and a transaction that does reach the
+    store counts 0.01 s on it (``metered_store``), so a test of the hook's budget reads the time a host waits for it,
+    whatever the runner's store and sleeps take.  The fixture's value is that clock."""
     from scope_recall.core import MemoryCore
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
+    clock = metered_store(0.01)
+
     def busy(self, context, value, *, remaining_seconds=None, **kwargs):
         timeout = self.config.write_timeout_seconds
-        time.sleep(timeout if remaining_seconds is None else min(timeout, remaining_seconds))
+        clock.advance(timeout if remaining_seconds is None else min(timeout, remaining_seconds))
         raise TruthWriterBusyError(role="truth_connection", scope="other_process")
 
     def slow(self, context, request, *, deadline_seconds, **kwargs):
-        time.sleep(deadline_seconds)
+        clock.advance(deadline_seconds)
         raise ContractError("DEADLINE_EXCEEDED")
 
     monkeypatch.setattr(MemoryCore, "record_host_event", busy)
     monkeypatch.setattr(MemoryCore, "record_event", busy)
     monkeypatch.setattr(MemoryCore, "recall_packet", slow)
+    return clock
 
 
 @pytest.mark.parametrize("configured", [None, 6])
@@ -4065,10 +4071,11 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
 
     monkeypatch.setattr(endpoint, "recall", held)
     _wb_hook_reads(monkeypatch, "<user_query>TEST 服务答得太慢。</user_query>")
+    clock = busy_store
     try:
-        started = time.monotonic()
+        started = clock()
         assert hook_entry.main(["--home", str(home), "--host", "workbuddy"]) == 0
-        elapsed = time.monotonic() - started
+        elapsed = clock() - started
     finally:
         release.set()
         endpoint.stop()

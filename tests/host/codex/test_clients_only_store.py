@@ -66,7 +66,8 @@ def _prompt(home, host, text, *, session, turn="1"):
         answer = hook.handle_payload(payload)
     finally:
         hook.close()
-    assert hook.diagnostics.last_reason != "recall_exception", hook.diagnostics.recall_error_detail
+    reason = hook.diagnostics.last_reason
+    assert reason not in ("recall_exception", "deadline_exceeded"), (reason, hook.diagnostics.recall_error_detail)
     context = (answer.get("hookSpecificOutput") or {}).get("additionalContext") or ""
     return json.loads(context.partition("\n")[2])["items"] if context else []
 
@@ -83,7 +84,7 @@ def _stored(root, entry_id):
         ).fetchall()
 
 
-def test_two_clients_share_a_store_no_hermes_home_is_attached_to(tmp_path, capsys, made):
+def test_two_clients_share_a_store_no_hermes_home_is_attached_to(tmp_path, capsys, made, still_clocks):
     """WorkBuddy, attached first to the new store, brings the owner's scope; dsh, attached naming it, reads and
     captures there.  Each recalls what the owner told the other, marked with the entry it came in through."""
     root = made
@@ -103,7 +104,7 @@ def test_two_clients_share_a_store_no_hermes_home_is_attached_to(tmp_path, capsy
     assert ["dsh"] in _came_through(recalled, "KZ-42")
 
 
-def test_a_hermes_home_attached_later_reads_and_is_read_in_the_clients_scope(tmp_path, capsys, made):
+def test_a_hermes_home_attached_later_reads_and_is_read_in_the_clients_scope(tmp_path, capsys, made, still_clocks):
     """A Hermes home attached without ``--grants-from`` gets a fresh installation's owner grants, and the store's first
     client brought exactly that owner scope: the Hermes entry brings no scope of its own, and the owner's words reach
     every agent both ways, with no grants changed."""

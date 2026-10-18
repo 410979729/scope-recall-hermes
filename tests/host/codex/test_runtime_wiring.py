@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +10,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
+from scope_recall.adapters.clients.handler import _TOTAL_BUDGET_S
 from scope_recall.adapters.clients.mcp_server import build_server
 from scope_recall.adapters.clients.runtime_wiring import GAP_UNCONFIGURED, attach_trusted_host_runtime
 from scope_recall.contracts import ContractError
@@ -111,7 +111,7 @@ def test_handler_and_mcp_share_runtime_core(codex_install):
     handler.close()
 
 
-def test_session_end_launches_owned_worker_without_foreground_model(codex_install):
+def test_session_end_launches_owned_worker_without_foreground_model(codex_install, still_clocks):
     config, _core, project, runtime_path = codex_install
     handler = CodexHookHandler.from_config_path(
         str(config.config_path),
@@ -151,8 +151,13 @@ def test_session_end_without_runtime_config_does_not_launch_worker(codex_install
         launch_worker.assert_not_called()
 
 
-def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install):
+def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install, metered_store):
+    """A SessionEnd stores its end, attaches the runtime and starts the owned watchdog, and it and the hook's close
+    end within the hook's budget while the watchdog runs on; the watchdog then ends on its own and takes its config
+    with it.  Each store transaction counts 0.05 s on the hook's clock, however long the runner's store takes, and
+    everything else as long as it takes."""
     config, _core, project, runtime_path = codex_install
+    clock = metered_store(0.05)
     handler = CodexHookHandler.from_config_path(
         str(config.config_path),
         trusted_runtime_config_path=str(runtime_path),
@@ -166,7 +171,7 @@ def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install
             "prompt": "persist before owned watchdog",
         }
     )
-    started = time.monotonic()
+    started = clock()
     handler.handle_payload(
         {
             "hook_event_name": "SessionEnd",
@@ -179,10 +184,11 @@ def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install
     assert host_runtime is not None
     worker = host_runtime._owned_worker
     assert worker is not None
+    assert worker.poll() is None, "the hook returned while its watchdog runs"
     ephemeral = (worker.config_path,)
     handler.close()
 
-    assert time.monotonic() - started < 2.0
+    assert clock() - started < _TOTAL_BUDGET_S, clock() - started
     assert worker.wait(timeout=30.0) == 0
     stdout, _stderr = worker.communicate(timeout=5.0)
     assert stdout == ""
@@ -190,6 +196,30 @@ def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install
     assert receipt["status"] == "waiting"
     assert receipt["processed"] == 0 and receipt["failed_work"] == 0
     assert all(not path.exists() for path in ephemeral)
+
+
+def test_a_session_end_left_too_little_time_after_its_capture_starts_no_worker(codex_install, metered_store):
+    """A SessionEnd left less time after its capture than an attach asks for (``RUNTIME_ATTACH_MIN_S``) attaches no
+    runtime and wakes no worker, and ends within its budget: its process started a second before its handler was made
+    (``hook_started_at``), as one slow to load does, and its capture's inbox write and commit take 0.4 s each, which
+    leaves 0.2 s."""
+    config, _core, project, runtime_path = codex_install
+    clock = metered_store(0.4)
+    hook_started_at = clock() - 1.0
+    handler = CodexHookHandler.from_config_path(
+        str(config.config_path), trusted_runtime_config_path=str(runtime_path), hook_started_at=hook_started_at
+    )
+    try:
+        with patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch:
+            handler.handle_payload(
+                {"hook_event_name": "SessionEnd", "session_id": "TEST-late", "cwd": str(project), "reason": "late"}
+            )
+            elapsed = clock() - hook_started_at
+        assert handler.diagnostics.capture_stage == "source_committed"
+        assert handler._host_runtime is None and launch.call_count == 0
+        assert elapsed < _TOTAL_BUDGET_S, elapsed
+    finally:
+        handler.close()
 
 
 def test_generated_hook_and_mcp_attach_binding_directory_default(codex_install):
