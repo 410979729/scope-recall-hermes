@@ -514,6 +514,31 @@ def test_source_keys_use_session_turn_and_public_event_ids():
     assert key == "codex:install-1:session-1:tool:exec-123@1"
 
 
+def test_a_session_start_s_read_of_the_store_waits_no_longer_than_a_capture(installed, project_root, monkeypatch):
+    """A hook's core lets a write wait 2 s for the store's lock, as long as the owner's prompt may, and a read given
+    no time of its own would wait as long.  A session's start reads the store's standing for a capture's 1 s at most."""
+    from scope_recall.adapters.clients.hook_events import CAPTURE_TIMEOUT_S
+    from scope_recall.core import MemoryCore
+
+    config, _core, _clock, _root = installed
+    asked = []
+    status = MemoryCore.status
+
+    def timed(self, context, **kwargs):
+        asked.append(kwargs.get("remaining_seconds"))
+        return status(self, context, **kwargs)
+
+    monkeypatch.setattr(MemoryCore, "status", timed)
+    monkeypatch.setattr(CodexHookHandler, "launch_worker", lambda *args, **kwargs: None)
+    hook = CodexHookHandler.from_config_path(str(config.config_path))
+    try:
+        hook.handle_payload(_payload(project_root, "SessionStart", turn=""))
+    finally:
+        hook.close()
+    assert hook.diagnostics.last_reason is None, hook.diagnostics.last_reason
+    assert asked and all(seconds is not None and 0 < seconds <= CAPTURE_TIMEOUT_S for seconds in asked), asked
+
+
 def test_hook_entry_cli_uses_absolute_config_and_bounded_stdin(installed, project_root):
     config, _, _, _ = installed
     payload = json.dumps(_payload(project_root, "SessionStart", turn=""))

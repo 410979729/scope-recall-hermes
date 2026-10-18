@@ -127,12 +127,18 @@ class MemoryCore:
         return self.storage.initialize()
 
     def status(
-        self, context: TrustedContext, *, include_admission: bool = True, include_queue_age: bool = True
+        self,
+        context: TrustedContext,
+        *,
+        include_admission: bool = True,
+        include_queue_age: bool = True,
+        remaining_seconds: float | None = None,
     ) -> StoreStatus:
         """Queue and store standing.  The admission counts scan every source's JSON and the
         queue age walks every queued row, so a caller that only needs the queue's depth says
-        so and skips both."""
-        with self.storage.read(context) as tx:
+        so and skips both.  ``remaining_seconds`` bounds the read's wait for the store's lock,
+        which is otherwise the core's write timeout."""
+        with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
             return tx.status(include_admission=include_admission, include_queue_age=include_queue_age)
 
     def memory_epoch(self, context: TrustedContext) -> int:

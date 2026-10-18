@@ -64,7 +64,10 @@ class HookEvents:
     def session_start(self, session_id: str, audience, deadline: float) -> bool:
         context = self._hook.context(audience, session_id, "host_generated")
         try:
-            self._hook.core.status(context)
+            # The hook's core lets a write wait 2 s for the store's lock (``PROMPT_CAPTURE_TIMEOUT_S``), and a read
+            # given no time would wait as long: this one waits no longer than a capture does.
+            wait = min(CAPTURE_TIMEOUT_S, max(0.001, self._hook.remaining(deadline)))
+            self._hook.core.status(context, remaining_seconds=wait)
         except ContractError:
             self._hook.note("binding_unavailable")
             return False
