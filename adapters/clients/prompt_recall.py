@@ -189,7 +189,7 @@ class PromptRecall:
         ):
             return {}
         deadline = self._hook.clock.monotonic() + max(0.0, remaining)
-        self._hook.ensure_runtime(audience)
+        self._hook.ensure_runtime(audience, deadline=deadline)
         context = self._hook.context(audience, session_id, "human_direct")
         return self.own(
             context, prompt, f"{self._hook.host}-auto:{session_id}:{turn_id}", current_refs, deadline, gaps, since=since

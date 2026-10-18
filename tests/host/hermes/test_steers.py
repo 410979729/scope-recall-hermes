@@ -15,6 +15,8 @@ from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_herme
 from scope_recall.adapters.hermes.identity import host_scope_payload
 from scope_recall.core import capture_inbox
 
+from tests.host.conftest import assert_hook_budget
+
 _NOTICE = "[IMPORTANT: Background process TEST-proc finished (exit code 0).\nCommand: TEST make build]"
 _SUMMARY = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. TEST 摘要"
 
@@ -525,7 +527,7 @@ def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(
     # The retry pass and the steers wait the hook's two seconds between them at most, beside the next to nothing a
     # write is given once they are spent, and the hook ends soon after: its reads of the store and its own work.
     assert sum(budgets) <= turn_capture._STEERS_SECONDS + 0.001 * len(budgets) + 0.01, budgets
-    assert clock() - started < turn_capture._STEERS_SECONDS + 0.5, clock() - started
+    assert_hook_budget(clock() - started, turn_capture._STEERS_SECONDS)
     monkeypatch.setattr(telegram._core, "record_host_event", real)
     wanted = {f"TEST 第{n}条" for n in range(8)} | {"TEST 先前没写成的"}
     # Each pass of the retry buffer writes what its second allows, and at least the first capture it holds: on a store

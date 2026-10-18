@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
+
+from tests.host.conftest import StoreMeteredClock
 
 
 @dataclass
@@ -17,7 +20,7 @@ class FixedClock:
         return self.now
 
     def monotonic(self) -> float:
-        return self._mono
+        return time.monotonic() if isinstance(time.monotonic, StoreMeteredClock) else self._mono
 
 
 @pytest.fixture

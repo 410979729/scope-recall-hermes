@@ -295,9 +295,9 @@ def test_a_replayed_capture_keeps_the_entry_that_captured_it(shared):
 
 def test_a_local_inbox_row_is_byte_for_byte_what_it_was(tmp_path):
     ctx = context(tmp_path / "TEST-local")
-    assert "entry_id" not in capture_inbox._context_payload(ctx)
+    assert "entry_id" not in capture_inbox.context_payload(ctx)
     shared_ctx = shared_context(shared_binding(tmp_path / "TEST-shared"), "tianshu")
-    assert capture_inbox._context_payload(shared_ctx)["entry_id"] == "tianshu"
+    assert capture_inbox.context_payload(shared_ctx)["entry_id"] == "tianshu"
 
 
 # --- upgrade -------------------------------------------------------------------------------
@@ -478,7 +478,7 @@ def test_a_writer_times_its_wait_on_the_clock_it_is_given(monkeypatch, shared):
     with pytest.raises(TruthWriterBusyError):
         with jumping.write(shared_context(binding, "tianshu")):
             pass
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_a_writer_on_a_clock_that_stands_still_never_sleeps_past_its_timeout(monkeypatch, shared):

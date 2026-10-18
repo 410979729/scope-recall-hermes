@@ -37,6 +37,9 @@ from scope_recall.adapters.hermes.shared_entries import (
 )
 from scope_recall.contracts import ContractError, InstanceBinding
 from scope_recall.core.capture import CaptureReceipt
+from scope_recall.core.capture_inbox import replay_inbox
+
+from tests.host.conftest import assert_hook_budget
 
 NOW = "2026-09-24T20:00:00Z"
 AGENT = "TEST-agent"
@@ -1390,9 +1393,8 @@ lease.release()
 
 
 def test_the_owner_s_prompt_waits_out_a_writer_lease_another_process_holds_past_a_second(store):
-    """Another agent's long reply can hold the writer lease 1-2 s, so the owner's prompt waits up to 2 s for it on a
-    6 s budget, where every other capture waits 1 s.  The store's own 1 s ended that wait first: a prompt that met a
-    lease held 1.3 s was not stored."""
+    """An owner's prompt waits up to 2 s for the writer lease and reaches durable storage. When the inbox write uses
+    most of that time, its source commit waits for replay instead of taking another write of the same duration."""
     import threading
 
     root, _homes, client, _capture = store
@@ -1419,7 +1421,17 @@ def test_the_owner_s_prompt_waits_out_a_writer_lease_another_process_holds_past_
             hook.close()
     finally:
         holder.communicate(timeout=30)
-    assert (hook.diagnostics.capture_stage, hook.diagnostics.capture_error_type) == ("source_committed", None)
+    assert hook.diagnostics.capture_error_type is None
+    assert hook.call.captured
+    audience = hook.audience_of(_prompt("TEST replay"))
+    context = hook.context(audience, "TEST-cc-session", "human_direct")
+    replay_inbox(
+        hook.core.storage,
+        hook.core.clock,
+        context,
+        authorize=lambda scope: context.allowed_scope_ids,
+        remaining_seconds=10,
+    )
     assert _user_rows(root) == [("TEST 等写锁让开的一句。",)]
 
 
@@ -4053,7 +4065,7 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
-    monkeypatch.setattr(CodexHookHandler, "ensure_runtime", lambda self, audience=None: None)
+    monkeypatch.setattr(CodexHookHandler, "ensure_runtime", lambda self, audience=None, **kwargs: None)
     _root, home, _projects = workbuddy
     if configured is not None:
         (home / "scope-recall" / "runtime-config.json").write_text(
@@ -4081,7 +4093,7 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
         endpoint.stop()
     err = capsys.readouterr().err
     assert '"error_type":"TruthWriterBusyError"' in err and "CODEX_RECALL_RESIDENT:late" in err and len(asked) == 1
-    assert elapsed < budget + 0.5, f"the host waited {elapsed:.2f} s for a hook whose budget is {budget} s"
+    assert_hook_budget(elapsed, budget)
 
 
 def test_a_workbuddy_hook_with_nothing_to_add_writes_nothing(workbuddy, tmp_path, monkeypatch, capsys):

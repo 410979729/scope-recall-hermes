@@ -5,7 +5,7 @@ longer text this file once held is in its history.
 
 ## [3.11.1] - Unreleased
 
-Test descriptions state the current capture, retry and packaging contracts without retired task identifiers or accounts of earlier failures.
+Hooks defer store work that cannot fit their remaining capture budget, and a finished turn writes its own captures before retrying older ones. With synthetic transactions taking 1.5 seconds each, client session-end processing falls from 3.00 to 1.50 seconds and Hermes shutdown from 6.00 to 1.52 seconds. Shutdown, retry expiry and buffer overflow keep sanitized capture envelopes on disk for authorization-checked replay at the next start. Test descriptions state the current capture, retry and packaging contracts without retired task identifiers or accounts of earlier failures. Include the `kept-captures/` directory beside the store when backing up pending host captures; no configuration changes are required.
 
 ## [3.11.0] - 2026-10-18
 

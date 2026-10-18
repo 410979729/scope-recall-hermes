@@ -11,6 +11,7 @@ import time
 from typing import TYPE_CHECKING
 
 from scope_recall.contracts import ContractError
+from scope_recall.core.deadline import fits
 
 from .audiences import LOCAL_PLATFORMS
 from .boundary import (
@@ -47,8 +48,9 @@ _INTERIM_PER_TURN = 64
 #: Steers this process wrote or found stored, by their key: read again at every turn's end, compression and session
 #: end, each is looked up and written once.
 _STEERS_WRITTEN = 4096
-#: How long one hook spends on the steers it reads, the look-up and the writes.  Past it each is still written, without
-#: waiting: one the store cannot take at once is kept to retry (``CaptureWriter``), and the hook returns.
+#: How long one hook spends on the steers it reads, the look-up and the writes.  A steer it has no time left for is kept
+#: to retry without a store call (``CaptureWriter.defer``), and the hook returns: the buffer's next pass, the next hook
+#: or, past a shutdown, the next start writes it.
 _STEERS_SECONDS = 2.0
 
 
@@ -58,8 +60,9 @@ def steer_deadline() -> float:
 
 
 def _budget(deadline: float) -> float:
-    """What one store call may wait of a hook's steer budget: a capture's own at most, next to nothing once spent."""
-    return max(0.001, min(CAPTURE_TIMEOUT_S, deadline - time.monotonic()))
+    """What one store call may have of a hook's steer budget: a capture's own at most, and nothing once it is spent,
+    which the store refuses."""
+    return min(CAPTURE_TIMEOUT_S, deadline - time.monotonic())
 
 
 def _steers(identity, messages: object) -> tuple[Steer, ...]:
@@ -320,9 +323,6 @@ class TurnCapture:
             if not identity.runtime_audience.allowed_scope_ids:
                 adapter._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
                 return
-        # Hermes runs this on its memory worker, after the reply: the place to write again what a busy store
-        # kept in memory, before the turn's own sources.
-        adapter._retry.write_buffered(release=True)
         context = identity.trusted_context(session_id=effective_session, mutation=True)
         shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
         opened = (
@@ -340,6 +340,10 @@ class TurnCapture:
         steered = [steer for said in steers.values() for steer in said]
         self._write_steers([*steered, *_said_aside(identity, messages)], identity, context, "sync_turn")
         self._write_turn(identity, opened, shown, effective_session, turn_id, user_content, assistant_content, said_at)
+        # Hermes runs this on its memory worker, after the reply: the place to write again what a busy store kept in
+        # memory, once the turn's own sources are written.  Before them, a pass over a store that cannot take the
+        # buffer would hold the turn's message and reply back by its whole time.
+        adapter._retry.write_buffered(release=True)
         with adapter._lock:
             if adapter._active_turn_id == active_turn:
                 # The next turn may have begun between these writes; its pre_llm marker is its own.
@@ -405,7 +409,8 @@ class TurnCapture:
 
     def _write_steers(self, steers, identity, context, hook: str, deadline: float | None = None) -> None:
         """Each steer the store does not hold yet (``_held``), one capture per hold of the lock, its store I/O
-        without it, all by the hook's ``deadline``.  Only a write the store took marks one written: a write still in
+        without it, all by the hook's ``deadline``: one it has no time left for is kept to retry with no store call
+        (``CaptureWriter.defer``).  Only a write the store took marks one written: a write still in
         flight in another hook may fail, and one the retry buffer kept may be given up.  The next hook reads either
         again; meanwhile the observation ledger and the retry buffer keep it from being written twice."""
         adapter = self._adapter
@@ -424,6 +429,7 @@ class TurnCapture:
                 )
             reads[key] = (steer, key)
         unread = list(reads.values())
+        took = 0.0
         for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
             with adapter._lock, adapter._calls.holding(hook):
                 taken = held
@@ -436,7 +442,19 @@ class TurnCapture:
                         # Being stored by another hook, or the ledger is full for now.
                         if gaps:
                             adapter._merge_gaps(gaps)
+                    elif not fits(deadline, took):
+                        # The hook's time is spent, or what is left would not hold another write as long as the last
+                        # (``fits``): kept to retry with no store call.
+                        adapter._writer.defer(
+                            context,
+                            event,
+                            identity=ledger_identity,
+                            gaps=gaps,
+                            scope_id=identity.local_scope_id,
+                            bound=identity,
+                        )
                     else:
+                        began = time.monotonic()
                         receipt = adapter._writer.write(
                             context,
                             event,
@@ -447,6 +465,7 @@ class TurnCapture:
                             bound=identity,
                             release=True,
                         )
+                        took = time.monotonic() - began
                         taken = receipt is not None
                 if taken:
                     adapter._steers_written[key] = None

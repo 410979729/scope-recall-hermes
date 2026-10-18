@@ -1,4 +1,4 @@
-"""One monotonic request deadline shared by the recall wait points.
+"""One monotonic request deadline shared by bounded request wait points.
 
 Foreground prefetch/search binds an absolute deadline at the door. Companion
 I/O reads the remaining budget; bulk workers leave the context empty and keep
@@ -26,7 +26,7 @@ _CURRENT: ContextVar[RequestDeadline | None] = ContextVar(
 
 @dataclass(frozen=True)
 class RequestDeadline:
-    """Absolute monotonic deadline for one ordinary recall request."""
+    """Absolute monotonic deadline for one bounded request."""
 
     started_monotonic: float
     deadline_monotonic: float
@@ -97,3 +97,12 @@ def remaining_seconds(now: float | None = None) -> float | None:
     if deadline is None:
         return None
     return deadline.remaining(now)
+
+
+def fits(deadline_monotonic: float, took_seconds: float, *, now: float | None = None) -> bool:
+    """Whether one more store call fits before ``deadline_monotonic``, reckoned by the call before it: something is
+    left, and at least the ``took_seconds`` that call took.  The store refuses a call given nothing (``storage._open``),
+    but one given a little runs as long as the store takes; on a store that slow, a capture's second write or a hook's
+    next capture started with less than its predecessor took would run past the deadline."""
+    left = deadline_monotonic - (time.monotonic() if now is None else float(now))
+    return left > 0 and left >= took_seconds

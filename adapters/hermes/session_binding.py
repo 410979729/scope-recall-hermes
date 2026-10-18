@@ -121,6 +121,9 @@ class SessionBinding:
             )
             self._adapter._worker_launch_gaps = ()
             self._adapter._initialized = True
+            # What an earlier process kept on disk, its shutdown or a pass that could not store it, is this start's
+            # to write (``CaptureRetry.load_kept``).
+            self._adapter._retry.load_kept()
             self._unbound_route = None
             self._report_unbound(fresh)
             from .hooks import update_adapter_binding
@@ -257,10 +260,15 @@ class SessionBinding:
                 gaps = (GAP_WORKER_LAUNCH_FAILED,)
             self.replace_worker_launch_gaps(gaps)
 
-    def end(self, messages: list[dict[str, Any]]) -> None:
+    def end(self, messages: list[dict[str, Any]], *, deadline: float) -> None:
+        """Write pending captures on ``deadline`` and wake the worker on its own budget.
+
+        ``deadline`` is the capture pass ``on_session_end`` already started. ``write_observed`` spends what is
+        left and does not open another. The launch below is not that pass.
+        """
         identity = self._adapter._require_identity()
         self._adapter._session_watermark += 1
-        self._adapter._retry.write_observed()
+        self._adapter._retry.write_observed(deadline=deadline)
         self.bounded_message_gaps(messages, hook="on_session_end")
         if identity.read_only:
             return
