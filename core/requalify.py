@@ -140,7 +140,7 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
         head = next((v for v in versions if v.revision == v.current_revision), None)
         if head is None or head.state not in REQUALIFIABLE_STATES:
             continue
-        held, denial_reason = _denial_standing(tx, head, versions) if is_denial(head.payload) else (None, None)
+        held, denial_reason = _denial_standing(tx, head, versions)
         settled_as = denial_reason if head.state != "proposed" else None
         if head.reason in preserved and settled_as is None:
             report.skipped.append({"ref": ref, "why": f"not_text_derived:{head.reason}"})
@@ -253,8 +253,11 @@ def retire_rootless_proposals(
 def _denial_standing(tx, head, versions):
     """What the slot held when ``head``, a denial, was written (``_value_under``), and why the denial is no value of
     its slot there (``mutate.denial_verdict``, as writing it now would judge), or None where it is one."""
+    earlier = tuple(v for v in versions if v.revision < head.revision)
+    if not is_denial(head.payload, (v.payload for v in earlier if v.state != "proposed")):
+        return None, None
     held = _value_under(tx, head, versions)
-    reason, _ends = denial_verdict(head.payload, held, tx.claims.roots(evidence_refs(head.payload)))
+    reason, _ends = denial_verdict(head.payload, held, tx.claims.roots(evidence_refs(head.payload)), earlier)
     return held, reason
 
 
@@ -265,7 +268,7 @@ def _value_under(tx, version, versions):
     earlier = tuple(v for v in versions if v.revision < version.revision)
     while earlier:
         held = select_effective(earlier, version.recorded_from)
-        if held is None or not is_denial(held.payload) or _denial_standing(tx, held, earlier)[1] is None:
+        if held is None or _denial_standing(tx, held, earlier)[1] is None:
             return held
         earlier = tuple(v for v in earlier if v.revision != held.revision)
     return None
@@ -328,7 +331,13 @@ def settle_denials(tx, refs, *, now: str, dry_run: bool = False) -> tuple[int, l
     for ref in refs:
         versions = tx.claims.versions(ref)
         head = next((v for v in versions if v.revision == v.current_revision), None)
-        if head is None or head.state not in {"active", "disputed"} or not is_denial(head.payload):
+        if (
+            head is None
+            or head.state not in {"active", "disputed"}
+            or not is_denial(
+                head.payload, (v.payload for v in versions if v.revision < head.revision and v.state != "proposed")
+            )
+        ):
             continue
         examined += 1
         held, reason = _denial_standing(tx, head, versions)

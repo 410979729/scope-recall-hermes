@@ -12,6 +12,8 @@ import pytest
 from scope_recall.contracts import ContractError, ImportProvenance, TrustedSourcePrincipal, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.claims import Qualification, is_denial, negates, qualify
+from scope_recall.core.confirmation import CONFIRMED_REASON
+from test_denial_values import NEGATED_STATES
 from v11_support import context, source_event
 
 
@@ -436,125 +438,47 @@ def test_a_value_written_as_a_term_denies_nothing(value, denial):
     assert is_denial({"kind": "fact", "value_text": value}) is denial
 
 
-#: Values that open with a negation and describe a state of their subject, or answer yes or no: each is its slot's
-#: value, the denials' earlier look-alikes among them.
-_NEGATED_STATES = {
-    "zh": (
-        *("未开始", "未完成", "尚未上线", "未开启", "没上线", "不在线", "不可用", "不支持 IPv6", "没有 GPU", "未部署"),
-        *("尚未发布", "没通过评审", "没装 Docker", "没有权限", "不稳定", "不兼容 Windows", "不对外开放", "未启用"),
-        *("未配置", "没开通", "不存在", "不在维护期", "没有备份", "还没合并", "没生效", "不能用", "不会自动重试"),
-        *("不收费", "不公开", "不够用", "没空", "不是很稳定", "还没确定", "不在家", "没用过 Jenkins", "不会用 Jenkins"),
-        *(
-            "未曾去过北京",
-            "不开放",
-            "没有车",
-            "不错",
-            "没问题",
-            "不客气",
-            "不同意 TEST-X",
-            "不知道",
-            "不一定",
-            "无所谓",
-        ),
-    ),
-    "en": (
-        *("not started", "not deployed", "not found", "not null", "not supported", "not available", "not ready"),
-        *("not online", "not enabled", "not yet", "not yet released", "not configured", "isn't running"),
-        *("is not reachable", "doesn't have a GPU", "doesn't support IPv6", "doesn't work on Windows"),
-        *("can't connect to the VPN", "didn't pass review", "hasn't started", "never deployed", "no longer supported"),
-        *("not merged yet", "not installed", "not responding", "not stable", "not public", "not required"),
-        *("not paid", "not scheduled", "not set", "not done", "not empty", "not free", "not very stable"),
-        *("not compatible with Python 2", "is not being used", "not connected", "isn't valid", "not self-hosted"),
-        *("not really", "Not Started", "don't have a car", "NOT NULL", "not bad", "don't know", "not applicable"),
-    ),
-}
-#: Values that open with a negation and name an alternative the slot could hold, which they reject: each denies it.
-_NAMED_DENIALS = {
-    "zh": (
-        *("不是 Jenkins", "不用 PowerShell 了", "别再用 bash", "不是 CircleCI", "不吃辣", "不喜欢用 PowerShell"),
-        *(
-            "从不抽烟",
-            "不再用 Jenkins",
-            "讨厌香菜",
-            "一点也不喜欢喝咖啡",
-            "现在不吃辣了",
-            "不是周三",
-            "并不是 us-east-2",
-        ),
-        *("不想用 Slack", "不想要靠窗的座位", "受不了 Emacs", "讨厌用 Vim", "不喜欢听爵士乐", "不喝咖啡", "不穿正装"),
-        *(
-            "不坐红眼航班",
-            "不去北京",
-            "别用 Docker Desktop",
-            "不需要纸质发票",
-            "不要靠过道的座位",
-            "再也不用 Windows 了",
-        ),
-        *("不会再用 Jenkins", "不太喜欢 TypeScript", "不是很喜欢 Rust", "不买 Mac", "不选 MySQL", "并非 v3.1"),
-    ),
-    "en": (
-        *(
-            "not CircleCI",
-            "not bash",
-            "not Jenkins",
-            "isn't Jenkins",
-            "don't like PowerShell",
-            "no longer uses Jenkins",
-        ),
-        *("never drink coffee", "can't stand PowerShell", "not v3.1", "not #ops-pager", "not us-east-2", "not 4 GB"),
-        *("not MySQL", "not AWS", "Not CircleCI", "NOT Jenkins any more", "not GitHub Actions", "not zsh", "not npm"),
-        *("don't want urgent notifications by email", "doesn't publish to Verdaccio", "dislikes PowerShell"),
-        *("hates early meetings", "don't use Slack", "not Friday", "not the main branch", "not prod", "isn't Python"),
-        *("won't use Jenkins again", "not TEST-X but TEST-Y", "doesn't use Docker", "is not Ansible", "not Vagrant"),
-    ),
-}
-
-
-@pytest.mark.parametrize("value", [*_NEGATED_STATES["zh"], *_NEGATED_STATES["en"]])
-def test_a_negated_state_or_a_polar_answer_is_a_value(value):
-    """未开始, 不在线, 没有 GPU, "not started", "not null" and "doesn't support IPv6" say what state the subject is
-    in, as a yes or a no would: the slot's value, which denies no other (``claims.read_denial``)."""
-    assert is_denial({"kind": "fact", "value_text": value}) is False
-    assert is_denial({"kind": "preference", "value_text": value}) is False
-
-
-@pytest.mark.parametrize("value", [*_NAMED_DENIALS["zh"], *_NAMED_DENIALS["en"]])
-def test_a_negation_that_names_an_alternative_denies_it(value):
-    """不是 Jenkins, 别再用 bash, "not bash" and "don't like PowerShell" name a value the slot could hold, and
-    reject it."""
-    assert is_denial({"kind": "fact", "value_text": value}) is True
-    assert is_denial({"kind": "preference", "value_text": value}) is True
-
-
-def test_the_reading_tables_hold_thirty_values_a_language_on_each_side():
-    """The two tables above, held to their size: at least thirty values a language on each side."""
-    assert all(len(values) >= 30 for table in (_NEGATED_STATES, _NAMED_DENIALS) for values in table.values())
-
-
 @pytest.mark.parametrize("command", ["restore_displaced_values", "requalify_claims"])
 def test_maintenance_keeps_every_negated_state_and_settles_the_denials(app, command):
-    """A store holding states and polar answers, each its slot's value, and two denials an older rule made values:
-    either command withdraws the two denials and leaves every state as it was."""
+    """Every tabulated description stays active; both preview and apply settle only denials and retry is inert."""
     core, ctx = app
-    english = (("deploy status", "not started"), ("release", "not deployed"), ("artifact", "not found"))
-    english += (("id column", "not null"), ("IPv6", "not supported"), ("staging host", "not available"))
-    chinese = (("部署状态", "未开始"), ("上线状态", "尚未上线"), ("服务状态", "不在线"), ("网络", "不支持 IPv6"))
-    chinese += (("构建机", "没有 GPU"), ("评审", "没通过"))
-    said = [(f"The TEST-project {predicate} is {value}.", value, predicate) for predicate, value in english]
-    said += [(f"TEST-project {predicate} {value}。", value, predicate) for predicate, value in chinese]
-    states = [_stated(core, ctx, text, value, predicate=predicate) for text, value, predicate in said]
-    assert [claim.state for claim in states] == ["active"] * len(said)
+    payloads = []
+    for index, value in enumerate((*NEGATED_STATES["zh"], *NEGATED_STATES["en"])):
+        predicate = f"state {index}"
+        source = capture(core, ctx, f"The TEST-project {predicate} is {value}.")
+        payloads.append(draft(source, value, kind="fact", predicate=predicate, statement_kind="assertion"))
+    with core.storage.write(ctx) as tx:
+        verdict = Qualification("active", "direct_report", CONFIRMED_REASON)
+        states = [tx.claims.append("TEST-scope", payload, verdict, recorded_at=Clock.now) for payload in payloads]
     jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
-    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not Jenkins any more.", "not Jenkins")
+    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not jenkins any more.", "not jenkins")
+    _stated(core, ctx, "The TEST-project shell is bash.", "bash", predicate="shell")
+    shell = _stated(core, ctx, "The TEST-project shell is Jenkins.", "Jenkins", _LATER, predicate="shell")
+    _denial_at_the_head(core, ctx, shell, "The TEST-project shell is not bash.", "not bash")
     region = capture(core, ctx, "The TEST-project deploy region is not us-east-2.", when=_LATER)
     alone = draft(region, "not us-east-2", kind="fact", predicate="deploy region", statement_kind="assertion")
     with core.storage.write(ctx) as tx:
         verdict = Qualification("active", "direct_report", "explicit_scoped_source")
         alone_ref = tx.claims.append("TEST-scope", alone, verdict, recorded_at=Clock.now).ref
-    report = getattr(core.operations, command)(ctx, limit=32, dry_run=False)
-    assert {item["ref"] for item in report["changed"]} == {jenkins.ref, alone_ref}
-    assert [core.current_claim(ctx, claim.ref).payload["value_text"] for claim in states] == [v for _, v, _ in said]
+
+    def run(dry_run):
+        cursor, changes = "", []
+        for _ in range(len(states) + 3):
+            report = getattr(core.operations, command)(ctx, after_ref=cursor, limit=32, dry_run=dry_run)
+            changes.extend(report["changed"])
+            if not report["last_ref"]:
+                return changes
+            cursor = report["last_ref"]
+        pytest.fail("maintenance did not finish its bounded pages")
+
+    assert {item["ref"] for item in run(True)} == {jenkins.ref, shell.ref, alone_ref}
+    assert all(core.claim_history(ctx, claim.ref) == (claim,) for claim in states)
+    assert {item["ref"] for item in run(False)} == {jenkins.ref, shell.ref, alone_ref}
+    assert all(core.current_claim(ctx, claim.ref).state == "active" for claim in states)
+    assert [core.current_claim(ctx, claim.ref).payload for claim in states] == payloads
     assert core.current_claim(ctx, jenkins.ref) is None and core.current_claim(ctx, alone_ref) is None
+    assert core.current_claim(ctx, shell.ref).payload["value_text"] == "Jenkins"
+    assert run(False) == []
 
 
 def test_a_term_in_capitals_is_its_slot_s_value_and_maintenance_keeps_it(app):
@@ -597,6 +521,25 @@ def test_a_value_that_opens_with_a_negator_word_updates_its_slot(app, stated, sa
 
 
 @pytest.mark.parametrize(
+    "held,denied",
+    [("bash", "not bash"), ("Jenkins", "not jenkins any more"), ("Jenkins", "NOT JENKINS ANY MORE")],
+)
+def test_writing_an_unmarked_denial_uses_the_slot_s_current_or_past_value(app, held, denied):
+    """An unmarked word is retained alone, ends a matching value and leaves a different current value standing."""
+    core, ctx = app
+    alone = _stated(core, ctx, f"The TEST-project shell is {denied}.", denied, predicate="shell")
+    assert alone.state == "active"
+    first = _stated(core, ctx, f"The TEST-project CI service is {held}.", held)
+    ended = _stated(core, ctx, f"The TEST-project CI service is {denied}.", denied, _LATER)
+    assert ended.state == "retracted" and core.current_claim(ctx, first.ref) is None
+    _stated(core, ctx, f"The TEST-project tool is {held}.", held, predicate="tool")
+    current = _stated(core, ctx, "The TEST-project tool is Redis.", "Redis", _LATER, predicate="tool")
+    denial = _stated(core, ctx, f"The TEST-project tool is {denied}.", denied, "2026-09-04T12:00:00Z", predicate="tool")
+    assert denial.state == "proposed"
+    assert core.current_claim(ctx, current.ref).payload["value_text"] == "Redis"
+
+
+@pytest.mark.parametrize(
     "denied,held,same",
     [
         ("不吃辣", "爱吃辣", True),
@@ -636,8 +579,8 @@ def test_a_denial_negates_a_value_that_holds_all_it_denies(denied, held, same):
         ("never use TEST-X again", True, True),
         ("别再用 TEST-X", True, True),
         ("不一定喜欢 TEST-X", False, False),
-        ("never again", True, False),
-        ("isn't any more", True, False),
+        ("never again", False, False),
+        ("isn't any more", False, False),
         ("not TEST-X but TEST-Y", True, True),
     ],
 )
@@ -653,12 +596,12 @@ def test_a_denial_is_read_as_its_negator_target_contrast_and_time(value, denial,
     "text,value,predicate",
     [("我不吃了。", "不吃了", "饮食"), ("I don't drink any more.", "don't drink any more", "drink")],
 )
-def test_a_denial_that_names_nothing_is_never_its_slot_s_value(app, text, value, predicate):
-    """我不吃了 and "I don't drink any more" deny no value the person names: not even theirs becomes a slot's value."""
+def test_an_action_without_a_target_remains_the_person_s_value(app, text, value, predicate):
+    """An action without a named target supplies no positive evidence of another slot value."""
     core, ctx = app
     denial, owner = _preferred(core, ctx, text, value, predicate=predicate)
-    assert (denial.state, core.claim_history(owner, denial.ref)[-1].reason) == ("proposed", "denial_not_a_value")
-    assert core.current_claim(owner, denial.ref) is None
+    assert denial.state == "active"
+    assert core.current_claim(owner, denial.ref).payload["value_text"] == value
 
 
 @pytest.mark.parametrize(
@@ -956,6 +899,64 @@ def test_a_revision_to_the_person_s_own_denial_replaces_what_it_denies(app):
     source = capture(core, owner, "更正：饮食上我现在不吃辣了。", when=_LATER)
     assert core.revise(owner, revise_request(held, source, "不吃辣"), remaining_seconds=10).items[0].state == "active"
     assert core.current_claim(owner, held.ref).payload["value_text"] == "不吃辣"
+
+
+def test_a_revision_uses_past_values_to_recognize_an_unmarked_target(app):
+    """A correction cannot install a denial of an unmarked historical value as the project's current value."""
+    core, ctx = app
+    _stated(core, ctx, "The TEST-project CI service is bash.", "bash")
+    current = _stated(core, ctx, "The TEST-project CI service is Redis.", "Redis", _LATER)
+    before = core.claim_history(ctx, current.ref)
+    source = capture(core, ctx, "更正：TEST-project CI service is not bash.", when="2026-09-04T12:00:00Z")
+    with pytest.raises(ContractError, match="denial_of_another_value"):
+        core.revise(ctx, revise_request(current, source, "not bash"), remaining_seconds=10)
+    assert core.claim_history(ctx, current.ref) == before
+
+
+def test_negative_state_transition_is_preserved_across_lifecycle(app):
+    """Applying or revising to a negative state preserves it, and maintenance leaves it active and idempotent."""
+    core, ctx = app
+    initial_en = _stated(core, ctx, "The TEST-project host status is online.", "online", predicate="host status")
+    initial_zh = _stated(core, ctx, "TEST-project 服务状态 在线。", "在线", predicate="服务状态")
+    transition_en = _stated(
+        core, ctx, "The TEST-project host status is not online.", "not online", _LATER, predicate="host status"
+    )
+    transition_zh = _stated(core, ctx, "TEST-project 服务状态 不在线。", "不在线", _LATER, predicate="服务状态")
+    assert transition_en.state == "active" and transition_en.disposition == "inserted"
+    assert core.current_claim(ctx, initial_en.ref).payload["value_text"] == "not online"
+    assert transition_zh.state == "active" and transition_zh.disposition == "inserted"
+    assert core.current_claim(ctx, initial_zh.ref).payload["value_text"] == "不在线"
+
+    conf = _stated(core, ctx, "The TEST-project deploy status is configured.", "configured", predicate="deploy status")
+    source_en = capture(core, ctx, "更正：TEST-project deploy status is not Configured.", when="2026-09-04T12:00:00Z")
+    revised_en = core.revise(ctx, revise_request(conf, source_en, "not Configured"), remaining_seconds=10)
+    assert revised_en.items[0].state == "active"
+    assert core.current_claim(ctx, conf.ref).payload["value_text"] == "not Configured"
+
+    def_zh = _stated(core, ctx, "TEST-project 设置状态 默认的。", "默认的", predicate="设置状态")
+    source_zh = capture(core, ctx, "更正：TEST-project 设置状态 不是默认的。", when="2026-09-04T12:00:00Z")
+    revised_zh = core.revise(ctx, revise_request(def_zh, source_zh, "不是默认的"), remaining_seconds=10)
+    assert revised_zh.items[0].state == "active"
+    assert core.current_claim(ctx, def_zh.ref).payload["value_text"] == "不是默认的"
+
+    for command in ("requalify_claims", "restore_displaced_values"):
+        assert getattr(core.operations, command)(ctx, limit=32, dry_run=False)["changed"] == []
+        assert getattr(core.operations, command)(ctx, limit=32, dry_run=False)["changed"] == []
+
+    assert core.current_claim(ctx, initial_en.ref).payload["value_text"] == "not online"
+    assert core.current_claim(ctx, initial_zh.ref).payload["value_text"] == "不在线"
+    assert core.current_claim(ctx, conf.ref).payload["value_text"] == "not Configured"
+    assert core.current_claim(ctx, def_zh.ref).payload["value_text"] == "不是默认的"
+
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    denial_circle = _stated(core, ctx, "The TEST-project CI service is not CircleCI.", "not CircleCI", _LATER)
+    assert denial_circle.state == "proposed"
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    denial_jenkins = _stated(
+        core, ctx, "The TEST-project CI service is not Jenkins any more.", "not Jenkins", "2026-09-05T12:00:00Z"
+    )
+    assert denial_jenkins.state == "retracted"
+    assert core.current_claim(ctx, jenkins.ref) is None
 
 
 @pytest.mark.parametrize("origin", ["assistant_visible", "host_generated", "memory_reinjection", "origin_unknown"])

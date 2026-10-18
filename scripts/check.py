@@ -178,7 +178,11 @@ SUITES = {
         "tests/known_answer/test_recall_invariants_check.py",
     ],
     "capture": ["tests/contract/test_capture.py", "tests/contract/test_capture_row_crossings.py"],
-    "claims": ["tests/contract/test_claims.py", "tests/contract/test_claim_embed_recovery.py"],
+    "claims": [
+        "tests/test_denial_values.py",
+        "tests/contract/test_claims.py",
+        "tests/contract/test_claim_embed_recovery.py",
+    ],
     "deletion": [
         "tests/contract/test_deletion.py",
         "tests/contract/test_purge_leaves_no_copy.py",

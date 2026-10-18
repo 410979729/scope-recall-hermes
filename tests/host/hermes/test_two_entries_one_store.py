@@ -25,6 +25,9 @@ from scope_recall.adapters.hermes.shared_entries import (
     read_shared_payload,
     write_shared_payload,
 )
+from scope_recall.core.claims import Qualification
+from scope_recall.maintenance.shared_import import import_entry
+from test_denial_values import NEGATED_STATES
 
 NOW = "2026-09-22T20:00:00Z"
 AGENT = "TEST-agent"
@@ -643,3 +646,52 @@ def test_an_imported_store_holds_no_denial_as_a_value(root, entries):
         ("CI service", "active", "不是 Jenkins"),
         ("CI service", "retracted", "不是 Jenkins"),
     ]
+
+
+def test_import_preserves_every_tabulated_description_and_settles_only_denials(root, entries):
+    """An imported store retains every description and its history; repeating the import changes no claim."""
+    tianshu, _ = entries
+    scope = _scope(tianshu)
+    states = (*NEGATED_STATES["zh"], *NEGATED_STATES["en"])
+    values = (*states, "不是 CircleCI", "not Jenkins")
+    texts = [f"TEST-project state {i} 是 {value}。" for i, value in enumerate(values)]
+    core, context, sources, old = _old_store(tianshu, scope, *texts)
+    with core.storage.write(context) as tx:
+        for i, (value, source) in enumerate(zip(values, sources, strict=True)):
+            event = core.source(context, source.ref, source.revision).event
+            payload = dict(
+                kind="fact",
+                subject="TEST-project",
+                predicate=f"state {i}",
+                value_text=value,
+                conditions=[],
+                statement_kind="assertion",
+                valid_from=event["occurred_at"],
+                valid_to=None,
+                evidence_spans=[dict(source_ref=source.ref, source_revision=source.revision, quote=texts[i])],
+            )
+            tx.claims.append(
+                scope,
+                payload,
+                Qualification("active", "direct_report", "explicit_scoped_source"),
+                recorded_at=core.clock.utc_now(),
+            )
+    report = import_entry(root=root, entry_id="tianshu", source=old, dry_run=True)
+    assert report["status"] == "rehearsed" and report["counts"]["denials_settled"] == 2
+    assert _query(root, "SELECT count(*) FROM claims") == [(0,)]
+    report = import_entry(root=root, entry_id="tianshu", source=old)
+    assert report["status"] == "imported" and report["counts"]["denials_settled"] == 2
+    query = (
+        "SELECT c.predicate,v.state,json_extract(v.payload_json,'$.value_text') FROM claims c"
+        " JOIN claim_versions v USING(claim_id) ORDER BY c.predicate,v.revision"
+    )
+    versions = _query(root, query)
+    for i, value in enumerate(states):
+        assert [row for row in versions if row[0] == f"state {i}"] == [(f"state {i}", "active", value)]
+    for i, value in enumerate(values[len(states) :], len(states)):
+        assert [row for row in versions if row[0] == f"state {i}"] == [
+            (f"state {i}", "active", value),
+            (f"state {i}", "retracted", value),
+        ]
+    assert import_entry(root=root, entry_id="tianshu", source=old)["status"] == "already_imported"
+    assert _query(root, query) == versions

@@ -27,6 +27,7 @@ from scope_recall.core.restore import (
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.restore import apply_restore
+from test_denial_values import NEGATED_STATES
 
 from maintenance.backup import backup_sqlite
 from maintenance.migrate_v2 import migrate_legacy
@@ -1321,3 +1322,40 @@ def test_a_converted_store_holds_no_denial_as_a_value(tmp_path: Path) -> None:
     }
     assert migrate_legacy(legacy, target)["fact_authority"]["denials_settled"] == 0
     assert facts() == (heads, versions)
+
+
+def test_conversion_preserves_every_tabulated_description_and_settles_only_denials(tmp_path):
+    """Conversion preserves descriptions as active project facts, keeps their history and retries without changes."""
+    states = (*NEGATED_STATES["zh"], *NEGATED_STATES["en"])
+    values = (*states, "不是 CircleCI", "not Jenkins")
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(i, "scope-a", f"TEST-project state {i} 是 {value}。") for i, value in enumerate(values, 1)],
+    )
+    _legacy_facts(
+        legacy,
+        [
+            (f"state-{i}", "TEST-project", f"state {i}", value, "current", _AT, i, value)
+            for i, value in enumerate(values, 1)
+        ],
+    )
+    target = tmp_path / "target"
+    report = migrate_legacy(legacy, target)
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    assert report["fact_authority"]["denials_settled"] == 2
+    query = (
+        "SELECT c.predicate,v.state,json_extract(v.payload_json,'$.value_text') FROM claims c"
+        " JOIN claim_versions v USING(claim_id) ORDER BY c.predicate,v.revision"
+    )
+    with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
+        versions = conn.execute(query).fetchall()
+    for i, value in enumerate(states, 1):
+        assert [row for row in versions if row[0] == f"state {i}"] == [(f"state {i}", "active", value)]
+    for i, value in enumerate(values[len(states) :], len(states) + 1):
+        assert [row for row in versions if row[0] == f"state {i}"] == [
+            (f"state {i}", "active", value),
+            (f"state {i}", "retracted", value),
+        ]
+    assert migrate_legacy(legacy, target)["fact_authority"]["denials_settled"] == 0
+    with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
+        assert conn.execute(query).fetchall() == versions

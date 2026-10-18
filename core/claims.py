@@ -146,8 +146,7 @@ _DENIED_VERB = (
 #: English negator ("not X", "isn't X", "don't have a car", "never drink coffee", "no longer uses X").  不一定 doubts
 #: rather than negates, and an English negator before a word of knowing, minding, applying or contrast negates nothing
 #: ("not bad", "not only X but Y", "don't know", "not sure", "not applicable", "doesn't apply", "isn't it X").  Joined
-#: to the word after it, a negator is part of that word, as in NOT_STARTED, no-op and never-ending.  Whether what it
-#: negates is a state or an alternative it rejects, ``_describes_a_state`` reads from the groups.
+#: to the word after it, a negator is part of that word, as in NOT_STARTED, no-op and never-ending.
 _NEGATOR = re.compile(
     r"^\s*(?:(?:一点[也都]|根本|完全|从来|从|向来|也|都|还|并|已经|再也|很|真|实在|一直|平时|现在)\s*)*"
     r"(?:(?P<outright>并非|绝非|讨厌|厌恶|反感|受不了)(?=\s*[^\s。，！？,.!?])"
@@ -176,13 +175,20 @@ _EN_UNSTRESSED = frozenset(
 _EN_STATE_WORDS = frozenset(
     """null nil none ready online offline empty free open live valid invalid up down due busy idle full safe secure
     true false ok okay fine good bad great well enough much many here away healthy dirty flaky noisy steady easy early
+    fast slow main
     likely read-only up-to-date done set found known shown seen given taken broken chosen written built run made sent
     paid held kept left lost met read said sold told won begun gone got gotten hidden frozen driven eaten proven spoken
     stolen worn torn grown thrown drawn""".split()
 )
-#: Endings an English adjective or participle carries (deployed, running, available, compatible, active, continuous,
-#: useful, stateless, optional, public, compliant, persistent, temporary); -ment ends a noun (deployment).
-_EN_STATE_ENDING = re.compile(r"(?:ed|ing|able|ible|ive|ous|ful|less|al|ic|ant|(?<!m)ent|ary)$")
+#: Endings an English adjective or participle carries strongly enough to describe the subject (deployed, running,
+#: available, active, continuous, useful, stateless, optional, public, persistent, temporary); -ment ends a noun
+#: (deployment).  ible and ant also end names, so they leave the reading open (``_EN_OPEN_ENDING``).
+_EN_STATE_ENDING = re.compile(r"(?:ed|ing|able|ive|ous|ful|less|al|ic|(?<!m)ent|ary)$")
+#: What case cannot settle: history may identify it, and a capital may not name it.  ible and ant end a
+#: description or a name (compatible, Ansible, vagrant).  default is a status a slot may hold: listed with the state
+#: words, "not default" would stay a value after a held default, and a capital would deny "not Default" with none.
+_EN_OPEN_WORDS = frozenset({"default"})
+_EN_OPEN_ENDING = re.compile(r"(?:ible|ant)$")
 #: English verbs of having, holding and doing what a thing is for: negated, they say whether the subject has or does
 #: it, a state ("doesn't have a GPU", "doesn't support IPv6", "doesn't work", "won't start").
 _EN_HAVING = frozenset(
@@ -201,6 +207,16 @@ _EN_UNABLE = re.compile(r"\bcan(?:not|['’]t|\s+not)\b|\bcould(?:n['’]t|\s+no
 _EN_DID_NOT = re.compile(r"\bdid(?:n['’]t|\s+not)\b", re.I)
 _EN_VERBAL = re.compile(
     r"\b(?:do|does|will|wo|would|should|has|have|had)(?:n['’]t|\s+not)\b|\bnever\b|\bno\s+longer\b", re.I
+)
+#: A complete number-word quantity names a scalar alternative, as a digit does; an age or degree description
+#: ("not one week old", 不是一周的) does not match. Missing quantity forms remain values.
+_NAMED_QUANTITY = re.compile(
+    r"(?:(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen"
+    r"|sixteen|seventeen|eighteen|nineteen|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+    r"(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?)\s+"
+    r"(?:milliseconds?|seconds?|minutes?|hours?|days?|weeks?|months?|years?|bytes?|kilobytes?|megabytes?|gigabytes?"
+    r"|terabytes?|requests?)|[零〇一二两三四五六七八九十百千万亿]+(?:毫秒|秒|分钟|小时|天|周|个月|月|年|字节|次))",
+    re.I,
 )
 #: Where a denial goes on to say what holds instead: "not X but Y", 不是 X 而是 Y, 不是 X，是 Y, 不再用 X 改用 Y.
 _CONTRAST = re.compile(
@@ -270,13 +286,11 @@ def _set_in_capitals(value: str, negator: str) -> bool:
 
 
 def _negation(payload) -> re.Match | None:
-    """The negation a fact's or a preference's value opens with (``_NEGATOR``), unless the value asks ("isn't it X?")
-    or is a term set in capitals (``_set_in_capitals``)."""
+    """The negation a fact's or a preference's value opens with, unless the value asks ("isn't it X?")."""
     value = str(payload.get("value_text") or "")
     if payload.get("kind") not in _VALUE_SLOT_KINDS or AUTHORITY_QUESTION.search(value):
         return None
-    negation = _NEGATOR.match(value)
-    return None if negation is None or _set_in_capitals(value, negation.group()) else negation
+    return _NEGATOR.match(value)
 
 
 def _lemmas(word: str) -> set[str]:
@@ -293,107 +307,121 @@ def _lemmas(word: str) -> set[str]:
 
 
 def _written_as_a_name(word: str) -> bool:
-    """Whether a word is written as a name or an identifier is: with a digit, a mark (#ops-pager, v3.1, my_var, a/b)
-    or a capital inside it (CircleCI, MySQL, AWS)."""
-    return any(char.isdigit() or char in "#@./_" for char in word) or any(char.isupper() for char in word[1:])
+    """Digits, identifier marks and camelCase positively identify a target; capitals alone also spell states."""
+    return any(char.isdigit() or char in "#@./_" for char in word) or re.search(r"[a-z][A-Z]", word) is not None
 
 
-def _english_state(negator: str, target: str) -> bool:
-    """``_describes_a_state`` for an English negation: ``negator`` as it was matched, ``target`` what it negates.  It
-    names nothing ("never again"), is a state not yet reached ("not yet") or is a polar answer ("not really"), or its
-    first word that names something decides (``_english_word_state``)."""
-    words = [word for word in (part.strip(".,;:!?\"'()[]") for part in target.split()) if word]
-    if not words:
+def _english_evidence(negator: str, target: str) -> bool | None:
+    """``_target_evidence`` for an English negation, read from the first word it negates that names something.  A
+    negation of a state not yet reached (\"not yet\") or of unstressed words alone (\"not really\") describes."""
+    words = [word for word in (part.strip(",;:!?\"'()[]").rstrip(".") for part in target.split()) if word]
+    if not words or words[0].casefold() == "yet":
         return False
-    if words[0].casefold() == "yet":
-        return True
     while words and words[0].casefold() in _EN_UNSTRESSED:
         words = words[1:]
-    return not words or _english_word_state(negator, words[0], bool(words[1:]))
+    return _english_word_evidence(negator, words[0], bool(words[1:])) if words else False
 
 
-def _english_word_state(negator: str, head: str, followed: bool) -> bool:
-    """Whether ``head``, the first word an English ``negator`` negates that names something, makes a state of the
-    negation; ``followed`` says whether more words come after it."""
+def _english_word_evidence(negator: str, head: str, followed: bool) -> bool | None:
+    """How ``head``, the first word an English ``negator`` negates that names something, reads; ``followed`` says
+    whether more words come after it.  True: a name (identifier marks, camelCase, a capital on a word no clear
+    ending or list makes a description and no open reading leaves unresolved) or a verb of liking, using or doing
+    aimed at an object.  False: a description, what the subject cannot do, a past that did not happen, a verb of
+    having or of what a thing does, a listed adjective, or a clear adjective or participle ending; capitals do not
+    make such a word a name.  None: neither.  An open reading (ible, ant, or default) is unresolved in either
+    case, so a capital does not deny it and a value the slot holds or held still can."""
     word = head.casefold()
     lemmas = _lemmas(word)
     if _EN_UNABLE.search(negator):
-        return not lemmas & {"stand", "bear"}
-    if _EN_DID_NOT.search(negator) or word in _EN_STATE_WORDS:
-        return True
-    if _written_as_a_name(head) or (head[:1].isupper() and not negator.lstrip()[:1].isupper()):
+        return followed and bool(lemmas & {"stand", "bear"})
+    if _EN_DID_NOT.search(negator) or lemmas & _EN_HAVING:
         return False
-    if word.endswith("ed") or lemmas & _EN_HAVING:
+    if _written_as_a_name(head):
         return True
-    if lemmas & _EN_REJECTING:
+    if followed and lemmas & _EN_REJECTING and not word.endswith("ed"):
+        return True
+    stem = word.rsplit("-", 1)[-1]
+    if word in _EN_STATE_WORDS or _EN_STATE_ENDING.search(stem):
         return False
-    return bool(_EN_STATE_ENDING.search(word.rsplit("-", 1)[-1])) or (
-        _EN_VERBAL.search(negator) is not None and not followed
-    )
+    open_reading = word in _EN_OPEN_WORDS or _EN_OPEN_ENDING.search(stem) is not None
+    if (head[:1].isupper() and not open_reading) or (
+        followed and bool(lemmas & _EN_REJECTING or _EN_VERBAL.search(negator))
+    ):
+        return True
+    return None
 
 
-def _describes_a_state(negation: re.Match, rest: str, target: str) -> bool:
-    """Whether a value that opens with a negation describes a state of its subject, and so is its slot's value,
-    rather than naming an alternative the slot could hold and rejecting it, which is a denial.  ``rest`` is what
-    follows the negation and ``target`` what it negates.
+def _target_evidence(negation: re.Match, target: str) -> bool | None:
+    """What a negation's own text says of the ``target`` it negates, slot history aside.
 
-    A negation rejects an alternative when it negates a choice: the copula before a name (不是 Jenkins, 并非 v3.1, "not
-    CircleCI", "isn't Python", "not bash": a name in any case, an identifier with a digit, a mark or a capital inside
-    it), a verb of liking, wanting, choosing, using or taking in before what it names (不用 PowerShell, 别再用 bash,
-    不喜欢香菜, 不想要 X, "don't like PowerShell", "no longer uses Jenkins", "never drink coffee", "can't stand X"), an
-    aversion (讨厌 X, "dislikes X"), and a verb of doing before its object ("doesn't publish to npm").
-
-    It describes a state when it negates what the subject is, has or has done: 没, 未, 尚未 and 未曾 say what has not
-    happened yet or is not had (未开始, 尚未上线, 没上线, 没有 GPU, 没用过 X); 不 before a word of state, being
-    somewhere, having or opening (不在线, 不可用, 不支持 IPv6, 不开放), before 能 or a 会 without 再 (不能用,
-    不会自动重试) and 不是 before a degree word (不是很稳定); in English a past participle, an adjective or a polar
-    answer (not started, not found, not null, not ready, not online, "isn't running", "not yet", "not really"), a verb
-    of having or of doing what a thing is for ("doesn't have a GPU", "doesn't support IPv6", "doesn't work", "won't
-    start"), what a subject cannot do ("can't connect") and a past that did not happen ("didn't pass review").
-
-    A word that reads either way is read as a state, which never takes a value from its slot: the first word of a value
-    is capitalized for the sentence or for a label, so after a capitalized negator a word reads by its ending ("Not
-    Started", and "Not Ansible" with it); a word in lower case ending as an adjective or a participle does ("not
-    staging"); and a verb of doing with nothing after it ("doesn't deploy").  A negation that names nothing at all
-    ("never again", "isn't any more") stays a denial that names no value (``Denial.names_a_value``).
+    True: it names an alternative or directs liking, using or doing at one: a complete number-word quantity, a
+    Chinese verb of choice, Latin text, an identifier or a quotation after 不是 or 并非, an aversion, an English name
+    or action (``_english_word_evidence``).  False: it describes its subject: 没, 未, 尚未 and 未曾, 不 before a
+    verb of being somewhere, having or opening, 能 or a 会 without 再, a phrase after 不是 or 并非 that ends in 的 or
+    opens with a degree word, an English description.  None: the text decides neither (不是主节点, \"not bash\", an
+    open reading such as \"not Default\" or \"not Ansible\").
     """
-    if negation.group("outright") or negation.group("dislike"):
-        return False
-    negator = negation.group("negator")
-    if negator is None:
-        return _english_state(negation.group(), target)
-    modal = negation.group("modal")
-    return (
-        negator not in ("不", "别")
-        or negation.group("verb") in _ZH_STATE_VERBS
-        or "能" in modal
-        or re.search("会(?!再)", modal) is not None
-        or (negation.group("verb") == "是" and _ZH_DEGREE.match(rest, 1) is not None)
-    )
+    chinese = negation.group("negator") is not None or negation.group("outright") is not None
+    verb = negation.group("verb")
+    if _NAMED_QUANTITY.fullmatch(target.removeprefix("是").strip()):
+        return True
+    if chinese:
+        if negation.group("negator") not in (None, "不", "别"):
+            return False
+        modal = negation.group("modal") or ""
+        if verb in _ZH_STATE_VERBS or "能" in modal or re.search("会(?!再)", modal):
+            return False
+        if verb == "是" or negation.group("outright") in {"并非", "绝非"}:
+            description = target.removeprefix("是").strip()
+            if description.endswith("的") or _ZH_DEGREE.match(description):
+                return False
+            return True if re.search(r"[A-Za-z0-9#@./_]|[\"'“‘「『]", description) else None
+        return True
+    if negation.group("dislike") or re.match(r"\s*[\"'“‘「『].+?[\"'”’」』]", target):
+        return True
+    return _english_evidence(negation.group(), target)
 
 
-def read_denial(payload) -> Denial | None:
-    """The denial a claim's value is, or None: a fact's or a preference's value that opens with a negation
-    (``_negation``) naming an alternative its slot could hold rather than describing a state of its subject
-    (``_describes_a_state``).  What follows the negator is its target, up to what it says holds instead
-    (``_CONTRAST``) and without a word of time after it (``_SINCE``): the target of 不是很喜欢 X and of "never use X
-    again" is X, and of "not X but Y" X."""
+def read_denial(payload, held_values=()) -> Denial | None:
+    """The denial a fact's or a preference's value is, or None: read from its own text first (``_target_evidence``),
+    then from the values its slot holds or held (``held_values``) where the text decides nothing.
+
+    A value whose text describes its subject is the slot's value even when it negates the value held: 不在线 after
+    在线, \"not online\" after online, \"not Configured\" after configured, 不是默认的 after 默认的 each say the state
+    changed.  History settles only what the text leaves open: \"not bash\" or 不是主节点 denies bash or 主节点 where
+    the slot holds or held it, and is a value where it never did.  An open reading stays unresolved in either case, so
+    \"not Ansible\", \"not vagrant\" and \"not Default\" are not names by their capitals, and a held Ansible, vagrant
+    or default is denied.  Descriptions form an open set, so an unrecognized
+    one stays a value rather than withdraw stored data; that ambiguity is the accepted cost.  A value that goes on to
+    say what holds instead (\"not X but Y\") is a denial whatever its target.  Fixed expressions and polar answers
+    remain values; capitals throughout supply no evidence without matching history.  Target comparison uses the
+    same normalization as ``negates``; a contrast and trailing time words belong to the construction, not the target.
+    """
     negation = _negation(payload)
     if negation is None:
         return None
-    rest = str(payload.get("value_text") or "")[negation.end() :]
+    value = str(payload.get("value_text") or "")
+    rest = value[negation.end() :]
     contrast = _CONTRAST.search(rest)
     target = _SINCE.sub("", rest if contrast is None else rest[: contrast.start()])
-    if _describes_a_state(negation, rest, target):
+    read = Denial(_value_words(target), contrast is not None)
+    if not read.names_a_value:
         return None
-    return Denial(_value_words(target), contrast is not None)
+    evidence = _target_evidence(negation, target)
+    if evidence is False and contrast is None:
+        return None
+    if any(_target_negates(read, held) for held in held_values):
+        return read
+    if _set_in_capitals(value, negation.group()):
+        return None
+    return read if contrast is not None or evidence else None
 
 
-def is_denial(payload) -> bool:
+def is_denial(payload, held_values=()) -> bool:
     """Whether a claim's value says what its slot is not (``read_denial``): "not CircleCI", "不吃辣", "don't like
     PowerShell"; not 不错, 没问题, 不一定喜欢 X, "not bad", "isn't it X?", NOT NULL, NOT_STARTED, 未开始, 不在线 or
     "not started", which say what state their subject is in."""
-    return read_denial(payload) is not None
+    return read_denial(payload, held_values) is not None
 
 
 def negates(denial, held) -> bool:
@@ -409,9 +437,17 @@ def negates(denial, held) -> bool:
     leaves 周三 standing, as "not v3" leaves v3.1, "not 4 GB" 14 GB and 不喜欢喝红茶 茶.  A target of verbs alone
     (不吃了) negates nothing.
     """
-    read = read_denial(denial)
-    holds = _value_words(str(held.get("value_text") or ""))
-    if read is None or not read.names_a_value or not holds:
+    read = read_denial(denial, (held,))
+    return read is not None and _target_negates(read, held)
+
+
+def _target_negates(read: Denial, held) -> bool:
+    """Compare a target with a held assertion, never with another negation of it: "not fast" cannot deny itself."""
+    value = str(held.get("value_text") or "")
+    if _NEGATOR.match(value):
+        return False
+    holds = _value_words(value)
+    if not read.names_a_value or not holds:
         return False
     denied = read.target
     named = denied[1:] if denied[0] in _COPULA and len(denied) > 1 else denied
