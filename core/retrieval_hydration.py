@@ -20,6 +20,7 @@ from ..contracts import (
     bounded_source_context,
 )
 from . import lineage
+from .candidate_tables import awaits_first_judgement
 from .claim_storage import parse_source_ref
 from .claims import select_effective, select_proposal
 from .episodes import source_origin
@@ -45,6 +46,9 @@ _RETAINED_ARTIFACT_STATES = frozenset({"retained_artifact", "described_artifact"
 #: Origins that are a first-hand record rather than an echo of the system's own
 #: output. Matches the set already used by consolidation result validation.
 _FIRST_HAND_ORIGINS = frozenset({"human_direct", "tool_observation"})
+#: Claim versions whose candidate rows one statement reads (``_judgements``): two parameters each, within SQLite's
+#: oldest limit of 999.
+_JUDGEMENT_PAGE = 400
 
 
 def source_key(ref: str, revision: int) -> str:
@@ -57,6 +61,31 @@ def _is_source_ref(value: object) -> bool:
     except ContractError:
         return False
     return True
+
+
+def _judgements(tx, pairs) -> dict[tuple[str, int], bool]:
+    """Whether each of these claim versions still waits for its candidate's first judgement
+    (``candidate_tables.awaits_first_judgement``), read from the candidate rows on their primary key, a page to a
+    statement.  A version with no candidate row waits for none."""
+    pairs = list(dict.fromkeys(pairs))
+    found: dict[tuple[str, int], bool] = {}
+    conn = tx._check()
+    for start in range(0, len(pairs), _JUDGEMENT_PAGE):
+        page = pairs[start : start + _JUDGEMENT_PAGE]
+        rows = conn.execute(
+            "SELECT candidate_ref,candidate_revision,processing_state,last_evaluated_at FROM candidate_lifecycle"
+            f" WHERE (candidate_ref,candidate_revision) IN (VALUES {','.join('(?,?)' for _ in page)})",
+            [value for pair in page for value in pair],
+        ).fetchall()
+        awaited = {(row[0], row[1]) for row in rows if awaits_first_judgement(row[2], row[3])}
+        found.update((pair, pair in awaited) for pair in page)
+    return found
+
+
+def _awaits_judgement(tx, ref: str, revision: int) -> bool:
+    """``_judgements`` of one claim version, as the hydration's prefetch loaded it for every claim of the round, or
+    read on its own for one hydrated alone."""
+    return tx.remembered(("judgement", ref, revision), lambda: _judgements(tx, ((ref, revision),))[(ref, revision)])
 
 
 def _prefetch(tx, pairs) -> None:
@@ -306,6 +335,8 @@ class RetrievalHydration:
         _prefetch(tx, ((item.ref, item.revision) for item in by_kind.get("event", ())))
         if "claim" in by_kind:
             tx.claims.prefetch_versions(item.ref for item in by_kind["claim"])
+            for (ref, revision), awaited in _judgements(tx, ((c.ref, c.revision) for c in by_kind["claim"])).items():
+                tx.remember(("judgement", ref, revision), awaited)
 
     def hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         if not allowed(tx, candidate.kind, candidate.ref, automatic=context.mode == "auto"):
@@ -395,6 +426,9 @@ class RetrievalHydration:
                 origins.append(source.event["origin"])
                 witnessed.append(tx.sources.witnessed_at(source))
         origin = next((item for item in origins if item == "human_direct"), origins[0] if origins else "origin_unknown")
+        # A proposal its candidate's first judgement has not yet reached, as against one the evaluator ruled on,
+        # one asleep or one blocked (``candidate_tables.awaits_first_judgement``).
+        awaited = version.state == "proposed" and _awaits_judgement(tx, candidate.ref, candidate.revision)
         metadata = (
             ("payload_json", _claim_content(version)),
             ("state", version.state),
@@ -402,6 +436,7 @@ class RetrievalHydration:
             # Which gate rejected it, so a reader can tell a weak quote from an
             # unasserted question or a missing condition.
             ("qualification_reason", version.reason),
+            *((("judgement", "awaited"),) if awaited else ()),
             *_source_contexts_metadata(evidence_source_contexts(tx, evidence)),
             # Every entry any of its evidence came in through.
             *_entries_metadata(evidence_entries(tx, evidence)),

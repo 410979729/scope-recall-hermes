@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.claims import Qualification
 from scope_recall.core.events import lexical_terms
 from scope_recall.core.recall_needs import answering, unmet_needs
 from scope_recall.core.recall_policy import (
@@ -20,7 +21,8 @@ from scope_recall.core.recall_policy import (
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext, SearchLimits
 from scope_recall.core.retrieval_storage import RetrievalStorage, scope_digest
 
-from tests.contract.test_claims import Clock, capture
+from tests.contract.test_candidate_lifecycle import Evaluator, _finish_source_work
+from tests.contract.test_claims import Clock, capture, draft
 from tests.v11_support import context, recall_request, source_event
 
 
@@ -248,9 +250,17 @@ def test_unrelated_or_negative_reason_does_not_support_why(app, content, query):
 
 
 def _recalled(
-    ref: str, content: str, *, kind: str = "event", origin: str = "human_direct", state: str = "", reason: str = ""
+    ref: str,
+    content: str,
+    *,
+    kind: str = "event",
+    origin: str = "human_direct",
+    state: str = "",
+    reason: str = "",
+    judgement: str = "",
 ) -> RetrievedObject:
-    metadata = tuple((key, value) for key, value in (("state", state), ("qualification_reason", reason)) if value)
+    pairs = (("state", state), ("qualification_reason", reason), ("judgement", judgement))
+    metadata = tuple((key, value) for key, value in pairs if value)
     return RetrievedObject(
         ref,
         1,
@@ -295,13 +305,16 @@ def test_an_item_answers_by_naming_what_the_question_names_and_saying_more_of_wh
 
 def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgement():
     """A proposal held back only by the strength of its one source passed every check of what it is, and said by a
-    person it answers while it waits to be judged.  One held back for what it is (a supposition, a subject its quote
-    does not bind, a condition it drops), or drawn from a tool's output, answers nothing."""
+    person it answers until its first judgement reaches it.  One already judged, one held back for what it is (a
+    supposition, a subject its quote does not bind, a condition it drops), one drawn from a tool's output and a denial
+    still proposed answer nothing; an active denial, the person's own answer, does."""
 
-    def claim(ref: str, *, state: str, reason: str, origin: str = "human_direct", statement_kind: str = "assertion"):
-        payload = {"kind": "fact", "subject": "Fennel", "predicate": "alert channel", "value_text": "#ops-pager"}
+    def claim(ref: str, value: str = "#ops-pager", *, state: str, reason: str, **changes):
+        changes.setdefault("judgement", "awaited" if state == "proposed" else "")
+        statement_kind = changes.pop("statement_kind", "assertion")
+        payload = {"kind": "fact", "subject": "Fennel", "predicate": "alert channel", "value_text": value}
         content = json.dumps({**payload, "statement_kind": statement_kind})
-        return _recalled(ref, content, kind="claim", origin=origin, state=state, reason=reason)
+        return _recalled(ref, content, kind="claim", state=state, reason=reason, **changes)
 
     question = "Where are the Fennel alerts posted?"
     answers = (
@@ -309,15 +322,57 @@ def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgeme
         claim("claim-unproved", state="proposed", reason="fact_entailment_unproved"),
     )
     held_back = (
+        claim("claim-judged", state="proposed", reason="fact_entailment_unproved", judgement=""),
         claim("claim-supposed", state="proposed", reason="statement_not_asserted", statement_kind="hypothetical"),
         claim("claim-unbound", state="proposed", reason="subject_not_bound"),
         claim("claim-unconditioned", state="proposed", reason="condition_not_supported"),
         claim("claim-observed", state="proposed", reason="fact_entailment_unproved", origin="tool_observation"),
+        claim("claim-denial", "not #ops-pager", state="proposed", reason="fact_entailment_unproved"),
     )
     for item in answers:
         assert answering(question, (item,)) == (item,), item.ref
     for item in held_back:
         assert answering(question, (item,)) == (), item.ref
+    own = {
+        "kind": "preference",
+        "subject": "principal:human:alice",
+        "predicate": "drink",
+        "value_text": "don't drink coffee",
+    }
+    answer = _recalled("claim-own", json.dumps(own), kind="claim", state="active", reason="explicit_scoped_source")
+    assert answering("Does Alice drink coffee?", (answer,)) == (answer,)
+
+
+def test_a_proposal_the_evaluator_found_insufficient_no_longer_answers(app):
+    """Hydrated while its first judgement has not reached it, a proposal a person's words gave answers; once the
+    evaluator has ruled its evidence insufficient it answers nothing, though it stays a proposal."""
+    core, ctx = app
+    said = capture(core, ctx, "Orchard keeps its staging database on port 6543.", key="TEST-p08/judgement-said")
+    proposal = draft(said, "6543", kind="fact", subject="Orchard", predicate="staging database port")
+    with core.storage.write(ctx) as tx:
+        unproved = Qualification("proposed", "inferred_suggestion", "fact_entailment_unproved")
+        saved = tx.claims.append("TEST-scope", proposal, unproved, recorded_at=core.clock.utc_now())
+        assert tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now()).work_queued
+    _finish_source_work(core)
+    question = "What is the staging database port for Orchard?"
+
+    def hydrated() -> RetrievedObject:
+        body = recall_request(query=question, mode="current")
+        search = SearchContext.from_request(body, ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 30)
+        with core.storage.read(ctx) as tx:
+            found = CandidateRef("claim", saved.ref, saved.revision, "claim_lexical")
+            item = RetrievalStorage(clock=core.clock).hydrate(tx, found, search)
+        assert item is not None
+        return item
+
+    waiting = hydrated()
+    assert answering(question, (waiting,)) == (waiting,)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    judged = hydrated()
+    assert evaluator.calls == 1
+    assert dict(judged.metadata)["state"] == "proposed"
+    assert answering(question, (judged,)) == ()
 
 
 def test_a_prompt_that_does_not_read_as_a_question_about_named_things_is_judged_as_before():

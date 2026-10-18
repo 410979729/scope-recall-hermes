@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from .claims import is_denial
 from .corroboration import CORROBORATION_ELIGIBLE_REASONS
 from .events import lexical_terms, version_suffixes
 from .fact_evidence import stem
@@ -271,16 +272,25 @@ def _asserted(content: str) -> str:
 
 def _answer_text(item: RetrievedObject) -> str | None:
     """What an item answers with: a person's own words (``human_direct``) as they assert them (``_asserted``), a
-    claim's statement, another kind's content.  A claim answers when it is active, or when a person said it and its
-    qualification stopped only at the strength of its one source (``CORROBORATION_ELIGIBLE_REASONS``): such a
-    proposal waits to be judged.  One held back for what it is (a supposition, a quotation, a subject its quote does
-    not bind, a condition it drops) answers nothing, nor does an assistant's or a tool's message: what a tool observed
-    answers through a claim drawn from it."""
+    claim's statement, another kind's content.  A claim answers when it is active, or when a person said it, its
+    qualification stopped only at the strength of its one source (``CORROBORATION_ELIGIBLE_REASONS``) and its first
+    judgement has not reached it (``judgement``, ``retrieval_hydration``): such a proposal waits to be judged.  One the
+    evaluator found insufficient, one asleep or blocked, and one held back for what it is (a supposition, a quotation,
+    a subject its quote does not bind, a condition it drops) answer nothing, nor does a proposed denial
+    (``claims.is_denial``): the store holds a denial as active only as the person's own answer
+    (``mutate.denial_verdict``), and any other says what its slot is not.  An assistant's or a tool's message answers
+    nothing either: what a tool observed answers through a claim drawn from it."""
     if item.kind in {"claim", "procedure"}:
         metadata = dict(item.metadata)
-        state = metadata.get("state")
-        unproved = state == "proposed" and metadata.get("qualification_reason") in CORROBORATION_ELIGIBLE_REASONS
-        return statement_text(item) if state == "active" or (unproved and item.origin == "human_direct") else None
+        payload = optional_json(item.content)
+        waits = (
+            metadata.get("state") == "proposed"
+            and metadata.get("qualification_reason") in CORROBORATION_ELIGIBLE_REASONS
+            and metadata.get("judgement") == "awaited"
+            and item.origin == "human_direct"
+            and not (isinstance(payload, dict) and is_denial(payload))
+        )
+        return statement_text(item) if metadata.get("state") == "active" or waits else None
     if item.kind == "event":
         return _asserted(item.content) if item.origin == "human_direct" else None
     return item.content
