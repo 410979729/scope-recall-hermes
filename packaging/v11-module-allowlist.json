@@ -66,6 +66,7 @@
     "adapters/hermes/shared_entries.py",
     "adapters/hermes/tool_surface.py",
     "adapters/hermes/turn_capture.py",
+    "adapters/hermes/unbound_sessions.py",
     "adapters/hermes/worker.py",
     "adapters/runtime_wiring.py",
     "adapters/tool_common.py",
