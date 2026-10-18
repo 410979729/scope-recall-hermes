@@ -402,9 +402,9 @@ def test_a_dislike_of_something_else_leaves_the_preference_its_slot_holds(app, s
         *((value, False) for value in ("不错", "不过", "没问题", "不客气", "不同意 TEST-X", "不知道", "不用谢")),
         *((value, False) for value in ("not bad", "don't know", "not sure", "isn't it TEST-X?")),
         ("not only TEST-X but TEST-Y", False),
-        *((value, True) for value in ("不是 CircleCI", "不吃辣", "不喜欢用 PowerShell", "没有车", "从不抽烟")),
+        *((value, True) for value in ("不是 CircleCI", "不吃辣", "不喜欢用 PowerShell", "从不抽烟")),
         *((value, True) for value in ("不再用 Jenkins", "讨厌香菜", "一点也不喜欢喝咖啡", "现在不吃辣了")),
-        *((value, True) for value in ("not CircleCI", "isn't Jenkins", "don't have a car", "never drink coffee")),
+        *((value, True) for value in ("not CircleCI", "isn't Jenkins", "never drink coffee")),
         *((value, True) for value in ("no longer uses Jenkins", "can't stand PowerShell", "really don't like X")),
     ],
 )
@@ -434,6 +434,127 @@ def test_a_value_written_as_a_term_denies_nothing(value, denial):
     written, in capitals or as one word, a value names the term and denies nothing.  A person who puts the negator
     alone in capitals stresses a denial ("NOT Jenkins any more"), which stays one."""
     assert is_denial({"kind": "fact", "value_text": value}) is denial
+
+
+#: Values that open with a negation and describe a state of their subject, or answer yes or no: each is its slot's
+#: value, the denials' earlier look-alikes among them.
+_NEGATED_STATES = {
+    "zh": (
+        *("未开始", "未完成", "尚未上线", "未开启", "没上线", "不在线", "不可用", "不支持 IPv6", "没有 GPU", "未部署"),
+        *("尚未发布", "没通过评审", "没装 Docker", "没有权限", "不稳定", "不兼容 Windows", "不对外开放", "未启用"),
+        *("未配置", "没开通", "不存在", "不在维护期", "没有备份", "还没合并", "没生效", "不能用", "不会自动重试"),
+        *("不收费", "不公开", "不够用", "没空", "不是很稳定", "还没确定", "不在家", "没用过 Jenkins", "不会用 Jenkins"),
+        *(
+            "未曾去过北京",
+            "不开放",
+            "没有车",
+            "不错",
+            "没问题",
+            "不客气",
+            "不同意 TEST-X",
+            "不知道",
+            "不一定",
+            "无所谓",
+        ),
+    ),
+    "en": (
+        *("not started", "not deployed", "not found", "not null", "not supported", "not available", "not ready"),
+        *("not online", "not enabled", "not yet", "not yet released", "not configured", "isn't running"),
+        *("is not reachable", "doesn't have a GPU", "doesn't support IPv6", "doesn't work on Windows"),
+        *("can't connect to the VPN", "didn't pass review", "hasn't started", "never deployed", "no longer supported"),
+        *("not merged yet", "not installed", "not responding", "not stable", "not public", "not required"),
+        *("not paid", "not scheduled", "not set", "not done", "not empty", "not free", "not very stable"),
+        *("not compatible with Python 2", "is not being used", "not connected", "isn't valid", "not self-hosted"),
+        *("not really", "Not Started", "don't have a car", "NOT NULL", "not bad", "don't know", "not applicable"),
+    ),
+}
+#: Values that open with a negation and name an alternative the slot could hold, which they reject: each denies it.
+_NAMED_DENIALS = {
+    "zh": (
+        *("不是 Jenkins", "不用 PowerShell 了", "别再用 bash", "不是 CircleCI", "不吃辣", "不喜欢用 PowerShell"),
+        *(
+            "从不抽烟",
+            "不再用 Jenkins",
+            "讨厌香菜",
+            "一点也不喜欢喝咖啡",
+            "现在不吃辣了",
+            "不是周三",
+            "并不是 us-east-2",
+        ),
+        *("不想用 Slack", "不想要靠窗的座位", "受不了 Emacs", "讨厌用 Vim", "不喜欢听爵士乐", "不喝咖啡", "不穿正装"),
+        *(
+            "不坐红眼航班",
+            "不去北京",
+            "别用 Docker Desktop",
+            "不需要纸质发票",
+            "不要靠过道的座位",
+            "再也不用 Windows 了",
+        ),
+        *("不会再用 Jenkins", "不太喜欢 TypeScript", "不是很喜欢 Rust", "不买 Mac", "不选 MySQL", "并非 v3.1"),
+    ),
+    "en": (
+        *(
+            "not CircleCI",
+            "not bash",
+            "not Jenkins",
+            "isn't Jenkins",
+            "don't like PowerShell",
+            "no longer uses Jenkins",
+        ),
+        *("never drink coffee", "can't stand PowerShell", "not v3.1", "not #ops-pager", "not us-east-2", "not 4 GB"),
+        *("not MySQL", "not AWS", "Not CircleCI", "NOT Jenkins any more", "not GitHub Actions", "not zsh", "not npm"),
+        *("don't want urgent notifications by email", "doesn't publish to Verdaccio", "dislikes PowerShell"),
+        *("hates early meetings", "don't use Slack", "not Friday", "not the main branch", "not prod", "isn't Python"),
+        *("won't use Jenkins again", "not TEST-X but TEST-Y", "doesn't use Docker", "is not Ansible", "not Vagrant"),
+    ),
+}
+
+
+@pytest.mark.parametrize("value", [*_NEGATED_STATES["zh"], *_NEGATED_STATES["en"]])
+def test_a_negated_state_or_a_polar_answer_is_a_value(value):
+    """未开始, 不在线, 没有 GPU, "not started", "not null" and "doesn't support IPv6" say what state the subject is
+    in, as a yes or a no would: the slot's value, which denies no other (``claims.read_denial``)."""
+    assert is_denial({"kind": "fact", "value_text": value}) is False
+    assert is_denial({"kind": "preference", "value_text": value}) is False
+
+
+@pytest.mark.parametrize("value", [*_NAMED_DENIALS["zh"], *_NAMED_DENIALS["en"]])
+def test_a_negation_that_names_an_alternative_denies_it(value):
+    """不是 Jenkins, 别再用 bash, "not bash" and "don't like PowerShell" name a value the slot could hold, and
+    reject it."""
+    assert is_denial({"kind": "fact", "value_text": value}) is True
+    assert is_denial({"kind": "preference", "value_text": value}) is True
+
+
+def test_the_reading_tables_hold_thirty_values_a_language_on_each_side():
+    """The two tables above, held to their size: at least thirty values a language on each side."""
+    assert all(len(values) >= 30 for table in (_NEGATED_STATES, _NAMED_DENIALS) for values in table.values())
+
+
+@pytest.mark.parametrize("command", ["restore_displaced_values", "requalify_claims"])
+def test_maintenance_keeps_every_negated_state_and_settles_the_denials(app, command):
+    """A store holding states and polar answers, each its slot's value, and two denials an older rule made values:
+    either command withdraws the two denials and leaves every state as it was."""
+    core, ctx = app
+    english = (("deploy status", "not started"), ("release", "not deployed"), ("artifact", "not found"))
+    english += (("id column", "not null"), ("IPv6", "not supported"), ("staging host", "not available"))
+    chinese = (("部署状态", "未开始"), ("上线状态", "尚未上线"), ("服务状态", "不在线"), ("网络", "不支持 IPv6"))
+    chinese += (("构建机", "没有 GPU"), ("评审", "没通过"))
+    said = [(f"The TEST-project {predicate} is {value}.", value, predicate) for predicate, value in english]
+    said += [(f"TEST-project {predicate} {value}。", value, predicate) for predicate, value in chinese]
+    states = [_stated(core, ctx, text, value, predicate=predicate) for text, value, predicate in said]
+    assert [claim.state for claim in states] == ["active"] * len(said)
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not Jenkins any more.", "not Jenkins")
+    region = capture(core, ctx, "The TEST-project deploy region is not us-east-2.", when=_LATER)
+    alone = draft(region, "not us-east-2", kind="fact", predicate="deploy region", statement_kind="assertion")
+    with core.storage.write(ctx) as tx:
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+        alone_ref = tx.claims.append("TEST-scope", alone, verdict, recorded_at=Clock.now).ref
+    report = getattr(core.operations, command)(ctx, limit=32, dry_run=False)
+    assert {item["ref"] for item in report["changed"]} == {jenkins.ref, alone_ref}
+    assert [core.current_claim(ctx, claim.ref).payload["value_text"] for claim in states] == [v for _, v, _ in said]
+    assert core.current_claim(ctx, jenkins.ref) is None and core.current_claim(ctx, alone_ref) is None
 
 
 def test_a_term_in_capitals_is_its_slot_s_value_and_maintenance_keeps_it(app):
