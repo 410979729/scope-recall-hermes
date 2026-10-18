@@ -20,6 +20,9 @@ from __future__ import annotations
 import json
 
 _EVIDENCE_COLUMNS = "object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote"
+#: Versions one statement names at most when many are read together: two parameters each, far inside the 32,766
+#: SQLite allows.
+_PAGE = 400
 
 #: Where an object's lineage sits.  Episode rows are written once, at the
 #: revision the source entered (``Episodes.attach``); every other kind writes
@@ -119,6 +122,48 @@ def evidence(conn, kind: str, ref: str, revision: int) -> list[tuple[str, int]]:
         (kind, ref, revision),
     ).fetchone()
     return sorted((pair[0], pair[1]) for pair in json.loads(row[0]))
+
+
+def _paged(conn, sql: str, pairs) -> list:
+    """The rows of ``sql``, whose ``{pairs}`` takes a list of (ref, revision), for these pairs, a page at a time."""
+    pairs = tuple(dict.fromkeys(pairs))
+    rows: list = []
+    for start in range(0, len(pairs), _PAGE):
+        page = pairs[start : start + _PAGE]
+        marks = ",".join("(?,?)" for _ in page)
+        rows.extend(conn.execute(sql.format(pairs=marks), tuple(value for pair in page for value in pair)).fetchall())
+    return rows
+
+
+def supported_claims(conn, pairs) -> dict[tuple[str, int], tuple[tuple[str, int], ...]]:
+    """The claim versions each of these source versions supports, as (claim, revision) by (source, revision); a
+    source version that supports none is left out.  A statement a page (``_PAGE``), on the ``evidence_dependents``
+    index."""
+    rows = _paged(
+        conn,
+        "SELECT source_ref,source_revision,object_ref,object_revision FROM evidence_links WHERE object_kind='claim'"
+        " AND relation='supports' AND (source_ref,source_revision) IN ({pairs})",
+        pairs,
+    )
+    supported: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    for source_ref, source_revision, claim_ref, claim_revision in rows:
+        supported.setdefault((source_ref, source_revision), set()).add((claim_ref, claim_revision))
+    return {pair: tuple(sorted(claims)) for pair, claims in supported.items()}
+
+
+def claim_evidence(conn, pairs) -> dict[tuple[str, int], tuple[tuple[str, int], ...]]:
+    """The source versions each of these claim versions derives from, ordered and once each as ``evidence`` gives
+    them, by (claim, revision); a version with none is left out.  A statement a page (``_PAGE``)."""
+    rows = _paged(
+        conn,
+        "SELECT object_ref,object_revision,source_ref,source_revision FROM evidence_links"
+        " WHERE object_kind='claim' AND (object_ref,object_revision) IN ({pairs})",
+        pairs,
+    )
+    found: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    for claim_ref, claim_revision, source_ref, source_revision in rows:
+        found.setdefault((claim_ref, claim_revision), set()).add((source_ref, source_revision))
+    return {pair: tuple(sorted(sources)) for pair, sources in found.items()}
 
 
 def sources_of(conn, kind: str, ref: str) -> list[str]:
@@ -233,6 +278,7 @@ def related(conn, kind: str, ref: str, *, limit: int):
 
 
 __all__ = [
+    "claim_evidence",
     "depend",
     "depend_unless_carried",
     "dependents",
@@ -244,4 +290,5 @@ __all__ = [
     "related",
     "revision_bound",
     "sources_of",
+    "supported_claims",
 ]

@@ -29,6 +29,11 @@ of days, more than three, a day still to come and a placeholder such as 9999-12-
 A day is a calendar day in the zone the asking host shows its model (``SearchContext.zone``; when the host names
 none, the serving machine's, with that day's daylight-saving offset), the zone its recalled times are rendered in,
 so "29日" means the same day in the question and in the answer.
+
+A question may ask for what held before instead of naming a time ("What port did Granite use before?", "Granite
+以前用的哪个端口？", ``asks_what_held_before``).  Like a question that names a time, it keeps the order recall ranked:
+a message whose value was replaced since is not moved behind the value that replaced it
+(``RetrievalPipeline._behind_replacements``), since the replaced value may be its answer.
 """
 
 from __future__ import annotations
@@ -302,6 +307,27 @@ _BEFORE = re.compile(r"(?<![a-z])(?:before|prior\s+to)\s+$", re.IGNORECASE)
 _SINCE = re.compile(r"(?<![a-z])(?:after|since)\s+$", re.IGNORECASE)
 _BEFORE_ZH = re.compile(r"\s*(?:之前|以前)")
 _SINCE_ZH = re.compile(r"\s*(?:之后|以后|以来)")
+#: Words a question asks with for what held before, not for what holds now (``asks_what_held_before``): "used to",
+#: "previously", "formerly", "originally", "the old" or "the former" before a word, and "before" that ends the
+#: question ("What port did Granite use before?", "… before that?"), not "before" with what it is before ("before the
+#: release, what should I check?").  In Chinese 以前, 之前, 原来, 曾经 or 过去 before what was, was used, liked,
+#: loved, called, lived in, had or was at ("Granite 以前用的哪个端口？", "我原来喜欢喝什么？"), 原来的
+#: ("原来的端口"), or one of them opening the question ("以前 Granite 用哪个端口？").  Not one before a word of
+#: saying or sending ("之前说的那个方案", "曾经提过的"), a number of days ("过去一周") or 是不是 and 是否, which
+#: ask whether, nor one after what it comes before with what to do then ("发布之前要检查什么？").  A question about
+#: the past these words catch that asks for no replaced value only keeps the order it was ranked in.
+_HELD_BEFORE_EN = re.compile(
+    r"(?<![a-z])(?:used\s+to|previously|formerly|originally)(?![a-z])"
+    r"|(?<![a-z])the\s+(?:old|former)\s+(?=[a-z])"
+    r"|(?<![a-z])before(?:\s+(?:that|then|now))?\s*(?:[?？.!！。]|$)",
+    re.IGNORECASE,
+)
+_BEFORE_WORD_ZH = r"(?:以前|之前|原来|曾经|过去)"
+_HELD_BEFORE_ZH = re.compile(
+    rf"{_BEFORE_WORD_ZH}\s*(?:一直|都|还|总|常|经常|曾)?\s*(?:是(?!不是|否)|用|叫|喜欢|爱|住|有|在)"
+    r"|原来\s*的"
+    rf"|^\s*{_BEFORE_WORD_ZH}(?![\s,，]*(?:说|讲|提|聊|谈|发|问|写|告诉|[一二两三四五六七八九十几\d]))"
+)
 #: Days before today each relative word names, and whether it names part of that day only ("昨晚", "今早", "tonight"),
 #: which only the scope reads: the time a question names is the past days a message could have been said on, and a
 #: part of today is often still to come ("今晚做什么菜").
@@ -623,6 +649,16 @@ def asks_what_was_said(rest: str) -> bool:
     if _DAY_QUESTION.fullmatch("".join(text.split())):
         return True
     return _DAY_QUESTION_EN.fullmatch(" ".join(text.split())) is not None
+
+
+def asks_what_held_before(query: str) -> bool:
+    """Whether ``query`` asks for what held before rather than what holds now (``_HELD_BEFORE_EN``,
+    ``_HELD_BEFORE_ZH``), read in a message no longer than ``_MESSAGE_CHARS``: a value replaced since may be its
+    answer."""
+    text = unicodedata.normalize("NFKC", query)
+    if len(text) > _MESSAGE_CHARS:
+        return False
+    return _HELD_BEFORE_EN.search(text) is not None or _HELD_BEFORE_ZH.search(text) is not None
 
 
 def says_something(text: str) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import replace
@@ -9,7 +10,7 @@ from dataclasses import replace
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, capture_retry, turn_capture
 from scope_recall.contracts import ContractError
-from scope_recall.core import MemoryCore
+from scope_recall.core import MemoryCore, capture_inbox
 
 from tests.host.hermes.test_runtime_bounds import _tool_result, _until
 from tests.host.hermes.test_steers import _row, _steer, telegram  # noqa: F401
@@ -35,6 +36,35 @@ def stored_words(core):
         return {row[0] for row in connection.execute("SELECT content FROM source_events")}
 
 
+def inbox_words(core):
+    """Words the durable inbox has accepted and not yet committed as source events."""
+    with sqlite3.connect(core.storage.path) as connection:
+        payloads = connection.execute("SELECT payload_json FROM capture_inbox").fetchall()
+    return {
+        event["content"]
+        for (payload,) in payloads
+        for event in json.loads(payload)["events"]
+        if isinstance(event.get("content"), str)
+    }
+
+
+def inbox_pending(core) -> int:
+    """Rows still waiting in the durable inbox."""
+    with sqlite3.connect(core.storage.path) as connection:
+        return connection.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
+
+
+def accounted_words(core, provider):
+    """Words a capture pass can still recover: committed sources, the memory retry, or the durable inbox.
+
+    The inbox commits before the source write. When that write does not fit, its receipt drops the memory copy,
+    so sources and memory alone miss a capture the store has already kept. Callers keep retry threads stopped
+    and use an unconfigured worker runtime, so these reads cannot race a background replay.
+    """
+    kept = {pending.event["content"] for pending in provider._retry.captures.values()}
+    return stored_words(core) | kept | inbox_words(core)
+
+
 @pytest.mark.parametrize("per_operation", [0.25, 1.0])
 def test_compression_defers_steers_within_shared_budget(telegram, monkeypatch, metered_store, per_operation):  # noqa: F811
     monkeypatch.setattr(telegram._retry, "start", lambda: None)
@@ -49,19 +79,58 @@ def test_compression_defers_steers_within_shared_budget(telegram, monkeypatch, m
     elapsed = clock() - started
     assert elapsed <= turn_capture._STEERS_SECONDS + 0.1, (per_operation, elapsed)
     wanted = {f"TEST steer {number}" for number in range(8)}
-    kept = {pending.event["content"] for pending in telegram._retry.captures.values()}
-    assert wanted <= stored_words(telegram._core) | kept
+    assert wanted <= accounted_words(telegram._core, telegram)
     clock.per_operation = 0.01
     telegram._retry.write_observed(deadline=clock() + 10)
     telegram._retry.write_buffered(seconds=10)
     assert wanted <= stored_words(telegram._core)
+    assert inbox_pending(telegram._core) == 0
+
+
+def test_inbox_keeps_a_steer_when_its_source_write_does_not_fit(telegram, monkeypatch, metered_store):
+    """A steer the inbox has committed stays accounted for when the source write does not fit.
+
+    A delay after enqueue leaves insufficient admission time for the source commit while staying inside the hook
+    budget. The receipt drops the memory copy; replay commits the source and leaves the inbox empty.
+    """
+    monkeypatch.setattr(telegram._retry, "start", lambda: None)
+    clock = metered_store(0.25)
+    real_enqueue = capture_inbox.enqueue
+    stalled = False
+
+    def enqueue_then_source_does_not_fit(*args, **kwargs):
+        nonlocal stalled
+        token, prepared = real_enqueue(*args, **kwargs)
+        if not stalled:
+            stalled = True
+            clock.advance(0.25)
+        return token, prepared
+
+    monkeypatch.setattr(capture_inbox, "enqueue", enqueue_then_source_does_not_fit)
+    rows = [_row(_steer(f"TEST steer {number}", message_id=str(300 + number))) for number in range(8)]
+    started = clock()
+    telegram.on_pre_compress([dict(row) for row in rows])
+    elapsed = clock() - started
+    assert elapsed <= turn_capture._STEERS_SECONDS + 0.1, elapsed
+    wanted = {f"TEST steer {number}" for number in range(8)}
+    stored = stored_words(telegram._core)
+    kept = {pending.event["content"] for pending in telegram._retry.captures.values()}
+    missing = wanted - (stored | kept)
+    assert missing
+    assert missing <= inbox_words(telegram._core)
+    assert wanted <= accounted_words(telegram._core, telegram)
+    clock.per_operation = 0.01
+    telegram._retry.write_observed(deadline=clock() + 10)
+    telegram._retry.write_buffered(seconds=10)
+    assert wanted <= stored_words(telegram._core)
+    assert inbox_pending(telegram._core) == 0
 
 
 def test_session_end_retries_and_steers_share_one_capture_pass(telegram, monkeypatch, metered_store):
     """Pending retries and the steers read at session end share one 2 s capture pass.
 
     The worker start inside the session end is a separate budget. What this pass cannot store stays in the retry
-    buffer and is written once the store has time.
+    buffer, or in the durable inbox when its source write does not fit, and is written once the store has time.
     """
     monkeypatch.setattr(telegram._retry, "start", lambda: None)
     real = telegram._core.record_host_event
@@ -92,11 +161,11 @@ def test_session_end_retries_and_steers_share_one_capture_pass(telegram, monkeyp
         clock.per_operation = 0.01
     assert elapsed <= turn_capture._STEERS_SECONDS + 0.1, (elapsed, clock.operations)
     wanted = {f"TEST session steer {number}" for number in range(8)} | {"TEST kept before session end"}
-    kept = {pending.event["content"] for pending in telegram._retry.captures.values()}
-    assert wanted <= stored_words(telegram._core) | kept
+    assert wanted <= accounted_words(telegram._core, telegram)
     telegram._retry.write_observed(deadline=clock() + 10)
     telegram._retry.write_buffered(seconds=10)
     assert wanted <= stored_words(telegram._core)
+    assert inbox_pending(telegram._core) == 0
 
 
 @pytest.mark.parametrize("per_operation", [0.5, 1.5])

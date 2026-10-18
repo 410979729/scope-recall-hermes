@@ -36,7 +36,7 @@ from .recall_policy import (
     rrf_score,
     same_message,
 )
-from .recall_scope import asks_what_was_said, query_scope, query_time
+from .recall_scope import asks_what_held_before, asks_what_was_said, query_scope, query_time
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -47,6 +47,7 @@ from .retrieval import (
     effective_limits,
     optional_json,
 )
+from .retrieval_hydration import replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import vector_failure_label
 
@@ -1018,6 +1019,38 @@ class RetrievalPipeline:
             ):
                 hydrated.append((replace(reply, fusion_score=score), obj))
 
+    @staticmethod
+    def _behind_replacements(
+        ranked: list[tuple[CandidateRef, RetrievedObject]], working: SearchContext
+    ) -> list[tuple[CandidateRef, RetrievedObject]]:
+        """``ranked`` with each message whose values were all replaced (``retrieval_hydration.replacements``) moved
+        right behind the first item that states what holds now in their place, where that ranked below it; messages
+        moved behind one item keep the order they were ranked in, as does the rest, so a small packet keeps the
+        highest-ranked of them.
+
+        A claim's correction moves the claim's head and leaves the message that said the old value as it was, and
+        that message often holds the question's words better than the one that changed it: ranked first, it is the
+        answer a reader gives.  Only replaced messages move, and none is dropped: each still says what was said then,
+        and a question about the old value still finds it.  A message the caller names by ref keeps its place first.
+        A question that names a day or a time, or asks what held before (``recall_scope.asks_what_held_before``), is
+        left as it is, since what was said or held then may be the value replaced since."""
+        if working.scope is not None or working.time is not None or asks_what_held_before(working.query):
+            return ranked
+        place = {candidate.key: index for index, (candidate, _obj) in enumerate(ranked)}
+        behind: dict[int, list[tuple[CandidateRef, RetrievedObject]]] = {}
+        for index, (candidate, obj) in enumerate(ranked):
+            first = min((place[key] for key in replacements(obj) if key in place), default=index)
+            # What states a value that holds is never itself moved, so every message moved stays behind its item.
+            if first > index and candidate.source != "exact_ref" and not replacements(ranked[first][1]):
+                behind.setdefault(first, []).append((candidate, obj))
+        moved = {pair[0].key for pairs in behind.values() for pair in pairs}
+        return [
+            pair
+            for index, kept in enumerate(ranked)
+            if kept[0].key not in moved
+            for pair in (kept, *behind.get(index, ()))
+        ]
+
     def _select(
         self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str]
     ):
@@ -1028,7 +1061,8 @@ class RetrievalPipeline:
         # document hold four of six slots.  One filter spans both passes so
         # background cannot repeat the evidence either.
         distinct = DistinctContent()
-        ranked = self._apply_budget(distinct.filtered(self._rank_hydrated(hydrated, working)), working.limits)
+        ordered = self._behind_replacements(self._rank_hydrated(hydrated, working), working)
+        ranked = self._apply_budget(distinct.filtered(ordered), working.limits)
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):

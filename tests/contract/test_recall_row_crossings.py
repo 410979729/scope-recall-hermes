@@ -5,19 +5,21 @@ A recall that loaded each evidence source up to five times, three statements eac
 In a busy Hermes gateway every statement and every row waits for the GIL (``test_capture_row_crossings``).
 """
 
+import itertools
 import json
 import sqlite3
 from dataclasses import replace
 
 import pytest
 from scope_recall.contracts import ContractError
+from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core import storage as storage_module
 from scope_recall.core.storage import SQLiteStorage, Transaction
 from scope_recall.core.visibility import allowed
 from test_capture_row_crossings import Crossings
-from test_claims import accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixtures)
+from test_claims import Clock, accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixtures)
 from test_shared_store import NOW, put, shared, shared_context  # noqa: F401  (fixture)
-from v11_support import recall_request
+from v11_support import context, recall_request
 
 
 def _pairs(sources):
@@ -301,6 +303,79 @@ def test_a_packet_reads_its_claims_judgements_together_however_many_it_holds(app
     many, many_reads = judgements("Birch 节点编号")
     assert (few, many) == (2, 10)
     assert many_reads == few_reads <= 4, (few_reads, many_reads)
+
+
+def _said_again(tmp_path, slots: int, *, replaced: bool):
+    """A store of ``slots`` facts about TEST-project, each said on 1 September and again on 3 September: with another
+    value when ``replaced``, so each first message is replaced, and with the same one otherwise; both hold as many
+    messages, claims and versions."""
+    ctx = replace(context(tmp_path / f"TEST-{slots}-{replaced}"), project_id="TEST-project", branch_id="TEST-main")
+    core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
+    core.initialize()
+    core.test_sequence = itertools.count(1)
+    for index in range(slots):
+        predicate = f"CI 服务{index}"
+        for when, text, value in (
+            ("2026-09-01T12:00:00Z", "是", "Jenkins"),
+            ("2026-09-03T12:00:00Z", "现在是", "GitHub Actions" if replaced else "Jenkins"),
+        ):
+            source = capture(core, ctx, f"TEST-project 的 {predicate} {text} {value}。", when=when)
+            accept(core, ctx, draft(source, value, kind="fact", predicate=predicate, statement_kind="assertion"))
+    return core, ctx
+
+
+def test_a_recall_over_replaced_messages_does_not_grow_with_them(tmp_path, monkeypatch):
+    """Each replaced message read what replaced it on its own: the evidence of the version holding instead, then each
+    of its sources, a statement each, in every round and pass that hydrated it."""
+    stores = {
+        (slots, replaced): _said_again(tmp_path, slots, replaced=replaced)
+        for slots in (2, 8)
+        for replaced in (True, False)
+    }
+    request = recall_request(query="TEST-project 的 CI 服务是什么？", mode="current", max_items=30, budget_tokens=8000)
+    for slots in (2, 8):
+        core, ctx = stores[slots, True]
+        items = core.recall(ctx, request, deadline_seconds=30).items
+        assert sum(item.kind == "event" and item.temporal_status == "historical" for item in items) == slots
+    crossings = Crossings(monkeypatch)
+
+    def statements(slots: int, replaced: bool) -> int:
+        core, ctx = stores[slots, replaced]
+
+        def recall():
+            return core.recall_packet(ctx, request, deadline_seconds=30, background_without_evidence=False)
+
+        return crossings.during(recall)[0]
+
+    few = statements(2, True) - statements(2, False)
+    lots = statements(8, True) - statements(8, False)
+    assert lots - few <= 4, (few, lots)
+
+
+def test_a_recall_over_replaced_messages_answers_alike_whether_or_not_it_keeps_what_it_loads(tmp_path, monkeypatch):
+    core, ctx = _said_again(tmp_path, 4, replaced=True)
+
+    def packets():
+        return [
+            {
+                key: value
+                for key, value in core.recall_packet(
+                    ctx,
+                    recall_request(
+                        query=query, request_id="TEST-same", mode="current", max_items=30, budget_tokens=8000
+                    ),
+                    deadline_seconds=30,
+                ).items()
+                if key != "diagnostic_ref"
+            }
+            for query in ("TEST-project 的 CI 服务是什么？", "TEST-project 以前用的 CI 服务是什么？")
+        ]
+
+    kept = packets()
+    assert all(any(item["temporal_status"] == "historical" for item in packet["items"]) for packet in kept)
+    monkeypatch.setattr(Transaction, "remember", lambda self, key, value, size=0: None)
+    monkeypatch.setattr(Transaction, "prefetch_sources", lambda self, pairs: None)
+    assert packets() == kept
 
 
 # --- what is loaded together keeps the reader's audience -------------------------------------------------------------

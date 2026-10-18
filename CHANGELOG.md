@@ -3,9 +3,9 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
-## [3.11.1] - Unreleased
+## [3.11.1] - 2026-10-18
 
-Hooks defer store work that cannot fit their remaining capture budget, and a finished turn writes its own captures before retrying older ones. With synthetic transactions taking 1.5 seconds each, client session-end processing falls from 3.00 to 1.50 seconds and Hermes shutdown from 6.00 to 1.52 seconds. Shutdown, retry expiry and buffer overflow keep sanitized capture envelopes on disk for authorization-checked replay at the next start. Test descriptions state the current capture, retry and packaging contracts without retired task identifiers or accounts of earlier failures. Include the `kept-captures/` directory beside the store when backing up pending host captures; no configuration changes are required.
+Capture hooks share the time left in their budget, defer work after it expires and close one-shot handlers on every exit path. Finished turns write their own captures before retrying older ones, and Hermes keeps pending capture envelopes for authorization-checked replay after restart. Current-value recall places messages whose recorded values have been replaced after available current evidence, preserving historical reads, explicit references and the relative order of replaced messages; replacement lineage is read in batches. Test descriptions state the current capture, retry and packaging contracts. Include the `kept-captures/` directory beside the store when backing up pending host captures. No configuration or schema change is required.
 
 ## [3.11.0] - 2026-10-18
 

@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
-from scope_recall.core.recall_scope import query_scope
+from scope_recall.core.recall_scope import asks_what_held_before, query_scope
 
 from tests.contract.test_claims import app  # noqa: F401  (fixture; its clock says 2026-09-06T12:00:00Z)
 from tests.contract.test_recall_dating_and_order import _say
@@ -349,6 +349,47 @@ def test_what_a_short_message_says(text, says):
     from scope_recall.core.recall_scope import says_something
 
     assert says_something(text) is says
+
+
+@pytest.mark.parametrize(
+    ("query", "asks"),
+    (
+        ("What port did Granite use before?", True),
+        ("Which CI service did Granite use before that?", True),
+        ("What did Granite used to run on?", True),
+        ("Which port was previously used?", True),
+        ("Where was Granite formerly deployed?", True),
+        ("What was the region originally?", True),
+        ("What was the old port?", True),
+        ("Who was the former release manager?", True),
+        ("Granite 以前用的哪个端口？", True),
+        ("我原来喜欢喝什么？", True),
+        ("Granite 之前是哪个区域？", True),
+        ("我曾经用过什么编辑器？", True),
+        ("过去用的是哪个 CI？", True),
+        ("Granite 原来的端口是多少？", True),
+        ("以前 Granite 用哪个端口？", True),
+        ("before the release, what should I check?", False),
+        ("What should I check before deploying?", False),
+        ("Check this before you deploy.", False),
+        ("What do I use to edit files?", False),
+        ("How old is the Granite server?", False),
+        ("What is the old-school approach?", False),
+        ("Which port does Granite use?", False),
+        ("之前说的那个方案是什么？", False),
+        ("我之前发的文件在哪？", False),
+        ("曾经提过的方案是什么？", False),
+        ("发布之前要检查什么？", False),
+        ("上线之前，我要做什么？", False),
+        ("发布之前是不是要先备份？", False),
+        ("过去一周 Granite 出了什么事？", False),
+        ("Granite 的端口是多少？", False),
+    ),
+)
+def test_a_question_about_what_held_before(query, asks):
+    """Its answer may be a value replaced since; "before" with what it comes before, what was said before (之前说的)
+    and a span of days ask no such value."""
+    assert asks_what_held_before(query) is asks
 
 
 def test_a_day_is_read_in_the_zone_the_host_shows_its_model():

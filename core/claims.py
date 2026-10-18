@@ -17,6 +17,7 @@ from ..contracts import (
     ContractError,
     Origin,
     SourcePrincipal,
+    nfkc_letters_and_digits,
     utc_timestamp,
     verified_human_principal_ref,
 )
@@ -686,7 +687,8 @@ def assertion_clause(content: str, quote: str) -> str:
     return "\n".join(dict.fromkeys(clauses)) if clauses else quote
 
 
-_UNASSERTED_STATEMENTS = frozenset({"request", "proposal", "hypothetical", "quotation", "fictional", "unknown"})
+#: Statement kinds that state no value of their slot; qualification keeps them proposed (``statement_not_asserted``).
+UNASSERTED_STATEMENTS = frozenset({"request", "proposal", "hypothetical", "quotation", "fictional", "unknown"})
 HUMAN_ONLY_KINDS = frozenset({"preference", "constraint", "decision", "intention", "alias"})
 #: Origins a cited root may lend authority from; ``_authority`` needs one of them.
 AUTHORITY_ORIGINS = ("human_direct", "tool_observation", "external_document")
@@ -765,7 +767,7 @@ def _cite(
 # Each rule answers with the refusal reason, or None.  Order matters: the first
 # refusal wins, and later rules assume the earlier ones passed.
 def _not_asserted(c: _Cited) -> str | None:
-    if c.proposal["statement_kind"] in _UNASSERTED_STATEMENTS:
+    if c.proposal["statement_kind"] in UNASSERTED_STATEMENTS:
         return "statement_not_asserted"
     if AUTHORITY_QUESTION.search(c.asserted or c.source_text):
         return "question_not_asserted"
@@ -1088,3 +1090,39 @@ def select_effective(
         return None
     chosen = max(candidates, key=lambda v: (canonical_time(v.valid_from) or "", v.revision))
     return None if chosen.state == "retracted" else chosen
+
+
+def dated_after(new_start, old_start, new_times, old_times) -> bool:
+    """Whether an assertion is known to come after another: by its stated start, or every source of it said after
+    every source of the other.  Starts and times are ``canonical_time`` values; None and empty lists say nothing."""
+    return bool(new_start and old_start and new_start > old_start) or bool(
+        new_times and old_times and min(new_times) > max(old_times)
+    )
+
+
+def states_a_value(version: ClaimVersion) -> bool:
+    """Whether a claim version says what its slot holds: a kind that has a value (not a procedure, an intention or an
+    alias), asserted (no hypothetical, quotation or other of ``UNASSERTED_STATEMENTS``), no retraction, and no denial
+    (``is_denial``) unless it was taken as the slot's value, as the person's own "我不吃辣" is (active).  A proposal the
+    fact gate could not prove still states its value."""
+    payload = version.payload
+    return (
+        payload.get("kind") not in VALUE_FREE_KINDS
+        and payload.get("statement_kind") not in UNASSERTED_STATEMENTS
+        and version.state != "retracted"
+        and (version.state == "active" or not is_denial(payload))
+    )
+
+
+def holds_instead(versions: tuple[ClaimVersion, ...], revision: int, instant: str) -> ClaimVersion | None:
+    """The version of a claim that holds at ``instant`` in place of the value its version ``revision`` states: the
+    effective one (``select_effective``) when it is active and its value differs in its letters and digits
+    (``nfkc_letters_and_digits``).  None while that value still holds, a replacement that starts later included, and
+    while no active version holds: the slot holds only proposals, a dispute or a retraction.  Whether the version was
+    said after the stated one is the caller's to check (``dated_after``)."""
+    stated = next((version for version in versions if version.revision == revision), None)
+    effective = select_effective(versions, instant)
+    if stated is None or effective is None or effective.state != "active" or effective.revision == revision:
+        return None
+    held, said = (nfkc_letters_and_digits(v.payload.get("value_text")) for v in (effective, stated))
+    return None if held == said else effective

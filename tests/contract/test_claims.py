@@ -11,7 +11,15 @@ from threading import Barrier
 import pytest
 from scope_recall.contracts import ContractError, ImportProvenance, TrustedSourcePrincipal, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.claims import Qualification, is_denial, negates, qualify
+from scope_recall.core.claims import (
+    ClaimVersion,
+    Qualification,
+    holds_instead,
+    is_denial,
+    negates,
+    qualify,
+    states_a_value,
+)
 from scope_recall.core.confirmation import CONFIRMED_REASON
 from test_denial_values import NEGATED_STATES
 from v11_support import context, source_event
@@ -716,6 +724,90 @@ def test_a_claim_said_under_a_condition_holds_only_with_it(app, text, predicate,
     assert (bare.state, core.claim_history(ctx, bare.ref)[-1].reason) == ("proposed", "condition_not_preserved")
     kept = _stated(core, ctx, text, "ops-pager", predicate=predicate, conditions=[condition])
     assert kept.state == "active" and kept.ref != bare.ref
+
+
+def test_a_later_active_value_holds_in_place_of_the_value_it_replaced(app):
+    core, ctx = app
+    held = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    moved = _stated(core, ctx, "The TEST-project CI service is GitHub Actions.", "GitHub Actions", _LATER)
+    assert (moved.ref, moved.state, moved.disposition) == (held.ref, "active", "inserted")
+    versions = core.claim_history(ctx, held.ref)
+    assert holds_instead(versions, held.revision, Clock.now).revision == moved.revision
+    assert holds_instead(versions, moved.revision, Clock.now) is None, "the value that holds is replaced by nothing"
+    assert holds_instead(versions, held.revision, "2026-09-02T12:00:00Z") is None, "Jenkins held until the change"
+
+
+def test_nothing_holds_in_place_of_a_value_said_again_disputed_or_only_proposed(app):
+    core, ctx = app
+    held = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    again = _stated(core, ctx, "The TEST-project CI service is jenkins.", "jenkins", _LATER)
+    assert again.revision > held.revision
+    assert holds_instead(core.claim_history(ctx, held.ref), held.revision, Clock.now) is None
+    guess = _stated(core, ctx, "我猜 TEST-project 验收 完成。", "完成", predicate="验收", statement_kind="hypothetical")
+    later = _stated(
+        core, ctx, "我猜 TEST-project 验收 失败。", "失败", _LATER, predicate="验收", statement_kind="hypothetical"
+    )
+    assert (guess.state, later.state, later.ref) == ("proposed", "proposed", guess.ref)
+    assert holds_instead(core.claim_history(ctx, guess.ref), guess.revision, Clock.now) is None
+    a = capture(core, ctx, "TEST-project 发布 完成。", origin="external_document", when=None)
+    one = accept(core, ctx, draft(a, "完成", kind="fact", predicate="发布")).items[0]
+    b = capture(core, ctx, "TEST-project 发布 失败。", origin="external_document", when=None)
+    assert accept(core, ctx, draft(b, "失败", kind="fact", predicate="发布")).items[0].state == "disputed"
+    assert holds_instead(core.claim_history(ctx, one.ref), one.revision, Clock.now) is None
+
+
+def _version(state="active", **payload):
+    """A version of TEST-project's CI service claim as the store holds it, stating Jenkins unless ``payload`` says
+    otherwise."""
+    body = {
+        "kind": "fact",
+        "subject": "TEST-project",
+        "predicate": "CI service",
+        "value_text": "Jenkins",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": _SAID,
+        "valid_to": None,
+        "evidence_spans": [],
+        **payload,
+    }
+    return ClaimVersion(
+        ref="TEST-claim",
+        revision=1,
+        current_revision=1,
+        scope_id="TEST-scope",
+        project_id=None,
+        branch_id=None,
+        payload=body,
+        state=state,
+        basis="direct_report",
+        reason="explicit_scoped_source",
+        valid_from=_SAID,
+        valid_to=None,
+        recorded_from=_SAID,
+        recorded_to=None,
+        replaces_revision=None,
+        conflict_revisions=(),
+    )
+
+
+@pytest.mark.parametrize(
+    "version,states",
+    [
+        (_version(), True),
+        # The fact gate could not prove it, and the sentence still said what the slot holds.
+        (_version("proposed"), True),
+        (_version("proposed", statement_kind="hypothetical"), False),
+        (_version("proposed", statement_kind="quotation"), False),
+        (_version("proposed", value_text="not CircleCI"), False),
+        # The person's own denial, taken as their answer.
+        (_version(kind="preference", subject="user", value_text="不吃辣"), True),
+        (_version("retracted"), False),
+        (_version(kind="procedure"), False),
+    ],
+)
+def test_a_version_states_a_value_when_it_says_what_its_slot_holds(version, states):
+    assert states_a_value(version) is states
 
 
 def _denial_at_the_head(core, ctx, claim, text, value):

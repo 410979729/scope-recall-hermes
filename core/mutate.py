@@ -30,6 +30,7 @@ from .claims import (
     Qualification,
     bind_claim_subject,
     canonical_time,
+    dated_after,
     effective_origin,
     evidence_context,
     evidence_refs,
@@ -179,14 +180,6 @@ def _dated_before(new_start, old_start, new_times, old_times) -> bool:
     )
 
 
-def _dated_after(new_start, old_start, new_times, old_times) -> bool:
-    """Whether the new assertion is known to come after the head's: by its stated start, or every source of it said
-    after every source of the head."""
-    return bool(new_start and old_start and new_start > old_start) or bool(
-        new_times and old_times and min(new_times) > max(old_times)
-    )
-
-
 def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     """Decide whether a differing assertion advances the slot head.
 
@@ -217,7 +210,7 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
         live_human = True
     except ContractError:
         live_human = False
-    ordered = _dated_after(new_start, old_start, new_times, old_times) or (ingestion_ordered and new_order > old_order)
+    ordered = dated_after(new_start, old_start, new_times, old_times) or (ingestion_ordered and new_order > old_order)
     if not live_human and not ordered:
         conflicts = tuple(dict.fromkeys((*previous.conflict_revisions, previous.revision)))
         return Qualification("disputed", qualification.basis, "conflicting_evidence_order_unknown"), True, conflicts
