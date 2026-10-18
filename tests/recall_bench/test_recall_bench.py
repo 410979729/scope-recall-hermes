@@ -286,12 +286,19 @@ def test_ndcg_weighs_each_delivered_item_once(bench) -> None:
 
 def test_a_slow_machine_scores_what_a_fast_one_does(bench, monkeypatch) -> None:
     """The store's waits for its lease, the worker's passes and every recall read the bench's clock: a machine so
-    slow that a minute of real time passes between two readings builds the same store and gets the same packets."""
+    slow that a minute of real time passes between two readings builds the same store and gets the same packets.
+    Two days of the dev world show it (a worker pass between them and one at the end, claims, vectors, both recall
+    paths), asked the first question of each task and form the two days answer, a revoked scope's among them."""
     world = bench.build_world("dev")
-    messages = world.messages[:240]
+    messages = world.messages[:80]
     kept = {message.key for message in messages}
-    small = replace(world, messages=messages, questions=tuple(q for q in world.questions if set(q.gold) <= kept)[:12])
-    assert small.questions
+    first: dict = {}
+    for question in world.questions:
+        if set(question.gold) <= kept:
+            first.setdefault((question.task, question.form), question)
+    small = replace(world, messages=messages, questions=tuple(first.values()))
+    assert len({bench.local_day(message.at, world.zone) for message in messages}) == 2
+    assert any(question.revoked for question in small.questions)
     steady = _scored(bench, small)
     readings = itertools.count()
     monkeypatch.setattr(time, "monotonic", lambda: next(readings) * 60.0)
