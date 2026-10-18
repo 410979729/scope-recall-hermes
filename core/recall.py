@@ -18,7 +18,16 @@ from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
 from .owner_view import OwnerView, owner_names, owner_view
 from .recall_budget import estimate_tokens, event_admission_order
-from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
+from .recall_needs import (
+    CHOICE_MARKERS,
+    Answers,
+    answering,
+    directed_followup_query,
+    evidence_roots,
+    mentions,
+    statement_text,
+    unmet_needs,
+)
 from .recall_policy import (
     RecallPolicy,
     asks_without_answering,
@@ -184,16 +193,6 @@ def _says_only_its_state(content: str) -> bool:
     """Whether an episode body is the placeholder a never-consolidated resume leaves."""
     payload = optional_json(content)
     return isinstance(payload, dict) and set(payload) <= {"state"}
-
-
-def _statement_text(obj: RetrievedObject) -> str:
-    """What a claim asserts, for term matching; other kinds match on content."""
-    if obj.kind != "claim":
-        return obj.content
-    payload = optional_json(obj.content)
-    if not isinstance(payload, dict):
-        return obj.content
-    return " ".join(str(payload.get(key, "")) for key in ("subject", "predicate", "value_text", "conditions"))
 
 
 def _said_after(obj: RetrievedObject, moment: str) -> bool:
@@ -755,7 +754,7 @@ class RetrievalPipeline:
         if not query_terms:
             return ranked
         matched = {
-            candidate.key: query_terms.intersection(lexical_terms(_statement_text(obj))) for candidate, obj in ranked
+            candidate.key: query_terms.intersection(lexical_terms(statement_text(obj))) for candidate, obj in ranked
         }
         selected: list[tuple[CandidateRef, RetrievedObject]] = []
         covered: set[str] = set()
@@ -840,7 +839,8 @@ class RetrievalPipeline:
                     aside.echoes.clear()
                 self._hydrate_related(tx, working, hydrated, gaps, echoes=tuple(aside.echoes), held=tuple(aside.held))
                 ranked, query_items = self._select(tx, working, hydrated, gaps)
-                return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated))
+                question = self._admission_query(working)
+                return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question)
         except ContractError as exc:
             if exc.code == "DEADLINE_EXCEEDED":
                 return _empty_result(working, "deadline_exceeded")
@@ -1065,19 +1065,31 @@ class RetrievalPipeline:
         gaps: list[str],
         seed_count: int,
         hydrated_count: int,
+        question: str,
     ) -> RetrievalResult:
+        """The search's result and its verdict on its query evidence: unknown without any, partial with a need left
+        open.  Then a question that names what answers it (``answering``) is unknown when nothing does, ambiguous when
+        what answers a question that asks to choose rests on more than one source (``evidence_roots``: a claim and the
+        message it was drawn from say one thing once), else supported.  One that names nothing is ambiguous by the same
+        rule, else partial: what matched it was never held to the question.  ``question`` is the question without the
+        owner's name, which their own words never carry.  A question about a day names its days and entries, not what
+        answers it (``recall_scope``), and is left unjudged."""
         items = tuple(obj for _candidate, obj in ranked)
         needs = unmet_needs(working.query, query_items)
         if items and not query_items:
             needs = (*needs, "query_evidence_missing")
+        answers = answering(question, query_items) if working.scope is None else Answers(False, query_items)
+        sources = {root for item in answers.items for root in evidence_roots(item)}
         if not query_items:
             answerability = "unknown"
         elif needs:
             answerability = "partial"
-        elif len(query_items) > 1 and mentions(working.query, CHOICE_MARKERS):
+        elif answers.judged and not answers.items:
+            answerability = "unknown"
+        elif len(sources) > 1 and mentions(working.query, CHOICE_MARKERS):
             answerability = "ambiguous"
         else:
-            answerability = "supported"
+            answerability = "supported" if answers.judged else "partial"
         return RetrievalResult(
             tuple(candidate for candidate, _obj in ranked),
             items,

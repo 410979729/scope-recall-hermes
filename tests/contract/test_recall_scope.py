@@ -701,6 +701,50 @@ def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_p
     assert asked("9月2日聊了什么") == {*said["tianshu"], *said["tianxuan"]}
 
 
+def test_a_day_question_naming_an_entry_is_not_judged_by_the_names_it_gives(tmp_path):
+    """A question about a day names its day and its entries, not what answers it: the entry's messages of that day are
+    its evidence, though none of them says the entry's name, and since nothing held them to the question they are
+    partial, never unknown."""
+    import time as _time
+
+    from scope_recall.core.recall import recall
+    from scope_recall.core.retrieval import SearchContext
+    from scope_recall.core.storage import SQLiteStorage
+
+    from tests.contract.test_shared_store import shared_binding, shared_context
+    from tests.v11_support import source_event
+
+    binding = shared_binding(tmp_path / "TEST-shared")
+    storage = SQLiteStorage(binding)
+    storage.initialize()
+    with storage.write(shared_context(binding)) as tx:
+        tx.registry.register_entry("workpc", "Claude Code", "claude-code", now="2026-09-01T00:00:00Z")
+    with storage.write(shared_context(binding, entry_id="workpc")) as tx:
+        said = {
+            tx.sources.put_source(
+                source_event(
+                    source_event_key=f"TEST-scope/workpc-{index}",
+                    content=f"第{index}件事做完了",
+                    occurred_at=f"2026-09-02T1{index}:00:00Z",
+                    recorded_at=f"2026-09-02T1{index}:00:00Z",
+                ),
+                scope_id="TEST-scope",
+                persisted_at="2026-09-02T20:00:00Z",
+            ).ref
+            for index in range(3)
+        }
+    context = SearchContext.from_request(
+        recall_request(query="9月2日 Claude Code 聊了什么", mode="auto", max_items=6),
+        shared_context(binding, entry_id="workpc"),
+        now="2026-09-03T12:00:00Z",
+        deadline=_time.monotonic() + 30,
+        zone=SHANGHAI,
+    )
+    result = recall(context, storage=storage)
+    assert {item.ref for item in result.items} == said
+    assert result.answerability_hint == "partial"
+
+
 @pytest.mark.parametrize(
     ("query", "mode", "background"),
     (

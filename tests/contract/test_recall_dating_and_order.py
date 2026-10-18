@@ -353,3 +353,44 @@ def test_asking_words_are_not_evidence_terms():
     }
     assert not {"怎么", "么配"} & set(meaningful_query_terms("Scope Recall 的整理模型怎么配置？"))
     assert set(meaningful_query_terms("which model does beta use")) == {"model", "beta", "use"}
+
+
+def test_words_that_only_frame_a_request_are_searched_but_not_asked():
+    """A request to be told about something names it and asks nothing more: tell me, describe, any updates, the latest,
+    介绍一下, 说说, 关于 ... 你知道, 怎么样, 的情况 and 进展 are none of the words it asks, nor are the bigrams that
+    join a Chinese one to the next word (绍一, 一下, 你知).  What a request asks for past its frame stays: a port, a
+    status page, a condition (情况下), and the person it is about (contact me, 给我订), whom an answer names too.
+    Recall searches every one of them, frame or not: a message that says one may be what was asked for."""
+    from scope_recall.core.recall_policy import asked_terms, meaningful_query_terms
+
+    assert set(meaningful_query_terms("show me the summary")) == {"show", "me", "summary"}
+    assert {"说说", "进展"} <= set(meaningful_query_terms("说说你的进展"))
+    assert "latest" in meaningful_query_terms("What's the latest version of Orchard?")
+    assert {"any", "news"} <= set(meaningful_query_terms("Any news from the Beacon team?"))
+    assert {"是多", "多少"}.isdisjoint(asked_terms("Orchard 的端口是多少？"))
+    assert "是多" in meaningful_query_terms("Orchard 的端口是多少？")
+    for request in (
+        "Tell me about Orchard",
+        "What do you know about Orchard?",
+        "Describe Orchard",
+        "Explain Orchard to me",
+        "Anything on Orchard?",
+        "Any updates on Orchard?",
+        "What's the latest on Orchard?",
+        "Please give me an overview of Orchard",
+        "Orchard 怎么样？",
+        "介绍一下 Orchard",
+        "说说 Orchard",
+        "给我讲讲 Orchard",
+        "讲讲 Orchard 的情况",
+        "关于 Orchard 你知道什么？",
+        "Orchard 的进展如何？",
+        "你还记得 Orchard 吗？",
+    ):
+        assert asked_terms(request) == ("orchard",), request
+    assert set(asked_terms("What do you know about Orchard's port?")) == {"orchard", "port"}
+    assert set(asked_terms("介绍一下 Orchard 的端口")) == {"orchard", "的端", "端口"}
+    assert set(asked_terms("Where is the Rivet status page?")) == {"rivet", "status", "page"}
+    assert {"情况", "况下"} <= set(asked_terms("周六什么情况下可以联系我？"))
+    assert set(asked_terms("When is it OK to contact me on a Saturday?")) == {"ok", "contact", "me", "saturday"}
+    assert "给我" in asked_terms("给我订机票时选什么座位？")
