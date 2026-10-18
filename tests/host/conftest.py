@@ -10,6 +10,14 @@ import pytest
 
 _REAL_MONOTONIC = time.monotonic
 
+# Real runs measured 0.019 s beyond budget and 0.049 s for runtime attach plus worker start. This allowance covers
+# thread dispatch, timed-wait scheduling, JSON, diagnostics and shutdown spool I/O beside the metered store time.
+HOOK_MARGIN_SECONDS = 0.1
+
+
+def assert_hook_budget(elapsed: float, budget: float) -> None:
+    assert elapsed <= budget + HOOK_MARGIN_SECONDS, (elapsed, budget)
+
 
 class StoreMeteredClock:
     """``time.monotonic`` for a test of a budget: real time, except the store's.  While the store works this clock
@@ -43,14 +51,16 @@ class StoreMeteredClock:
             self._depth += 1
             if self._depth == 1:
                 self._started = _REAL_MONOTONIC()
+        entered = [False]
         try:
-            yield
+            yield entered
         finally:
             with self._lock:
                 self._depth -= 1
                 if self._depth == 0:
-                    self._shift += self.per_operation - (_REAL_MONOTONIC() - self._started)
-                    self.operations += 1
+                    if entered[0]:
+                        self._shift += self.per_operation - (_REAL_MONOTONIC() - self._started)
+                        self.operations += 1
 
 
 class _LeasePolls:
@@ -83,8 +93,10 @@ def metered_store(monkeypatch):
 
         @contextmanager
         def metered(self, *args, **kwargs):
-            with clock.operation(), transaction(self, *args, **kwargs) as tx:
-                yield tx
+            with clock.operation() as entered:
+                with transaction(self, *args, **kwargs) as tx:
+                    entered[0] = True
+                    yield tx
 
         monkeypatch.setattr(SQLiteStorage, "_transaction", metered)
         monkeypatch.setattr(storage, "time", _LeasePolls(clock))

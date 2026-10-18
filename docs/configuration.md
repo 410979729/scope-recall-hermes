@@ -639,6 +639,43 @@ or changes `vector_threshold`.
 
 ### Hermes hooks and the host's timeout
 
+Host capture budgets cover successive store operations, including first-seen
+lookups, inbox writes and source commits. SQLite refuses a transaction entered
+with no caller time remaining. An admitted transaction finishes its commit or
+rollback and releases its connection and writer lease; those operations preserve
+atomicity and cannot be abandoned at the deadline. A statement already running
+can exceed its budget. Each following stage uses the time left and the preceding
+store operation's duration to decide whether to defer.
+
+Client hooks use a 2 s default total budget and 1 s per capture. A capture already
+written to the durable inbox stays there when its source commit cannot fit.
+Runtime attachment and worker start wait only for the hook's remaining time;
+with less than 0.3 s for attachment or 0.1 s for worker start they are skipped.
+The next session start, captured turn end, session end or queued prompt with time
+remaining wakes the worker. A shared store's scheduled worker also replays its
+inbox. A runtime finishing after its hook returns has its resources closed by
+its owning background call.
+
+Hermes compression and session-end retries and steers share a 2 s capture pass.
+Unwritten steers stay in the retry buffer for its next pass. A finished turn
+writes its own captures before retrying older buffered captures. Shutdown's last
+retry pass takes at most 2 s of store work, apart from an already-running
+transaction and the filesystem work needed to keep its remaining captures.
+Its diagnostic pending count is skipped when another read cannot fit.
+
+Unstored captures at shutdown, captures past the retry window, and buffer
+overflow are kept under `kept-captures/` beside `memory.sqlite3`. These files
+hold sanitized, unadmitted capture envelopes, with their original session,
+actor, scope and occurrence time. The next adapter start loads them and wakes
+the retry thread; replay checks the installation and current grants before
+SQLite admits them. A file is removed only after persistence, durable inbox
+acceptance or a terminal refusal, including revoked authorization. Unreadable
+files remain for inspection and produce a warning. Failed spool writes report
+the failure; shutdown and retry expiry retain captures already in the buffer. Include this directory when
+backing up pending host captures; SQLite remains the authority for admitted
+memory. The spool holds at most 256 files, each with at most 256 KiB of event
+data plus 64 KiB of envelope metadata.
+
 Hermes abandons a plugin's hook call after its own `plugins.hook_callback_timeout`
 (30 s by default) and, on Hermes 0.21.5, skips that callback for the next 60 s.
 Scope Recall registers one callback per hook for the whole gateway, so that skip

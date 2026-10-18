@@ -19,6 +19,9 @@ from scripts.execution_boundary import (
 )
 from scripts.test_directories import TestDirectory
 
+# The shared timing fixture also serves integration selections across test directories.
+from tests.host.conftest import metered_store
+
 _DECLARED_REAL_HOME = str(os.environ.get("SCOPE_RECALL_REAL_HOME") or "").strip()
 _REAL_HOME = Path(_DECLARED_REAL_HOME or Path.home()).resolve(strict=False)
 _ACTIVE_HERMES_HOME = ambient_active_hermes_home(real_home=_REAL_HOME)

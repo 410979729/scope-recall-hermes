@@ -51,8 +51,12 @@ CAPTURE_TIMEOUT_S = 1.0
 #: less than the one second every other capture waits, so a 6 s budget waits 2 s and a 2 s one still 1 s.  The
 #: core a hook writes through lets a write wait this long (``handler``).
 PROMPT_CAPTURE_TIMEOUT_S = 2.0
-#: Attaching the trusted runtime after a capture needs this much budget left.
+#: Attaching the trusted runtime after a capture needs this much budget left; the hook waits for it no longer than what
+#: it has left (``CodexHookHandler.ensure_runtime``).
 RUNTIME_ATTACH_MIN_S = 0.3
+#: Starting the bounded worker needs this much left: it writes the worker's config and starts a process, a few
+#: milliseconds on a machine that is not loaded.  The hook waits for it no longer than what it has left.
+WORKER_START_MIN_S = 0.1
 
 
 class HookEvents:
@@ -63,13 +67,16 @@ class HookEvents:
 
     def session_start(self, session_id: str, audience, deadline: float) -> bool:
         context = self._hook.context(audience, session_id, "host_generated")
+        # The hook's core lets a write wait 2 s for the store's lock (``PROMPT_CAPTURE_TIMEOUT_S``), and a read given no
+        # time would wait as long: this one waits no longer than a capture does, and with no time left is not made.
+        wait = min(CAPTURE_TIMEOUT_S, self._hook.remaining(deadline))
+        if wait <= 0:
+            self._hook.note("deadline_exceeded")
+            return False
         try:
-            # The hook's core lets a write wait 2 s for the store's lock (``PROMPT_CAPTURE_TIMEOUT_S``), and a read
-            # given no time would wait as long: this one waits no longer than a capture does.
-            wait = min(CAPTURE_TIMEOUT_S, max(0.001, self._hook.remaining(deadline)))
             self._hook.core.status(context, remaining_seconds=wait)
-        except ContractError:
-            self._hook.note("binding_unavailable")
+        except ContractError as exc:
+            self._hook.note("deadline_exceeded" if exc.code == "DEADLINE_EXCEEDED" else "binding_unavailable")
             return False
         return True
 
@@ -147,9 +154,9 @@ class HookEvents:
             )
         ) and self._hook.remaining(deadline) >= RUNTIME_ATTACH_MIN_S
         if vectors:
-            self._hook.ensure_runtime(audience)
+            self._hook.ensure_runtime(audience, deadline=deadline)
             if self._hook.call.queued:
-                self._hook.launch_worker(session_id, audience)
+                self._hook.launch_worker(session_id, audience, deadline=deadline)
         if not prompt.strip():
             return {}
         if event is not None and not current_refs and not self._hook.call.queued:

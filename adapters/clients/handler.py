@@ -8,6 +8,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Protocol, cast
 
@@ -21,11 +22,18 @@ from .boundary import (
     is_workbuddy_agent_run,
     without_lone_surrogates,
 )
+from .bounded_call import BoundedCall
 from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
 from .hook_answer import (
     HookDiagnostics,
 )
-from .hook_events import CAPTURE_TIMEOUT_S, PROMPT_CAPTURE_TIMEOUT_S, RUNTIME_ATTACH_MIN_S, HookEvents
+from .hook_events import (
+    CAPTURE_TIMEOUT_S,
+    PROMPT_CAPTURE_TIMEOUT_S,
+    RUNTIME_ATTACH_MIN_S,
+    WORKER_START_MIN_S,
+    HookEvents,
+)
 from .identity import resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
 from .record_reader import RecordLines, RecordReader
@@ -140,6 +148,9 @@ class CodexHookHandler:
         self.call = HookCall()
         self._pending_runtime_config_path: str | None = None
         self._runtime_attach_attempted = host_runtime is not None
+        #: An attach the last hook stopped waiting for (``ensure_runtime``), still this handler's.
+        self._attaching: BoundedCall | None = None
+        self._starting: BoundedCall | None = None
         #: The entry's running MCP server, asked for a prompt's recall (``local_endpoint.Recaller``): given the
         #: payload, the stored refs, the gaps and the seconds it may take, the result and its diagnostics, or None.
         self.resident_recall: Callable[..., tuple[dict[str, Any], dict[str, Any]] | None] | None = None
@@ -241,11 +252,41 @@ class CodexHookHandler:
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
         return trusted_context(self.config, audience, session_id=session_id, actor_origin=origin)
 
-    def ensure_runtime(self, audience=None) -> None:
-        """Attach Lance/worker runtime only after Source persist, or for wakeup."""
-        if self._host_runtime is not None or self._runtime_attach_attempted:
+    def ensure_runtime(self, audience=None, *, deadline: float | None = None) -> None:
+        """Attach Lance/worker runtime only after Source persist, or for wakeup.
+
+        With a hook's ``deadline`` the attach has what is left of the hook's time: with less than
+        ``RUNTIME_ATTACH_MIN_S`` it is not begun, and the hook waits for it no longer than its time
+        (``BoundedCall``).  One the hook stopped waiting for is this handler's once a later call here finds it done
+        (a kept handler's next prompt), and a handler closed meanwhile closes it."""
+        if self._host_runtime is not None:
             return
-        self._runtime_attach_attempted = True
+        attaching = self._attaching
+        if attaching is None:
+            if self._runtime_attach_attempted:
+                return
+            if deadline is not None and self.remaining(deadline) < RUNTIME_ATTACH_MIN_S:
+                return
+            self._runtime_attach_attempted = True
+            attaching = self._attaching = BoundedCall(
+                partial(self._attach, audience),
+                name="scope-recall-runtime-attach",
+                remaining_seconds=None if deadline is None else self.remaining(deadline),
+            )
+        if not attaching.wait(None if deadline is None else self.remaining(deadline)):
+            self.note("runtime_attach_late")
+            return
+        self._attaching = None
+        host_runtime, self.diagnostics.runtime_attach_ms = attaching.result()
+        if host_runtime is None:
+            self.note("runtime_attach_failed", gaps=("capability_gap:trusted_runtime_invalid",))
+            return
+        self._host_runtime = host_runtime
+        self.core = host_runtime.core
+        self._merge_runtime_gaps()
+
+    def _attach(self, audience) -> tuple[TrustedHostRuntime | None, int]:
+        """The trusted runtime, or None when it could not be attached, and how long that took in milliseconds."""
         session_id = f"{self.host}-runtime:{self.config.installation_id}"
         started = time.monotonic()
         try:
@@ -262,43 +303,62 @@ class CodexHookHandler:
                 branch_id=partition.branch_id if partition is not None else None,
             )
         except Exception:
-            self.note("runtime_attach_failed", gaps=("capability_gap:trusted_runtime_invalid",))
-            return
-        finally:
-            self.diagnostics.runtime_attach_ms = round((time.monotonic() - started) * 1000)
-        self._host_runtime = host_runtime
-        self.core = host_runtime.core
-        self._merge_runtime_gaps()
+            host_runtime = None
+        return host_runtime, round((time.monotonic() - started) * 1000)
 
-    def launch_worker(self, session_id: str, audience, *, require_persisted: bool = True) -> None:
+    def launch_worker(
+        self, session_id: str, audience, *, require_persisted: bool = True, deadline: float | None = None
+    ) -> None:
+        """Wake the owned worker.  With a hook's ``deadline`` the start has what is left of the hook's time: with less
+        than ``WORKER_START_MIN_S`` it is not begun, and the hook waits for it no longer than its time.  The work it
+        would have done waits for whatever wakes the worker next: a session's start, which wakes it for work already
+        pending, or the next turn's end, session's end or queued prompt with the time for it."""
         if self._host_runtime is None or not self._host_runtime.configured:
             if self.call.captured:
                 self._merge_runtime_gaps()
             return
         if require_persisted and not self.call.captured:
             return
-        try:
-            launch = getattr(self._host_runtime, "maybe_launch_bounded_worker", None)
-            if not callable(launch):
-                worker_gaps = (GAP_WORKER_LAUNCH_FAILED,)
-            else:
-                partition = self.context(audience, session_id, "host_generated")
-                worker_gaps = cast(Callable[..., tuple[str, ...]], launch)(
-                    session_id=session_id,
-                    allowed_scope_ids=audience.allowed_scope_ids,
-                    project_id=partition.project_id,
-                    branch_id=partition.branch_id,
-                )
-        except Exception:
-            worker_gaps = (GAP_WORKER_LAUNCH_FAILED,)
+        if deadline is not None and self.remaining(deadline) < WORKER_START_MIN_S:
+            self.note("runtime_worker_deferred")
+            return
+        starting = self._starting
+        if starting is None:
+            starting = self._starting = BoundedCall(
+                partial(self._launch, self._host_runtime, session_id, audience),
+                name="scope-recall-worker-start",
+                remaining_seconds=None if deadline is None else self.remaining(deadline),
+            )
+        if not starting.wait(None if deadline is None else self.remaining(deadline)):
+            self.note("runtime_worker_late")
+            return
+        worker_gaps = starting.result()
+        self._starting = None
         if worker_gaps:
             self.note("runtime_worker", gaps=worker_gaps)
 
+    def _launch(self, runtime, session_id: str, audience) -> tuple[str, ...]:
+        """Start the bounded worker for ``audience``: the gaps its start leaves."""
+        try:
+            launch = getattr(runtime, "maybe_launch_bounded_worker", None)
+            if not callable(launch):
+                return (GAP_WORKER_LAUNCH_FAILED,)
+            partition = self.context(audience, session_id, "host_generated")
+            return cast(Callable[..., tuple[str, ...]], launch)(
+                session_id=session_id,
+                allowed_scope_ids=audience.allowed_scope_ids,
+                project_id=partition.project_id,
+                branch_id=partition.branch_id,
+            )
+        except Exception:
+            return (GAP_WORKER_LAUNCH_FAILED,)
+
     def _wake_after_capture(self, session_id: str, audience, deadline: float) -> None:
-        """After a Stop/SessionEnd capture, attach the runtime and wake the owned worker."""
-        if self.call.captured and self.remaining(deadline) >= RUNTIME_ATTACH_MIN_S:
-            self.ensure_runtime(audience)
-        self.launch_worker(session_id, audience)
+        """After a Stop/SessionEnd capture, attach the runtime and wake the owned worker, each within the hook's
+        time."""
+        if self.call.captured:
+            self.ensure_runtime(audience, deadline=deadline)
+        self.launch_worker(session_id, audience, deadline=deadline)
 
     @property
     def runtime_ready(self) -> bool:
@@ -325,11 +385,20 @@ class CodexHookHandler:
             warm(seconds)
 
     def close(self) -> None:
+        attaching, self._attaching = self._attaching, None
+        if attaching is not None:
+            # An attach the hook stopped waiting for: the runtime it makes is closed once it is made.
+            attaching.abandon(lambda made: made[0].close() if made[0] is not None else None)
         if self._host_runtime is not None:
             # A short hook must return without synchronously killing the
             # already-owned bounded watchdog.  The watchdog owns cleanup and
             # removes its ephemeral trusted config when the drain exits.
-            self._host_runtime.close(detach_worker=True)
+            runtime, self._host_runtime = self._host_runtime, None
+            starting, self._starting = self._starting, None
+            if starting is None:
+                runtime.close(detach_worker=True)
+            else:
+                starting.abandon(lambda _result: runtime.close(detach_worker=True))
 
     # -- payload dispatch ------------------------------------------------
 
@@ -420,12 +489,9 @@ class CodexHookHandler:
             # the whole store: on a shared store of 277,000 sources, 7-8 s, past Codex's 2 s hook timeout at every
             # session start.
             return {}
-        if (
-            self.events.session_start(session_id, audience, deadline)
-            and self.remaining(deadline) >= RUNTIME_ATTACH_MIN_S
-        ):
-            self.ensure_runtime(audience)
-            self.launch_worker(session_id, audience, require_persisted=False)
+        if self.events.session_start(session_id, audience, deadline):
+            self.ensure_runtime(audience, deadline=deadline)
+            self.launch_worker(session_id, audience, require_persisted=False, deadline=deadline)
         return {}
 
     def _turn_ended(

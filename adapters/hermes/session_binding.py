@@ -108,6 +108,9 @@ class SessionBinding:
             )
             self._adapter._worker_launch_gaps = ()
             self._adapter._initialized = True
+            # What an earlier process kept on disk, its shutdown or a pass that could not store it, is this start's
+            # to write (``CaptureRetry.load_kept``).
+            self._adapter._retry.load_kept()
             self._unbound_route = None
             self._say_if_unbound(fresh)
             from .hooks import update_adapter_binding

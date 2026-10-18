@@ -2,8 +2,9 @@
 
 A capture that met a busy store or ran out of time is kept, at most 16 at a time, and written again by a thread of
 its own every ``_RETRY_EVERY_S`` while any is kept, at each turn's end, before a compression, at the session's end and
-at shutdown; one kept longer than ``_RETRY_GIVE_UP_S`` is dropped and logged as lost.  It works on the adapter's
-state under the adapter's lock (``self._adapter``) and writes through the adapter's capture."""
+at shutdown.  What the buffer cannot hold, one kept longer than ``_RETRY_GIVE_UP_S``, and what a shutdown leaves are
+kept on disk (``kept_captures``) for the next start, which writes them.  It works on the adapter's state under the
+adapter's lock (``self._adapter``) and writes through the adapter's capture."""
 
 from __future__ import annotations
 
@@ -14,12 +15,14 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from scope_recall.contracts import ContractError
+from scope_recall.contracts import ContractError, InstanceBinding
 from scope_recall.core import MemoryCore
+from scope_recall.core.deadline import fits
 
+from . import kept_captures
 from .authorization import build_ingress_authorizer
 from .boundary import SourceIdentity
-from .capture import CAPTURE_TIMEOUT_S, RetryCapture, label
+from .capture import CAPTURE_TIMEOUT_S, RETRY_CAPACITY, RetryCapture, label
 from .identity import (
     HermesIdentity,
     HermesIdentityError,
@@ -43,9 +46,10 @@ _RETRY_PASS_SECONDS = 5.0
 #: What a shutdown's last pass may spend: the thread wrote again within the last ``_RETRY_EVERY_S``, and on a busy store
 #: a longer pass seldom changes the outcome while it holds up a gateway's planned stop.
 SHUTDOWN_RETRY_SECONDS = 2.0
-#: How long a capture is kept to retry: one that cannot be written by then is dropped and logged as lost.  Kept for
-#: good, a capture of a full inbox or of an installation whose scopes changed under a running gateway would be retried
-#: every ``_RETRY_EVERY_S`` for the life of the process, and its thread would hold an evicted agent's adapter.
+#: How long a capture is kept to retry in this process: one that cannot be written by then is kept on disk for the next
+#: start instead.  Retried for good, a capture of a full inbox or of an installation whose scopes changed under a
+#: running gateway would be retried every ``_RETRY_EVERY_S`` for the life of the process, and its thread would hold an
+#: evicted agent's adapter.
 _RETRY_GIVE_UP_S = 1800.0
 #: How often the retry thread writes again what the buffer holds, for as long as it holds anything.  Hermes runs
 #: ``sync_turn`` only after a turn with a message and a reply: a turn it injected (a watch notification), one it
@@ -70,6 +74,17 @@ class CaptureRetry:
         self.wake = threading.Event()
         #: Buffered captures a pass is writing without ``_lock``: a shutdown's pass, which may overlap it, skips them.
         self.in_flight: set[SourceIdentity] = set()
+        #: Captures that have a file on disk (``kept_captures``), with the binding it is kept under: taken from disk,
+        #: or kept there by this buffer.  Its file goes once the capture is stored or not to be written.
+        self.on_disk: dict[SourceIdentity, InstanceBinding] = {}
+        #: Whether kept captures of this installation wait on disk that the buffer had no room for.
+        self.more_on_disk = False
+        #: Captures this process gave up and kept on disk: taken again only by the next start, or a capture no store
+        #: takes would be retried for the life of the process.
+        self.given_up: set[SourceIdentity] = set()
+        #: What the last capture a pass wrote took: the next is reckoned by it (``fits``), and so is a shutdown's read
+        #: of what the inbox holds.
+        self.last_took = 0.0
 
     def write_observed(self, *, deadline: float | None = None) -> None:
         """Retry only previously observed DTOs with their original identities.
@@ -109,7 +124,7 @@ class CaptureRetry:
         self,
         *,
         release: bool = False,
-        seconds: float = CAPTURE_TIMEOUT_S,
+        seconds: float | None = None,
         force: bool = False,
         deadline: float | None = None,
     ) -> None:
@@ -120,11 +135,14 @@ class CaptureRetry:
         writer lease in memory for hours, and an eviction or a restart would lose it.  One pass at a time; ``force``
         is shutdown's, which may run while another pass waits for the lock between two captures.  One retry per hold
         of the lock; with ``release`` (``sync_turn`` and the retry thread, which do not hold it) each writes without.
-        A caller's earlier deadline caps the pass, measured before acquiring the lock.
+        A pass takes ``seconds``, a capture's ``CAPTURE_TIMEOUT_S`` unless given, and a caller's earlier deadline caps
+        it, measured before acquiring the lock.
         """
-        pass_deadline = time.monotonic() + seconds
+        pass_deadline = time.monotonic() + (CAPTURE_TIMEOUT_S if seconds is None else seconds)
         deadline = pass_deadline if deadline is None else min(deadline, pass_deadline)
         with self._adapter._lock:
+            if self.more_on_disk and len(self.captures) < RETRY_CAPACITY:
+                self.load_kept()
             if time.monotonic() >= deadline or not self.captures or (self.retrying and not force):
                 return
             identity = self._adapter._require_identity()
@@ -152,9 +170,11 @@ class CaptureRetry:
                     len(pending_items) - len(expired),
                 )
             return
+        took = 0.0
         for key, pending in pending_items:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            # Each capture is reckoned by the one before it (``fits``): started with less time left than that one took,
+            # on a store that slow it would run past the pass's time.  What is left waits for the next pass.
+            if not fits(deadline, took):
                 break
             with self._adapter._lock, self._adapter._calls.holding("retry_buffered_captures"):
                 if self._adapter._identity is not identity or not (self._adapter._initialized or force):
@@ -178,7 +198,7 @@ class CaptureRetry:
                     else frozenset()
                 )
                 if pending.context.binding != identity.binding or pending.scope_id not in allowed_scopes:
-                    self.captures.pop(key, None)
+                    self.done(key)
                     self._adapter._ledger.rollback(key)
                     self._adapter._merge_gaps(("capture_gap:retry_authorization_revoked",))
                     _log.warning("scope-recall: not stored (authorization revoked), dropped: %s", label(key))
@@ -193,6 +213,7 @@ class CaptureRetry:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+                began = time.monotonic()
                 self.in_flight.add(key)
                 try:
                     self._adapter._writer.write(
@@ -208,10 +229,11 @@ class CaptureRetry:
                     )
                 finally:
                     self.in_flight.discard(key)
+                    took = self.last_took = time.monotonic() - began
 
     def give_up_expired(self, items) -> list:
-        """Drop the buffered captures kept longer than ``_RETRY_GIVE_UP_S``, each logged as lost; the caller holds
-        ``_lock``.  Returns their keys."""
+        """Stop retrying the buffered captures kept longer than ``_RETRY_GIVE_UP_S``: each is kept on disk for the next
+        start (``keep_on_disk``), and said; the caller holds ``_lock``.  Returns their keys."""
         expired = [
             key
             for key, pending in items
@@ -219,16 +241,85 @@ class CaptureRetry:
             and key not in self.in_flight
             and time.monotonic() - pending.kept_at > _RETRY_GIVE_UP_S
         ]
+        kept = []
         for key in expired:
-            self.captures.pop(key, None)
+            pending = self.captures[key]
             self._adapter._ledger.rollback(key)
             self._adapter._merge_gaps(("capture_gap:retry_gave_up",))
-            _log.warning(
-                "scope-recall: not stored (still failing after %d minutes), lost: %s",
-                int(_RETRY_GIVE_UP_S // 60),
-                label(key),
-            )
-        return expired
+            if self.keep_on_disk(key, pending):
+                self.captures.pop(key)
+                self.given_up.add(key)
+                kept.append(key)
+                _log.warning(
+                    "scope-recall: not stored (still failing after %d minutes), kept on disk for the next start: %s",
+                    int(_RETRY_GIVE_UP_S // 60),
+                    label(key),
+                )
+            else:
+                _log.warning(
+                    "scope-recall: not stored (still failing after %d minutes), retained in memory: %s",
+                    int(_RETRY_GIVE_UP_S // 60),
+                    label(key),
+                )
+        return kept
+
+    def keep_on_disk(self, key: SourceIdentity, capture: RetryCapture) -> bool:
+        """Keep a capture on disk for the next start (``kept_captures``); whether it is there.  The caller holds
+        ``_lock``."""
+        if key in self.on_disk:
+            return True
+        binding = capture.context.binding
+        if not kept_captures.keep(binding, key, capture):
+            return False
+        self.on_disk[key] = binding
+        return True
+
+    def keep_all_on_disk(self) -> tuple[int, int]:
+        """At shutdown: each capture the buffer still holds, one a pass is still writing included, kept on disk for the
+        next start, and reported. Captures that could not reach disk remain in memory.
+        Return the counts kept on disk and retained in memory. The caller holds ``_lock``."""
+        kept = retained = 0
+        for key, capture in tuple(self.captures.items()):
+            if self.keep_on_disk(key, capture):
+                kept += 1
+                self.captures.pop(key)
+                if key in self.in_flight:
+                    _log.warning(
+                        "scope-recall: not stored yet (still being written at shutdown), kept on disk: %s", label(key)
+                    )
+                else:
+                    _log.warning("scope-recall: not stored yet, kept on disk for the next start: %s", label(key))
+            else:
+                retained += 1
+                _log.warning("scope-recall: not stored at shutdown, retained in memory: %s", label(key))
+        return kept, retained
+
+    def done(self, key: SourceIdentity) -> None:
+        """A buffered capture is stored, or not to be written: out of the buffer, and its file off the disk if it has
+        one."""
+        self.captures.pop(key, None)
+        binding = self.on_disk.pop(key, None)
+        if binding is not None:
+            kept_captures.forget(binding, key)
+
+    def load_kept(self) -> None:
+        """Take into the buffer what this installation keeps on disk (``kept_captures``), as far as it has room: what
+        an earlier process could not store, or what this one kept there for want of room.  The caller holds
+        ``_lock``."""
+        identity = self._adapter._identity
+        if identity is None or identity.read_only:
+            return
+        room = RETRY_CAPACITY - len(self.captures)
+        loaded, self.more_on_disk = kept_captures.load(
+            identity.binding, skip=set(self.captures) | self.given_up, room=room
+        )
+        for key, capture in loaded:
+            self.captures[key] = capture
+            self.on_disk[key] = identity.binding
+        if loaded:
+            _log.info("scope-recall: %d kept capture(s) read from disk, to be written", len(loaded))
+            self.start()
+            self.wake.set()
 
     def start(self) -> None:
         """Start the retry thread when none runs; the caller holds ``_lock``."""
@@ -246,6 +337,8 @@ class CaptureRetry:
             if self.wake.wait(_RETRY_EVERY_S):
                 self.wake.clear()
             with self._adapter._lock:
+                if self._adapter._initialized and self.more_on_disk and not self.captures:
+                    self.load_kept()
                 if not self._adapter._initialized or not self.captures:
                     self.thread = None
                     return
@@ -258,13 +351,15 @@ class CaptureRetry:
                 with self._adapter._lock:
                     self.give_up_expired(tuple(self.captures.items()))
 
-    def durable_pending_count(self):
+    def durable_pending_count(self, remaining_seconds: float = 0.1):
+        """How many captures this session's partition has waiting in the inbox, read within ``remaining_seconds``; None
+        when the store could not say in that time."""
         if not isinstance(self._adapter._core, MemoryCore) or self._adapter._identity is None:
             return None
         try:
             context = self._adapter._identity.trusted_context()
             scopes = sorted(context.allowed_scope_ids)
-            with self._adapter._core.storage.read(context, remaining_seconds=0.1) as tx:
+            with self._adapter._core.storage.read(context, remaining_seconds=remaining_seconds) as tx:
                 return (
                     tx._check()
                     .execute(

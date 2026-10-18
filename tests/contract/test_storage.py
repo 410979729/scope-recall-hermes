@@ -19,6 +19,7 @@ import pytest
 import scope_recall.core.storage as storage_module
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import truth_writer_process_snapshot
@@ -42,6 +43,40 @@ def put(tx, key="TEST-source/1", **values):
 def snapshot(storage, ctx):
     with storage.read(ctx) as tx:
         return tx.status()
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+@pytest.mark.parametrize("remaining", [None, 0.001, 1.0])
+def test_expired_request_opens_no_store_connection(store, monkeypatch, operation, remaining):
+    storage, ctx = store
+    _actual, opened = inject(monkeypatch)
+    deadline = RequestDeadline.from_budget(0)
+    with using_request_deadline(deadline), pytest.raises(ContractError, match="DEADLINE_EXCEEDED"):
+        with getattr(storage, operation)(ctx, remaining_seconds=remaining):
+            pytest.fail("expired request entered SQLite")
+    assert opened == []
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_expired_request_finishes_started_transaction_but_refuses_another(store, monkeypatch, fails):
+    storage, ctx = store
+    _actual, opened = inject(monkeypatch)
+    current = [10.0]
+    monkeypatch.setattr(time, "monotonic", lambda: current[0])
+    with using_request_deadline(RequestDeadline.from_budget(1)):
+        try:
+            with storage.write(ctx) as tx:
+                put(tx)
+                current[0] += 2
+                if fails:
+                    raise InjectedFailure("TEST abort")
+        except InjectedFailure:
+            assert fails
+        with pytest.raises(ContractError, match="DEADLINE_EXCEEDED"), storage.write(ctx):
+            pytest.fail("expired request opened another transaction")
+    assert opened[0].closed
+    assert ("ROLLBACK" if fails else "COMMIT") in opened[0].trace
+    assert snapshot(storage, ctx).sources == (0 if fails else 1)
 
 
 class InjectedFailure(RuntimeError):

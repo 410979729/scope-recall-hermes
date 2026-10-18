@@ -10,12 +10,13 @@ from functools import wraps
 from typing import Any, Dict, List, Optional
 
 from scope_recall.core import MemoryCore
+from scope_recall.core.deadline import fits
 
 from .backpressure import HostBackpressure
 from .boundary import (
     SourceObservationLedger,
 )
-from .capture import CAPTURE_TIMEOUT_S, CaptureWriter, label
+from .capture import CAPTURE_TIMEOUT_S, CaptureWriter
 from .capture_retry import SHUTDOWN_RETRY_SECONDS, CaptureRetry
 from .identity import HermesIdentity, HermesIdentityError
 from .outcomes import TurnOutcomeTracker
@@ -299,37 +300,41 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             while self._captures_in_flight and time.monotonic() < deadline:
                 self._captures_done.wait(max(0.0, deadline - time.monotonic()))
             still_writing = self._captures_in_flight
-            # What the buffer still holds is written once more, in the time the drain left and at least a capture's:
-            # dropped here, it would be lost at every gateway restart.  An agent Hermes evicts keeps its
-            # adapter without a shutdown; the retry thread writes its buffer.
+            # What the buffer still holds is written once more, in the time the drain left and at least a capture's.
+            # What that pass cannot store is kept on disk for replay at the next start.
+            # An evicted agent keeps its adapter without a shutdown; the retry thread writes its buffer.
             self._retry.wake.set()
+            seconds = min(SHUTDOWN_RETRY_SECONDS, max(CAPTURE_TIMEOUT_S, deadline - time.monotonic()))
+            pass_deadline = time.monotonic() + seconds
             try:
-                self._retry.write_buffered(
-                    seconds=min(SHUTDOWN_RETRY_SECONDS, max(CAPTURE_TIMEOUT_S, deadline - time.monotonic())),
-                    force=True,
-                )
+                self._retry.write_buffered(seconds=seconds, force=True)
             except Exception as exc:  # noqa: BLE001 - the shutdown goes on; what is left is said below
                 _log.warning("scope-recall: a retry of buffered captures failed at shutdown (%s)", type(exc).__name__)
             pending = self._retry.pending_identities()
-            for key in tuple(self._retry.captures)[:16]:
-                if key in self._retry.in_flight:
-                    _log.warning("scope-recall: not stored yet (still being written at shutdown): %s", label(key))
-                else:
-                    _log.warning("scope-recall: not stored (still failing at shutdown), lost: %s", label(key))
-            self._retry.captures.clear()
-            durable_pending = self._retry.durable_pending_count()
+            kept_on_disk, _retained = self._retry.keep_all_on_disk()
+            # Read only while one more store call fits the pass's time (``fits``): a count is not worth running past it.
+            durable_pending = (
+                self._retry.durable_pending_count(remaining_seconds=pass_deadline - time.monotonic())
+                if fits(pass_deadline, self._retry.last_took)
+                else None
+            )
             state = self._worker.shutdown()
             if self._host_runtime is not None:
                 self._host_runtime.close()
                 self._host_runtime = None
             if pending:
+                # Observed but neither stored nor on disk: still being written, or kept nowhere.
+                unpersisted = len(pending) - kept_on_disk
                 state = {
                     **state,
                     "pending_captures": len(pending),
-                    "pending_capture_status": "unpersisted",
-                    "pending_capture_durability": "memory_only",
+                    "pending_capture_status": "unpersisted" if unpersisted else "kept_on_disk",
+                    "pending_capture_durability": "memory_only" if unpersisted else "on_disk",
                 }
-                self._merge_gaps(("capability_gap:durable_capture_ingress_unavailable",))
+                if kept_on_disk:
+                    state["kept_on_disk_captures"] = kept_on_disk
+                if unpersisted:
+                    self._merge_gaps(("capability_gap:durable_capture_ingress_unavailable",))
             if self._diagnostics.capture_failures:
                 state = {
                     **state,
