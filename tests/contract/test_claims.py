@@ -9,9 +9,9 @@ from dataclasses import replace
 from threading import Barrier
 
 import pytest
-from scope_recall.contracts import ContractError, ImportProvenance, import_source_fingerprint
+from scope_recall.contracts import ContractError, ImportProvenance, TrustedSourcePrincipal, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.claims import Qualification, qualify
+from scope_recall.core.claims import Qualification, is_denial, negates, qualify
 from v11_support import context, source_event
 
 
@@ -312,6 +312,412 @@ def test_proposed_collision_cannot_demote_active_or_advance_pointer(app):
     assert core.current_claim(ctx, item.ref).revision == 1
 
 
+#: When the stated value is said, and when the denial is.
+_SAID, _LATER = "2026-09-01T12:00:00Z", "2026-09-03T12:00:00Z"
+_OWNER = TrustedSourcePrincipal("human", "verified", "principal:TEST-owner")
+
+
+def _stated(core, ctx, text, value, when=_SAID, **frame):
+    """The claim drawn from ``text`` with ``value``: a fact about TEST-project's CI service unless ``frame`` says
+    otherwise."""
+    frame = {"kind": "fact", "predicate": "CI service", "statement_kind": "assertion", **frame}
+    return accept(core, ctx, draft(capture(core, ctx, text, when=when), value, **frame)).items[0]
+
+
+def _preferred(core, ctx, text, value, when=_SAID, predicate="饮食"):
+    """The owner's preference drawn from ``text``, through a context that attests them; and that context."""
+    owner = replace(ctx, source_principal=_OWNER)
+    return _stated(core, owner, text, value, when, kind="preference", subject="user", predicate=predicate), owner
+
+
+@pytest.mark.parametrize(
+    "stated,denied",
+    [
+        (
+            ("The TEST-project CI service is Jenkins.", "Jenkins"),
+            ("The TEST-project CI service is not CircleCI.", "not CircleCI"),
+        ),
+        (
+            ("TEST-project CI service 是 Jenkins。", "Jenkins"),
+            ("TEST-project CI service 不是 CircleCI。", "不是 CircleCI"),
+        ),
+    ],
+)
+def test_a_denial_of_another_value_leaves_the_value_its_slot_holds(app, stated, denied):
+    """(a) Not CircleCI says nothing about whether Jenkins still holds: the denial is kept beside it, a proposal."""
+    core, ctx = app
+    held = _stated(core, ctx, *stated)
+    denial = _stated(core, ctx, *denied, _LATER)
+    assert held.state == "active"
+    assert (denial.ref, denial.state, denial.disposition) == (held.ref, "proposed", "historical")
+    assert core.claim_history(ctx, held.ref)[-1].reason == "denial_of_another_value"
+    assert core.current_claim(ctx, held.ref).payload["value_text"] == "Jenkins"
+
+
+@pytest.mark.parametrize("text,value", [("我不吃辣。", "不吃辣"), ("I never drink coffee.", "never drink coffee")])
+def test_a_denial_where_its_slot_holds_nothing_is_its_value(app, text, value):
+    """(b) With nothing else known, the owner's 我不吃辣 is the preference itself."""
+    core, ctx = app
+    claim, owner = _preferred(core, ctx, text, value)
+    assert claim.state == "active"
+    assert core.current_claim(owner, claim.ref).payload["value_text"] == value
+
+
+@pytest.mark.parametrize(
+    "stated,denied",
+    [
+        (("我爱吃辣。", "爱吃辣"), ("我现在不吃辣了。", "不吃辣")),
+        (("I drink coffee every morning.", "drink coffee"), ("I don't drink coffee any more.", "don't drink coffee")),
+    ],
+)
+def test_a_denial_of_the_value_its_slot_holds_replaces_it(app, stated, denied):
+    """(c) 我现在不吃辣了 says that 爱吃辣 holds no more: the owner's preference changed."""
+    core, ctx = app
+    held, owner = _preferred(core, ctx, *stated)
+    denial, _owner = _preferred(core, ctx, *denied, _LATER)
+    assert (denial.ref, denial.state, denial.disposition) == (held.ref, "active", "inserted")
+    assert core.current_claim(owner, held.ref).payload["value_text"] == denied[1]
+
+
+@pytest.mark.parametrize(
+    "stated,denied",
+    [
+        (("I prefer bash as my shell.", "bash"), ("I don't like PowerShell as a shell.", "don't like PowerShell")),
+        (("我喜欢用 bash 当 shell。", "bash"), ("我不喜欢用 PowerShell 当 shell。", "不喜欢用 PowerShell")),
+    ],
+)
+def test_a_dislike_of_something_else_leaves_the_preference_its_slot_holds(app, stated, denied):
+    """(d) Not liking PowerShell does not say which shell the person prefers; said again, it changes nothing."""
+    core, ctx = app
+    held, owner = _preferred(core, ctx, *stated, predicate="shell")
+    for when in (_LATER, "2026-09-04T12:00:00Z"):
+        dislike, _owner = _preferred(core, ctx, *denied, when, predicate="shell")
+        assert (dislike.ref, dislike.state) == (held.ref, "proposed")
+    assert core.current_claim(owner, held.ref).payload["value_text"] == "bash"
+
+
+@pytest.mark.parametrize(
+    "value,denial",
+    [
+        *((value, False) for value in ("不错", "不过", "没问题", "不客气", "不同意 TEST-X", "不知道", "不用谢")),
+        *((value, False) for value in ("not bad", "don't know", "not sure", "isn't it TEST-X?")),
+        ("not only TEST-X but TEST-Y", False),
+        *((value, True) for value in ("不是 CircleCI", "不吃辣", "不喜欢用 PowerShell", "没有车", "从不抽烟")),
+        *((value, True) for value in ("不再用 Jenkins", "讨厌香菜", "一点也不喜欢喝咖啡", "现在不吃辣了")),
+        *((value, True) for value in ("not CircleCI", "isn't Jenkins", "don't have a car", "never drink coffee")),
+        *((value, True) for value in ("no longer uses Jenkins", "can't stand PowerShell", "really don't like X")),
+    ],
+)
+def test_a_denial_is_a_negation_with_what_it_negates(value, denial):
+    """不错 and "not bad" praise, 不过 and "not only ... but" contrast, 不同意 disagrees, 不知道, "don't know" and "not
+    sure" tell what the person does not know, and "isn't it X?" asks: none says what its slot is not."""
+    assert is_denial({"kind": "preference", "value_text": value}) is denial
+    assert is_denial({"kind": "constraint", "value_text": value}) is False
+
+
+@pytest.mark.parametrize(
+    "stated,said,predicate",
+    [
+        (("TEST-project 部署状态 有故障。", "有故障"), ("TEST-project 部署状态 没问题。", "没问题"), "部署状态"),
+        (
+            ("The TEST-project deploy status is shaky.", "shaky"),
+            ("The TEST-project deploy status is not bad.", "not bad"),
+            "deploy status",
+        ),
+    ],
+)
+def test_a_value_that_opens_with_a_negator_word_updates_its_slot(app, stated, said, predicate):
+    """没问题 and "not bad" deny nothing: said later, each replaces the value held as any other value does."""
+    core, ctx = app
+    held = _stated(core, ctx, *stated, predicate=predicate)
+    update = _stated(core, ctx, *said, _LATER, predicate=predicate)
+    assert (update.ref, update.state, update.disposition) == (held.ref, "active", "inserted")
+    assert core.current_claim(ctx, held.ref).payload["value_text"] == said[1]
+
+
+@pytest.mark.parametrize(
+    "denied,held,same",
+    [
+        ("不吃辣", "爱吃辣", True),
+        ("不吃辣了", "吃辣", True),
+        ("不是周三", "周三下午", True),
+        ("不是周三下午", "周三", False),
+        ("don't like PowerShell", "PowerShell", True),
+        ("don't drink coffee", "drinks coffee", True),
+        ("NOT ＣｉｒｃｌｅＣＩ", "circleci", True),
+        ("not v3.1", "v3.1", True),
+        ("not v3", "v3.1", False),
+        ("not 14 GB", "14 GB", True),
+        ("not 4 GB", "14 GB", False),
+        ("not #ops-pager", "#ops-pager", True),
+        ("not CircleCI", "Jenkins", False),
+        ("not MySQL", "SQL", False),
+        ("不喜欢喝红茶", "红茶", True),
+        ("不喜欢喝红茶", "茶", False),
+        ("don't drive a car", "have a car", False),
+        ("don't like having meetings early in the morning", "late in the morning", False),
+        ("不吃了", "爱吃辣", False),
+    ],
+)
+def test_a_denial_negates_a_value_that_holds_all_it_denies(denied, held, same):
+    """Compared as the store compares values, identifiers whole: the held value holds all the denial denies, or the
+    denial denies the held value itself under a verb of liking or doing.  A longer denial narrows what it denies, so
+    不是周三下午 leaves 周三, as "not v3" leaves v3.1, standing; a verb alone (不吃了) names nothing to deny."""
+    assert negates({"kind": "fact", "value_text": denied}, {"value_text": held}) is same
+
+
+@pytest.mark.parametrize(
+    "value,denial,negated",
+    [
+        ("不是很喜欢 TEST-X", True, True),
+        ("不太喜欢 TEST-X", True, True),
+        ("不再用 TEST-X 改用 TEST-Y", True, True),
+        ("never use TEST-X again", True, True),
+        ("别再用 TEST-X", True, True),
+        ("不一定喜欢 TEST-X", False, False),
+        ("never again", True, False),
+        ("isn't any more", True, False),
+        ("not TEST-X but TEST-Y", True, True),
+    ],
+)
+def test_a_denial_is_read_as_its_negator_target_contrast_and_time(value, denial, negated):
+    """A denial is read as its negator, the target it denies, what it says holds instead and a word of time, each for
+    itself: the target of 不是很喜欢 X and of "never use X again" is X, 不一定喜欢 X doubts and denies nothing, and
+    "never again" names no target at all."""
+    assert is_denial({"kind": "preference", "value_text": value}) is denial
+    assert negates({"kind": "preference", "value_text": value}, {"value_text": "TEST-X"}) is negated
+
+
+@pytest.mark.parametrize(
+    "text,value,predicate",
+    [("我不吃了。", "不吃了", "饮食"), ("I don't drink any more.", "don't drink any more", "drink")],
+)
+def test_a_denial_that_names_nothing_is_never_its_slot_s_value(app, text, value, predicate):
+    """我不吃了 and "I don't drink any more" deny no value the person names: not even theirs becomes a slot's value."""
+    core, ctx = app
+    denial, owner = _preferred(core, ctx, text, value, predicate=predicate)
+    assert (denial.state, core.claim_history(owner, denial.ref)[-1].reason) == ("proposed", "denial_not_a_value")
+    assert core.current_claim(owner, denial.ref) is None
+
+
+@pytest.mark.parametrize(
+    "stated,switched",
+    [
+        (("我用 TEST-X。", "TEST-X"), ("我现在不用 TEST-X 了，而是用 TEST-Y。", "不用 TEST-X 了，而是用 TEST-Y")),
+        (("I use TEST-X.", "TEST-X"), ("I don't use TEST-X but TEST-Y now.", "don't use TEST-X but TEST-Y")),
+    ],
+)
+def test_a_denial_that_says_what_holds_instead_ends_the_value_and_is_none(app, stated, switched):
+    """不用 X 了，而是用 Y is two claims in one: it ends X, which it denies, and is no value itself, the person's own
+    included; Y is a claim of its own.  (Said with 改用, it is a correction too, and capture applies Y at once.)"""
+    core, ctx = app
+    tool, owner = _preferred(core, ctx, *stated, predicate="tool")
+    denial, _owner = _preferred(core, ctx, *switched, _LATER, predicate="tool")
+    assert (tool.state, denial.ref, denial.state) == ("active", tool.ref, "retracted")
+    assert core.current_claim(owner, tool.ref) is None
+    assert core.claim_history(owner, tool.ref)[-1].reason == "denial_not_a_value"
+
+
+@pytest.mark.parametrize(
+    "text,value",
+    [
+        ("The TEST-project deploy region is not us-east-2.", "not us-east-2"),
+        ("TEST-project deploy region 不是 us-east-2。", "不是 us-east-2"),
+    ],
+)
+def test_a_denial_about_anything_but_the_person_is_never_its_slot_s_value(app, text, value):
+    """(b) With nothing known of TEST-project's region, "not us-east-2" still does not say which it is; re-judging the
+    stored claim's text does not make it the value either."""
+    core, ctx = app
+    denial = _stated(core, ctx, text, value, predicate="deploy region")
+    assert (denial.state, core.claim_history(ctx, denial.ref)[-1].reason) == ("proposed", "denial_not_a_value")
+    assert core.current_claim(ctx, denial.ref) is None
+    assert core.operations.requalify_claims(ctx, limit=32, dry_run=False)["changed"] == []
+    assert core.current_claim(ctx, denial.ref) is None
+
+
+@pytest.mark.parametrize(
+    "stated,denied",
+    [
+        (
+            ("The TEST-project CI service is Jenkins.", "Jenkins"),
+            ("The TEST-project CI service is not Jenkins any more.", "not Jenkins"),
+        ),
+        (
+            ("TEST-project CI service 是 Jenkins。", "Jenkins"),
+            ("TEST-project CI service 不是 Jenkins 了。", "不是 Jenkins"),
+        ),
+    ],
+)
+def test_a_denial_of_the_value_held_about_anything_but_the_person_ends_it(app, stated, denied):
+    """(c) "Not Jenkins any more" ends Jenkins when it is said, as a retraction: the slot then holds no value, its
+    history keeps Jenkins, and the denial is kept beside it as a proposal."""
+    core, ctx = app
+    held = _stated(core, ctx, *stated)
+    ended = _stated(core, ctx, *denied, _LATER)
+    assert (ended.ref, ended.state, ended.disposition) == (held.ref, "retracted", "retracted")
+    assert core.current_claim(ctx, held.ref) is None
+    assert core.current_claim(ctx, held.ref, as_of="2026-09-02T12:00:00Z").payload["value_text"] == "Jenkins"
+    assert [(v.state, v.reason, v.payload["value_text"]) for v in core.claim_history(ctx, held.ref)] == [
+        ("active", "explicit_scoped_source", "Jenkins"),
+        ("retracted", "value_denied", "Jenkins"),
+        ("proposed", "denial_not_a_value", denied[1]),
+    ]
+
+
+@pytest.mark.parametrize(
+    "text,value,predicate",
+    [
+        ("我不吃辣。", "不吃辣", "饮食"),
+        ("我没有车。", "没有车", "车"),
+        ("I don't have a car.", "don't have a car", "car"),
+    ],
+)
+def test_a_negative_self_report_is_the_person_s_fact(app, text, value, predicate):
+    """(b) A fact about the person in their own words holds its negation, as their preference does."""
+    core, ctx = app
+    owner = replace(ctx, source_principal=_OWNER)
+    fact = _stated(core, owner, text, value, predicate=predicate, subject="user")
+    assert fact.state == "active"
+    assert core.current_claim(owner, fact.ref).payload["value_text"] == value
+
+
+def test_a_negative_self_report_replaces_the_fact_it_denies(app):
+    """(c) The person's facts keep the four cases: their "don't have a car any more" replaces "have a car"."""
+    core, ctx = app
+    owner = replace(ctx, source_principal=_OWNER)
+    held = _stated(core, owner, "I have a car.", "a car", predicate="have", subject="user")
+    denial = _stated(
+        core, owner, "I don't have a car any more.", "don't have a car", _LATER, predicate="have", subject="user"
+    )
+    assert held.state == "active"
+    assert (denial.ref, denial.state, denial.disposition) == (held.ref, "active", "inserted")
+
+
+@pytest.mark.parametrize(
+    "text,predicate,condition",
+    [
+        ("要是值班表调整，TEST-project 告警频道是 ops-pager。", "告警频道", "值班表调整"),
+        (
+            "If the rotation changes, the TEST-project alert channel is ops-pager.",
+            "alert channel",
+            "the rotation changes",
+        ),
+    ],
+)
+def test_a_claim_said_under_a_condition_holds_only_with_it(app, text, predicate, condition):
+    """Dropped, the condition would make ops-pager the alert channel now; kept, the claim is a slot of its own."""
+    core, ctx = app
+    bare = _stated(core, ctx, text, "ops-pager", predicate=predicate)
+    assert (bare.state, core.claim_history(ctx, bare.ref)[-1].reason) == ("proposed", "condition_not_preserved")
+    kept = _stated(core, ctx, text, "ops-pager", predicate=predicate, conditions=[condition])
+    assert kept.state == "active" and kept.ref != bare.ref
+
+
+def _denial_at_the_head(core, ctx, claim, text, value):
+    """The denial in ``text``, said later, written over ``claim`` as its head and active, the slot's value."""
+    denied = capture(core, ctx, text, when=_LATER)
+    with core.storage.write(ctx) as tx:
+        head = next(v for v in tx.claims.versions(claim.ref) if v.revision == v.current_revision)
+        quoted = [dict(source_ref=denied.ref, source_revision=denied.revision, quote=text)]
+        payload = {**head.payload, "value_text": value, "valid_from": denied.event["occurred_at"], "valid_to": None}
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+        tx.claims.append(
+            "TEST-scope", {**payload, "evidence_spans": quoted}, verdict, recorded_at=Clock.now, previous=head
+        )
+
+
+def test_restore_withdraws_a_denial_that_is_no_value_and_gives_back_what_it_displaced(app):
+    """A denial at its claim's head that is not its slot's value is withdrawn: one of another value, which gives back
+    the value it displaced if that value held when the denial was written and holds still, and any about something
+    other than the person.  The person's own denials are their values and stay.  The preview writes nothing; every
+    version stays."""
+    core, ctx = app
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not CircleCI.", "not CircleCI")
+    region = _stated(
+        core,
+        ctx,
+        "The TEST-project deploy region is us-east-1 until 2026-09-02.",
+        "us-east-1",
+        predicate="deploy region",
+        valid_to="2026-09-02T00:00:00Z",
+    )
+    _denial_at_the_head(core, ctx, region, "The TEST-project deploy region is not us-west-2.", "not us-west-2")
+    bucket = _stated(core, ctx, "The TEST-project backup bucket is vault-1.", "vault-1", predicate="backup bucket")
+    _denial_at_the_head(core, ctx, bucket, "The TEST-project backup bucket is not vault-1 any more.", "not vault-1")
+    alone, owner = _preferred(core, ctx, "我不吃辣。", "不吃辣")
+    spicy, _owner = _preferred(core, ctx, "我爱吃辣。", "爱吃辣", predicate="口味")
+    _preferred(core, ctx, "我现在不吃辣了。", "不吃辣", _LATER, predicate="口味")
+    assert {region.state, alone.state, spicy.state} == {"active"}
+    before = core.storage.path.read_bytes()
+    preview = core.operations.restore_displaced_values(ctx, limit=32)
+    assert {item["ref"]: item["restores"] for item in preview["changed"]} == {
+        jenkins.ref: 1,
+        region.ref: None,
+        bucket.ref: None,
+    }
+    assert core.storage.path.read_bytes() == before
+    assert len(core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"]) == 3
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    assert core.current_claim(ctx, jenkins.ref, as_of="2026-09-05T00:00:00Z").payload["value_text"] == "Jenkins"
+    assert [v.state for v in core.claim_history(ctx, jenkins.ref)] == ["active", "active", "retracted", "active"]
+    # The expired region is not re-instated, and the denial of a bucket the project no longer uses leaves none.
+    assert core.current_claim(ctx, region.ref) is None
+    assert [v.payload["value_text"] for v in core.claim_history(ctx, region.ref)] == [
+        "us-east-1",
+        *["not us-west-2"] * 2,
+    ]
+    assert core.current_claim(ctx, bucket.ref) is None
+    assert core.current_claim(ctx, bucket.ref, as_of="2026-09-02T12:00:00Z").payload["value_text"] == "vault-1"
+    assert core.current_claim(owner, alone.ref).payload["value_text"] == "不吃辣"
+    assert core.current_claim(owner, spicy.ref).payload["value_text"] == "不吃辣"
+    assert core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"] == []
+
+
+def test_requalify_keeps_the_person_s_own_claims_as_they_were(app):
+    """The person's own claims are stored under their principal, bound from their 我 when written: re-judging binds
+    them the same way and changes none, nor does restoring displaced values."""
+    core, ctx = app
+    preference, owner = _preferred(core, ctx, "我爱吃辣。", "爱吃辣")
+    fact = _stated(core, owner, "I have a car.", "a car", predicate="have", subject="user")
+    denial = _stated(core, owner, "我没有车。", "没有车", predicate="车", subject="user")
+    refs = (preference.ref, fact.ref, denial.ref)
+    before = [core.claim_history(owner, ref) for ref in refs]
+    assert [version[-1].state for version in before] == ["active"] * 3
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=False)
+    assert (report["changed"], report["skipped"], report["examined"]) == ([], [], 3)
+    assert core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"] == []
+    assert [core.claim_history(owner, ref) for ref in refs] == before
+
+
+def test_requalify_reads_a_denial_at_the_head_as_writing_does(app):
+    """Re-judging the store settles a denial as writing would (``mutate.denial_verdict``): one an older rule made the
+    head of TEST-project's CI service is withdrawn and Jenkins, which it displaced, comes back; one that became the
+    deploy region's only value is withdrawn and leaves none; and one the text gate now proves stays a proposal."""
+    core, ctx = app
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not CircleCI.", "not CircleCI")
+    region = capture(core, ctx, "The TEST-project deploy region is not us-east-2.", when=_LATER)
+    bucket = capture(core, ctx, "The TEST-project backup bucket is not vault-1.", when=_LATER)
+    alone = draft(region, "not us-east-2", kind="fact", predicate="deploy region", statement_kind="assertion")
+    unproved = draft(bucket, "not vault-1", kind="fact", predicate="backup bucket", statement_kind="assertion")
+    with core.storage.write(ctx) as tx:
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+        alone_ref = tx.claims.append("TEST-scope", alone, verdict, recorded_at=Clock.now).ref
+        refused = Qualification("proposed", "inferred_suggestion", "fact_entailment_unproved")
+        bucket_ref = tx.claims.append("TEST-scope", unproved, refused, recorded_at=Clock.now).ref
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=False)
+    assert {item["ref"]: item["now"] for item in report["changed"]} == {
+        jenkins.ref: "retracted:denial_of_another_value",
+        alone_ref: "retracted:denial_not_a_value",
+        bucket_ref: "proposed:denial_not_a_value",
+    }
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    assert core.current_claim(ctx, alone_ref) is None and core.current_claim(ctx, bucket_ref) is None
+    assert core.operations.requalify_claims(ctx, limit=32, dry_run=False)["changed"] == []
+
+
 @pytest.mark.parametrize("origin", ["assistant_visible", "host_generated", "memory_reinjection", "origin_unknown"])
 def test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering(app, origin):
     core, ctx = app
@@ -570,6 +976,29 @@ def test_M40_reminder_does_not_complete_intention(app, origin, text):
     assert attempt.state == "proposed" and core.current_claim(ctx, item.ref).payload["intention"]["state"] == "pending"
 
 
+def test_a_cancellation_or_an_acceptance_said_under_a_condition_proves_nothing(app):
+    core, ctx = app
+    item = accept(core, ctx, intention(capture(core, ctx, "TEST-project 验收前提醒检查散热。"))).items[0]
+    cancel = capture(core, ctx, "要是验收提前，TEST-project 散热检查约定就取消。", when="2026-09-03T12:00:00Z")
+    assert accept(core, ctx, intention(cancel, "cancelled")).items[0].state == "proposed"
+    assert core.current_claim(ctx, item.ref).payload["intention"]["state"] == "pending"
+    source = capture(core, ctx, "要是复测通过，TEST-project 验收前检查方法就认可，先检查温度，再验收。")
+    procedure = draft(
+        source,
+        "检查方法",
+        kind="procedure",
+        predicate="验收方法",
+        procedure=dict(
+            conditions=["验收前"],
+            non_applicable=[],
+            method=["先检查温度", "再验收"],
+            verification_basis="user_accepted",
+            counterexample_refs=[],
+        ),
+    )
+    assert accept(core, ctx, procedure).items[0].state == "proposed"
+
+
 def test_intention_actual_human_completion_and_procedure_evidence_are_qualified(app):
     core, ctx = app
     completed = capture(core, ctx, "TEST-project 散热检查已完成。")
@@ -613,6 +1042,170 @@ def test_negative_and_questioned_operations_do_not_change_current(app, raw):
     assert core.current_claim(ctx, item.ref).revision == 1
     with pytest.raises(ContractError, match="revision_not_asserted"):
         core.revise(ctx, revise_request(item, source, None if "撤回" in raw else "银色"))
+
+
+@pytest.mark.parametrize(
+    "raw,value",
+    [
+        # Said under a condition or a supposition: what would change, not what did.
+        ("要是值班表调整，TEST-project 配色就会改成 #A1。", "#A1"),
+        ("万一预算削减，TEST-project 配色换成银色。", "银色"),
+        ("预算削减的话，TEST-project 配色换成银色。", "银色"),
+        ("If the budget is cut, TEST-project 配色 would switch to 银色.", "银色"),
+        # Asked without a question mark.
+        ("TEST-project 配色换成银色怎么样", "银色"),
+        ("Did TEST-project 配色 change to 银色", "银色"),
+        # Someone else's words, or quoted text.
+        ("张三说：TEST-project 配色换成银色。", "银色"),
+        ("张三说 TEST-project 配色换成银色了。", "银色"),
+        ("张三：TEST-project 配色换成银色。", "银色"),
+        ("张三表示 TEST-project 配色换成银色。", "银色"),
+        ("张三称 TEST-project 配色换成银色。", "银色"),
+        ("张三提到 TEST-project 配色换成银色了。", "银色"),
+        ("张三认为 TEST-project 配色应该换成银色。", "银色"),
+        ("Alice: TEST-project 配色 should change to 银色.", "银色"),
+        ("Alice claims TEST-project 配色 should switch to 银色.", "银色"),
+        ("@alice: TEST-project 配色改成银色。", "银色"),
+        ("Alice (PM): TEST-project 配色改成银色。", "银色"),
+        ("欧阳明明：TEST-project 配色换成银色。", "银色"),
+        ("司马懿：TEST-project 配色换成银色。", "银色"),
+        ("> TEST-project 配色改成银色。", "银色"),
+        ("The style guide says “TEST-project 配色改成银色”.", "银色"),
+    ],
+)
+def test_a_change_the_person_does_not_assert_corrects_nothing(app, raw, value):
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    source = capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    current = core.current_claim(ctx, item.ref)
+    assert (current.revision, current.payload["value_text"]) == (1, "蓝色")
+    with pytest.raises(ContractError, match="revision_not_asserted"):
+        core.revise(ctx, revise_request(item, source, value))
+    assert core.current_claim(ctx, item.ref).revision == 1
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "TEST-project 配色还是改成银色。",
+        "I would like TEST-project 配色 to switch to 银色.",
+        "我表示 TEST-project 配色换成银色。",
+        "更正：TEST-project 配色换成银色。",
+        "INFO: TEST-project 配色改成银色。",
+        "WARN: TEST-project 配色改成银色。",
+        "ERROR: TEST-project 配色改成银色。",
+        "DEBUG: TEST-project 配色改成银色。",
+        "status: TEST-project 配色改成银色。",
+        "value: TEST-project 配色改成银色。",
+    ],
+)
+def test_a_plain_correction_takes_the_value_its_replacement_names(app, raw):
+    """In 还是改成银色 the looser replacement word 是 stands too; the value is the word 改成 names.  The person's own
+    我表示, a heading of theirs and a log's or a key's prefix give their words to no one else."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "银色"
+
+
+@pytest.mark.parametrize(
+    "held,raw,value",
+    [
+        ("30 天", "TEST-project 配色改成 90 天了。", "90 天"),
+        ("1 GB", "TEST-project 配色换成 2 GB。", "2 GB"),
+        ("10 分钟", "TEST-project 配色调整为 30 分钟。", "30 分钟"),
+        ("30 days", "TEST-project 配色: change to 90 days.", "90 days"),
+        ("#night-shift", "TEST-project 配色换成 #ops-pager。", "#ops-pager"),
+    ],
+)
+def test_a_correction_takes_the_whole_value_it_names(app, held, raw, value):
+    """A number with its unit (90 天, 2 GB), or a word opening with the mark a channel's name carries (#ops-pager), is
+    all of the value."""
+    core, ctx = app
+    item, _ = initial(core, ctx, value=held)
+    capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == value
+
+
+@pytest.mark.parametrize(
+    "raw", ["TEST-project 配色改成 Jenkins 来跑 CI。", "TEST-project 配色: switch to Jenkins for the nightly runs."]
+)
+def test_a_replacement_that_names_more_than_a_value_is_left_for_the_person_to_settle(app, raw):
+    """A replacement that may say more than which value ("Jenkins 来跑 CI") leaves the claim its value, and the change
+    waits, unresolved."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    source = capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "蓝色"
+    assert core.records.unresolved_updates(ctx)[0]["source_ref"] == source.ref
+
+
+@pytest.mark.parametrize(
+    "raw,state",
+    [
+        ("张三：TEST-project 配色是银色。", "proposed"),
+        ("张三：\nTEST-project 配色是银色。", "proposed"),
+        ("张三表示 TEST-project 配色是银色。", "proposed"),
+        ("我表示 TEST-project 配色是银色。", "active"),
+        ("更正：TEST-project 配色是银色。", "active"),
+        ("库里只有这一句：TEST-project 配色是银色。", "active"),
+        ("记住：TEST-project 配色是银色。", "active"),
+        ("Remember: TEST-project 配色 is 银色.", "active"),
+        ("Alice (PM): TEST-project 配色是银色。", "proposed"),
+        ("@alice: TEST-project 配色是银色。", "proposed"),
+        ("欧阳明明：TEST-project 配色是银色。", "proposed"),
+        ("Alice: I prefer TEST-project 配色 银色.", "proposed"),
+        ("INFO: TEST-project 配色是银色。", "active"),
+        ("status: TEST-project 配色是银色。", "active"),
+        ("Value: TEST-project 配色是银色。", "active"),
+    ],
+)
+def test_a_claim_in_words_given_to_someone_else_is_not_the_person_s(app, raw, state):
+    """Qualification gives words to a speaker as the correction path does (``attributed_to_another``)."""
+    core, ctx = app
+    item = accept(core, ctx, draft(capture(core, ctx, raw), "银色")).items[0]
+    reason = core.claim_history(ctx, item.ref)[-1].reason
+    assert (item.state, reason) == (state, "other_speaker" if state == "proposed" else "explicit_scoped_source")
+
+
+def test_a_labelled_third_party_neither_ends_nor_retracts_a_value(app):
+    """Alice (PM)'s "not Jenkins any more" is her word, not the person's, so Jenkins stays; nor does her 不再使用
+    retract anything."""
+    core, ctx = app
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    text = "Alice (PM): The TEST-project CI service is not Jenkins any more."
+    denial = _stated(core, ctx, text, "not Jenkins", _LATER)
+    assert (denial.state, core.claim_history(ctx, jenkins.ref)[-1].reason) == ("proposed", "other_speaker")
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    item, _ = initial(core, ctx)
+    capture(core, ctx, "Alice (PM): 不再使用 TEST-project 配色蓝色。", when=_LATER)
+    current = core.current_claim(ctx, item.ref)
+    assert current is not None and current.payload["value_text"] == "蓝色"
+
+
+def test_a_correction_naming_its_claim_by_ref_applies(app):
+    """A claim's ref (claim-…) is the surest name a person gives it; its "claim" is no one else's report."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    capture(core, ctx, f"TEST-project 配色这条 {item.ref} 写错了，改为银色。", when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "银色"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "TEST-project 配色下周换成银色。",
+        "TEST-project 配色会改成银色。",
+        "TEST-project 配色 will switch to 银色 next week.",
+    ],
+)
+def test_a_change_said_for_later_is_left_for_the_person_to_settle(app, raw):
+    """Capture dates a correction to its message; a change said for later keeps the raw update instead."""
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    source = capture(core, ctx, raw, when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "蓝色"
+    assert core.records.unresolved_updates(ctx)[0]["source_ref"] == source.ref
 
 
 def test_question_marked_preference_source_cannot_become_active_claim(app):

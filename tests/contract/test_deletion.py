@@ -169,7 +169,7 @@ def test_expected_revision_and_explicit_batch_authorization_are_required(app):
     assert core.forget(ctx, request(source, second), remaining_seconds=10)["read_blocked"]
 
 
-@pytest.mark.parametrize("text", ["不要删除 ", "是否删除 ", "删除了吗？ "])
+@pytest.mark.parametrize("text", ["不要删除 ", "是否删除 ", "删除了吗？ ", "要是没用了就删除 ", "万一过期的话，删除 "])
 def test_negative_or_unsettled_delete_does_not_change_any_target(app, text):
     core, ctx = app
     item, source = initial(core, ctx)

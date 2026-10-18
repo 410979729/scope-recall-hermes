@@ -1,6 +1,6 @@
 """The maintenance passes an operator runs on a store (``MemoryCore.operations``): repairing and requalifying
-claims, retiring rootless proposals, unindexing withheld tool outputs, retrying failed work, re-embedding into a
-new space and purging."""
+claims, retiring rootless proposals, withdrawing denials that hold a claim's head, unindexing withheld tool outputs,
+retrying failed work, re-embedding into a new space and purging."""
 
 from __future__ import annotations
 
@@ -69,6 +69,26 @@ class Operations:
         opener = self._core.storage.read if dry_run else self._core.storage.write
         with opener(context, remaining_seconds=seconds) as tx:
             return _retire(
+                tx, now=self._core.clock.utc_now(), after_ref=after_ref, limit=limit, dry_run=dry_run
+            ).to_dict()
+
+    def restore_displaced_values(
+        self,
+        context: TrustedContext,
+        *,
+        after_ref: str = "",
+        limit: int = 16,
+        dry_run: bool = True,
+        remaining_seconds: float | None = None,
+    ):
+        """Withdraw the denials of one bounded page that hold a claim's head without being its value, giving back what
+        they displaced; a preview unless ``dry_run=False``."""
+        from .requalify import restore_displaced_values as _restore
+
+        seconds = self._core.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
+        opener = self._core.storage.read if dry_run else self._core.storage.write
+        with opener(context, remaining_seconds=seconds) as tx:
+            return _restore(
                 tx, now=self._core.clock.utc_now(), after_ref=after_ref, limit=limit, dry_run=dry_run
             ).to_dict()
 

@@ -70,6 +70,7 @@ def test_alias_target_from_other_project_is_not_accepted(app):
         "TEST-mist 项目改名为 TEST暮光吗？",
         "TEST-mist 项目改名为 TEST暮光吗",
         "TEST-mist 如果改名为 TEST暮光，就保留旧称。",
+        "要是 TEST-mist 改名为 TEST暮光，就保留旧称。",
         "TEST-mist 不是改名为 TEST暮光，仍叫 TEST晨雾。",
     ],
 )

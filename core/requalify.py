@@ -30,12 +30,23 @@ from typing import Any
 
 from ..contracts import ContractError
 from .claim_normalization import expand_frames
-from .claims import Qualification, bind_claim_subject, evidence_refs, qualify, same_assertion
+from .claims import (
+    DENIAL_REASON,
+    NOT_A_VALUE_REASON,
+    Qualification,
+    bind_claim_subject,
+    evidence_refs,
+    is_denial,
+    qualify,
+    same_assertion,
+    select_effective,
+    valid_at,
+)
 from .confirmation import CONFIRMED_REASON
 from .corroboration import CORROBORATED_REASON
 from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS, NO_DERIVATION_ROOT_REASON
-from .mutate import apply_claim, register_applied_candidate
+from .mutate import apply_claim, denial_verdict, register_applied_candidate
 
 #: Page ceiling.  Matches ``repair_frames``: large enough to finish a real
 #: store in a few passes, small enough that one pass is an ordinary transaction.
@@ -55,11 +66,13 @@ def _preserved_reasons() -> frozenset[str]:
     vouched for it, or two independent witnesses did -- and re-running the text
     gate over a single stored payload would return "unproved" for both and
     silently undo them.  Every user confirmation would be withdrawn by the next
-    maintenance pass.
+    maintenance pass.  A denial's verdict answers another still: whether it is
+    its slot's value, given what the slot held when it was written.  The text
+    gate alone would promote it.
 
     Imported lazily so this module stays free of import cycles with ``mutate``.
     """
-    return frozenset({CONFIRMED_REASON, CORROBORATED_REASON})
+    return frozenset({CONFIRMED_REASON, CORROBORATED_REASON, DENIAL_REASON, NOT_A_VALUE_REASON})
 
 
 @dataclass
@@ -111,22 +124,35 @@ def _head(tx, ref: str):
 
 
 def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True) -> RequalifyReport:
-    """Re-judge one bounded page of stored claims.  Returns what moved."""
+    """Re-judge one bounded page of stored claims.  Returns what moved.
+
+    A denial is judged as writing judges it (``mutate.denial_verdict``): one at the head that is no value of its slot
+    is withdrawn (``_settle_denial``), and one the text gate alone would promote stays a proposal."""
     refs = _page(tx, after_ref, limit)
     preserved = _preserved_reasons()
     report = RequalifyReport(applied=not dry_run)
     for ref in refs:
         report.last_ref = ref
-        head = _head(tx, ref)
+        versions = tx.claims.versions(ref)
+        head = next((v for v in versions if v.revision == v.current_revision), None)
         if head is None or head.state not in REQUALIFIABLE_STATES:
             continue
         if head.reason in preserved:
             report.skipped.append({"ref": ref, "why": f"not_text_derived:{head.reason}"})
             continue
         report.examined += 1
+        held, denial_reason = _denial_standing(tx, head, versions) if is_denial(head.payload) else (None, None)
+        if denial_reason is not None and head.state != "proposed":
+            entry = _settle_denial(tx, head, held, denial_reason, now=now, dry_run=dry_run)
+            payload = head.payload
+            entry.update(
+                subject=payload.get("subject"), predicate=payload.get("predicate"), value=payload.get("value_text")
+            )
+            report.changed.append(entry)
+            continue
         try:
             roots = tx.claims.roots(evidence_refs(head.payload))
-            proposal, subject_bound, binding_issue = bind_claim_subject(head.payload, roots)
+            proposal, subject_bound, binding_issue = bind_claim_subject(head.payload, roots, stored=True)
             verdict = (
                 Qualification("proposed", "inferred_suggestion", binding_issue)
                 if binding_issue is not None
@@ -140,6 +166,8 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
             # re-judgement, and it is not this operation's decision to make.
             report.skipped.append({"ref": ref, "why": "assertion_would_change"})
             continue
+        if denial_reason is not None and verdict.state != "proposed":
+            verdict = Qualification("proposed", "inferred_suggestion", denial_reason)
         if (verdict.state, verdict.reason) == (head.state, head.reason):
             continue
         entry = {
@@ -223,12 +251,74 @@ def retire_rootless_proposals(
     return report
 
 
+def _denial_standing(tx, head, versions):
+    """What the slot held when ``head``, a denial, was written (``select_effective``), and why the denial is no value
+    of its slot there (``mutate.denial_verdict``, as writing it now would judge), or None where it is one."""
+    earlier = tuple(v for v in versions if v.revision < head.revision)
+    held = select_effective(earlier, head.recorded_from) if earlier else None
+    reason, _ends = denial_verdict(head.payload, held, tx.claims.roots(evidence_refs(head.payload)))
+    return held, reason
+
+
+def _settle_denial(tx, head, held, reason: str, *, now: str, dry_run: bool) -> dict[str, Any]:
+    """Withdraw ``head``, a denial at its claim's head that is no value of its slot (``_denial_standing``), with a
+    retracted version, so no read at any instant takes it for the value; and where it denied another value than the
+    one held, re-instate that value as it was, if it still holds (``valid_at``): an expired one is not.  Every version
+    stays."""
+    displaced = held if reason == DENIAL_REASON else None
+    restores = displaced if displaced is not None and valid_at(displaced, now, historical=False) else None
+    entry = {
+        "ref": head.ref,
+        "was": f"{head.state}:{head.reason}",
+        "now": f"retracted:{reason}",
+        "restores": None if restores is None else restores.revision,
+    }
+    if not dry_run:
+        saved = tx.claims.append(
+            head.scope_id, head.payload, Qualification("retracted", head.basis, reason), recorded_at=now, previous=head
+        )
+        if restores is not None:
+            verdict = Qualification(restores.state, restores.basis, restores.reason)
+            saved = tx.claims.append(head.scope_id, restores.payload, verdict, recorded_at=now, previous=saved)
+        tx.candidates.register(saved.ref, saved.revision, observed_at=now, schedule_initial=False)
+        entry["revision"] = saved.revision
+    return entry
+
+
+def restore_displaced_values(
+    tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True
+) -> RequalifyReport:
+    """Withdraw each denial of one bounded page that holds its claim's head without being its slot's value, and give
+    back the value it displaced.
+
+    A denial is its slot's value only as the person's own answer (``mutate.denial_verdict``): any other at the head
+    ("not CircleCI" over Jenkins, "not us-east-2" as a project's region) reads as the slot's value, and is settled as
+    ``_settle_denial`` says; the value a denial of another value displaced comes back if it was the slot's value when
+    the denial was written and holds still.  ``requalify_claims`` settles them the same way.  The report names refs and
+    revisions only, never claim text.
+    """
+    refs = _page(tx, after_ref, limit)
+    report = RequalifyReport(applied=not dry_run)
+    for ref in refs:
+        report.last_ref = ref
+        versions = tx.claims.versions(ref)
+        head = next((v for v in versions if v.revision == v.current_revision), None)
+        if head is None or head.state not in {"active", "disputed"} or not is_denial(head.payload):
+            continue
+        report.examined += 1
+        held, reason = _denial_standing(tx, head, versions)
+        if reason is not None:
+            report.changed.append(_settle_denial(tx, head, held, reason, now=now, dry_run=dry_run))
+    return report
+
+
 __all__ = [
     "MAX_PAGE",
     "REQUALIFIABLE_STATES",
     "ROOTLESS_REASON",
     "RequalifyReport",
     "requalify_claims",
+    "restore_displaced_values",
     "retire_rootless_proposals",
 ]
 

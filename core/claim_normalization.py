@@ -6,7 +6,7 @@ import re
 from copy import deepcopy
 
 from .claims import evidence_context, rejects_other_value
-from .source_qualification import AUTHORITY_QUESTION, REPORTED_SPEECH, UNASSERTED_UNCERTAINTY
+from .source_qualification import AUTHORITY_QUESTION, CONDITIONAL, REPORTED_SPEECH, UNASSERTED_UNCERTAINTY
 
 PROJECT_TAG = re.compile(r"项目[【\[][^【】\[\]\n]{1,120}[】\]]")
 _SELF_ATTRIBUTE = re.compile(r"(?:我的|本人的)(?:长期|默认|通常)?(?:偏好|喜好|习惯|要求|决定)")
@@ -122,11 +122,10 @@ _NAMING = (
     ),
     re.compile(r"(?P<subject>[^,;.!?\n]{1,80}?)\s+(?P<verb>is called|is named)\s+(?P<name>[^,;.!?\n]{1,60})", re.I),
 )
-#: A name said under a condition, or as an example, was not given: "如果我养猫的话，我的猫叫年糕".
+#: A name said under a condition (``CONDITIONAL``), in a fiction or as an example was not given:
+#: "如果我养猫的话，我的猫叫年糕".
 _UNASSERTED_NAMING = re.compile(
-    r"假设|假如|如果|要是|倘若|万一|除非|设想|虚构|假定|比如|例如|举例|"
-    r"\b(?:if|unless|suppose|supposing|imagine|hypothetical|fictional|for example)\b",
-    re.I,
+    CONDITIONAL.pattern + r"|虚构|比如|例如|举例|\b(?:hypothetical|fictional|for example)\b", re.I
 )
 
 

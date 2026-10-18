@@ -846,6 +846,26 @@ by reference, never by text. A retired claim gets a retracted version and stops
 waiting for evaluation; its sources, its earlier versions and every confirmed
 claim stay as they are.
 
+A store can hold claims whose current version is a denial that is not the
+slot's value: one of another value than the one held ("the CI service is not
+CircleCI" while it is Jenkins, "I don't like PowerShell" while the preferred
+shell is bash), or one in a fact about anything but the person ("the deploy
+region is not us-east-2"). Take a `backup` first; it is the way back. Then:
+
+```bash
+scope-recall restore-displaced-values --config /path/to/instance-root/scope-recall/runtime-config.json --limit 32 --apply
+```
+
+It pages like `retire-rootless-claims`, and without `--apply` it only lists the
+claims it would change and the revision it would restore, by reference. Each
+such denial gets a retracted version. The value a denial of another value
+displaced becomes current again if it held when the denial was written and
+holds still; otherwise the claim has no current value. The person's own
+denials, in a preference or a fact about them, that are the slot's only value
+("我不吃辣") or deny the value they replaced ("I don't drink coffee any more")
+are their values, and the command leaves them. Nothing is deleted: every
+version stays in the claim's history.
+
 An earlier release's capture filter left a one-line summary in place of a tool
 output it withheld ("Tool execution summary ... output_preview=omitted"); stores
 that imported that history hold many. Since 3.7.4 such a placeholder is found by

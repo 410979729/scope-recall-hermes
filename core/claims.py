@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -21,14 +22,15 @@ from ..contracts import (
 )
 from .candidate_lifecycle import SELF_SUBJECTS
 from .fact_actions import ClaimDraft, EvidenceReference
-from .fact_evidence import evidence_supports_claim, evidence_supports_relation
+from .fact_evidence import evidence_supports_claim, evidence_supports_relation, stem
 from .fact_temporal_semantics import classify_durable_state_clause
 from .source_qualification import (
     AUTHORITY_QUESTION,
+    CONDITIONAL,
     RELATIVE_SCOPE,
-    REPORTED_SPEECH,
     UNASSERTED_UNCERTAINTY,
     asserted_marker,
+    attributed_to_another,
     bound_literal,
     condition_supports_value,
     in_pasted_text,
@@ -131,6 +133,141 @@ _COMPLETION = re.compile(r"已经完成|已完成|检查完成|完成了|\b(?:co
 _CANCELLATION = re.compile(r"取消|撤销|作废|\b(?:cancel|revoke|withdraw)\b", re.I)
 _NEGATED_COMPLETION = re.compile(r"未完成|没[有]?完成|尚未完成|提醒|\b(?:not done|not completed|remind)\b", re.I)
 _NEGATION = re.compile(r"不是|并非|没有|未曾|不喜欢|讨厌|\b(?:not|never|dislike)\b", re.I)
+#: The verbs of being, having, liking and doing a Chinese negator denies with what follows them ("不是 X", "没有车",
+#: "不吃辣", "不喜欢用 X"); before any other word it is part of that word (不错, 不过, 没问题, 不客气, 不同意, 不知道,
+#: 不用谢, 不在乎).
+_DENIED_VERB = (
+    r"是|有(?!问题|关系|事)|喜欢|爱|想(?!到)|要(?!紧)|需要|用(?!谢)|使用|吃|喝|抽|吸|穿|戴|碰|玩|开|住|睡|养|信|怕"
+    r"|在(?!乎|意)|去|做|坐|骑|买|选|看|听"
+)
+#: A denial's negator at the opening of a value, after the adverbs that may lead it ("一点也不喜欢", "really don't"):
+#: a Chinese negator with the degree or the time it carries (不是很, 不太, 不再, 别再) before a verb of being, having,
+#: liking or doing; an aversion ("讨厌 X", "受不了 X", "can't stand X", "dislikes X"); or an English negator ("not X",
+#: "isn't X", "don't have a car", "never drink coffee", "no longer uses X").  不一定 doubts rather than denies, and an
+#: English negator before a word of knowing, minding or contrast denies nothing ("not bad", "not only X but Y", "don't
+#: know", "not sure", "isn't it X").
+_NEGATOR = re.compile(
+    r"^\s*(?:(?:一点[也都]|根本|完全|从来|从|向来|也|都|还|并|已经|再也|很|真|实在|一直|平时|现在)\s*)*"
+    r"(?:(?:并非|绝非|讨厌|厌恶|反感|受不了)(?=\s*[^\s。，！？,.!?])"
+    r"|(?:不|没|别|未曾|尚未|未)(?:是(?=很|太|那么|特别))?(?:太|大|很|那么|特别|怎么|常|再|会|能)*"
+    rf"(?=(?:{_DENIED_VERB})\s*[^\s。，！？,.!?]))"
+    r"|^\s*(?:(?:really|just|still|simply|definitely|absolutely|is|are|was|were|do|does|did)\s+)*"
+    r"(?:(?:not|never|no\s+longer|cannot|can['’]?t|\w+n['’]t)\s+"
+    r"(?!(?:bad|only|just|merely|sure|certain|know|knows|knew|think|mind|care|matter|remember|it|that|this|there"
+    r"|a\s+problem)\b)"
+    r"|(?:dislikes?|hates?)\s+)(?=[^\s.,!?])",
+    re.I,
+)
+#: Where a denial goes on to say what holds instead: "not X but Y", 不是 X 而是 Y, 不是 X，是 Y, 不再用 X 改用 Y.
+_CONTRAST = re.compile(
+    r"\s*(?:[，,;；]\s*(?:而是|是|改用|改为|改成|换成|换用|换为|用)|而是|改用|改为|改成|换成|换用|换为"
+    r"|,?\s*\b(?:but|instead)\b)",
+    re.I,
+)
+#: A particle or a word of time a denial may end its target with, which neither names nor narrows what it denies (了,
+#: "any more", "again").
+_SINCE = re.compile(
+    r"(?:\s*(?:了|啦|呀|啊|以后|now|already|anymore|any\s+(?:more|longer)|no\s+more|at\s+all|(?:ever\s+)?again"
+    r"|from\s+now\s+on))+[\s。.!！]*$",
+    re.I,
+)
+#: Kinds whose slot holds a value, so a denial can only say what it is not.  A constraint's negation is the rule
+#: itself ("never push to main"), and a decision not to do something is the decision.
+_VALUE_SLOT_KINDS = frozenset({"fact", "preference"})
+#: Why a denial's own version is a proposal: it denies another value than the one its slot holds; or it is no value
+#: of its slot (``mutate.denial_verdict``).
+DENIAL_REASON = "denial_of_another_value"
+NOT_A_VALUE_REASON = "denial_not_a_value"
+#: Why a value ended: a source denies it.
+DENIED_REASON = "value_denied"
+#: A word of a value as values are compared: one CJK character, or an identifier whole with the marks it carries
+#: (v3.1, my_var, ops-pager, a/b, #ops-pager, @owner).
+_VALUE_WORD = re.compile(r"[\u3400-\u9fff]|[#@]?[^\W\u3400-\u9fff](?:[./-]?[^\W\u3400-\u9fff])*")
+_ARTICLES = frozenset({"a", "an", "the"})
+
+
+def _value_words(text: str) -> tuple[str, ...]:
+    words = _VALUE_WORD.findall(unicodedata.normalize("NFKC", text).casefold())
+    return tuple(stem(word) for word in words if word not in _ARTICLES)
+
+
+#: The copula a denial puts before what it denies ("不是 X", "is not X"), and the verbs it may name it under ("不喜欢用
+#: X", "don't like X", "can't stand X"), as ``_value_words`` gives them.
+_COPULA = frozenset(_value_words("是 is are was were am be"))
+_DENYING_VERBS = _COPULA | frozenset(
+    _value_words(
+        "有 喜欢 爱 想 要 需要 用 使用 吃 喝 抽 吸 穿 戴 碰 玩 开 住 睡 养 信 怕 在 去 做 坐 骑 买 选 看 听"
+        " have has having like liking love want need use using eat drink smoke wear drive play own live work go take"
+        " prefer enjoy stand"
+    )
+)
+
+
+@dataclass(frozen=True)
+class Denial:
+    """A denial read from a claim's value (``read_denial``): the words of the target it denies, as ``_value_words``
+    gives them and without the time words after it, and whether it goes on to say what holds instead."""
+
+    target: tuple[str, ...]
+    contrast: bool
+
+    @property
+    def names_a_value(self) -> bool:
+        """Whether the target holds more than the verbs of its construction: 不吃了 and "never again" name nothing."""
+        return any(word not in _DENYING_VERBS for word in self.target)
+
+
+def read_denial(payload) -> Denial | None:
+    """The denial a claim's value is, or None: a fact's or a preference's value that opens with a negator
+    (``_NEGATOR``) and asks nothing ("isn't it X?" asks).  What follows the negator is its target, up to what it says
+    holds instead (``_CONTRAST``) and without a word of time after it (``_SINCE``): the target of 不是很喜欢 X and of
+    "never use X again" is X, and of "not X but Y" X."""
+    value = str(payload.get("value_text") or "")
+    if payload.get("kind") not in _VALUE_SLOT_KINDS or AUTHORITY_QUESTION.search(value):
+        return None
+    negator = _NEGATOR.match(value)
+    if negator is None:
+        return None
+    rest = value[negator.end() :]
+    contrast = _CONTRAST.search(rest)
+    target = rest if contrast is None else rest[: contrast.start()]
+    return Denial(_value_words(_SINCE.sub("", target)), contrast is not None)
+
+
+def is_denial(payload) -> bool:
+    """Whether a claim's value says what its slot is not (``read_denial``): "not CircleCI", "不吃辣", "don't like
+    PowerShell"; not 不错, 没问题, 不一定喜欢 X, "not bad" or "isn't it X?"."""
+    return read_denial(payload) is not None
+
+
+def negates(denial, held) -> bool:
+    """Whether the denial ``denial`` says that the claim ``held`` (a payload) does not hold.
+
+    The target the denial denies (``read_denial``) and ``held``'s value are compared as the store compares values
+    (NFKC, case-folded), word by word: a CJK character is a word, an identifier is one word with its marks (v3.1,
+    #ops-pager), a Latin word is taken by the stem the fact gate gives a predicate's words, and an article is no word.
+    The denial negates the held value when the held value holds all the target after a copula (不是周三 negates
+    周三下午, 不吃辣 negates 爱吃辣, "don't drink coffee" negates "drinks coffee"), or when the target is the held
+    value itself under the verbs of the construction ("don't like PowerShell" negates PowerShell, 不喜欢喝红茶 negates
+    红茶).  A longer target does not negate a shorter value: its other words narrow what it denies, so 不是周三下午
+    leaves 周三 standing, as "not v3" leaves v3.1, "not 4 GB" 14 GB and 不喜欢喝红茶 茶.  A target of verbs alone
+    (不吃了) negates nothing.
+    """
+    read = read_denial(denial)
+    holds = _value_words(str(held.get("value_text") or ""))
+    if read is None or not read.names_a_value or not holds:
+        return False
+    denied = read.target
+    named = denied[1:] if denied[0] in _COPULA and len(denied) > 1 else denied
+    lead = len(denied) - len(holds)
+    return _runs_within(holds, named) or (
+        lead > 0 and denied[lead:] == holds and all(word in _DENYING_VERBS for word in denied[:lead])
+    )
+
+
+def _runs_within(words: tuple[str, ...], run: tuple[str, ...]) -> bool:
+    """Whether ``run`` stands in ``words`` as consecutive words."""
+    return any(words[at : at + len(run)] == run for at in range(len(words) - len(run) + 1))
 
 
 def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
@@ -164,15 +301,18 @@ def _unresolved_subject(proposal: ClaimProposal, roots: tuple[RootEvidence, ...]
 def bind_claim_subject(
     proposal: ClaimProposal,
     roots: tuple[RootEvidence, ...],
+    *,
+    stored: bool = False,
 ) -> tuple[ClaimProposal, bool, str | None]:
     """Bind a first-person model label to C1 evidence, or isolate it safely.
 
     The model may repeat ``我`` or a legacy self label, but it cannot mint an
     authority key. Unresolved sources receive a source-specific non-authority
     slot so different speakers in one shared scope cannot collapse together.
+    A claim already in the store (``stored``) carries the principal its self
+    label was bound to when it was written, and is bound from that label again,
+    so re-judging reads the person's own claims as writing did.
     """
-    if proposal["subject"].casefold() not in SELF_SUBJECTS:
-        return proposal, False, None
     relevant = tuple(
         root
         for root in roots
@@ -182,6 +322,9 @@ def bind_claim_subject(
             for span in proposal["evidence_spans"]
         )
     )
+    written = stored and {verified_human_ref(root) for root in relevant} == {proposal["subject"]}
+    if proposal["subject"].casefold() not in SELF_SUBJECTS and not written:
+        return proposal, False, None
     bound = deepcopy(proposal)
 
     def spans_of(root):
@@ -444,7 +587,7 @@ def _not_asserted(c: _Cited) -> str | None:
         return "transient_request_not_durable"
     if (
         c.kind in {"preference", "constraint", "decision"} and _QUOTED_OTHER.search(c.source_text)
-    ) or REPORTED_SPEECH.search(c.source_text):
+    ) or attributed_to_another(c.source_text):
         return "other_speaker"
     return None
 
@@ -455,6 +598,9 @@ def _scope_preserved(c: _Cited) -> str | None:
         not condition_supports_value(c.source_text, condition, c.proposal["value_text"]) for condition in conditions
     ):
         return "condition_not_supported"
+    # "要是值班表调整，告警频道是 X" holds only under its condition: a claim that drops it would say X holds now.
+    if CONDITIONAL.search(c.source_text) and not conditions:
+        return "condition_not_preserved"
     if _LIMIT.search(c.source_text) and not conditions and valid_to is None:
         return "missing_limitation"
     for marker in RELATIVE_SCOPE.finditer(c.source_text):
@@ -544,8 +690,10 @@ def _procedure_proved(c: _Cited) -> str | None:
 
 
 def _fact_entailed(c: _Cited) -> str | None:
-    """Ordinary durable facts keep the claim-frame support check."""
-    if c.kind != "fact" or c.explicit_attribute_correction:
+    """Ordinary durable facts keep the claim-frame support check.  A person's denial of themselves ("I don't have a
+    car", 我不吃辣) holds its verb in its value, so no frame orders subject, relation and value in it; bound to their
+    own clause (``bind_claim_subject``), it stands on that as their preference does."""
+    if c.kind != "fact" or c.explicit_attribute_correction or (c.subject_bound and is_denial(c.proposal)):
         return None
     try:
         draft = ClaimDraft.from_parts(

@@ -28,6 +28,15 @@ UNASSERTED_UNCERTAINTY = re.compile(
     r"reportedly|apparently|allegedly|rumou?red|unconfirmed|unverified)\b",
     re.I,
 )
+#: A condition or a supposition that what follows depends on ("要是值班表调整，就会改成 X", "if the rotation changes it
+#: would be X"): it says what would hold, not what holds.  "would like", "would prefer" and "would rather" ask for
+#: something instead.
+CONDITIONAL = re.compile(
+    r"如果|假如|假设|假使|假定|设想|要是|若是|倘若|万一|一旦|除非|的话|"
+    r"\b(?:if|unless|suppose|supposing|imagine|in\s+case|provided\s+that|as\s+long\s+as|hypothetically"
+    r"|would(?!\s+(?:like|love|prefer|rather)\b))\b",
+    re.I,
+)
 REPORTED_SPEECH = re.compile(
     r"他说|她说|他们说|同事说|朋友说|客户说|有人说|文档写|引用|原文|"
     r"\b(?:he|she|they|someone|customer|colleague|friend)\s+(?:said|says|wrote)|"
@@ -41,15 +50,70 @@ _UNASSERTED_CONTEXT = re.compile(
     r"customer said|may|might|maybe|perhaps|guess(?:ed)?|heard\s+that|reportedly)\b",
     re.I,
 )
-#: Someone else's words, or an example, around a first person: a named or unnamed speaker (``张三说：``,
-#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a quoted first person in double, CJK or single quotes (an
-#: apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a first person
-#: after a speaker's label (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
+#: What a statement says holds or changes: a copula, 用, a change (改成, 换成, "switch to"), what should be.
+_STATEMENT = r"(?:是|为|用|改|换|调整|应该|应当|要|\b(?:is|are|was|were|uses?|should|will|must|change|switch)\b)"
+#: A named or unnamed speaker other than the one writing, before what they said: ``张三说：``, ``张三说，``, a name
+#: opening a clause before 说 with nothing between (``张三说配色换成了银色``), or before 表示, 称, 提到, 认为, 觉得,
+#: 指出 or 声称 and a statement (``张三表示配色换成银色``; ``红色表示错误`` states nothing), ``Alice said``, ``the
+#: wiki says``, ``Everyone thinks``.  ``我说：``, ``我表示`` and ``I said`` are the writer's own; 说 in a noun (小说,
+#: 传说, 学说) says nothing, nor does it in 说错 (misspoke), 说好 (agreed), 说明 (explain) or 说得 (put it), nor 称 in
+#: a name (名称, 简称, 称为); and a verb that opens an identifier (``claim-4daf…``, a claim's ref) is no verb.
+_SAID_BY_ANOTHER = re.compile(
+    r"(?<![我小传学演游劝解])(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
+    r"|(?:^|(?<=[\n，,。；;！!？?、\s]))(?!我)[^\s，,。；;！!？?、：:]{1,8}?(?:(?<![小传学演游劝解])说(?![错好明得法服])"
+    r"|(?:表示|(?<![名简昵俗统通职堪相对匀])称(?![为作呼号赞心职重])|提到(?!的)|认为|觉得|指出|声称)"
+    rf"(?=[^。！？；;!?\n]*?{_STATEMENT}))"
+    r"|\b(?!I\b)\w+\s+(?:(?:said|says|wrote|thinks?|thought|believes?|believed|claims?|claimed|assumes?|assumed"
+    r"|guess(?:es|ed)?|heard)\b(?!-)|(?:told|tells)\s+\w+\b)",
+    re.I,
+)
+#: The common surnames a Chinese name begins with, less those that also begin everyday keys (方案, 高度, 任务, 金额,
+#: 周一).
+_SURNAME = (
+    "[王李张刘陈杨黄赵吴徐孙朱胡郭林罗郑梁谢宋唐韩冯邓曹彭肖董袁潘蒋蔡杜苏魏吕"
+    "丁沈姚卢姜崔谭汪廖贾韦邹孟熊秦邱尹薛闫雷侯陶贺顾郝龚邵覃武戴莫孔汤欧司]"
+)
+#: Surnames of two characters (欧阳明明, 司马懿, 上官婉儿).
+_COMPOUND_SURNAME = "(?:欧阳|司马|上官|诸葛|东方|皇甫|慕容|司徒|公孙|夏侯|令狐|尉迟|长孙|宇文)"
+#: A speaker's name as a line's label: a surname and one or two characters after it (张三, 李经理, 欧阳明明), 小 or 老
+#: before one (小王, 老张), 阿 and a character (阿乙), a role (同事, 客户, 老板), a handle (@alice), or a capitalised
+#: Latin word that is no heading, log level or key (Alice; not Note, Update, Remember, Status, Value); and a role or a
+#: time after it in brackets (Alice (PM), 张三（产品）).  An instruction or a key before its value (记住：, 配色：), a
+#: log's level (INFO:, ERROR:) and a key in lower case (status:, value:) are no name.
+_SPEAKER_NAME = (
+    rf"(?:{_COMPOUND_SURNAME}[\u3400-\u9fff]{{1,2}}|[小老]{_SURNAME}|{_SURNAME}[\u3400-\u9fff]{{1,2}}|阿[\u3400-\u9fff]"
+    r"|同事|客户|老板|领导|经理|主管|组长|老师|同学|朋友|家人|妈妈|爸爸|儿子|女儿|老婆|老公|对方|甲方|乙方|助手"
+    r"|@[\w.-]{1,24}"
+    r"|(?!(?:Note|Notes|Nb|Update|Updates|Correction|Edit|Summary|Fyi|Reminder|Remember|Important|Warning|Warn"
+    r"|Error|Info|Debug|Notice|Tip|Hint|Btw|Ps|Todo|Answer|Question|Result|Results|Conclusion|Decision|Context"
+    r"|Background|Status|State|Value|Values|Example|Reason|Cause|Output|Input|Source|Subject|Log|Name|Type|Mode"
+    r"|Level|Version|Owner|Problem|Issue|Fix|Plan|Goal|Task|Step|Steps|Next|Done)\b)[A-Z][a-z][A-Za-z0-9_.-]{0,15})"
+    r"(?:[^\S\n]*[(（][^()（）\n]{1,24}[)）])?"
+)
+#: What a line says when it holds a sentence rather than a key's value: a statement (``_STATEMENT``), a negation, a
+#: person or a liking (张三：我不吃辣, Alice: I prefer blue).
+_SAYS = (
+    rf"(?i:{_STATEMENT}|不|没|别|我|你|他|她|喜欢|偏好|讨厌"
+    r"|\b(?:i|my|me|we|our|you|he|she|they|not|never|no|prefer|like|love|hate|want|need)\b|n['’]t\b)"
+)
+#: A line that opens with another speaker's name (``_SPEAKER_NAME``) and a colon before a sentence (``_SAYS``), on it or
+#: on the next line (``张三：TEST-project 配色换成银色``, ``Alice (PM): the CI is GitLab``, ``Alice: I prefer blue``),
+#: after a list marker, a ``[10:32]`` or in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of
+#: theirs (``更正：``, ``Update:``, ``刚才写错了：``), a head that is a phrase (``库里只有这一句：``), a log's line
+#: (``INFO: …``) and a key before its value (``status: …``, ``Region: us-east-1``) give no one else's words.
+_SPEAKER_LINE = re.compile(
+    r"(?:^|(?<=\n))[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?(?:\[[^\]\n]{0,24}\][^\S\n]*)?(?:\*\*|__)?"
+    rf"{_SPEAKER_NAME}(?:\*\*|__)?[：:](?!//)(?=[^\n]*?{_SAYS}|[^\S\n]*\n[^\n]*?{_SAYS})"
+)
+#: Someone else's words, or an example, around a first person: a speaker other than the writer
+#: (``_SAID_BY_ANOTHER``, and ``Alice writes``, ``Alice hears``), a quoted first person in double, CJK or single
+#: quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a
+#: first person after a speaker's label (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one
+#: else's words.
 _REPORTED_SELF = re.compile(
-    r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)"
-    r"|(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
-    r"|\b(?!I\b)\w+\s+(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard"
-    r"|told\s+\w+|tells\s+\w+)\b"
+    r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)|"
+    + _SAID_BY_ANOTHER.pattern
+    + r"|\b(?!I\b)\w+\s+(?:writes|hears?)\b"
     r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
     r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
     r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
@@ -120,7 +184,9 @@ _ENGLISH_SELF_REPORT = re.compile(
     + r"|my\s+(?:preference|decision|requirement|constraint|habit)\b)",
     re.I,
 )
-_ENGLISH_FACT = re.compile(_ENGLISH_HEAD + r"I\s+(?:am|have|live|work)\b", re.I)
+_ENGLISH_FACT = re.compile(
+    _ENGLISH_HEAD + r"I\s+(?:am|(?:(?:do\s+not|don[’']t|never|no\s+longer)\s+)?(?:have|live|work))\b", re.I
+)
 _CJK_CHAR = re.compile(r"[\u3400-\u9fff]")
 _SENTENCE_BREAK = re.compile(r"[;；。!?！？\n]")
 _DURABLE_DIRECTIVE = re.compile(
@@ -226,12 +292,19 @@ def _quote_open(text: str) -> bool:
     )
 
 
-def _pasted_at(content: str, position: int) -> bool:
-    """Labels and quotation marks are read outside fenced blocks: code's own (``x: int``, ``'"'``) mark no speaker."""
+def quoted_at(content: str, position: int) -> bool:
+    """Whether ``position`` stands in quoted text: inside a fenced block, inside a quotation still open, or on a quoted
+    line (``> ...``).  Quotation marks are read outside fenced blocks: code's own (``'"'``) open none."""
     before = content[:position]
     fenced, outside = _outside_fences(before)
     line = before[before.rfind("\n") + 1 :]
-    return fenced or _SPEAKER_LABEL.search(outside) is not None or _quote_open(outside) or line.lstrip().startswith(">")
+    return fenced or _quote_open(outside) or line.lstrip().startswith(">")
+
+
+def _pasted_at(content: str, position: int) -> bool:
+    """Quoted text (``quoted_at``), or text after a speaker's label; labels are read outside fenced blocks too: code's
+    own (``x: int``) marks no speaker."""
+    return quoted_at(content, position) or _SPEAKER_LABEL.search(_outside_fences(content[:position])[1]) is not None
 
 
 def in_pasted_text(content: str, quote: str) -> bool:
@@ -284,7 +357,7 @@ def self_report_bound(content, value_text, *, kind=None):
         )
         english = _ENGLISH_SELF_REPORT.search(prefix)
         if kind == "fact":
-            chinese = chinese or re.search(r"(?:^|[\s：:])我(?:是|住在|工作于)", prefix)
+            chinese = chinese or re.search(r"(?:^|[\s：:])我(?:不|没)?(?:是|有|住在|工作于)", prefix)
             english = english or _ENGLISH_FACT.search(prefix)
         if chinese or english:
             return True
@@ -333,6 +406,24 @@ def is_transient_request(content):
     if type(content) is not str or not content.strip():
         return False
     return bool(_DIRECT_REQUEST.search(content) and not _DURABLE_DIRECTIVE.search(content))
+
+
+#: An example, which shows what might be said rather than says it (举例, 示例, "for example", "Example: …").
+_EXAMPLE = re.compile(r"举例|示例|\b(?:for example|example:)", re.I)
+
+
+def attributed_to_another(content: str) -> bool:
+    """Whether the text gives what it says to anyone but its writer: reported speech (``REPORTED_SPEECH``), a speaker
+    before what they said (``_SAID_BY_ANOTHER``), a line opening with their name (``_SPEAKER_LINE``) or an example
+    (``_EXAMPLE``), outside the writer's own framing (``老实说，``, ``That said,``).  The one check that claims and
+    corrections are read by; the writer's own ``我表示…`` stays theirs."""
+    unframed = _OWN_FRAMING.sub("", content)
+    return bool(
+        REPORTED_SPEECH.search(content)
+        or _EXAMPLE.search(content)
+        or _SAID_BY_ANOTHER.search(unframed)
+        or _SPEAKER_LINE.search(unframed)
+    )
 
 
 def first_person_reference(content):
@@ -408,6 +499,8 @@ def preserves_qualifiers(content, text, *, conditions=(), polarity_only=False):
 
 
 def asserted_marker(pattern, content):
-    return not AUTHORITY_QUESTION.search(content) and any(
+    """Whether ``content`` asserts one of ``pattern``'s markers: not asked, not under a condition or a supposition,
+    and with the marker's qualifiers kept."""
+    return not (AUTHORITY_QUESTION.search(content) or CONDITIONAL.search(content)) and any(
         preserves_qualifiers(content, match.group()) for match in pattern.finditer(content)
     )
