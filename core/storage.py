@@ -20,7 +20,7 @@ from ..contracts import (
 from .delete_storage import Deletions
 from .failure_retry import failure_kind, retry_class
 from .registry_storage import Registry
-from .restore import MARKER_FILENAME
+from .restore import restore_pending
 from .schema import (
     APPLICATION_ID,
     SCHEMA_VERSION,
@@ -548,8 +548,7 @@ class SQLiteStorage:
                 raise ContractError("STORAGE_UNAVAILABLE", "connection_cleanup") from exc
             self.__pending_close.pop()
         self._path_check()
-        restore_marker = self.binding.data_directory / MARKER_FILENAME
-        if not restoring and (restore_marker.exists() or restore_marker.is_symlink()):
+        if not restoring and restore_pending(self.binding.data_directory):
             raise ContractError("RESTORE_UNVERIFIED")
         timeout = self.timeout_seconds
         if remaining_seconds is not None:
@@ -809,8 +808,7 @@ class SQLiteStorage:
             self.verify(conn)
             # A restore can establish its fence while this connection waits
             # for the writer lease. Recheck after acquiring the transaction.
-            restore_marker = self.binding.data_directory / MARKER_FILENAME
-            if not restoring and (restore_marker.exists() or restore_marker.is_symlink()):
+            if not restoring and restore_pending(self.binding.data_directory):
                 raise ContractError("RESTORE_UNVERIFIED")
             yield tx
             if writable:

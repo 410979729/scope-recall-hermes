@@ -9,6 +9,7 @@ from scope_recall.core.retained_artifacts import (
     ArtifactGrant,
     RetainedBlob,
     erase_retained,
+    extended_path,
     read_retained,
     retain,
 )
@@ -23,15 +24,6 @@ def _grant(path: Path, media_type: str = "image/png", limit: int | None = None):
 PNG_V1 = b"\x89PNG\r\n\x1a\nTEST-v1"
 PNG_V2 = b"\x89PNG\r\n\x1a\nTEST-v2"
 WEBP = b"RIFF\x04\x00\x00\x00WEBP"
-
-
-def _io_path(path: Path) -> Path:
-    if os.name != "nt":
-        return path
-    value = os.path.abspath(os.fspath(path))
-    if value.startswith("\\\\?\\"):
-        return Path(value)
-    return Path("\\\\?\\" + value) if not value.startswith("\\\\") else Path("\\\\?\\UNC\\" + value[2:])
 
 
 def test_same_name_versions_are_content_addressed_and_immutable(tmp_path):
@@ -84,10 +76,10 @@ def test_read_detects_tamper_missing_and_erase_is_exact(tmp_path):
     source.write_bytes(WEBP)
     blob = retain(ctx.binding, _grant(source, "image/webp"))
     retained = ctx.binding.data_directory / blob.relative_path
-    _io_path(retained).write_bytes(b"tampered")
+    extended_path(retained).write_bytes(b"tampered")
     with pytest.raises(ContractError):
         read_retained(ctx.binding, blob)
-    _io_path(retained).write_bytes(WEBP)
+    extended_path(retained).write_bytes(WEBP)
     assert read_retained(ctx.binding, blob) == WEBP
     erase_retained(ctx.binding, blob)
     assert not retained.exists()
@@ -133,7 +125,7 @@ def test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial(monke
     retained = ctx.binding.data_directory / blob.relative_path
     alias = tmp_path / "hardlink.png"
     try:
-        os.link(_io_path(retained), _io_path(alias))
+        os.link(extended_path(retained), extended_path(alias))
     except OSError as exc:
         pytest.skip(f"hardlinks unavailable: {exc}")
     alias.write_bytes(b"BAD")
@@ -192,3 +184,11 @@ def test_blob_identity_is_bound_to_installation_and_agent(tmp_path):
     other = replace(ctx.binding, installation_id="OTHER-installation", agent_id="OTHER-agent")
     with pytest.raises(ContractError):
         read_retained(other, blob)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the extended-length form is Windows'")
+def test_a_path_is_named_in_its_extended_length_form_on_a_local_disk_and_on_a_share():
+    assert str(extended_path(Path(r"C:\TEST-目录\TEST-a.json"))) == r"\\?\C:\TEST-目录\TEST-a.json"
+    share = Path(r"\\TEST-host\TEST-share\TEST-目录\TEST-a.json")
+    assert str(extended_path(share)) == r"\\?\UNC\TEST-host\TEST-share\TEST-目录\TEST-a.json"
+    assert str(extended_path(extended_path(share))) == str(extended_path(share))

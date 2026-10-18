@@ -24,7 +24,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.core.inbox_rules import given_up, replayable
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
-from scope_recall.core.restore import MARKER_FILENAME
+from scope_recall.core.restore import restore_pending
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.runtime.model_budget import embedding_calls, provider_holds
@@ -158,7 +158,7 @@ def _backlog_is_stalled(worker_status: dict[str, Any], *, wake_seconds: float | 
 def _unopened(report: DoctorReport, data_directory: Path) -> bool:
     """Whether the store is left unread for a reason that refuses every open of it but one step of the operator's
     lifts, reported with that step: a restore not yet finished, a schema step not yet applied, a stamped header."""
-    if os.path.lexists(data_directory / MARKER_FILENAME):
+    if restore_pending(data_directory):
         report.capability_gaps.append("restore_pending")
         record_check(
             report,

@@ -1000,9 +1000,12 @@ first (`autostart pause`), then:
   another store's (`snapshot_identity`), one taken before an entry brought a scope of
   its own (`snapshot_scopes`) or before an entry still attached was attached
   (`snapshot_entries`; detach it first), or one at a schema it cannot replay into
-  (`snapshot_schema`). The snapshot stays open from its checks to its copy, so what
-  is copied is what was checked: another writer of its file is kept out, and a file
-  moved over it is not the one read.
+  (`snapshot_schema`). Where the file system cannot say whether the snapshot is one
+  of the store's files, it changes nothing either (`file_identity_unknown`). The
+  snapshot stays open from its checks to its copy, so what is copied is what was
+  checked and what the receipt's `snapshot_sha256` describes: another SQLite writer
+  is kept out, and a file moved over the snapshot is not the one read; one moved
+  over it as it is opened is refused (`snapshot_replaced`).
 - It backs the store up into `--backup-dir` as it is and closes it: it writes the
   ledger beside it (`restore-ledger.json`) and then the marker
   (`restore-required.json`), each through a file of its own that is synced and then
@@ -1012,11 +1015,12 @@ first (`autostart pause`), then:
   `memory.sqlite3-wal`, which held the snapshot's pages, is truncated: a reader
   still on an older snapshot holds that back, and the run stops with the store
   closed (`wal_busy`). The ledger stays beside the store, content-free, until the
-  next restore writes its own. The receipt names the backup, the ledger's digest and
-  the deletes it replayed (`purges_queued`): start the worker again, and its next
-  pass removes their vectors and attachments once more. The vector companion and
-  `retained\` are otherwise left as they are; an attachment only the replaced store
-  refers to stays there, for that store if it is restored in turn from its backup.
+  next restore writes its own or a purge (section 8) removes it with the store. The
+  receipt names the backup, the ledger's digest and the deletes it replayed
+  (`purges_queued`): start the worker again, and its next pass removes their vectors
+  and attachments once more. The vector companion and `retained\` are otherwise
+  left as they are; an attachment only the replaced store refers to stays there,
+  for that store if it is restored in turn from its backup.
 - A run cut short leaves the store closed: `restore_pending: true` in the output,
   `restore_pending` in `doctor`. Run the same command again: it finishes with the
   ledger it kept, and asks for `--backup-dir` only while the store is still as it

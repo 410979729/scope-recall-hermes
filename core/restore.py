@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ..contracts import ContractError, TrustedContext
 from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
+from .retained_artifacts import extended_path
 from .schema import SCHEMA_VERSION
 
 #: Beside ``memory.sqlite3`` while a restore is pending; every normal open refuses while it exists.
@@ -125,14 +126,25 @@ def _sync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+def restore_pending(data_directory: Path) -> bool:
+    """Whether a restore's marker is beside the store, whole or not: every open of the store refuses while it is.
+
+    On Windows the marker is looked for, as it is written, by its extended-length name, to which the 260-character
+    path limit does not apply.
+    """
+    return os.path.lexists(extended_path(data_directory / MARKER_FILENAME))
+
+
 def _write_whole(path: Path, text: str) -> None:
     """``text`` written to ``path`` through a file of its own beside it, synced, then moved over it on the disk.
 
     A crash leaves the earlier file or the whole new one, never part of one.  On Windows the move is ``MoveFileExW``
     with ``MOVEFILE_WRITE_THROUGH``, which returns only once the file is moved on the disk, where ``os.replace``
-    leaves the flag out; elsewhere it is ``os.replace``, then ``fsync`` of the directory.
+    leaves the flag out; elsewhere it is ``os.replace``, then ``fsync`` of the directory.  On Windows both files are
+    named in the extended-length form, to which the 260-character path limit does not apply.
     """
-    staged = path.with_name(f".{path.name}.{os.urandom(8).hex()}.tmp")
+    staged = extended_path(path.with_name(f".{path.name}.{os.urandom(8).hex()}.tmp"))
+    target = extended_path(path)
     try:
         with staged.open("x", encoding="utf-8") as stream:
             stream.write(text)
@@ -140,12 +152,15 @@ def _write_whole(path: Path, text: str) -> None:
             os.fsync(stream.fileno())
         if sys.platform == "win32":
             import ctypes  # Loaded here: every open of a store imports this module, and only a restore writes files.
+            from ctypes import wintypes
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            if not kernel32.MoveFileExW(str(staged), str(path), 0x1 | 0x8):  # REPLACE_EXISTING | WRITE_THROUGH
+            move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+            move.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+            move.restype = wintypes.BOOL
+            if not move(str(staged), str(target), 0x1 | 0x8):  # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
                 raise ctypes.WinError(ctypes.get_last_error())
         else:
-            os.replace(staged, path)
+            os.replace(staged, target)
             _sync_directory(path.parent)
     finally:
         staged.unlink(missing_ok=True)
@@ -153,7 +168,7 @@ def _write_whole(path: Path, text: str) -> None:
 
 def _kept_ledger(storage) -> dict | None:
     """The ledger kept beside the store (``LEDGER_FILENAME``), or None when none can be read."""
-    path = storage.binding.data_directory / LEDGER_FILENAME
+    path = extended_path(storage.binding.data_directory / LEDGER_FILENAME)
     if path.is_symlink() or not path.is_file():
         return None
     try:
@@ -172,7 +187,7 @@ def _closable(storage, context, ledger) -> bool:
     only that ledger holds what was forgotten since (``marker_damaged``).  A whole marker of another ledger refuses:
     the store is closed on that ledger (``restore_already_pending`` when it is kept, ``ledger_missing`` when not).
     """
-    if not os.path.lexists(storage.binding.data_directory / MARKER_FILENAME):
+    if not restore_pending(storage.binding.data_directory):
         return True
     kept = _kept_ledger(storage)
     digest = ledger_digest(ledger)
@@ -229,12 +244,13 @@ def _pending_marker(storage, context):
     ``checkpoint_unreadable`` when it holds no whole marker, and ``identity`` when it names another installation.
     """
     marker = storage.binding.data_directory / MARKER_FILENAME
-    if not os.path.lexists(marker):
+    if not restore_pending(storage.binding.data_directory):
         raise ContractError("RESTORE_UNVERIFIED", "checkpoint_missing")
-    if marker.is_symlink() or not marker.is_file():
+    found = extended_path(marker)
+    if found.is_symlink() or not found.is_file():
         raise ContractError("RESTORE_UNVERIFIED", "marker_path")
     try:
-        pending = json.loads(marker.read_text(encoding="utf-8")) if marker.stat().st_size <= 4096 else None
+        pending = json.loads(found.read_text(encoding="utf-8")) if found.stat().st_size <= 4096 else None
     except ValueError:
         pending = None
     if (
@@ -572,9 +588,10 @@ def replay_deletion_ledger(
     if not storage.truncate_wal(context, remaining_seconds=remaining_seconds, restoring=True):
         raise ContractError("RESTORE_UNVERIFIED", "wal_busy")
     storage._path_check()
-    if marker.is_symlink() or marker.parent.resolve() != storage.binding.data_directory.resolve():
+    found = extended_path(marker)
+    if found.is_symlink() or marker.parent.resolve() != storage.binding.data_directory.resolve():
         raise ContractError("RESTORE_UNVERIFIED", "marker_path")
-    marker.unlink()
+    found.unlink()
     _sync_directory(marker.parent)
     return dict(
         status="deletion_ledger_replayed",

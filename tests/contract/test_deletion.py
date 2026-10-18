@@ -1,7 +1,10 @@
 """P06 online/read/restore fencing in isolated SQLite; no host or vector claims."""
 
+import itertools
 import json
+import os
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 
 import pytest
@@ -17,10 +20,13 @@ from scope_recall.core.restore import (
     ledger_digest,
     pending_restore_ledger,
     replay_deletion_ledger,
+    restore_pending,
 )
+from scope_recall.core.retained_artifacts import extended_path
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.visibility import ObjectRef
-from test_claims import accept, app, capture, counts, draft, initial
+from test_claims import Clock, accept, app, capture, counts, draft, initial
+from v11_support import context as trusted_context
 
 
 def request(*items, mode="delete"):
@@ -560,6 +566,41 @@ def test_a_ledger_of_this_format_is_replayed_whatever_schema_wrote_it_and_anothe
     replay_deletion_ledger(core.storage, authority, closed_on(newer))
     assert not marker.exists()
     assert core.source(ctx, deleted.ref, 1) is None and core.current_claim(ctx, item.ref) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the 260-character path limit is Windows'")
+def test_a_restore_closes_and_reopens_a_store_whose_marker_passes_the_path_limit(tmp_path):
+    """A store's own files may be within Windows' 260-character path limit while its marker is not: in WAL mode the
+    store writes no rollback journal, whose name is longer.  The marker, and the files the marker and the ledger are
+    written through, are written and looked for by their extended-length names, which hold on a Windows that does not
+    lift the limit.  The store is created by its extended-length name, as it is where the limit is lifted, in a
+    directory named in Latin and Han letters."""
+    base = len(str(tmp_path)) + 1
+    data = tmp_path / ("TEST-长路径-" + "径" * (239 - base - len("TEST-长路径-")))
+    assert len(str(data / "memory.sqlite3-wal")) < 260 <= len(str(data / MARKER_FILENAME))
+    data.mkdir()
+    with closing(sqlite3.connect(extended_path(data / "memory.sqlite3"))) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+    ctx = replace(trusted_context(data), project_id="TEST-project", branch_id="TEST-main")
+    core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
+    core.initialize()
+    core.test_sequence = itertools.count(1)
+    item, source = initial(core, ctx)
+    backup = tmp_path / "TEST-long-path-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    authorize(core, ctx, source)
+    core.forget(ctx, request(source), remaining_seconds=10)
+    authority = InstallationMaintenance(ctx)
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    assert extended_path(data / MARKER_FILENAME).is_file() and extended_path(data / LEDGER_FILENAME).is_file()
+    with pytest.raises(ContractError) as closed:
+        core.status(ctx)
+    assert closed.value.code == "RESTORE_UNVERIFIED"
+    sqlite_backup(backup, core.storage.path)
+    replay_deletion_ledger(core.storage, authority, ledger)
+    assert not restore_pending(data)
+    assert core.source(ctx, source.ref, 1) is None and core.current_claim(ctx, item.ref) is None
 
 
 def test_the_deletion_ledger_format_holds_these_sections_and_fields(app, tmp_path):

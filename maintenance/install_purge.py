@@ -10,7 +10,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from scope_recall.core.restore import MARKER_FILENAME
+from scope_recall.core.restore import LEDGER_FILENAME, restore_pending
 from scope_recall.core.truth_connection import connect_truth_database
 
 from .backup import exclusive_store, sqlite_busy
@@ -123,7 +123,7 @@ def purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, An
     if db_path.is_symlink() or not db_path.is_file():
         raise InstallError("purge_refused:database_missing")
     reject_symlink_chain(db_path)
-    if (data_directory / MARKER_FILENAME).exists():
+    if restore_pending(data_directory):
         raise InstallError("purge_refused:restore_pending")
 
     retained_files = _safe_owned_files(data_directory / "retained", label="retained")
@@ -135,7 +135,12 @@ def purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, An
         raise InstallError("purge_refused:unknown_retained_file")
 
     files = [config_path.resolve(), db_path.resolve()]
-    for sidecar in (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")):
+    # Beside the store: its write-ahead log, its shared memory, and the ledger a restore keeps.
+    for sidecar in (
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+        data_directory / LEDGER_FILENAME,
+    ):
         if sidecar.exists():
             reject_symlink_chain(sidecar)
             if not sidecar.is_file():

@@ -546,10 +546,12 @@ def test_a_damaged_marker_beside_a_ledger_newer_than_the_store_is_refused(store,
     assert (store.data / "memory.sqlite3").read_bytes() == before and fenced(store)
 
 
-@pytest.mark.parametrize("change", ["write", "replace"])
+@pytest.mark.parametrize("change", ["write", "replace", "replace_before_digest"])
 def test_the_snapshot_copied_is_the_one_checked(store, capsys, monkeypatch, change):
-    """Whatever happens to the snapshot's file once it is checked, what is copied over the store is what was
-    checked: another writer is kept out, and the file it was is the one read."""
+    """Whatever happens to the snapshot's file once it is opened, what is copied over the store is what was checked
+    and what the receipt's digest describes: another SQLite writer is kept out, and a file moved over the snapshot,
+    before its digest is taken or after, is not the one read.  Windows refuses to move a file over one held open; POSIX
+    moves it, and the handles opened before go on reading the file they opened."""
     kept = store.say("TEST-kept the meeting moved to Thursday")
     secret = store.say(SECRET)
     snapshot = backup(capsys, store, "TEST-checked")
@@ -557,7 +559,9 @@ def test_the_snapshot_copied_is_the_one_checked(store, capsys, monkeypatch, chan
     store.say("TEST-injected a message the checked snapshot does not hold")
     other = backup(capsys, store, "TEST-other")
     store.forget(secret)
-    actual = restore.begin_restore
+    # The digest is taken after the checks and the ledger, the fence after the digest.
+    hooked = "export_deletion_ledger" if change == "replace_before_digest" else "begin_restore"
+    actual = getattr(restore, hooked)
 
     def changed_meanwhile(*args, **kwargs):
         try:
@@ -571,7 +575,7 @@ def test_the_snapshot_copied_is_the_one_checked(store, capsys, monkeypatch, chan
             pass
         return actual(*args, **kwargs)
 
-    monkeypatch.setattr(restore, "begin_restore", changed_meanwhile)
+    monkeypatch.setattr(restore, hooked, changed_meanwhile)
     code, done = run(
         capsys,
         "restore",
@@ -629,4 +633,60 @@ def test_a_store_whose_file_has_another_name_is_refused(store, capsys):
         "--apply",
     )
     assert (code, out.get("error"), out["restore_pending"]) == (2, "store_links", False), out
+    assert database.read_bytes() == before and not (store.tmp / "TEST-kept").exists()
+
+
+def test_a_snapshot_the_file_system_cannot_tell_from_the_store_is_refused(store, capsys, monkeypatch):
+    """Where the file system cannot say whether two names are one file, the snapshot may be the store's own file: the
+    restore is refused rather than run on a guess."""
+    store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-snapshot")
+
+    def unsupported(first, second):
+        raise NotImplementedError("TEST file identity")
+
+    monkeypatch.setattr(os.path, "samefile", unsupported)
+    code, out = run(
+        capsys,
+        "restore",
+        *store.target(),
+        "--snapshot",
+        str(snapshot),
+        "--backup-dir",
+        str(store.tmp / "TEST-kept"),
+        "--apply",
+    )
+    assert (code, out.get("error"), out["restore_pending"]) == (2, "file_identity_unknown", False), out
+    assert not (store.tmp / "TEST-kept").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows refuses to move a file over one held open")
+def test_a_snapshot_replaced_as_it_is_opened_is_refused(store, capsys, monkeypatch):
+    """SQLite opens the snapshot by its path after the command opened it as a file, which the digest is read from: a
+    file moved over the path in between would be copied while the digest described the file opened first."""
+    store.say(SECRET)
+    snapshot = backup(capsys, store, "TEST-checked")
+    store.say("TEST-injected a message the checked snapshot does not hold")
+    other = backup(capsys, store, "TEST-other")
+    actual = restore.connect_truth_database
+
+    def moved_first(path, *args, **kwargs):
+        if Path(path).name == snapshot.name:
+            os.replace(other, snapshot)
+        return actual(path, *args, **kwargs)
+
+    monkeypatch.setattr(restore, "connect_truth_database", moved_first)
+    database = store.data / "memory.sqlite3"
+    before = database.read_bytes()
+    code, out = run(
+        capsys,
+        "restore",
+        *store.target(),
+        "--snapshot",
+        str(snapshot),
+        "--backup-dir",
+        str(store.tmp / "TEST-kept"),
+        "--apply",
+    )
+    assert (code, out.get("error"), out["restore_pending"]) == (2, "snapshot_replaced", False), out
     assert database.read_bytes() == before and not (store.tmp / "TEST-kept").exists()
