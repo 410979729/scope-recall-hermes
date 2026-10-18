@@ -251,10 +251,10 @@ def test_dsh_remote_record_recall_identity_and_bounds(remote, still_clocks):
 def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one_stored(
     remote, monkeypatch, still_clocks
 ):
-    """A client whose clock runs ten minutes ahead has every time a request carries moved back by that request's lead
+    """A client whose clock runs ten minutes ahead has every time a request carries moved back by its session's lead
     (``remote_server.client_times``), the turn's messages dsh's plugin sends inside its Stop with the hook's own: the
     person's line is the prompt already stored, nothing is dated ahead of this machine's clock, and the reply sent again
-    with a later Stop, moved back by another lead, is the reply stored."""
+    with a later Stop is the reply stored."""
     root, _home, client, _bodies, _records = remote
 
     def client_now():
@@ -287,6 +287,69 @@ def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one
     assert sorted(key.split(":TEST-fast:", 1)[1].rsplit("@", 1)[0] for key, _at in kept) == ["assistant:1", "user:1"]
     assert all(datetime.fromisoformat(at.replace("Z", "+00:00")) <= latest for _key, at in kept), kept
     assert waiting == 0, "nothing left for the store's worker to store under a key of its own"
+
+
+def test_a_fast_client_s_turn_keeps_its_order_whatever_each_request_s_delay(remote, monkeypatch, still_clocks):
+    """A client 90 s fast whose prompt reached this machine 5 s after it was sent, and whose Stop came at once: each
+    moved back by its own lead, the reply said 2 s after the prompt would be dated 3 s before it.  Every request of a
+    client's session moves back by the lead its first one was found ahead by."""
+    root, home, _client, _bodies, _records = remote
+    config = remote_server.load_server_config(home, "dsh")
+    start = datetime.now(UTC)
+
+    class Clock(datetime):
+        at = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.at
+
+    monkeypatch.setattr(remote_server, "datetime", Clock)
+
+    def client(seconds):  # the client's clock, 90 s fast
+        return start + timedelta(seconds=90 + seconds)
+
+    def stamp(moment):
+        return moment.isoformat().replace("+00:00", "Z")
+
+    def ms(moment):
+        return int(moment.timestamp() * 1000)
+
+    session = {"session_id": "TEST-delays", "turn_id": "1", "cwd": "C:/TEST/work"}
+    Clock.at = start + timedelta(seconds=5)
+    remote_server.handle_request(
+        config,
+        {
+            "payload": {"hook_event_name": "UserPromptSubmit", "prompt": "TEST 先问一句。", **session},
+            "observed_at": stamp(client(0)),
+        },
+    )
+    Clock.at = start + timedelta(seconds=10)
+    remote_server.handle_request(
+        config,
+        {
+            "payload": {
+                "hook_event_name": "Stop",
+                "last_assistant_message": "TEST 两秒后就答了。",
+                "reply_id": "a1",
+                "record": [
+                    {"id": "u1", "role": "user", "text": "TEST 先问一句。", "time": ms(client(0))},
+                    {"id": "a1", "role": "assistant", "text": "TEST 两秒后就答了。", "time": ms(client(2))},
+                ],
+                **session,
+            },
+            "observed_at": stamp(client(10)),
+        },
+    )
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        when = dict(
+            db.execute(
+                "SELECT content, occurred_at FROM source_events WHERE source_event_key LIKE '%:TEST-delays:%'"
+            ).fetchall()
+        )
+    moment = {text: datetime.fromisoformat(at.replace("Z", "+00:00")) for text, at in when.items()}
+    assert sorted(moment) == ["TEST 两秒后就答了。", "TEST 先问一句。"], when
+    assert moment["TEST 先问一句。"] < moment["TEST 两秒后就答了。"], when
 
 
 def test_dsh_remote_install_and_mcp(remote, tmp_path, capsys):

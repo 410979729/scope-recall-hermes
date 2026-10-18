@@ -1017,9 +1017,9 @@ def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_wo
 
 
 def test_a_fast_client_s_context_moment_is_not_used():
-    """A client whose clock runs ahead has its times moved back, each request by its own lead, which differs with
-    the network's delay: its in-context moment cannot be compared with them safely, and a message from before the
-    compaction could read as held.  Such a client's recall leaves nothing out."""
+    """A client whose clock runs ahead has its times moved back by leads that hold the network's delay, one for a
+    session only while the server keeps it: its in-context moment cannot be compared with them safely, and a message
+    from before the compaction could read as held.  Such a client's recall leaves nothing out."""
     from scope_recall.adapters.clients.boundary import IN_CONTEXT_FIELD
 
     ahead = datetime.now(UTC) + timedelta(hours=1)
