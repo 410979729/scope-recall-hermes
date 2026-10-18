@@ -20,7 +20,7 @@ from scope_recall.core.recall_policy import (
 )
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext, SearchLimits
 from scope_recall.core.retrieval_storage import RetrievalStorage, scope_digest
-from scope_recall.core.source_qualification import unquoted
+from scope_recall.core.source_qualification import in_pasted_text, unquoted
 
 from tests.contract.test_candidate_lifecycle import Evaluator, _finish_source_work
 from tests.contract.test_claims import Clock, capture, draft
@@ -384,6 +384,101 @@ def test_a_quoted_clause_is_someone_s_words_and_a_quoted_term_the_writer_s_own()
         assert unquoted(f'We call it "{term}".') == f'We call it "{term}".'
 
 
+@pytest.mark.parametrize(
+    ("question", "quoted", "own"),
+    (
+        ("When does Orchard ship?", "Alice said 'Orchard Ships Friday'.", "Orchard ships Friday."),
+        ("When does Orchard ship?", "The notice says ‘Orchard Ships Friday’.", "Orchard ships Friday."),
+        ("When does Orchard ship?", "The note wrote: ‘Orchard Ships Friday’.", "Orchard ships Friday."),
+        ("When does Orchard ship?", "Old notice: ‘Orchard Ships Friday’.", "Orchard ships Friday."),
+        ("When does Orchard ship?", "‘Orchard Ships Friday’", "Orchard ships Friday."),
+        ("Orchard 什么时候发布？", "Orchard 的旧公告写着：“周五发布”。", "Orchard 周五发布。"),
+        ("Orchard 什么时候发布？", "Orchard 的通知是“周五发布”", "Orchard 周五发布。"),
+        ("Orchard 什么时候发布？", "Orchard 的旧说明说“周五发布”", "Orchard 周五发布。"),
+        ("Orchard 什么时候发布？", "Orchard 的旧说明表示“周五发布”", "Orchard 周五发布。"),
+        ("Orchard 什么时候发布？", "Orchard 的旧说明称“周五发布”", "Orchard 周五发布。"),
+        ("Orchard 什么时候发布？", "Orchard：“周五发布”", "Orchard 周五发布。"),
+    ),
+)
+def test_reported_clauses_answer_nothing_and_direct_statements_answer(question, quoted, own):
+    assert answering(question, (_recalled("event-quoted", quoted),)) == Answers(True, ())
+    direct = _recalled("event-own", own)
+    assert answering(question, (direct,)) == Answers(True, (direct,))
+
+
+@pytest.mark.parametrize("term", ("Blue Cypress", "New York City", "果园计划", "Orchard", "8443", "host:8443"))
+def test_quoted_names_identifiers_and_values_stay_in_the_writers_statement(term):
+    text = f'We call it "{term}".'
+    assert unquoted(text) == text
+    labelled = f'The "{term}" service has port 8443.'
+    assert unquoted(labelled) == labelled
+
+
+def test_a_capitalised_name_ending_in_s_closes_before_the_writers_sentence():
+    """A quoted name that ends in s closes on its own mark.  A later plural (the users' guide) is not that closer."""
+    text = "The view from 'The Alps' is nice. I prefer blue. See the users' guide."
+    assert "I prefer blue" in unquoted(text)
+    assert not in_pasted_text(text, "I prefer blue")
+
+
+def test_a_character_inside_a_name_does_not_introduce_a_quotation():
+    """称 introduces a quotation only as its own verb.  The 称 of 名称 leaves the name in the writer's statement."""
+    text = "服务名称是“果园计划”"
+    assert unquoted(text) == text
+
+
+@pytest.mark.parametrize("term", ("Orchard", "8443", "host:8443", "v3.1", "eu-west-1"))
+def test_a_source_introducing_a_single_identifier_or_value_does_not_make_it_a_clause(term):
+    text = f'Alice said "{term}".'
+    assert unquoted(text) == text
+
+
+@pytest.mark.parametrize(
+    ("query", "requested"),
+    (
+        ("继续努力", False),
+        ("继续观察 Orchard", False),
+        ("继续观察迁移", False),
+        ("Do not continue the Orchard migration", False),
+        ("Don't resume the Orchard migration", False),
+        ("We will continue the Orchard migration", False),
+        ("I can resume the Orchard migration", False),
+        ("我们继续做 Orchard 迁移", False),
+        ("不要继续做 Orchard 迁移", False),
+        ("不能恢复 Orchard 的迁移", False),
+        ("Can we not pick up the Orchard migration?", False),
+        ("Can we continue using Orchard?", False),
+        ("continue using Orchard", False),
+        ("Continue Using Orchard", False),
+        ("Continue the Orchard migration", True),
+        ("Let's continue Orchard", True),
+        ("Can we pick up Orchard?", True),
+        ("Could you resume the Orchard migration?", True),
+        ("Please continue with Orchard", True),
+        ("Where were we on Orchard?", True),
+        ("继续做 Orchard 迁移", True),
+        ("继续搞 Orchard 迁移", True),
+        ("接着做 Orchard 迁移", True),
+        ("请恢复 Orchard 的迁移", True),
+        ("我们可以继续做 Orchard 迁移吗？", True),
+        ("继续 H100", True),
+        ("继续 TEST 项目", True),
+        ("继续当前任务", True),
+        ("Continue H100", True),
+        ("好的，继续做 Orchard 迁移", True),
+        ("OK, continue the Orchard migration", True),
+        ("请你继续做 Orchard 迁移", True),
+        ("So where were we?", True),
+        ("继续吧，把迁移做完", True),
+        ("继续上次", True),
+        ("恢复上次", True),
+    ),
+)
+def test_resume_requires_a_request_and_keeps_other_query_paths(query, requested):
+    assert asks_to_resume(query) is requested
+    assert ("resume_state" in unmet_needs(query, ())) is requested
+
+
 def test_only_a_grounded_task_s_resume_answers_and_only_a_question_that_asks_to_resume():
     """An episode's resume is a summary drawn from messages that answer for themselves: asked a fact, it answers
     nothing; asked to resume, a grounded task's resume answers by naming the task, in its own words.  An artifact's
@@ -424,6 +519,9 @@ def test_only_a_request_to_resume_a_task_reads_as_one():
         "continue",
         "继续",
         "继续 Orchard 的迁移",
+        "继续 H100",
+        "继续 TEST 项目",
+        "继续当前任务",
         "继续上次的工作",
         "接着做",
         "恢复上次的任务",
@@ -464,9 +562,16 @@ def test_request_framing_words_still_find_lexical_candidates(app, question, text
     ("question", "resume"),
     (
         ("Continue the Jenkins migration", True),
+        ("Let's continue Jenkins", True),
+        ("Can we pick up Jenkins?", True),
         ("接着做 Jenkins 的迁移", True),
+        ("继续搞 Jenkins 迁移", True),
         ("Should we continue using Jenkins?", False),
         ("继续用 Jenkins 吗？", False),
+        ("继续努力", False),
+        ("Do not continue the Jenkins migration", False),
+        ("We will continue the Jenkins migration", False),
+        ("我们继续做 Jenkins 迁移", False),
         ("discontinue Jenkins", False),
     ),
 )

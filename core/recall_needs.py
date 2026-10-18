@@ -31,19 +31,28 @@ from .source_qualification import FENCE, UNASSERTED_CONTEXT, unquoted
 COMPARE_MARKERS = ("比较", "对比", "差异", "哪个更", "compare", "versus", " vs ")
 WHY_MARKERS = ("为什么", "为何", "原因", "why", "reason")
 _RESUME_QUERY_TERMS = frozenset({"继续", "接着", "恢复", "resume", "continue", "pick", "up"})
-#: A request to resume a task (``asks_to_resume``), read with word boundaries: continue, resume or pick up the task,
-#: with it, on it, working on it or where it was left off; "where were we", "where did we leave off"; continue or
-#: resume alone; 继续 with what is to go on (继续 Orchard 的迁移, 继续上次的工作) or alone; 接着 doing it (接着做,
-#: 接着上次的); 恢复 a task or the last one (恢复 Orchard 的迁移, 恢复上次的工作).  Continuing a practice asks whether
-#: to keep it, not to resume a task
-#: (continue using Jenkins, 继续用 Jenkins 吗), and discontinue, continued or 恢复数据库 resume nothing.
+#: A task request: an imperative, a suggestion or a question, at the start of a prompt or after a sentence break, with
+#: a short acknowledgement allowed before it (OK, So, 好的).  请你 and 可以/能否 frame one; 继续吧, 继续上次 and
+#: 恢复上次 name no further task.  A subject stating what will continue, a negation, and 继续 plus any other verb match
+#: none.
+_RESUME_LEAD = r"(?:ok|okay|sure|yes|yeah|right|so|well|now|好的?|行|嗯)"
 _RESUME_REQUEST = re.compile(
-    r"\b(?:continue|resume|pick\s+up)\s+(?:(?:with|on|working\s+on)\s+\S|(?:the|our|my|this|that|where)\b)"
-    r"|\bwhere\s+(?:were\s+we|did\s+(?:we|i)\s+leave\s+off)\b"
-    r"|^\W*(?:please\s+)?(?:continue|resume)\W*(?:please\W*)?$"
-    r"|继续(?!\s*(?:用|使用|采用|沿用|保持|维持|留))"
+    r"(?:^|[\n。！？!?.])\s*"
+    rf"(?:{_RESUME_LEAD}\b\s*[,，:：]?\s*)?"
+    r"(?:please\s+)?(?:let['’]s\s+|(?:can|could|would|shall)\s+(?:we|you|i)\s+)?(?:please\s+)?"
+    r"(?:(?:continue|resume|pick\s+up)\s+(?!using\b)"
+    r"(?:(?:with|on|working\s+on)\s+\S|(?:the|our|my|this|that|where)\b|(?-i:[A-Z])[\w.-]*)"
+    r"|where\s+(?:were\s+we|did\s+(?:we|i)\s+leave\s+off)\b"
+    r"|(?:continue|resume)\W*(?:please\W*)?$)"
+    r"|(?:^|[\n。！？!?.])\s*"
+    rf"(?:{_RESUME_LEAD}\b\s*[,，:：]?\s*)?"
+    r"(?:(?:(?:请|麻烦)(?:你|帮我)?|帮我|请帮我)\s*)?"
+    r"(?:(?:我们|咱们|你)?(?:可以|能否|能不能|可否)\s*)?"
+    r"(?:继续\s*(?:[吧呀啊]\s*[。.!！?？]*(?:$|[,，])|[。.!！?？\s]*$"
+    r"|(?:做|搞|干|弄|写|改)\s*\S|(?:上次|之前|刚才|昨天|当前)\S?"
+    r"|(?:任务|工作|迁移|部署|项目)|[A-Za-z0-9_.-]+)"
     r"|接着(?:做|干|来|弄|写|改|上次|刚才|之前)"
-    r"|恢复(?:上次|之前|刚才|昨天)|恢复\s*(?:[\w.-]+\s*的?)?(?:任务|工作|迁移|部署)",
+    r"|恢复\s*(?:(?:上次|之前|刚才|昨天)\S?|(?:[\w.-]+\s*的?)?(?:任务|工作|迁移|部署)))",
     re.I,
 )
 CHOICE_MARKERS = ("哪个", "哪一个", "which", "choose")
