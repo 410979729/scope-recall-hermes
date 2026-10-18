@@ -10,7 +10,7 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 
 from tests.contract.test_claims import Clock, capture
-from tests.v11_support import context, recall_request
+from tests.v11_support import context, recall_request, slowdown
 
 
 @pytest.fixture
@@ -125,16 +125,16 @@ def test_an_older_copy_is_the_same_words_whatever_closes_them(older, query, same
 
 def test_closing_marks_are_read_from_the_end_once():
     """A long run of spaces or marks inside a message costs one pass, not a pattern anchored at the end that tries it
-    again from every position of the run, which takes seconds for one candidate."""
-    import time
-
+    again from every position of the run, which takes seconds for one candidate: four times the run takes about four
+    times as long (``slowdown``)."""
     from scope_recall.core.recall_policy import same_message
 
+    def compared(text):
+        return same_message(text, text + "。"), same_message(text, "P12")
+
     text = "P12" + " ." * 40_000 + "x"
-    started = time.monotonic()
-    assert same_message(text, text + "。") is True
-    assert same_message(text, "P12") is False
-    assert time.monotonic() - started < 1.0
+    assert compared(text) == (True, False)
+    assert slowdown(compared, "P12" + " ." * 10_000 + "x", text) < 8
 
 
 # -- what the asking model still holds ----------------------------------------------------------------------------

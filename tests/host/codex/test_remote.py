@@ -191,7 +191,7 @@ def test_a_wrong_token_is_refused_and_nothing_is_stored(served, tmp_path):
     assert refused.value.code == 401
 
 
-def test_claude_code_prompt_and_record_reach_the_entry_once(served, tmp_path):
+def test_claude_code_prompt_and_record_reach_the_entry_once(served, tmp_path, still_clocks):
     root, _homes, ports = served
     config = _client(tmp_path, "claude-code", ports["claude-code"])
     at = _moments()
@@ -1017,9 +1017,9 @@ def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_wo
 
 
 def test_a_fast_client_s_context_moment_is_not_used():
-    """A client whose clock runs ahead has its times moved back, each request by its own lead, which differs with
-    the network's delay: its in-context moment cannot be compared with them safely, and a message from before the
-    compaction could read as held.  Such a client's recall leaves nothing out."""
+    """A client whose clock runs ahead has its times moved back by leads that hold the network's delay, one for a
+    session only while the server keeps it: its in-context moment cannot be compared with them safely, and a message
+    from before the compaction could read as held.  Such a client's recall leaves nothing out."""
     from scope_recall.adapters.clients.boundary import IN_CONTEXT_FIELD
 
     ahead = datetime.now(UTC) + timedelta(hours=1)
@@ -1033,7 +1033,7 @@ def test_a_fast_client_s_context_moment_is_not_used():
     assert on_time == timedelta(0)
 
 
-def test_an_older_client_s_reminders_are_taken_out_by_the_server(store):
+def test_an_older_client_s_reminders_are_taken_out_by_the_server(store, still_clocks):
     """A client on another machine still on 3.10.4 sends the prompt as its hook got it and the person's messages
     as its record has them, with the <system-reminder> Claude's desktop app put in them; the entry's server stores only
     the person's words, and nothing for a message that is only reminders."""
@@ -1089,7 +1089,7 @@ def test_an_older_client_s_reminders_are_taken_out_by_the_server(store):
     )
 
 
-def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds(store, tmp_path):
+def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds(store, tmp_path, still_clocks):
     """The server opens no path a request names, so a Claude Code client reads since when its model holds the
     session's turns from its own record and sends it with the prompt; the server's recall leaves those turns out.  A
     client that cannot read its record sends nothing, and keeps nothing a payload carried of its own."""
@@ -1135,17 +1135,11 @@ def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds
     assert "QX-17。" in held and "KZ-42。" not in held, held
 
 
-def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch):
+def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch, still_clocks):
     """Clamped one time at a time, a client 90 s fast lost its order: a reply said 10 s into the turn kept its time
     (within the minute of the Stop that sent it), the next prompt was clamped to now, and the reply sorted after it
     and joined the next turn.  Every time a request carries moves back by the same lead."""
     root, homes = store
-    # Without a runtime config a test entry's hooks get 2 s; on a slow runner the Stop spent them on the store and the
-    # reply, and its record read stopped before the middle line this order needs.  A real entry's hooks get 6 s.
-    (homes["claude-code"] / "scope-recall").mkdir(parents=True, exist_ok=True)
-    (homes["claude-code"] / "scope-recall" / "runtime-config.json").write_text(
-        json.dumps({"hook_processing_seconds": 6, "resident_recall_minutes": 0}), "utf-8"
-    )
     remote_server.write_server_config(
         homes["claude-code"], "claude-code", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
     )
@@ -1273,7 +1267,7 @@ def test_a_hook_the_busy_store_did_not_store_is_kept_to_send_again(store, tmp_pa
     assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 1, "and the hook is kept to send again"
 
 
-def test_a_locked_database_fails_the_capture_or_the_recall_not_the_request(store, monkeypatch):
+def test_a_locked_database_fails_the_capture_or_the_recall_not_the_request(store, monkeypatch, still_clocks):
     """SQLite's own "database is locked" (``BEGIN IMMEDIATE`` past its wait) does not escape the hook as a 500 that
     leaves the prompt with no recall at all.  The capture fails and the hook is kept to send again; a recall that
     meets it fails alone."""
@@ -1431,15 +1425,10 @@ def test_the_server_refuses_a_body_nested_past_the_parser_s_limit(served, past_t
     assert refused.value.code == 400
 
 
-def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_path, monkeypatch):
+def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_path, still_clocks):
     """A prompt's recall is asked of the server's kept recaller, not of a handler made for each request, which would
     open its vector table and embedding worker every time (3-5 s of a 5 s budget).  The request's handler stores the
-    prompt, and recalls itself only while the kept one is busy.  This store has no runtime config, so a hook gets
-    the 2 s default, and a slow CI runner's capture leaves less than the second a kept recall is asked with: the
-    entries' own configs give 6 s."""
-    from scope_recall.adapters.clients import handler as handler_module
-
-    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
+    prompt, and recalls itself only while the kept one is busy."""
     _root, homes = store
     config = remote_server.RemoteServerConfig(
         home=homes["claude-code"], host="claude-code", listen="127.0.0.1", port=1, token_sha256="0" * 64
@@ -1530,14 +1519,11 @@ def test_the_server_log_says_how_the_kept_recall_went(served, tmp_path, monkeypa
     assert " ms (build 120 ms, capture 850 ms, close 40 ms), warm recall" in log
 
 
-def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store, monkeypatch, caplog):
+def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store, caplog, still_clocks):
     """A kept recall that raises is not swallowed by the request's handler: the server's log names it, and the request
     recalls itself."""
     import logging
 
-    from scope_recall.adapters.clients import handler as handler_module
-
-    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
     _root, homes = store
     config = remote_server.RemoteServerConfig(
         home=homes["claude-code"], host="claude-code", listen="127.0.0.1", port=1, token_sha256="0" * 64
@@ -1561,7 +1547,7 @@ def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store
     assert any("kept recall failed" in record.getMessage() and record.exc_info for record in caplog.records)
 
 
-def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_path, monkeypatch):
+def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_path, monkeypatch, still_clocks):
     """A WorkBuddy on another machine is forwarded as the claude-code host is: its Stop sends what its own session
     record shows (read with WorkBuddy's reader, the record found by its session when the hook names it wrongly), and
     the server stores each message once.  A Stop that only repeats the last reply sends nothing new."""

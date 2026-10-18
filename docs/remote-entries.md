@@ -157,12 +157,15 @@ Stop or the plugin's bounded background sweep can replay them. The plugin's rete
 
 A message is dated by the client's clock, the moment its hook ran there, which is what makes a hook sent again
 the same source. When a request's latest time is more than a minute ahead of this machine's, every time in it
-moves back by that lead, so the latest is this machine's now and a turn keeps its order: a recall finds nothing
-dated after its now, so a message dated a day ahead would have stayed hidden for a day (a hook that such a client
-sends twice may then be stored twice). When it was stored, when its work falls due and a recall's now are
-this machine's clock, so a client clock that runs fast or slow does not hold back the work on its messages.
-That request-time adjustment covers the forwarder's hook time and file-record envelope; dsh's nested message
-timestamps follow dsh's own transcript handling. Keep the two machines' clocks synchronized.
+moves back by that lead: a recall finds nothing dated after its now, so a message dated a day ahead would have stayed
+hidden for a day. Every request of a client session moves back by the lead its first such request found, while its
+own is within a minute of that, so the session's times stay about this machine's now and its turns keep their order
+whatever each request's delay on the way; moved back each by its own lead, a reply that came with a quicker `Stop`
+could be dated before its prompt. A request whose lead is further off (a clock set anew, a hook sent long after it
+ran) moves back by its own, and a hook sent twice may then be stored twice. When it was stored, when its work falls
+due and a recall's now are this machine's clock, so a client clock that runs fast or slow does not hold back the work
+on its messages. That covers the hook's own time and every message a request carries: a record's lines, and the
+turn's messages dsh's plugin sends inside its Stop. Keep the two machines' clocks synchronized.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP

@@ -1328,11 +1328,14 @@ What the plugin does:
   pass, and the next waits longer, up to 30 minutes. A dsh that quits waits up to 3 s for a store that is
   running; what it left is taken up by the next dsh that runs, once that process is gone (or the
   file has been idle for 6 hours). A message sent twice is stored once.
-- A completed turn's reply goes with its `Stop` when it was said at most a minute before: the store
-  recognises it among the turn's messages by its words and a moment 120 s away at most, and the
-  reply's moment is the hook's. A reply said earlier (before a long tool call that ended the turn,
-  say), and the last words of a turn that did not complete, are stored from the turn's messages alone,
-  as the model's words.
+- A completed turn's reply goes with its `Stop` when it was said at most a minute before, with the id
+  of the message that holds it. The store dates the reply by that message; when the `Stop` names no
+  message holding the reply's words, or the message carries no time the store can read, by the
+  moment the `Stop` ran. A reply already stored under its turn keeps the moment it was stored with
+  when a later `Stop` sends it again (the rest of a turn, or a pass over what a failed store left),
+  and its message is held as that reply, so each is stored once. A reply said earlier (before a long
+  tool call that ended the turn, say), and the last words of a turn that did not complete, are
+  stored from the turn's messages alone, as the model's words.
 - Bounds: a message's text is kept up to 20,000 characters (and 36 KB), with a marker for the rest;
   a message waiting longer than 14 days, or past 5,000 waiting in a session, is dropped and said in
   dsh's log.

@@ -584,16 +584,19 @@ def test_compression_retries_keep_the_hook_deadline(telegram, hermes_home, monke
     )
     assert token is not None
     began, finished = threading.Event(), threading.Event()
-    budgets, errors = [], []
+    budgets, errors, deadlines = [], [], []
 
     def deadline():
-        value = time.monotonic() + 0.05
+        deadlines.append(time.monotonic() + 0.05)
         began.set()
-        return value
+        return deadlines[-1]
 
     def replay(*_args, **kwargs):
         budgets.append(("inbox", kwargs["remaining_seconds"]))
-        time.sleep(kwargs["remaining_seconds"] + 0.01)
+        # Past the hook's deadline as the hook's clock reads it: time.monotonic moves in 15.6 ms ticks on Windows before
+        # Python 3.13 (GetTickCount64), and could show a sleep of the budget and a little more as still within it.
+        while time.monotonic() <= deadlines[-1]:
+            time.sleep(0.005)
         return ()
 
     def write(*_args, **kwargs):

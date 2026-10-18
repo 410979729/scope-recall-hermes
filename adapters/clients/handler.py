@@ -17,7 +17,6 @@ from scope_recall.core.capture_inbox import DELETED_KEY
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from ..runtime_wiring import strict_hook_budget
-from . import transcript
 from .boundary import (
     is_workbuddy_agent_run,
     without_lone_surrogates,
@@ -26,7 +25,7 @@ from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfi
 from .hook_answer import (
     HookDiagnostics,
 )
-from .hook_events import CAPTURE_TIMEOUT_S, RUNTIME_ATTACH_MIN_S, HookEvents
+from .hook_events import CAPTURE_TIMEOUT_S, PROMPT_CAPTURE_TIMEOUT_S, RUNTIME_ATTACH_MIN_S, HookEvents
 from .identity import resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
 from .record_reader import RecordLines, RecordReader
@@ -83,6 +82,8 @@ class HookCall:
     queued: bool = False
     #: The turn a WorkBuddy Stop closed and the words of its reply, for the read of the record after it.
     closed_reply: tuple[str, str] | None = None
+    #: The id of the line holding the reply a dsh Stop stored, and its turn, for the read of the lines after it.
+    reply_line: tuple[str, str] | None = None
     #: Whether this hook may open the session record its payload names: a client on another machine sends its lines.
     local_record: bool = True
     #: That client's word that its Stop's reply is an error its record marks.
@@ -91,6 +92,14 @@ class HookCall:
     @property
     def captured(self) -> bool:
         return self.persisted or self.queued
+
+
+def _hook_core(config: CodexInstallationConfig | SharedClientConfig, clock: HookClock | None) -> MemoryCore:
+    """The core a hook captures through until its trusted runtime attaches: its writes may wait for the writer lease as
+    long as the owner's prompt asks (``PROMPT_CAPTURE_TIMEOUT_S``); every other capture asks for its 1 s.  A store waits
+    no longer than its core's write timeout, whatever a capture asks, and at the default 1 s a prompt that met a lease
+    held longer would not be stored."""
+    return MemoryCore(CoreConfig(config.to_binding(), write_timeout_seconds=PROMPT_CAPTURE_TIMEOUT_S), clock=clock)
 
 
 class CodexHookHandler:
@@ -113,7 +122,7 @@ class CodexHookHandler:
                 raise CodexConfigError("injected core mismatch")
             self.core = host_runtime.core
         elif core is None:
-            self.core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+            self.core = _hook_core(config, clock)
         else:
             if core.config.binding != config.to_binding():
                 raise CodexConfigError("injected core binding mismatch")
@@ -157,7 +166,7 @@ class CodexHookHandler:
         if host_runtime is None and core is None:
             # Capture uses a basic Core first.  Trusted runtime attach
             # (Lance/aux/worker) waits until after a durable Source commit.
-            core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+            core = _hook_core(config, clock)
             handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
             handler._pending_runtime_config_path = trusted_runtime_config_path
             return handler
@@ -189,7 +198,7 @@ class CodexHookHandler:
         ``clock``'s time for when it stored them.
         """
         config = load_shared_client(home, host)
-        core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+        core = _hook_core(config, clock)
         handler = cls(
             config, core=core, clock=event_clock if event_clock is not None else clock, hook_started_at=hook_started_at
         )
@@ -434,15 +443,23 @@ class CodexHookHandler:
         if self.host == "dsh" and record is None:
             # The turn's messages as dsh's plugin kept them (it has no record a hook could open), read as a remote
             # client's lines; the answer says how many are stored, so the plugin drops those and sends the rest again.
-            record = RecordLines(start=0, lines=transcript.dsh_lines(payload.get("record")))
-        capture = self.events.stop if event == "Stop" else self.events.session_end
-        result = capture(session_id, audience, payload, deadline)
+            record = RecordLines.from_dsh(payload)
+        if event == "Stop":
+            result = self.events.stop(session_id, audience, payload, deadline, record=record)
+        else:
+            result = self.events.session_end(session_id, audience, payload, deadline)
         # A server for a client on another machine reads only the lines that client sent (``local_record``
         # False): the payload's transcript_path names a file over there, and a path from a request is never
         # opened here.
         if self.record_reader.reads(event) and (record is not None or local_record):
             self.record_reader.read(
-                session_id, audience, payload, deadline, remote=record, closed_reply=self.call.closed_reply
+                session_id,
+                audience,
+                payload,
+                deadline,
+                remote=record,
+                closed_reply=self.call.closed_reply,
+                reply_line=self.call.reply_line,
             )
         if self.host == "workbuddy" and event == "SessionEnd":
             forget_turns(self.config, session_id)
