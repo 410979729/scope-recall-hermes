@@ -57,7 +57,7 @@ def tmp_path(tmp_path_factory):
 
 @pytest.fixture
 def target(tmp_path, monkeypatch):
-    uv = os.environ.get("SCOPE_RECALL_TEST_UV") or shutil.which("uv")
+    uv = os.environ.get("SCOPE_RECALL_TEST_UV") or os.environ.get("SCOPE_RECALL_UV") or shutil.which("uv")
     if not uv:
         pytest.skip("isolated package fixture requires external uv")
     uv = Path(uv).resolve()

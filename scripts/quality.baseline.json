@@ -675,7 +675,7 @@
    "E501": 2
   },
   "core/source_storage.py": {
-   "E501": 9
+   "E501": 8
   },
   "core/storage.py": {
    "B010": 1,
@@ -1191,9 +1191,6 @@
   },
   "tests/host/hermes/test_runtime_bounds.py": {
    "BLE001": 1
-  },
-  "tests/host/test_eval_model_runtime.py": {
-   "E501": 1
   },
   "tests/host/test_runtime_wiring_common.py": {
    "E501": 1,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import threading
 import time
@@ -149,12 +148,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     @property
     def name(self) -> str:
         return self.PROVIDER_NAME
-
-    @property
-    def installation_token(self) -> str:
-        if self._identity is None:
-            return ""
-        return self._identity.binding.installation_id
 
     @property
     def diagnostics(self) -> AdapterDiagnostics:
@@ -352,39 +345,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 state["captures_still_writing"] = still_writing
             self._diagnostics.shutdown_state = state
             self._initialized = False
-
-
-def public_signatures_match(provider: PublicMemoryProvider) -> bool:
-    """Return whether a fixture provider exposes the documented public surface."""
-
-    required = {
-        "name": property,
-        "is_available": callable,
-        "initialize": callable,
-        "prefetch": callable,
-        "queue_prefetch": callable,
-        "sync_turn": callable,
-        "on_session_end": callable,
-        "on_session_switch": callable,
-        "on_pre_compress": callable,
-        "shutdown": callable,
-        "get_tool_schemas": callable,
-        "handle_tool_call": callable,
-    }
-    for attr, kind in required.items():
-        value = getattr(provider, attr, None)
-        if kind is property and not isinstance(getattr(type(provider), attr, None), property):
-            return False
-        if kind is callable and not callable(value):
-            return False
-    initialize_params = inspect.signature(provider.initialize).parameters
-    if "session_id" not in initialize_params:
-        return False
-    if "kwargs" not in initialize_params and not any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in initialize_params.values()
-    ):
-        return False
-    return True
 
 
 def register_adapter(ctx: Any) -> ScopeRecallHermesAdapter:

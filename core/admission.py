@@ -19,7 +19,6 @@ from .events import withheld_tool_output
 from .visibility import allowed
 from .work_storage import FRESH_CONVERSATION_ORIGINS, fresh_since
 
-ADMISSION_KEY = "_scope_recall_admission"
 WORK_TYPES = frozenset({"consolidate", "embed"})
 
 

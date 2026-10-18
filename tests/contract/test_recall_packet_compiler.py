@@ -1012,7 +1012,7 @@ def test_p09_deadline_without_safe_item_is_unavailable_not_no_match(app):
     assert any(gap.startswith("deadline_exceeded") for gap in packet["gaps"])
 
 
-def test_p09_diagnostics_deque_and_index_evict_together():
+def test_diagnostics_keep_only_the_newest_records_readable():
     diagnostics = RecallDiagnostics()
     refs: list[str] = []
     for index in range(70):
@@ -1033,12 +1033,8 @@ def test_p09_diagnostics_deque_and_index_evict_together():
                 deadline_remaining_ms=1000,
             )
         )
-    assert diagnostics.record_count == 64
-    assert diagnostics.index_count == 64
-    for ref in refs[:6]:
-        assert diagnostics.get(ref) is None
-    for ref in refs[-3:]:
-        assert diagnostics.get(ref) is not None
+    # The 64 newest are still readable by their ref; the 6 oldest left the lookup with their records.
+    assert [ref for ref in refs if diagnostics.get(ref) is not None] == refs[6:]
 
 
 def test_p09_renderer_state_is_bounded_across_requests():

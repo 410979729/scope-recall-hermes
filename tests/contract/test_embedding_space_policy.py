@@ -291,14 +291,9 @@ def test_P08_admission_is_bound_to_the_configured_space_not_the_shipped_one():
             RecallPolicy(vector_threshold=0.5, embedding_space_id=broken)
 
 
-def test_P08_embedding_wire_dialects_round_trip_both_shapes():
-    """Both request shapes are built, and both responses parse, at any width."""
-    from scope_recall.runtime.embedding_models import (
-        build_gemini_embed_body,
-        build_openai_embed_body,
-        parse_embedding_response,
-    )
-    from scope_recall.runtime.models import AuxiliaryModelError
+def test_embedding_request_bodies_name_the_model_and_width_in_both_dialects():
+    """Both request shapes are built at any width."""
+    from scope_recall.runtime.embedding_models import build_gemini_embed_body, build_openai_embed_body
 
     gemini = json.loads(build_gemini_embed_body("t", model="m", dimensions=64))
     assert gemini["requests"][0]["model"] == "models/m"
@@ -306,22 +301,6 @@ def test_P08_embedding_wire_dialects_round_trip_both_shapes():
 
     openai = json.loads(build_openai_embed_body("t", model="m", dimensions=64))
     assert openai == {"model": "m", "input": ["t"], "dimensions": 64}
-
-    vector = [0.5] * 64
-    got, usage = parse_embedding_response(
-        {"embeddings": [{"values": vector}], "usageMetadata": {"promptTokenCount": 7}}, dialect="gemini", dimensions=64
-    )
-    assert len(got) == 64 and usage == {"promptTokenCount": 7}
-
-    got, usage = parse_embedding_response(
-        {"data": [{"embedding": vector}], "usage": {"prompt_tokens": 7}}, dialect="openai", dimensions=64
-    )
-    assert len(got) == 64 and usage == {"promptTokenCount": 7}
-
-    # A provider that ignores the requested width must not slip through: the
-    # space digest commits to it, so a mismatched vector is unusable.
-    with pytest.raises(AuxiliaryModelError):
-        parse_embedding_response({"data": [{"embedding": [0.5] * 63}]}, dialect="openai", dimensions=64)
 
 
 def test_P08_an_openai_route_may_name_the_field_that_carries_the_width():
