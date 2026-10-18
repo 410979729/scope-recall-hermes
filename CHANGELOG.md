@@ -5,7 +5,7 @@ longer text this file once held is in its history.
 
 ## [3.11.2] - 2026-10-18
 
-The README links the reproducible synthetic recall benchmark and states its limits. Installation guidance, contributor descriptions and capture and retry test documentation describe their current contracts without historical incident references or old instance measurements. Contributor names and profile links are preserved. Runtime behavior, configuration and the store schema are unchanged.
+The README links the reproducible synthetic recall benchmark and states its limits. Installation guidance, contributor descriptions and capture and retry test documentation describe their current contracts without historical incident references or old instance measurements. Contributor names and profile links are preserved. Remote, WorkBuddy and Telegram semantic tests use the same admission clock as the other host tests, so a slow store write is not charged against those checks, while a budget check still sets its own transaction cost. Runtime behavior, configuration and the store schema are unchanged.
 
 ## [3.11.1] - 2026-10-18
 

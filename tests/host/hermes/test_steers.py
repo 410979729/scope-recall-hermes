@@ -57,8 +57,14 @@ def _stored(hermes_home) -> list[tuple[str, str, str]]:
 
 
 @pytest.fixture
-def telegram(hermes_home, initialize_kwargs):
-    """A Telegram private chat bound to its person, as a gateway binds one."""
+def telegram(hermes_home, initialize_kwargs, metered_store):
+    """A Telegram private chat bound to its person, as a gateway binds one.
+
+    The zero semantic charge is installed before the core and the adapter, so the handler, core and inbox share
+    it. A budget test's ``metered_store(cost)`` replaces that charge. A real wait, including a deadline slept out
+    beside the store, still advances the clock. ``slow_capture_store`` is armed after this fixture returns.
+    """
+    metered_store(0.0)
     _binding, core = install_hermes_scope_recall(
         hermes_home,
         agent_id=initialize_kwargs["agent_identity"],
@@ -689,9 +695,18 @@ def test_messages_a_restarted_gateway_put_back_are_stored_once_whichever_hook_re
     assert len(keys) == 1 and ":unanswered:" in keys[0]
 
 
-def test_a_turn_s_own_message_a_stopped_gateway_left_unanswered_is_not_stored_again(telegram, hermes_home):
+@pytest.mark.parametrize("slow_write", [False, True], ids=["store", "slow_store"])
+def test_a_turn_s_own_message_a_stopped_gateway_left_unanswered_is_not_stored_again(
+    telegram, hermes_home, slow_capture_store, slow_write
+):
     """The turn opened, pre_llm_call stored its message, and the gateway stopped before any reply: the message stands
-    unanswered before the next one, and is found stored by its words and moment."""
+    unanswered before the next one, and is found stored by its words and moment.
+
+    The slow store delays the next real open after this fixture, that pre-llm capture. The message is still the one
+    source row.
+    """
+    if slow_write:
+        slow_capture_store()
     telegram.on_turn_start(7, "TEST 查一下进度", turn_id="turn-7")
     telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-7", user_message="TEST 查一下进度")
     telegram.on_turn_start(8, "TEST 怎么样了", turn_id="turn-8")
