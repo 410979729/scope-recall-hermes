@@ -140,13 +140,13 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
         if head is None or head.state not in REQUALIFIABLE_STATES:
             continue
         held, denial_reason = _denial_standing(tx, head, versions) if is_denial(head.payload) else (None, None)
-        settles = denial_reason is not None and head.state != "proposed"
-        if head.reason in preserved and not settles:
+        settled_as = denial_reason if head.state != "proposed" else None
+        if head.reason in preserved and settled_as is None:
             report.skipped.append({"ref": ref, "why": f"not_text_derived:{head.reason}"})
             continue
         report.examined += 1
-        if settles:
-            entry = _settle_denial(tx, head, held, denial_reason, now=now, dry_run=dry_run)
+        if settled_as is not None:
+            entry = _settle_denial(tx, head, held, settled_as, now=now, dry_run=dry_run)
             payload = head.payload
             entry.update(
                 subject=payload.get("subject"), predicate=payload.get("predicate"), value=payload.get("value_text")
