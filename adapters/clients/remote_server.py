@@ -236,7 +236,8 @@ def client_times_and_lead(
 ) -> tuple[str | None, RecordLines | None, timedelta]:
     """``client_times``, and how far everything was moved back (nothing when the client's clock is not ahead)."""
     observed = _observed_at(body.get("observed_at"))
-    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    sent = body.get("payload")
+    payload: dict[str, Any] = sent if isinstance(sent, dict) else {}
     if host == "dsh":
         record = RecordLines.from_dsh(payload) if "record" in payload else None
     else:
