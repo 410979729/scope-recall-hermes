@@ -83,12 +83,19 @@ class _LeasePolls:
 def metered_store(monkeypatch):
     """``metered_store(per_operation)``: ``time.monotonic``, which a hook's clock, a core's and the Hermes adapter's
     deadlines all read, becomes a ``StoreMeteredClock`` charging that much for each of the store's transactions; the
-    clock is returned.  For a test that holds code to its budget on any machine's store."""
+    clock is returned. Reinstalling changes the charge on the same clock, without nesting transaction wrappers.
+    Semantic fixtures use zero; budget tests set the cost they need to exercise."""
     from scope_recall.core import storage
     from scope_recall.core.storage import SQLiteStorage
 
+    clock = StoreMeteredClock(0.0)
+    installed = False
+
     def install(per_operation: float) -> StoreMeteredClock:
-        clock = StoreMeteredClock(per_operation)
+        nonlocal installed
+        clock.per_operation = per_operation
+        if installed:
+            return clock
         transaction = SQLiteStorage._transaction
 
         @contextmanager
@@ -101,6 +108,33 @@ def metered_store(monkeypatch):
         monkeypatch.setattr(SQLiteStorage, "_transaction", metered)
         monkeypatch.setattr(storage, "time", _LeasePolls(clock))
         monkeypatch.setattr(time, "monotonic", clock)
+        installed = True
         return clock
+
+    return install
+
+
+@pytest.fixture
+def slow_capture_store(monkeypatch):
+    """Delay the next real write after setup beyond half of a capture's admission budget.
+
+    The delay is inside the storage transaction, so semantic clocks exclude it while real clocks defer the source
+    commit. The actual inbox and source writes still execute; no receipt or stored row is substituted.
+    """
+    from scope_recall.core.storage import SQLiteStorage
+
+    def install():
+        opened = SQLiteStorage._open
+        delayed = False
+
+        def slow_open(self, mode, *args, **kwargs):
+            nonlocal delayed
+            connection = opened(self, mode, *args, **kwargs)
+            if mode == "rw" and not delayed:
+                delayed = True
+                time.sleep(0.6)
+            return connection
+
+        monkeypatch.setattr(SQLiteStorage, "_open", slow_open)
 
     return install
