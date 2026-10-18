@@ -135,7 +135,7 @@ _SPEAKER_LABEL = re.compile(
 _FIRST_PERSON = re.compile(r"\bI\b|\bmy\b|我", re.I)
 #: A line of three or more backticks or tildes, which opens or closes a fenced block of pasted text (Markdown), with
 #: whatever follows it on the line.
-_FENCE = re.compile(r"(?m)^[ \t]{0,3}(`{3,}|~{3,})(.*)$")
+FENCE = re.compile(r"(?m)^[ \t]{0,3}(`{3,}|~{3,})(.*)$")
 #: A speaker's own framing at the head of a clause, after a list marker too (老实说，一般来说，我跟你说，"That said,"):
 #: what follows it is their own words.  After a name it is someone else's again: 张三跟你说，…, "a message that
 #: said, …".
@@ -243,7 +243,7 @@ def _outside_fences(before: str) -> tuple[bool, str]:
     opens on a line of three or more backticks or tildes, and closes only on a line of the same character, at least
     as long, with nothing after it (CommonMark): inside a tilde block a backtick line is text."""
     kept, opened, start = [], None, 0
-    for match in _FENCE.finditer(before):
+    for match in FENCE.finditer(before):
         marks, rest = match.group(1), match.group(2)
         if opened is None:
             if marks[0] != "`" or "`" not in rest:  # a backtick fence's info string holds no backtick

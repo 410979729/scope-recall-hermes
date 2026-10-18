@@ -21,9 +21,9 @@
         "mrr": 0.6598,
         "ndcg@10": 0.6815,
         "outdated_above_current": 0.3667,
-        "answered": 0.9214,
+        "answered": 0.9286,
         "abstained": 0.9792,
-        "abstention_balanced_accuracy": 0.9503
+        "abstention_balanced_accuracy": 0.9539
       },
       "single_fact": {
         "recall@1": 0.5833,
@@ -32,7 +32,7 @@
         "recall@10": 0.9167,
         "mrr": 0.7361,
         "ndcg@10": 0.7827,
-        "answered": 0.8889
+        "answered": 0.9167
       },
       "preference": {
         "recall@1": 0.2917,

@@ -247,14 +247,16 @@ def test_unrelated_or_negative_reason_does_not_support_why(app, content, query):
     assert result.answerability_hint == "partial"
 
 
-def _recalled(ref: str, content: str, *, kind: str = "event", state: str = "") -> RetrievedObject:
-    metadata = (("state", state),) if state else ()
+def _recalled(
+    ref: str, content: str, *, kind: str = "event", origin: str = "human_direct", state: str = "", reason: str = ""
+) -> RetrievedObject:
+    metadata = tuple((key, value) for key, value in (("state", state), ("qualification_reason", reason)) if value)
     return RetrievedObject(
         ref,
         1,
         kind,
         content,
-        "human_direct",
+        origin,
         "current",
         "trusted scope",
         (f"{ref}@1",),
@@ -266,14 +268,12 @@ def _recalled(ref: str, content: str, *, kind: str = "event", state: str = "") -
 
 def test_an_item_answers_by_naming_what_the_question_names_and_saying_more_of_what_it_asks():
     """Each name a question gives must stand in an item that also says another of its words, in any inflection of
-    that word; a question's first word, I, a month, a weekday and a word in capitals name nothing.  A claim answers
-    once it is a fact the store holds, not while it waits to be judged.  A question that names nothing is not judged."""
+    that word; a question's first word, I, a month, a weekday and a word in capitals name nothing.  A question that
+    names nothing is not judged."""
     fact = json.dumps({"kind": "fact", "subject": "Fennel", "predicate": "alert channel", "value_text": "#ops-pager"})
     active = _recalled("claim-fennel", fact, kind="claim", state="active")
-    pending = _recalled("claim-fennel-pending", fact, kind="claim", state="proposed")
     other = _recalled("event-maple", "The Maple alert channel is #night-shift.")
     assert answering("Where are the Fennel alerts posted?", (other, active)) == (active,)
-    assert answering("Where are the Fennel alerts posted?", (other, pending)) == ()
     keys = _recalled("event-keys", "We rotated the Orchard API keys on Monday.")
     assert answering("What did I say about the Orchard API keys on Sep 3?", (keys,)) == (keys,)
     assert answering("What did I say about the Lantern API keys on Sep 3?", (keys,)) == ()
@@ -291,6 +291,56 @@ def test_an_item_answers_by_naming_what_the_question_names_and_saying_more_of_wh
     assert answering("比较 H100 和 H200 部署配置", sides) == sides
     assert answering("比较 H100 和 H300 部署配置", sides) == ()
     assert answering("我下午喜欢喝什么？", (other,)) == (other,)
+
+
+def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgement():
+    """A proposal held back only by the strength of its one source passed every check of what it is, and said by a
+    person it answers while it waits to be judged.  One held back for what it is (a supposition, a subject its quote
+    does not bind, a condition it drops), or drawn from a tool's output, answers nothing."""
+
+    def claim(ref: str, *, state: str, reason: str, origin: str = "human_direct", statement_kind: str = "assertion"):
+        payload = {"kind": "fact", "subject": "Fennel", "predicate": "alert channel", "value_text": "#ops-pager"}
+        content = json.dumps({**payload, "statement_kind": statement_kind})
+        return _recalled(ref, content, kind="claim", origin=origin, state=state, reason=reason)
+
+    question = "Where are the Fennel alerts posted?"
+    answers = (
+        claim("claim-active", state="active", reason="explicit_scoped_source"),
+        claim("claim-unproved", state="proposed", reason="fact_entailment_unproved"),
+    )
+    held_back = (
+        claim("claim-supposed", state="proposed", reason="statement_not_asserted", statement_kind="hypothetical"),
+        claim("claim-unbound", state="proposed", reason="subject_not_bound"),
+        claim("claim-unconditioned", state="proposed", reason="condition_not_supported"),
+        claim("claim-observed", state="proposed", reason="fact_entailment_unproved", origin="tool_observation"),
+    )
+    for item in answers:
+        assert answering(question, (item,)) == (item,), item.ref
+    for item in held_back:
+        assert answering(question, (item,)) == (), item.ref
+
+
+def test_a_prompt_that_does_not_read_as_a_question_about_named_things_is_judged_as_before():
+    """A pasted traceback, a code block and a long message hold capitalised words that are not things a question
+    names, and a short prompt naming more than two things is a list: each is judged as before, every item answering.
+    The question that ends the long message, asked alone, is judged."""
+    item = _recalled("event-region", "We moved the deploy region to eu-west-1 last week.")
+    traceback = (
+        "Why does the worker keep failing?\n"
+        "Traceback (most recent call last):\n"
+        '  File "/srv/app/worker.py", line 41, in run\n'
+        "    Pipeline.start()\n"
+        "RuntimeError: Lantern refused the connection"
+    )
+    code = "Why does this call fail?\n```python\nclient = OrchardClient(Region.EU)\nclient.sync()\n```"
+    prose = (
+        "I spent the morning going over the rollout plan and the budget with the team, and we still disagree about "
+        "the order of the two steps; what did I say about the Basalt migration?"
+    )
+    listed = "Do Orchard, Lantern and Basalt share one deploy region?"
+    for prompt in (traceback, code, prose, listed):
+        assert answering(prompt, (item,)) == (item,), prompt
+    assert answering("What did I say about the Basalt migration?", (item,)) == ()
 
 
 def test_followup_blocked_after_initial_round_when_shared_deadline_expires(tmp_path):

@@ -12,11 +12,12 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from .corroboration import CORROBORATION_ELIGIBLE_REASONS
 from .events import lexical_terms, version_suffixes
 from .fact_evidence import stem
-from .recall_policy import asks_without_answering, hard_identifiers, meaningful_query_terms
+from .recall_policy import QUESTION_MAX_CHARS, asks_without_answering, hard_identifiers, meaningful_query_terms
 from .retrieval import STALE_RESUME_GAPS, RetrievedObject, SearchContext, optional_json
-from .source_qualification import UNASSERTED_CONTEXT, unquoted
+from .source_qualification import FENCE, UNASSERTED_CONTEXT, unquoted
 
 COMPARE_MARKERS = ("比较", "对比", "差异", "哪个更", "compare", "versus", " vs ")
 WHY_MARKERS = ("为什么", "为何", "原因", "why", "reason")
@@ -209,6 +210,9 @@ _CALENDAR = frozenset(
 #: a domain name (3.11, beat.example.app) stays whole.  A semicolon parts none: a supposition's consequence often
 #: follows one ("Suppose we shard it; the host would then be ...").
 _SENTENCE_BREAK = re.compile(r"(?<=[。！？!?\n])|(?<=\.)(?=\s)")
+#: The most things a question the rule judges names: one, or two it compares.  More, in a prompt as short as a
+#: question, make a list, and its answer need not name every one.
+_QUESTION_NAMES = 2
 
 
 def statement_text(obj: RetrievedObject) -> str:
@@ -243,6 +247,18 @@ def _names(question: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def _question_names(question: str) -> tuple[str, ...]:
+    """The names a prompt's items are held to (``_names``), when it reads as a question about named things: no longer
+    than a bare question (``QUESTION_MAX_CHARS``), without a fenced block (``FENCE``) and naming at most
+    ``_QUESTION_NAMES`` things.  A pasted log, trace or block of code runs longer or sits in a fence, and its
+    capitalised words are not things the person asks about; like a long message or a list, it names nothing here."""
+    text = unicodedata.normalize("NFKC", question).strip()
+    if len(text) > QUESTION_MAX_CHARS or FENCE.search(text):
+        return ()
+    names = _names(text)
+    return names if len(names) <= _QUESTION_NAMES else ()
+
+
 def _asserted(content: str) -> str:
     """The sentences of a message its writer says hold, outside quotation marks (``unquoted``): without one that asks
     (``asks_without_answering``) or that supposes, guesses or reports (``UNASSERTED_CONTEXT``)."""
@@ -254,18 +270,24 @@ def _asserted(content: str) -> str:
 
 
 def _answer_text(item: RetrievedObject) -> str | None:
-    """What an item answers with: a person's own words (``human_direct``) as they assert them (``_asserted``), an
-    active claim's statement, another kind's content.  Neither an assistant's or a tool's message nor a claim waiting
-    to be judged answers: what a tool observed answers through an active claim drawn from it."""
+    """What an item answers with: a person's own words (``human_direct``) as they assert them (``_asserted``), a
+    claim's statement, another kind's content.  A claim answers when it is active, or when a person said it and its
+    qualification stopped only at the strength of its one source (``CORROBORATION_ELIGIBLE_REASONS``): such a
+    proposal waits to be judged.  One held back for what it is (a supposition, a quotation, a subject its quote does
+    not bind, a condition it drops) answers nothing, nor does an assistant's or a tool's message: what a tool observed
+    answers through a claim drawn from it."""
     if item.kind in {"claim", "procedure"}:
-        return statement_text(item) if dict(item.metadata).get("state") == "active" else None
+        metadata = dict(item.metadata)
+        state = metadata.get("state")
+        unproved = state == "proposed" and metadata.get("qualification_reason") in CORROBORATION_ELIGIBLE_REASONS
+        return statement_text(item) if state == "active" or (unproved and item.origin == "human_direct") else None
     if item.kind == "event":
         return _asserted(item.content) if item.origin == "human_direct" else None
     return item.content
 
 
 def answering(question: str, items: tuple[RetrievedObject, ...]) -> tuple[RetrievedObject, ...]:
-    """The items that answer what ``question`` names (``_names``); every item when it names nothing.
+    """The items that answer what ``question`` names (``_question_names``); every item when it names nothing.
 
     An item answers when what it says (``_answer_text``) holds one of the names and one more of the question's
     words, in any of that word's inflections (``stem``): another project's value shares every word of a question but
@@ -273,7 +295,7 @@ def answering(question: str, items: tuple[RetrievedObject, ...]) -> tuple[Retrie
     item, though not all in one, so that the two sides of a comparison answer it side by side; when one stands in
     none, nothing answers.
     """
-    names = _names(question)
+    names = _question_names(question)
     if not names:
         return items
     named = {name: frozenset(lexical_terms(name)) for name in names}
