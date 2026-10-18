@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Iterable, cast
 
@@ -27,6 +27,7 @@ from .recall_policy import (
     hard_identifiers,
     meaningful_query_terms,
     query_is_relevant,
+    shares_enough,
     synonym_expansions,
 )
 from .recall_scope import says_something
@@ -294,7 +295,18 @@ class RetrievalStorage(RetrievalHydration):
 
     # -- candidate channels ---------------------------------------------------
 
-    def lexical(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
+    def lexical(
+        self,
+        tx,
+        context: SearchContext,
+        *,
+        limit: int,
+        within: tuple[tuple[str, str], ...] = (),
+        among: frozenset[str] | None = None,
+    ) -> tuple[CandidateRef, ...]:
+        """Sources holding the query's terms, those holding most first.  With ``within``, only those said within one
+        of its UTC ``[start, end)`` windows; with ``among``, only the terms it holds of those the plain statement
+        searches (``dated``), so no posting it would not group."""
         terms = meaningful_query_terms(context.query)
         if not terms:
             return ()
@@ -306,6 +318,12 @@ class RetrievalStorage(RetrievalHydration):
         requested = hard_identifiers(context.query)
         identifiers = tuple(term for term in terms if requested.intersection(hard_identifiers(term)))
         terms, cut = _searched_terms(tx, terms, keep=identifiers)
+        if among is not None:
+            terms, cut, identifiers = (
+                tuple(term for term in group if term in among) for group in (terms, cut, identifiers)
+            )
+            if not terms:
+                return ()
         # A synonym term matches as the query term it stands in for, so hits
         # and matched terms still count the query's own terms, once each.
         # Without a synonym the statement and its parameters are unchanged.
@@ -331,6 +349,8 @@ class RetrievalStorage(RetrievalHydration):
         if context.as_of is not None:
             as_of = " AND (e.occurred_at IS NULL OR e.occurred_at<=?)"
             params.append(context.as_of)
+        said = " AND (" + " OR ".join("(e.occurred_at>=? AND e.occurred_at<?)" for _ in within) + ")" if within else ""
+        params.extend(bound for window in within for bound in window)
         # The statement starts from the query's terms.  A store keeps no planner statistics, so SQLite weighs the terms
         # against the scopes by rule of thumb, and with a long enough query it started from the scope index instead:
         # every event of the audience read one by one, 21 s for a Telegram message of 72 characters on the shared
@@ -346,7 +366,7 @@ class RetrievalStorage(RetrievalHydration):
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.event_id AND b.read_blocked=1)
-                  {current}{as_of}
+                  {current}{as_of}{said}
                 GROUP BY e.event_id,e.source_revision
                 ORDER BY CASE
                     WHEN e.role='tool' AND (
@@ -379,6 +399,31 @@ class RetrievalStorage(RetrievalHydration):
                 )
             )
         return tuple(candidates)
+
+    def dated(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
+        """Sources said within the time the question names (``context.time``) that hold enough of what else it asks
+        (``shares_enough``): the lexical statement for the question, on the words of what else it asks alone, kept to
+        that time.  It searches none of the terms the plain statement leaves out, so it groups no posting that one
+        would not, and its windows drop the others before they are grouped.
+
+        Weighed against the whole question, a note said on the day asked about is short of the words that name the
+        day, which it never repeats ("September", "11"), and below the notes on its subject that hold more words; on
+        a long-lived store the newest of those fill the lexical pool before it.
+        """
+        named = context.time
+        # A question about what was said on its day is read in that day already (``scoped``).
+        if named is None or context.scope is not None or limit <= 0:
+            return ()
+        terms = frozenset(meaningful_query_terms(named.rest))
+        if not terms:
+            return ()
+        found = self.lexical(tx, context, limit=limit, within=named.windows, among=terms)
+        held = [
+            candidate
+            for candidate in found
+            if shares_enough(len(terms.intersection(candidate.matched_query_terms or ())), len(terms))
+        ]
+        return tuple(replace(candidate, source="dated", rank=index) for index, candidate in enumerate(held, 1))
 
     def claims(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
         """Claims whose own statement answers the query.

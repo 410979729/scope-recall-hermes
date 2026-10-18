@@ -62,6 +62,9 @@ def _scoped_candidates(core, ctx, query, *, limit=12, **request):
         ("昨晚聊了什么", ("29",), ()),
         ("今早说了什么", ("30",), ()),
         ("what did we talk about last night", ("29",), ()),
+        ("What did we talk about on September 29?", ("29",), ()),
+        ("what did Codex do on Sept 28th", ("28",), ("codex",)),
+        ("What did we discuss on the 29th?", ("29",), ()),
     ),
 )
 def test_a_question_s_days_and_entries(query, days, entries):
@@ -101,6 +104,8 @@ def test_a_question_that_names_no_day_has_no_scope(query):
         ("9月28-30日聊了什么", NEW_YORK),
         ("2026-09-28 至 2026-09-30 聊了什么", NEW_YORK),
         ("昨天到今天聊了什么", NEW_YORK),
+        ("What did we talk about from Sep 28 to Sep 30?", NEW_YORK),
+        ("上周聊了什么", NEW_YORK),
         ("9月1日、9月2日、9月3日和9月4日聊了什么", NEW_YORK),
         ("9月27日、9月28日、9月29日和10月1日聊了什么", NEW_YORK),
         ("valid_to 的默认值 9999-12-31 是什么意思", NEW_YORK),

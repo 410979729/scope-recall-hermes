@@ -624,13 +624,7 @@
    "UP035": 1
   },
   "core/recall_scope.py": {
-   "B905": 2,
-   "C901": {
-    "_named_days": 20
-   },
-   "PLR0912": {
-    "_named_days": 16
-   },
+   "B905": 1,
    "UP017": 1,
    "UP035": 1
   },

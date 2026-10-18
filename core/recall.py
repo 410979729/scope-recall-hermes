@@ -27,7 +27,7 @@ from .recall_policy import (
     rrf_score,
     same_message,
 )
-from .recall_scope import asks_what_was_said, query_scope
+from .recall_scope import asks_what_was_said, query_scope, query_time
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -75,15 +75,23 @@ ECHO_TURN_MIN_TERMS = 5
 _INTERRUPT_STEPS = 1_000_000
 #: ``vector_owner`` is the vector channel's search for a question that names the owner, asked in their first person
 #: (``core/owner_view.py``); it has slots of its own, so the question as asked keeps all of the channel's.
-_CHANNELS = ("scoped", "exact", "lexical", "claim", "recent", "vector", "vector_owner")
+_CHANNELS = ("scoped", "exact", "lexical", "dated", "claim", "recent", "vector", "vector_owner")
 #: Messages the scoped channel offers: a day of one entry, for a question that asks what was said then
 #: (``recall_scope``).
 SCOPED_CANDIDATES = 12
+#: Sources the dated channel offers, as many as the scoped channel: said within the time a question names, holding
+#: what else it asks (``RetrievalStorage.dated``).
+DATED_CANDIDATES = 12
 #: What a scoped candidate's fused score is multiplied by.  The question asked only what was said on its day: that
 #: day's messages go before a candidate one channel found elsewhere by the question's words or the entry's name,
 #: which on a shared store would fill the packet ("Claude Code" is in thousands of other messages).  Three puts a
 #: first rank above any candidate two channels agree on at their first rank.
 SCOPED_WEIGHT = 3.0
+#: What the fused score of a candidate said within the time its question names (``recall_scope.query_time``) is
+#: multiplied by.  Notes on one subject from other days hold the question's words as well, and the newest ranked
+#: first: 2.5 puts what one channel ranked within its first sixteen above any candidate of another time that two
+#: channels agree on at their first rank.  Nothing is left out for its time, which may be the answer's.
+IN_TIME_WEIGHT = 2.5
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
     "embedding_space_mismatch": "vector_old_or_mismatched_space",
@@ -125,6 +133,7 @@ class ChannelBudget:
             "scoped": SCOPED_CANDIDATES,
             "exact": limits.candidate_pool,
             "lexical": limits.candidate_pool,
+            "dated": DATED_CANDIDATES,
             "claim": min(CLAIM_CANDIDATES, limits.candidate_pool),
             "recent": limits.recent_items,
             "vector": limits.vector_limit,
@@ -134,9 +143,10 @@ class ChannelBudget:
         self.reserve = dict.fromkeys(_CHANNELS, 0)
 
     def hold(self, future_rounds: int) -> None:
-        # A follow-up round never reads the day a question names (``RetrievalPipeline._collect_rounds``).
+        # A follow-up round never reads the day or the time a question names (``RetrievalPipeline._collect_rounds``).
         self.reserve = {
-            channel: 0 if channel == "scoped" else min(future_rounds, self.left[channel]) for channel in _CHANNELS
+            channel: 0 if channel in {"scoped", "dated"} else min(future_rounds, self.left[channel])
+            for channel in _CHANNELS
         }
 
     def allowance(self, channel: str, limit: int) -> int:
@@ -194,6 +204,45 @@ def _said_after(obj: RetrievedObject, moment: str) -> bool:
         return (canonical_time(stamp) or "") > moment
     except ContractError:
         return False
+
+
+def _identifiers_asked(candidate: CandidateRef, context: SearchContext) -> str:
+    """The question whose hard identifiers a candidate has to hold (``identifiers_compatible``).  A message of the day
+    a question named was chosen by its day and entry, and a source of the time it named by that time: neither the
+    entry's name ("pc2") nor the identifier the time is written with ("on the 18th") is one it has to repeat.  Every
+    other candidate still has to."""
+    if candidate.source == "scoped" and context.scope is not None:
+        return context.scope.rest
+    if candidate.source == "dated" and context.time is not None:
+        return context.time.rest
+    return context.query
+
+
+def _said_within(obj: RetrievedObject, windows: tuple[tuple[str, str], ...]) -> bool:
+    """Whether ``obj`` was said within one of ``windows`` (``canonical_time`` bounds, ``[start, end)``), as far as its
+    time tells (``_said_after``).  Without one it is not."""
+    try:
+        moment = canonical_time(dict(obj.metadata).get("occurred_at"))
+    except ContractError:
+        return False
+    return moment is not None and any(start <= moment < end for start, end in windows)
+
+
+def _weighed_by_time(
+    hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext
+) -> list[tuple[CandidateRef, RetrievedObject]]:
+    """``hydrated`` with each candidate said within the time the question names (``SearchContext.time``) weighed by
+    ``IN_TIME_WEIGHT``.  The others keep their scores, and nothing changes for a question that names no time or a read
+    that leaves it unread (``RetrievalPipeline.search``)."""
+    if context.time is None:
+        return hydrated
+    windows = tuple((utc_timestamp(start), utc_timestamp(end)) for start, end in context.time.windows)
+    return [
+        (replace(candidate, fusion_score=candidate.fusion_score * IN_TIME_WEIGHT), obj)
+        if _said_within(obj, windows)
+        else (candidate, obj)
+        for candidate, obj in hydrated
+    ]
 
 
 #: See ``RetrievalPipeline.RELATION_WEIGHT``.
@@ -343,9 +392,10 @@ class RetrievalPipeline:
             return False
         if candidate.source == "vector":
             return self.policy.vector_admission(candidate)[0]
-        if candidate.source in {"exact_ref", "relation", "claim_lexical", "scoped"}:
+        if candidate.source in {"exact_ref", "relation", "claim_lexical", "scoped", "dated"}:
             # A claim candidate already passed its own statement rule in storage; a scoped one is a message of
-            # the day and entry the question names.
+            # the day and entry the question names, and a dated one a source of the time it names that holds what
+            # else it asks.
             return True
         return self._lexically_admitted(candidate, context)
 
@@ -363,11 +413,12 @@ class RetrievalPipeline:
             fusion = rrf_score((item.rank for item in signals), k=self.policy.rrf_k)
             scoped = [item for item in signals if item.source == "scoped"]
             if scoped:
-                # A message of the day the question named stays one, whichever channel ranked it higher; a ref the
-                # caller named keeps its place first.
                 fusion *= SCOPED_WEIGHT
-                if representative.source != "exact_ref":
-                    representative = scoped[0]
+            # A message of the day or the time the question named stays one, whichever channel ranked it higher; a
+            # ref the caller named keeps its place first.
+            named = scoped or [item for item in signals if item.source == "dated"]
+            if named and representative.source != "exact_ref":
+                representative = named[0]
             seeds.append(replace(representative, fusion_score=fusion))
         return tuple(seeds)
 
@@ -401,6 +452,11 @@ class RetrievalPipeline:
             ),
             ("exact", self.storage_reader.exact, context.limits.candidate_pool),
             ("lexical", self.storage_reader.lexical, context.limits.candidate_pool),
+            (
+                "dated",
+                getattr(self.storage_reader, "dated", None) if context.time is not None else None,
+                DATED_CANDIDATES,
+            ),
             # A reader predating the claim channel simply offers no claims.
             ("claim", getattr(self.storage_reader, "claims", None), CLAIM_CANDIDATES),
             ("recent", self.storage_reader.recent, context.limits.recent_items),
@@ -481,10 +537,9 @@ class RetrievalPipeline:
                 if aside is not None:
                     aside.echoes.append(candidate)
                 return None
-        # A message of the day a question named was chosen by its day and entry: the entry's name ("pc2") is not an
-        # identifier it has to repeat.  Every other candidate still has to.
-        asked = context.scope.rest if context.scope is not None and candidate.source == "scoped" else context.query
-        if candidate.source != "exact_ref" and not identifiers_compatible(asked, obj.content):
+        if candidate.source != "exact_ref" and not identifiers_compatible(
+            _identifiers_asked(candidate, context), obj.content
+        ):
             return None
         # An episode whose resume was never consolidated carries nothing but its
         # own state: `{"state": "unknown"}` fills a packet slot and answers
@@ -679,6 +734,8 @@ class RetrievalPipeline:
                 else (candidate, obj)
                 for candidate, obj in hydrated
             ]
+        if context is not None:
+            hydrated = _weighed_by_time(hydrated, context)
         ranked = sorted(
             hydrated,
             key=lambda pair: (
@@ -762,7 +819,11 @@ class RetrievalPipeline:
         if not isinstance(context, SearchContext):
             raise ContractError("INPUT_INVALID", "search_context")
         limits = effective_limits(context)
-        working = replace(context, limits=limits) if limits != context.limits else context
+        # A historical or as-of read is left as it was: the time a question names is read for a recall of what holds
+        # now, and no channel searches it or weighs by it otherwise.
+        reads_time = context.mode not in {"history", "as_of"}
+        time = query_time(context.query, now=context.now, zone=context.zone) if reads_time else None
+        working = replace(context, limits=limits, time=time)
         if self._remaining(working) <= 0:
             return _empty_result(working, "deadline_exceeded")
         gaps: list[str] = []
@@ -835,8 +896,8 @@ class RetrievalPipeline:
             if self._remaining(working) <= 0:
                 gaps.append("deadline_exceeded_followup" if round_index else "deadline_exceeded")
                 break
-            # The day a question names is read once: a follow-up asks for something else.
-            round_context = replace(working, query=follow_query, scope=None) if follow_query else working
+            # The day and the time a question names are read once: a follow-up asks for something else.
+            round_context = replace(working, query=follow_query, scope=None, time=None) if follow_query else working
             budget.hold(max_rounds - round_index - 1)
             seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget, prefetched=prefetched)
             seed_count += len(seeds)
