@@ -2,7 +2,7 @@
   "about": "The dev split at scale 1, measured by recall_bench.py; recall_bench.py --update rewrites it.",
   "split": "dev",
   "scale": 1,
-  "world": "a17b0621a0d2353b5aeea47db8d2728437dd256789a93ef52f9eb0ee94258a41",
+  "world": "3a01a39b3395294b22fca8ed879061c35ad6a6d621fed960e567f6a7ff9817e8",
   "tolerance": 0.02,
   "facts": {
     "hypothetical": 0,
@@ -15,11 +15,11 @@
     "auto": {
       "all": {
         "recall@1": 0.497,
-        "recall@3": 0.7435,
-        "recall@6": 0.7762,
-        "recall@10": 0.7762,
-        "mrr": 0.6764,
-        "ndcg@10": 0.6939,
+        "recall@3": 0.7339,
+        "recall@6": 0.7649,
+        "recall@10": 0.7649,
+        "mrr": 0.6743,
+        "ndcg@10": 0.6857,
         "outdated_above_current": 0.1667,
         "answered": 0.9286,
         "abstained": 0.9792,
@@ -64,11 +64,11 @@
       },
       "aggregation": {
         "recall@1": 0.1292,
-        "recall@3": 0.4458,
-        "recall@6": 0.6083,
-        "recall@10": 0.6083,
-        "mrr": 0.5417,
-        "ndcg@10": 0.517,
+        "recall@3": 0.3792,
+        "recall@6": 0.5292,
+        "recall@10": 0.5292,
+        "mrr": 0.5267,
+        "ndcg@10": 0.4596,
         "answered": 0.75
       },
       "abstention": {
@@ -81,11 +81,11 @@
     "explicit": {
       "all": {
         "recall@1": 0.5077,
-        "recall@3": 0.7363,
-        "recall@6": 0.769,
-        "recall@10": 0.7762,
-        "mrr": 0.679,
-        "ndcg@10": 0.6967,
+        "recall@3": 0.7268,
+        "recall@6": 0.7577,
+        "recall@10": 0.7649,
+        "mrr": 0.6769,
+        "ndcg@10": 0.6885,
         "outdated_above_current": 0.2,
         "answered": 0.9286,
         "abstained": 0.9792,
@@ -130,11 +130,11 @@
       },
       "aggregation": {
         "recall@1": 0.1292,
-        "recall@3": 0.4458,
-        "recall@6": 0.6083,
-        "recall@10": 0.6083,
-        "mrr": 0.5417,
-        "ndcg@10": 0.517,
+        "recall@3": 0.3792,
+        "recall@6": 0.5292,
+        "recall@10": 0.5292,
+        "mrr": 0.5267,
+        "ndcg@10": 0.4596,
         "answered": 0.75
       },
       "abstention": {

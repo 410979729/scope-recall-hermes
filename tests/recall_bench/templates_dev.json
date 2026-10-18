@@ -714,12 +714,12 @@
     {
       "items": ["k6", "Locust", "Gatling", "JMeter", "Vegeta", "wrk", "Artillery"],
       "en": {
-        "say": ["Ran a quick {project} benchmark with {item}; the scripting was painless.", "{item} could not generate enough load for {project}.", "Compared {item} against what the {project} load tests need."],
+        "say": ["Ran a quick {project} benchmark with {item}; the scripting was painless.", "{item} could not generate enough load for {project}.", "Tested {item} against what the {project} load tests need."],
         "ask": ["Which load-testing tools did we try for {project}?", "What load-testing tools have we used on {project}?"],
         "hypothetical": ["Maybe next quarter we try {item} for the {project} load tests."]
       },
       "zh": {
-        "say": ["用 {item} 给 {project} 跑了个快速压测，写脚本很顺手。", "{item} 给 {project} 打不出足够的压力。", "拿 {item} 对照了一下 {project} 压测的需求。"],
+        "say": ["用 {item} 给 {project} 跑了个快速压测，写脚本很顺手。", "{item} 给 {project} 打不出足够的压力。", "上手测了 {item}，对照 {project} 压测的需求。"],
         "ask": ["{project} 的压测试过哪些工具？", "我们在 {project} 上用过哪些压测工具？"],
         "hypothetical": ["下个季度也许可以给 {project} 的压测试试 {item}。"]
       }
@@ -727,12 +727,12 @@
     {
       "items": ["Datadog", "Grafana Cloud", "New Relic", "Honeycomb", "Sentry", "Dynatrace"],
       "en": {
-        "say": ["Got a quote from {item} for {project} monitoring.", "{item} was too expensive for {project} monitoring.", "Had a demo call with {item} about {project} monitoring."],
+        "say": ["Got a quote from {item} for {project} monitoring.", "Contacted {item} for {project} monitoring, but their quote was too expensive.", "Had a demo call with {item} about {project} monitoring and got their quote."],
         "ask": ["Which monitoring vendors did we talk to for {project}?", "Who did we get monitoring quotes from for {project}?"],
         "hypothetical": ["If the budget grows, we could ask {item} about {project} monitoring too."]
       },
       "zh": {
-        "say": ["{item} 给 {project} 的监控报了价。", "{item} 做 {project} 的监控太贵了。", "和 {item} 开了个演示会，聊了 {project} 的监控。"],
+        "say": ["{item} 给 {project} 的监控报了价。", "找 {item} 沟通了 {project} 监控，但他们给的报价太贵了。", "和 {item} 开了个演示会，聊了 {project} 的监控，并拿到了报价。"],
         "ask": ["{project} 的监控我们联系过哪些厂商？", "{project} 的监控问过哪几家的报价？"],
         "hypothetical": ["如果预算多了，也可以问问 {item} 做 {project} 监控的事。"]
       }
