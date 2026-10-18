@@ -1248,3 +1248,76 @@ def test_a_refusal_is_told_only_when_its_text_cannot_carry_a_row(
     assert told["reason"] == (str(refusal) if told_as_is else "invalid_or_unavailable_input")
     workflow = Path(__file__).resolve().parents[2] / "maintenance" / "AGENT_WORKFLOW.md"
     assert f"--legacy-reader-contract {MEMORY_READER_CONTRACT}" in workflow.read_text(encoding="utf-8")
+
+
+def _legacy_facts(path: Path, facts) -> None:
+    """Facts of a shaped store in scope-a, each (id, subject, predicate, value, status, recorded at, journal id,
+    excerpt), one fact key to a slot as 2.0 kept a slot's history."""
+    with closing(sqlite3.connect(path)) as conn:
+        for name, subject, predicate, value, status, recorded, entry, excerpt in facts:
+            conn.execute(
+                "INSERT INTO fact_claims VALUES (?,NULL,'scope-a',?,?,?,?,'single','direct',?,?)",
+                (name, subject, predicate, f"key-{subject}-{predicate}", value, recorded, status),
+            )
+            conn.execute(
+                "INSERT INTO fact_claim_evidence VALUES (?,?,'journal',?,?,?,?)",
+                (f"{name}-ev", name, str(entry), f"eh-{name}", excerpt, recorded),
+            )
+        conn.commit()
+
+
+def test_a_converted_store_holds_no_denial_as_a_value(tmp_path: Path) -> None:
+    """2.0 took a denial for its slot's value as readily as any other value.  The conversion settles each as
+    restore-displaced-values does, in its own transaction: "不是 CircleCI", all TEST-project's CI service held, leaves
+    it no value, "不再是 vault-1" ends the vault-1 it denies, and the person's own 不吃辣 stays their value.  Every
+    version stays, and a second run changes nothing."""
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[
+            (1, "scope-a", "TEST-project 的 CI service 不是 CircleCI。"),
+            (2, "scope-a", "TEST-project 的 backup bucket 是 vault-1。"),
+            (3, "scope-a", "TEST-project 的 backup bucket 不再是 vault-1。"),
+            (4, "scope-a", "我不吃辣。"),
+        ],
+    )
+    later = "2026-07-02T00:00:00Z"
+    _legacy_facts(
+        legacy,
+        [
+            ("fact-ci", "TEST-project", "CI service", "不是 CircleCI", "current", _AT, 1, "不是 CircleCI"),
+            ("fact-bucket-1", "TEST-project", "backup bucket", "vault-1", "superseded", _AT, 2, "vault-1"),
+            ("fact-bucket-2", "TEST-project", "backup bucket", "不再是 vault-1", "current", later, 3, "不再是 vault-1"),
+            ("fact-diet", "用户", "饮食", "不吃辣", "current", _AT, 4, "不吃辣"),
+        ],
+    )
+    target = tmp_path / "target"
+    report = migrate_legacy(legacy, target)
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    assert report["fact_authority"]["denials_settled"] == 2
+
+    def facts() -> tuple[dict[str, str], dict[str, list[tuple[str, str]]]]:
+        """Each fact's head state, and its versions' states and values, by predicate."""
+        with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
+            heads = dict(
+                conn.execute(
+                    "SELECT c.predicate, v.state FROM claims c JOIN claim_versions v"
+                    " ON v.claim_id=c.claim_id AND v.revision=c.current_revision WHERE c.kind='fact'"
+                ).fetchall()
+            )
+            versions: dict[str, list[tuple[str, str]]] = {}
+            for predicate, state, value in conn.execute(
+                "SELECT c.predicate, v.state, json_extract(v.payload_json, '$.value_text') FROM claims c"
+                " JOIN claim_versions v USING(claim_id) WHERE c.kind='fact' ORDER BY v.revision"
+            ):
+                versions.setdefault(predicate, []).append((state, value))
+        return heads, versions
+
+    heads, versions = facts()
+    assert heads == {"CI service": "retracted", "backup bucket": "retracted", "饮食": "active"}
+    assert versions == {
+        "CI service": [("active", "不是 CircleCI"), ("retracted", "不是 CircleCI")],
+        "backup bucket": [("superseded", "vault-1"), ("active", "不再是 vault-1"), ("retracted", "不再是 vault-1")],
+        "饮食": [("active", "不吃辣")],
+    }
+    assert migrate_legacy(legacy, target)["fact_authority"]["denials_settled"] == 0
+    assert facts() == (heads, versions)

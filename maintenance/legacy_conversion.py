@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterable, Mapping
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core import lexical_index
 from scope_recall.core.events import indexed_terms
+from scope_recall.core.requalify import settle_brought_denials
 from scope_recall.core.schema import SCHEMA_VERSION, normalize_scope_authorizations
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.legacy_episode_membership import plan_legacy_episode_memberships
@@ -588,11 +589,13 @@ def _write_target(cv: Conversion, storage: SQLiteStorage, context: TrustedContex
         # Preserve the old ordinary-recall lifecycle policy using the same Core
         # suppression/group/dependency mechanism as runtime governance. Run
         # after all sources and derived links exist, before commit.
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         cv.lifecycle_suppression = apply_lifecycle_suppression(
-            tx,
-            [row for row in cv.rows["memories"] if str(row.get("id")) in cv.memory_refs],
-            now=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            tx, [row for row in cv.rows["memories"] if str(row.get("id")) in cv.memory_refs], now=now
         )
+        # 2.0 took a denial ("not CircleCI") for its slot's value as readily as any other value: each is settled as
+        # restore-displaced-values settles it, before anything reads the converted store.
+        cv.denials_settled = settle_brought_denials(tx, sorted(set(cv.fact_claim_refs.values())), now=now)
 
 
 def _insert_sources(cv: Conversion, conn: sqlite3.Connection) -> None:
@@ -819,6 +822,7 @@ def _report(cv: Conversion, target: dict[str, Any]) -> dict[str, Any]:
         "fact_authority": {
             "active": authority.get("active", 0),
             "proposed_or_disputed": sum(value for state, value in authority.items() if state != "active"),
+            "denials_settled": cv.denials_settled,
             "slot_encoding": "semantic conditions only; legacy fact_key and value_fingerprint remain in sanitized source archives linked to claim revisions; conflicts remain archived with explicit incomplete conversion",
         },
         "source_status": target["source_status"],

@@ -30,7 +30,8 @@ Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际�
 3. 停止旧写入者，保存配置与附件，运行 `migrate prepare` 创建一致快照和持久任务。
 4. 运行 `migrate run`，复用唯一的旧版转换器；中断后从任务继续，不重复重提炼旧 Journal。
    超过 65,536 字的旧记录分段保存，一个字不丢；被几个 episode 同时引用的旧日志只归属其中一个，
-   其余 episode 保留证据链接；转换报告逐项写明。
+   其余 episode 保留证据链接；转换报告逐项写明。旧版把否认（“不是 CircleCI”）也当作取值，转换在写入时就按
+   `restore-displaced-values` 的同一裁决结算，报告的 `denials_settled` 写明条数；以自称（用户、我）为主体的旧 fact 是本人的。
 5. 运行 `migrate verify` 核验报告、SQLite 完整性和数量；以 `migrate queue-index`
    分页恢复现有后台队列中的嵌入任务。排队完成不等于向量索引已完成。
 6. 通过实际宿主控制器切换，并在实际 Agent 上验证旧记忆、纠正、删除和不同会话的访问范围。

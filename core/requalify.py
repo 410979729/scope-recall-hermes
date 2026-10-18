@@ -25,7 +25,7 @@ cursor (the caller does, exactly as ``repair_frames`` does it).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..contracts import ContractError
@@ -47,6 +47,7 @@ from .corroboration import CORROBORATED_REASON
 from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS, NO_DERIVATION_ROOT_REASON
 from .mutate import apply_claim, denial_verdict, register_applied_candidate
+from .storage import Transaction
 
 #: Page ceiling.  Matches ``repair_frames``: large enough to finish a real
 #: store in a few passes, small enough that one pass is an ordinary transaction.
@@ -313,18 +314,46 @@ def restore_displaced_values(
     revisions only, never claim text.
     """
     refs = _page(tx, after_ref, limit)
-    report = RequalifyReport(applied=not dry_run)
+    report = RequalifyReport(applied=not dry_run, last_ref=refs[-1] if refs else "")
+    report.examined, report.changed = settle_denials(tx, refs, now=now, dry_run=dry_run)
+    return report
+
+
+def settle_denials(tx, refs, *, now: str, dry_run: bool = False) -> tuple[int, list[dict[str, Any]]]:
+    """Settle each of ``refs`` in ``tx``'s project and branch whose head is a denial that holds it without being its
+    slot's value (``_denial_standing``, ``_settle_denial``): how many heads were denials, and what moved."""
+    examined, changed = 0, []
     for ref in refs:
-        report.last_ref = ref
         versions = tx.claims.versions(ref)
         head = next((v for v in versions if v.revision == v.current_revision), None)
         if head is None or head.state not in {"active", "disputed"} or not is_denial(head.payload):
             continue
-        report.examined += 1
+        examined += 1
         held, reason = _denial_standing(tx, head, versions)
         if reason is not None:
-            report.changed.append(_settle_denial(tx, head, held, reason, now=now, dry_run=dry_run))
-    return report
+            changed.append(_settle_denial(tx, head, held, reason, now=now, dry_run=dry_run))
+    return examined, changed
+
+
+def settle_brought_denials(tx, refs, *, now: str) -> int:
+    """Settle ``refs`` as ``settle_denials`` does, each in its own project and branch, and say how many moved: the
+    claims a conversion or an import brings in whole, as a writer judged them that took a denial for its slot's
+    value, settled in the operation's own transaction (``tx``) before anything reads them.  A transaction reads one
+    project and branch, so each is settled in one scoped to it, on ``tx``'s connection."""
+    conn = tx._check(write=True)
+    partitions: dict[tuple[str | None, str | None], list[str]] = {}
+    for ref in refs:
+        row = conn.execute("SELECT project_id, branch_id FROM claims WHERE claim_id=?", (ref,)).fetchone()
+        if row is not None:
+            partitions.setdefault((row[0], row[1]), []).append(ref)
+    settled = 0
+    for (project, branch), claim_refs in sorted(partitions.items(), key=repr):
+        scoped = Transaction(conn, replace(tx.context, project_id=project, branch_id=branch), writable=True)
+        try:
+            settled += len(settle_denials(scoped, claim_refs, now=now)[1])
+        finally:
+            scoped._finish()
+    return settled
 
 
 __all__ = [
@@ -335,6 +364,8 @@ __all__ = [
     "requalify_claims",
     "restore_displaced_values",
     "retire_rootless_proposals",
+    "settle_brought_denials",
+    "settle_denials",
 ]
 
 

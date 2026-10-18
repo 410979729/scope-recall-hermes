@@ -19,6 +19,7 @@ from ..contracts import (
     verified_human_principal_ref,
 )
 from .aliases import validate_alias_source, validate_alias_target
+from .candidate_lifecycle import SELF_SUBJECTS
 from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
 from .claim_storage import parse_source_ref
 from .claims import (
@@ -227,12 +228,14 @@ def denial_verdict(proposal, held, roots) -> tuple[str | None, bool]:
     """Why a denial's own version is a proposal, if it is, and whether the value its slot holds (``held``) ends.
 
     A denial of another value than the one held ("not CircleCI" while Jenkins is, ``claims.negates``) leaves the slot
-    as it is.  In the person's own slot, a preference or a fact about the person whose words it cites, a denial that
-    names a value and only denies it is their answer where the slot holds nothing ("我不吃辣") and replaces the value it
-    denies.  Any other denial says what its slot is not and is never its value: one in a fact about anything else, one
-    that names nothing (我不吃了, "never again", ``claims.Denial``) and one that goes on to say what holds instead
-    (不用 X 了，而是用 Y, "not X but Y"); when it denies the value held, that value ends.  Writing (``apply_claim``)
-    and re-judging the store (``requalify``) read a denial by this alone.
+    as it is.  In the person's own slot, a preference or a fact about the person whose words it cites (its subject
+    the principal their 我 was bound to, or the self label 用户, user or 我 a converted 2.0 store keeps, having
+    bound none), a denial that names a value and only denies it is their answer where the slot holds nothing
+    ("我不吃辣") and replaces the value it denies.  Any other denial says what its slot is not and is never its
+    value: one in a fact about anything else, one that names nothing (我不吃了, "never again", ``claims.Denial``) and
+    one that goes on to say what holds instead (不用 X 了，而是用 Y, "not X but Y"); when it denies the value held,
+    that value ends.  Writing (``apply_claim``) and re-judging the store (``requalify``) read a denial by this alone;
+    writing binds a self label to a principal before it asks.
     """
     denial = read_denial(proposal)
     if denial is None:
@@ -240,7 +243,8 @@ def denial_verdict(proposal, held, roots) -> tuple[str | None, bool]:
     denies_held = held is not None and negates(proposal, held.payload)
     if held is not None and not denies_held:
         return DENIAL_REASON, False
-    owned = proposal["kind"] == "preference" or proposal["subject"] == human_owner(roots)
+    subject = proposal["subject"]
+    owned = proposal["kind"] == "preference" or subject == human_owner(roots) or subject.casefold() in SELF_SUBJECTS
     if owned and denial.names_a_value and not denial.contrast:
         return None, False
     return NOT_A_VALUE_REASON, denies_held
