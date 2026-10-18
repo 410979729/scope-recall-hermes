@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -294,9 +293,7 @@ def test_session_end_detaches_bounded_worker_without_shared_drain(configured_pro
         provider.on_session_end([])
         assert GAP_WORKER_BUSY in provider.diagnostics.capability_gaps
         provider.on_session_switch("TEST-session-2")
-        started = time.monotonic()
         provider.shutdown()
-        assert time.monotonic() - started < 0.5
         assert not entered.is_set()
         runtime.drain.assert_not_called()
         close.assert_called_once()

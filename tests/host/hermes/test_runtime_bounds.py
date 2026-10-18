@@ -1135,8 +1135,9 @@ def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.02)
     provider._retry.wake.set()
-    # The row is in the store a moment before its line is said, on the retry thread.
-    assert _until(lambda: any("stored on retry" in record.getMessage() for record in caplog.records))
+    # The row is in the store a moment before its line is said, on the retry thread: after seven tries of the store,
+    # each as slow as this store is, so its line is waited for as long as a slow one takes.
+    assert _until(lambda: any("stored on retry" in record.getMessage() for record in caplog.records), seconds=60)
     assert _tool_rows(hermes_home) == 1
     lines = [record for record in caplog.records if "busy-call" in record.getMessage()]
     assert [(record.levelname, record.getMessage().split(":")[1].strip()) for record in lines] == [

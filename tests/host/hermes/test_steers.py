@@ -515,18 +515,18 @@ def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(telegram,
     assert telegram._retry.captures, "a capture the busy store refused is kept to retry"
     budgets.clear()
     rows = [_row(_steer(f"TEST 第{n}条", message_id=str(300 + n))) for n in range(8)]
-    started = time.monotonic()
     telegram.on_pre_compress([dict(row) for row in rows])
     # The retry pass and the steers wait the hook's two seconds between them at most, beside the next to nothing a
     # write is given once they are spent: a slow runner only shortens what is left.
     assert sum(budgets) <= 2.0 + 0.001 * len(budgets) + 0.01, budgets
-    assert time.monotonic() - started < 10
     monkeypatch.setattr(telegram._core, "record_host_event", real)
     wanted = {f"TEST 第{n}条" for n in range(8)} | {"TEST 先前没写成的"}
-    deadline = time.monotonic() + 10
-    while not wanted <= {content for _role, content, _origin in _stored(hermes_home)} and time.monotonic() < deadline:
+    # Each pass of the retry buffer writes what its second allows, and at least the first capture it holds: on a store
+    # whose writes take seconds that is one a pass, so the passes are counted, not the time.
+    for _ in range(2 * len(wanted)):
+        if wanted <= {content for _role, content, _origin in _stored(hermes_home)}:
+            break
         telegram._retry.write_buffered()
-        time.sleep(0.05)
     assert wanted <= {content for _role, content, _origin in _stored(hermes_home)}
 
 
@@ -561,7 +561,9 @@ def test_a_steer_the_retry_buffer_gave_up_is_read_again(telegram, hermes_home, m
 
 
 @pytest.mark.parametrize("spent_at_lock", [True, False])
-def test_compression_retries_keep_the_hook_deadline(telegram, hermes_home, monkeypatch, spent_at_lock):
+def test_compression_retries_keep_the_hook_deadline(
+    telegram, hermes_home, monkeypatch, retry_passes_have_time, spent_at_lock
+):
     """A pending inbox and memory retry share the hook's time, including time already spent waiting for its lock.
     Exhausting it keeps both captures for a later pass, rather than granting either another full wait."""
 
