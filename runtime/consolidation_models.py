@@ -90,7 +90,7 @@ def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_RO
 
 
 #: ``finish_reason`` values with which DeepSeek ends a generation it did not finish, for lack of capacity or by
-#: interruption.  A tuple, so a ``finish_reason`` that is not a string can be compared with it.
+#: interruption.
 _CHAT_INTERRUPTIONS = ("insufficient_system_resource", "aborted")
 
 
@@ -116,6 +116,10 @@ def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     if not isinstance(choice, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
     finish_reason = choice.get("finish_reason")
+    # A stop reason is text; a gateway that sends none leaves it absent or null.  Any other type is a route that does
+    # not say why it stopped, which cannot be told from one that finished.
+    if finish_reason is not None and type(finish_reason) is not str:
+        raise AuxiliaryModelError("unsupported_response_shape")
     # "content_filter" means the provider's policy ended the answer, whatever
     # the message still holds: the text left, if any, is incomplete.  It is
     # named as a refusal instead of reaching the decoder as anonymous invalid
@@ -547,6 +551,9 @@ def _require_completed(payload: Mapping[str, Any]) -> None:
             raise AuxiliaryModelError("model_refused")
         if reason not in (None, "max_output_tokens"):
             raise AuxiliaryModelError("unsupported_response_shape")
+        # An ``incomplete`` that gives no reason is read as cut off at the output limit.  The details and the reason
+        # are optional in the API and no provider document gives their absence another meaning, so a response that
+        # says nothing keeps the name under which the doctor advises on the output limit.
         raise ContractError("DERIVATION_INVALID", "model_output_truncated")
     if status == "failed":
         raise AuxiliaryModelError("response_status_failed")

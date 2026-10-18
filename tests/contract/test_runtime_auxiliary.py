@@ -578,14 +578,31 @@ def test_a_refusal_that_declines_nothing_is_no_refusal(tmp_path, monkeypatch, re
     assert exc.value.error_type == "unsupported_response_shape"
 
 
-@pytest.mark.parametrize("finish_reason", [[], {}, 7, None], ids=["list", "object", "number", "null"])
-def test_a_finish_reason_that_is_not_a_string_stops_nothing(tmp_path, monkeypatch, finish_reason):
+@pytest.mark.parametrize("finish_reason", [[], {}, 7, True], ids=["list", "object", "number", "boolean"])
+def test_a_finish_reason_that_is_not_text_is_a_shape_this_route_does_not_read(tmp_path, monkeypatch, finish_reason):
+    """A route that does not say why it stopped cannot be told from one that finished, so a stop reason that is
+    neither text nor absent is refused, beside valid JSON as beside a prefix."""
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
     message = {"role": "assistant", "content": '{"protocol_version":"1.1"}'}
     runtime = build_auxiliary_runtime(
         config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, finish_reason)))
     )
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "unsupported_response_shape"
+
+
+@pytest.mark.parametrize("sent", [False, True], ids=["absent", "null"])
+def test_a_reply_that_names_no_stop_reason_is_read_as_an_answer(tmp_path, monkeypatch, sent):
+    """A gateway that sends no stop reason, or null, has said nothing wrong: its answer is read."""
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    choice = {"message": {"role": "assistant", "content": '{"protocol_version":"1.1"}'}}
+    if sent:
+        choice["finish_reason"] = None
+    body = json.dumps({"usage": {"prompt_tokens": 10, "completion_tokens": 5}, "choices": [choice]}).encode()
+    runtime = build_auxiliary_runtime(config, transport=FakeTransport(lambda **kwargs: (200, body)))
     answer = runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
     assert answer == '{"protocol_version":"1.1"}'
 

@@ -416,9 +416,10 @@ def _incomplete(details: object) -> bytes:
     [_NO_DETAILS, None, {}, {"reason": "max_output_tokens"}],
     ids=["no_details", "null_details", "no_reason", "output_limit"],
 )
-def test_responses_incomplete_at_the_output_limit_is_the_named_truncated_derivation(tmp_path, monkeypatch, details):
-    """A response cut off at ``max_output_tokens`` is a prefix, not an answer, and so is one that is incomplete
-    without saying why; the spent call is still settled with the usage the provider reported."""
+def test_responses_incomplete_at_the_output_limit_or_without_a_reason_is_a_truncation(tmp_path, monkeypatch, details):
+    """An incomplete response is a prefix cut off at the output limit when it says so (``max_output_tokens``) and when
+    it gives no reason: the details and the reason are optional in the API, and no provider document gives their
+    absence another meaning.  The spent call is still settled with the usage the provider reported."""
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     transport = FakeTransport(lambda **kwargs: (200, _incomplete(details)))
     _payload_of, ledger = _payload(tmp_path), tmp_path / "auxiliary-budget.sqlite3"
