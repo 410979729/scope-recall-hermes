@@ -1,4 +1,4 @@
-"""D14: actual offline uv replacement in a disposable pip-less venv only."""
+"""Actual offline uv replacement in a disposable pip-less venv only."""
 
 from __future__ import annotations
 
