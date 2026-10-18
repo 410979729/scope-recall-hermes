@@ -302,21 +302,26 @@ def test_a_refusal_by_the_providers_policy_is_asked_once_and_re_run_only_on_requ
     assert (every["retried"], every["by_kind"]) == (1, {"model_refused": 1})
 
 
-def test_a_candidate_evaluation_the_provider_interrupted_fails_once_and_a_plain_run_re_opens_it(app):
-    """A candidate evaluation is asked once; one the provider interrupted fails as the fault it is, and a plain run
-    moves its three tables back together."""
+def test_a_candidate_pass_stops_at_the_first_interrupted_answer_and_a_plain_run_re_opens_the_one_it_failed(app):
+    """The provider that interrupted one answer interrupts the next, so the pass asks once and the other evaluation
+    waits for the next pass untouched.  A candidate evaluation is asked once: the one asked is left failed, and a
+    plain run moves its three tables back together."""
+    asked = []
 
     class Interrupted:
         def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+            asked.append(candidate)
             raise AuxiliaryModelError("model_output_interrupted")
 
     core, ctx = app
-    _candidate(core, ctx)
+    _candidate(core, ctx, key="TEST-cand/1")
+    _candidate(core, ctx, key="TEST-cand/2", value="红色")
     _finish_source_work(core)
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Interrupted())
+    assert len(asked) == 1
     assert list(_codes(core).values()) == ["model_output_interrupted"]
     work, evaluations = _states(core)
-    assert (work.get("failed"), evaluations) == (1, {"failed": 1})
+    assert (work.get("failed"), evaluations.get("failed")) == (1, 1)
     preview = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
     assert (preview["retried"], preview["by_kind"]) == (1, {"model_output_interrupted": 1})
     assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 1
