@@ -34,16 +34,19 @@ class HermesIdentityError(RuntimeError):
 
 
 #: The principal of a session the host names no user for: the CLI's, and an
-#: approved local surface's.
+#: approved local surface's.  A conversation the gateway's local session
+#: transport runs for the gateway's own account is bound under it too
+#: (``identity.host_account_principal``).
 LOCAL_USER_ID = "local"
 
 #: Host surfaces a person types into on the machine the host runs on, where the
 #: host sends no ``user_id`` unless a dashboard login exists: the Desktop chat
 #: panel and ``hermes --tui`` (``tui_gateway/server.py`` resolves the platform to
-#: one of the two and passes the login, or nothing).  Each is refused like any
-#: other platform until the installer approves it for one installation, because
-#: only the owner knows whether everyone who can reach that surface without
-#: logging in is the owner.  A login there is a principal of its own, approved
+#: one of the two and passes the login, or nothing), or, where the gateway runs
+#: their conversations, the account it runs as.  Neither binds a scope until the
+#: installer approves the surface for one installation, because only the owner
+#: knows whether everyone who can reach that surface without logging in is the
+#: owner.  A login there is a principal of its own, approved
 #: apart (``normalize_owner_logins``).  ``cron`` is deliberately not here: nobody is
 #: speaking in a scheduled run, a job can be created from any chat, and its
 #: prompt would be captured as the owner's own words.

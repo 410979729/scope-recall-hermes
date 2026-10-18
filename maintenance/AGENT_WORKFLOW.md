@@ -46,11 +46,18 @@ instance. Approve one only where everyone who can reach that surface without
 logging in is the owner; if you cannot tell, ask the user that one question.
 On a host that serves its dashboard to other machines this is every dashboard
 login: the dashboard's Chat tab runs there as a session that names no user.
+A Hermes whose gateway runs these conversations, and the CLI's turns, over its
+local session transport names the gateway's own OS account instead (`sid:<SID>`,
+`uid:<uid>`): that binds as the owner on an approved surface, and on another
+binds nothing while the host log names the approval, so approve the same way.
 A session that carries a dashboard login (`hermes serve` with
 `dashboard.basic_auth`, or the Desktop app connected to such a host) is that
-login, `basic:<name>`, never the local owner, and binds nothing until approved:
-add `--owner-login desktop=basic:<name>` (or `tui=`) only for a login that is
-the owner's own, and ask which one is if you cannot tell.
+login, `basic:<name>` (over the transport `auth:v1:["basic","","<name>"]`), never
+the local owner, and binds nothing until approved: add
+`--owner-login desktop=<login>` (or `tui=`) with the login the host log names,
+only for a login that is the owner's own, and ask which one is if you cannot tell.
+On an entry of a shared store `apply-install` approves neither: add the owner
+principal and row with `scope-recall grants` (docs/shared-store.md).
 A Desktop installation of 1.9 to 2.x wrote under a minted `srdesk_*` principal. When
 the old runtime's own settings show that principal is the owner, keep its private
 scope as it is: list that scope ID in `allowed_scope_ids` of the owner's rows (the

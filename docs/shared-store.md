@@ -372,6 +372,17 @@ reading the home's pointer to its last write it holds the home's lock and the st
 `commands.lock`, so no other shared-store command writes in between
 ([above](#make-a-store-and-attach-the-first-agent)).
 
+A Hermes entry attached from a home whose installer never approved Hermes Desktop or
+`hermes --tui` has no grant for that surface, and `apply-install --local-platform` refuses an
+entry; its owner's sessions there bind no scope, and the host log says so. Add the surface as the installer would: the owner principal
+`{"platform": "desktop", "user_id": "local"}` and an `owner_private` row on `desktop`, user
+`local`, chat type `private`, chat `local`, thread `main`, an empty `gateway_session_key` and the
+entry's `agent_workspace`, reading, writing and capturing into the scope the entry's CLI owner row
+captures into. That route is also where the conversations Hermes's local session transport runs
+for the gateway's own account bind ([install.md](install.md), section 4). An owner's login is
+added the same way, the login in place of `local` as the principal's user and the row's user and
+chat.
+
 A row matches a session field by field, as at attach: `platform`, `user_id`, `chat_type`,
 `chat_id`, `thread_id`, `gateway_session_key` (empty does not pin the host's session key) and
 `agent_workspace`; there is no wildcard. An `owner_private` row grants something only when its

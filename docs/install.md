@@ -259,8 +259,31 @@ nothing when nobody logged in, which is the ordinary case for a local profile.
 A session that names no user is refused everywhere but the CLI:
 
 ```
-Memory provider 'scope-recall' initialize failed: user principal required for non-cli platform; approve it as the owner's local surface with apply-install --local-platform desktop
+Memory provider 'scope-recall' initialize failed: user principal required for non-cli platform; approve the surface with apply-install --local-platform desktop
 ```
+
+A Hermes whose gateway runs these conversations itself, and the CLI's turns, over
+its local session transport names the person instead of nobody. It passes the
+account the operating system says the Desktop app, the TUI or the CLI runs as:
+`sid:<SID>` on Windows (the named pipe client's token), `uid:<uid>` elsewhere (the
+socket peer's), and serves no other account than the one the gateway runs as. Each
+conversation comes as a direct chat of its own: `chat_type` `dm`, `chat_id`
+`local-<64 hex>` (or the id a conversation from before the transport kept),
+session key `agent:<profile>:local:dm:<chat id>`, no thread. The adapter takes the
+gateway's own account for the person at this machine and binds such a
+conversation as it binds a session that names no user there: on an approved
+surface it gets the owner's private scope, under the same principal as before the
+host moved its conversations, with nothing to do; the CLI binds as it always has.
+The conversation is never a route, and neither is its session key. On a surface
+not yet approved such a session is not refused: it binds no scope, and the host
+log says once what approves it:
+
+```
+scope-recall: session bound to no memory scope: a desktop session for local (capability_gap:audience_unmapped, capability_gap:owner_private_denied, capability_gap:no_allowed_scope); nothing in it is captured or recalled; approve the surface with apply-install --local-platform desktop
+```
+
+Any other account or a login there is a user like any other, routed as a
+one-to-one chat with itself (`--owner-login`, below).
 
 Approve the surface when you install, or later on the same instance with the same
 other arguments. The flag is repeatable and takes `desktop` or `tui`:
@@ -277,7 +300,13 @@ owner's private scope on that route to `installation.json`, keeping a copy of th
 previous file under `.scope-recall-backups\`. The scopes, the installation id and
 `memory.sqlite3` are unchanged, so Desktop reads and writes the memory the CLI
 does. `plan-install` lists the approval as a change; an approved surface is not
-listed again. Restart the host surface afterwards so it binds again.
+listed again. Restart the host surface afterwards so it binds again; where the
+gateway runs the conversations, restart the gateway, since the Desktop app attaches
+to the gateway that is running. An entry of a shared store keeps its grants in
+the store's manifest, and `apply-install` refuses to approve a surface there: add
+the surface's owner principal and row with `scope-recall grants`
+([shared-store.md](shared-store.md#changing-an-entrys-grants)), which the host log
+names for such an entry.
 
 What it does not do: it does not cover a session that carries a login. That one
 is approved apart (`--owner-login`, below) or gets only what an audience row gives
@@ -290,26 +319,30 @@ owner. That is the same trust the CLI already has: whoever can run it against
 this home can read the store. A host that serves its dashboard to other machines
 (`hermes serve --host 0.0.0.0` with `dashboard.basic_auth`) runs the dashboard's
 Chat tab as `hermes --tui` on the host for whoever logged in, and passes that
-login to no memory provider, so such a session names no user. Approving `tui` (or
-`desktop`) on that host gives every dashboard login the owner's memory through
-the Chat tab.
+login to no memory provider, so such a session names no user, or over the local
+session transport the gateway's own account. Approving `tui` (or `desktop`) on
+that host gives every dashboard login the owner's memory through the Chat tab.
 
 #### A dashboard login: `--owner-login`
 
 With a dashboard login (`hermes serve` with `dashboard.basic_auth`, or the Desktop
 app connected to such a host from another machine) the host passes the login to
-the adapter as the session's user, `basic:<name>`, and names no chat. The adapter
-routes that session as a one-to-one chat with the login: `chat_type` `private`,
-`chat_id` the login, `thread_id` `main`. A login is not the local owner. Until it
-is approved it binds no scope, nothing said there is captured or recalled, and the
-host log says so once per session:
+the adapter as the session's user, `basic:<name>`, and names no chat. Its local
+session transport names a login `auth:v1:["<provider>","<issuer>","<name>"]`
+(`auth:v1:["basic","","alice"]`) and the conversation as a chat of its own. The
+adapter routes either session as a one-to-one chat with the login: `chat_type`
+`private`, `chat_id` the login, `thread_id` `main`. A login is not the local
+owner. Until it is approved it binds no scope, nothing said there is captured or
+recalled, and the host log says so once per session:
 
 ```
 scope-recall: session bound to no memory scope: a desktop session for basic:alice (capability_gap:audience_unmapped, capability_gap:owner_private_denied, capability_gap:no_allowed_scope); nothing in it is captured or recalled; if this login is the owner's own, approve it with apply-install --owner-login desktop=basic:alice
 ```
 
 Approve your own login with `--owner-login <platform>=<login>`, repeatable,
-`desktop` or `tui` only, with the login exactly as the host sends it:
+`desktop` or `tui` only, with the login exactly as the host sends it, which that
+line names. Windows PowerShell 5.1 drops the double quotes inside an argument
+unless each is written `\"`: `--owner-login 'desktop=auth:v1:[\"basic\",\"\",\"alice\"]'`.
 
 ```powershell
 scope-recall apply-install --host hermes `
@@ -326,9 +359,10 @@ login then reads and writes the owner's private memory there, from any machine
 that reaches the host, so approve only a login that is the owner's own; `revise`
 and `forget` stay with the CLI. An entry of a shared store keeps its grants in
 the store's manifest, which this command does not write: add the login's owner
-row there with `scope-recall grants` ([shared-store.md](shared-store.md)).
-`doctor` reports an owner row whose user is no owner principal as
-`audience_owner_unverified`.
+principal and row there with `scope-recall grants`
+([shared-store.md](shared-store.md#changing-an-entrys-grants)), which the host
+log names for such an entry. `doctor` reports an owner row whose user is no owner
+principal as `audience_owner_unverified`.
 
 A login that is not the owner's is a user like any gateway user and gets only
 what an audience row on its route gives it.
@@ -634,7 +668,7 @@ Things that look wrong in a healthy report and are not:
 | `schema_header_stale` | The store's tables and its own record say one schema, the SQLite header another: another process stamped the header, typically a 2.0 plugin that opened the store after its migration. Every open is refused. | Stop that process, then run `upgrade-store` with `--backup-dir`: it snapshots the store and puts the recorded schema back into the header. |
 | `restore_pending` | A `restore` was begun and not finished: the marker `restore-required.json` closes the store, and every read and write of every host refuses it (`RESTORE_UNVERIFIED`). | Run the same `restore` command again (section 9): it finishes with the ledger kept beside the store. To keep the store as it was, give it the backup that run took as `--snapshot`, or one `backup` takes of the closed store. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
-| `audience_owner_unverified` | An `owner_private` audience row names a user who is no owner principal, so it grants nothing and every session on its route captures and recalls nothing. The `audiences` check counts such rows by platform. `attention`. | If the user is the owner's own dashboard login, approve it with `apply-install --owner-login <platform>=<login>` (section 4); otherwise remove the rows. |
+| `audience_owner_unverified` | An `owner_private` audience row names a user who is no owner principal, so it grants nothing and every session on its route captures and recalls nothing. The `audiences` check counts such rows by platform. `attention`. | If the user is the owner's own dashboard login, approve it with `apply-install --owner-login <platform>=<login>` (section 4), or on an entry of a shared store add its owner principal with `scope-recall grants`; otherwise remove the rows. |
 | `owner_words_with_client_reminder` | Claude Code only. Messages stored as the owner's words before 3.10.5 that hold a `<system-reminder>` block Claude's desktop app put in them (#248): claims drawn from them read as things the owner said, and a recall can bring the block back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a session that has `forget` (Codex, a Hermes chat), ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New messages are stored without the block. |
 | `owner_words_from_host_request` | Codex only. Codex's own requests for suggestions of what to do next, stored as the owner's words, and the model's answers to them, stored as replies: the desktop app's request for one suggested next message (it opens by saying the user did not write it) and the longer request for several suggestions. Claims drawn from them read as things the owner said, and recall brings the answers back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a Codex session, ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New requests and their answers are not stored. |
 | `owner_words_unchecked` | Claude Code and Codex. The read for `owner_words_with_client_reminder` or `owner_words_from_host_request` stopped after 10 s before it reached the end of the store; the `owner_words` check says how many it found by then. `attention`. | Run `doctor` again when the store is less busy. |

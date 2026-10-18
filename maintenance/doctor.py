@@ -527,14 +527,19 @@ def _check_audiences(report: DoctorReport, instance: Path) -> None:
         if row.get("kind") == "owner_private" and (row["platform"], row["user_id"]) not in owners:
             unverified[row["platform"]] = unverified.get(row["platform"], 0) + 1
     if unverified:
+        # An entry of a shared store keeps its grants in the store's manifest, which apply-install refuses to write.
+        approve = (
+            "add the owner's own login as an owner principal with scope-recall grants"
+            if manifest.entry_id is not None
+            else "approve the owner's own desktop or tui login (apply-install --owner-login)"
+        )
         report.capability_gaps.append("audience_owner_unverified")
         record_check(
             report,
             "audiences",
             "owner_unverified",
             ",".join(f"{platform}={count}" for platform, count in sorted(unverified.items()))
-            + ": owner_private rows whose user is no owner principal grant nothing; approve the owner's own "
-            "desktop or tui login (apply-install --owner-login) or remove the rows",
+            + f": owner_private rows whose user is no owner principal grant nothing; {approve} or remove the rows",
         )
 
 
