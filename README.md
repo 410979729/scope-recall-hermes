@@ -2,7 +2,7 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, and for Codex, Claude Code, WorkBuddy and DeepSeek Harness (dsh), which share one adapter of hooks and an MCP server (the MCP tools need the optional `codex` extra; dsh runs the hooks through a plugin). The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.11.1`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
+This checkout is `3.11.2`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that is not
 attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
@@ -19,11 +19,12 @@ sight; only the owner's explicit correction or confirmation changes a fact as it
 is captured. SQLite is the only fact authority; host adapters share the same
 contracts.
 
-**What is not verified.** `scripts/check.py --tier release` runs about 3,600 tests with
-none failing. They check contracts, storage and the hosts' wiring; none of them
-measures recall quality. Every accuracy figure in the notes was measured by us, on
-copies of our own stores; the question sets hold private conversations, so there is
-no recall-quality suite you can re-run.
+**Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)
+provides reproducible development and held-out splits for retrieval, answerability,
+scope isolation, packet size and latency. It uses proposed claims and a word-hashing
+embedder without a model or network, so it does not establish consolidation quality,
+semantic embedding quality or performance on private conversations. The test tiers
+also check contracts, storage and host integration.
 
 ## For agents: install or upgrade on the user's behalf
 

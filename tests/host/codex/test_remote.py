@@ -40,7 +40,13 @@ TOKEN = "TEST-token-0123456789-abcdefghijklmnopqrstuvwxyz"
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path, still_clocks):
+    """Shared store whose handler, core and inbox read the semantic admission clock.
+
+    Physical SQL time is not charged. A later ``metered_store(cost)`` replaces that zero charge.
+    Time outside a store transaction, including the server's start and a client's HTTP wait, still
+    runs. A slow-write check calls ``slow_capture_store`` after this fixture has returned.
+    """
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
     home = tmp_path / "TEST-tianshu-home"
@@ -85,7 +91,10 @@ def _free_port() -> int:
 
 @pytest.fixture
 def served(store):
-    """Both entries served on loopback, each with its own token, as a client machine sees them."""
+    """Both entries served on loopback, each with its own token, as a client machine sees them.
+
+    The servers use the store's admission clock. Startup waits on time outside a store transaction.
+    """
     import uvicorn
 
     root, homes = store
@@ -256,7 +265,18 @@ def test_claude_code_prompt_and_record_reach_the_entry_once(served, tmp_path, st
     assert entries["workpc-claude-code"] == "工作机 Claude Code"
 
 
-def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(served, tmp_path, monkeypatch):
+@pytest.mark.parametrize("slow_write", [False, True], ids=["store", "slow_store"])
+def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(
+    served, tmp_path, monkeypatch, slow_capture_store, slow_write
+):
+    """A prompt kept while the server was away is stored with the Stop, at the moment it was kept.
+
+    The slow store delays the next real open after these fixtures. That open is the Stop reply:
+    the prompt was spooled on the client and is committed by the later flush. Both are source rows,
+    and the prompt keeps the moment it was spooled. The admission clock does not charge the delay.
+    """
+    if slow_write:
+        slow_capture_store()
     root, _homes, ports = served
     flushes = []
     monkeypatch.setattr(remote_client, "_start_flush", lambda config: flushes.append(config))

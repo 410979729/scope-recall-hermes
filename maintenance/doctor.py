@@ -117,9 +117,10 @@ def _installed_version(names: list[str], distribution: str) -> str | None:
 
 
 def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeInstanceConfig | None) -> None:
-    """What a Hermes that builds its own environment really runs: the core there, and the vector dependencies
-    there.  After the official Hermes update of 2026-10-11 every recall of one installation ran without vectors for
-    two days, on a core two releases old, while the venv every check read held the right ones."""
+    """Check the package version and vector dependencies in the environment Hermes manages.
+
+    The inspecting interpreter can differ from that environment. An unreadable environment is reported without
+    inferring whether its packages match the installation."""
     if report.host != "hermes":
         return
     environment = _hermes_runtime_environment(instance)
@@ -154,13 +155,9 @@ def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeI
 def _check_vector_dependencies(
     report: DoctorReport, probe: dict[str, Any], config: RuntimeInstanceConfig | None
 ) -> None:
-    """The runtime config names a LanceDB store, and the interpreter that recalls has no ``lancedb`` or ``pyarrow``.
+    """Report missing vector packages only for a configured LanceDB store.
 
-    The extra is optional, so its absence is no drift; with a LanceDB store configured it is every recall by words
-    alone, said only in the recall's own gaps (``lance_not_installed``) while the doctor named the threshold instead.
-    A Hermes that builds its own environment is read there (``_check_hermes_runtime``); a probe from an older core
-    has no answer, which is no finding.
-    """
+    Hermes-managed environments are checked separately. A probe without dependency metadata supplies no finding."""
     vector = config.vector if config is not None else None
     if report.hermes_runtime is not None or vector is None or vector.backend != "lancedb":
         return

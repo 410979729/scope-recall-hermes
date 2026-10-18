@@ -10,8 +10,8 @@ import pytest
 
 _REAL_MONOTONIC = time.monotonic
 
-# Real runs measured 0.019 s beyond budget and 0.049 s for runtime attach plus worker start. This allowance covers
-# thread dispatch, timed-wait scheduling, JSON, diagnostics and shutdown spool I/O beside the metered store time.
+# Allowance for thread dispatch, timed-wait scheduling, JSON, diagnostics and shutdown spool I/O beside the
+# metered store time.
 HOOK_MARGIN_SECONDS = 0.1
 
 

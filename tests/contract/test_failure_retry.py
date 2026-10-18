@@ -105,8 +105,8 @@ def test_a_stamp_from_another_release_does_not_block():
 
 
 def test_a_schema_generation_stamp_never_blocks_a_release():
-    """#233: rows re-opened under schema 1110 before a fix kept a stamp that blocked every later release keeping the
-    schema, the one that fixed their validation included.  The code is one of the two items reported there."""
+    """A schema-generation stamp does not count as a retry by the current release, even when the schema is unchanged.
+    Reopening terminal work replaces that stamp while preserving its other failure marks."""
     code = (
         "retried:1110|derivation_retry:1|retried:1109|auto_retry:2|timeout|timeout|"
         "DERIVATION_INVALID|DERIVATION_INVALID|DERIVATION_INVALID"
@@ -487,8 +487,8 @@ def test_a_lost_lease_keeps_every_budget_mark_within_the_bound(app):
 
 
 def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(worker_app):
-    """#233's items: a consolidation refused on its second page, its re-look spent under the schema stamp, resumes on
-    that page when this release re-opens it, keeps the page it had accepted, and finishes."""
+    """Reopened consolidation resumes at the refused page, preserves the accepted page and finishes after a
+    schema-generation retry has been spent."""
     core, ctx, _clock = worker_app
     source = long_source(core, ctx, FIRST + "\n" + "这是一段归档资料；" * 700 + "\n" + LAST)
 
@@ -706,8 +706,7 @@ def test_every_by_design_terminal_failure_counts_as_terminal(app, code):
 
 
 def test_status_counts_each_failure_kind_once(app):
-    """Retry history and case used to split one kind across several rows, so
-    an operator saw ``derivation_invalid`` three times with different counts."""
+    """Failure counts group one kind across retry-history decorations and letter case."""
     core, ctx = app
     _fail_one(core, ctx, "timeout")
     codes = ("auto_retry:1|derivation_invalid", "DERIVATION_INVALID", "derivation_retry:1|derivation_invalid")
@@ -852,8 +851,7 @@ def test_a_refused_evaluation_clears_through_real_storage(app):
 
 
 def test_a_transport_failure_mid_reply_clears_through_real_storage(app):
-    """#201: a model served over plain HTTP failed candidate evaluations with ``http_protocol``, and no operator
-    command could take them up again."""
+    """Operator retry reopens stored work whose model reply failed with ``http_protocol``."""
     core, ctx = app
     _fail_one(core, ctx, "http_protocol")
     assert _states(core)[0].get("failed")

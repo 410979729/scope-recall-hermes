@@ -80,7 +80,7 @@ _BLANK_LINES = re.compile(r"(?:[ \t]*\r?\n)*")
 
 #: Where a prompt's payload carries since when the host's model still holds the session's own turns
 #: (``transcript.context_since``) to a recall that runs where the session record cannot be opened: the entry's resident
-#: server, or the server of a client on another machine.  Only this package's own hook and client write it (#249).
+#: server, or the server of a client on another machine.  Only this package's own hook and client write it.
 IN_CONTEXT_FIELD = "scope_recall_in_context_since"
 
 
@@ -98,8 +98,8 @@ def in_context_since(payload: dict[str, Any]) -> str | None:
 
 def claude_code_person_text(text: str) -> str:
     """The person's own words in a Claude Code prompt or session-record message: without the ``<system-reminder>``
-    blocks the app put in it, or the text as it came when it holds none.  Stored as theirs, a reminder became things
-    they had said, and claims were drawn from it (#248).  A block that never closes, and what follows it, stay."""
+    blocks the app put in it, or the text as it came when it holds none.  Complete reminder blocks are excluded from
+    the evidence used to derive the person's claims.  A block that never closes, and what follows it, stay."""
     kept: list[str] = []
     position = 0
     while (opening := _CLAUDE_CODE_REMINDER_OPEN.search(text, position)) is not None:

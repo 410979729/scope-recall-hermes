@@ -2,15 +2,11 @@ name: CI
 
 on:
   push:
-    # With tags-ignore alone GitHub ran this workflow for no push at all: a
-    # filter on one kind of ref leaves the other kind undefined, so a merge
-    # to main went unchecked until the nightly run.  main is named here; a
-    # pull request's branch is covered by pull_request below.
+    # Branches must be explicit alongside the tag filter so main pushes
+    # receive checks. Feature branches are covered by pull_request below.
     branches: [main]
-    # A tag push would start a second ci-required run on a commit main has
-    # already checked.  The release gate reads the check name once however
-    # many runs reported it, so that run would be harmless and is simply
-    # not needed.
+    # Release tags refer to commits already checked on main; the release
+    # gate consumes ci-required without repeating this workflow for tags.
     tags-ignore: ['**']
   pull_request:
   schedule:
@@ -33,16 +29,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # storage, capture, claims, deletion, episodes and retrieval ran in
-        # no workflow at all, and the nightly integration baseline does not
-        # select their newest files (test_storage_growth.py,
-        # test_vector_retention.py, test_aliases.py), so those tests had
-        # only ever run on a developer's machine.
+        # Each layer runs its own tier: integration selects a shared
+        # baseline and does not replace the layer-specific test sets.
         tier: [unit, contract, storage, capture, claims, deletion, episodes, retrieval, packaging, migration]
-        # host and native ran in no pull-request workflow at all. Both are
-        # added here on Windows, where they are known to pass; native is gated
-        # on LanceDB rather than on Windows and host holds the only
-        # Task Scheduler paths, so moving either to Linux is its own change.
+        # Host and native process checks run on Windows. Host includes
+        # Task Scheduler paths; native requires LanceDB. Linux coverage
+        # for these process tiers needs its own validation.
         include:
           - os: windows-latest
             tier: host
@@ -63,13 +55,9 @@ jobs:
       - name: Run tier (no implicit retries)
         run: python scripts/check.py --tier ${{ matrix.tier }} --task P17
 
-  # requires-python admits 3.11 to 3.14, yet every job above is 3.12: a
-  # construct only 3.12 parses would pass there and fail at import on 3.11,
-  # and a standard-library change would pass there and fail on 3.14 (on
-  # Windows 3.13 added os.fchmod, which the vector store then called and
-  # was refused).  Hermes Desktop builds its plugin environment on 3.14
-  # (#135).  One job per system and end of the range runs the in-process
-  # tiers; the process tiers stay on 3.12 above.
+  # The in-process tiers cover both ends of the supported Python range on
+  # each platform to catch parser and standard-library differences. The
+  # process tiers use the shared interpreter configured above.
   test-python-range:
     name: ${{ matrix.os }}-py${{ matrix.python }}
     if: github.event_name != 'schedule'

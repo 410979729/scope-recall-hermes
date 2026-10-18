@@ -48,7 +48,14 @@ OWNER = "TEST-owner"
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path, still_clocks):
+    """Shared store whose hooks, core and inbox read the semantic admission clock.
+
+    Physical SQL time is not charged. ``metered_store(cost)`` after this fixture, including
+    ``busy_store``, replaces the zero charge. A lease wait, a network wait and any other time
+    outside a store transaction still run. ``slow_capture_store`` is armed after this fixture
+    returns.
+    """
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
     homes = {}
@@ -214,8 +221,7 @@ def test_the_client_s_tool_traffic_is_not_recorded_and_a_turn_needs_its_prompt_i
 
 
 def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypatch):
-    """A local installation checks its store's status at a session start; on the pilot's shared store that
-    count took 7-8 s, past Codex's 2 s hook timeout.  An entry was checked when its config loaded."""
+    """Session start on a shared entry performs no store-status query; loading its configuration checks the entry."""
     _root, _homes, client, _capture = store
     hook = _hook(client)
     monkeypatch.setattr(hook.core, "status", lambda *args, **kwargs: pytest.fail("status read at a session start"))
@@ -251,9 +257,8 @@ def _codex_client(root, tmp_path):
 
 
 def test_a_client_s_prompt_runs_the_entry_s_budget(store, tmp_path):
-    """Recall on the pilot's shared store took 2.7-5.7 s.  Claude Code waits 15 s for a prompt's hook and Codex
-    now as long, so both run the entry's configured budget; with 2 s most of Codex's automatic recalls came back
-    empty.  No installer writes ``hook_processing_seconds``: a config without it runs the worker's 6 s."""
+    """Both clients honor the entry's configured hook budget. A missing setting uses the worker's default;
+    an out-of-bounds value falls back to the hook's own budget."""
     root, _homes, client, _capture = store
     codex = _codex_client(root, tmp_path)
     for home, host in ((client, "claude-code"), (codex, "codex")):
@@ -375,9 +380,9 @@ READ_TOOLS = ["recall", "inspect", "profile", "trace", "entity", "status"]
 
 @pytest.mark.parametrize("host", ["claude-code", "workbuddy", "dsh", "codex"])
 def test_only_a_client_that_names_its_conversation_is_offered_the_tools_that_change_the_store(store, tmp_path, host):
-    """#245: the store takes a change only on the word of the person's latest message in the same conversation, and
-    Claude Code, WorkBuddy and dsh name no conversation with a tool call: offered there, propose_memory, revise and
-    forget were refused on every call (ACCESS_DENIED codex_thread_id).  Codex names its thread and keeps all nine."""
+    """Store changes require the person's latest message in the tool call's conversation.  Claude Code, WorkBuddy
+    and dsh name no conversation with a tool call, so they omit mutation tools; Codex names its thread and keeps all
+    nine tools."""
     root, _homes, client, _capture = store
     if host != "claude-code":
         owner = next(
@@ -904,8 +909,7 @@ def test_codex_does_not_read_a_session_record(store, tmp_path):
 
 
 def test_a_task_notification_is_not_the_owner_s_prompt(store):
-    """Claude Code hands the model a notice as a prompt when a background task finishes; on the pilot the
-    first such notice was stored as the owner's message."""
+    """A background-task notice passed as a prompt is excluded from the owner's captured words and recall."""
     root, _homes, client, _capture = store
     notice = "<task-notification>\n<task-id>TEST</task-id>\n<status>completed</status>\n</task-notification>"
     hook = _hook(client)
@@ -919,7 +923,7 @@ def test_a_task_notification_is_not_the_owner_s_prompt(store):
 
 
 #: What Claude's desktop app puts in the person's first message when a session starts without a project folder,
-#: shortened (#248).  Synthetic.
+#: shortened and synthetic.
 APP_REMINDER = (
     "<system-reminder>\nTEST The user started this session without choosing a project folder, so your working "
     "directory is a scratch workspace the app created for it.\n</system-reminder>"
@@ -927,9 +931,9 @@ APP_REMINDER = (
 
 
 def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(store, monkeypatch):
-    """#248: Claude's desktop app puts a <system-reminder> ahead of what the person typed; it was stored as their words,
-    claims were drawn from it, and it was recalled for.  A prompt that is only reminders stores and recalls nothing,
-    here and on the entry's server; the person's own words about such a block stay."""
+    """Reminder blocks inserted by the app are excluded from the person's captured words and recall query.  A prompt
+    containing only reminders stores and recalls nothing, locally or on the entry's server; the person's own words
+    about a block stay."""
     root, _homes, client, _capture = store
     asked = []
     monkeypatch.setattr(
@@ -957,8 +961,8 @@ def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(st
 
 
 def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(store, tmp_path, still_clocks):
-    """#248, the session record: the reminder is a text block of its own, or ahead of the typed text in one string, in
-    a message the record marks as the person's.  A message that is only reminders is not theirs."""
+    """A reminder in a person-role record is excluded whether it is a separate text block or precedes the typed text
+    in one string.  A message containing only reminders is not captured as the person's words."""
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -1003,9 +1007,8 @@ def _compaction(stamp):
 
 
 def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store, tmp_path, still_clocks):
-    """#249: a message of this session the model still has (said since its last compaction, or in a session that has
-    had none) came back in a later prompt's recall, a second copy in the context.  One said before the compaction
-    reaches the model only as the compaction's summary, and is still recalled."""
+    """Recall excludes this session's messages that the model still holds, including every message when no compaction
+    has occurred.  Messages before compaction remain recallable because the model holds only their summary."""
     root, _homes, client, _capture = store
     record = tmp_path / "TEST-projects" / "TEST-cc-session.jsonl"
     record.parent.mkdir(parents=True)
@@ -1211,9 +1214,8 @@ def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, t
 
 
 def test_the_rest_of_codex_s_suggestions_thread_is_not_stored_either(store, tmp_path):
-    """The request and its answer were kept out, but the thread's tool calls and end came through: on the pilot one
-    thread left four tool outputs of 2-11 kB and an end marker.  Each hook is a process of its own, so the thread is
-    marked when its request is recognized, and its end removes the mark."""
+    """Every hook of a suggested-message thread is excluded, including tool calls and the end marker. Each hook
+    runs in its own process, so recognizing the request persists a thread mark and session end removes it."""
     root, _homes, _client, _capture = store
     codex = _codex_client(root, tmp_path)
 
@@ -1326,9 +1328,8 @@ def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store, still_
 
 
 def test_a_failed_recall_says_what_stopped_it(store, ample_budget, monkeypatch, capsys):
-    """The work computer's server logged recall_exception three times with nothing else: the cause had to be found
-    by reading the store.  The hook needs time enough to reach the recall: on the 2 s default a slow CI runner spent
-    it attaching the runtime, and the hook said deadline_exceeded instead (windows-latest, 2026-10-05)."""
+    """A failed recall reports its contract error in diagnostics and the hook's error output. The fixture reserves
+    enough hook time to reach recall, so an earlier deadline does not replace the failure being checked."""
     from scope_recall.adapters.clients.hook_answer import emit_result
     from scope_recall.core import MemoryCore
 
@@ -1602,9 +1603,7 @@ def small_reserve(monkeypatch):
 
 @pytest.fixture
 def ample_budget(monkeypatch):
-    """For a test that needs the server's answer: a hook on the 2 s default asked no server when storing the prompt
-    took most of it, as on a slow CI runner (the prompt's write took 5.6 s on windows-latest, 2026-10-04, and the hook
-    recalled by itself).  The server answers at once; the time is only there to be enough."""
+    """Reserve hook time for semantic server-answer tests to reach recall after runtime attachment and capture."""
     from scope_recall.adapters.clients import handler as handler_module
 
     monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 30.0)
@@ -1613,9 +1612,8 @@ def ample_budget(monkeypatch):
 def test_the_server_answers_a_prompt_s_recall_and_the_hook_stores_the_prompt(
     resident, small_reserve, ample_budget, monkeypatch, capsys
 ):
-    """A cold prompt's recall was often done before its LanceDB helper was ready: on the pilot 6 of 8 cold Claude
-    Code prompts recalled by words alone.  The client's MCP server lives as long as the client and recalls warm; the
-    prompt is stored by its own hook, as before."""
+    """The resident server answers the prompt's recall while the hook stores the prompt. Closing the server removes
+    its endpoint, so another hook cannot mistake a closed server for an available one."""
     root, client, endpoint = resident
     calls = _counted(endpoint, monkeypatch)
     raw = json.dumps(_prompt("TEST 常驻进程给这句召回。", prompt_id="TEST-prompt-resident")).encode()
@@ -1869,8 +1867,8 @@ def test_credentials_rotated_or_removed_in_the_env_file_are_taken_up(store, monk
 
 
 def test_a_server_names_itself_in_the_user_s_own_profile(resident):
-    """The entry's home may sit on a drive every account can read (on the pilot, F:\\ gives Authenticated Users
-    write), and whoever holds a server's token can read the owner's memory through it."""
+    """The server's endpoint lives in the user's private profile, apart from an entry home other accounts may read.
+    Its token authorizes memory reads, so the endpoint and its directory require private permissions."""
     import os
     import stat
     from pathlib import Path
@@ -2757,9 +2755,8 @@ class _WarmedFake(_KeptFake):
 
 
 def test_a_kept_recaller_searches_its_vector_store_again_after_an_idle_stretch(monkeypatch):
-    """Every search reads the whole index, and left alone the OS gave its pages to other work: the first recall after
-    an idle hour searched past its time (2 of 4 on this machine's Claude Code, 2026-10-02).  The server searches once
-    more after each idle stretch; a recall starts the stretch again, and a closed recaller searches no more."""
+    """The server warms the vector store at startup and after each idle stretch. A recall restarts the idle interval,
+    and closing the recaller stops further warming without creating another handler."""
     import time
 
     from scope_recall.adapters.clients import local_endpoint
@@ -3303,11 +3300,8 @@ def _kept_prompt(kept, index, budget=10.0):
 
 
 def test_a_kept_handler_recalls_with_its_vectors_when_its_provider_and_store_are_slow(tmp_path, monkeypatch):
-    """The query embedding was asked for after the SQLite channels, with three quarters of what they left: on
-    2026-09-29 the work computer's server recalled 4 of 9 prompts by words alone (AuxiliaryModelError:timeout), each
-    on a new connection after a pause.  Here the channels take 2.8 s of a prompt's 4 s and the provider answers in
-    0.8 s; asked for as the recall starts, the embedding is there when the vector channel needs it, after a pause
-    too."""
+    """Query embedding overlaps the SQLite channels: with 2.8 s of channel work and a 0.8 s provider reply, a 4 s
+    prompt keeps its vector results. The retained handler preserves this behavior after a pause."""
     import time
 
     from scope_recall.adapters.clients.handler import CodexHookHandler
@@ -3450,7 +3444,10 @@ WB_SESSION = "TEST-wb-session"
 
 @pytest.fixture
 def workbuddy(store, tmp_path, monkeypatch):
-    """A WorkBuddy entry beside the store's others, its session records in a projects folder of the test's own."""
+    """A WorkBuddy entry beside the store's others, its session records in a projects folder of the test's own.
+
+    Its hooks use the store's admission clock.
+    """
     from scope_recall.adapters.clients import transcript
 
     root, _homes, _client, _capture = store
@@ -3900,11 +3897,18 @@ def test_a_workbuddy_reply_said_again_in_a_new_turn_is_stored_from_the_record(wo
     assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 好的。")] * 2
 
 
-def test_a_workbuddy_record_s_own_user_messages_are_not_the_person_s(workbuddy):
+@pytest.mark.parametrize("slow_write", [False, True], ids=["store", "slow_store"])
+def test_a_workbuddy_record_s_own_user_messages_are_not_the_person_s(workbuddy, slow_capture_store, slow_write):
     """WorkBuddy saves what the person sent inside ``<user_query>``.  The user messages it adds itself carry none: a
     local command and its output, a shell command run in bash mode and its output, a teammate's report, and a slash
     command's expansion, which WorkBuddy writes over the typed command before it saves the message (the prompt hook is
-    handed the typed command)."""
+    handed the typed command).
+
+    The slow store delays the next real open after this fixture, the prompt's capture. The typed command is still
+    that source row.
+    """
+    if slow_write:
+        slow_capture_store()
     root, home, projects = workbuddy
     at = _wb_ms()
     skill = (
@@ -4028,7 +4032,8 @@ def busy_store(monkeypatch, metered_store):
     it may (what it asks, up to its core's write timeout) and fails as a busy store does, and each recall takes all the
     time it is given.  Those waits move the hook's clock on rather than sleep, and a transaction that does reach the
     store counts 0.01 s on it (``metered_store``), so a test of the hook's budget reads the time a host waits for it,
-    whatever the runner's store and sleeps take.  The fixture's value is that clock."""
+    whatever the runner's store and sleeps take.  The store fixture may already have installed a zero charge; this
+    call replaces it.  The fixture's value is that clock."""
     from scope_recall.core import MemoryCore
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
