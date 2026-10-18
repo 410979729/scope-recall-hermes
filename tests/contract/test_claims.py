@@ -818,6 +818,14 @@ def test_restore_withdraws_a_denial_that_is_no_value_and_gives_back_what_it_disp
         region.ref: None,
         bucket.ref: None,
     }
+    assert {
+        item["ref"]: (item["subject"], item["predicate"], item["value"], item["gives_back"])
+        for item in preview["changed"]
+    } == {
+        jenkins.ref: ("TEST-project", "CI service", "not CircleCI", "Jenkins"),
+        region.ref: ("TEST-project", "deploy region", "not us-west-2", None),
+        bucket.ref: ("TEST-project", "backup bucket", "not vault-1", None),
+    }
     assert core.storage.path.read_bytes() == before
     assert len(core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"]) == 3
     assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"

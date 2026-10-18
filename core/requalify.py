@@ -147,12 +147,7 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
             continue
         report.examined += 1
         if settled_as is not None:
-            entry = _settle_denial(tx, head, held, settled_as, now=now, dry_run=dry_run)
-            payload = head.payload
-            entry.update(
-                subject=payload.get("subject"), predicate=payload.get("predicate"), value=payload.get("value_text")
-            )
-            report.changed.append(entry)
+            report.changed.append(_settle_denial(tx, head, held, settled_as, now=now, dry_run=dry_run))
             continue
         try:
             roots = tx.claims.roots(evidence_refs(head.payload))
@@ -280,14 +275,20 @@ def _settle_denial(tx, head, held, reason: str, *, now: str, dry_run: bool) -> d
     """Withdraw ``head``, a denial at its claim's head that is no value of its slot (``_denial_standing``), with a
     retracted version, so no read at any instant takes it for the value; and where it denied another value than the
     one held, re-instate that value as it was, if it still holds (``valid_at``): an expired one is not.  Every version
-    stays."""
+    stays.  The entry names the claim, its subject, predicate and current value, and the revision and value it gives
+    back (``restores``, ``gives_back``), both None where it will hold none, so a preview can be read before it is
+    applied."""
     displaced = held if reason == DENIAL_REASON else None
     restores = displaced if displaced is not None and valid_at(displaced, now, historical=False) else None
     entry = {
         "ref": head.ref,
         "was": f"{head.state}:{head.reason}",
         "now": f"retracted:{reason}",
+        "subject": head.payload.get("subject"),
+        "predicate": head.payload.get("predicate"),
+        "value": head.payload.get("value_text"),
         "restores": None if restores is None else restores.revision,
+        "gives_back": None if restores is None else restores.payload.get("value_text"),
     }
     if not dry_run:
         saved = tx.claims.append(
@@ -310,8 +311,9 @@ def restore_displaced_values(
     A denial is its slot's value only as the person's own answer (``mutate.denial_verdict``): any other at the head
     ("not CircleCI" over Jenkins, "not us-east-2" as a project's region) reads as the slot's value, and is settled as
     ``_settle_denial`` says; the value a denial of another value displaced comes back if it was the slot's value when
-    the denial was written and holds still.  ``requalify_claims`` settles them the same way.  The report names refs and
-    revisions only, never claim text.
+    the denial was written and holds still.  ``requalify_claims`` settles them the same way.  The report names each
+    claim it changes, or as a preview would change, by ref, subject, predicate and current value, with the value it
+    gives back or None where the claim will hold none (``_settle_denial``).
     """
     refs = _page(tx, after_ref, limit)
     report = RequalifyReport(applied=not dry_run, last_ref=refs[-1] if refs else "")
