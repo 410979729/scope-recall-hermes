@@ -375,9 +375,9 @@ READ_TOOLS = ["recall", "inspect", "profile", "trace", "entity", "status"]
 
 @pytest.mark.parametrize("host", ["claude-code", "workbuddy", "dsh", "codex"])
 def test_only_a_client_that_names_its_conversation_is_offered_the_tools_that_change_the_store(store, tmp_path, host):
-    """#245: the store takes a change only on the word of the person's latest message in the same conversation, and
-    Claude Code, WorkBuddy and dsh name no conversation with a tool call: offered there, propose_memory, revise and
-    forget were refused on every call (ACCESS_DENIED codex_thread_id).  Codex names its thread and keeps all nine."""
+    """Store changes require the person's latest message in the tool call's conversation.  Claude Code, WorkBuddy
+    and dsh name no conversation with a tool call, so they omit mutation tools; Codex names its thread and keeps all
+    nine tools."""
     root, _homes, client, _capture = store
     if host != "claude-code":
         owner = next(
@@ -919,7 +919,7 @@ def test_a_task_notification_is_not_the_owner_s_prompt(store):
 
 
 #: What Claude's desktop app puts in the person's first message when a session starts without a project folder,
-#: shortened (#248).  Synthetic.
+#: shortened and synthetic.
 APP_REMINDER = (
     "<system-reminder>\nTEST The user started this session without choosing a project folder, so your working "
     "directory is a scratch workspace the app created for it.\n</system-reminder>"
@@ -927,9 +927,9 @@ APP_REMINDER = (
 
 
 def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(store, monkeypatch):
-    """#248: Claude's desktop app puts a <system-reminder> ahead of what the person typed; it was stored as their words,
-    claims were drawn from it, and it was recalled for.  A prompt that is only reminders stores and recalls nothing,
-    here and on the entry's server; the person's own words about such a block stay."""
+    """Reminder blocks inserted by the app are excluded from the person's captured words and recall query.  A prompt
+    containing only reminders stores and recalls nothing, locally or on the entry's server; the person's own words
+    about a block stay."""
     root, _homes, client, _capture = store
     asked = []
     monkeypatch.setattr(
@@ -957,8 +957,8 @@ def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(st
 
 
 def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(store, tmp_path, still_clocks):
-    """#248, the session record: the reminder is a text block of its own, or ahead of the typed text in one string, in
-    a message the record marks as the person's.  A message that is only reminders is not theirs."""
+    """A reminder in a person-role record is excluded whether it is a separate text block or precedes the typed text
+    in one string.  A message containing only reminders is not captured as the person's words."""
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -1003,9 +1003,8 @@ def _compaction(stamp):
 
 
 def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store, tmp_path, still_clocks):
-    """#249: a message of this session the model still has (said since its last compaction, or in a session that has
-    had none) came back in a later prompt's recall, a second copy in the context.  One said before the compaction
-    reaches the model only as the compaction's summary, and is still recalled."""
+    """Recall excludes this session's messages that the model still holds, including every message when no compaction
+    has occurred.  Messages before compaction remain recallable because the model holds only their summary."""
     root, _homes, client, _capture = store
     record = tmp_path / "TEST-projects" / "TEST-cc-session.jsonl"
     record.parent.mkdir(parents=True)
