@@ -129,7 +129,7 @@ def test_the_retrieval_tier_s_watchdog_carries_the_recall_bench_s_own_allowance(
     rest = [path for path in selected if path != bench]
     assert bench in selected
     assert check.pytest_watchdog_seconds("retrieval", len(selected), selected) == 600
-    assert check.pytest_watchdog_seconds("retrieval", len(rest), rest) == 400
+    assert check.pytest_watchdog_seconds("retrieval", len(rest), rest) == 180 + 20 * len(rest)
     # Alone, it still has a bound short of the release budget.
     assert check.pytest_watchdog_seconds("retrieval", 1, [bench]) == 440
 
