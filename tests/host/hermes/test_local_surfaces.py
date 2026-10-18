@@ -29,6 +29,7 @@ from scope_recall.adapters.hermes import (
     ScopeRecallHermesAdapter,
     bind_hermes_identity,
     install_hermes_scope_recall,
+    unbound_sessions,
 )
 from scope_recall.adapters.hermes import identity as hermes_identity
 from scope_recall.adapters.hermes.audiences import audience_entry, normalize_local_platforms, normalize_owner_logins
@@ -734,25 +735,27 @@ def test_doctor_names_a_surface_whose_unnamed_sessions_are_refused(hermes_home, 
     assert "approve the surface with apply-install --local-platform tui" in check["detail"]
 
 
-def _ended_record(folder, *, entry_id, platform):
-    """A record as a process that has ended left it: no process can hold this pid."""
-    ended = 0xFFFFFFF0
+def _ended_record(folder, *, entry_id, platform, pid):
+    """A dead process record, including ids beyond POSIX's signed native int range."""
     folder.mkdir(exist_ok=True)
-    path = folder / f"{ended}.json"
+    path = folder / f"{pid}.json"
     session = {"entry_id": entry_id, "platform": platform, "gaps": ["capability_gap:audience_unmapped"], "since": ""}
-    record = {"schema": "scope-recall.unbound-sessions.v1", "pid": ended, "start_token": None, "sessions": [session]}
+    record = {"schema": "scope-recall.unbound-sessions.v1", "pid": pid, "start_token": None, "sessions": [session]}
     path.write_text(json.dumps(record), encoding="utf-8")
     return path
 
 
-def test_doctor_reads_what_live_processes_recorded_for_its_own_entry(tmp_path, initialize_kwargs, this_account):
+@pytest.mark.parametrize("ended_pid", [0x7FFFFFFF, 0xFFFFFFF0])
+def test_doctor_reads_what_live_processes_recorded_for_its_own_entry(
+    tmp_path, initialize_kwargs, this_account, ended_pid
+):
     root = _store(tmp_path, initialize_kwargs)
     desk = _entry(root, tmp_path, initialize_kwargs, entry_id="desk")
     lab = _entry(root, tmp_path, initialize_kwargs, entry_id="lab")
     provider = ScopeRecallHermesAdapter()
     provider.initialize(CONVERSATION, **_conversation(desk, "desktop"))
     provider.shutdown()
-    _ended_record(root / "unbound-sessions", entry_id="lab", platform="tui")
+    _ended_record(root / "unbound-sessions", entry_id="lab", platform="tui", pid=ended_pid)
 
     at_desk = doctor.run_doctor(host="hermes", instance_root=desk["hermes_home"])
     at_lab = doctor.run_doctor(host="hermes", instance_root=lab["hermes_home"])
@@ -763,13 +766,14 @@ def test_doctor_reads_what_live_processes_recorded_for_its_own_entry(tmp_path, i
     assert not _local_sessions_check(at_lab), "another entry's record, and one whose process ended"
 
 
+@pytest.mark.parametrize("ended_pid", [0x7FFFFFFF, 0xFFFFFFF0])
 def test_a_record_a_process_left_when_it_ended_is_retired_when_this_one_writes(
-    hermes_home, initialize_kwargs, this_account
+    hermes_home, initialize_kwargs, this_account, ended_pid
 ):
     """A record that cannot be read is left: no pass can tell whose it is."""
     _binding, core = _install(hermes_home, initialize_kwargs)
     folder = hermes_home / "scope-recall" / "unbound-sessions"
-    ended = _ended_record(folder, entry_id="", platform="tui")
+    ended = _ended_record(folder, entry_id="", platform="tui", pid=ended_pid)
     unreadable = folder / "TEST-unreadable.json"
     unreadable.write_text("{", encoding="utf-8")
 
@@ -779,6 +783,118 @@ def test_a_record_a_process_left_when_it_ended_is_retired_when_this_one_writes(
 
     assert (folder / f"{os.getpid()}.json").is_file()
     assert not ended.exists() and unreadable.exists()
+
+
+@pytest.mark.parametrize("failure", ["partial", "replace"])
+@pytest.mark.parametrize("next_platform", ["desktop", "tui"])
+def test_an_unbound_record_write_is_retried_on_the_next_session_event(tmp_path, monkeypatch, failure, next_platform):
+    target = tmp_path / "unbound-sessions" / f"{os.getpid()}.json"
+    attempts = []
+    write_text, replace_file = Path.write_text, os.replace
+
+    def write_partial(path, *args, **kwargs):
+        if path == target.with_suffix(".json.partial"):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise PermissionError("TEST sharing violation")
+        return write_text(path, *args, **kwargs)
+
+    def replace_partial(source, destination):
+        if destination == target:
+            attempts.append(destination)
+            if len(attempts) == 1:
+                raise PermissionError("TEST sharing violation")
+        return replace_file(source, destination)
+
+    if failure == "partial":
+        monkeypatch.setattr(Path, "write_text", write_partial)
+    else:
+        monkeypatch.setattr(os, "replace", replace_partial)
+    gaps = ("capability_gap:audience_unmapped",)
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=gaps)
+    assert not target.exists()
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry") == []
+
+    unbound_sessions.note_owner_session(
+        tmp_path, entry_id="TEST-entry", platform=next_platform, gaps=gaps if next_platform == "desktop" else None
+    )
+
+    [record] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry")
+    assert record["platform"] == "desktop" and record["gaps"] == list(gaps)
+    assert len(attempts) == 2
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=gaps)
+    assert len(attempts) == 2, "a persisted session needs no further write"
+
+
+@pytest.mark.parametrize("next_platform", ["desktop", "tui"])
+def test_a_resolved_record_deletion_is_retried_on_the_next_session_event(tmp_path, monkeypatch, next_platform):
+    target = tmp_path / "unbound-sessions" / f"{os.getpid()}.json"
+    unbound_sessions.note_owner_session(
+        tmp_path, entry_id="TEST-entry", platform="desktop", gaps=("capability_gap:audience_unmapped",)
+    )
+    other = target.with_name("TEST-other.json")
+    other.write_text("{", encoding="utf-8")
+    attempts = []
+    unlink = Path.unlink
+
+    def unlink_record(path, *args, **kwargs):
+        if path == target:
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise PermissionError("TEST sharing violation")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_record)
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=None)
+    assert target.is_file()
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry")
+
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform=next_platform, gaps=None)
+
+    assert not target.exists() and other.is_file() and target.parent.is_dir()
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry") == []
+    assert len(attempts) == 2
+
+
+def test_resolving_a_session_never_removes_a_directory_at_the_record_path(tmp_path):
+    target = tmp_path / "unbound-sessions" / f"{os.getpid()}.json"
+    unbound_sessions.note_owner_session(
+        tmp_path, entry_id="TEST-entry", platform="desktop", gaps=("capability_gap:audience_unmapped",)
+    )
+    target.unlink()
+    target.mkdir()
+
+    for _ in range(2):
+        unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=None)
+
+    assert target.is_dir()
+
+
+def test_a_pending_update_keeps_other_entries_and_the_first_seen_time(tmp_path, monkeypatch):
+    gaps = ("capability_gap:audience_unmapped",)
+    for entry in ("TEST-desk", "TEST-lab"):
+        unbound_sessions.note_owner_session(tmp_path, entry_id=entry, platform="desktop", gaps=gaps)
+    [before] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-desk")
+    replace_file = os.replace
+    attempts = []
+
+    def replace_partial(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            raise PermissionError("TEST sharing violation")
+        return replace_file(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace_partial)
+    updated = (*gaps, "capability_gap:no_allowed_scope")
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-desk", platform="desktop", gaps=updated)
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-desk") == [before]
+
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-lab", platform="desktop", gaps=gaps)
+
+    [after] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-desk")
+    assert after == dict(before, gaps=list(updated))
+    [other] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-lab")
+    assert other["gaps"] == list(gaps) and len(attempts) == 2
 
 
 def test_doctor_points_a_shared_entry_s_unverified_owner_row_at_grants(tmp_path, initialize_kwargs):

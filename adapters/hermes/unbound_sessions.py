@@ -8,8 +8,8 @@ never who spoke or what was said.  A later session of the owner on that surface 
 record of a process that has ended is not read (``runtime/process_probe``): a gateway started again once the surface
 was approved has none.  A login nobody approved is a visitor's and no record.
 
-The records are breadcrumbs, written and read as ``runtime/running_code.py``'s are: a write that fails is skipped, and
-a record that cannot be read is no finding.
+The records are breadcrumbs: a failed write or deletion is retried on the next session event, and a record that
+cannot be read is no finding.  Persistence failures never stop a session from binding.
 """
 
 from __future__ import annotations
@@ -34,13 +34,16 @@ _MAX_RECORD_BYTES = 65536
 _lock = threading.Lock()
 #: This process's owner surfaces that bound no scope, by store directory, then by (entry, platform).
 _held: dict[Path, dict[tuple[str, str], dict[str, Any]]] = {}
+#: The last successfully persisted surfaces, separate from the desired contents in ``_held``.
+#: Session values are replaced rather than mutated, so a shallow snapshot retains the persisted contents.
+_persisted: dict[Path, dict[tuple[str, str], dict[str, Any]]] = {}
 
 
 def note_owner_session(data_directory: Path, *, entry_id: str, platform: str, gaps: tuple[str, ...] | None) -> None:
     """Keep that the owner's session on ``platform`` bound no scope, with its ``gaps``; ``None``, that one bound.
 
-    Writes only when that changes what this process holds, and never raises: a diagnostic aid that could stop a
-    session from binding would be worse than none.
+    Persist only contents different from the last successful write; retry failures on the next event, even for
+    another surface.  A diagnostic aid must not stop a session from binding.
     """
     store = Path(data_directory)
     key = (entry_id, platform)
@@ -48,15 +51,12 @@ def note_owner_session(data_directory: Path, *, entry_id: str, platform: str, ga
         held = _held.setdefault(store, {})
         before = held.get(key)
         if gaps is None:
-            if before is None:
-                return
-            del held[key]
-        elif before is not None and before["gaps"] == list(gaps):
-            return
-        else:
+            held.pop(key, None)
+        elif before is None or before["gaps"] != list(gaps):
             since = before["since"] if before is not None else datetime.now(UTC).isoformat(timespec="seconds")
             held[key] = {"entry_id": entry_id, "platform": platform, "gaps": list(gaps), "since": since}
-        _write(store, list(held.values()))
+        if held != _persisted.get(store, {}) and _write(store, list(held.values())):
+            _persisted[store] = held.copy()
 
 
 def owner_sessions_unbound(data_directory: Path, *, entry_id: str) -> list[dict[str, Any]]:
@@ -75,13 +75,13 @@ def owner_sessions_unbound(data_directory: Path, *, entry_id: str) -> list[dict[
     return [found[platform] for platform in sorted(found)]
 
 
-def _write(store: Path, sessions: list[dict[str, Any]]) -> None:
+def _write(store: Path, sessions: list[dict[str, Any]]) -> bool:
     directory = store / UNBOUND_SESSIONS_DIRNAME
     target = directory / f"{os.getpid()}.json"
     try:
         if not sessions:
             target.unlink(missing_ok=True)
-            return
+            return True
         directory.mkdir(parents=True, exist_ok=True)
         record = {
             "schema": RECORD_SCHEMA,
@@ -93,8 +93,9 @@ def _write(store: Path, sessions: list[dict[str, Any]]) -> None:
         partial.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(partial, target)
     except OSError:
-        return
+        return False
     _retire_ended(directory, keep=target)
+    return True
 
 
 def _retire_ended(directory: Path, *, keep: Path) -> None:
