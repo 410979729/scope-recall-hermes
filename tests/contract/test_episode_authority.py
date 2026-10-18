@@ -1,4 +1,4 @@
-"""P07 authority regressions for episode state and reference versions."""
+"""Authority contracts for episode state and reference versions."""
 
 from dataclasses import replace
 

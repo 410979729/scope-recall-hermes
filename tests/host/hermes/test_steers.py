@@ -81,8 +81,7 @@ def telegram(hermes_home, initialize_kwargs):
 
 
 def test_a_steer_before_a_notice_or_a_summary_is_still_the_person_s(telegram, hermes_home):
-    """Hermes puts a finished process's notice and a compression's summary after a steer, as user rows; reading
-    the turn back from its end stopped at the first of them."""
+    """A process notice or compression summary after a steer does not hide the person's message."""
     telegram.on_turn_start(1, "TEST 整理 QX-21", turn_id="turn-1")
     history = [
         {"role": "user", "content": "TEST 整理 QX-21"},
@@ -705,8 +704,7 @@ def test_a_turn_s_own_message_a_stopped_gateway_left_unanswered_is_not_stored_ag
 
 
 def test_a_message_put_back_is_not_taken_for_an_earlier_one_said_alike(telegram, hermes_home):
-    """The person said "继续" and was answered, then said it again while the agent was busy, and a restarted gateway
-    put that back.  Looked up by words and moment, the first one's copy answered for it, and it was never stored."""
+    """A restored message stays distinct from an identical message in an earlier answered turn."""
     telegram.on_turn_start(10, "TEST 继续", turn_id="turn-10")
     telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-10", user_message="TEST 继续")
     now = time.time()
@@ -728,9 +726,7 @@ def _iso(moment: float) -> str:
 
 
 def test_messages_said_alike_each_take_their_own_copy(telegram, hermes_home, monkeypatch):
-    """Three "继续" in a row: one a turn answered, two whose turns pre_llm_call stored before the gateway stopped.
-    Looked up one by one, each with the answered one before it, the answered one's copy was looked up again for the
-    third and took its copy, and the third was stored a second time."""
+    """Identical messages restored after restart reuse their own source events without duplication."""
     t0 = time.time() - 600
     for offset, turn in ((0, 20), (30, 21), (60, 22)):
         stamp = _iso(t0 + offset)
@@ -776,8 +772,7 @@ def test_a_message_put_back_and_stored_keeps_its_copy_from_a_later_one_said_alik
 
 
 def test_a_message_put_back_does_not_take_the_copy_of_one_said_alike_after_it(telegram, hermes_home, monkeypatch):
-    """A "继续" put back by a restarted gateway, never stored, and half a minute later the same words opened a turn,
-    which pre_llm_call stored.  Looked up in the order said, the first took the second's copy and was never stored."""
+    """An unstored restored message stays distinct from identical words captured in a later turn."""
     t0 = time.time() - 600
     stamp = _iso(t0 + 30)
     monkeypatch.setattr(telegram, "_utc_now", lambda: stamp)
@@ -798,8 +793,7 @@ def test_a_message_put_back_does_not_take_the_copy_of_one_said_alike_after_it(te
 
 
 def test_a_message_put_back_read_by_two_hooks_is_looked_up_once(telegram, hermes_home):
-    """A turn's message pre_llm_call stored before the gateway stopped is in the conversation both post_llm_call and
-    sync_turn read: read twice, only the second read was found stored, and the first was written again."""
+    """A restored message seen by both post-LLM and sync-turn hooks is captured once."""
     telegram.on_turn_start(50, "TEST 查一下", turn_id="turn-50")
     telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-50", user_message="TEST 查一下")
     history = [

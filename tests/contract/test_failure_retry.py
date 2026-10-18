@@ -335,7 +335,7 @@ def _codes(core):
 
 
 def test_a_row_re_opened_under_the_schema_stamp_is_re_opened_by_this_release(app):
-    """#233: its re-look spent before the fix, a row stayed failed through every release that kept the schema."""
+    """A schema-stamped retry marker does not prevent an operator from reopening failed work."""
     core, ctx = app
     _fail_one(core, ctx, "retried:1110|derivation_retry:1|derivation_invalid")
     report = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)

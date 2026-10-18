@@ -3,6 +3,10 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.11.1] - Unreleased
+
+Test descriptions state the current capture, retry and packaging contracts without retired task identifiers or accounts of earlier failures.
+
 ## [3.11.0] - 2026-10-18
 
 Shared stores can start with clients alone, derive a new entry's grants from an authorized attached entry, and preserve grants on reattachment; commands that write a shared store run one at a time. Approved local gateway sessions bind to the local owner. Recall follows the time a question names and judges answerability against evidence that answers it, keeping quoted statements separate from the writer's own words and using task progress only for a request to resume that task. Hypothetical, quoted or future changes do not silently correct claims. Denials cannot become another subject's current value through repeated witnesses, confirmation, conversion or import; transitions from `online` to `not online` or `available` to `not available` remain state values, and maintenance can restore values wrongly displaced by denials. Purge receipts track SQLite history cleanup and remain pending while an older reader prevents truncation. Restoring a backup replays later deletion and governance records instead of restoring forgotten content; `restore` replaces `rollback`. Provider refusals are distinguished from output truncation and transient interruptions, with terminal handling for refusals and bounded recovery for temporary failures. Client capture deduplicates replayed turns, preserves prompt/reply order under clock skew, and lets prompt writes use their allotted wait for a busy store. A synthetic recall benchmark measures retrieval, answerability and scope isolation. Combined test tiers preserve directory fixtures, concurrent-writer checks identify SQLite's exact busy result, and the broken `model_runtime` tier is removed; `eval` and the host probe kit remain available.
