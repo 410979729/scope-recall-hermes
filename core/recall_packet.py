@@ -46,6 +46,13 @@ from .retrieval_storage import RetrievalStorage
 _BASIS = frozenset({"direct_report", "observed", "derived_summary", "inferred_suggestion", "unknown"})
 _CLAIM_STATES = frozenset({"proposed", "active", "superseded", "disputed", "retracted"})
 _AUTHORITY_GAP_PREFIXES = ("sqlite_unavailable",)
+#: Gaps after which the evidence delivered may lack part of the answer: authority failed, or a read did not finish.
+#: Query evidence dropped as stale or by the budget may have held part of it too (``_Draft.answer_dropped``).  The
+#: other gaps leave the answer as whole as the evidence delivered: candidates past the packet's slots and background
+#: past its own (``coverage_truncated``), the relation bound (``relation_bound_reached``), duplicate bodies folded
+#: into one (``duplicates_collapsed``), an absent or failing vector channel beside the lexical ones (``vector_*``),
+#: background dropped by the budget, and a day the question names that could not be read (``scope_unreadable``),
+#: which recalls the question as one that names no day.
 _INCOMPLETE_GAP_PREFIXES = ("deadline_exceeded", "sqlite_unavailable", "sqlite_candidate_error")
 #: Markers published as their bare prefix, so diagnostics stay useful without
 #: refs consuming the packet budget.  Everything else passes through intact.
@@ -253,6 +260,9 @@ class _Draft:
     unmet_needs: list[str] = field(default_factory=list)
     stale_drops: int = 0
     budget_drops: int = 0
+    #: Whether query evidence, not background, was dropped as stale or by the budget while the rest was delivered.  A
+    #: withdrawal that drops the whole release leaves no evidence to answer with at all.
+    answer_dropped: bool = False
 
     def note_epoch(self, epoch: int, gap: str, *, retracted: Callable[[int], bool] | None = None) -> bool:
         """Record an epoch move; ``True`` means the verified set is no longer released.
@@ -299,17 +309,16 @@ def _packet_status(
 
 
 def _answerability(
-    status: str, answer_objects, needs, dropped: bool, gaps, hint
+    status: str, answer_objects, needs, incomplete: bool, verdict
 ) -> Literal["supported", "partial", "ambiguous", "unknown"]:
-    """Unknown without answer evidence; partial with gaps, unmet needs or drops; else the retrieval's hint when it
-    is ambiguous or supported, and partial otherwise."""
+    """Unknown without answer evidence; partial with unmet needs, or when the evidence delivered may lack part of the
+    answer (``incomplete``: ``_INCOMPLETE_GAP_PREFIXES``, ``_Draft.answer_dropped``); else the retrieval's verdict on
+    its evidence (``RetrievalPipeline._result``)."""
     if status in {"no_match", "unavailable"} or not answer_objects:
         return "unknown"
-    if needs or dropped or gaps:
+    if needs or incomplete:
         return "partial"
-    if hint in {"ambiguous", "supported"}:
-        return hint
-    return "partial"
+    return verdict
 
 
 def _packet_epoch(status: str, items, memory_epoch: int | None) -> int | None:
@@ -346,7 +355,8 @@ def assemble_packet(draft: _Draft, *, items=None, objects=None, extra_needs=()) 
     dropped = bool(draft.stale_drops or draft.budget_drops)
 
     status = _packet_status(items, result, gaps, needs, dropped, failed=authority_failed or read_incomplete)
-    answerability = _answerability(status, answer_objects, needs, dropped, gaps, result.answerability_hint)
+    incomplete = read_incomplete or draft.answer_dropped
+    answerability = _answerability(status, answer_objects, needs, incomplete, result.answerability_hint)
     coverage = "partial" if gaps or dropped or needs else result.coverage
     packet_epoch = _packet_epoch(status, items, draft.memory_epoch)
 
@@ -470,6 +480,7 @@ class RecallPacketCompiler:
                     fresh = self._recheck(tx, context, candidate, item, draft.gaps)
                     if fresh is None:
                         draft.stale_drops += 1
+                        draft.answer_dropped |= not is_background(item)
                         continue
                     verified.append((candidate, fresh))
                 if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release", retracted=retracted):
@@ -544,6 +555,7 @@ class RecallPacketCompiler:
 
         def reject(obj: RetrievedObject, gap: str, *needs: str) -> None:
             draft.budget_drops += 1
+            draft.answer_dropped |= not is_background(obj)
             rejected_gaps.append(f"{gap}:{obj.ref}@{obj.revision}")
             rejected_needs.extend(needs)
 
@@ -599,6 +611,7 @@ class RecallPacketCompiler:
             draft.items.pop()
             dropped = draft.objects.pop()
             draft.budget_drops += 1
+            draft.answer_dropped |= not is_background(dropped)
             draft.gaps.append(f"budget_packet_cap:{dropped.ref}@{dropped.revision}")
             draft.unmet_needs.append(f"expandable:{dropped.ref}@{dropped.revision}")
 

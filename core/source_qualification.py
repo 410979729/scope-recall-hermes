@@ -43,7 +43,9 @@ REPORTED_SPEECH = re.compile(
     r"\baccording\s+to\b|\bquoted\b",
     re.I,
 )
-_UNASSERTED_CONTEXT = re.compile(
+#: What makes a text say what might hold rather than what holds: a condition or a supposition, an example, a quotation
+#: or someone else's words, a guess or hearsay.
+UNASSERTED_CONTEXT = re.compile(
     r"假设|假如|如果|除非|举例|示例|引用|原文|他说|她说|客户说|"
     r"也许|或许|可能|猜测?|听说|据说|好像|似乎|传闻|"
     r"\b(?:if|unless|suppose|hypothetical|for example|quoted|he said|she said|"
@@ -256,6 +258,14 @@ def _outside_fences(before: str) -> tuple[bool, str]:
 
 #: Quotation marks that open and close as a pair; a straight double quote does both.
 _QUOTE_PAIRS = (("“", "”"), ("「", "」"), ("『", "』"))
+#: Text between quotation marks: a pair's (``_QUOTE_PAIRS``), or straight double quotes on one line.
+_QUOTATION = re.compile("|".join((r'"[^"\n]*"', *(f"{start}[^{end}]*{end}" for start, end in _QUOTE_PAIRS))))
+
+
+def unquoted(text: str) -> str:
+    """``text`` without what it holds between quotation marks (``_QUOTATION``): someone else's words, or a name or a
+    value its writer quotes."""
+    return _QUOTATION.sub(" ", text)
 
 
 #: A single quotation opens at a ``‘``, never an apostrophe, or at a ``'`` at a line's start or after a space with text
@@ -445,7 +455,7 @@ def conditions_match(conditions, context_text):
     if not isinstance(conditions, (list, tuple)) or type(context_text) is not str:
         return False
     context = " ".join(unicodedata.normalize("NFC", context_text).split())
-    if _UNASSERTED_CONTEXT.search(context):
+    if UNASSERTED_CONTEXT.search(context):
         return False
     for condition in conditions:
         if type(condition) is not str or not condition.strip() or RELATIVE_SCOPE.search(condition):

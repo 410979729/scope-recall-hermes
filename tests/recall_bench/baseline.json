@@ -21,9 +21,9 @@
         "mrr": 0.6598,
         "ndcg@10": 0.6815,
         "outdated_above_current": 0.3667,
-        "answered": 0.9929,
-        "abstained": 0.0,
-        "abstention_balanced_accuracy": 0.4965
+        "answered": 0.9214,
+        "abstained": 0.9792,
+        "abstention_balanced_accuracy": 0.9503
       },
       "single_fact": {
         "recall@1": 0.5833,
@@ -32,7 +32,7 @@
         "recall@10": 0.9167,
         "mrr": 0.7361,
         "ndcg@10": 0.7827,
-        "answered": 1.0
+        "answered": 0.8889
       },
       "preference": {
         "recall@1": 0.2917,
@@ -60,7 +60,7 @@
         "mrr": 0.5789,
         "ndcg@10": 0.6268,
         "outdated_above_current": 0.3667,
-        "answered": 0.9667
+        "answered": 0.9333
       },
       "aggregation": {
         "recall@1": 0.1292,
@@ -69,13 +69,13 @@
         "recall@10": 0.6083,
         "mrr": 0.5417,
         "ndcg@10": 0.517,
-        "answered": 1.0
+        "answered": 0.75
       },
       "abstention": {
-        "abstained": 0.0
+        "abstained": 0.9667
       },
       "cross_scope": {
-        "abstained": 0.0
+        "abstained": 1.0
       }
     },
     "explicit": {
@@ -87,9 +87,9 @@
         "mrr": 0.6707,
         "ndcg@10": 0.6905,
         "outdated_above_current": 0.3,
-        "answered": 0.9929,
-        "abstained": 0.0,
-        "abstention_balanced_accuracy": 0.4965
+        "answered": 0.9286,
+        "abstained": 0.9792,
+        "abstention_balanced_accuracy": 0.9539
       },
       "single_fact": {
         "recall@1": 0.6111,
@@ -98,7 +98,7 @@
         "recall@10": 0.9167,
         "mrr": 0.75,
         "ndcg@10": 0.793,
-        "answered": 1.0
+        "answered": 0.9167
       },
       "preference": {
         "recall@1": 0.3333,
@@ -126,7 +126,7 @@
         "mrr": 0.6194,
         "ndcg@10": 0.6572,
         "outdated_above_current": 0.3,
-        "answered": 0.9667
+        "answered": 0.9333
       },
       "aggregation": {
         "recall@1": 0.1292,
@@ -135,13 +135,13 @@
         "recall@10": 0.6083,
         "mrr": 0.5417,
         "ndcg@10": 0.517,
-        "answered": 1.0
+        "answered": 0.75
       },
       "abstention": {
-        "abstained": 0.0
+        "abstained": 0.9667
       },
       "cross_scope": {
-        "abstained": 0.0
+        "abstained": 1.0
       }
     }
   }

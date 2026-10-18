@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -9,7 +10,7 @@ import pytest
 from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import lexical_terms
-from scope_recall.core.recall_needs import unmet_needs
+from scope_recall.core.recall_needs import answering, unmet_needs
 from scope_recall.core.recall_policy import (
     SPACE_ID,
     RecallPolicy,
@@ -244,6 +245,52 @@ def test_unrelated_or_negative_reason_does_not_support_why(app, content, query):
     result = _recall(core, ctx, query=query, mode="history")
     assert "reason_evidence" in result.unmet_needs
     assert result.answerability_hint == "partial"
+
+
+def _recalled(ref: str, content: str, *, kind: str = "event", state: str = "") -> RetrievedObject:
+    metadata = (("state", state),) if state else ()
+    return RetrievedObject(
+        ref,
+        1,
+        kind,
+        content,
+        "human_direct",
+        "current",
+        "trusted scope",
+        (f"{ref}@1",),
+        "direct_report",
+        True,
+        metadata=metadata,
+    )
+
+
+def test_an_item_answers_by_naming_what_the_question_names_and_saying_more_of_what_it_asks():
+    """Each name a question gives must stand in an item that also says another of its words, in any inflection of
+    that word; a question's first word, I, a month, a weekday and a word in capitals name nothing.  A claim answers
+    once it is a fact the store holds, not while it waits to be judged.  A question that names nothing is not judged."""
+    fact = json.dumps({"kind": "fact", "subject": "Fennel", "predicate": "alert channel", "value_text": "#ops-pager"})
+    active = _recalled("claim-fennel", fact, kind="claim", state="active")
+    pending = _recalled("claim-fennel-pending", fact, kind="claim", state="proposed")
+    other = _recalled("event-maple", "The Maple alert channel is #night-shift.")
+    assert answering("Where are the Fennel alerts posted?", (other, active)) == (active,)
+    assert answering("Where are the Fennel alerts posted?", (other, pending)) == ()
+    keys = _recalled("event-keys", "We rotated the Orchard API keys on Monday.")
+    assert answering("What did I say about the Orchard API keys on Sep 3?", (keys,)) == (keys,)
+    assert answering("What did I say about the Lantern API keys on Sep 3?", (keys,)) == ()
+    assert answering("What's the plan for the Orchard keys?", (keys,)) == (keys,)
+    assets = _recalled("event-assets", "Put the Flint assets behind Akamai for a week.")
+    assert answering("What CDNs did we test with Flint's assets?", (assets,)) == (assets,)
+    # A sentence that supposes, and words in quotation marks, are left out; the rest of the message still answers.
+    port = "What is the staging database port for Orchard?"
+    said = _recalled("event-said", "The Orchard staging database port is 6543. If we split the cluster, it would move.")
+    supposed = _recalled("event-supposed", "If we split the cluster, the Orchard staging database port would move.")
+    assert answering(port, (said, supposed)) == (said,)
+    labelled = _recalled("event-labelled", "旧架构图上把 Cinder 标成“部署区域 eu-central-1”，但那张图是迁移之前画的。")
+    assert answering("Cinder 的部署区域是哪里？", (labelled,)) == ()
+    sides = (_recalled("event-h100", "H100 使用第一套部署配置。"), _recalled("event-h200", "H200 使用第二套部署配置。"))
+    assert answering("比较 H100 和 H200 部署配置", sides) == sides
+    assert answering("比较 H100 和 H300 部署配置", sides) == ()
+    assert answering("我下午喜欢喝什么？", (other,)) == (other,)
 
 
 def test_followup_blocked_after_initial_round_when_shared_deadline_expires(tmp_path):
