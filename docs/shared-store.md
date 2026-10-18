@@ -374,7 +374,8 @@ reading the home's pointer to its last write it holds the home's lock and the st
 
 A Hermes entry attached from a home whose installer never approved Hermes Desktop or
 `hermes --tui` has no grant for that surface, and `apply-install --local-platform` refuses an
-entry; its owner's sessions there bind no scope, and the host log says so. Add the surface as the installer would: the owner principal
+entry; its owner's sessions there bind no scope, and the host log and `doctor`
+(`local_session_unbound`) say so. Add the surface as the installer would: the owner principal
 `{"platform": "desktop", "user_id": "local"}` and an `owner_private` row on `desktop`, user
 `local`, chat type `private`, chat `local`, thread `main`, an empty `gateway_session_key` and the
 entry's `agent_workspace`, reading, writing and capturing into the scope the entry's CLI owner row

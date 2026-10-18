@@ -682,6 +682,105 @@ def test_this_process_s_account_is_named_as_the_transport_names_a_peer_that_runs
         assert named == f"uid:{os.getuid()}"
 
 
+def _local_sessions_check(report):
+    return [check for check in report.checks if check["name"] == "local_sessions"]
+
+
+def test_doctor_names_a_surface_whose_owner_sessions_bind_no_scope_until_one_binds(
+    hermes_home, initialize_kwargs, this_account
+):
+    """The line in the host's log is read by no one.  ``doctor`` names the surface and what approves it, never who
+    spoke, and asks for a look rather than an action: only the owner knows whether everyone who reaches a surface
+    without logging in is the owner.  A login nobody approved is a visitor's, and no finding."""
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    for user in (LOGIN_FORM, THIS_ACCOUNT):
+        provider = ScopeRecallHermesAdapter(core=core)
+        provider.initialize(CONVERSATION, **_conversation(initialize_kwargs, "desktop", user=user))
+        provider.shutdown()
+        if user == LOGIN_FORM:
+            assert not _local_sessions_check(doctor.run_doctor(host="hermes", instance_root=hermes_home))
+
+    report = doctor.run_doctor(host="hermes", instance_root=hermes_home)
+    [check] = _local_sessions_check(report)
+    assert "local_session_unbound" in report.capability_gaps
+    assert check["result"] == "unbound" and check["detail"].startswith("desktop:")
+    assert "approve the surface with apply-install --local-platform desktop" in check["detail"]
+    shown = json.dumps(report.to_dict())
+    assert THIS_ACCOUNT not in shown and "TEST-visitor" not in shown
+    classified = doctor.DoctorReport(host="hermes", status="degraded", capability_gaps=["local_session_unbound"])
+    doctor._classify_status(classified)
+    assert classified.status == "attention"
+
+    manifest = load_installation_manifest(hermes_home)
+    approved = approve_local_platforms(manifest, ["desktop"], agent_workspace=initialize_kwargs["agent_workspace"])
+    write_installation_manifest(approved)
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize("TEST-next-session", **_conversation(initialize_kwargs, "desktop"))
+    provider.shutdown()
+    report = doctor.run_doctor(host="hermes", instance_root=hermes_home)
+    assert "local_session_unbound" not in report.capability_gaps and not _local_sessions_check(report)
+
+
+def test_doctor_names_a_surface_whose_unnamed_sessions_are_refused(hermes_home, initialize_kwargs):
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    provider = ScopeRecallHermesAdapter(core=core)
+    with pytest.raises(HermesIdentityError, match="--local-platform tui"):
+        provider.initialize("TEST-session-1", **_session(initialize_kwargs, "tui"))
+
+    report = doctor.run_doctor(host="hermes", instance_root=hermes_home)
+
+    [check] = _local_sessions_check(report)
+    assert "local_session_unbound" in report.capability_gaps and check["detail"].startswith("tui:")
+    assert "approve the surface with apply-install --local-platform tui" in check["detail"]
+
+
+def _ended_record(folder, *, entry_id, platform):
+    """A record as a process that has ended left it: no process can hold this pid."""
+    ended = 0xFFFFFFF0
+    folder.mkdir(exist_ok=True)
+    path = folder / f"{ended}.json"
+    session = {"entry_id": entry_id, "platform": platform, "gaps": ["capability_gap:audience_unmapped"], "since": ""}
+    record = {"schema": "scope-recall.unbound-sessions.v1", "pid": ended, "start_token": None, "sessions": [session]}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return path
+
+
+def test_doctor_reads_what_live_processes_recorded_for_its_own_entry(tmp_path, initialize_kwargs, this_account):
+    root = _store(tmp_path, initialize_kwargs)
+    desk = _entry(root, tmp_path, initialize_kwargs, entry_id="desk")
+    lab = _entry(root, tmp_path, initialize_kwargs, entry_id="lab")
+    provider = ScopeRecallHermesAdapter()
+    provider.initialize(CONVERSATION, **_conversation(desk, "desktop"))
+    provider.shutdown()
+    _ended_record(root / "unbound-sessions", entry_id="lab", platform="tui")
+
+    at_desk = doctor.run_doctor(host="hermes", instance_root=desk["hermes_home"])
+    at_lab = doctor.run_doctor(host="hermes", instance_root=lab["hermes_home"])
+
+    [check] = _local_sessions_check(at_desk)
+    assert check["detail"].startswith("desktop:") and "scope-recall grants" in check["detail"]
+    assert "apply-install" not in check["detail"]
+    assert not _local_sessions_check(at_lab), "another entry's record, and one whose process ended"
+
+
+def test_a_record_a_process_left_when_it_ended_is_retired_when_this_one_writes(
+    hermes_home, initialize_kwargs, this_account
+):
+    """A record that cannot be read is left: no pass can tell whose it is."""
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    folder = hermes_home / "scope-recall" / "unbound-sessions"
+    ended = _ended_record(folder, entry_id="", platform="tui")
+    unreadable = folder / "TEST-unreadable.json"
+    unreadable.write_text("{", encoding="utf-8")
+
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize(CONVERSATION, **_conversation(initialize_kwargs, "desktop"))
+    provider.shutdown()
+
+    assert (folder / f"{os.getpid()}.json").is_file()
+    assert not ended.exists() and unreadable.exists()
+
+
 def test_doctor_points_a_shared_entry_s_unverified_owner_row_at_grants(tmp_path, initialize_kwargs):
     root = _store(tmp_path, initialize_kwargs)
     home = tmp_path / "TEST-desk-home"

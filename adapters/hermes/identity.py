@@ -44,6 +44,18 @@ _TOKEN_QUERY = 0x0008
 _TOKEN_USER = 1
 
 
+class LocalSurfaceUnapproved(HermesIdentityError):
+    """A session that names no user on a local surface this installation does not approve, refused with what approves
+    it.  It names the store and the entry it was refused for, so the session binding can keep the refusal where
+    ``doctor`` reads it (``unbound_sessions``)."""
+
+    def __init__(self, message: str, *, platform: str, data_directory: Path, entry_id: str) -> None:
+        super().__init__(message)
+        self.platform = platform
+        self.data_directory = data_directory
+        self.entry_id = entry_id
+
+
 def _opaque_ref(prefix: str, *parts: str) -> str:
     payload = "\x1f".join(parts).encode("utf-8")
     return f"principal:{prefix}:v1:{hashlib.sha256(payload).hexdigest()}"
@@ -94,9 +106,12 @@ def _normalize_user_id(
         return resolved or LOCAL_USER_ID
     if platform not in LOCAL_PLATFORMS:
         raise HermesIdentityError("user principal required for non-cli platform")
-    raise HermesIdentityError(
+    raise LocalSurfaceUnapproved(
         "user principal required for non-cli platform; "
-        + unbound_session_hint(platform, LOCAL_USER_ID, shared_entry=manifest.entry_id is not None)
+        + unbound_session_hint(platform, LOCAL_USER_ID, shared_entry=manifest.entry_id is not None),
+        platform=platform,
+        data_directory=manifest.data_directory,
+        entry_id=manifest.entry_id or "",
     )
 
 

@@ -20,7 +20,10 @@ from typing import Any
 import scope_recall
 from scope_recall._version import __version__
 from scope_recall.adapters.clients.config import load_codex_config, load_shared_client
+from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
+from scope_recall.adapters.hermes.identity import unbound_session_hint
 from scope_recall.adapters.hermes.shared_entries import read_attachment
+from scope_recall.adapters.hermes.unbound_sessions import owner_sessions_unbound
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import budget_totals, budget_window, pre_request_refusals, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
@@ -286,10 +289,14 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
 #: ``audience_owner_unverified`` is an owner grant whose user is no owner
 #: principal: it grants nothing until the owner approves that user, and only
 #: the owner knows whether to.
+#: ``local_session_unbound`` is the owner's sessions on a local surface binding
+#: no scope: approving the surface gives its memory to everyone who reaches it
+#: without logging in, which only the owner can judge.
 _NON_ACTIONABLE_GAPS = frozenset(
     {
         "audience_owner_unverified",
         "due_work_unreached",
+        "local_session_unbound",
         "owner_words_from_host_request",
         "owner_words_unchecked",
         "owner_words_with_client_reminder",
@@ -543,6 +550,32 @@ def _check_audiences(report: DoctorReport, instance: Path) -> None:
         )
 
 
+def _check_local_sessions(report: DoctorReport, data_directory: Path) -> None:
+    """The owner's local sessions a live Hermes process bound to no scope (``adapters/hermes/unbound_sessions``).
+
+    Such a session captures and recalls nothing, and the host shows no one the line the adapter writes in its log.
+    Named by surface, never by who spoke.
+    """
+    if report.host != "hermes":
+        return
+    entry = report.shared_store.get("entry_id", "")
+    unbound = owner_sessions_unbound(data_directory, entry_id=entry)
+    if not unbound:
+        return
+    report.capability_gaps.append("local_session_unbound")
+    record_check(
+        report,
+        "local_sessions",
+        "unbound",
+        "; ".join(
+            f"{item['platform']}: the owner's sessions there bind no memory scope since {item['since']} "
+            f"({', '.join(item['gaps'])}): "
+            + unbound_session_hint(item["platform"], LOCAL_USER_ID, shared_entry=bool(entry))
+            for item in unbound
+        ),
+    )
+
+
 def _serves(worker, binding) -> bool:
     """Whether the autostart's worker is the one for this binding.
 
@@ -758,6 +791,7 @@ def run_doctor(
         return report
     binding, data_directory = bound
     _check_audiences(report, instance)
+    _check_local_sessions(report, data_directory)
     _check_running_code(report, data_directory)
     package_health.apply_package_health(report, instance, probe)
     check_runtime_config_present(report, data_directory)

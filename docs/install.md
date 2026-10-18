@@ -283,7 +283,9 @@ scope-recall: session bound to no memory scope: a desktop session for local (cap
 ```
 
 Any other account or a login there is a user like any other, routed as a
-one-to-one chat with itself (`--owner-login`, below).
+one-to-one chat with itself (`--owner-login`, below). `doctor` names a surface
+whose owner sessions bound no scope, or were refused, as `local_session_unbound`
+(section 6).
 
 Approve the surface when you install, or later on the same instance with the same
 other arguments. The flag is repeatable and takes `desktop` or `tui`:
@@ -306,7 +308,7 @@ to the gateway that is running. An entry of a shared store keeps its grants in
 the store's manifest, and `apply-install` refuses to approve a surface there: add
 the surface's owner principal and row with `scope-recall grants`
 ([shared-store.md](shared-store.md#changing-an-entrys-grants)), which the host log
-names for such an entry.
+and `doctor` name for such an entry.
 
 What it does not do: it does not cover a session that carries a login. That one
 is approved apart (`--owner-login`, below) or gets only what an audience row gives
@@ -536,10 +538,11 @@ by key, and exits `0` only when `status` is `"ok"`.
 | `degraded` | 1 | At least one gap an operator must act on. It is also the fail-safe default when the database cannot be read at all. |
 
 The gaps that yield `attention` rather than `degraded` are
-`audience_owner_unverified`, `due_work_unreached`, `owner_words_from_host_request`,
-`owner_words_unchecked`, `owner_words_with_client_reminder`,
-`vector_threshold_unconfigured`, `work_failed_terminal_only`, `work_needs_review`
-and `worker_capability_unavailable`. Everything else forces `degraded`.
+`audience_owner_unverified`, `due_work_unreached`, `local_session_unbound`,
+`owner_words_from_host_request`, `owner_words_unchecked`,
+`owner_words_with_client_reminder`, `vector_threshold_unconfigured`,
+`work_failed_terminal_only`, `work_needs_review` and
+`worker_capability_unavailable`. Everything else forces `degraded`.
 
 Each store under `index_metadata.vector_stores` names its nearest-neighbour index
 in `index_outcome`. The worker builds the index once the store holds 10,000
@@ -669,6 +672,7 @@ Things that look wrong in a healthy report and are not:
 | `restore_pending` | A `restore` was begun and not finished: the marker `restore-required.json` closes the store, and every read and write of every host refuses it (`RESTORE_UNVERIFIED`). | Run the same `restore` command again (section 9): it finishes with the ledger kept beside the store. To keep the store as it was, give it the backup that run took as `--snapshot`, or one `backup` takes of the closed store. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
 | `audience_owner_unverified` | An `owner_private` audience row names a user who is no owner principal, so it grants nothing and every session on its route captures and recalls nothing. The `audiences` check counts such rows by platform. `attention`. | If the user is the owner's own dashboard login, approve it with `apply-install --owner-login <platform>=<login>` (section 4), or on an entry of a shared store add its owner principal with `scope-recall grants`; otherwise remove the rows. |
+| `local_session_unbound` | A running Hermes process bound sessions of the person at this machine, on the CLI, Desktop or `hermes --tui`, to no scope, or refused them because the surface is not approved: nothing said there is captured or recalled. The `local_sessions` check names each surface, its gaps and since when, never who spoke. It reads what that process recorded beside the store (`unbound-sessions\`), so it appears once such a session has opened, and goes when one there binds or the process ends. `attention`: approving a surface gives its memory to everyone who reaches it without logging in, which only the owner can judge. | Approve the surface with `apply-install --local-platform <platform>` (section 4), or on an entry of a shared store add its owner principal and row with `scope-recall grants` ([shared-store.md](shared-store.md#changing-an-entrys-grants)); then restart the gateway. |
 | `owner_words_with_client_reminder` | Claude Code only. Messages stored as the owner's words before 3.10.5 that hold a `<system-reminder>` block Claude's desktop app put in them (#248): claims drawn from them read as things the owner said, and a recall can bring the block back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a session that has `forget` (Codex, a Hermes chat), ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New messages are stored without the block. |
 | `owner_words_from_host_request` | Codex only. Codex's own requests for suggestions of what to do next, stored as the owner's words, and the model's answers to them, stored as replies: the desktop app's request for one suggested next message (it opens by saying the user did not write it) and the longer request for several suggestions. Claims drawn from them read as things the owner said, and recall brings the answers back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a Codex session, ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New requests and their answers are not stored. |
 | `owner_words_unchecked` | Claude Code and Codex. The read for `owner_words_with_client_reminder` or `owner_words_from_host_request` stopped after 10 s before it reached the end of the store; the `owner_words` check says how many it found by then. `attention`. | Run `doctor` again when the store is less busy. |
@@ -1441,6 +1445,7 @@ Known limits:
 | Codex Core data directory | `<instance-root>\data\` |
 | Runtime config | `<core-data-directory>\runtime-config.json` |
 | A restore's files | `<core-data-directory>\restore-required.json` while it is not finished; `restore-ledger.json`, the ledger it replays, until the next restore |
+| The owner's local sessions bound to no scope | `<core-data-directory>\unbound-sessions\<pid>.json`, one per host process that bound one, read by `doctor` while that process runs |
 | WorkBuddy home | `WORKBUDDY_CONFIG_DIR`, else `%USERPROFILE%\.workbuddy` |
 | WorkBuddy hooks and MCP server | `hooks` in `<WorkBuddy home>\settings.json`, `mcpServers.scope-recall` in `<WorkBuddy home>\mcp.json` |
 | dsh home | `DSH_HOME`, else `%USERPROFILE%\.dsh` |
