@@ -17,6 +17,52 @@ if str(SCRIPTS) not in sys.path:
 import check  # noqa: E402
 
 
+@pytest.mark.parametrize("mixed_separators", [False, True])
+def test_interleaved_parent_and_child_selections_keep_conftest_fixtures_visible(tmp_path, mixed_separators) -> None:
+    """A directory revisited after its parent's tests still shares its conftest with every selected child."""
+    host = tmp_path / "tests" / "host"
+    (host / "zed").mkdir(parents=True)
+    (host / "codex").mkdir()
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "v11_guard.py").write_text("", encoding="utf-8")
+    (host / "conftest.py").write_text(
+        "import pytest\n@pytest.fixture\ndef shared_value():\n    return 'synthetic'\n", encoding="utf-8"
+    )
+    child = "tests/host/zed/test_child.py"
+    selected = [
+        "tests/host/aaa_flat.py",
+        "tests/test_parent.py",
+        child.replace("/", "\\") if mixed_separators else child,
+        "tests/host/codex/test_child.py",
+        child,
+    ]
+    for name in dict.fromkeys(path.replace("\\", "/") for path in selected):
+        source = (
+            "def test_value(shared_value):\n    assert shared_value == 'synthetic'\n"
+            if name.startswith("tests/host/")
+            else "def test_value():\n    pass\n"
+        )
+        (tmp_path / name).write_text(source, encoding="utf-8")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(tmp_path / "tests"),
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    }
+    junit = tmp_path / "junit.xml"
+    done = subprocess.run(
+        check.pytest_command(selected, junit),
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert check._junit_counts(junit) == {"passed": 4, "failed": 0, "skipped": 0}
+
+
 def test_write_scope_delete_change_adds_safety_baseline() -> None:
     selected, details = check.select_tests(
         "contract",
