@@ -43,7 +43,9 @@ REPORTED_SPEECH = re.compile(
     r"\baccording\s+to\b|\bquoted\b",
     re.I,
 )
-_UNASSERTED_CONTEXT = re.compile(
+#: What makes a text say what might hold rather than what holds: a condition or a supposition, an example, a quotation
+#: or someone else's words, a guess or hearsay.
+UNASSERTED_CONTEXT = re.compile(
     r"假设|假如|如果|除非|举例|示例|引用|原文|他说|她说|客户说|"
     r"也许|或许|可能|猜测?|听说|据说|好像|似乎|传闻|"
     r"\b(?:if|unless|suppose|hypothetical|for example|quoted|he said|she said|"
@@ -133,7 +135,7 @@ _SPEAKER_LABEL = re.compile(
 _FIRST_PERSON = re.compile(r"\bI\b|\bmy\b|我", re.I)
 #: A line of three or more backticks or tildes, which opens or closes a fenced block of pasted text (Markdown), with
 #: whatever follows it on the line.
-_FENCE = re.compile(r"(?m)^[ \t]{0,3}(`{3,}|~{3,})(.*)$")
+FENCE = re.compile(r"(?m)^[ \t]{0,3}(`{3,}|~{3,})(.*)$")
 #: A speaker's own framing at the head of a clause, after a list marker too (老实说，一般来说，我跟你说，"That said,"):
 #: what follows it is their own words.  After a name it is someone else's again: 张三跟你说，…, "a message that
 #: said, …".
@@ -241,7 +243,7 @@ def _outside_fences(before: str) -> tuple[bool, str]:
     opens on a line of three or more backticks or tildes, and closes only on a line of the same character, at least
     as long, with nothing after it (CommonMark): inside a tilde block a backtick line is text."""
     kept, opened, start = [], None, 0
-    for match in _FENCE.finditer(before):
+    for match in FENCE.finditer(before):
         marks, rest = match.group(1), match.group(2)
         if opened is None:
             if marks[0] != "`" or "`" not in rest:  # a backtick fence's info string holds no backtick
@@ -254,42 +256,164 @@ def _outside_fences(before: str) -> tuple[bool, str]:
     return opened is not None, "".join(kept)
 
 
-#: Quotation marks that open and close as a pair; a straight double quote does both.
-_QUOTE_PAIRS = (("“", "”"), ("「", "」"), ("『", "』"))
+#: The mark that closes each opening quotation mark; straight marks do both.
+_CLOSING_MARK = {"“": "”", "「": "」", "『": "』", "‘": "’", '"': '"', "'": "'"}
+#: What a straight single quotation mark opens after: the line's start, a space, an opening bracket or mark.
+_SINGLE_OPENS_AFTER = frozenset('\n \t([{（【“‘「『"')
+#: What follows a straight single quotation mark that closes: a space, punctuation, a closing mark or the end.
+_SINGLE_CLOSES_BEFORE = frozenset('\n \t.,!?;:)]}。，！？；：）】」』"”’')
+#: A decade or a year cut to two digits, after its apostrophe: the '90s, class of '99.
+_ELIDED_YEAR = re.compile(r"\d\ds?\b")
+#: Punctuation that ends or parts a clause: Chinese marks anywhere, a comma, colon, semicolon, question or exclamation
+#: mark or full stop before a space or the end (not the joints of host:8443 or v3.1).
+_CLAUSE_PUNCTUATION = re.compile(r"[。，；：！？、]|[,;:!?.](?=\s|$)")
+#: A word of a quoted span: a Latin word or an identifier with its joints, or a run of Chinese characters.
+_QUOTED_WORD = re.compile(rf"[A-Za-z0-9][A-Za-z0-9'’._:/-]*|{_CJK_CHAR.pattern}+")
+#: Verbs that make even a title-cased English span or an unspaced Chinese span a statement.
+_QUOTED_STATEMENT = re.compile(r"\b(?:is|are|was|were|runs?|uses?|listens?)\b|\S(?:是|不吃|使用|改成|设为)\S", re.I)
+#: A temporal clause supplies an action beside its time, regardless of the action's spelling or capitalisation.
+_QUOTED_TIME_CLAUSE = re.compile(
+    r"\S+\s+\S+\s+(?:on\s+)?(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|today|tomorrow)\b"
+    r"|(?:周[一二三四五六日天]|今天|明天|昨天)\S+",
+    re.I,
+)
+#: A source introducing quoted words at the end of its clause, or a colon immediately before them.  称 is that verb,
+#: not the second character of 名称; a copula may stand between the source and the quotation (通知是).
+_QUOTE_INTRODUCER = re.compile(
+    r"(?:\b(?:said|says|wrote|writes)\b|写着|说道|表示|公告|通知|(?<!名)称|说)\s*(?:是)?\s*$|[:：]\s*$",
+    re.I,
+)
+#: Explicit naming keeps even a long name in the writer's statement.
+_QUOTE_NAMING = re.compile(r"\b(?:call(?:ed)?\s+(?:it|this|that)|nam(?:e|ed))\s*$|(?:叫|名为|称为)\s*$", re.I)
+#: A conjunction after a quotation ends its clause rather than opening a possessive's noun phrase.
+_AFTER_QUOTE = re.compile(r"\s+(?:and|but|or|so|yet|then)\b", re.I)
+#: A determiner or another possessive introduces a plural possessor whose head is a lower-case common noun.  A
+#: capitalised name (The Alps) is not one, so the mark after it closes the quotation.
+_PLURAL_POSSESSOR = re.compile(
+    r"(?:\b(?:[Tt]he|[Tt]hese|[Tt]hose|[Oo]ur|[Tt]heir|[Yy]our|[Ii]ts|[Mm]y|[Aa]ll"
+    r"|[Ss]ome|[Mm]any|[Ss]everal|[Bb]oth|[Oo]ther)\s+|['’]s\s+)[a-z]+s$"
+)
 
 
-#: A single quotation opens at a ``‘``, never an apostrophe, or at a ``'`` at a line's start or after a space with text
-#: after it (``it's`` and ``students' books`` open none).
-_OPENING_SINGLE = re.compile(r"‘|(?:^|(?<=\s))'(?=\S)")
-#: It closes where a line ends in a single quote, perhaps before punctuation (``‘hi’.``): inside a line a closing
-#: quote is as often an apostrophe (``the others’ choices``).
-_CLOSING_SINGLE = re.compile(r"[’'][.,!?;:。，！？；：)）\]」』\"”]*$")
-
-
-def _single_quote_open(text: str) -> bool:
-    """Whether a quotation in single quotes is still open at the end of ``text`` (``_OPENING_SINGLE``,
-    ``_CLOSING_SINGLE``)."""
-    opened = False
-    for line in text.split("\n"):
-        if not opened:
-            start = _OPENING_SINGLE.search(line)
-            if start is None:
-                continue
-            opened, line = True, line[start.end() :]
-        if _CLOSING_SINGLE.search(line.strip()):
-            opened = False
-    return opened
-
-
-def _quote_open(text: str) -> bool:
-    """Whether a quotation opened in ``text`` is still open, across lines too: a pair's opening marks outnumber its
-    closing ones, straight double quotes stand in an odd number, or a single-quoted one is open
-    (``_single_quote_open``)."""
-    return (
-        text.count('"') % 2 == 1
-        or any(text.count(start) > text.count(end) for start, end in _QUOTE_PAIRS)
-        or _single_quote_open(text)
+def _internal_mark(text: str, at: int) -> bool:
+    """Whether the ``'`` or ``’`` at ``at`` sits inside a word, or before a decade or a year (``_ELIDED_YEAR``)."""
+    before = text[at - 1] if at else ""
+    after = text[at + 1 : at + 2]
+    return ((before.isalnum() or before == "_") and (after.isalnum() or after == "_")) or (
+        _ELIDED_YEAR.match(text, at + 1) is not None
     )
+
+
+def _later_closer(text: str, at: int, mark: str) -> bool:
+    """A matching closer after ``at``.  A nested quotation of the same mark is read past: its opening mark does not
+    mean that no closer follows.  A word-internal apostrophe (``_internal_mark``) closes nothing."""
+    depth = 0
+    for later in range(at + 1, len(text)):
+        if text[later] != mark or _internal_mark(text, later):
+            continue
+        if _opening_quote(text, later):
+            depth += 1
+            continue
+        before, after = text[later - 1], text[later + 1 : later + 2]
+        if (not before.isspace() or mark == "’") and (not after or after in _SINGLE_CLOSES_BEFORE):
+            if depth:
+                depth -= 1
+                continue
+            return True
+    return False
+
+
+def _apostrophe(text: str, at: int, opening: int | None) -> bool:
+    """Whether the ``'`` or ``’`` at ``at`` is an apostrophe rather than a quotation mark: between word characters
+    (Orchard's, don't), after the s that ends a plural (the users' choices), or before a decade or a year cut to two
+    digits (``_ELIDED_YEAR``).  After s inside a quotation, the possessor's head is a lower-case common noun
+    (``_PLURAL_POSSESSOR``), so a capitalised name closes, and a later closer (``_later_closer``) must follow; a
+    conjunction (``_AFTER_QUOTE``) resumes the writer's clause instead."""
+    before = text[at - 1] if at else ""
+    after = text[at + 1 : at + 2]
+    if _internal_mark(text, at):
+        return True
+    if before in ("s", "S") and at >= 2 and text[at - 2].isalnum() and after in (" ", "\t"):
+        return opening is None or (
+            _PLURAL_POSSESSOR.search(text[opening + 1 : at]) is not None
+            and _AFTER_QUOTE.match(text, at + 1) is None
+            and _later_closer(text, at, _CLOSING_MARK[text[opening]])
+        )
+    return False
+
+
+def _opening_quote(text: str, at: int) -> bool:
+    if text[at] != "'":
+        return text[at] in _CLOSING_MARK
+    before = text[at - 1] if at else "\n"
+    after = text[at + 1 : at + 2]
+    return before in _SINGLE_OPENS_AFTER and bool(after) and not after.isspace()
+
+
+def _scan_quotes(text: str, *, through: int | None = None) -> tuple[list[tuple[int, int]], list[tuple[str, int]]]:
+    """The outermost spans of ``text`` between quotation marks, each from the mark that opens it to the one that
+    closes it.  A mark closes the innermost quotation it can close, so one nested in another ends inside it
+    (‘Orchard runs on ‘production’ port 8443’), and what opened inside a quotation that closes is closed with it.
+    Marks may run across lines.  A straight double mark closes the one it opened; a
+    straight single mark opens after a space or an opening mark (``_SINGLE_OPENS_AFTER``) and closes before a space,
+    punctuation or the end (``_SINGLE_CLOSES_BEFORE``).  An apostrophe (``_apostrophe``) is no mark.  Open quotations
+    are returned separately so capture and recall read nesting and apostrophes by the same rules.  ``through`` stops
+    the scan at a position while keeping the rest of the text available to disambiguate a plural possessive."""
+    spans: list[tuple[int, int]] = []
+    opened: list[tuple[str, int]] = []  # the mark that closes each open quotation, and where it opened
+    for at, char in enumerate(text[:through]):
+        closes = next((depth for depth in range(len(opened) - 1, -1, -1) if opened[depth][0] == char), None)
+        opening = opened[closes][1] if closes is not None else None
+        if char in ("'", "’") and _apostrophe(text, at, opening):
+            continue
+        before = text[at - 1] if at else "\n"
+        after = text[at + 1] if at + 1 < len(text) else "\n"
+        if closes is not None and (char != "'" or (not before.isspace() and after in _SINGLE_CLOSES_BEFORE)):
+            start = opened[closes][1]
+            del opened[closes:]
+            if not opened:
+                spans.append((start, at + 1))
+        elif _opening_quote(text, at):
+            opened.append((_CLOSING_MARK[char], at))
+    return spans, opened
+
+
+def _reported(span: str, context: str) -> bool:
+    """Whether a quoted span reports someone's words, rather than set off a term of the writer's own.  A clause does:
+    it holds a clause's punctuation (``_CLAUSE_PUNCTUATION``), a statement verb (``_QUOTED_STATEMENT``), or several
+    words (``_QUOTED_WORD``), or an action beside its time (``_QUOTED_TIME_CLAUSE``).  A source introducing it
+    (``_QUOTE_INTRODUCER``) also marks a multiword or Chinese
+    clause, regardless of capitals or spacing.  That introducer is the verb or source at the end of the clause, so the
+    称 of 名称 introduces nothing.  Explicit naming (``_QUOTE_NAMING``) keeps a name; without an
+    introduction, capitalised words can name a thing (Blue Ocean, New York City, Release 2).  A reported
+    line says that a thing holds ("Lantern staging database port: 7012", “部署区域 eu-central-1”,
+    ‘Orchard runs on port 8443’), and the writer does not say
+    so.  One word, a name, an identifier or a value ('Orchard', “果园计划”, "eu-west-1") is the writer's own text:
+    the marks set off what it names, and reading it out would leave their own statement without what it is about."""
+    if _CLAUSE_PUNCTUATION.search(span):
+        return True
+    if _QUOTE_NAMING.search(context):
+        return False
+    words = _QUOTED_WORD.findall(span)
+    statement = _QUOTED_STATEMENT.search(span) and (len(words) > 1 or _CJK_CHAR.search(span))
+    introduced = _QUOTE_INTRODUCER.search(context) and (len(words) > 1 or _CJK_CHAR.search(span))
+    return bool(statement or introduced or _QUOTED_TIME_CLAUSE.search(span)) or (
+        len(words) > 1 and not all(word[0].isupper() or word[0].isdigit() for word in words)
+    )
+
+
+def unquoted(text: str) -> str:
+    """``text`` without the quotations it holds (``_scan_quotes``) that report someone's words (``_reported``).  A
+    term, a name or a value its writer sets off in quotation marks stays (We call it "Orchard"; port 8443)."""
+    kept: list[str] = []
+    last = 0
+    for start, end in _scan_quotes(text)[0]:
+        context = CLAUSE_BREAK.split(text[:start])[-1]
+        if _reported(text[start + 1 : end - 1], context):
+            kept.extend((text[last:start], " "))
+            last = end
+    kept.append(text[last:])
+    return "".join(kept)
 
 
 def quoted_at(content: str, position: int) -> bool:
@@ -298,7 +422,11 @@ def quoted_at(content: str, position: int) -> bool:
     before = content[:position]
     fenced, outside = _outside_fences(before)
     line = before[before.rfind("\n") + 1 :]
-    return fenced or _quote_open(outside) or line.lstrip().startswith(">")
+    return (
+        fenced
+        or bool(_scan_quotes(outside + content[position:], through=len(outside))[1])
+        or line.lstrip().startswith(">")
+    )
 
 
 def _pasted_at(content: str, position: int) -> bool:
@@ -445,7 +573,7 @@ def conditions_match(conditions, context_text):
     if not isinstance(conditions, (list, tuple)) or type(context_text) is not str:
         return False
     context = " ".join(unicodedata.normalize("NFC", context_text).split())
-    if _UNASSERTED_CONTEXT.search(context):
+    if UNASSERTED_CONTEXT.search(context):
         return False
     for condition in conditions:
         if type(condition) is not str or not condition.strip() or RELATIVE_SCOPE.search(condition):
