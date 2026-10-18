@@ -774,7 +774,9 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
 
     Everything that makes it safe is in the targeting: the text must literally
     name the claim, and it must name exactly one.  A bare "记住" resolves to
-    nothing and is recorded as unresolved rather than guessed at.
+    nothing and is recorded as unresolved rather than guessed at.  So is a
+    denial the denial rule keeps a proposal (``denial_verdict``): adopted or
+    not, it is no value of its slot.
     """
     raw = source.event["content"]
     if source.event["origin"] != "human_direct" or source.capture_gaps or source.event["capture_state"] != "complete":
@@ -797,6 +799,10 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
             tx.claims.unresolved(source.ref, source.revision, tuple(v.ref for v in heads), recorded_at=clock.utc_now())
         return None
     target = matches[0]
+    held = select_effective(tx.claims.versions(target.ref), clock.utc_now())
+    if denial_verdict(target.payload, held, tx.claims.roots(evidence_refs(target.payload)))[0] is not None:
+        tx.claims.unresolved(source.ref, source.revision, (target.ref,), recorded_at=clock.utc_now())
+        return None
     payload = deepcopy(target.payload)
     spans = list(payload.get("evidence_spans") or ())
     # The confirmation is itself evidence: it is the record of who vouched.
