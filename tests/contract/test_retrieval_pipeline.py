@@ -326,19 +326,28 @@ def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(
 def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeypatch):
     """A statement cannot see the recall's deadline: the lexical one can run 18-21 s for a long Telegram message on a
     large shared store, and the recall would come back empty long after its deadline.  Past the deadline a candidate
-    statement is interrupted, before its end, and the recall returns, saying so."""
+    statement is interrupted at the next look at the clock, and the recall returns, saying so.  The recall's clock here
+    moves with the statement's rows, a microsecond each: its 0.5 s are up after 500,000 rows on any machine, and an
+    interrupt that came later than a few looks after would let it run on to a million."""
     import sqlite3
 
     from scope_recall.core import retrieval_storage
 
     core, ctx = app
     capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/interrupt")
-    ended = []
+    rows, ended = [0], []
+
+    def counted():
+        rows[0] += 1
+        return 1
 
     def slow(self, tx, context, *, limit):
+        conn = tx._check()
+        conn.create_function("counted", 0, counted)
         try:
-            tx._check().execute(
-                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) SELECT count(*) FROM n"
+            conn.execute(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE counted() LIMIT 60000000) "
+                "SELECT count(*) FROM n"
             ).fetchone()
         except sqlite3.OperationalError as exc:
             ended.append(exc.sqlite_errorcode)
@@ -346,9 +355,12 @@ def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeyp
         ended.append("ran to its end")
         return ()
 
+    started = core.clock.monotonic()
+    monkeypatch.setattr(core.clock, "monotonic", lambda: started + rows[0] / 1_000_000)
     monkeypatch.setattr(retrieval_storage.RetrievalStorage, "lexical", slow)
     result = core.recall(ctx, recall_request(query="TEST 值班表", mode="current"), deadline_seconds=0.5)
     assert ended == [sqlite3.SQLITE_INTERRUPT]
+    assert 500_000 <= rows[0] < 1_000_000, rows
     assert "deadline_exceeded_collect" in result.gaps
     assert not [gap for gap in result.gaps if gap.startswith("sqlite_candidate_error")], result.gaps
     # The interrupt ends with the statement: the next recall's statements run as before.
