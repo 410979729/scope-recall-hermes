@@ -5,7 +5,7 @@ longer text this file once held is in its history.
 
 ## [3.11.1] - Unreleased
 
-Test descriptions state the current capture, retry and packaging contracts without retired task identifiers or accounts of earlier failures.
+Current-value recall places a message whose values have all been replaced after an available current-value item, preserving historical reads, explicit references and the relative order of replaced messages. Replacement lineage is read in batches. Test descriptions state the current capture, retry and packaging contracts without retired task identifiers or accounts of earlier failures. No configuration or stored-format change is required.
 
 ## [3.11.0] - 2026-10-18
 

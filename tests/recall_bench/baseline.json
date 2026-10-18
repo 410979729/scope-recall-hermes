@@ -14,13 +14,13 @@
   "metrics": {
     "auto": {
       "all": {
-        "recall@1": 0.4685,
+        "recall@1": 0.497,
         "recall@3": 0.7435,
         "recall@6": 0.7762,
         "recall@10": 0.7762,
-        "mrr": 0.6598,
-        "ndcg@10": 0.6815,
-        "outdated_above_current": 0.3667,
+        "mrr": 0.6764,
+        "ndcg@10": 0.6939,
+        "outdated_above_current": 0.1667,
         "answered": 0.9286,
         "abstained": 0.9792,
         "abstention_balanced_accuracy": 0.9539
@@ -53,13 +53,13 @@
         "answered": 1.0
       },
       "knowledge_update": {
-        "recall@1": 0.4333,
+        "recall@1": 0.5667,
         "recall@3": 0.7333,
         "recall@6": 0.7667,
         "recall@10": 0.7667,
-        "mrr": 0.5789,
-        "ndcg@10": 0.6268,
-        "outdated_above_current": 0.3667,
+        "mrr": 0.6567,
+        "ndcg@10": 0.6847,
+        "outdated_above_current": 0.1667,
         "answered": 0.9333
       },
       "aggregation": {
@@ -80,13 +80,13 @@
     },
     "explicit": {
       "all": {
-        "recall@1": 0.4935,
+        "recall@1": 0.5077,
         "recall@3": 0.7363,
         "recall@6": 0.769,
         "recall@10": 0.7762,
-        "mrr": 0.6707,
-        "ndcg@10": 0.6905,
-        "outdated_above_current": 0.3,
+        "mrr": 0.679,
+        "ndcg@10": 0.6967,
+        "outdated_above_current": 0.2,
         "answered": 0.9286,
         "abstained": 0.9792,
         "abstention_balanced_accuracy": 0.9539
@@ -119,13 +119,13 @@
         "answered": 1.0
       },
       "knowledge_update": {
-        "recall@1": 0.5,
+        "recall@1": 0.5667,
         "recall@3": 0.7333,
         "recall@6": 0.7667,
         "recall@10": 0.7667,
-        "mrr": 0.6194,
-        "ndcg@10": 0.6572,
-        "outdated_above_current": 0.3,
+        "mrr": 0.6583,
+        "ndcg@10": 0.6862,
+        "outdated_above_current": 0.2,
         "answered": 0.9333
       },
       "aggregation": {

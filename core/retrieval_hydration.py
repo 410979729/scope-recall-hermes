@@ -1,7 +1,8 @@
 """Hydration: a recall candidate turned into the object a packet carries.
 
-The event, claim, episode or artifact a candidate names, with its evidence, the entries it came in through and
-whether its sources are still live; the hydrating half of ``retrieval_storage.RetrievalStorage``.
+The event, claim, episode or artifact a candidate names, with its evidence, the entries it came in through,
+whether its sources are still live and, for a message, what has since replaced the values it states; the hydrating
+half of ``retrieval_storage.RetrievalStorage``.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from ..contracts import (
 from . import lineage
 from .candidate_tables import awaits_first_judgement
 from .claim_storage import parse_source_ref
-from .claims import select_effective, select_proposal
+from .claims import canonical_time, dated_after, holds_instead, select_effective, select_proposal, states_a_value
 from .episodes import source_origin
 from .recall_policy import applicability, in_time_window, parse_time
 from .resume_compaction import resume_evidence_refs
@@ -238,6 +239,21 @@ def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
     return (("occurred_at", stamp),) if stamp else ()
 
 
+def replacements(obj: RetrievedObject) -> tuple[tuple[str, str, int], ...]:
+    """What states the values that hold in place of every value a hydrated message states
+    (``RetrievalHydration._replaced_by``), as candidate keys (kind, ref, revision); none for anything else."""
+    keys = json.loads(dict(obj.metadata).get("replaced_by") or "[]")
+    return tuple((str(kind), str(ref), int(revision)) for kind, ref, revision in keys)
+
+
+def _said(source) -> str | None:
+    """When a source was said (``canonical_time``), or None when it does not say or says it unreadably."""
+    try:
+        return canonical_time(source.event.get("occurred_at"))
+    except ContractError:
+        return None
+
+
 def _newest(stamps: Iterable[str | None]) -> str | None:
     """The latest of several ISO-8601 times; unparseable ones are skipped."""
     newest: tuple[object, str] | None = None
@@ -322,9 +338,10 @@ class RetrievalHydration:
         return tuple(refs)
 
     def prefetch(self, tx, candidates, context: SearchContext) -> None:
-        """Load what hydrating these candidates reads first, together: their visibility, the events' rows and the
-        claims' versions (``Transaction.remembered``).  Read one by one, every statement and row would wait for the GIL
-        in a busy Hermes gateway, and a recall would run past its deadline in every stage."""
+        """Load what hydrating these candidates reads first, together: their visibility, the events' rows, the claims'
+        versions and, in the live modes, what has replaced the values the messages state (``_prefetch_replacements``)
+        (``Transaction.remembered``).  Read one by one, every statement and row would wait for the GIL in a busy
+        Hermes gateway, and a recall would run past its deadline in every stage."""
         if not getattr(tx, "remembers", False):
             return
         by_kind: dict[str, list[CandidateRef]] = {}
@@ -332,11 +349,32 @@ class RetrievalHydration:
             by_kind.setdefault(candidate.kind, []).append(candidate)
         for kind, items in by_kind.items():
             allowed_refs(tx, kind, (item.ref for item in items), automatic=context.mode == "auto")
-        _prefetch(tx, ((item.ref, item.revision) for item in by_kind.get("event", ())))
+        events = tuple((item.ref, item.revision) for item in by_kind.get("event", ()))
+        _prefetch(tx, events)
         if "claim" in by_kind:
             tx.claims.prefetch_versions(item.ref for item in by_kind["claim"])
             for (ref, revision), awaited in _judgements(tx, ((c.ref, c.revision) for c in by_kind["claim"])).items():
                 tx.remember(("judgement", ref, revision), awaited)
+        if context.mode in LIVE_MODES and events:
+            self._prefetch_replacements(tx, events, context)
+
+    def _prefetch_replacements(self, tx, events, context: SearchContext) -> None:
+        """What ``_replaced_by`` reads for these messages, loaded together: the claim versions each is evidence for
+        and those claims' versions, what holds in place of the values they state (``_holding_instead``, kept for the
+        recall's instant), then the evidence of every version holding instead and those sources.  A page of each,
+        however many messages and replacements.  A claim's first judgement stays the page ``prefetch`` already read
+        (``_judgements``); this does not widen who may see a source."""
+        conn = tx._check()
+        supported = lineage.supported_claims(conn, events)
+        tx.claims.prefetch_versions(ref for found in supported.values() for ref, _revision in found)
+        holding = {pair: self._holding_instead(tx, supported.get(pair, ()), context) for pair in events}
+        for pair, found in holding.items():
+            tx.remember(("holding_instead", *pair, context.now), found)
+        instead = {(version.ref, version.revision) for found in holding.values() for _stated, version in found or ()}
+        evidence = lineage.claim_evidence(conn, instead)
+        for key in instead:
+            tx.remember(("claim_evidence", *key), evidence.get(key, ()))
+        _prefetch(tx, (cited for found in evidence.values() for cited in found))
 
     def hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         if not allowed(tx, candidate.kind, candidate.ref, automatic=context.mode == "auto"):
@@ -358,6 +396,7 @@ class RetrievalHydration:
             newer_sql += " AND (newer.occurred_at IS NULL OR newer.occurred_at<=?)"
             newer_params.append(context.as_of)
         superseded = tx._check().execute(newer_sql, newer_params).fetchone() is not None
+        replaced = () if superseded else self._replaced_by(tx, source, context)
         event = source.event
         context_meta = bounded_source_context(event.get("source_context"))
         return RetrievedObject(
@@ -366,7 +405,7 @@ class RetrievalHydration:
             "event",
             event["content"],
             event["origin"],
-            "historical" if superseded else "current",
+            "historical" if superseded or replaced else "current",
             applicability(context, source.project_id, source.branch_id),
             (source_key(candidate.ref, candidate.revision),),
             "direct_report" if event["origin"] == "human_direct" else "observed",
@@ -377,8 +416,67 @@ class RetrievalHydration:
                 *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
                 *_occurred_metadata(tx.sources.witnessed_at(source)),
                 *((("recall_echo", "true"),) if context.mode in LIVE_MODES and recall_echo(tx, source) else ()),
+                *((("replaced_by", json.dumps(replaced)),) if replaced else ()),
             ),
         )
+
+    def _replaced_by(self, tx, source, context: SearchContext) -> tuple[tuple[str, str, int], ...]:
+        """What states the values that hold now in place of every value a message states, as candidate keys: for each
+        claim version it is evidence for that states a value, the version holding instead (``_holding_instead``) and
+        the sources it stands on, deliverable and said after it (``_later_evidence``).  None when it states no value,
+        or a value that still holds or that nothing active replaced; none outside the live modes, whose reads of the
+        past are left as they are.  ``prefetch`` loads what this reads for a round's messages together."""
+        if context.mode not in LIVE_MODES:
+            return ()
+        pair = (source.ref, source.revision)
+        holding = tx.remembered(
+            ("holding_instead", *pair, context.now),
+            lambda: self._holding_instead(tx, lineage.supported_claims(tx._check(), (pair,)).get(pair, ()), context),
+        )
+        found: list[tuple[str, str, int]] = []
+        for stated, instead in holding or ():
+            evidence = self._later_evidence(tx, instead, stated, source, context)
+            if not evidence:
+                return ()
+            found.extend((("claim", instead.ref, instead.revision), *(("event", *cited) for cited in evidence)))
+        return tuple(dict.fromkeys(found))
+
+    @staticmethod
+    def _holding_instead(tx, supported, context: SearchContext) -> list | None:
+        """For each of the claim versions ``supported`` that states a value (``claims.states_a_value``), it and the
+        version holding in place of that value (``claims.holds_instead``); None when one of those values still holds
+        or nothing active replaced it."""
+        holding = []
+        for claim_ref, revision in supported:
+            versions = tx.claims.versions(claim_ref)
+            stated = next((version for version in versions if version.revision == revision), None)
+            if stated is None or not states_a_value(stated):
+                continue
+            instead = holds_instead(versions, revision, context.now)
+            if instead is None:
+                return None
+            holding.append((stated, instead))
+        return holding
+
+    def _later_evidence(self, tx, instead, stated, source, context: SearchContext) -> tuple[tuple[str, int], ...]:
+        """The source versions the claim version ``instead`` stands on, when they are deliverable in this mode
+        (``_deliverable``), do not hold ``source`` itself, and are known to come after what ``source`` said for
+        ``stated`` (``claims.dated_after``: by their stated starts, or every one of them said after ``source``); none
+        otherwise, so a message is never labelled replaced by what its reader could not be given."""
+        key = (instead.ref, instead.revision)
+        evidence = tx.remembered(
+            ("claim_evidence", *key), lambda: lineage.claim_evidence(tx._check(), (key,)).get(key, ())
+        )
+        if (
+            not evidence
+            or (source.ref, source.revision) in evidence
+            or self._deliverable(tx, evidence, context) is None
+        ):
+            return ()
+        times = [said for pair in evidence if (cited := tx.source(*pair)) is not None and (said := _said(cited))]
+        own = _said(source)
+        starts = (canonical_time(instead.valid_from), canonical_time(stated.valid_from))
+        return evidence if dated_after(*starts, times, [own] if own else []) else ()
 
     def _hydrate_claim(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         versions = tx.claims.versions(candidate.ref)
