@@ -76,3 +76,15 @@ def test_a_stop_s_reply_is_the_model_s_line_it_names_holding_its_words():
     assert lines.reply("TEST-u1", "TEST 好的。") is None, "nor one the person said"
     assert lines.reply("TEST-a3", "TEST 好的。") is None, "nor one that shows nothing"
     assert lines.reply(None, "TEST 好的。") is None and lines.reply("TEST-none", "TEST 好的。") is None
+    edited = RecordLines.from_dsh(
+        {
+            "record": [
+                _row("assistant", "TEST 改之前。", id="TEST-a4"),
+                _row("assistant", "TEST 改之后。", id="TEST-a4", time=AT_MS + 3000),
+            ]
+        }
+    )
+    assert edited.reply("TEST-a4", "TEST 改之前。") == transcript.Said("TEST-a4", "assistant", "TEST 改之前。", AT)
+    assert edited.reply("TEST-a4", "TEST 改之后。") == transcript.Said(
+        "TEST-a4", "assistant", "TEST 改之后。", "2025-10-01T12:00:03.123000Z"
+    ), "a message edited under its id: the line with the reply's words, wherever it is"

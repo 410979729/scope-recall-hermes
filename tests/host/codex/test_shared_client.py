@@ -4344,6 +4344,34 @@ def test_a_dsh_reply_sent_again_when_its_key_cannot_be_read_is_resolved_as_the_o
     assert [(key, words) for key, words, _at in _dsh_kept(root)] == [("assistant:6", "TEST 读不到也只存一次。")]
 
 
+@pytest.mark.parametrize("reply", ["TEST 改之前的回答。", "TEST 改之后的回答。"])
+def test_an_edited_dsh_reply_is_its_own_line_under_the_id_it_shares(dsh, still_clocks, reply):
+    """dsh sent the model's message again, edited, under the same id.  The Stop's reply is the line with its id and its
+    words, whichever version it is, and is said when that line was; the id is one message, held with its reply, as the
+    read of a record holds every line of an id it holds."""
+    from scope_recall.adapters.clients import transcript
+
+    root, home = dsh
+    at = _dsh_ms()
+    record = [
+        {"id": "a1", "role": "assistant", "text": "TEST 改之前的回答。", "time": at(0)},
+        {"id": "a1", "role": "assistant", "text": "TEST 改之后的回答。", "time": at(3)},
+    ]
+    result, diagnostics = _dsh(
+        home,
+        {
+            "hook_event_name": "Stop",
+            "turn_id": "7",
+            "last_assistant_message": reply,
+            "reply_id": "a1",
+            "record": record,
+        },
+    )
+    assert result == {"through": 2} and diagnostics.capture_error_detail is None
+    said = {line.text: line.occurred_at for _end, line in transcript.dsh_lines(record) if line is not None}
+    assert _dsh_kept(root) == [("assistant:7", reply, said[reply])]
+
+
 def test_a_dsh_turn_without_a_reply_stores_what_its_lines_show(dsh):
     """A turn that failed or was aborted has no reply, and the plugin sends what it kept of earlier turns the same way:
     no reply is stored, the lines are, and lines that are no message are counted with them."""

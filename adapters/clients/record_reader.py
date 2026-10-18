@@ -52,13 +52,15 @@ class RecordLines:
         return cls(start=0, lines=transcript.dsh_lines(payload.get("record")))
 
     def reply(self, entry_id: object, text: str) -> transcript.Said | None:
-        """The model's message of the line with this id when it says ``text``: the line a client names as its Stop's
-        reply (dsh's ``reply_id``).  None when no line does."""
-        wanted = entry_id.strip() if type(entry_id) is str else None
+        """The model's line with this id that says ``text``: the line a client names as its Stop's reply (dsh's
+        ``reply_id``), found by its words as well as its id, since a message edited later comes again under its id.
+        The last such line; None when no line is one."""
+        wanted = (entry_id.strip() if type(entry_id) is str else None, "assistant", text)
+        found = None
         for _end, said in self.lines:
-            if said is not None and said.entry_id == wanted:
-                return said if (said.role, said.text) == ("assistant", text) else None
-        return None
+            if said is not None and (said.entry_id, said.role, said.text) == wanted:
+                found = said
+        return found
 
 
 class RecordReader:
