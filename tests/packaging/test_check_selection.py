@@ -524,7 +524,7 @@ def test_the_integration_budget_is_its_own_not_the_release_budget() -> None:
     assert check.INTEGRATION_WATCHDOG_SECONDS > check.RELEASE_WATCHDOG_SECONDS
 
 
-def test_no_run_can_wait_longer_than_the_release_budget() -> None:
+def test_no_count_of_files_waits_longer_than_the_release_budget() -> None:
     assert check.pytest_watchdog_seconds("contract", 10_000) == check.RELEASE_WATCHDOG_SECONDS
 
 
