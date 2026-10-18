@@ -561,3 +561,85 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
         )
     }
     assert kept and "tool" not in kept and "test-deploy" in kept, "a placeholder keeps its error text alone"
+
+
+def test_an_imported_store_holds_no_denial_as_a_value(root, entries):
+    """The store an entry brings in took a denial for its slot's value as readily as any other value.  The import
+    settles each as restore-displaced-values does, in its own transaction: "不是 us-east-2", all TEST-project's region
+    held, leaves it no value, "不是 Jenkins 了" ends the Jenkins it denies, and the person's own 不吃辣 stays their
+    value.  Every version stays, and the receipt counts what moved."""
+    from dataclasses import replace
+
+    from scope_recall.contracts import TrustedSourcePrincipal
+    from scope_recall.core.claims import Qualification
+    from scope_recall.maintenance.shared_import import import_entry
+    from v11_support import source_event
+
+    tianshu, _tianquan = entries
+    scope = _scope(tianshu)
+    core, context, (region, jenkins, ended), old = _old_store(
+        tianshu,
+        scope,
+        "TEST-project deploy region 不是 us-east-2。",
+        "TEST-project CI service 是 Jenkins。",
+        "TEST-project CI service 不是 Jenkins 了。",
+    )
+    owner = replace(context, source_principal=TrustedSourcePrincipal("human", "verified", "principal:TEST-owner"))
+    said = source_event(source_event_key="legacy:memories:diet", content="我不吃辣。")
+    diet = core.record_event(owner, said, scope_id=scope, remaining_seconds=10).event_refs[0]
+
+    def proposal(source, predicate, value, kind="fact", subject="TEST-project"):
+        event = core.source(context, source.ref, source.revision).event
+        quoted = [dict(source_ref=source.ref, source_revision=source.revision, quote=event["content"])]
+        frame = dict(kind=kind, subject=subject, predicate=predicate, value_text=value, conditions=[])
+        times = dict(statement_kind="assertion", valid_from=event["occurred_at"], valid_to=None)
+        return {**frame, **times, "evidence_spans": quoted}
+
+    def accepted(ctx, claim):
+        refs = [f"{span['source_ref']}@{span['source_revision']}" for span in claim["evidence_spans"]]
+        body = dict(protocol_version="1.1", source_refs=refs, claim_proposals=[claim], resume_proposals=[])
+        return core.records.accept_claim_proposals(
+            ctx, {**body, "reference_proposals": []}, scope_id=scope, remaining_seconds=10
+        ).items[0]
+
+    assert accepted(context, proposal(jenkins, "CI service", "Jenkins")).state == "active"
+    assert accepted(owner, proposal(diet, "饮食", "不吃辣", kind="preference", subject="user")).state == "active"
+    # As a release before the denial rule wrote them: each denial its slot's current value.
+    with core.storage.write(context) as tx:
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+        tx.claims.append(
+            scope, proposal(region, "deploy region", "不是 us-east-2"), verdict, recorded_at=core.clock.utc_now()
+        )
+        head = next(
+            v
+            for v in tx.claims.slot(scope, proposal(jenkins, "CI service", "Jenkins"))
+            if v.revision == v.current_revision
+        )
+        tx.claims.append(
+            scope,
+            proposal(ended, "CI service", "不是 Jenkins"),
+            verdict,
+            recorded_at=core.clock.utc_now(),
+            previous=head,
+        )
+
+    result = import_entry(root=root, entry_id="tianshu", source=old)
+    assert (result["status"], result["counts"]["denials_settled"]) == ("imported", 2), result
+    heads = dict(
+        _query(
+            root,
+            "SELECT c.predicate, v.state FROM claims c JOIN claim_versions v"
+            " ON v.claim_id=c.claim_id AND v.revision=c.current_revision",
+        )
+    )
+    assert heads == {"deploy region": "retracted", "CI service": "retracted", "饮食": "active"}
+    versions = _query(
+        root,
+        "SELECT c.predicate, v.state, json_extract(v.payload_json, '$.value_text') FROM claims c"
+        " JOIN claim_versions v USING(claim_id) WHERE c.predicate='CI service' ORDER BY v.revision",
+    )
+    assert versions == [
+        ("CI service", "active", "Jenkins"),
+        ("CI service", "active", "不是 Jenkins"),
+        ("CI service", "retracted", "不是 Jenkins"),
+    ]

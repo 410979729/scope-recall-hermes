@@ -110,8 +110,11 @@ episodes, candidates, deletions and blocks. Every imported source is marked with
 gets an id of its own, since stores migrated from 2.x can share ids for different content; its
 key and session take the entry's prefix, and what the old store had forgotten stays forgotten.
 A fact whose slot is already filled is left out, and the receipt under `receipts\` names it; its
-sources are imported. No vector is copied: the embeddings the old store had are queued for the
-shared worker, and until it has made them those memories are found by their words.
+sources are imported. A fact whose current version is a denial the old store took for its value
+("not CircleCI") is settled in the same transaction, as `restore-displaced-values` settles it,
+and the receipt counts them (`denials_settled`). No vector is copied: the embeddings the old
+store had are queued for the shared worker, and until it has made them those memories are found
+by their words.
 `--dry-run` runs the whole import and rolls it back. A store is imported once per entry; a
 second run is refused, and so is a store that was not this entry's home's. It reads a 3.x
 store; a 1.x or 2.x store is migrated into the agent's home first (`scope-recall migrate`,
