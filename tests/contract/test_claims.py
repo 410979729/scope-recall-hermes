@@ -416,6 +416,46 @@ def test_a_denial_is_a_negation_with_what_it_negates(value, denial):
 
 
 @pytest.mark.parametrize(
+    "value,denial",
+    [
+        # Set in capitals, or written as one word with what it negates, a value is a term: a keyword, a status, a flag.
+        *((value, False) for value in ("NOT NULL", "NOT FOUND", "DON'T CARE", "NO_CACHE", "NOT_STARTED", "N/A")),
+        *((value, False) for value in ("No.1", "no-op", "nonprofit", "never-ending story", "不锈钢", "无所谓")),
+        # Not applicable says the slot does not apply, as "don't know" says what the person does not know.
+        *((value, False) for value in ("Not Applicable", "not applicable", "doesn't apply")),
+        # Capitals on the negator alone are emphasis; a sentence's first word and a name keep their own case.
+        *((value, True) for value in ("NOT Jenkins any more", "Not CircleCI", "not AWS", "不是 AWS")),
+        # A denial shouted whole in capitals is set as a term is, and read as one.
+        ("NOT JENKINS", False),
+    ],
+)
+def test_a_value_written_as_a_term_denies_nothing(value, denial):
+    """NOT NULL is a column's constraint, NOT FOUND a lookup's status and NO_CACHE a flag: written as a term is
+    written, in capitals or as one word, a value names the term and denies nothing.  A person who puts the negator
+    alone in capitals stresses a denial ("NOT Jenkins any more"), which stays one."""
+    assert is_denial({"kind": "fact", "value_text": value}) is denial
+
+
+def test_a_term_in_capitals_is_its_slot_s_value_and_maintenance_keeps_it(app):
+    """TEST-project's id column is NOT NULL: written, that is the slot's value; and NOT FOUND, which a store already
+    holds as a lookup's status, stays its value through requalify and restore-displaced-values."""
+    core, ctx = app
+    written = _stated(
+        core, ctx, "The TEST-project id column constraint is NOT NULL.", "NOT NULL", predicate="id column constraint"
+    )
+    status = capture(core, ctx, "The TEST-project lookup status is NOT FOUND.", when=_LATER)
+    held = draft(status, "NOT FOUND", kind="fact", predicate="lookup status", statement_kind="assertion")
+    with core.storage.write(ctx) as tx:
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+        held_ref = tx.claims.append("TEST-scope", held, verdict, recorded_at=Clock.now).ref
+    assert written.state == "active"
+    for command in ("requalify_claims", "restore_displaced_values"):
+        assert getattr(core.operations, command)(ctx, limit=32, dry_run=False)["changed"] == [], command
+    assert core.current_claim(ctx, written.ref).payload["value_text"] == "NOT NULL"
+    assert core.current_claim(ctx, held_ref).payload["value_text"] == "NOT FOUND"
+
+
+@pytest.mark.parametrize(
     "stated,said,predicate",
     [
         (("TEST-project 部署状态 有故障。", "有故障"), ("TEST-project 部署状态 没问题。", "没问题"), "部署状态"),

@@ -144,8 +144,9 @@ _DENIED_VERB = (
 #: a Chinese negator with the degree or the time it carries (不是很, 不太, 不再, 别再) before a verb of being, having,
 #: liking or doing; an aversion ("讨厌 X", "受不了 X", "can't stand X", "dislikes X"); or an English negator ("not X",
 #: "isn't X", "don't have a car", "never drink coffee", "no longer uses X").  不一定 doubts rather than denies, and an
-#: English negator before a word of knowing, minding or contrast denies nothing ("not bad", "not only X but Y", "don't
-#: know", "not sure", "isn't it X").
+#: English negator before a word of knowing, minding, applying or contrast denies nothing ("not bad", "not only X but
+#: Y", "don't know", "not sure", "not applicable", "doesn't apply", "isn't it X").  Joined to the word after it, a
+#: negator is part of that word, as in NOT_STARTED, no-op and never-ending.
 _NEGATOR = re.compile(
     r"^\s*(?:(?:一点[也都]|根本|完全|从来|从|向来|也|都|还|并|已经|再也|很|真|实在|一直|平时|现在)\s*)*"
     r"(?:(?:并非|绝非|讨厌|厌恶|反感|受不了)(?=\s*[^\s。，！？,.!?])"
@@ -153,8 +154,8 @@ _NEGATOR = re.compile(
     rf"(?=(?:{_DENIED_VERB})\s*[^\s。，！？,.!?]))"
     r"|^\s*(?:(?:really|just|still|simply|definitely|absolutely|is|are|was|were|do|does|did)\s+)*"
     r"(?:(?:not|never|no\s+longer|cannot|can['’]?t|\w+n['’]t)\s+"
-    r"(?!(?:bad|only|just|merely|sure|certain|know|knows|knew|think|mind|care|matter|remember|it|that|this|there"
-    r"|a\s+problem)\b)"
+    r"(?!(?:bad|only|just|merely|sure|certain|know|knows|knew|think|mind|care|matter|remember|applicable|apply"
+    r"|applies|it|that|this|there|a\s+problem)\b)"
     r"|(?:dislikes?|hates?)\s+)(?=[^\s.,!?])",
     re.I,
 )
@@ -217,16 +218,24 @@ class Denial:
         return any(word not in _DENYING_VERBS for word in self.target)
 
 
+def _set_in_capitals(value: str, negator: str) -> bool:
+    """Whether a value opening with an English negator is set in capitals, every letter of it: a term as a keyword, a
+    status or a flag is written (NOT NULL, NOT FOUND), not a sentence's denial.  Capitals on the negator alone, before
+    words in their own case, stress a denial ("NOT Jenkins any more"); a Chinese negator has no case."""
+    cased = [char for char in value if char.lower() != char.upper()]
+    return any(char.lower() != char.upper() for char in negator) and all(char.isupper() for char in cased)
+
+
 def read_denial(payload) -> Denial | None:
     """The denial a claim's value is, or None: a fact's or a preference's value that opens with a negator
-    (``_NEGATOR``) and asks nothing ("isn't it X?" asks).  What follows the negator is its target, up to what it says
-    holds instead (``_CONTRAST``) and without a word of time after it (``_SINCE``): the target of 不是很喜欢 X and of
-    "never use X again" is X, and of "not X but Y" X."""
+    (``_NEGATOR``), asks nothing ("isn't it X?" asks) and is not a term set in capitals (``_set_in_capitals``).  What
+    follows the negator is its target, up to what it says holds instead (``_CONTRAST``) and without a word of time
+    after it (``_SINCE``): the target of 不是很喜欢 X and of "never use X again" is X, and of "not X but Y" X."""
     value = str(payload.get("value_text") or "")
     if payload.get("kind") not in _VALUE_SLOT_KINDS or AUTHORITY_QUESTION.search(value):
         return None
     negator = _NEGATOR.match(value)
-    if negator is None:
+    if negator is None or _set_in_capitals(value, negator.group()):
         return None
     rest = value[negator.end() :]
     contrast = _CONTRAST.search(rest)
@@ -236,7 +245,7 @@ def read_denial(payload) -> Denial | None:
 
 def is_denial(payload) -> bool:
     """Whether a claim's value says what its slot is not (``read_denial``): "not CircleCI", "不吃辣", "don't like
-    PowerShell"; not 不错, 没问题, 不一定喜欢 X, "not bad" or "isn't it X?"."""
+    PowerShell"; not 不错, 没问题, 不一定喜欢 X, "not bad", "isn't it X?", NOT NULL or NOT_STARTED."""
     return read_denial(payload) is not None
 
 
