@@ -398,13 +398,30 @@ def test_responses_route_joins_parts_within_a_message_and_separates_messages(tmp
     )
 
 
-def test_responses_incomplete_is_the_named_truncated_derivation(tmp_path, monkeypatch):
-    """A response cut off at ``max_output_tokens`` is a prefix, not an answer;
-    the spent call is still settled with the usage the provider reported."""
-    monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
+_NO_DETAILS = object()
+
+
+def _incomplete(details: object) -> bytes:
+    """An ``incomplete`` response that spent 512 output tokens, with ``incomplete_details`` as given
+    (``_NO_DETAILS`` leaves the key out)."""
     usage = {"input_tokens": 40, "output_tokens": 512, "output_tokens_details": {"reasoning_tokens": 480}}
-    key = '{"claims":["partial"'
-    transport = FakeTransport(lambda **kwargs: (200, _answer(key, status="incomplete", usage=usage)))
+    body = json.loads(_answer('{"claims":["partial"', status="incomplete", usage=usage).decode())
+    if details is not _NO_DETAILS:
+        body["incomplete_details"] = details
+    return json.dumps(body).encode()
+
+
+@pytest.mark.parametrize(
+    "details",
+    [_NO_DETAILS, None, {}, {"reason": "max_output_tokens"}],
+    ids=["no_details", "null_details", "no_reason", "output_limit"],
+)
+def test_responses_incomplete_at_the_output_limit_or_without_a_reason_is_a_truncation(tmp_path, monkeypatch, details):
+    """An incomplete response is a prefix cut off at the output limit when it says so (``max_output_tokens``) and when
+    it gives no reason: the details and the reason are optional in the API, and no provider document gives their
+    absence another meaning.  The spent call is still settled with the usage the provider reported."""
+    monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
+    transport = FakeTransport(lambda **kwargs: (200, _incomplete(details)))
     _payload_of, ledger = _payload(tmp_path), tmp_path / "auxiliary-budget.sqlite3"
     runtime = _runtime(_payload_of, transport)
 
@@ -414,6 +431,39 @@ def test_responses_incomplete_is_the_named_truncated_derivation(tmp_path, monkey
     assert [(row["status"], row["actual_input"], row["actual_output"]) for row in _rows(ledger)] == [
         ("http_200", 40, 512)
     ]
+
+
+def test_responses_incomplete_by_the_content_filter_is_a_refusal_not_a_truncation(tmp_path, monkeypatch):
+    """The provider's policy stopped the answer, so a longer output limit changes nothing; the call is settled with
+    the usage the provider reported."""
+    monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
+    transport = FakeTransport(lambda **kwargs: (200, _incomplete({"reason": "content_filter"})))
+    _payload_of, ledger = _payload(tmp_path), tmp_path / "auxiliary-budget.sqlite3"
+    runtime = _runtime(_payload_of, transport)
+
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "model_refused"
+    assert [(row["status"], row["actual_input"], row["actual_output"]) for row in _rows(ledger)] == [
+        ("http_200", 40, 512)
+    ]
+
+
+@pytest.mark.parametrize(
+    "details",
+    [{"reason": "something_else"}, {"reason": 7}, "content_filter", ["content_filter"]],
+    ids=["other_reason", "reason_not_a_string", "details_a_string", "details_a_list"],
+)
+def test_responses_incomplete_for_a_reason_the_route_does_not_know_is_not_a_truncation(tmp_path, monkeypatch, details):
+    """Only the output limit is a truncation, and only the content filter a refusal; an ``incomplete`` that names
+    anything else is a response this route does not understand, whatever the output limit is."""
+    monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
+    transport = FakeTransport(lambda **kwargs: (200, _incomplete(details)))
+    runtime = _runtime(_payload(tmp_path), transport)
+
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "unsupported_response_shape"
 
 
 @pytest.mark.parametrize(

@@ -279,6 +279,56 @@ def test_a_terminal_failure_is_left_alone_without_the_flag(app):
     assert not _states(core)[0].get("failed")
 
 
+def test_a_refusal_by_the_providers_policy_is_asked_once_and_re_run_only_on_request(worker_app):
+    """Asking again would send the same request to the same policy: the item fails on its first refusal, the status
+    counts it as by design, and only a run that includes the terminal failures re-opens it."""
+    core, ctx, clock = worker_app
+    source = long_source(core, ctx, "TEST 内容策略拒绝了这一条。")
+    asked = []
+
+    class Refusing:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
+            asked.append(sources)
+            raise AuxiliaryModelError("model_refused")
+
+    for minute in range(1, 5):
+        clock.advance(seconds=65.0, iso=f"2026-09-06T12:{minute:02d}:30Z")
+        core.drain_worker(ctx, consolidation=Refusing(), max_items=2, remaining_seconds=5)
+    assert len(asked) == 1 and row(core, source) == ("failed", 0, 1)
+    status = core.status(ctx)
+    assert (status.failed_work, status.terminal_failed_work) == (1, 1)
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=True)["retried"] == 0
+    every = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=True)
+    assert (every["retried"], every["by_kind"]) == (1, {"model_refused": 1})
+
+
+def test_a_candidate_pass_stops_at_the_first_interrupted_answer_and_a_plain_run_re_opens_the_one_it_failed(app):
+    """The provider that interrupted one answer interrupts the next, so the pass asks once and the other evaluation
+    waits for the next pass untouched.  A candidate evaluation is asked once: the one asked is left failed, and a
+    plain run moves its three tables back together."""
+    asked = []
+
+    class Interrupted:
+        def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+            asked.append(candidate)
+            raise AuxiliaryModelError("model_output_interrupted")
+
+    core, ctx = app
+    _candidate(core, ctx, key="TEST-cand/1")
+    _candidate(core, ctx, key="TEST-cand/2", value="红色")
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Interrupted())
+    assert len(asked) == 1
+    assert list(_codes(core).values()) == ["model_output_interrupted"]
+    work, evaluations = _states(core)
+    assert (work.get("failed"), evaluations.get("failed")) == (1, 1)
+    preview = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
+    assert (preview["retried"], preview["by_kind"]) == (1, {"model_output_interrupted": 1})
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 1
+    work, evaluations = _states(core)
+    assert not work.get("failed") and not evaluations.get("failed")
+
+
 def _codes(core):
     with sqlite3.connect(core.storage.path) as conn:
         return dict(conn.execute("SELECT work_id,last_error_code FROM work_items WHERE last_error_code IS NOT NULL"))
@@ -719,6 +769,8 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
     [
         "model_unavailable",
         "model_timeout",
+        "model_output_interrupted",
+        "response_status_failed",
         "network_error",
         "http_protocol",
         "http_429",
@@ -727,9 +779,10 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
         "rate_limited",
     ],
 )
-def test_a_transient_model_failure_can_be_cleared(code):
+def test_a_transient_model_failure_is_cleared_by_a_run_and_by_the_automatic_recovery(code):
     assert retry_class(code) == "actionable"
     assert selects(code, include_terminal=False, generation=RETRY_GENERATION) is True
+    assert code in AUTO_RECOVERABLE_ERRORS
 
 
 @pytest.mark.parametrize(
@@ -994,12 +1047,14 @@ def test_consecutive_refusals_space_the_retries_out(app):
 
 
 def test_the_two_rate_limit_sets_cannot_drift_apart():
-    """They said the same thing about 429 and 503 while disagreeing about 502
-    and 504 -- which is how a pair of hand-kept sets always ends up."""
+    """Two hand-kept sets said the same thing about 429 and 503 while disagreeing about 502 and 504, which is how a
+    pair always ends up.  The pass stands a work type down for every capacity refusal, taken from that set and not
+    copied from it, and for an interrupted answer, which was billed and is no refusal."""
     from scope_recall.core.work_storage import CAPACITY_REFUSALS
     from scope_recall.core.worker import _RATE_LIMITED_ERRORS
 
-    assert _RATE_LIMITED_ERRORS is CAPACITY_REFUSALS
+    assert CAPACITY_REFUSALS <= _RATE_LIMITED_ERRORS
+    assert _RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted"}
 
 
 @pytest.mark.parametrize("legacy", [False, True])

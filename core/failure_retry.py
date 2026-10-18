@@ -61,13 +61,17 @@ DERIVATION_RETRY_MARKER = "derivation_retry:1"
 # Invalid derivations and rejected authority remain terminal and inspectable.
 # ``http_protocol`` is the transport failing mid-reply (a connection closed or a malformed answer), and is treated as
 # ``network_error`` is: it says nothing about the payload.  Missing here, consolidation and embedding work failing
-# with it would never be recovered.  An answer the route cannot use (a vector of another width, say) is not here: it
-# comes back until someone changes the model or the configuration, and a recovery gated by time alone cannot tell
-# when they have, so ``retry-failures`` re-opens it.
+# with it would never be recovered.  ``model_output_interrupted`` is the provider ending an answer for lack of capacity
+# or by interrupting it, and ``response_status_failed`` is a Responses route's generation failing at the provider;
+# neither says anything about the payload either.  An answer the route cannot use (a vector of another width, say) is
+# not here: it comes back until someone changes the model or the configuration, and a recovery gated by time alone
+# cannot tell when they have, so ``retry-failures`` re-opens it.
 AUTO_RECOVERABLE_ERRORS = frozenset(
     {
         "model_unavailable",
         "model_timeout",
+        "model_output_interrupted",
+        "response_status_failed",
         "timeout",
         "network_error",
         "http_protocol",
@@ -98,11 +102,15 @@ ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
 #: By-design outcomes, as ``failure_kind`` reads them.  Re-running them asserts
 #: that something upstream changed.  ``sensitive_request`` is the request guard
 #: refusing to send secret-like text to a model; the payload is what it is, so a
-#: retry can only refuse again.  Every failure not named here is actionable.
+#: retry can only refuse again.  ``model_refused`` is the provider's policy
+#: refusing or stopping the answer (a content filter, a refusal): the request
+#: is not asked again, and a run re-opens it once the model, the route or the
+#: provider's policy has changed.  Every failure not named here is actionable.
 TERMINAL_FAILURES = frozenset(
     {
         "derivation_invalid",
         "input_invalid",
+        "model_refused",
         "sensitive_request",
     }
 )
