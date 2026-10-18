@@ -7,7 +7,7 @@ import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.claims import RootEvidence, qualify
-from scope_recall.core.source_qualification import conditions_match, self_report_bound
+from scope_recall.core.source_qualification import conditions_match, in_pasted_text, self_report_bound, unquoted
 
 from tests.contract.test_claims import Clock, capture, initial, revise_request
 from tests.v11_support import context
@@ -219,6 +219,7 @@ def test_a_transcript_s_label_outside_the_quote_s_sentence_still_names_someone_e
         ("Alice sent this.\n'Hello.\nMy preference is blue.\n'", preference),
         ("Alice wrote ‘Hello.\nMy preference is blue.\n’", preference),
         ("Alice wrote 'Hello.\nMy preference is blue.\n'", preference),
+        ("Alice sent ‘The users' choices include ‘blue’.\nMy preference is blue.\n’", preference),
         ("Alice sent this.\n```\n```python\nMy preference is blue.\n```", preference),
         ("[2026-10-10 Saturday] Alice Wonderland-Smith:\nMy preference is blue.", preference),
     ):
@@ -238,11 +239,33 @@ def test_a_transcript_s_label_outside_the_quote_s_sentence_still_names_someone_e
         "'Hi.\nBye.'\nMy preference is blue.",
         "Alice said ‘hi’.\nMy preference is blue.",
         "It's done, and the students' books are back.\nMy preference is blue.",
+        "‘The service runs’\nMy preference is blue.",
+        "We call it 'Cypress' and use blue. My preference is blue.",
         "```inline``` is code.\nMy preference is blue.",
         "Here is a short summary of where things stand this week:\nMy preference is blue.",
     ):
         owner = qualification(owner_text, value="blue", quote="My preference is blue.")
         assert owner.state == "active", owner_text
+
+
+@pytest.mark.parametrize(("opening", "closing"), (("'", "'"), ("‘", "’")))
+@pytest.mark.parametrize("tail", ("", " and the flag is 'on'"))
+def test_a_name_ending_in_s_closes_before_the_writers_own_preference(opening, closing, tail):
+    quote = "my preference is blue"
+    own = f"We call it {opening}Blue Cypress{closing} and {quote}{tail}."
+    assert not in_pasted_text(own, quote)
+    separate = f"We call it {opening}Blue Cypress{closing}. My preference is blue{tail}."
+    assert qualification(separate, value="blue", quote="My preference is blue").state == "active"
+    reported = f"Alice wrote {opening}The users{closing} choices are fine and {quote}.{closing}"
+    assert in_pasted_text(reported, quote)
+    assert qualification(reported, value="blue", quote=quote).state == "proposed"
+
+
+def test_a_possessive_inside_a_quotation_stays_open_through_a_nested_quote():
+    """An inner quotation does not end the outer one at a plural possessive, so the quoted preference stays quoted."""
+    text = "Alice wrote 'The users' choices are fine and my preference is blue and the flag is 'on'.'"
+    assert in_pasted_text(text, "my preference is blue")
+    assert "my preference is blue" not in unquoted(text)
 
 
 def test_self_report_requires_a_verified_c1_principal():

@@ -34,7 +34,9 @@ Five conditions, and all of them are narrow on purpose:
   the *eligible* kind.
 
 Not responsible for: judging either statement (``core/claims.qualify`` does
-that), or writing anything (``core/mutate.apply_claim`` owns the version).
+that), writing anything (``core/mutate.apply_claim`` owns the version), or what
+the slot allows: ``mutate._corroborated`` asks it only for the slot's own head,
+and never for a denial the denial rule keeps a proposal.
 """
 
 from __future__ import annotations

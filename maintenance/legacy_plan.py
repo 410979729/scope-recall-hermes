@@ -87,6 +87,8 @@ class Conversion:
     procedure_collisions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     membership_audit: dict[str, Any] | None = None
     lifecycle_suppression: dict[str, Any] | None = None
+    #: Fact heads that were denials no value of their slot, settled by the write (``settle_brought_denials``).
+    denials_settled: int = 0
 
     def unmapped(self, table: str, key: str, reason: str, **fields: Any) -> Row:
         """Record one row the conversion could not map losslessly."""

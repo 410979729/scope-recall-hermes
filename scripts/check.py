@@ -180,7 +180,11 @@ SUITES = {
         "tests/known_answer/test_recall_invariants_check.py",
     ],
     "capture": ["tests/contract/test_capture.py", "tests/contract/test_capture_row_crossings.py"],
-    "claims": ["tests/contract/test_claims.py", "tests/contract/test_claim_embed_recovery.py"],
+    "claims": [
+        "tests/test_denial_values.py",
+        "tests/contract/test_claims.py",
+        "tests/contract/test_claim_embed_recovery.py",
+    ],
     "deletion": [
         "tests/contract/test_deletion.py",
         "tests/contract/test_purge_leaves_no_copy.py",
@@ -1014,6 +1018,29 @@ def main() -> int:
     return _execute(args, selected, selection)
 
 
+def pytest_command(selected: list[str], junit: Path) -> list[str]:
+    """Keep each directory's files together so pytest's conftest fixtures and their users share a collector.
+
+    Re-entering a directory after selecting a file in its parent can create another collector for it. Normalize
+    separators before sorting so Windows selections form the same contiguous subtrees as POSIX selections.
+    """
+    return [
+        sys.executable,
+        "-B",
+        "-m",
+        "pytest",
+        *sorted({path.replace("\\", "/") for path in selected}),
+        "-q",
+        "--import-mode=importlib",
+        "-p",
+        "v11_guard",
+        "-p",
+        "no:cacheprovider",
+        "--durations=10",
+        f"--junitxml={junit}",
+    ]
+
+
 def _execute(args, selected: list[str], selection: dict) -> int:
     """Run the selected files under the watchdog, always clean up, always write a receipt.
 
@@ -1053,21 +1080,7 @@ def _execute(args, selected: list[str], selection: dict) -> int:
         isolated = Path(directory.name if hasattr(directory, "name") else directory)
         env = _test_environment(args.tier, isolated)
         junit = isolated / "junit.xml"
-        command = [
-            sys.executable,
-            "-B",
-            "-m",
-            "pytest",
-            *selected,
-            "-q",
-            "--import-mode=importlib",
-            "-p",
-            "v11_guard",
-            "-p",
-            "no:cacheprovider",
-            "--durations=10",
-            f"--junitxml={junit}",
-        ]
+        command = pytest_command(selected, junit)
         transitions.append("pytest_started")
         start = time.perf_counter()
         try:

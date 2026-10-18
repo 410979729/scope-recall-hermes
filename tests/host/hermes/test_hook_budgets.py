@@ -57,6 +57,48 @@ def test_compression_defers_steers_within_shared_budget(telegram, monkeypatch, m
     assert wanted <= stored_words(telegram._core)
 
 
+def test_session_end_retries_and_steers_share_one_capture_pass(telegram, monkeypatch, metered_store):
+    """Pending retries and the steers read at session end share one 2 s capture pass.
+
+    The worker start inside the session end is a separate budget. What this pass cannot store stays in the retry
+    buffer and is written once the store has time.
+    """
+    monkeypatch.setattr(telegram._retry, "start", lambda: None)
+    real = telegram._core.record_host_event
+
+    def refused(*args, **kwargs):
+        raise ContractError("DEADLINE_EXCEEDED", "TEST writer held")
+
+    monkeypatch.setattr(telegram._core, "record_host_event", refused)
+    telegram.observe_post_tool_call(
+        session_id="TEST-session-tg",
+        turn_id="turn-kept",
+        tool_call_id="kept-session-end",
+        tool_name="terminal",
+        result="TEST kept before session end",
+        status="success",
+    )
+    monkeypatch.setattr(telegram._core, "record_host_event", real)
+    assert telegram._retry.captures
+    # The worker's own start is not this capture pass.
+    monkeypatch.setattr(telegram._worker, "submit", lambda *args, **kwargs: False)
+    clock = metered_store(1.0)
+    rows = [_row(_steer(f"TEST session steer {number}", message_id=str(400 + number))) for number in range(8)]
+    started = clock()
+    try:
+        telegram.on_session_end([dict(row) for row in rows])
+        elapsed = clock() - started
+    finally:
+        clock.per_operation = 0.01
+    assert elapsed <= turn_capture._STEERS_SECONDS + 0.1, (elapsed, clock.operations)
+    wanted = {f"TEST session steer {number}" for number in range(8)} | {"TEST kept before session end"}
+    kept = {pending.event["content"] for pending in telegram._retry.captures.values()}
+    assert wanted <= stored_words(telegram._core) | kept
+    telegram._retry.write_observed(deadline=clock() + 10)
+    telegram._retry.write_buffered(seconds=10)
+    assert wanted <= stored_words(telegram._core)
+
+
 @pytest.mark.parametrize("per_operation", [0.5, 1.5])
 def test_shutdown_keeps_unstored_captures_for_restart(
     adapter, initialize_kwargs, monkeypatch, metered_store, caplog, per_operation
@@ -121,6 +163,13 @@ def test_shutdown_disk_failure_retains_memory_capture(adapter, monkeypatch, mete
     monkeypatch.setattr(os, "fsync", failed_sync)
     provider.shutdown()
     assert len(provider._retry.captures) == 1
+    state = provider.diagnostics.shutdown_state
+    assert state["pending_capture_status"] == "unpersisted"
+    assert state["pending_capture_durability"] == "memory_only"
+    assert any("could not be written to disk" in record.getMessage() for record in caplog.records)
+    assert any("retained in memory" in record.getMessage() for record in caplog.records)
+    folder = provider._core.config.binding.data_directory / "kept-captures"
+    assert not list(folder.glob("*.json"))
     assert not any("lost" in record.getMessage() for record in caplog.records)
     clock.per_operation = 0.01
 

@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.11.0",
+  "package_version": "3.11.1",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",
@@ -68,6 +68,7 @@
     "adapters/hermes/shared_entries.py",
     "adapters/hermes/tool_surface.py",
     "adapters/hermes/turn_capture.py",
+    "adapters/hermes/unbound_sessions.py",
     "adapters/hermes/worker.py",
     "adapters/runtime_wiring.py",
     "adapters/tool_common.py",

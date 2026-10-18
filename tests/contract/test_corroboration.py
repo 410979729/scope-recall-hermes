@@ -11,7 +11,9 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from scope_recall.core.claims import RootEvidence
+from scope_recall.contracts import TrustedSourcePrincipal
+from scope_recall.core.claims import Qualification, RootEvidence
+from scope_recall.core.confirmation import CONFIRMED_REASON
 from scope_recall.core.corroboration import (
     CORROBORATED_REASON,
     CORROBORATION_ELIGIBLE_REASONS,
@@ -333,3 +335,61 @@ def test_corroboration_is_not_a_way_around_a_value_conflict(app):
         )
     state, reason = _state(core, ctx, ref)
     assert reason != CORROBORATED_REASON, "the head was not replaced by corroboration"
+
+
+# --------------------------------------------------------------------------
+# A denial the denial rule keeps as a proposal
+# --------------------------------------------------------------------------
+
+#: A denial about TEST-instrument, refused by the fact gate (``fact_entailment_unproved``) as well as kept a proposal by
+#: the denial rule: it says what the serial is not, never what it is.
+DENIAL = "TEST-instrument：不是 SN-4471。"
+
+
+def _denial(source):
+    return draft(
+        source, "不是 SN-4471", kind="fact", subject="TEST-instrument", predicate="序列号", statement_kind="assertion"
+    )
+
+
+def test_a_second_session_does_not_make_a_denial_about_something_else_a_value(app):
+    """Said again in a second session, the denial is the same assertion from a second witness, and still no value of
+    its slot (``mutate.denial_verdict``): corroboration leaves it a proposal."""
+    core, ctx = app
+    ref = accept(core, ctx, _denial(capture(core, ctx, DENIAL, key="TEST-deny/1"))).items[0].ref
+    assert _state(core, ctx, ref) == ("proposed", "fact_entailment_unproved")
+    later = replace(ctx, session_id="TEST-session-2")
+    accept(core, later, _denial(capture(core, later, DENIAL, key="TEST-deny/2")))
+    assert _state(core, ctx, ref)[0] == "proposed"
+    assert core.current_claim(ctx, ref) is None
+
+
+def test_the_person_s_own_denial_said_in_two_sessions_stays_their_value(app):
+    """The person's 我不吃辣 is their answer where nothing else is known, in the first session and the second."""
+    core, ctx = app
+    owner = replace(ctx, source_principal=TrustedSourcePrincipal("human", "verified", "principal:TEST-owner"))
+    refs = []
+    for index, session in enumerate((owner, replace(owner, session_id="TEST-session-2"))):
+        source = capture(core, session, "我不吃辣。", key=f"TEST-own-denial/{index}")
+        preference = draft(
+            source, "不吃辣", kind="preference", subject="user", predicate="饮食", statement_kind="assertion"
+        )
+        refs.append(accept(core, session, preference).items[0].ref)
+    assert refs[0] == refs[1] and _state(core, owner, refs[0])[0] == "active"
+    assert core.current_claim(owner, refs[0]).payload["value_text"] == "不吃辣"
+
+
+@pytest.mark.parametrize("command", ["requalify_claims", "restore_displaced_values"])
+@pytest.mark.parametrize("reason", [CORROBORATED_REASON, CONFIRMED_REASON])
+def test_a_denial_about_something_else_made_a_value_is_withdrawn(app, command, reason):
+    """One a store already holds as its slot's value, by a second witness or a confirmation, is withdrawn by either
+    command; the slot then holds no value, and every version stays."""
+    core, ctx = app
+    source = capture(core, ctx, DENIAL, key="TEST-deny/held")
+    with core.storage.write(ctx) as tx:
+        made = Qualification("active", "direct_report", reason)
+        ref = tx.claims.append("TEST-scope", _denial(source), made, recorded_at=core.clock.utc_now()).ref
+    report = getattr(core.operations, command)(ctx, limit=32, dry_run=False)
+    assert [item["ref"] for item in report["changed"]] == [ref]
+    assert core.current_claim(ctx, ref) is None
+    assert [version.state for version in core.claim_history(ctx, ref)] == ["active", "retracted"]

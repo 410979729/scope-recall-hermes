@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 from ...runtime.worker_entry import host_process_credential_environment
@@ -98,28 +99,31 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("CODEX_HOOK:config_unavailable\n")
         emit_result({}, empty=empty)
         return 0
-    if len(raw) > 65536:
-        sys.stderr.write("CODEX_HOOK:input_too_large\n")
-        emit_result({}, empty=empty)
-        return 0
-    # A client attached to a shared store runs the entry's MCP server for as long as it is open, and that server
-    # answers the prompt's recall with its vector search warm (``local_endpoint``).  The prompt is stored here.
-    recaller = None
-    if args.config is None and runtime_config is None:
-        from .local_endpoint import Recaller
+    # Closing abandons late attachment and preserves any watchdog detached by this hook.
+    with closing(handler):
+        if len(raw) > 65536:
+            sys.stderr.write("CODEX_HOOK:input_too_large\n")
+            emit_result({}, empty=empty)
+            return 0
+        # A client attached to a shared store runs the entry's MCP server for as long as it is open, and that server
+        # answers the prompt's recall with its vector search warm (``local_endpoint``).  The prompt is stored here.
+        recaller = None
+        if args.config is None and runtime_config is None:
+            from .local_endpoint import Recaller
 
-        recaller = Recaller(location, args.host)
-        handler.resident_recall = recaller
-    result = handler.handle_bytes(raw)
-    emit_result(result, diagnostics=handler.diagnostics, empty=empty)
-    if recaller is not None:
-        outcome = getattr(handler, "resident_outcome", None) or recaller.outcome
-        if outcome is not None:
-            sys.stderr.write(f"CODEX_RECALL_RESIDENT:{outcome}\n")
-        if handler.diagnostics.last_event == "UserPromptSubmit":
-            sys.stdout.flush()  # the answer's bytes leave now; a client that reads to the end still waits for the exit
-            _keep_a_resident_server(location, args.host, args.env_file)
-    return 0
+            recaller = Recaller(location, args.host)
+            handler.resident_recall = recaller
+        result = handler.handle_bytes(raw)
+        emit_result(result, diagnostics=handler.diagnostics, empty=empty)
+        if recaller is not None:
+            outcome = getattr(handler, "resident_outcome", None) or recaller.outcome
+            if outcome is not None:
+                sys.stderr.write(f"CODEX_RECALL_RESIDENT:{outcome}\n")
+            if handler.diagnostics.last_event == "UserPromptSubmit":
+                # The answer's bytes leave now; a client that reads to the end still waits for the exit.
+                sys.stdout.flush()
+                _keep_a_resident_server(location, args.host, args.env_file)
+        return 0
 
 
 def _keep_a_resident_server(home: Path, host: str, env_file: Path | None) -> None:

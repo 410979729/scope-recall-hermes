@@ -2,7 +2,7 @@
 
 Exists so that a diagnostic can ask "is the process that wrote this record
 still running?" without ever signalling, waiting on, or otherwise touching
-that process.  ``runtime/running_code.py`` is the only caller.
+that process.  Running-code and unbound-session records use it.
 
 Two things this module is deliberately careful about:
 
@@ -22,6 +22,7 @@ Not responsible for: starting, stopping, or waiting on processes
 from __future__ import annotations
 
 import os
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,6 +92,9 @@ def _probe_windows(pid: int) -> ProcessState:
 
 
 def _probe_posix(pid: int) -> ProcessState:
+    # CPython passes the pid to os.kill as a signed native int, unlike Windows's DWORD.
+    if pid > (1 << (struct.calcsize("i") * 8 - 1)) - 1:
+        return ProcessState(pid=pid, running=False)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -121,7 +125,10 @@ def is_same_process(pid: int, start_token: str | None) -> bool:
     A record written without a token (platform could not supply one) degrades
     to a pid-only check rather than being treated as dead.
     """
-    state = probe_process(pid)
+    try:
+        state = probe_process(pid)
+    except (OSError, ValueError, OverflowError):
+        return False
     if not state.running:
         return False
     if start_token is None or state.start_token is None:

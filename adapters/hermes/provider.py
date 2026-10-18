@@ -247,11 +247,13 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._turns.sync(user_content, assistant_content, session_id=session_id, messages=messages)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        # The steers first, their store I/O without the lock; then the short process launch, serialized with
-        # shutdown, never the drain.
-        self._turns.steers(messages, hook="on_session_end")
+        # One capture pass (``steer_deadline``) for the steers and the retry inside ``end``. The steers' store
+        # I/O runs without the lock; ``end`` then holds it, serialized with shutdown, and never drains. The worker
+        # start in ``end`` keeps its own budget and is not this pass.
+        deadline = steer_deadline()
+        self._turns.steers(messages, hook="on_session_end", deadline=deadline)
         with self._lock:
-            self._binding.end(messages)
+            self._binding.end(messages, deadline=deadline)
 
     @_serialized_host_event
     def on_session_switch(

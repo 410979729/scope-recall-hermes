@@ -110,8 +110,11 @@ episodes, candidates, deletions and blocks. Every imported source is marked with
 gets an id of its own, since stores migrated from 2.x can share ids for different content; its
 key and session take the entry's prefix, and what the old store had forgotten stays forgotten.
 A fact whose slot is already filled is left out, and the receipt under `receipts\` names it; its
-sources are imported. No vector is copied: the embeddings the old store had are queued for the
-shared worker, and until it has made them those memories are found by their words.
+sources are imported. A fact whose current version is a denial the old store took for its value
+("not CircleCI") is settled in the same transaction, as `restore-displaced-values` settles it,
+and the receipt counts them (`denials_settled`). No vector is copied: the embeddings the old
+store had are queued for the shared worker, and until it has made them those memories are found
+by their words.
 `--dry-run` runs the whole import and rolls it back. A store is imported once per entry; a
 second run is refused, and so is a store that was not this entry's home's. It reads a 3.x
 store; a 1.x or 2.x store is migrated into the agent's home first (`scope-recall migrate`,
@@ -371,6 +374,18 @@ hand); run again, the command also rebinds an entry config that a failed run lef
 reading the home's pointer to its last write it holds the home's lock and the store's
 `commands.lock`, so no other shared-store command writes in between
 ([above](#make-a-store-and-attach-the-first-agent)).
+
+A Hermes entry attached from a home whose installer never approved Hermes Desktop or
+`hermes --tui` has no grant for that surface, and `apply-install --local-platform` refuses an
+entry; its owner's sessions there bind no scope, and the host log and `doctor`
+(`local_session_unbound`) say so. Add the surface as the installer would: the owner principal
+`{"platform": "desktop", "user_id": "local"}` and an `owner_private` row on `desktop`, user
+`local`, chat type `private`, chat `local`, thread `main`, an empty `gateway_session_key` and the
+entry's `agent_workspace`, reading, writing and capturing into the scope the entry's CLI owner row
+captures into. That route is also where the conversations Hermes's local session transport runs
+for the gateway's own account bind ([install.md](install.md), section 4). An owner's login is
+added the same way, the login in place of `local` as the principal's user and the row's user and
+chat.
 
 A row matches a session field by field, as at attach: `platform`, `user_id`, `chat_type`,
 `chat_id`, `thread_id`, `gateway_session_key` (empty does not pin the host's session key) and

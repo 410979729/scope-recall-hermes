@@ -19,6 +19,7 @@ from ..contracts import (
     verified_human_principal_ref,
 )
 from .aliases import validate_alias_source, validate_alias_target
+from .candidate_lifecycle import SELF_SUBJECTS
 from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
 from .claim_storage import parse_source_ref
 from .claims import (
@@ -138,18 +139,24 @@ def _alias_verified(tx, proposal: ClaimProposal, roots, scope_id: str, now: str)
         return False
 
 
-def _corroborated(tx, proposal, roots, identical, previous, qualification) -> bool:
+def _corroborated(tx, proposal, roots, identical, previous, qualification, denial_reason) -> bool:
     """The same assertion from a second independent first-hand source is not a
     duplicate but corroboration; see core/corroboration.py.  Only when the slot's
     head is this assertion, so corroboration can never bypass ordering,
-    principal or disputed-state handling below."""
+    principal or disputed-state handling below; and never for a denial the
+    denial rule keeps a proposal (``denial_reason``), which no witness makes its
+    slot's value."""
     head_is_this_assertion = previous is None or same_assertion(previous.payload, proposal)
-    return head_is_this_assertion and corroboration_promotes(
-        existing=identical,
-        existing_reason=identical.reason,
-        incoming_reason=qualification.reason,
-        incoming_roots=roots,
-        existing_roots=tx.claims.roots(evidence_refs(identical.payload)),
+    return (
+        denial_reason is None
+        and head_is_this_assertion
+        and corroboration_promotes(
+            existing=identical,
+            existing_reason=identical.reason,
+            incoming_reason=qualification.reason,
+            incoming_roots=roots,
+            existing_roots=tx.claims.roots(evidence_refs(identical.payload)),
+        )
     )
 
 
@@ -217,25 +224,29 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     return qualification, True, ()
 
 
-def denial_verdict(proposal, held, roots) -> tuple[str | None, bool]:
+def denial_verdict(proposal, held, roots, versions=()) -> tuple[str | None, bool]:
     """Why a denial's own version is a proposal, if it is, and whether the value its slot holds (``held``) ends.
 
     A denial of another value than the one held ("not CircleCI" while Jenkins is, ``claims.negates``) leaves the slot
-    as it is.  In the person's own slot, a preference or a fact about the person whose words it cites, a denial that
-    names a value and only denies it is their answer where the slot holds nothing ("我不吃辣") and replaces the value it
-    denies.  Any other denial says what its slot is not and is never its value: one in a fact about anything else, one
-    that names nothing (我不吃了, "never again", ``claims.Denial``) and one that goes on to say what holds instead
-    (不用 X 了，而是用 Y, "not X but Y"); when it denies the value held, that value ends.  Writing (``apply_claim``)
-    and re-judging the store (``requalify``) read a denial by this alone.
+    as it is.  In the person's own slot, a preference or a fact about the person whose words it cites (its subject
+    the principal their 我 was bound to, or the self label 用户, user or 我 a converted 2.0 store keeps, having
+    bound none), a denial that names a value and only denies it is their answer where the slot holds nothing
+    ("我不吃辣") and replaces the value it denies.  Any other denial says what its slot is not and is never its
+    value: one in a fact about anything else and one that goes on to say what holds instead (不用 X 了，而是用 Y,
+    "not X but Y"); when it denies the value held,
+    that value ends.  Writing (``apply_claim``) and re-judging the store (``requalify``) read a denial by this alone;
+    writing binds a self label to a principal before it asks. Slot versions supply target evidence to ``read_denial``.
     """
-    denial = read_denial(proposal)
+    values = tuple(v.payload for v in versions if v.state != "proposed")
+    denial = read_denial(proposal, values + (() if held is None else (held.payload,)))
     if denial is None:
         return None, False
     denies_held = held is not None and negates(proposal, held.payload)
     if held is not None and not denies_held:
         return DENIAL_REASON, False
-    owned = proposal["kind"] == "preference" or proposal["subject"] == human_owner(roots)
-    if owned and denial.names_a_value and not denial.contrast:
+    subject = proposal["subject"]
+    owned = proposal["kind"] == "preference" or subject == human_owner(roots) or subject.casefold() in SELF_SUBJECTS
+    if owned and not denial.contrast:
         return None, False
     return NOT_A_VALUE_REASON, denies_held
 
@@ -274,7 +285,7 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
     history = tx.claims.slot(scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
     held = select_effective(history, now) if history else None
-    denial_reason, ends_held = denial_verdict(proposal, held, roots)
+    denial_reason, ends_held = denial_verdict(proposal, held, roots, history)
     gated = qualification
     if denial_reason is not None and qualification.state != "proposed":
         qualification = Qualification("proposed", "inferred_suggestion", denial_reason)
@@ -289,7 +300,7 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
         None,
     )
     if identical is not None:
-        if _corroborated(tx, proposal, roots, identical, previous, qualification):
+        if _corroborated(tx, proposal, roots, identical, previous, qualification, denial_reason):
             promoted = Qualification("active", "direct_report", CORROBORATED_REASON)
             saved = tx.claims.append(
                 scope_id,
@@ -530,8 +541,14 @@ def _revision_proof(head, updated, authority: _Authority) -> str:
     return proof
 
 
-def _revision_qualification(tx, updated, proof: str, authority: _Authority) -> Qualification:
-    """The revised claim's qualification: a retraction is the person's report; a correction must qualify active."""
+#: What a correction refused because its value is a denial that is no value of its slot can do instead.
+_DENIAL_REVISION_HINT = "give the value that holds instead, or withdraw the claim with new_value null"
+
+
+def _revision_qualification(tx, updated, proof: str, authority: _Authority, held, versions) -> Qualification:
+    """The revised claim's qualification: a retraction is the person's report; a correction must qualify active and
+    be a value of its slot, given ``held``, the value the slot holds: a denial the denial rule keeps a proposal
+    (``denial_verdict``) is none."""
     roots = tx.claims.roots(evidence_refs(updated))
     roots = tuple(replace(root, content=evidence_context(root.content, proof)) for root in roots)
     if not all(grounded_time(updated[field], roots) for field in ("valid_from", "valid_to")):
@@ -553,6 +570,9 @@ def _revision_qualification(tx, updated, proof: str, authority: _Authority) -> Q
     # polarity, conditions, source identity or temporal checks.
     if qualification.state != "active":
         raise ContractError("DERIVATION_INVALID", qualification.reason)
+    denial_reason, _ends_held = denial_verdict(updated, held, roots, versions)
+    if denial_reason is not None:
+        raise ContractError("DERIVATION_INVALID", denial_reason, hint=_DENIAL_REVISION_HINT)
     return qualification
 
 
@@ -605,7 +625,9 @@ def _revise_in_transaction(tx, clock, request) -> Mutation:
         reference_proposals=[],
     )
     validate_claims(tx, result, head.scope_id)
-    qualification = _revision_qualification(tx, updated, proof, authority)
+    history = tx.claims.slot(head.scope_id, updated)
+    held = select_effective(history, clock.utc_now()) if history else None
+    qualification = _revision_qualification(tx, updated, proof, authority, held, history)
     return _record_revision(tx, clock, head, updated, qualification, request, authority)
 
 
@@ -768,7 +790,9 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
 
     Everything that makes it safe is in the targeting: the text must literally
     name the claim, and it must name exactly one.  A bare "记住" resolves to
-    nothing and is recorded as unresolved rather than guessed at.
+    nothing and is recorded as unresolved rather than guessed at.  So is a
+    denial the denial rule keeps a proposal (``denial_verdict``): adopted or
+    not, it is no value of its slot.
     """
     raw = source.event["content"]
     if source.event["origin"] != "human_direct" or source.capture_gaps or source.event["capture_state"] != "complete":
@@ -791,6 +815,11 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
             tx.claims.unresolved(source.ref, source.revision, tuple(v.ref for v in heads), recorded_at=clock.utc_now())
         return None
     target = matches[0]
+    versions = tx.claims.versions(target.ref)
+    held = select_effective(versions, clock.utc_now())
+    if denial_verdict(target.payload, held, tx.claims.roots(evidence_refs(target.payload)), versions)[0] is not None:
+        tx.claims.unresolved(source.ref, source.revision, (target.ref,), recorded_at=clock.utc_now())
+        return None
     payload = deepcopy(target.payload)
     spans = list(payload.get("evidence_spans") or ())
     # The confirmation is itself evidence: it is the record of who vouched.

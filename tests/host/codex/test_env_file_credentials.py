@@ -153,6 +153,9 @@ def _stub_hook_handler(monkeypatch, seen: dict[str, object]) -> None:
             seen["environment_at_handle"] = os.environ.get(KEY)
             return {}
 
+        def close(self) -> None:
+            return None
+
     monkeypatch.setattr(hook_entry.CodexHookHandler, "from_config_path", classmethod(lambda cls, *a, **k: Handler()))
     monkeypatch.setattr(hook_entry.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"{}")))
 

@@ -109,6 +109,14 @@ def is_reachable(processing_state: str, reason: str) -> bool:
     )
 
 
+def awaits_first_judgement(processing_state: str, last_evaluated_at: str | None) -> bool:
+    """Whether a candidate still waits for its first judgement: queued for evaluation and never evaluated, by the
+    evaluator or settled without it.  One the evaluator found insufficient waits for evidence, one asleep or waiting for
+    an absent person is archived, one deleted or suppressed is blocked, and one queued again for new evidence was
+    judged before."""
+    return processing_state == "pending_evaluation" and last_evaluated_at is None
+
+
 def is_live_head(row) -> bool:
     """The joined row still describes a current, readable, judgeable candidate."""
     return (

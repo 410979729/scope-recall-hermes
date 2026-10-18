@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import pytest
 from scope_recall.contracts import ContractError, TrustedContext, validate_payload
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.background_context import mark_background
 from scope_recall.core.events import lexical_terms
 from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.recall_diagnostics import RecallDiagnostics
@@ -28,6 +29,7 @@ from scope_recall.core.retrieval import CandidateRef, RetrievalResult, Retrieved
 from scope_recall.core.retrieval_storage import RetrievalStorage
 
 from tests.contract.test_claims import accept, capture, draft
+from tests.contract.test_episodes import apply, resume
 from tests.v11_support import context, recall_request
 
 
@@ -1673,6 +1675,212 @@ def test_p09_comparison_reduced_to_one_side_becomes_partial_not_supported(app):
     assert len(packet["items"]) <= 1
     assert packet["answerability"] in {"partial", "unknown"}
     assert "comparison_second_side" in packet["unmet_needs"] or packet["status"] == "partial"
+
+
+def _said(ref: str, content: str) -> RetrievedObject:
+    return RetrievedObject(
+        ref, 1, "event", content, "human_direct", "current", "trusted scope", (f"{ref}@1",), "direct_report", True
+    )
+
+
+def _compiled(core, ctx, query: str, found, *, gaps=(), **request):
+    """The packet compiled from a retrieval that found ``found``, (candidate source, object) pairs in rank order, for
+    ``query`` and noted ``gaps``; its verdict on the evidence is ``supported``."""
+    objects = {obj.ref: obj for _source, obj in found}
+
+    class Found(RetrievalStorage):
+        def hydrate(self, tx, candidate, context):
+            return objects.get(candidate.ref)
+
+    body = recall_request(query=query, mode="current", request_id="TEST-answerability", **request)
+    search = SearchContext.from_request(body, ctx, now=FixedClock.now, deadline=200.0)
+    candidates = tuple(
+        CandidateRef(obj.kind, obj.ref, obj.revision, source, fusion_score=0.9 - 0.01 * rank)
+        for rank, (source, obj) in enumerate(found)
+    )
+    items = tuple(mark_background(obj) if source == "background" else obj for source, obj in found)
+    result = RetrievalResult(
+        candidates,
+        items,
+        core.status(ctx).memory_epoch,
+        tuple(gaps),
+        "partial" if gaps else "unknown",
+        "supported",
+        len(found),
+        len(found),
+        request_id=body["request_id"],
+    )
+    return compile_recall_packet(
+        search, result, core.storage, storage_reader=Found(clock=FixedClock()), clock=FixedClock()
+    )
+
+
+@pytest.mark.parametrize(
+    ("gap", "answerability"),
+    [
+        ("coverage_truncated:packet_slots:6of9", "supported"),
+        ("coverage_truncated:background_slots:2of5", "supported"),
+        ("relation_bound_reached", "supported"),
+        ("duplicates_collapsed:3", "supported"),
+        ("vector_unavailable", "supported"),
+        ("deadline_exceeded_relation", "partial"),
+        ("sqlite_candidate_error:OperationalError", "partial"),
+    ],
+)
+def test_only_a_gap_that_can_leave_the_answer_incomplete_makes_it_partial(app, gap, answerability):
+    """Candidates past the packet's slots, background past its own, the relation bound, folded duplicates and an
+    absent vector channel leave the answer delivered as whole as it was; an unfinished read may have missed part of
+    it.  Either way the gap stays in the packet, and so does the partial coverage it reports."""
+    core, ctx = app
+    answer = _said("event-orchard-port", "The Orchard staging database port is 6543.")
+    packet = _compiled(core, ctx, "What is the staging database port for Orchard?", [("lexical", answer)], gaps=[gap])
+    assert [item["ref"] for item in packet["items"]] == [answer.ref]
+    assert packet["answerability"] == answerability
+    assert gap in packet["gaps"]
+    assert packet["coverage"] == "partial"
+
+
+def test_answer_evidence_the_budget_cuts_leaves_the_answer_partial_and_background_it_cuts_does_not(app):
+    core, ctx = app
+    question = "What is the staging database port for Orchard?"
+    answer = _said("event-orchard-port", "The Orchard staging database port is 6543.")
+    more = _said("event-orchard-moved", "We moved the Orchard staging database port to 6543 last spring.")
+    ambient = _said("event-ambient", "Keep replies short.")
+    cut_evidence = _compiled(core, ctx, question, [("lexical", answer), ("lexical", more)], max_items=1)
+    assert [item["ref"] for item in cut_evidence["items"]] == [answer.ref]
+    assert cut_evidence["answerability"] == "partial"
+    cut_background = _compiled(core, ctx, question, [("lexical", answer), ("background", ambient)], max_items=1)
+    assert [item["ref"] for item in cut_background["items"]] == [answer.ref]
+    assert f"budget_item_cap:{ambient.ref}@1" in cut_background["gaps"]
+    assert cut_background["answerability"] == "supported"
+
+
+@pytest.mark.parametrize(
+    ("said", "other", "same"),
+    [
+        (
+            "The Orchard staging database port is 6543.",
+            "What is the staging database port for Lantern?",
+            "What is the staging database port for Orchard?",
+        ),
+        ("Orchard 的预发数据库端口是 6543。", "Lantern 的预发数据库端口是多少？", "Orchard 的预发数据库端口是多少？"),
+    ],
+)
+def test_a_question_naming_what_no_item_mentions_is_unknown(app, said, other, same):
+    """Another project's value shares every word of the question but the name it asks about, and answers nothing."""
+    core, ctx = app
+    source = capture(core, ctx, said, key="TEST-answerability/said")
+    unanswered = _packet(core, ctx, query=other, mode="current", request_id="TEST-answerability-other")
+    assert source.ref in [item["ref"] for item in unanswered["items"]]
+    assert unanswered["answerability"] == "unknown"
+    answered = _packet(core, ctx, query=same, mode="current", request_id="TEST-answerability-same")
+    assert [item["ref"] for item in answered["items"]] == [source.ref]
+    assert answered["answerability"] == "supported"
+
+
+@pytest.mark.parametrize(
+    ("said", "origin", "question"),
+    [
+        (
+            "If we split the Lantern cluster, the Lantern staging database port would become 7012.",
+            "human_direct",
+            "What is the staging database port for Lantern?",
+        ),
+        (
+            'The old runbook says "Lantern staging database port: 7012", but that page is out of date.',
+            "human_direct",
+            "What is the staging database port for Lantern?",
+        ),
+        (
+            "I think the Lantern staging database port is 7012, but I have not checked.",
+            "assistant_visible",
+            "What is the staging database port for Lantern?",
+        ),
+        (
+            "What is the staging database port for Lantern?",
+            "human_direct",
+            "What is the staging database port for Lantern?",
+        ),
+        (
+            "假如以后把 Lantern 的预发集群拆开，预发数据库端口就会变成 7012。",
+            "human_direct",
+            "Lantern 的预发数据库端口是多少？",
+        ),
+        (
+            "老运维手册上写着“Lantern 预发数据库端口：7012”，不过那页早就过时了。",
+            "human_direct",
+            "Lantern 的预发数据库端口是多少？",
+        ),
+    ],
+)
+def test_a_supposition_a_quotation_a_guess_or_a_question_alone_answers_nothing(app, said, origin, question):
+    """Recalled, each names what the question asks about, but none is the owner saying it holds: a supposition, words
+    in quotation marks, an assistant's guess, the question asked before."""
+    core, ctx = app
+    source = capture(core, ctx, said, origin=origin, key="TEST-answerability/unasserted")
+    packet = _packet(core, ctx, query=question, mode="current", request_id="TEST-answerability-unasserted")
+    assert source.ref in [item["ref"] for item in packet["items"]]
+    assert packet["answerability"] == "unknown"
+
+
+def test_a_claim_and_the_message_it_was_drawn_from_are_one_answer_not_a_choice(app):
+    """A question that asks to choose is ambiguous when what answers it rests on more than one source; a claim and the
+    message it was drawn from say one thing once."""
+    core, ctx = app
+    source = capture(core, ctx, "We picked the blue colour scheme for Orchard.", key="TEST-answerability/choice-said")
+    accept(core, ctx, draft(source, "blue", subject="Orchard", predicate="colour scheme"))
+
+    def asked():
+        body = recall_request(
+            query="Which colour scheme did we pick for Orchard?", mode="current", request_id="TEST-answerability-choice"
+        )
+        return core.recall(ctx, body, deadline_seconds=5)
+
+    once = asked()
+    assert sorted(item.kind for item in once.items) == ["claim", "event"]
+    assert once.answerability_hint == "supported"
+    capture(core, ctx, "We also tried the red colour scheme for Orchard.", key="TEST-answerability/choice-other")
+    assert asked().answerability_hint == "ambiguous"
+
+
+@pytest.mark.parametrize(
+    ("said", "question", "answerability"),
+    [
+        ("Orchard keeps its staging database on port 6543.", "what port is the redis staging database on?", "partial"),
+        ("我的护照放在书房的抽屉里，护照的有效期到明年三月。", "我的护照号码是多少？", "partial"),
+        (
+            "Orchard keeps its staging database on port 6543.",
+            "What port is the Orchard staging database on?",
+            "supported",
+        ),
+    ],
+)
+def test_a_packet_is_supported_only_when_its_evidence_was_held_to_what_the_question_names(
+    app, said, question, answerability
+):
+    """A question that names nothing, in lower case or in Chinese without a Latin word, cannot be held to what its
+    evidence names: whatever matched it is partial, another project's port or a passport's drawer among it.  Named,
+    what names it is supported."""
+    core, ctx = app
+    source = capture(core, ctx, said, key="TEST-answerability/judged")
+    packet = _packet(core, ctx, query=question, mode="current", request_id="TEST-answerability-judged")
+    assert [item["ref"] for item in packet["items"]] == [source.ref]
+    assert packet["answerability"] == answerability
+
+
+def test_asked_to_resume_a_task_its_grounded_resume_answers_by_naming_it(app):
+    """The person called the work moving Orchard.  Asked to continue the Orchard migration, the grounded task's resume
+    answers by naming Orchard, though neither it nor the message says migration."""
+    core, ctx = app
+    ctx = replace(ctx, task_anchor="TEST-answerability-task")
+    said = "We are moving Orchard to the new cluster; the database is done and the cache is not."
+    source = capture(core, ctx, said, key="TEST-answerability/resume-said")
+    refs = [f"{source.ref}@{source.revision}"]
+    apply(core, ctx, resumes=[resume(source, open_items=[{"text": "the cache is not", "evidence_refs": refs}])])
+    resumed = _packet(core, ctx, query="Continue the Orchard migration", mode="auto", request_id="TEST-resume")
+    assert sorted(item["kind"] for item in resumed["items"]) == ["episode", "event"]
+    assert resumed["unmet_needs"] == []
+    assert resumed["answerability"] == "supported"
 
 
 def test_p09_renderer_dedupes_same_installation_session_request(app):

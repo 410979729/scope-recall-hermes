@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import io
+import json
 import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
+from scope_recall.adapters.clients import CodexHookHandler, hook_entry, install_codex_scope_recall
 from scope_recall.adapters.clients import handler as handler_module
 from scope_recall.adapters.clients.handler import _TOTAL_BUDGET_S
 from scope_recall.core.capture_inbox import replay_inbox
@@ -113,3 +115,61 @@ def test_runtime_wait_uses_only_hook_time_left(codex_install, monkeypatch, meter
             )
     finally:
         handler.close()
+
+
+def _entry(monkeypatch, config, raw: bytes, closed: list, made: list, *, handle=None) -> int:
+    """Run the hook entry and record handlers it built and ``close`` calls it made."""
+    real_close = CodexHookHandler.close
+    real_from = CodexHookHandler.from_config_path.__func__
+
+    def spy(self):
+        closed.append(self)
+        real_close(self)
+
+    def capturing(cls, *args, **kwargs):
+        handler = real_from(cls, *args, **kwargs)
+        made.append(handler)
+        return handler
+
+    monkeypatch.setattr(CodexHookHandler, "close", spy)
+    monkeypatch.setattr(CodexHookHandler, "from_config_path", classmethod(capturing))
+    if handle is not None:
+        monkeypatch.setattr(CodexHookHandler, "handle_bytes", handle)
+    monkeypatch.setattr(hook_entry.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(raw)))
+    try:
+        return hook_entry.main(["--config", str(config.config_path)])
+    finally:
+        for handler in made:
+            if handler not in closed:
+                real_close(handler)
+
+
+def test_hook_entry_closes_handler_after_a_handled_event(codex_install, monkeypatch, capsys):
+    config, _core, project, _path = codex_install
+    closed, made = [], []
+    raw = json.dumps(
+        {"hook_event_name": "SessionEnd", "session_id": "TEST-session", "cwd": str(project), "reason": "exit"}
+    ).encode()
+    assert _entry(monkeypatch, config, raw, closed, made) == 0
+    assert closed and closed == made
+    assert capsys.readouterr().out.strip().startswith("{")
+
+
+def test_hook_entry_closes_handler_when_handling_raises(codex_install, monkeypatch):
+    config, _core, _project, _path = codex_install
+    closed, made = [], []
+
+    def exploded(self, raw):
+        raise RuntimeError("TEST entry failed")
+
+    with pytest.raises(RuntimeError, match="TEST entry failed"):
+        _entry(monkeypatch, config, b"{}", closed, made, handle=exploded)
+    assert closed and closed == made
+
+
+def test_hook_entry_closes_handler_when_input_is_too_large(codex_install, monkeypatch, capsys):
+    config, _core, _project, _path = codex_install
+    closed, made = [], []
+    assert _entry(monkeypatch, config, b"x" * 65537, closed, made) == 0
+    assert closed and closed == made
+    assert "input_too_large" in capsys.readouterr().err

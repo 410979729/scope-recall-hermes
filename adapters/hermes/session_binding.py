@@ -1,6 +1,7 @@
 """Which session the Hermes adapter speaks for: the one Hermes opens (``initialize``), the one it switches to
-(``on_session_switch``), and the line a desktop or tui session bound to no scope says in the host's log.  It works on
-the adapter's state under the adapter's lock (``self._adapter``)."""
+(``on_session_switch``), and what a local session bound to no scope says: a line in the host's log, and for the owner's
+a record ``doctor`` reads (``unbound_sessions``).  It works on the adapter's state under the adapter's lock
+(``self._adapter``)."""
 
 from __future__ import annotations
 
@@ -10,10 +11,11 @@ from typing import TYPE_CHECKING, Any
 
 from scope_recall.core import CoreConfig, MemoryCore
 
-from .audiences import LOCAL_PLATFORMS
+from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID
 from .capture import CAPTURE_TIMEOUT_S
 from .identity import (
     HermesIdentity,
+    LocalSurfaceUnapproved,
     assert_same_installation,
     bind_hermes_identity,
     switch_hermes_identity,
@@ -21,6 +23,7 @@ from .identity import (
 )
 from .installation import assert_core_binding_matches
 from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, attach_trusted_host_runtime
+from .unbound_sessions import note_owner_session
 
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
@@ -58,7 +61,17 @@ class SessionBinding:
         self._unbound_route: tuple[str, ...] | None = None
 
     def bind(self, session_id: str, **kwargs) -> None:
-        fresh = bind_hermes_identity(session_id, **kwargs)
+        try:
+            fresh = bind_hermes_identity(session_id, **kwargs)
+        except LocalSurfaceUnapproved as refused:
+            # The owner's session there, refused for want of the surface's approval, keeps nothing either.
+            note_owner_session(
+                refused.data_directory,
+                entry_id=refused.entry_id,
+                platform=refused.platform,
+                gaps=("capability_gap:local_surface_unapproved",),
+            )
+            raise
         with self._adapter._lock:
             assert_same_installation(self._adapter._identity, fresh)
             runtime_path = kwargs.get("trusted_runtime_config_path") or fresh.runtime_config_path
@@ -112,7 +125,7 @@ class SessionBinding:
             # to write (``CaptureRetry.load_kept``).
             self._adapter._retry.load_kept()
             self._unbound_route = None
-            self._say_if_unbound(fresh)
+            self._report_unbound(fresh)
             from .hooks import update_adapter_binding
 
             update_adapter_binding(self._adapter)
@@ -156,7 +169,7 @@ class SessionBinding:
             )
         )
         self._adapter._worker_launch_gaps = ()
-        self._say_if_unbound(fresh)
+        self._report_unbound(fresh)
         if self._adapter._host_runtime is not None:
             self._adapter._host_runtime.rebind_session(new_session_id, fresh.writable_scope_ids)
         from .hooks import update_adapter_binding
@@ -166,21 +179,34 @@ class SessionBinding:
             self._adapter._turn_counter = 0
         self._adapter._session_watermark += 1
 
-    def _say_if_unbound(self, identity: HermesIdentity) -> None:
-        """Say once per session, in the host's log, that a desktop or tui session binds no scope.
+    def _report_unbound(self, identity: HermesIdentity) -> None:
+        """Say once per session, in the host's log, that a local session binds no scope, and keep the owner's where
+        ``doctor`` reads it, until a session of theirs on that surface binds.
 
         Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this adapter's
-        diagnostics, so without this line a Desktop login's sessions could write nothing for days with nothing
-        to say so.  A gateway chat left unmapped is the owner's choice and says nothing: a line for each would
-        name its users, some by phone number.  The platform, the login and the gap codes only, never what was
-        said, and nothing a login could make into a line of its own.
+        diagnostics, so without the line a Desktop login's sessions could write nothing for days with nothing
+        to say so, and without the record no ``doctor`` would know of the owner's.  A local session is a Desktop or
+        ``hermes --tui`` one, or the owner's at the CLI.  A gateway chat left unmapped is the owner's choice and says
+        nothing: a line for each would name its users, some by phone number.  The platform, the login and the gap
+        codes only, never what was said, and nothing a login could make into a line of its own.
         """
         scope = identity.scope
-        if (
-            scope.platform not in LOCAL_PLATFORMS
-            or scope.agent_context != "primary"
-            or identity.runtime_audience.allowed_scope_ids
-        ):
+        owner = scope.user_id == LOCAL_USER_ID
+        local = scope.platform in LOCAL_PLATFORMS or (
+            scope.platform == "cli" and owner and not scope.gateway_session_key
+        )
+        if not local or scope.agent_context != "primary":
+            self._unbound_route = None
+            return
+        bound = bool(identity.runtime_audience.allowed_scope_ids)
+        if owner:
+            note_owner_session(
+                identity.manifest.data_directory,
+                entry_id=scope.entry_id,
+                platform=scope.platform,
+                gaps=None if bound else identity.runtime_audience.capability_gaps,
+            )
+        if bound:
             self._unbound_route = None
             return
         route = (scope.platform, scope.user_id, scope.chat_type, scope.chat_id, scope.thread_id, scope.agent_workspace)
@@ -194,7 +220,7 @@ class SessionBinding:
             scope.platform,
             scope.user_id[:120],
             ", ".join(identity.runtime_audience.capability_gaps),
-            unbound_session_hint(scope),
+            unbound_session_hint(scope.platform, scope.user_id, shared_entry=bool(scope.entry_id)),
         )
         _log.warning("%s", "".join(character for character in said if character.isprintable()))
 
@@ -234,10 +260,15 @@ class SessionBinding:
                 gaps = (GAP_WORKER_LAUNCH_FAILED,)
             self.replace_worker_launch_gaps(gaps)
 
-    def end(self, messages: list[dict[str, Any]]) -> None:
+    def end(self, messages: list[dict[str, Any]], *, deadline: float) -> None:
+        """Write pending captures on ``deadline`` and wake the worker on its own budget.
+
+        ``deadline`` is the capture pass ``on_session_end`` already started. ``write_observed`` spends what is
+        left and does not open another. The launch below is not that pass.
+        """
         identity = self._adapter._require_identity()
         self._adapter._session_watermark += 1
-        self._adapter._retry.write_observed()
+        self._adapter._retry.write_observed(deadline=deadline)
         self.bounded_message_gaps(messages, hook="on_session_end")
         if identity.read_only:
             return

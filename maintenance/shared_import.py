@@ -29,8 +29,12 @@ Three things cannot be copied as they are.
 
 A fact whose slot the shared store already fills is not imported, nor are its
 candidate rows: the first store imported keeps the slot, and the receipt names
-what was left out.  Its sources are imported like every other.  Work history is not copied; pending
-work is, as new work.  A store already imported for the entry is refused.
+what was left out.  Its sources are imported like every other.  A fact whose
+head the source store took for its value though it is a denial ("not
+CircleCI") is settled in the same transaction as ``restore-displaced-values``
+settles it, and the receipt counts them (``denials_settled``).  Work history is
+not copied; pending work is, as new work.  A store already imported for the
+entry is refused.
 """
 
 from __future__ import annotations
@@ -48,10 +52,13 @@ from typing import Any, Callable, Iterator
 from urllib.request import pathname2url
 
 from ..adapters.hermes.shared_entries import read_shared_payload
+from ..contracts import InstanceBinding, TrustedContext
 from ..core import lexical_index
 from ..core.delete_storage import group_digest
 from ..core.events import indexed_terms, withheld_tool_output
+from ..core.requalify import settle_brought_denials
 from ..core.schema import SCHEMA_VERSION
+from ..core.storage import Transaction
 from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
 from ..runtime.running_code import live_records
@@ -518,6 +525,33 @@ def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
     return len(rows)
 
 
+def _brought_in(conn, src, names: _Names, *, payload: dict[str, Any], root: Path, now: str) -> dict:
+    """Copy the source store's rows (``_import_rows``), then settle the facts it brought whose head is a denial it took
+    for its slot's value, in the same transaction (``settle_brought_denials``), counted as ``denials_settled``."""
+    copied = _import_rows(
+        conn,
+        src,
+        names,
+        store_installation=payload["installation_id"],
+        store_scopes=frozenset(payload["scope_ids"]),
+        now=now,
+    )
+    left_out = {item["claim_id"] for item in copied["claims_left_out"]}
+    brought = [row[0] for row in src.execute("SELECT claim_id FROM claims") if row[0] not in left_out]
+    copied["counts"]["denials_settled"] = 0
+    if brought:
+        scopes = frozenset(row[0] for row in src.execute("SELECT DISTINCT scope_id FROM claims"))
+        binding = InstanceBinding(
+            payload["agent_id"], payload["installation_id"], root.resolve(), scopes, payload["test_mode"], "shared"
+        )
+        tx = Transaction(conn, TrustedContext(binding, "import-entry", scopes, "host_generated"), writable=True)
+        try:
+            copied["counts"]["denials_settled"] = settle_brought_denials(tx, brought, now=now)
+        finally:
+            tx._finish()
+    return copied
+
+
 def import_entry(
     *, root: Path, entry_id: str, source: Path, dry_run: bool = False, now: str | None = None
 ) -> dict[str, Any]:
@@ -574,16 +608,7 @@ def _imported(*, root: Path, entry_id: str, source: Path, dry_run: bool, now: st
                 if live_records(root):
                     raise SharedStoreError("a host or the worker still has the shared store open; stop them first")
                 try:
-                    result.update(
-                        _import_rows(
-                            conn,
-                            src,
-                            names,
-                            store_installation=payload["installation_id"],
-                            store_scopes=frozenset(payload["scope_ids"]),
-                            now=now,
-                        )
-                    )
+                    result.update(_brought_in(conn, src, names, payload=payload, root=root, now=now))
                 except sqlite3.IntegrityError as exc:
                     # Only sources are renamed; any other id the store already holds is refused, not guessed at.
                     raise SharedStoreError(f"the source cannot be imported as it is: {exc}") from None

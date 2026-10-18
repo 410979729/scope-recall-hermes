@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
+import sys
 from dataclasses import asdict, dataclass
+from functools import cache
 from pathlib import Path
 from typing import Mapping, cast
 
@@ -31,6 +35,25 @@ from .shared_entries import load_binding_for_home
 
 _NON_PRIMARY_CONTEXTS = frozenset({"subagent", "cron", "flush"})
 _UNATTESTED_HUMAN_PLATFORMS = frozenset({"a2a"})
+#: The session key Hermes's gateway gives a conversation its local session transport runs:
+#: ``agent:<profile>:local:dm:<chat id>``.  A profile id holds no colon (``main`` is the default profile's namespace,
+#: ``main~`` the one of a profile named ``main``).
+_TRANSPORT_SESSION_KEY = re.compile(r"agent:[^:]+:local:dm:(?P<chat>.+)")
+#: ``OpenProcessToken``'s ``TOKEN_QUERY`` right and ``GetTokenInformation``'s ``TokenUser`` class.
+_TOKEN_QUERY = 0x0008
+_TOKEN_USER = 1
+
+
+class LocalSurfaceUnapproved(HermesIdentityError):
+    """A session that names no user on a local surface this installation does not approve, refused with what approves
+    it.  It names the store and the entry it was refused for, so the session binding can keep the refusal where
+    ``doctor`` reads it (``unbound_sessions``)."""
+
+    def __init__(self, message: str, *, platform: str, data_directory: Path, entry_id: str) -> None:
+        super().__init__(message)
+        self.platform = platform
+        self.data_directory = data_directory
+        self.entry_id = entry_id
 
 
 def _opaque_ref(prefix: str, *parts: str) -> str:
@@ -63,7 +86,11 @@ def _normalize_platform(value: object) -> str:
 
 
 def _normalize_user_id(
-    platform: str, user_id: object, user_id_alt: object, local_platforms: frozenset[str] = frozenset()
+    platform: str,
+    user_id: object,
+    user_id_alt: object,
+    manifest: InstallationManifest,
+    local_platforms: frozenset[str],
 ) -> str:
     primary = str(user_id or "").strip()
     alternate = str(user_id_alt or "").strip()
@@ -77,12 +104,84 @@ def _normalize_user_id(
     # else it is nobody's, and is refused.
     if resolved or platform == "cli" or platform in local_platforms:
         return resolved or LOCAL_USER_ID
-    hint = (
-        f"; approve it as the owner's local surface with apply-install --local-platform {platform}"
-        if platform in LOCAL_PLATFORMS
-        else ""
+    if platform not in LOCAL_PLATFORMS:
+        raise HermesIdentityError("user principal required for non-cli platform")
+    raise LocalSurfaceUnapproved(
+        "user principal required for non-cli platform; "
+        + unbound_session_hint(platform, LOCAL_USER_ID, shared_entry=manifest.entry_id is not None),
+        platform=platform,
+        data_directory=manifest.data_directory,
+        entry_id=manifest.entry_id or "",
     )
-    raise HermesIdentityError("user principal required for non-cli platform" + hint)
+
+
+@cache
+def host_account_principal() -> str | None:
+    """How Hermes's local session transport names a peer that runs as this process's own OS account, or ``None`` when
+    the account cannot be read.
+
+    The transport takes a peer's account from the OS, never from the peer: on Windows the user SID of the named pipe
+    client's token (``sid:<SID>``), elsewhere the socket peer's uid (``uid:<uid>``).  It serves no peer of another
+    account, and a peer may name anyone else only in a dashboard login's form (``auth:v1:[...]``).  The agent, and this
+    adapter with it, runs in the gateway's process, so a session that names this account comes from the gateway's own
+    account: the person at this machine, whom the CLI takes for the owner.
+    """
+    if sys.platform != "win32":
+        return f"uid:{os.getuid()}"
+    sid = _windows_account_sid()
+    return f"sid:{sid}" if sid else None
+
+
+def _windows_account_sid() -> str | None:
+    """This process's user SID (its token's ``TokenUser``) as ``ConvertSidToStringSidW`` writes it, or ``None``."""
+    if sys.platform != "win32":
+        return None
+    import ctypes  # Windows only, and only once a conversation of the transport binds.
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(token)):
+        return None
+    try:
+        size = wintypes.DWORD()
+        advapi.GetTokenInformation(token, _TOKEN_USER, None, 0, ctypes.byref(size))
+        buffer = ctypes.create_string_buffer(size.value)
+        if not advapi.GetTokenInformation(token, _TOKEN_USER, buffer, size, ctypes.byref(size)):
+            return None
+        # A TOKEN_USER opens with its SID's address (``User.Sid``).
+        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        text = wintypes.LPWSTR()
+        if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            return None
+        try:
+            return text.value
+        finally:
+            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+    finally:
+        kernel.CloseHandle(token)
+
+
+def _names_this_account(user_id: object) -> bool:
+    account = host_account_principal()
+    return account is not None and str(user_id or "").strip() == account
 
 
 def _normalize_chat_type(value: object) -> str:
@@ -278,20 +377,26 @@ def host_scope_payload(scope: HermesRuntimeScope) -> dict[str, str]:
     return payload
 
 
-def unbound_session_hint(scope: HermesRuntimeScope) -> str:
-    """What the operator can do about a session that binds no scope; it names the route, never what was said."""
-    if scope.platform in LOCAL_PLATFORMS and scope.user_id == LOCAL_USER_ID:
-        hint = f"approve the surface with apply-install --local-platform {scope.platform}"
-    elif scope.platform in LOCAL_PLATFORMS:
-        hint = (
-            "if this login is the owner's own, approve it with apply-install "
-            f"--owner-login {scope.platform}={scope.user_id[:240]}"
-        )
-    else:
-        hint = "a route is granted by an exact audience row in installation.json (docs/install.md)"
-    if scope.entry_id:
-        hint += "; a shared store entry's rows are changed with scope-recall grants"
-    return hint
+def unbound_session_hint(platform: str, user_id: str, *, shared_entry: bool) -> str:
+    """What the operator can do about a session on ``platform`` for ``user_id`` that binds no scope.
+
+    ``apply-install`` approves the owner's local surface, and a login on one as the owner's own.  An entry of a shared
+    store keeps its grants in the store's manifest, which ``apply-install`` refuses to write: there the owner principal
+    and its row are added with ``scope-recall grants``.  Any other route is granted by an exact audience row.  It names
+    the route, never what was said.
+    """
+    if platform in LOCAL_PLATFORMS:
+        owner = user_id == LOCAL_USER_ID
+        login = user_id[:240]
+        if shared_entry:
+            add = f"add the owner principal ({platform}, {login}) and its owner_private row with scope-recall grants"
+            return add if owner else f"if this login is the owner's own, {add}"
+        if owner:
+            return f"approve the surface with apply-install --local-platform {platform}"
+        return f"if this login is the owner's own, approve it with apply-install --owner-login {platform}={login}"
+    if shared_entry:
+        return "a shared store entry's routes are granted by exact audience rows, changed with scope-recall grants"
+    return "a route is granted by an exact audience row in installation.json (docs/install.md)"
 
 
 def trusted_source_context(scope: HermesRuntimeScope) -> SourceContext | None:
@@ -309,6 +414,7 @@ def _route_matches(row: Mapping[str, object], route: Mapping[str, str]) -> bool:
     exact empty key would fail every gateway route closed.  A row that names a key still
     matches only that key.  The CLI sends none, so a CLI row is never relaxed: Hermes reports a
     relayed ``local`` gateway session to plugins as ``cli``, with its key, and that is not the CLI.
+    A conversation of its local session transport reaches this with no key (``_transport_conversation``).
     """
     unpinned = row.get("gateway_session_key") == "" and route.get("platform") != "cli"
     return all(
@@ -454,6 +560,35 @@ def _chat_route(platform: str, user_id: str, local_platforms, kwargs: dict) -> t
     return chat_type, chat_id, thread_id
 
 
+def _transport_conversation(platform: str, kwargs: dict) -> bool:
+    """Whether the chat a session names is a conversation Hermes's local session transport runs.
+
+    The gateway runs the conversations of Hermes Desktop, ``hermes --tui`` and the CLI itself, and names each as a
+    direct chat of its own: ``chat_type`` ``dm``, the conversation's id as ``chat_id`` (``local-<64 hex>``, or the id a
+    conversation from before the transport kept), the session key ``agent:<profile>:local:dm:<chat id>`` and no
+    thread.  That chat is the window someone types into, not a route a grant could name.
+    """
+    chat_id = str(kwargs.get("chat_id") or "").strip()
+    key = _TRANSPORT_SESSION_KEY.fullmatch(str(kwargs.get("gateway_session_key") or "").strip())
+    return (
+        (platform == "cli" or platform in LOCAL_PLATFORMS)
+        and _normalize_chat_type(kwargs.get("chat_type")) == "dm"
+        and not str(kwargs.get("thread_id") or "").strip()
+        and key is not None
+        and bool(chat_id)
+        and key["chat"] == chat_id
+    )
+
+
+def _conversation_route(platform: str, user_id: str) -> tuple[str, str, str]:
+    """The route of a conversation of the transport: the CLI's or the local surface's, as the installer's grants
+    declare them, for the person at this machine; for anyone else a one-to-one chat with them, as a dashboard login
+    that names no chat is routed."""
+    if platform == "cli" and user_id == LOCAL_USER_ID:
+        return "cli", LOCAL_USER_ID, "main"
+    return "private", user_id, "main"
+
+
 def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
     """Read-only bind from an existing trusted installation manifest and host kwargs."""
 
@@ -467,16 +602,29 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
 
     platform = _normalize_platform(kwargs.get("platform"))
     local_platforms = approved_local_platforms(manifest.owner_principals)
-    user_id = _normalize_user_id(platform, kwargs.get("user_id"), kwargs.get("user_id_alt"), local_platforms)
+    conversation = _transport_conversation(platform, kwargs)
+    if conversation and _names_this_account(kwargs.get("user_id")):
+        # The person at this machine, bound as a session that names no user is on these surfaces.  Named, though, it
+        # is somebody, the owner: where the installer approved no grant it binds no scope, as a login nobody approved
+        # does, and is not refused.
+        user_id = LOCAL_USER_ID
+    else:
+        user_id = _normalize_user_id(
+            platform, kwargs.get("user_id"), kwargs.get("user_id_alt"), manifest, local_platforms
+        )
     agent_identity, agent_workspace, agent_context = _agent_fields(kwargs, manifest)
-    chat_type, chat_id, thread_id = _chat_route(platform, user_id, local_platforms, kwargs)
+    if conversation:
+        chat_type, chat_id, thread_id = _conversation_route(platform, user_id)
+    else:
+        chat_type, chat_id, thread_id = _chat_route(platform, user_id, local_platforms, kwargs)
     scope = HermesRuntimeScope(
         platform=platform,
         user_id=user_id,
         chat_type=chat_type,
         chat_id=chat_id,
         thread_id=thread_id,
-        gateway_session_key=str(kwargs.get("gateway_session_key") or "").strip(),
+        # The transport builds the key from the conversation alone, so it names no route either.
+        gateway_session_key="" if conversation else str(kwargs.get("gateway_session_key") or "").strip(),
         agent_identity=agent_identity,
         agent_workspace=agent_workspace,
         agent_context=agent_context,

@@ -670,8 +670,10 @@ actor, scope and occurrence time. The next adapter start loads them and wakes
 the retry thread; replay checks the installation and current grants before
 SQLite admits them. A file is removed only after persistence, durable inbox
 acceptance or a terminal refusal, including revoked authorization. Unreadable
-files remain for inspection and produce a warning. Failed spool writes report
-the failure; shutdown and retry expiry retain captures already in the buffer. Include this directory when
+files remain for inspection and produce a warning. Shutdown reports captures it
+could not persist with `pending_capture_status` `unpersisted` and
+`pending_capture_durability` `memory_only`. Those in-memory copies cannot be
+recovered after the process exits. Include this directory when
 backing up pending host captures; SQLite remains the authority for admitted
 memory. The spool holds at most 256 files, each with at most 256 KiB of event
 data plus 64 KiB of envelope metadata.

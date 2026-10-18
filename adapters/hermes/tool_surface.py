@@ -226,16 +226,26 @@ def _unfenced_turn_packet(request_id: str) -> dict[str, Any]:
     }
 
 
-def _error_output(code: str, field: str, *, request_id: str, origin: str, capability_gaps: tuple[str, ...] = ()) -> str:
-    # Error output deliberately carries only the public contract code/field;
-    # exception text could disclose a private ref, scope, or filesystem path.
+def _error_output(
+    code: str,
+    field: str,
+    *,
+    request_id: str,
+    origin: str,
+    capability_gaps: tuple[str, ...] = (),
+    hint: str | None = None,
+) -> str:
+    # Error output deliberately carries only the public contract code/field and
+    # the refusal's own fixed hint; exception text could disclose a private
+    # ref, scope, or filesystem path.
+    error = {"code": code, "field": field} if hint is None else {"code": code, "field": field, "hint": hint}
     return _dumps(
         {
             "protocol_version": PROTOCOL_VERSION,
             "request_id": request_id,
             "origin": origin,
             "capability_gaps": list(capability_gaps),
-            "error": {"code": code, "field": field},
+            "error": error,
         }
     )
 
@@ -293,12 +303,14 @@ class HermesToolSurface:
         origin, gaps = self._tool_origin_and_gaps()
         return _dumps(envelope(request_id, result, origin=origin, capability_gaps=gaps, zone=display_zone()))
 
-    def _error_reply(self, code: str, field: str, request_id: str, *, memory_result: bool = True) -> str:
+    def _error_reply(
+        self, code: str, field: str, request_id: str, *, memory_result: bool = True, hint: str | None = None
+    ) -> str:
         try:
             origin, gaps = self._tool_origin_and_gaps(memory_result=memory_result)
         except (ContractError, HermesIdentityError):
             origin, gaps = "origin_unknown", ()
-        return _error_output(code, field, request_id=request_id, origin=origin, capability_gaps=gaps)
+        return _error_output(code, field, request_id=request_id, origin=origin, capability_gaps=gaps, hint=hint)
 
     def _handle_recall(self, args: object) -> str:
         body = self._tool_body(args, "recall")
@@ -442,7 +454,7 @@ class HermesToolSurface:
         try:
             return handler(self, args)
         except ContractError as exc:
-            return self._error_reply(exc.code, exc.field, request_id)
+            return self._error_reply(exc.code, exc.field, request_id, hint=exc.hint)
         except HermesIdentityError:
             return _error_output("ACCESS_DENIED", "identity", request_id=request_id, origin="origin_unknown")
         except (OSError, RuntimeError):
