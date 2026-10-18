@@ -5,13 +5,23 @@ Hermes Desktop's chat panel and ``hermes --tui`` hand a memory provider the dash
 ``tui``).  Only what the installation manifest approves is bound, so every such session fails
 with ``user principal required for non-cli platform`` and the provider does not initialise.
 The approval is the installer's: ``apply-install --local-platform desktop``.
+
+Through Hermes's local session transport the gateway runs those conversations, and the CLI's, itself.
+It names the account the OS says the client runs as (``sid:<SID>``, ``uid:<uid>``), and only this
+gateway's own; each conversation is a direct chat of its own (``chat_id`` ``local-<64 hex>``) under
+the session key ``agent:<profile>:local:dm:<chat id>``.  That account is the person at this machine,
+bound as an unnamed session there is; the conversation is never a route.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sqlite3
+import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from scope_recall.adapters.hermes import (
@@ -19,8 +29,10 @@ from scope_recall.adapters.hermes import (
     ScopeRecallHermesAdapter,
     bind_hermes_identity,
     install_hermes_scope_recall,
+    unbound_sessions,
 )
-from scope_recall.adapters.hermes.audiences import normalize_local_platforms, normalize_owner_logins
+from scope_recall.adapters.hermes import identity as hermes_identity
+from scope_recall.adapters.hermes.audiences import audience_entry, normalize_local_platforms, normalize_owner_logins
 from scope_recall.adapters.hermes.identity import switch_hermes_identity
 from scope_recall.adapters.hermes.installation import (
     approve_local_platforms,
@@ -30,6 +42,9 @@ from scope_recall.adapters.hermes.installation import (
     unapproved_local_platforms,
     write_installation_manifest,
 )
+from scope_recall.adapters.hermes.shared_entries import attach_shared_entry, new_shared_payload, write_shared_payload
+from scope_recall.maintenance import doctor
+from scope_recall.maintenance import shared as shared_cli
 
 
 def _install(hermes_home, initialize_kwargs, **options):
@@ -351,3 +366,558 @@ def test_a_platform_that_names_its_chats_keeps_the_route_it_sent(hermes_home, in
         **_session(initialize_kwargs, "desktop", user_id=LOGIN, chat_type="group", chat_id="TEST-room"),
     )
     assert (named.scope.chat_type, named.scope.chat_id, named.scope.thread_id) == ("group", "TEST-room", "")
+
+
+THIS_ACCOUNT = "sid:S-1-5-21-1000000001-2000000002-3000000003-1001"
+OTHER_ACCOUNT = "sid:S-1-5-21-1000000001-2000000002-3000000003-1002"
+CONVERSATION = "local-" + "0123456789abcdef" * 4
+LOGIN_FORM = 'auth:v1:["basic","","TEST-visitor"]'
+
+
+@pytest.fixture
+def this_account(monkeypatch):
+    """The account this gateway runs as, named as the transport names a peer the OS says runs as it."""
+    monkeypatch.setattr(hermes_identity, "host_account_principal", lambda: THIS_ACCOUNT, raising=False)
+    return THIS_ACCOUNT
+
+
+def _conversation(initialize_kwargs, platform, *, user=THIS_ACCOUNT, chat=CONVERSATION, profile="main"):
+    """What the transport sends for one conversation: the verified account, the conversation as a direct chat of its
+    own, the session key the gateway built from it, and no thread."""
+    kwargs = {key: value for key, value in initialize_kwargs.items() if key != "user_id"}
+    return dict(
+        kwargs,
+        platform=platform,
+        user_id=user,
+        chat_type="dm",
+        chat_id=chat,
+        gateway_session_key=f"agent:{profile}:local:dm:{chat}",
+    )
+
+
+def _route(identity):
+    scope = identity.scope
+    return scope.user_id, scope.chat_type, scope.chat_id, scope.thread_id, scope.gateway_session_key
+
+
+def _warnings(caplog):
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("scope_recall") and record.levelno >= logging.WARNING
+    ]
+
+
+def test_a_desktop_conversation_of_this_account_is_the_owner_where_the_surface_is_approved(
+    hermes_home, initialize_kwargs, this_account
+):
+    """The installer approved Desktop for the owner.  A conversation the transport runs binds the same scope under
+    the same principal as an unnamed Desktop session, with no step of the operator's."""
+    _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
+
+    conversation = bind_hermes_identity("TEST-session-1", **_conversation(initialize_kwargs, "desktop"))
+    unnamed = bind_hermes_identity("TEST-session-2", **_session(initialize_kwargs, "desktop"))
+
+    assert _route(conversation) == ("local", "private", "local", "main", "")
+    assert conversation.scope == unnamed.scope
+    assert conversation.runtime_audience == unnamed.runtime_audience
+    assert conversation.runtime_audience.includes_owner_private and not conversation.read_only
+    assert conversation.trusted_context().source_principal == unnamed.trusted_context().source_principal
+
+
+def test_what_is_said_in_a_desktop_conversation_of_the_transport_is_captured_as_the_owners(
+    hermes_home, initialize_kwargs, this_account
+):
+    _binding, core = _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize(CONVERSATION, **_conversation(initialize_kwargs, "desktop"))
+    try:
+        said = "TEST 桌面端换成深色主题。"
+        provider.observe_pre_llm(session_id=CONVERSATION, turn_id="TEST-turn-1", user_message=said)
+        provider.sync_turn(said, "好的。", session_id=CONVERSATION)
+        with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as connection:
+            rows = connection.execute("SELECT origin, scope_id FROM source_events WHERE role='user'").fetchall()
+        assert rows and set(rows) == {("human_direct", provider._identity.owner_private_scope_id)}
+    finally:
+        provider.shutdown()
+
+
+def test_the_tui_and_the_cli_through_the_transport_bind_as_an_unnamed_session_there(
+    hermes_home, initialize_kwargs, this_account
+):
+    """The transport runs ``hermes --tui``'s conversations and the CLI's turns too."""
+    _install(hermes_home, initialize_kwargs, local_platforms=("tui",))
+
+    for platform, route in (
+        ("tui", ("local", "private", "local", "main", "")),
+        ("cli", ("local", "cli", "local", "main", "")),
+    ):
+        conversation = bind_hermes_identity("TEST-session-1", **_conversation(initialize_kwargs, platform))
+        unnamed = bind_hermes_identity("TEST-session-2", **_session(initialize_kwargs, platform))
+        assert _route(conversation) == route, platform
+        assert conversation.runtime_audience == unnamed.runtime_audience, platform
+        assert conversation.runtime_audience.includes_owner_private and not conversation.read_only, platform
+
+
+def test_a_conversation_the_transport_adopted_or_a_profile_runs_is_still_a_conversation(
+    hermes_home, initialize_kwargs, this_account
+):
+    """A conversation from before the transport keeps its old id as its chat, and a named profile's key has its own
+    namespace (``main~`` is the one named ``main``); neither makes the conversation a route."""
+    _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
+
+    for chat, profile in (("20261012_101500_a1b2c3", "main"), (CONVERSATION, "TEST-profile"), (CONVERSATION, "main~")):
+        conversation = bind_hermes_identity(
+            "TEST-session-1", **_conversation(initialize_kwargs, "desktop", chat=chat, profile=profile)
+        )
+        assert _route(conversation) == ("local", "private", "local", "main", ""), (chat, profile)
+        assert conversation.runtime_audience.includes_owner_private, (chat, profile)
+
+
+def test_another_account_or_a_login_through_the_transport_is_a_user_like_any_other(
+    hermes_home, initialize_kwargs, this_account
+):
+    """The transport refuses a peer of another account and names a dashboard login in a form of its own; neither is
+    the person at this machine.  Each is a one-to-one chat with itself and binds what the manifest gives it, here
+    nothing."""
+    _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
+
+    for user in (OTHER_ACCOUNT, LOGIN_FORM, "basic:TEST-visitor"):
+        identity = bind_hermes_identity("TEST-session-1", **_conversation(initialize_kwargs, "desktop", user=user))
+        assert _route(identity) == (user, "private", user, "main", ""), user
+        assert identity.runtime_audience.allowed_scope_ids == frozenset() and identity.read_only, user
+        assert "capability_gap:audience_unmapped" in identity.runtime_audience.capability_gaps, user
+
+
+def test_a_login_the_owner_approved_is_the_owner_through_the_transport(hermes_home, initialize_kwargs, this_account):
+    owner_login = 'auth:v1:["basic","","TEST-owner"]'
+    _install(hermes_home, initialize_kwargs, owner_logins=(f"desktop={owner_login}",))
+
+    identity = bind_hermes_identity("TEST-session-1", **_conversation(initialize_kwargs, "desktop", user=owner_login))
+
+    assert _route(identity) == (owner_login, "private", owner_login, "main", "")
+    assert identity.runtime_audience.includes_owner_private and not identity.read_only
+
+
+def test_this_account_on_a_surface_nobody_approved_binds_nothing_and_is_told_to_approve_the_surface(
+    hermes_home, initialize_kwargs, this_account, caplog
+):
+    """Bound to no scope rather than refused: the account is somebody, the owner, whose surface the installer has not
+    approved, as a login nobody approved binds nothing.  The line names the surface's approval, never the account."""
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    caplog.set_level(logging.WARNING, logger="scope_recall")
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize(CONVERSATION, **_conversation(initialize_kwargs, "desktop"))
+    try:
+        identity = provider._identity
+        assert _route(identity) == ("local", "private", "local", "main", "")
+        assert identity.runtime_audience.allowed_scope_ids == frozenset() and identity.read_only
+        [said] = _warnings(caplog)
+        assert said.startswith("scope-recall: session bound to no memory scope: a desktop session for local ")
+        assert "approve the surface with apply-install --local-platform desktop" in said
+        assert "--owner-login" not in said and THIS_ACCOUNT not in said
+    finally:
+        provider.shutdown()
+
+
+def _store(tmp_path, initialize_kwargs):
+    root = tmp_path / "TEST-shared"
+    write_shared_payload(root, new_shared_payload(root, agent_id=initialize_kwargs["agent_identity"]))
+    return root
+
+
+def _entry(root, tmp_path, initialize_kwargs, entry_id="desk", **grants):
+    """A home attached to the shared store at ``root`` with the grants its own installation would have had."""
+    home = tmp_path / f"TEST-{entry_id}-home"
+    home.mkdir()
+    manifest = build_installation_manifest(
+        home,
+        agent_id=initialize_kwargs["agent_identity"],
+        agent_workspace=initialize_kwargs["agent_workspace"],
+        **grants,
+    )
+    attach_shared_entry(root, manifest, entry_id=entry_id, display_name=f"TEST {entry_id}", now="2026-10-18T08:00:00Z")
+    return dict(initialize_kwargs, hermes_home=str(home))
+
+
+def test_a_shared_entry_whose_grants_approve_the_surface_binds_the_owner_through_the_transport(
+    tmp_path, initialize_kwargs, this_account
+):
+    kwargs = _entry(_store(tmp_path, initialize_kwargs), tmp_path, initialize_kwargs, local_platforms=("desktop",))
+
+    identity = bind_hermes_identity("TEST-session-1", **_conversation(kwargs, "desktop"))
+
+    assert identity.entry_id == "desk"
+    assert _route(identity) == ("local", "private", "local", "main", "")
+    assert identity.runtime_audience.includes_owner_private and not identity.read_only
+
+
+def test_a_shared_entry_given_the_surface_with_grants_binds_the_owner_through_the_transport(
+    tmp_path, initialize_kwargs, this_account
+):
+    """What ``shared-store.md`` says to add with ``scope-recall grants``: the owner principal and the row the installer
+    writes for an approved surface, into the scope the entry's CLI owner row captures into."""
+    kwargs = _entry(_store(tmp_path, initialize_kwargs), tmp_path, initialize_kwargs)
+    home = kwargs["hermes_home"]
+    document = shared_cli.grants(instance_root=Path(home))["grants"]
+    cli = next(row for row in document["audiences"] if row["kind"] == "owner_private" and row["platform"] == "cli")
+    document["owner_principals"].append({"platform": "desktop", "user_id": "local"})
+    document["audiences"].append(
+        dict(cli, platform="desktop", user_id="local", chat_type="private", chat_id="local", gateway_session_key="")
+    )
+    edited = tmp_path / "TEST-grants-desk.json"
+    edited.write_text(json.dumps(document), encoding="utf-8")
+    assert shared_cli.grants(instance_root=Path(home), grants_from=edited, apply=True)["status"] == "applied"
+
+    identity = bind_hermes_identity("TEST-session-1", **_conversation(kwargs, "desktop"))
+
+    assert _route(identity) == ("local", "private", "local", "main", "")
+    assert identity.runtime_audience.includes_owner_private and not identity.read_only
+    assert identity.runtime_audience.capture_scope_id == cli["capture_scope_id"]
+
+
+def test_a_shared_entry_is_told_to_add_its_row_with_grants_never_with_apply_install(
+    tmp_path, initialize_kwargs, this_account, caplog
+):
+    """``apply-install`` refuses an entry of a shared store: its grants are in the store's manifest."""
+    kwargs = _entry(_store(tmp_path, initialize_kwargs), tmp_path, initialize_kwargs)
+    caplog.set_level(logging.WARNING, logger="scope_recall")
+    for user in (THIS_ACCOUNT, LOGIN_FORM):
+        provider = ScopeRecallHermesAdapter()
+        provider.initialize("TEST-session-1", **_conversation(kwargs, "desktop", user=user))
+        provider.shutdown()
+
+    owner, login = _warnings(caplog)
+    assert "scope-recall grants" in owner and "(desktop, local)" in owner and "apply-install" not in owner
+    assert "scope-recall grants" in login and f"(desktop, {LOGIN_FORM})" in login and "apply-install" not in login
+    with pytest.raises(HermesIdentityError, match="scope-recall grants") as refused:
+        bind_hermes_identity("TEST-session-2", **_session(kwargs, "desktop"))
+    assert "apply-install" not in str(refused.value)
+
+
+def test_routes_that_are_no_conversation_of_the_transport_keep_their_routes_and_grants(
+    hermes_home, initialize_kwargs, this_account
+):
+    """The CLI that runs its agent in its own process, a dashboard login that names no chat, a gateway's direct chat,
+    and a chat that only looks like a conversation of the transport keep their routes and their grants."""
+    workspace = initialize_kwargs["agent_workspace"]
+    base = build_installation_manifest(
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        agent_workspace=workspace,
+        local_platforms=("desktop",),
+    )
+    direct = audience_entry(
+        platform="telegram",
+        user_id="TEST-tg",
+        chat_type="dm",
+        chat_id="TEST-tg",
+        thread_id="",
+        gateway_session_key="",
+        agent_workspace=workspace,
+        allowed_scope_ids=["scope:TEST-telegram-dm"],
+        writable_scope_ids=["scope:TEST-telegram-dm"],
+        capture_scope_id="scope:TEST-telegram-dm",
+        kind="conversation",
+    )
+    _install(
+        hermes_home, initialize_kwargs, owner_principals=base.owner_principals, audiences=[*base.audiences, direct]
+    )
+
+    cli = bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, "cli"))
+    login = bind_hermes_identity(
+        "TEST-session-2", **_session(initialize_kwargs, "desktop", user_id="basic:TEST-visitor")
+    )
+    telegram = bind_hermes_identity(
+        "TEST-session-3",
+        **dict(
+            initialize_kwargs,
+            platform="telegram",
+            user_id="TEST-tg",
+            chat_type="dm",
+            chat_id="TEST-tg",
+            gateway_session_key="agent:main:telegram:dm:TEST-tg",
+        ),
+    )
+
+    assert _route(cli) == ("local", "cli", "local", "main", "") and cli.runtime_audience.includes_owner_private
+    assert _route(login) == ("basic:TEST-visitor", "private", "basic:TEST-visitor", "main", "") and login.read_only
+    assert _route(telegram) == ("TEST-tg", "dm", "TEST-tg", "", "agent:main:telegram:dm:TEST-tg")
+    assert telegram.runtime_audience.allowed_scope_ids == frozenset({"scope:TEST-telegram-dm"})
+    # Only the transport's own key, on a local surface, makes a chat one of its conversations.
+    looks_alike = f"agent:main:local:dm:{CONVERSATION}"
+    for platform, key in (
+        ("desktop", ""),
+        ("desktop", f"agent:main:telegram:dm:{CONVERSATION}"),
+        ("telegram", looks_alike),
+        ("a2a", looks_alike),
+        ("cron", looks_alike),
+    ):
+        sent = bind_hermes_identity(
+            "TEST-session-4", **dict(_conversation(initialize_kwargs, platform), gateway_session_key=key)
+        )
+        assert _route(sent) == (THIS_ACCOUNT, "dm", CONVERSATION, "", key), (platform, key)
+        assert sent.runtime_audience.allowed_scope_ids == frozenset(), (platform, key)
+
+
+def test_a_session_switch_in_a_conversation_of_the_transport_stays_the_owners(
+    hermes_home, initialize_kwargs, this_account
+):
+    _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
+    first = bind_hermes_identity(CONVERSATION, **_conversation(initialize_kwargs, "desktop"))
+
+    second = switch_hermes_identity(first, "TEST-compressed-session")
+
+    assert second.scope == first.scope and second.runtime_audience == first.runtime_audience
+    assert second.runtime_audience.includes_owner_private and not second.read_only
+
+
+def test_this_process_s_account_is_named_as_the_transport_names_a_peer_that_runs_as_it():
+    named = hermes_identity.host_account_principal()
+
+    if os.name == "nt":
+        whoami = os.path.join(os.environ["SystemRoot"], "System32", "whoami.exe")
+        listed = subprocess.run([whoami, "/user", "/fo", "csv", "/nh"], capture_output=True, text=True, check=True)
+        assert named == "sid:" + listed.stdout.strip().rsplit(",", 1)[1].strip('"')
+    else:
+        assert named == f"uid:{os.getuid()}"
+
+
+def _local_sessions_check(report):
+    return [check for check in report.checks if check["name"] == "local_sessions"]
+
+
+def test_doctor_names_a_surface_whose_owner_sessions_bind_no_scope_until_one_binds(
+    hermes_home, initialize_kwargs, this_account
+):
+    """The line in the host's log is read by no one.  ``doctor`` names the surface and what approves it, never who
+    spoke, and asks for a look rather than an action: only the owner knows whether everyone who reaches a surface
+    without logging in is the owner.  A login nobody approved is a visitor's, and no finding."""
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    for user in (LOGIN_FORM, THIS_ACCOUNT):
+        provider = ScopeRecallHermesAdapter(core=core)
+        provider.initialize(CONVERSATION, **_conversation(initialize_kwargs, "desktop", user=user))
+        provider.shutdown()
+        if user == LOGIN_FORM:
+            assert not _local_sessions_check(doctor.run_doctor(host="hermes", instance_root=hermes_home))
+
+    report = doctor.run_doctor(host="hermes", instance_root=hermes_home)
+    [check] = _local_sessions_check(report)
+    assert "local_session_unbound" in report.capability_gaps
+    assert check["result"] == "unbound" and check["detail"].startswith("desktop:")
+    assert "approve the surface with apply-install --local-platform desktop" in check["detail"]
+    shown = json.dumps(report.to_dict())
+    assert THIS_ACCOUNT not in shown and "TEST-visitor" not in shown
+    classified = doctor.DoctorReport(host="hermes", status="degraded", capability_gaps=["local_session_unbound"])
+    doctor._classify_status(classified)
+    assert classified.status == "attention"
+
+    manifest = load_installation_manifest(hermes_home)
+    approved = approve_local_platforms(manifest, ["desktop"], agent_workspace=initialize_kwargs["agent_workspace"])
+    write_installation_manifest(approved)
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize("TEST-next-session", **_conversation(initialize_kwargs, "desktop"))
+    provider.shutdown()
+    report = doctor.run_doctor(host="hermes", instance_root=hermes_home)
+    assert "local_session_unbound" not in report.capability_gaps and not _local_sessions_check(report)
+
+
+def test_doctor_names_a_surface_whose_unnamed_sessions_are_refused(hermes_home, initialize_kwargs):
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    provider = ScopeRecallHermesAdapter(core=core)
+    with pytest.raises(HermesIdentityError, match="--local-platform tui"):
+        provider.initialize("TEST-session-1", **_session(initialize_kwargs, "tui"))
+
+    report = doctor.run_doctor(host="hermes", instance_root=hermes_home)
+
+    [check] = _local_sessions_check(report)
+    assert "local_session_unbound" in report.capability_gaps and check["detail"].startswith("tui:")
+    assert "approve the surface with apply-install --local-platform tui" in check["detail"]
+
+
+def _ended_record(folder, *, entry_id, platform, pid):
+    """A dead process record, including ids beyond POSIX's signed native int range."""
+    folder.mkdir(exist_ok=True)
+    path = folder / f"{pid}.json"
+    session = {"entry_id": entry_id, "platform": platform, "gaps": ["capability_gap:audience_unmapped"], "since": ""}
+    record = {"schema": "scope-recall.unbound-sessions.v1", "pid": pid, "start_token": None, "sessions": [session]}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("ended_pid", [0x7FFFFFFF, 0xFFFFFFF0])
+def test_doctor_reads_what_live_processes_recorded_for_its_own_entry(
+    tmp_path, initialize_kwargs, this_account, ended_pid
+):
+    root = _store(tmp_path, initialize_kwargs)
+    desk = _entry(root, tmp_path, initialize_kwargs, entry_id="desk")
+    lab = _entry(root, tmp_path, initialize_kwargs, entry_id="lab")
+    provider = ScopeRecallHermesAdapter()
+    provider.initialize(CONVERSATION, **_conversation(desk, "desktop"))
+    provider.shutdown()
+    _ended_record(root / "unbound-sessions", entry_id="lab", platform="tui", pid=ended_pid)
+
+    at_desk = doctor.run_doctor(host="hermes", instance_root=desk["hermes_home"])
+    at_lab = doctor.run_doctor(host="hermes", instance_root=lab["hermes_home"])
+
+    [check] = _local_sessions_check(at_desk)
+    assert check["detail"].startswith("desktop:") and "scope-recall grants" in check["detail"]
+    assert "apply-install" not in check["detail"]
+    assert not _local_sessions_check(at_lab), "another entry's record, and one whose process ended"
+
+
+@pytest.mark.parametrize("ended_pid", [0x7FFFFFFF, 0xFFFFFFF0])
+def test_a_record_a_process_left_when_it_ended_is_retired_when_this_one_writes(
+    hermes_home, initialize_kwargs, this_account, ended_pid
+):
+    """A record that cannot be read is left: no pass can tell whose it is."""
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    folder = hermes_home / "scope-recall" / "unbound-sessions"
+    ended = _ended_record(folder, entry_id="", platform="tui", pid=ended_pid)
+    unreadable = folder / "TEST-unreadable.json"
+    unreadable.write_text("{", encoding="utf-8")
+
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize(CONVERSATION, **_conversation(initialize_kwargs, "desktop"))
+    provider.shutdown()
+
+    assert (folder / f"{os.getpid()}.json").is_file()
+    assert not ended.exists() and unreadable.exists()
+
+
+@pytest.mark.parametrize("failure", ["partial", "replace"])
+@pytest.mark.parametrize("next_platform", ["desktop", "tui"])
+def test_an_unbound_record_write_is_retried_on_the_next_session_event(tmp_path, monkeypatch, failure, next_platform):
+    target = tmp_path / "unbound-sessions" / f"{os.getpid()}.json"
+    attempts = []
+    write_text, replace_file = Path.write_text, os.replace
+
+    def write_partial(path, *args, **kwargs):
+        if path == target.with_suffix(".json.partial"):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise PermissionError("TEST sharing violation")
+        return write_text(path, *args, **kwargs)
+
+    def replace_partial(source, destination):
+        if destination == target:
+            attempts.append(destination)
+            if len(attempts) == 1:
+                raise PermissionError("TEST sharing violation")
+        return replace_file(source, destination)
+
+    if failure == "partial":
+        monkeypatch.setattr(Path, "write_text", write_partial)
+    else:
+        monkeypatch.setattr(os, "replace", replace_partial)
+    gaps = ("capability_gap:audience_unmapped",)
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=gaps)
+    assert not target.exists()
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry") == []
+
+    unbound_sessions.note_owner_session(
+        tmp_path, entry_id="TEST-entry", platform=next_platform, gaps=gaps if next_platform == "desktop" else None
+    )
+
+    [record] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry")
+    assert record["platform"] == "desktop" and record["gaps"] == list(gaps)
+    assert len(attempts) == 2
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=gaps)
+    assert len(attempts) == 2, "a persisted session needs no further write"
+
+
+@pytest.mark.parametrize("next_platform", ["desktop", "tui"])
+def test_a_resolved_record_deletion_is_retried_on_the_next_session_event(tmp_path, monkeypatch, next_platform):
+    target = tmp_path / "unbound-sessions" / f"{os.getpid()}.json"
+    unbound_sessions.note_owner_session(
+        tmp_path, entry_id="TEST-entry", platform="desktop", gaps=("capability_gap:audience_unmapped",)
+    )
+    other = target.with_name("TEST-other.json")
+    other.write_text("{", encoding="utf-8")
+    attempts = []
+    unlink = Path.unlink
+
+    def unlink_record(path, *args, **kwargs):
+        if path == target:
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise PermissionError("TEST sharing violation")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_record)
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=None)
+    assert target.is_file()
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry")
+
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform=next_platform, gaps=None)
+
+    assert not target.exists() and other.is_file() and target.parent.is_dir()
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-entry") == []
+    assert len(attempts) == 2
+
+
+def test_resolving_a_session_never_removes_a_directory_at_the_record_path(tmp_path):
+    target = tmp_path / "unbound-sessions" / f"{os.getpid()}.json"
+    unbound_sessions.note_owner_session(
+        tmp_path, entry_id="TEST-entry", platform="desktop", gaps=("capability_gap:audience_unmapped",)
+    )
+    target.unlink()
+    target.mkdir()
+
+    for _ in range(2):
+        unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-entry", platform="desktop", gaps=None)
+
+    assert target.is_dir()
+
+
+def test_a_pending_update_keeps_other_entries_and_the_first_seen_time(tmp_path, monkeypatch):
+    gaps = ("capability_gap:audience_unmapped",)
+    for entry in ("TEST-desk", "TEST-lab"):
+        unbound_sessions.note_owner_session(tmp_path, entry_id=entry, platform="desktop", gaps=gaps)
+    [before] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-desk")
+    replace_file = os.replace
+    attempts = []
+
+    def replace_partial(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            raise PermissionError("TEST sharing violation")
+        return replace_file(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace_partial)
+    updated = (*gaps, "capability_gap:no_allowed_scope")
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-desk", platform="desktop", gaps=updated)
+    assert unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-desk") == [before]
+
+    unbound_sessions.note_owner_session(tmp_path, entry_id="TEST-lab", platform="desktop", gaps=gaps)
+
+    [after] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-desk")
+    assert after == dict(before, gaps=list(updated))
+    [other] = unbound_sessions.owner_sessions_unbound(tmp_path, entry_id="TEST-lab")
+    assert other["gaps"] == list(gaps) and len(attempts) == 2
+
+
+def test_doctor_points_a_shared_entry_s_unverified_owner_row_at_grants(tmp_path, initialize_kwargs):
+    root = _store(tmp_path, initialize_kwargs)
+    home = tmp_path / "TEST-desk-home"
+    home.mkdir()
+    approved = build_installation_manifest(
+        home,
+        agent_id=initialize_kwargs["agent_identity"],
+        agent_workspace=initialize_kwargs["agent_workspace"],
+        owner_logins=(f"desktop={LOGIN}",),
+    )
+    principals = tuple(item for item in approved.owner_principals if item["user_id"] != LOGIN)
+    attach_shared_entry(
+        root,
+        replace(approved, owner_principals=principals),
+        entry_id="desk",
+        display_name="TEST desk",
+        now="2026-10-18T08:00:00Z",
+    )
+
+    report = doctor.run_doctor(host="hermes", instance_root=home)
+
+    [check] = [check for check in report.checks if check["name"] == "audiences"]
+    assert check["detail"].startswith("desktop=1:") and "scope-recall grants" in check["detail"]
+    assert "apply-install" not in check["detail"]
