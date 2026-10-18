@@ -138,18 +138,24 @@ def _alias_verified(tx, proposal: ClaimProposal, roots, scope_id: str, now: str)
         return False
 
 
-def _corroborated(tx, proposal, roots, identical, previous, qualification) -> bool:
+def _corroborated(tx, proposal, roots, identical, previous, qualification, denial_reason) -> bool:
     """The same assertion from a second independent first-hand source is not a
     duplicate but corroboration; see core/corroboration.py.  Only when the slot's
     head is this assertion, so corroboration can never bypass ordering,
-    principal or disputed-state handling below."""
+    principal or disputed-state handling below; and never for a denial the
+    denial rule keeps a proposal (``denial_reason``), which no witness makes its
+    slot's value."""
     head_is_this_assertion = previous is None or same_assertion(previous.payload, proposal)
-    return head_is_this_assertion and corroboration_promotes(
-        existing=identical,
-        existing_reason=identical.reason,
-        incoming_reason=qualification.reason,
-        incoming_roots=roots,
-        existing_roots=tx.claims.roots(evidence_refs(identical.payload)),
+    return (
+        denial_reason is None
+        and head_is_this_assertion
+        and corroboration_promotes(
+            existing=identical,
+            existing_reason=identical.reason,
+            incoming_reason=qualification.reason,
+            incoming_roots=roots,
+            existing_roots=tx.claims.roots(evidence_refs(identical.payload)),
+        )
     )
 
 
@@ -289,7 +295,7 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
         None,
     )
     if identical is not None:
-        if _corroborated(tx, proposal, roots, identical, previous, qualification):
+        if _corroborated(tx, proposal, roots, identical, previous, qualification, denial_reason):
             promoted = Qualification("active", "direct_report", CORROBORATED_REASON)
             saved = tx.claims.append(
                 scope_id,
