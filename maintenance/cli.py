@@ -23,7 +23,6 @@ from .install_common import absolute
 from .install_dsh import default_home as dsh_home
 from .install_hermes import LOCAL_PLATFORM_CHOICES
 from .install_workbuddy import default_home
-from .rollback import RollbackError, plan_rollback, rollback_to_verified_snapshot
 
 
 def _emit(payload: dict) -> None:
@@ -77,6 +76,12 @@ def _resident(argv: list[str]) -> int:
     return main(argv[1:])
 
 
+def _restore(argv: list[str]) -> int:
+    from .restore import main
+
+    return main(argv[1:])
+
+
 _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
@@ -93,6 +98,7 @@ _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "entries": ("list a shared store's entries and when each was last heard from", _shared),
     "import-entry": ("copy an entry's own store, moved aside at attach, into its shared store", _shared),
     "resident": ("see or stop an entry's resident prompt recall server, as before a package upgrade", _resident),
+    "restore": ("go back to a snapshot backup took, keeping every deletion made since", _restore),
 }
 
 
@@ -280,23 +286,6 @@ def _backup(args: argparse.Namespace) -> int:
     target = _path(args.output, "output")
     manifest = _path(args.manifest, "manifest") if args.manifest else target.with_suffix(target.suffix + ".json")
     _emit(backup_sqlite(_path(args.database, "database"), target, manifest=manifest))
-    return 0
-
-
-def _add_rollback_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--current-db", required=True)
-    parser.add_argument("--snapshot", required=True)
-    parser.add_argument("--output")
-    parser.add_argument("--apply", action="store_true")
-
-
-def _rollback(args: argparse.Namespace) -> int:
-    current, snapshot = _path(args.current_db, "current_db"), _path(args.snapshot, "snapshot")
-    output = _optional_path(args.output, "output")
-    result = plan_rollback(current, snapshot, destination=output)
-    if args.apply:
-        result = rollback_to_verified_snapshot(current, snapshot, destination=output)
-    _emit(result)
     return 0
 
 
@@ -672,12 +661,6 @@ _COMMANDS: tuple[
         _respace_embeddings,
     ),
     ("backup", "create a new consistent SQLite snapshot and manifest", _add_backup_arguments, _backup),
-    (
-        "rollback",
-        "inspect rollback; --apply may stop writes when new data must be reconciled",
-        _add_rollback_arguments,
-        _rollback,
-    ),
     ("plan-install", None, _add_install_arguments, _plan_install),
     ("apply-install", None, _add_install_arguments, _apply_install),
     ("doctor", None, _add_doctor_arguments, _doctor),
@@ -711,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(arguments)
     try:
         return handlers[args.command](args)
-    except (InstallError, BackupError, RollbackError) as exc:
+    except (InstallError, BackupError) as exc:
         _emit({"status": "error", "error": str(exc)})
         return 2
 

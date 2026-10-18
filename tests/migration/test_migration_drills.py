@@ -1,4 +1,4 @@
-"""Small synthetic P15 migration, idempotence, deletion, and rollback drills."""
+"""Small synthetic P15 migration, idempotence, deletion, and restore drills."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import subprocess
 import sys
 from contextlib import closing
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -25,11 +26,11 @@ from scope_recall.core.restore import (
 )
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.maintenance.restore import apply_restore
 
 from maintenance.backup import backup_sqlite
 from maintenance.migrate_v2 import migrate_legacy
 from maintenance.migration_records import stable_legacy_id
-from maintenance.rollback import rollback_to_verified_snapshot
 
 
 def _legacy(path: Path) -> None:
@@ -333,8 +334,8 @@ def test_p15_exported_deletion_ledger_replays_and_core_fence_denies_normal_captu
     assert ledger["memory_epoch"] >= max(item["operation"]["memory_epoch"] for item in ledger["operations"])
     begin_restore(storage, authority, expected_ledger_sha256=ledger_digest(ledger))
     assert replay_deletion_ledger(storage, authority, ledger)["status"] == "deletion_ledger_replayed"
-    rollback = rollback_to_verified_snapshot(storage.path, legacy)
-    assert rollback["status"] == "stop_write_protection_required"
+    ledger = export_deletion_ledger(storage, authority)
+    begin_restore(storage, authority, expected_ledger_sha256=ledger_digest(ledger))
 
     class Clock:
         def utc_now(self) -> str:
@@ -369,24 +370,30 @@ def test_p15_exported_deletion_ledger_replays_and_core_fence_denies_normal_captu
     assert before == after and (target / "restore-required.json").is_file()
 
 
-def test_p15_consistent_backup_and_incompatible_rollback_protects_new_events(tmp_path: Path) -> None:
+def test_p15_restoring_a_backup_of_the_migrated_store_keeps_its_migrated_deletions(tmp_path: Path) -> None:
     legacy = tmp_path / "legacy.sqlite3"
     target = tmp_path / "target"
     _legacy(legacy)
     migrate_legacy(legacy, target)
+    legacy_before = legacy.read_bytes()
     current = target / "memory.sqlite3"
-    backup = tmp_path / "old-snapshot.sqlite3"
-    manifest = tmp_path / "old-snapshot.manifest.json"
-    backup_receipt = backup_sqlite(current, backup, manifest=manifest)
-    result = rollback_to_verified_snapshot(current, backup)
+    backup = tmp_path / "migrated-snapshot.sqlite3"
+    backup_receipt = backup_sqlite(current, backup, manifest=tmp_path / "migrated-snapshot.manifest.json")
+    binding = InstanceBinding("p15-synthetic-agent", "p15-synthetic-installation", target, frozenset({"scope-a"}), True)
+    moment = datetime(2026, 9, 6, tzinfo=UTC)
+    result = apply_restore(binding, backup, backup_dir=tmp_path / "kept", now=moment)
 
     assert backup_receipt["quick_check"] == "ok"
-    assert result["status"] == "stop_write_protection_required"
-    marker = Path(result["stop_write_marker"])
-    assert marker.is_file()
-    assert current.is_file() and backup.is_file()
-    assert json.loads(marker.read_text(encoding="utf-8"))["old_snapshot_preserved"] is True
-    assert _counts(current)["source_events"] == 7
+    assert (result["status"], result["ledger_operations"]) == ("restored", 1)
+    assert not (target / "restore-required.json").exists() and Path(result["backup"]["path"]).is_file()
+    assert _counts(current)["source_events"] == 7 and legacy.read_bytes() == legacy_before
+    with closing(sqlite3.connect(current)) as conn:
+        assert conn.execute(
+            "SELECT read_blocked FROM source_events WHERE event_id=?", (stable_legacy_id("event", "journal_entries:2"),)
+        ).fetchone() == (1,)
+    storage = SQLiteStorage(binding)
+    with storage.read(TrustedContext(binding, "p15-audit", binding.scope_ids, "host_generated")) as tx:
+        assert tx.sources.search_sources("不能复活") == ()
 
 
 def test_p15_official_578b_private_fixture_maps_facts_history_and_multivalue(tmp_path: Path) -> None:

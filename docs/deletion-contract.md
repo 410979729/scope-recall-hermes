@@ -100,5 +100,24 @@ a missing human source or ordinary correction history. Physical cleanup is repea
 on the restored file; status from the latest file is not treated as evidence about
 the old copy. The resulting epoch exceeds both snapshot and latest-checkpoint
 epochs, preventing cache ABA. Failed replay or commit leaves admission closed and
-permits retry. The operator's backup and restore are the `backup` and `rollback`
-commands.
+permits retry.
+
+The operator's backup and restore are the `backup` and `restore` commands
+([install.md](install.md), section 9). `restore` exports the ledger from the store
+it replaces and backs that store up. `begin_restore` then writes the ledger beside
+the store (`restore-ledger.json`) and the marker after it, each through a file of
+its own that is synced and moved into place, so a crash leaves either whole or not
+there. The snapshot, held open in one read transaction from its checks on, is then
+copied over the store through SQLite's backup API, and the replay truncates the
+write-ahead log, which held the snapshot's pages, before admission reopens: a
+reader still on an older snapshot holds that back (`wal_busy`), and admission stays
+closed. A run cut short after admission closed is finished by running `restore`
+again: the kept ledger, or the store itself while nothing has replaced it, is
+checked against the marker before anything else is written, and a marker left
+partial is written again while nothing has replaced the store. A snapshot copied
+back by hand, without its ledger, brings back what was forgotten after it was
+taken. The ledger's format (`scope-recall-deletion-ledger/1`) names what it holds
+whatever schema the exporting release writes, so the release that reads a
+snapshot's schema replays the ledger a newer release exported; a ledger of another
+format, or of this one with other fields, is refused (`RESTORE_UNVERIFIED`,
+`ledger_format` or a `*_shape` field) and admission stays closed.

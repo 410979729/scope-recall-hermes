@@ -195,7 +195,7 @@
     "maintenance/package_health.py",
     "maintenance/package_upgrade.py",
     "maintenance/resident.py",
-    "maintenance/rollback.py",
+    "maintenance/restore.py",
     "maintenance/shared.py",
     "maintenance/shared_import.py",
     "maintenance/shared_run.py",

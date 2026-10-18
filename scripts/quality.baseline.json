@@ -207,9 +207,6 @@
   "maintenance/package_upgrade.py": {
    "reportArgumentType": 6
   },
-  "maintenance/rollback.py": {
-   "reportArgumentType": 8
-  },
   "maintenance/shared.py": {
    "reportOptionalMemberAccess": 1
   },
@@ -789,7 +786,7 @@
   "maintenance/doctor_store.py": {
    "E501": 1,
    "PLR0915": {
-    "check_storage": 75
+    "check_storage": 66
    },
    "UP017": 7
   },
@@ -811,9 +808,6 @@
    "PLR0915": {
     "plan_install": 61
    }
-  },
-  "maintenance/install_purge.py": {
-   "UP035": 1
   },
   "maintenance/install_receipt.py": {
    "UP035": 1

@@ -1,21 +1,32 @@
 """P06 online/read/restore fencing in isolated SQLite; no host or vector claims."""
 
+import itertools
 import json
+import os
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 
 import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.delete_storage import canonical
 from scope_recall.core.restore import (
+    LEDGER_FILENAME,
+    MARKER_FILENAME,
     InstallationMaintenance,
     begin_restore,
     export_deletion_ledger,
     ledger_digest,
+    pending_restore_ledger,
     replay_deletion_ledger,
+    restore_pending,
 )
+from scope_recall.core.retained_artifacts import extended_path
+from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.visibility import ObjectRef
-from test_claims import accept, app, capture, counts, draft, initial
+from test_claims import Clock, accept, app, capture, counts, draft, initial
+from v11_support import context as trusted_context
 
 
 def request(*items, mode="delete"):
@@ -474,6 +485,202 @@ def test_restore_failed_commit_keeps_marker_closed_and_replay_retries(app, tmp_p
         core.source(ctx, source.ref, 1)
     replay_deletion_ledger(core.storage, authority, ledger)
     assert core.source(ctx, source.ref, 1) is None and core.current_claim(ctx, item.ref) is None
+
+
+def test_the_ledger_of_a_pending_restore_is_the_one_kept_beside_its_marker(app, tmp_path):
+    """``begin_restore`` keeps the ledger beside the store before it writes the marker.  The pending restore replays
+    that ledger once the store is replaced; while nothing has replaced the store, its own ledger, read through the
+    fence, serves as well, and without either the restore is refused."""
+    core, ctx = app
+    item, source = initial(core, ctx)
+    backup = tmp_path / "TEST-pending-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    authorize(core, ctx, source)
+    core.forget(ctx, request(source), remaining_seconds=10)
+    authority = InstallationMaintenance(ctx)
+    kept = ctx.binding.data_directory / LEDGER_FILENAME
+    with pytest.raises(ContractError, match="checkpoint_missing"):
+        pending_restore_ledger(core.storage, authority)
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    assert json.loads(kept.read_text(encoding="utf-8")) == ledger
+    assert pending_restore_ledger(core.storage, authority) == (ledger, True)
+    kept.write_text("{}", encoding="utf-8")
+    assert pending_restore_ledger(core.storage, authority) == (ledger, False)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    assert pending_restore_ledger(core.storage, authority) == (ledger, True)
+    sqlite_backup(backup, core.storage.path)
+    assert pending_restore_ledger(core.storage, authority) == (ledger, True)
+    kept.write_text("{}", encoding="utf-8")
+    with pytest.raises(ContractError, match="ledger_missing"):
+        pending_restore_ledger(core.storage, authority)
+    assert (ctx.binding.data_directory / MARKER_FILENAME).is_file()
+
+
+def test_a_ledger_of_this_format_is_replayed_whatever_schema_wrote_it_and_another_shape_is_refused(app, tmp_path):
+    """The release that reads a snapshot replays the ledger the release that wrote the latest store exported; a
+    ledger that is not of this format, section by section, is refused and the store stays closed."""
+    core, ctx = app
+    item, _source = initial(core, ctx)
+    backup = tmp_path / "TEST-format-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    deleted = capture(core, ctx, "TEST 一句要删掉的话。")
+    authorize(core, ctx, deleted)
+    core.forget(ctx, request(deleted), remaining_seconds=10)
+    capture(core, ctx, "撤回 TEST-project 配色蓝色。", when="2026-09-03T12:00:00Z")
+    authority = InstallationMaintenance(ctx)
+    newer = dict(export_deletion_ledger(core.storage, authority), schema_version=SCHEMA_VERSION + 1)
+    marker = ctx.binding.data_directory / MARKER_FILENAME
+    binding = ctx.binding
+
+    def closed_on(ledger):
+        """The marker another release's ``begin_restore`` writes for ``ledger``."""
+        marker.write_text(
+            canonical(
+                dict(
+                    installation_id=binding.installation_id,
+                    agent_id=binding.agent_id,
+                    data_directory=str(binding.data_directory),
+                    expected_ledger_sha256=ledger_digest(ledger),
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return ledger
+
+    entry = newer["operations"][0]
+    others = [
+        (dict(newer, format="scope-recall-deletion-ledger/2"), "ledger_format"),
+        ({key: value for key, value in newer.items() if key != "absent_objects"}, "ledger_format"),
+        (dict(newer, schema_version="1111"), "ledger_format"),
+        (dict(newer, operations=[dict(entry, operation=dict(entry["operation"], TEST_column=1))]), "operation_shape"),
+        (dict(newer, operations=[dict(entry, members=[dict(entry["members"][0], TEST_column=1)])]), "member_shape"),
+        (dict(newer, withdrawals=[dict(newer["withdrawals"][0], TEST_column=1)]), "withdrawal_shape"),
+    ]
+    sqlite_backup(backup, core.storage.path)
+    for other, field in others:
+        with pytest.raises(ContractError, match=field):
+            replay_deletion_ledger(core.storage, authority, closed_on(other))
+        assert marker.is_file()
+    replay_deletion_ledger(core.storage, authority, closed_on(newer))
+    assert not marker.exists()
+    assert core.source(ctx, deleted.ref, 1) is None and core.current_claim(ctx, item.ref) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the 260-character path limit is Windows'")
+def test_a_restore_closes_and_reopens_a_store_whose_marker_passes_the_path_limit(tmp_path):
+    """A store's own files may be within Windows' 260-character path limit while its marker is not: in WAL mode the
+    store writes no rollback journal, whose name is longer.  The marker, and the files the marker and the ledger are
+    written through, are written and looked for by their extended-length names, which hold on a Windows that does not
+    lift the limit.  The store is created by its extended-length name, as it is where the limit is lifted, in a
+    directory named in Latin and Han letters."""
+    base = len(str(tmp_path)) + 1
+    data = tmp_path / ("TEST-长路径-" + "径" * (239 - base - len("TEST-长路径-")))
+    assert len(str(data / "memory.sqlite3-wal")) < 260 <= len(str(data / MARKER_FILENAME))
+    data.mkdir()
+    with closing(sqlite3.connect(extended_path(data / "memory.sqlite3"))) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+    ctx = replace(trusted_context(data), project_id="TEST-project", branch_id="TEST-main")
+    core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
+    core.initialize()
+    core.test_sequence = itertools.count(1)
+    item, source = initial(core, ctx)
+    backup = tmp_path / "TEST-long-path-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    authorize(core, ctx, source)
+    core.forget(ctx, request(source), remaining_seconds=10)
+    authority = InstallationMaintenance(ctx)
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    assert extended_path(data / MARKER_FILENAME).is_file() and extended_path(data / LEDGER_FILENAME).is_file()
+    with pytest.raises(ContractError) as closed:
+        core.status(ctx)
+    assert closed.value.code == "RESTORE_UNVERIFIED"
+    sqlite_backup(backup, core.storage.path)
+    replay_deletion_ledger(core.storage, authority, ledger)
+    assert not restore_pending(data)
+    assert core.source(ctx, source.ref, 1) is None and core.current_claim(ctx, item.ref) is None
+
+
+def test_the_deletion_ledger_format_holds_these_sections_and_fields(app, tmp_path):
+    """Every release replays a ledger of its format, whichever release exported it (``LEDGER_FORMAT``): a change to
+    what the export holds is a new format, which the releases before it refuse."""
+    core, ctx = app
+    empty = tmp_path / "TEST-shape-backup.sqlite3"
+    sqlite_backup(core.storage.path, empty)
+    item, source = initial(core, ctx)
+    capture(core, ctx, "撤回 TEST-project 配色蓝色。", when="2026-09-03T12:00:00Z")
+    deleted = capture(core, ctx, "TEST 一句要删掉的话。")
+    authorize(core, ctx, deleted)
+    core.forget(ctx, request(deleted), remaining_seconds=10)
+    authority = InstallationMaintenance(ctx)
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    sqlite_backup(empty, core.storage.path)
+    replay_deletion_ledger(core.storage, authority, ledger)
+    restored = export_deletion_ledger(core.storage, authority)
+
+    assert ledger["format"] == "scope-recall-deletion-ledger/1"
+    assert set(ledger) == {
+        "format",
+        "schema_version",
+        "memory_epoch",
+        "installation_id",
+        "agent_id",
+        "scope_ids",
+        "operations",
+        "withdrawals",
+        "source_groups",
+        "absent_objects",
+    }
+    entry = ledger["operations"][0]
+    assert set(entry) == {"operation", "members"}
+    assert set(entry["operation"]) == {
+        "operation_id",
+        "request_sha256",
+        "mode",
+        "scope_ids_json",
+        "project_id",
+        "branch_id",
+        "requested_refs_json",
+        "expected_revisions_json",
+        "created_at",
+        "memory_epoch",
+        "layers_json",
+        "active_content_removed",
+    }
+    assert set(entry["members"][0]) == {"object_kind", "object_ref", "scope_id", "project_id", "branch_id"}
+    assert set(ledger["withdrawals"][0]) == {
+        "claim_id",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "current_revision",
+        "valid_from",
+        "valid_to",
+        "recorded_from",
+        "state",
+        "intention_state",
+    }
+    assert set(ledger["source_groups"][0]) == {
+        "group_sha256",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "read_blocked",
+        "suppressed",
+        "operation_id",
+    }
+    assert set(restored["absent_objects"][0]) == {
+        "object_kind",
+        "object_ref",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "checkpoint_sha256",
+        "reason",
+    }
 
 
 def test_a_capture_between_a_read_and_its_release_withdraws_nothing(app):

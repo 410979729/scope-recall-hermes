@@ -26,8 +26,9 @@ def _bad(field: str, code: str = "INPUT_INVALID") -> None:
     raise ContractError(code, field)
 
 
-def _io_path(path: Path) -> Path:
-    """Use an extended Windows path only at filesystem I/O boundaries."""
+def extended_path(path: Path) -> Path:
+    """``path`` in Windows' extended-length form (``\\\\?\\``, ``\\\\?\\UNC\\`` for a share), to which the 260-character
+    path limit does not apply, for a file system call; on any other system, ``path`` as it is."""
     if os.name != "nt":
         return path
     value = os.path.abspath(os.fspath(path))
@@ -42,7 +43,7 @@ def _reject_links(path: Path, field: str) -> None:
     """Reject symlink/junction components without resolving the path."""
     current = path
     while True:
-        io_current = _io_path(current)
+        io_current = extended_path(current)
         try:
             attributes = getattr(io_current.lstat(), "st_file_attributes", 0)
         except FileNotFoundError:
@@ -60,8 +61,8 @@ def _root(binding: InstanceBinding, *, create: bool) -> Path:
     root = binding.data_directory / "retained"
     _reject_links(binding.data_directory, "data_directory")
     if create:
-        _io_path(root).mkdir(parents=True, exist_ok=True)
-    elif not _io_path(root).is_dir():
+        extended_path(root).mkdir(parents=True, exist_ok=True)
+    elif not extended_path(root).is_dir():
         _bad("retained_directory", "SOURCE_MISSING")
     _reject_links(root, "retained_directory")
     if root.resolve(strict=False) != root:
@@ -128,7 +129,7 @@ def _check_secret(data: bytes, field: str) -> None:
 
 def _read_bounded(path: Path, limit: int, field: str) -> bytes:
     try:
-        io_path = _io_path(path)
+        io_path = extended_path(path)
         before = io_path.stat()
         with io_path.open("rb") as stream:
             data = stream.read(limit + 1)
@@ -154,10 +155,10 @@ def _validate_magic(data: bytes, media_type: str) -> None:
 
 def _read_grant(grant: ArtifactGrant) -> bytes:
     _reject_links(grant.path, "artifact_path")
-    if not _io_path(grant.path).is_file():
+    if not extended_path(grant.path).is_file():
         _bad("artifact_path", "SOURCE_MISSING")
     try:
-        size = _io_path(grant.path).stat().st_size
+        size = extended_path(grant.path).stat().st_size
         if size > grant.max_bytes or size > MAX_RETAINED_BYTES:
             _bad("artifact_size", "INPUT_TOO_LARGE")
         data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
@@ -231,7 +232,7 @@ def retain(binding: InstanceBinding, grant: ArtifactGrant) -> RetainedBlob:
     root = _root(binding, create=True)
     destination = root / grant.sha256
     _reject_links(destination, "retained_path")
-    io_destination = _io_path(destination)
+    io_destination = extended_path(destination)
     if io_destination.exists():
         if io_destination.is_symlink() or not io_destination.is_file():
             _bad("retained_path", "IDENTITY_UNBOUND")
@@ -303,7 +304,7 @@ def erase_retained(binding: InstanceBinding, blob: RetainedBlob) -> None:
             return
         raise
     try:
-        _io_path(path).unlink()
+        extended_path(path).unlink()
     except FileNotFoundError:
         return
     except OSError as exc:

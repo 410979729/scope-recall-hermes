@@ -276,7 +276,7 @@ def _ledger_made(raw: dict[str, Any]) -> list[str]:
     return [str(ledger)]
 
 
-def _store_binding(payload: dict[str, Any], root: Path, scope_ids: frozenset[str]) -> InstanceBinding:
+def store_binding(payload: dict[str, Any], root: Path, scope_ids: frozenset[str]) -> InstanceBinding:
     return InstanceBinding(
         payload["agent_id"], payload["installation_id"], root, scope_ids, payload["test_mode"], "shared"
     )
@@ -354,14 +354,14 @@ def _runtime_configs(
         routes = _read_json(routes_from)
         entry_config = _entry_config(
             routes,
-            _store_binding(payload, root, scopes),
+            store_binding(payload, root, scopes),
             home=home,
             host=record["host"],
             entry_id=record["entry_id"],
             worker=worker_now,
         )
         if worker_now is None:
-            worker_config = _worker_config(routes, _store_binding(payload, root, union))
+            worker_config = _worker_config(routes, store_binding(payload, root, union))
         elif _space(worker_now) != _space(routes):
             # A query vector from another model searches a directory the worker never fills.
             raise SharedStoreError(
@@ -371,7 +371,7 @@ def _runtime_configs(
     else:
         notes.append("vector_recall_unavailable: no runtime config for this entry; its recall is lexical only")
     if worker_config is None and worker_now is not None:
-        worker_config = _bound(worker_now, _store_binding(payload, root, union))
+        worker_config = _bound(worker_now, store_binding(payload, root, union))
         if worker_config == worker_now:
             # Rewriting it unchanged would still restart the running worker (supervisor_config_changed).
             worker_config = None
@@ -560,7 +560,7 @@ def adopt(*, root: Path, now: str | None = None) -> dict[str, Any]:
         payload = read_shared_payload(root)
         if not payload["scope_ids"]:
             raise SharedStoreError("the store has no entries yet; there is nothing to adopt")
-        binding = _store_binding(payload, root, frozenset(payload["scope_ids"]))
+        binding = store_binding(payload, root, frozenset(payload["scope_ids"]))
         run = Run(root, "adopt", now)
         worker_path = root / RUNTIME_CONFIG_FILENAME
         worker_now = _read_json(worker_path) if worker_path.is_file() else None
@@ -780,7 +780,7 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
     entry_config = None
     if entry_path.is_file():
         now_config = _read_json(entry_path)
-        entry_config = _bound(now_config, _store_binding(updated, store, frozenset(after["scope_ids"])))
+        entry_config = _bound(now_config, store_binding(updated, store, frozenset(after["scope_ids"])))
         if entry_config == now_config:
             entry_config = None
     change["entry_runtime_config_rebound"] = entry_config is not None
@@ -879,7 +879,7 @@ def entries(*, root: Path, now: str | None = None) -> dict[str, Any]:
     seen: dict[str, dict[str, str]] = {}
     store = "empty"
     if payload["scope_ids"] and (root / "memory.sqlite3").is_file():
-        binding = _store_binding(payload, root, frozenset(payload["scope_ids"]))
+        binding = store_binding(payload, root, frozenset(payload["scope_ids"]))
         try:
             with SQLiteStorage(binding).read(
                 TrustedContext(binding, "shared-store-entries", binding.scope_ids, "host_generated")

@@ -746,6 +746,26 @@ def test_explicit_purge_removes_owned_data_and_keeps_host_files(tmp_path):
     assert host_file.is_file()
 
 
+def test_purge_removes_the_ledger_a_restore_keeps_beside_the_store(tmp_path):
+    instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="codex")
+    apply_install(
+        plan_install(
+            host="codex",
+            target_plugin_dir=plugin_dir,
+            instance_root=instance_root,
+            project_root=project_root,
+            agent_id="TEST-P14-agent",
+            python_executable=Path(sys.executable),
+        )
+    )
+    ledger = instance_root / "data" / "restore-ledger.json"
+    ledger.write_text("{}\n", encoding="utf-8")
+    purge_plan = plan_uninstall(instance_root=instance_root, target_plugin_dir=plugin_dir, purge=True)
+    assert purge_plan.conflicts == [] and str(ledger.resolve()) in purge_plan.purge_paths
+    result = apply_uninstall(purge_plan, purge=True)
+    assert result.purged is True and not ledger.exists()
+
+
 def test_purge_rejects_unknown_retained_file(tmp_path):
     instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="codex")
     apply_install(

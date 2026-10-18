@@ -632,6 +632,7 @@ Things that look wrong in a healthy report and are not:
 | `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails; on a store above 100 MB, a caller with a minute of budget does (section 9). A step is one way: take a `backup` first if you may want to go back. |
 | `schema_version_mismatch` | The database schema is one this code cannot bring forward. | Do not run against it. Back it up and use the migration path. |
 | `schema_header_stale` | The store's tables and its own record say one schema, the SQLite header another: another process stamped the header, typically a 2.0 plugin that opened the store after its migration. Every open is refused. | Stop that process, then run `upgrade-store` with `--backup-dir`: it snapshots the store and puts the recorded schema back into the header. |
+| `restore_pending` | A `restore` was begun and not finished: the marker `restore-required.json` closes the store, and every read and write of every host refuses it (`RESTORE_UNVERIFIED`). | Run the same `restore` command again (section 9): it finishes with the ledger kept beside the store. To keep the store as it was, give it the backup that run took as `--snapshot`, or one `backup` takes of the closed store. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
 | `audience_owner_unverified` | An `owner_private` audience row names a user who is no owner principal, so it grants nothing and every session on its route captures and recalls nothing. The `audiences` check counts such rows by platform. `attention`. | If the user is the owner's own dashboard login, approve it with `apply-install --owner-login <platform>=<login>` (section 4); otherwise remove the rows. |
 | `owner_words_with_client_reminder` | Claude Code only. Messages stored as the owner's words before 3.10.5 that hold a `<system-reminder>` block Claude's desktop app put in them (#248): claims drawn from them read as things the owner said, and a recall can bring the block back. The `owner_words` check counts this entry's and names the first 20 refs, never their text. `attention`. | Forget them: in a session that has `forget` (Codex, a Hermes chat), ask for those refs to be deleted, naming each ref in your own message. What was drawn from them goes with them. New messages are stored without the block. |
@@ -913,8 +914,8 @@ scope-recall apply-uninstall --instance-root C:\path\to\instance-root --purge
 
 A purge verifies the installation identity, that the data directory is really
 owned by this installation, that no writer is active, and that no restore is
-outstanding. If any check fails it refuses with a `purge_refused:*` reason and
-deletes nothing. **Do not treat purge as a normal uninstall step.** Ordinary
+outstanding (`restore` finishes one, section 9). If any check fails it refuses
+with a `purge_refused:*` reason and deletes nothing. **Do not treat purge as a normal uninstall step.** Ordinary
 uninstall does not need it.
 
 ## 9. Coming from an older database
@@ -949,7 +950,8 @@ A step is one way. Once a newer release has opened the store, an older one
 refuses it (`SCHEMA_UNSUPPORTED`) without touching it: a 3.1 process cannot
 open a store 3.2 has opened. Stop every host and worker of a store before
 upgrading, upgrade them together, and keep the pre-upgrade `backup`; going
-back means restoring it, and writes made since are lost.
+back means restoring it with `restore` (below): what was forgotten since stays
+forgotten, and every other write made since is lost.
 
 To bring a store forward now, with a snapshot first and the worker stopped:
 
@@ -970,13 +972,82 @@ back into the header (`header_restamped` in its report) and, if that schema
 is an older one, brings the store forward as usual. A store that is not this
 product's, or records no schema this release knows, is still refused.
 
+### Going back to a backup
+
+A `backup` snapshot still holds whatever was forgotten after it was taken, so put
+it back with `restore`, never by copying the file over the store: a copy brings
+those words back. `restore` replays the store's deletion ledger over the snapshot,
+and every deletion, suppression and withdrawal made since stays; every other write
+made since the snapshot is lost.
+
+```bash
+python -I -X utf8 -m scope_recall.maintenance.cli restore --host hermes --instance-root <instance root> --snapshot <backup file>
+python -I -X utf8 -m scope_recall.maintenance.cli restore --host hermes --instance-root <instance root> --snapshot <backup file> --backup-dir <a new directory> --apply
+```
+
+A shared store is named by `--root <store directory>` instead; an entry's home is
+refused (`shared_store_entry`). Without `--apply` the command only checks and says
+what it would do. Stop every host, resident recall server and worker of the store
+first (`autostart pause`), then:
+
+- It changes nothing and says why while a process that recorded itself as running
+  on the store still runs (`store_open`) or another process writes it
+  (`store_busy`), while another name refers to the store's file, a hard link, which
+  is no backup since it changes with the store (`store_links`), and for a snapshot
+  that is not a whole `backup` snapshot of this very store: the store's file or its
+  log under any name (`snapshot_is_the_store`), a live store's file or another
+  program's (`snapshot_not_a_backup`), a copy cut short (`snapshot_damaged`),
+  another store's (`snapshot_identity`), one taken before an entry brought a scope of
+  its own (`snapshot_scopes`) or before an entry still attached was attached
+  (`snapshot_entries`; detach it first), or one at a schema it cannot replay into
+  (`snapshot_schema`). Where the file system cannot say whether the snapshot is one
+  of the store's files, it changes nothing either (`file_identity_unknown`). The
+  snapshot stays open from its checks to its copy, so what is copied is what was
+  checked and what the receipt's `snapshot_sha256` describes: another SQLite writer
+  is kept out, and a file moved over the snapshot is not the one read; one moved
+  over it as it is opened is refused (`snapshot_replaced`).
+- It backs the store up into `--backup-dir` as it is and closes it: it writes the
+  ledger beside it (`restore-ledger.json`) and then the marker
+  (`restore-required.json`), each through a file of its own that is synced and then
+  moved into place, so a crash leaves either file whole or not there. Every host
+  then refuses the store (`RESTORE_UNVERIFIED`). It copies the snapshot over the
+  store and replays the ledger, and opens the store again only once
+  `memory.sqlite3-wal`, which held the snapshot's pages, is truncated: a reader
+  still on an older snapshot holds that back, and the run stops with the store
+  closed (`wal_busy`). The ledger stays beside the store, content-free, until the
+  next restore writes its own or a purge (section 8) removes it with the store. The
+  receipt names the backup, the ledger's digest and the deletes it replayed
+  (`purges_queued`): start the worker again, and its next pass removes their vectors
+  and attachments once more. The vector companion and `retained\` are otherwise
+  left as they are; an attachment only the replaced store refers to stays there,
+  for that store if it is restored in turn from its backup.
+- A run cut short leaves the store closed: `restore_pending: true` in the output,
+  `restore_pending` in `doctor`. Run the same command again: it finishes with the
+  ledger it kept, and asks for `--backup-dir` only while the store is still as it
+  was. To keep the store as it was instead, give it the backup it took as
+  `--snapshot`. A marker left empty or partial is written again while nothing has
+  replaced the store; beside a kept ledger newer than the store, the store was
+  replaced after it was closed, and the run is refused (`marker_damaged`).
+
+Going back across a schema step takes two releases: only the newer one reads the
+latest store, and only the older one writes a store at the snapshot's schema. Run
+`restore` with the newer release first. For a snapshot at an older schema it backs
+the store up, closes it and keeps the ledger beside it (`status: prepared`), and
+goes no further; then install the release that reads the snapshot and run the same
+command again, which replays that ledger over the snapshot. Every release from
+3.11.0 on replays a ledger another release kept in the same format. When both
+releases write the same schema, as every release from 3.2.0 to 3.11.0 does (1110),
+the newer one does the whole restore. A snapshot at a schema below 1110, from 3.1 or
+earlier, is refused (`snapshot_schema`): no release that reads it carries
+`restore`, and going back to it would bring back what was forgotten since.
+
 ## 10. Platform and storage boundaries
 
 - **The store is a WAL-mode SQLite file.** `memory.sqlite3-wal` and
   `memory.sqlite3-shm` sit beside `memory.sqlite3` while any process has it
   open. Never copy the files by hand while the host or the worker runs;
   `scope-recall backup` takes a consistent snapshot and writes it in
-  rollback-journal mode. Readers and the writer coexist, so an operator
+  rollback-journal mode, and `scope-recall restore` puts one back (section 9). Readers and the writer coexist, so an operator
   query no longer fails a worker pass. After a `forget`, the worker's purge
   truncates `memory.sqlite3-wal`, which still held the deleted words; what is
   written to it afterwards holds none of them. A read transaction left open on
@@ -1312,6 +1383,7 @@ Known limits:
 | Codex installation record | `<instance-root>\codex-installation.json` |
 | Codex Core data directory | `<instance-root>\data\` |
 | Runtime config | `<core-data-directory>\runtime-config.json` |
+| A restore's files | `<core-data-directory>\restore-required.json` while it is not finished; `restore-ledger.json`, the ledger it replays, until the next restore |
 | WorkBuddy home | `WORKBUDDY_CONFIG_DIR`, else `%USERPROFILE%\.workbuddy` |
 | WorkBuddy hooks and MCP server | `hooks` in `<WorkBuddy home>\settings.json`, `mcpServers.scope-recall` in `<WorkBuddy home>\mcp.json` |
 | dsh home | `DSH_HOME`, else `%USERPROFILE%\.dsh` |

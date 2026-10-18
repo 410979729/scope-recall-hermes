@@ -1,8 +1,12 @@
 """Explicit closed restore admission; no automatic import during normal reads.
 
-P15 wraps this with the backup/copy/identity-selection CLI. A checkpoint must be
-obtained independently from the latest authorized store, not from the old backup
-being restored. Ordinary open paths cannot clear the marker or accept a ledger.
+The ``restore`` maintenance command (``maintenance/restore.py``) drives it: the
+ledger is exported from the latest authorized store, never from the snapshot
+being restored, admission is closed, the snapshot is copied over the store and
+the ledger is replayed. Admission stays closed from the marker's write until the
+replay has truncated the write-ahead log, with the ledger kept beside the marker
+all along, so that a run stopped anywhere in between is finished by running it
+again. Ordinary open paths cannot clear the marker or accept a ledger.
 """
 
 from __future__ import annotations
@@ -10,19 +14,34 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from ..contracts import ContractError, TrustedContext
 from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
+from .retained_artifacts import extended_path
 from .schema import SCHEMA_VERSION
+
+#: Beside ``memory.sqlite3`` while a restore is pending; every normal open refuses while it exists.
+MARKER_FILENAME = "restore-required.json"
+#: Beside the marker: the ledger the pending restore replays, written whole before the marker is.  It stays once the
+#: restore is done, content-free, until the next restore writes its own; every release that reads the format below
+#: finds it here.
+LEDGER_FILENAME = "restore-ledger.json"
+#: What a ledger holds, by name.  Every release that exports this format exports the same sections with the same
+#: fields, and a release replays a ledger of this format whatever schema the exporting release wrote: a ledger
+#: exported where the latest store lives is replayed by the release that reads the snapshot.  A release whose
+#: deletions need anything this format does not carry exports another one, which the releases before it refuse.
+LEDGER_FORMAT = "scope-recall-deletion-ledger/1"
 
 
 @dataclass(frozen=True)
 class InstallationMaintenance:
     """Runtime capability minted only by an explicit installation maintenance entry.
 
-    This is deliberately not a model DTO or an ordinary project context. P15's
-    maintenance CLI owns creation; normal source/recall/tool adapters must not.
+    This is deliberately not a model DTO or an ordinary project context. Only
+    the maintenance commands create it; source, recall and tool adapters never do.
     """
 
     context: TrustedContext
@@ -70,7 +89,7 @@ def _ledger_in_transaction(tx, context) -> dict:
         AND c.read_blocked=0 ORDER BY c.claim_id""")
     ]
     return dict(
-        format="scope-recall-deletion-ledger/1",
+        format=LEDGER_FORMAT,
         schema_version=SCHEMA_VERSION,
         memory_epoch=tx.status().memory_epoch,
         installation_id=context.binding.installation_id,
@@ -91,73 +110,227 @@ def export_deletion_ledger(storage, authority: InstallationMaintenance) -> dict:
         return _ledger_in_transaction(tx, context)
 
 
+def _digest_shaped(value) -> bool:
+    return type(value) is str and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _sync_directory(directory: Path) -> None:
+    """Make a rename or a removal in ``directory`` durable where a directory can be synced: on POSIX, by ``fsync`` of
+    the directory.  Windows has none to sync; ``_write_whole`` moves files there with write-through instead."""
+    if sys.platform == "win32":
+        return
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def restore_pending(data_directory: Path) -> bool:
+    """Whether a restore's marker is beside the store, whole or not: every open of the store refuses while it is.
+
+    On Windows the marker is looked for, as it is written, by its extended-length name, to which the 260-character
+    path limit does not apply.
+    """
+    return os.path.lexists(extended_path(data_directory / MARKER_FILENAME))
+
+
+def _write_whole(path: Path, text: str) -> None:
+    """``text`` written to ``path`` through a file of its own beside it, synced, then moved over it on the disk.
+
+    A crash leaves the earlier file or the whole new one, never part of one.  On Windows the move is ``MoveFileExW``
+    with ``MOVEFILE_WRITE_THROUGH``, which returns only once the file is moved on the disk, where ``os.replace``
+    leaves the flag out; elsewhere it is ``os.replace``, then ``fsync`` of the directory.  On Windows both files are
+    named in the extended-length form, to which the 260-character path limit does not apply.
+    """
+    staged = extended_path(path.with_name(f".{path.name}.{os.urandom(8).hex()}.tmp"))
+    target = extended_path(path)
+    try:
+        with staged.open("x", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if sys.platform == "win32":
+            import ctypes  # Loaded here: every open of a store imports this module, and only a restore writes files.
+            from ctypes import wintypes
+
+            move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+            move.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+            move.restype = wintypes.BOOL
+            if not move(str(staged), str(target), 0x1 | 0x8):  # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            os.replace(staged, target)
+            _sync_directory(path.parent)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _kept_ledger(storage) -> dict | None:
+    """The ledger kept beside the store (``LEDGER_FILENAME``), or None when none can be read."""
+    path = extended_path(storage.binding.data_directory / LEDGER_FILENAME)
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        ledger = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return ledger if isinstance(ledger, dict) else None
+
+
+def _closable(storage, context, ledger) -> bool:
+    """Whether closing admission on ``ledger`` writes the marker; False when the store is closed on it already.
+
+    No marker, or one its writer left cut short (``checkpoint_unreadable``), is written: a restore copies a snapshot
+    over the store only once its marker is whole, so the store is still the one being closed.  Not when a ledger newer
+    than the store's present state is kept beside a cut-short marker: the store was replaced after it was closed, and
+    only that ledger holds what was forgotten since (``marker_damaged``).  A whole marker of another ledger refuses:
+    the store is closed on that ledger (``restore_already_pending`` when it is kept, ``ledger_missing`` when not).
+    """
+    if not restore_pending(storage.binding.data_directory):
+        return True
+    kept = _kept_ledger(storage)
+    digest = ledger_digest(ledger)
+    try:
+        _, pending = _pending_marker(storage, context)
+    except ContractError as exc:
+        if exc.field != "checkpoint_unreadable":
+            raise
+        epoch = None if kept is None else kept.get("memory_epoch")
+        if type(epoch) is int and ledger_digest(kept) != digest and epoch >= ledger["memory_epoch"]:
+            raise ContractError("RESTORE_UNVERIFIED", "marker_damaged") from None
+        return True
+    if pending["expected_ledger_sha256"] == digest:
+        return False
+    if kept is not None and ledger_digest(kept) == pending["expected_ledger_sha256"]:
+        raise ContractError("RESTORE_UNVERIFIED", "restore_already_pending")
+    raise ContractError("RESTORE_UNVERIFIED", "ledger_missing")
+
+
 def begin_restore(storage, authority: InstallationMaintenance, *, expected_ledger_sha256: str) -> None:
+    """Close admission on the store's ledger, the one ``expected_ledger_sha256`` names.
+
+    The ledger is written beside the store first and the marker after it, each whole (``_write_whole``): once the
+    marker is there, so is the ledger it names, and a restore copies a snapshot over the store only after both.  A
+    store closed on this ledger already gets its ledger file written again; a marker cut short is written again when
+    the store is still the one it was closing (``_closable``).
+    """
     context = _maintenance_context(storage, authority)
-    if (
-        type(expected_ledger_sha256) is not str
-        or len(expected_ledger_sha256) != 64
-        or any(c not in "0123456789abcdef" for c in expected_ledger_sha256)
-    ):
+    if not _digest_shaped(expected_ledger_sha256):
         raise ContractError("RESTORE_UNVERIFIED", "checkpoint_required")
-    marker = storage.binding.data_directory / "restore-required.json"
+    data_directory = storage.binding.data_directory
     payload = dict(
         installation_id=context.binding.installation_id,
         agent_id=context.binding.agent_id,
         data_directory=str(context.binding.data_directory),
         expected_ledger_sha256=expected_ledger_sha256,
     )
-    # Take the same writer lease/transaction as ordinary mutations, so the
-    # independently supplied checkpoint cannot go stale before admission closes.
-    with storage.write(context) as tx:
-        if marker.exists() or marker.is_symlink():
-            raise ContractError("RESTORE_UNVERIFIED", "restore_already_pending")
-        if ledger_digest(_ledger_in_transaction(tx, context)) != expected_ledger_sha256:
+    # The same writer lease and transaction as ordinary mutations, so the independently supplied checkpoint cannot go
+    # stale before admission closes; through the fence, so that a store closed already can be closed again.
+    with storage._transaction(context, writable=True, remaining_seconds=None, restoring=True) as tx:
+        ledger = _ledger_in_transaction(tx, context)
+        if ledger_digest(ledger) != expected_ledger_sha256:
             raise ContractError("RESTORE_UNVERIFIED", "checkpoint_changed")
-        # Closed admission is durable BEFORE P15 replaces/copies the database.
-        with marker.open("x", encoding="utf-8") as stream:
-            stream.write(canonical(payload) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        write_marker = _closable(storage, context, ledger)
+        _write_whole(data_directory / LEDGER_FILENAME, canonical(ledger) + "\n")
+        if write_marker:
+            _write_whole(data_directory / MARKER_FILENAME, canonical(payload) + "\n")
 
 
-def _restore_checkpoint(storage, context, ledger):
-    """The pending restore's marker and the ledger's checkpoint epoch, once the marker, the ledger and this
-    installation agree."""
-    marker = storage.binding.data_directory / "restore-required.json"
-    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size > 4096:
+def _pending_marker(storage, context):
+    """The pending restore's marker and what it holds.
+
+    Refused with ``checkpoint_missing`` when there is none, ``marker_path`` when it is not a plain file,
+    ``checkpoint_unreadable`` when it holds no whole marker, and ``identity`` when it names another installation.
+    """
+    marker = storage.binding.data_directory / MARKER_FILENAME
+    if not restore_pending(storage.binding.data_directory):
         raise ContractError("RESTORE_UNVERIFIED", "checkpoint_missing")
-    pending = json.loads(marker.read_text(encoding="utf-8"))
-    if (pending.get("installation_id"), pending.get("agent_id"), pending.get("data_directory")) != (
+    found = extended_path(marker)
+    if found.is_symlink() or not found.is_file():
+        raise ContractError("RESTORE_UNVERIFIED", "marker_path")
+    try:
+        pending = json.loads(found.read_text(encoding="utf-8")) if found.stat().st_size <= 4096 else None
+    except ValueError:
+        pending = None
+    if (
+        not isinstance(pending, dict)
+        or any(type(pending.get(field)) is not str for field in ("installation_id", "agent_id", "data_directory"))
+        or not _digest_shaped(pending.get("expected_ledger_sha256"))
+    ):
+        raise ContractError("RESTORE_UNVERIFIED", "checkpoint_unreadable")
+    if (pending["installation_id"], pending["agent_id"], pending["data_directory"]) != (
         context.binding.installation_id,
         context.binding.agent_id,
         str(context.binding.data_directory),
     ):
         raise ContractError("RESTORE_UNVERIFIED", "identity")
+    return marker, pending
+
+
+def _restore_checkpoint(storage, context, ledger):
+    """The pending restore's marker and the ledger's checkpoint epoch, once the marker, the ledger and this
+    installation agree."""
+    marker, pending = _pending_marker(storage, context)
     if ledger_digest(ledger) != pending.get("expected_ledger_sha256"):
         raise ContractError("RESTORE_UNVERIFIED", "ledger_incomplete")
-    if (
-        ledger.get("format"),
-        ledger.get("schema_version"),
-        ledger.get("installation_id"),
-        ledger.get("agent_id"),
-        ledger.get("scope_ids"),
-    ) != (
-        "scope-recall-deletion-ledger/1",
-        SCHEMA_VERSION,
+    sections = {
+        "format",
+        "schema_version",
+        "memory_epoch",
+        "installation_id",
+        "agent_id",
+        "scope_ids",
+        "operations",
+        "withdrawals",
+        "source_groups",
+        "absent_objects",
+    }
+    # Whatever schema the exporting release wrote: the format names what the ledger holds.
+    if set(ledger) != sections or ledger["format"] != LEDGER_FORMAT or type(ledger["schema_version"]) is not int:
+        raise ContractError("RESTORE_UNVERIFIED", "ledger_format")
+    if (ledger["installation_id"], ledger["agent_id"], ledger["scope_ids"]) != (
         context.binding.installation_id,
         context.binding.agent_id,
         sorted(context.allowed_scope_ids),
     ):
         raise ContractError("RESTORE_UNVERIFIED", "ledger_identity")
-    checkpoint_epoch = ledger.get("memory_epoch")
+    checkpoint_epoch = ledger["memory_epoch"]
     if type(checkpoint_epoch) is not int or not 0 <= checkpoint_epoch < 9223372036854775807:
         raise ContractError("RESTORE_UNVERIFIED", "ledger_epoch")
     return marker, checkpoint_epoch
 
 
+def pending_restore_ledger(storage, authority: InstallationMaintenance) -> tuple[dict, bool]:
+    """The ledger the pending restore replays, and whether it is the one kept beside its marker.
+
+    The kept ledger, whichever release exported it, once the marker names it and its format and this installation
+    accept it.  Otherwise the store's own ledger, read through the fence, on which ``begin_restore`` then closes the
+    store again, when ``_closable`` allows it.  Refused with ``RESTORE_UNVERIFIED`` when neither holds; nothing is
+    written.
+    """
+    context = _maintenance_context(storage, authority)
+    kept = _kept_ledger(storage)
+    try:
+        _, pending = _pending_marker(storage, context)
+    except ContractError as exc:
+        if exc.field != "checkpoint_unreadable":
+            raise
+        pending = None
+    if pending is not None and kept is not None and ledger_digest(kept) == pending["expected_ledger_sha256"]:
+        _restore_checkpoint(storage, context, kept)
+        return kept, True
+    with storage._transaction(context, writable=False, remaining_seconds=None, restoring=True) as tx:
+        ledger = _ledger_in_transaction(tx, context)
+    _closable(storage, context, ledger)
+    return ledger, False
+
+
 def _replay_operation(tx, conn, context, entry, checkpoint_epoch) -> int:
     """Replay one deletion operation of the ledger: the operation, its members' tombstones and, for a delete, the
     purge.  Returns how many objects it names."""
+    if set(entry) != {"operation", "members"}:
+        raise ContractError("RESTORE_UNVERIFIED", "operation_shape")
     row = entry["operation"]
     fields = tuple(row)
     allowed_fields = {
@@ -206,6 +379,8 @@ def _replay_operation(tx, conn, context, entry, checkpoint_epoch) -> int:
         )
     targets = []
     for member in entry["members"]:
+        if set(member) != {"object_kind", "object_ref", "scope_id", "project_id", "branch_id"}:
+            raise ContractError("RESTORE_UNVERIFIED", "member_shape")
         if member["scope_id"] not in context.allowed_scope_ids or member["object_kind"] not in OBJECT_TABLES:
             raise ContractError("RESTORE_UNVERIFIED", "member_scope")
         targets.append(
@@ -287,6 +462,19 @@ def _replay_source_group(conn, context, group) -> None:
 def _replay_withdrawal(conn, context, ledger, withdrawal) -> None:
     """Replay one withdrawn claim: its later revision when the restored file holds an older one, else a block on the
     claim the file does not hold."""
+    if set(withdrawal) != {
+        "claim_id",
+        "scope_id",
+        "project_id",
+        "branch_id",
+        "current_revision",
+        "valid_from",
+        "valid_to",
+        "recorded_from",
+        "state",
+        "intention_state",
+    }:
+        raise ContractError("RESTORE_UNVERIFIED", "withdrawal_shape")
     if withdrawal["scope_id"] not in context.allowed_scope_ids:
         raise ContractError("RESTORE_UNVERIFIED", "withdrawal_scope")
     old = conn.execute(
@@ -342,6 +530,9 @@ def _replay_withdrawal(conn, context, ledger, withdrawal) -> None:
 
 def _replay_absence(conn, context, absent) -> None:
     """Replay one block on an object the checkpoint says is absent."""
+    fields = {"object_kind", "object_ref", "scope_id", "project_id", "branch_id", "checkpoint_sha256", "reason"}
+    if set(absent) != fields:
+        raise ContractError("RESTORE_UNVERIFIED", "absent_shape")
     if absent["scope_id"] not in context.allowed_scope_ids or absent["object_kind"] != "claim":
         raise ContractError("RESTORE_UNVERIFIED", "absent_scope")
     conn.execute(
@@ -391,14 +582,20 @@ def replay_deletion_ledger(
         conn.execute(
             "UPDATE instance_meta SET memory_epoch=max(memory_epoch,?)+1 WHERE singleton=1", (checkpoint_epoch,)
         )
-    # A crash before this unlink leaves admission closed and replay is safe.
+    # The write-ahead log holds the snapshot's pages, deleted words included, until it is truncated, so admission
+    # reopens only after that.  A reader still on an older snapshot holds the truncation back (wal_busy); a crash
+    # before the unlink below leaves admission closed too, and replaying again is safe.
+    if not storage.truncate_wal(context, remaining_seconds=remaining_seconds, restoring=True):
+        raise ContractError("RESTORE_UNVERIFIED", "wal_busy")
     storage._path_check()
-    if marker.is_symlink() or marker.parent.resolve() != storage.binding.data_directory.resolve():
+    found = extended_path(marker)
+    if found.is_symlink() or marker.parent.resolve() != storage.binding.data_directory.resolve():
         raise ContractError("RESTORE_UNVERIFIED", "marker_path")
-    marker.unlink()
+    found.unlink()
+    _sync_directory(marker.parent)
     return dict(
         status="deletion_ledger_replayed",
         affected_objects=count,
         checkpoint_sha256=ledger_digest(ledger),
-        boundary="deletion and withdrawal admission only; P15 validates the complete restored dataset",
+        boundary="deletion and withdrawal admission only; the snapshot's integrity and identity are the caller's",
     )

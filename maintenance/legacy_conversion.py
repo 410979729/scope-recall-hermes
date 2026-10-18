@@ -844,7 +844,7 @@ def _report(cv: Conversion, target: dict[str, Any]) -> dict[str, Any]:
             "pipeline": "scope_recall.core.capture_filters.sanitize_report_text/sanitize_structured_value",
             "redacted_records": cv.redactions,
         },
-        "rollback_boundary": "new sources/deletions/corrections not representable in 578b require Core restore-required stop-write protection; old snapshot is never overwritten",
+        "rollback_boundary": "the 578b source is never written; going back to it keeps nothing this store receives after the migration, deletions included",
         "candidate_auto_promoted": False,
         "vectors": "not imported; rebuildable",
         "old_governance_engines": "sanitized imported history only; not executable in new Core",
