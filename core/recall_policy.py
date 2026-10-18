@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -410,10 +411,50 @@ def query_is_specific(
 #: A bigram holding one of these asks rather than names, so it proves nothing.
 #: The few nouns built on them (酒吧, 哪吒) are the price of that rule.
 _ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥谁")
-#: Asking words whose characters also appear in naming words (怎 in 怎样 only,
-#: but 多 in 多少 and 多个, 是 in 是否 and 于是).
-_ASKING_WORDS = frozenset({"怎样", "如何", "为何", "多少", "是否", "何时", "几时"})
-#: English asking and helper words: in a question they carry no subject matter.
+#: What a question is read without (``meaningful_query_terms``), so that the bigrams joining a Chinese one to its
+#: neighbours go with it (是多 in 端口是多少, 绍一 and 一下 in 介绍一下):
+#:
+#: - Chinese words that ask, whose characters also appear in naming words: 怎 in 怎样 only, but 多 in 多少 and 多个, 是
+#:   in 是否 and 于是.
+#: - Words that only frame a request about what the question names, which an answer need not say: it names what it
+#:   answers (介绍一下, 说说, 告诉, 关于, 知道, 怎么样, 进展, 消息 ...).  情况 frames "X 的情况" but not 情况下, a
+#:   condition an answer says too.
+#: - The person a request to be told is addressed to: tell me, 给我讲讲, and me or us closing a request
+#:   ("Explain Orchard to me").  Elsewhere they name whom the request is about (contact me, seat me, 给我订), and an
+#:   answer says them.
+_ASKING_PHRASES = re.compile(
+    "|".join(
+        (
+            "怎么样",
+            "怎样",
+            "如何",
+            "为何",
+            "多少",
+            "是否",
+            "何时",
+            "几时",
+            "(?:给我|跟我|帮我)?(?:介绍|说说|讲讲|谈谈|聊聊|看看)",
+            "告诉我?",
+            "一下",
+            "关于",
+            "知道",
+            "还记得",
+            "记得",
+            "情况(?!下)",
+            "进展",
+            "消息",
+            "最新",
+            "动态",
+            r"\b(?:tell|show|give|remind) (?:me|us)\b",
+            r"\b(?:let (?:me|us) know|fill (?:me|us) in|catch (?:me|us) up|walk (?:me|us) through)\b",
+            r"\b(?:to|for) (?:me|us)\b(?=\W*$)",
+        )
+    ),
+    re.I,
+)
+#: English words that ask, help or only frame a request about what the question names ("Describe Orchard", "Any
+#: updates on Orchard?"): in a question they carry no subject matter, and an answer need not say them.  status names
+#: something itself (a status page, a status code) and stays a word.
 _ASKING_ENGLISH = frozenset(
     {
         "what",
@@ -447,12 +488,41 @@ _ASKING_ENGLISH = frozenset(
         "by",
         "with",
         "about",
+        "please",
+        "tell",
+        "show",
+        "give",
+        "you",
+        "know",
+        "remember",
+        "remind",
+        "say",
+        "said",
+        "describe",
+        "explain",
+        "summarize",
+        "summarise",
+        "any",
+        "anything",
+        "something",
+        "everything",
+        "update",
+        "updates",
+        "latest",
+        "news",
+        "progress",
+        "situation",
+        "overview",
+        "summary",
+        "info",
+        "information",
+        "details",
     }
 )
 
 
 def _asks_only(term: str) -> bool:
-    if term in _ASKING_WORDS or term in _ASKING_ENGLISH:
+    if term in _ASKING_ENGLISH:
         return True
     return _CJK_TEXT.search(term) is not None and any(char in _ASKING_CHARACTERS for char in term)
 
@@ -525,10 +595,21 @@ def same_message(text: str, other: str) -> bool:
 
 
 def meaningful_query_terms(query: str) -> tuple[str, ...]:
-    """Terms that can establish lexical relevance for one candidate."""
+    """Terms that can establish lexical relevance for one candidate: the query's own, read without what asks or frames
+    a request (``_ASKING_PHRASES``), but for weak ones, single characters and words that ask or frame
+    (``_asks_only``)."""
+    # Without those phrases a query is shorter: what ``query_terms`` refuses is refused as asked.
+    query_terms(query)
+    return _meaningful_terms(query)
 
+
+@functools.lru_cache(maxsize=64)
+def _meaningful_terms(query: str) -> tuple[str, ...]:
+    """A recall asks for these as often as for its terms (``query_terms``)."""
     return tuple(
-        term for term in query_terms(query) if term not in _WEAK_QUERY and len(term) > 1 and not _asks_only(term)
+        term
+        for term in query_terms(_ASKING_PHRASES.sub(" ", query))
+        if term not in _WEAK_QUERY and len(term) > 1 and not _asks_only(term)
     )
 
 

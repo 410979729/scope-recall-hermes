@@ -315,6 +315,34 @@ def test_a_question_that_asks_nothing_past_its_names_is_answered_by_any_item_nam
     assert answering("What is Lantern?", (said,)) == Answers(True, ())
 
 
+def test_a_request_to_be_told_about_a_named_thing_is_answered_by_any_item_naming_it():
+    """A request to be told about something asks for whatever is said about it, as "What is Orchard?" does: the words
+    that frame it (tell me, describe, any updates, 介绍一下, 说说, 怎么样, 的情况) ask nothing an answer has to say.
+    Asked for Orchard's port inside such a frame, an item answers only by saying port."""
+    said = _recalled("event-orchard", "Orchard is the billing service the shop runs on.")
+    zh = _recalled("event-orchard-zh", "Orchard 是商店用的计费服务。")
+    for request in (
+        "Tell me about Orchard",
+        "What do you know about Orchard?",
+        "Describe Orchard",
+        "Explain Orchard to me",
+        "Anything on Orchard?",
+        "Any updates on Orchard?",
+        "Orchard 怎么样？",
+        "介绍一下 Orchard",
+        "说说 Orchard",
+        "讲讲 Orchard 的情况",
+        "关于 Orchard 你知道什么？",
+    ):
+        assert answering(request, (said, zh)) == Answers(True, (said, zh)), request
+    assert answering("Tell me about Lantern", (said, zh)) == Answers(True, ())
+    port = _recalled("event-port", "Orchard's port is 8443.")
+    port_zh = _recalled("event-port-zh", "Orchard 的端口是 8443。")
+    for request, answer in (("What do you know about Orchard's port?", port), ("介绍一下 Orchard 的端口", port_zh)):
+        assert answering(request, (said, zh)) == Answers(True, ()), request
+        assert answering(request, (said, zh, port, port_zh)) == Answers(True, (answer,)), request
+
+
 def test_words_in_single_quotes_are_left_out_and_an_apostrophe_quotes_nothing():
     """Single quotation marks around words, straight or curly, hold someone else's words or a value the writer quotes,
     as double ones do; an apostrophe inside a word or before a decade opens no quotation."""
