@@ -255,12 +255,24 @@ def retire_rootless_proposals(
 
 
 def _denial_standing(tx, head, versions):
-    """What the slot held when ``head``, a denial, was written (``select_effective``), and why the denial is no value
-    of its slot there (``mutate.denial_verdict``, as writing it now would judge), or None where it is one."""
-    earlier = tuple(v for v in versions if v.revision < head.revision)
-    held = select_effective(earlier, head.recorded_from) if earlier else None
+    """What the slot held when ``head``, a denial, was written (``_value_under``), and why the denial is no value of
+    its slot there (``mutate.denial_verdict``, as writing it now would judge), or None where it is one."""
+    held = _value_under(tx, head, versions)
     reason, _ends = denial_verdict(head.payload, held, tx.claims.roots(evidence_refs(head.payload)))
     return held, reason
+
+
+def _value_under(tx, version, versions):
+    """The value the slot held when ``version`` was written, of the versions before it (``select_effective``), passing
+    over one that is a denial and no value of its slot itself: an older rule stacked denials as values, and "not
+    Travis" over "not CircleCI" over Jenkins displaced Jenkins, "not Jenkins" over "not CircleCI" alone nothing."""
+    earlier = tuple(v for v in versions if v.revision < version.revision)
+    while earlier:
+        held = select_effective(earlier, version.recorded_from)
+        if held is None or not is_denial(held.payload) or _denial_standing(tx, held, earlier)[1] is None:
+            return held
+        earlier = tuple(v for v in earlier if v.revision != held.revision)
+    return None
 
 
 def _settle_denial(tx, head, held, reason: str, *, now: str, dry_run: bool) -> dict[str, Any]:

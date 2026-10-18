@@ -715,6 +715,31 @@ def test_restore_withdraws_a_denial_that_is_no_value_and_gives_back_what_it_disp
     assert core.operations.restore_displaced_values(ctx, limit=32, dry_run=False)["changed"] == []
 
 
+@pytest.mark.parametrize("command", ["restore_displaced_values", "requalify_claims"])
+def test_a_denial_over_denials_gives_back_the_nearest_value_under_them(app, command):
+    """Denials an older rule stacked on a slot displaced only what was a value: "not Travis" over "not CircleCI" over
+    Jenkins gives back Jenkins, and "not Jenkins" over "not CircleCI" alone gives back nothing; a second run finds
+    nothing left to do."""
+    core, ctx = app
+    jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
+    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not CircleCI.", "not CircleCI")
+    _denial_at_the_head(core, ctx, jenkins, "The TEST-project CI service is not Travis.", "not Travis")
+    first = capture(core, ctx, "The TEST-project build service is not CircleCI.")
+    with core.storage.write(ctx) as tx:
+        verdict = Qualification("active", "direct_report", "explicit_scoped_source")
+        payload = draft(first, "not CircleCI", kind="fact", predicate="build service", statement_kind="assertion")
+        build = tx.claims.append("TEST-scope", payload, verdict, recorded_at=Clock.now)
+    _denial_at_the_head(core, ctx, build, "The TEST-project build service is not Jenkins.", "not Jenkins")
+    run = getattr(core.operations, command)
+    assert {item["ref"]: item["restores"] for item in run(ctx, limit=32, dry_run=False)["changed"]} == {
+        jenkins.ref: 1,
+        build.ref: None,
+    }
+    assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
+    assert core.current_claim(ctx, build.ref) is None
+    assert run(ctx, limit=32, dry_run=False)["changed"] == []
+
+
 def test_requalify_keeps_the_person_s_own_claims_as_they_were(app):
     """The person's own claims are stored under their principal, bound from their 我 when written: re-judging binds
     them the same way and changes none, nor does restoring displaced values."""

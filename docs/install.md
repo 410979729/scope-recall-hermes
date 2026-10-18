@@ -859,12 +859,14 @@ scope-recall restore-displaced-values --config /path/to/instance-root/scope-reca
 It pages like `retire-rootless-claims`, and without `--apply` it only lists the
 claims it would change and the revision it would restore, by reference. Each
 such denial gets a retracted version. The value a denial of another value
-displaced becomes current again if it held when the denial was written and
-holds still; otherwise the claim has no current value. The person's own
+displaced, the nearest version under it that is a value itself, becomes current
+again if it held when the denial was written and holds still; otherwise the
+claim has no current value. A second run changes nothing. The person's own
 denials, in a preference or a fact about them, that are the slot's only value
 ("我不吃辣") or deny the value they replaced ("I don't drink coffee any more")
-are their values, and the command leaves them. Nothing is deleted: every
-version stays in the claim's history.
+are their values, and the command leaves them, as it leaves a value written as
+a term (NOT NULL, NOT FOUND, NOT_STARTED). Nothing is deleted: every version
+stays in the claim's history.
 
 An earlier release's capture filter left a one-line summary in place of a tool
 output it withheld ("Tool execution summary ... output_preview=omitted"); stores
