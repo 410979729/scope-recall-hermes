@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
 from scope_recall.adapters.clients.handler import SystemHookClock
-from scope_recall.core.composition import SystemClock
 
 
 @pytest.fixture(scope="session")
@@ -47,19 +46,14 @@ class FixedClock:
         return self._mono
 
 
-# A hook's budget runs on its clock (``SystemHookClock`` unless a test gives it another), and a write to a real store
-# has no bound in time: on a slow disk one can take a hook's whole budget.  These keep a test's outcome from depending
-# on how long the store takes.  A test of the budget itself stores nothing and injects its delays, and reads the time a
-# host would wait (``test_shared_client.busy_store``).
-
-
 @pytest.fixture
-def still_clocks(monkeypatch):
-    """Every hook's clock stands still, and so does that of every ``MemoryCore`` given none: no hook runs out of its
-    budget and no recall out of its time.  For a test of what a hook stores and answers, not of when its budget ends."""
-    now = time.monotonic()
-    monkeypatch.setattr(SystemHookClock, "monotonic", lambda _clock: now)
-    monkeypatch.setattr(SystemClock, "monotonic", lambda _clock: now)
+def still_clocks(metered_store):
+    """Exclude physical store latency from a semantic test, on the clock every admission check reads.
+
+    The hook, core and durable inbox share this clock. Non-store waits still advance, so a failed operation can
+    time out; budget tests charge explicit store costs through the same fixture.
+    """
+    return metered_store(0.0)
 
 
 @pytest.fixture

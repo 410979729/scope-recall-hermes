@@ -176,13 +176,16 @@ def _stored(hermes_home) -> list[tuple]:
         return conn.execute("SELECT role, content, origin, occurred_at FROM source_events ORDER BY rowid").fetchall()
 
 
-def test_a_rebuilt_agent_s_provider_gets_its_session_s_hooks(installed_core, initialize_kwargs, hermes_home):
+def test_a_rebuilt_agent_s_provider_gets_its_session_s_hooks(
+    installed_core, initialize_kwargs, hermes_home, slow_capture_store
+):
     """Hermes rebuilds an agent its cache evicted, and the new provider binds the same session while the old one,
     retired but not shut down, stays registered.  The hooks went to the lower id(): pre_llm_call stored the message
     through the old provider under the turn's id, on_turn_start and sync_turn reached the new one, and it stored the
     message a second time under an ordinal with the reply.  The adapter that bound the session last gets its hooks."""
     from scope_recall.adapters.hermes.hooks import _global_callback
 
+    slow_capture_store()
     core, clock = installed_core
     pair = sorted(
         (ScopeRecallHermesAdapter(core=core, clock=clock), ScopeRecallHermesAdapter(core=core, clock=clock)), key=id
@@ -206,10 +209,11 @@ def test_a_rebuilt_agent_s_provider_gets_its_session_s_hooks(installed_core, ini
         old.shutdown()
 
 
-def test_what_the_person_sent_mid_turn_is_recorded_as_their_words(adapter, hermes_home):
+def test_what_the_person_sent_mid_turn_is_recorded_as_their_words(adapter, hermes_home, slow_capture_store):
     """Hermes delivers a message sent while a turn runs as a steer row inside the turn, in its marker and, from a
     gateway, after an origin preamble of chat and user ids.  None of it was stored, and the turn's scan stopped at
     that row, so what the assistant said before it was lost too."""
+    slow_capture_store()
     provider, _clock = adapter
     provider.on_turn_start(5, "TEST 整理 QX-18", turn_id="turn-5")
     history = [

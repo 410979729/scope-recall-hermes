@@ -69,6 +69,7 @@ def accounted_words(core, provider):
 def test_compression_defers_steers_within_shared_budget(telegram, monkeypatch, metered_store, per_operation):  # noqa: F811
     monkeypatch.setattr(telegram._retry, "start", lambda: None)
     clock = metered_store(per_operation)
+    assert clock is metered_store(per_operation), "semantic and budget fixtures share one transaction clock"
     started = telegram._core.clock.monotonic()
     with telegram._core.storage.read(telegram._require_identity().trusted_context()):
         pass

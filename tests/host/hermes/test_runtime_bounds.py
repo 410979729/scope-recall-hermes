@@ -617,7 +617,10 @@ def test_a_turns_retry_pass_leaves_a_tool_result_being_written_alone(adapter, he
 
 
 @pytest.mark.parametrize("switch", ["session", "audience"])
-def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(adapter, hermes_home, monkeypatch, switch):
+@pytest.mark.parametrize("deferred", [False, True])
+def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(
+    adapter, hermes_home, monkeypatch, switch, deferred
+):
     """The write runs without the session, so a session or audience switch can come in meanwhile: the capture
     keeps the session and scope it was said in, and stays out of the new session's fence."""
     provider, _clock = adapter
@@ -626,9 +629,11 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(ada
     entered, release = threading.Event(), threading.Event()
 
     def source_by_event_key(context, key, *args, **kwargs):
-        if "slow-call" in key:
+        if "slow-call" in key and not entered.is_set():
             entered.set()
             release.wait(10)
+            if deferred:
+                time.sleep(0.6)
         return real(context, key, *args, **kwargs)
 
     monkeypatch.setattr(provider._core, "source_by_event_key", source_by_event_key)
@@ -645,9 +650,14 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(ada
         switch_thread.join(_PROMPTLY)
         _unregister_adapter_instance(provider)
     assert "error" not in first_box and "error" not in switch_box, (first_box, switch_box)
+    # Waiting for the switch can consume the capture's admission time. Its retry must keep the original audience
+    # even though the provider now serves another session; only committed sources satisfy the assertion below.
+    provider._retry.write_observed()
     with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
         rows = conn.execute("SELECT session_id, scope_id, origin FROM source_events WHERE role='tool'").fetchall()
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
     assert rows == [(before.stored_session_id(), before.local_scope_id, "tool_observation")]
+    assert not provider._retry.captures
     assert provider.diagnostics.current_source_refs == ()
 
 

@@ -4167,9 +4167,10 @@ def _dsh_said(root, role=None):
     return sorted(_rows(root, f"SELECT role, origin, content FROM source_events WHERE entry_id='dsh'{where}"))
 
 
-def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(dsh, still_clocks):
+def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(dsh, still_clocks, slow_capture_store):
     """The plugin runs the prompt hook before a turn's first step: the prompt is the owner's, named by the session and
     dsh's turn number, and the answer is what is remembered, which the plugin appends to the step."""
+    slow_capture_store()
     root, home = dsh
     result, diagnostics = _dsh(
         home, {"hook_event_name": "UserPromptSubmit", "turn_id": "1", "prompt": "TEST 我的猫叫 Mochi，最爱吃金枪鱼。"}
