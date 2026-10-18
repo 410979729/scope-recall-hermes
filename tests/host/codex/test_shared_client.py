@@ -4300,6 +4300,50 @@ def test_two_dsh_replies_alike_in_one_session_are_two_messages(dsh, still_clocks
     ]
 
 
+def _dsh_inbox_resolved(home):
+    """What the store's worker does with the dsh session's captures that met another message under their key
+    (``capture_inbox.resolve_conflicted_ingress``)."""
+    from scope_recall.core import capture_inbox
+
+    hook = CodexHookHandler.from_home(str(home), "dsh")
+    try:
+        context = hook.context(hook.audience_of({"cwd": "C:/TEST/work"}), DSH_SESSION, "host_generated")
+        return capture_inbox.resolve_conflicted_ingress(
+            hook.core.storage,
+            hook.core.clock,
+            context,
+            authorize=lambda _scope: context.allowed_scope_ids,
+            remaining_seconds=5,
+        )
+    finally:
+        hook.close()
+
+
+def test_a_dsh_reply_sent_again_when_its_key_cannot_be_read_is_resolved_as_the_one_stored(
+    dsh, still_clocks, monkeypatch
+):
+    """The Stop reads what its turn's key holds to keep a reply's stored moment.  When that read fails, the reply sent
+    again with a moment of its own is refused and waits in the inbox, and the store's worker resolves it as the reply
+    already stored: one copy, and nothing under a key of its own."""
+    from scope_recall.core import MemoryCore
+
+    root, home = dsh
+    stop = {"hook_event_name": "Stop", "turn_id": "6", "last_assistant_message": "TEST 读不到也只存一次。"}
+    _dsh(home, stop)
+
+    def unreadable(self, *args, **kwargs):
+        raise sqlite3.OperationalError("TEST disk I/O error")
+
+    with monkeypatch.context() as broken:
+        broken.setattr(MemoryCore, "source_by_event_key", unreadable)
+        _result, diagnostics = _dsh(home, stop)
+    assert diagnostics.capture_error_code == "VERSION_CONFLICT"
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(1,)]
+    assert [receipt.disposition for receipt in _dsh_inbox_resolved(home)] == ["duplicate"]
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
+    assert [(key, words) for key, words, _at in _dsh_kept(root)] == [("assistant:6", "TEST 读不到也只存一次。")]
+
+
 def test_a_dsh_turn_without_a_reply_stores_what_its_lines_show(dsh):
     """A turn that failed or was aborted has no reply, and the plugin sends what it kept of earlier turns the same way:
     no reply is stored, the lines are, and lines that are no message are counted with them."""

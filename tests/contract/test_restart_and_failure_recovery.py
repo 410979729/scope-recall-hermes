@@ -448,6 +448,41 @@ def test_every_message_sent_into_one_running_turn_is_stored(worker_app):
     assert contents == sorted(["TEST 先看一下日志", "TEST 顺便查一下锁", "TEST 好"])
 
 
+def test_a_message_sent_again_with_a_moment_of_its_own_is_resolved_as_the_one_stored(worker_app):
+    """A host can send a message again dated anew (dsh's plugin sends a turn's reply with each later Stop that carries
+    its line): the same words under the same key, another moment, refused on that alone.  Resolved, it is the message
+    its key holds and leaves the inbox; re-keyed it would be stored a second time.  Other words under the key are
+    still a message of their own."""
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-turn-9/reply", role="assistant", content="TEST 已经存下的回答")
+    assert (
+        capture_inbox.durable_record_event(
+            core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None
+        ).durability
+        == "persisted"
+    )
+    receipts = [
+        capture_inbox.durable_record_event(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+        for event in (
+            dict(first, occurred_at="2026-09-05T12:00:31Z", time_precision="approximate"),
+            dict(first, content="TEST 同一个键下的另一句", occurred_at="2026-09-05T12:00:42Z"),
+        )
+    ]
+    assert [(receipt.disposition, receipt.error_code) for receipt in receipts] == [("conflict", "VERSION_CONFLICT")] * 2
+    resolved = capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5
+    )
+    assert sorted(receipt.disposition for receipt in resolved) == ["duplicate", "inserted"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+        stored = sorted(conn.execute("SELECT source_event_key, content, occurred_at FROM source_events").fetchall())
+    assert sorted((key, content) for key, content, _at in stored if "#rekey:" not in key) == [
+        ("TEST-turn-9/reply", "TEST 已经存下的回答")
+    ]
+    assert [content for key, content, _at in stored if "#rekey:" in key] == ["TEST 同一个键下的另一句"]
+    assert [at for _key, content, at in stored if content == "TEST 已经存下的回答"] == [first["occurred_at"]]
+
+
 def _a_pass(core, clock, ctx):
     """What a worker pass does with the inbox (``runtime.instance._replay_ingress``)."""
     authorize_all = dict(authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5)

@@ -296,11 +296,11 @@ class HookEvents:
         """A dsh reply already stored under its turn's key with the same words keeps the moment it was stored with.
 
         The plugin sends the reply again with each later Stop that carries its line: after one whose time ran out
-        before all of the turn's lines were stored, and from its sweep after a store that failed.  With a moment of its
-        own it would be another message under the key, refused (VERSION_CONFLICT) and then stored a second time under a
-        key of its own: a reply whose line carries no moment is dated by each hook, one from a client whose clock runs
-        ahead by its line moved back by each request's lead, and one stored at its hook's moment by its line when sent
-        again.  A store that cannot be read now leaves the moment as it is, and the capture says what the store does."""
+        before all of the turn's lines were stored, and from its sweep after a store that failed.  Sent again, it can
+        come with a moment of its own (a reply whose line carries none is dated by each hook, one stored at its hook's
+        moment by its line the next time), and is then refused under its key (VERSION_CONFLICT) and left in the inbox
+        until the store's worker resolves it as the reply already stored (``capture_inbox``).  Read here, the Stop
+        stores it as that reply at once; a store that cannot be read now leaves the moment as it is."""
         remaining = self._hook.remaining(deadline)
         if remaining <= 0:
             return
