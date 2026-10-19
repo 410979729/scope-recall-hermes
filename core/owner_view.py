@@ -1,11 +1,8 @@
 """Who a store's owner is called, and a question that names them, asked as they would ask it themselves.
 
-The owner's own words never carry their name.  A question that names them, the way an agent asks the recall tool
-("Joy 对辣的饮食偏好是什么？"), is drawn by its embedding to every greeting addressed to them, and lexically an
-answer in their own words falls short of the name.  Recall reads such a question as the owner's own as well
-(``owner_view``): the vector channel searches it in the first person beside the question as asked, both embedded in
-one request, and lexical admission takes a candidate the question without the name admits.  The question as asked
-keeps finding what names them.
+First-person statements can omit the owner's name, while questions about that owner can include it.  Recall
+therefore searches a first-person form alongside the original question and also applies lexical admission without
+the name.  The original query remains available for text that names the owner.
 
 The names are the installation's ``owner_names`` and the name the host attests for the person asking
 (``TrustedSourcePrincipal.display_name``), never a name a model or a message supplies.  No name is built in: every
@@ -36,7 +33,7 @@ _WRAPPING = " \"'“”‘’()[]{}<>.,;:!?|*~_-"
 
 def name_forms(display_name: object) -> tuple[str, ...]:
     """What a person is called, from the name a host attests: the whole name and, for a name of several words, the
-    first, the one people are called by (``Joy Joy`` gives ``Joy Joy`` and ``Joy``).  The others are left out: a
+    first, the one people are called by (``Alice Lee`` gives ``Alice Lee`` and ``Alice``).  The others are left out: a
     middle name or a surname (``Ann``, ``Lee`` of ``Mary Ann Lee``) is someone else's as often.  A host's account id
     and a name without a letter give nothing; a first word of one character gives the whole name alone."""
     if type(display_name) is not str:
@@ -66,7 +63,7 @@ def _chinese(text: str) -> bool:
 
 def _glued(text: str, index: int) -> bool:
     """Whether the character at ``index`` runs a Latin name on into a longer word, name or identifier: a letter or a
-    digit of any script but Chinese, which is written straight against a name (``Joy对辣``), or ``_./-\\`` of a
+    digit of any script but Chinese, which is written straight against a name (``Alice对辣``), or ``_./-\\`` of a
     path or an identifier."""
     if not 0 <= index < len(text):
         return False
@@ -74,8 +71,8 @@ def _glued(text: str, index: int) -> bool:
     return char in "_./-\\" or (char.isalnum() and not _chinese(char))
 
 
-#: A word in capitals after a Latin name on its line, which makes it someone's longer name (``Joy Smith``,
-#: ``Joy  SMITH``); ``I`` is no name.
+#: An ASCII word beginning with an uppercase letter after a Latin name is treated as a possible continuation of that
+#: name (``Alice Smith``, ``Alice SMITH``); the pronoun ``I`` is excluded.
 _NEXT_WORD = re.compile(r"[^\S\n]+(?!I\b)([A-Z][A-Za-z]+)")
 #: What may follow a Chinese name in a question about the person: a particle, a preposition, a common verb or adverb,
 #: a time.  Another character runs the name on into someone's longer one (``王芳芳``, ``王芳林``), which is no name
@@ -95,8 +92,9 @@ def _spans(query: str, name: str, names: tuple[str, ...]) -> list[tuple[int, int
     """Where ``name`` stands in ``query``, as (start, end, possessive), the end past a possessive after it (``的`` in
     a Chinese question, ``'s`` in another).
 
-    A Latin name is a word of its own, matched with its case (``joy`` and ``will`` are words before they are names),
-    and not the first of a longer name (``Joy Smith``) unless the next word is one of ``names`` too.  A Chinese name
+    Latin names are matched case-sensitively at word boundaries so ordinary lowercase words are not mistaken for
+    names (``May`` does not match ``may``).  A following capitalized word extends the name unless that word is also
+    configured in ``names``.  A Chinese name
     runs into the words around it, as Chinese is written (``王芳喜欢什么``), and is followed by what a question about
     the person goes on with (``_AFTER_A_CHINESE_NAME``), not by more of a longer name (``王芳芳``).  A name of one
     character is too short to tell from a word."""
@@ -154,7 +152,7 @@ def _tidy(text: str, chinese: bool) -> str:
 @lru_cache(maxsize=256)
 def owner_view(query: str, names: tuple[str, ...]) -> OwnerView | None:
     """The question asked as the owner would ask it, or None when it names none of ``names``.  The longest name is
-    read first (``Joy Joy`` before ``Joy``), and a question in Chinese takes 我 where an English one takes I."""
+    read first (``Alice Lee`` before ``Alice``), and a question in Chinese takes 我 where an English one takes I."""
     chosen: list[tuple[int, int, bool]] = []
     for name in sorted(set(names), key=lambda name: (-len(name), name)):
         for span in _spans(query, name, names):

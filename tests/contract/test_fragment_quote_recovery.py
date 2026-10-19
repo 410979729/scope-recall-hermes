@@ -60,8 +60,8 @@ def dropped(value):
 
 
 def test_prior_page_items_are_dropped_while_only_an_accepted_goal_can_carry_forward():
-    """What the page does not ground never enters the result; the page is no longer refused for it, so its claims,
-    checked on their own, stay."""
+    """Resume and reference proposals not grounded in the current page are dropped; only a goal already accepted
+    on an earlier page can carry forward."""
     goal = {"text": 'TEST 整理 "报告"', "basis": "explicit"}
     prior, page = 'TEST 已完成 "第一项"。', 'TEST 等待 "第二项"。'
     fence = SimpleNamespace(work_id=1, chunk=SimpleNamespace(start=len(prior), end=len(prior + page)))

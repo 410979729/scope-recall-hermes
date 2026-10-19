@@ -43,10 +43,8 @@ from .retrieval_hydration import RetrievalHydration, source_key
 from .visibility import OBJECT_KINDS
 
 _EXACT_REF = re.compile(r"(?:event|claim|episode|artifact|reference)-[A-Za-z0-9._/-]+@\d+")
-#: A term in at least this share of all sources tells the ranker nothing: it
-#: matches most of the corpus, so it separates nothing while costing the longest
-#: posting list in the index.  Measured, the terms that clear this bar are JSON
-#: field names from tool-observation envelopes, not anything a person wrote.
+#: High-frequency terms have low discriminative value and long posting lists.  Terms matching at least this share
+#: of all sources are candidates for pruning, subject to the floor and protected query terms below.
 _LEXICAL_DF_FRACTION = 0.10
 #: Floor so a young or small instance is never pruned: on a corpus of thirty
 #: sources, "10% of everything" is three, and ordinary words would vanish.

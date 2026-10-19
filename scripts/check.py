@@ -55,10 +55,9 @@ def pytest_watchdog_seconds(
 ) -> int:
     """Bounded suite watchdog, scaled to how much this run selected.
 
-    Release and integration keep their own fixed budgets: release's 600s,
-    integration's 2700s sized to the GitHub Windows runner's measured need for
-    the 118-file baseline. Every other tier keeps 180s as a floor and adds
-    twenty seconds a file it runs, capped at the release budget so no run --
+    Release and integration keep fixed budgets of 600s and 2700s respectively.
+    Every other tier keeps 180s as a floor and adds twenty seconds per selected
+    file, capped at the release budget so no run --
     hung or merely large -- waits forever; each of ``selected_paths`` that
     builds a whole store then adds its own allowance (``HEAVY_FILE_SECONDS``),
     which the cap does not cut.

@@ -40,9 +40,8 @@ def source_id(conn, event_id: str, source_revision: int) -> int | None:
 def index_terms(conn, source: int, terms: Iterable[str]) -> int:
     """Record that the source holds these terms.  Returns how many postings were named.
 
-    One statement each, whatever the count.  A statement per term hands the GIL back and forth at every row, and in a
-    Hermes gateway whose other threads are busy each handoff waits out their switch interval: a tool output of 51,283
-    characters (9,348 terms) would hold the store's writer lease 42 s, every other entry's write failing meanwhile.
+    Batch statements avoid per-term Python/SQLite crossings and reduce time spent
+    holding the writer lease under thread contention.
     """
     unique = tuple(dict.fromkeys(terms))
     if not unique:

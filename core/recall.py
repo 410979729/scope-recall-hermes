@@ -307,7 +307,7 @@ class RetrievalPipeline:
 
     def _owner_view(self, context: SearchContext) -> OwnerView | None:
         """The question as the store's owner would ask it, when it names them and asks something besides
-        (``core/owner_view.py``); a question about the name alone ("Joy 是谁？") is read as asked."""
+        (``core/owner_view.py``); a question about the name alone ("Alice 是谁？") is read as asked."""
         names = owner_names(self.policy.owner_names, context.trusted_context.source_principal)
         view = owner_view(context.query, names) if names else None
         return view if view is not None and meaningful_query_terms(view.bare) else None
@@ -587,22 +587,10 @@ class RetrievalPipeline:
                 hydrated.append((candidate, obj))
                 known.add(candidate.key)
 
-    #: What an object reached by relation may score against the hit it was reached from.
-    #:
-    #: Scored by its place in its own seed's list, the first object related to the
-    #: thirteenth hit would score 1/62, above every direct hit but the first.  Measured,
-    #: a query reached about sixteen related objects, and scored that way they all ranked
-    #: with the best hits: over one store's real questions the reply that answered each was in
-    #: the top five for 20 of 30, against 28 with this weight, while fact recall,
-    #: no-match, supersession and question recall were the same either way.  Held to the
-    #: smaller of its own score and its seed's, times this, it is 28 (0.8 gives the
-    #: same; letting a related object continue its seed's rank gives 27).  The price: on
-    #: a second store, a related object scored by rank answers one question of 25 that
-    #: this weight loses (19 against 18).  At 0.5 the best it can score is 1/124 and the
-    #: 48th hit of one channel scores 1/108, so with the default pool a related object
-    #: sorts after every direct hit, and among themselves they keep the order of the
-    #: hits that led to them.  A turn's replies are not weighed: they are what the
-    #: question was told, and are read before the hops.
+    #: A relation hit receives half the smaller of its own reciprocal-rank score and its seed's fusion score.
+    #: With the default ``rrf_k=60`` and 48-candidate pool, its score is at most 1/124, below a direct hit at rank 48.
+    #: Related hits can differ in their own ranks, so their final order need not match seed order.  Turn replies are
+    #: collected before relation hops and do not receive this weight.
     RELATION_WEIGHT = RELATION_WEIGHT
 
     def _expand(

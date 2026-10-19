@@ -109,14 +109,12 @@ def epoch_changed(tx, item, now: str) -> tuple[str, str | None, str]:
 #
 # ``memory_epoch`` moves on every source insert and every claim, resume,
 # reference, artifact and deletion write anywhere in the instance.  It stays
-# the read-side release fence.  Worker derivations used to compare it across
-# their paid model or vector call, so every chat message or tool call captured
-# meanwhile discarded results that never depended on it.  A derivation now
-# records what it depends on before the call and re-reads exactly that in the
-# transaction that would record its result.  Clocks play no part: deletion
-# operations are dated by the epoch they create, and claim versions by the
-# rowid order of an append-only table, both assigned under SQLite's single
-# writer lock and therefore comparable across processes.
+# the read-side release fence.  Derivations instead record their dependencies
+# before external model or vector calls and revalidate them when storing the
+# result, so unrelated captures do not discard paid work.  Deletions are ordered
+# by the epochs they create and claim versions by append-only row order; neither
+# check depends on wall-clock timestamps.  Both orders are assigned under
+# SQLite's single writer lock and therefore comparable across processes.
 
 
 @dataclass(frozen=True)

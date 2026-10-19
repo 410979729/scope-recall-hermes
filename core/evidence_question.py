@@ -74,12 +74,8 @@ def question_digest(evidence: object) -> str:
 
 # --- questions no answer could settle ----------------------------------------
 #
-# A new question is still not always a question worth a model call.  Measured
-# in one store, 2,019 evaluations in one day promoted 7 facts, and 54% of them
-# carried evidence on which no verdict could pass ``claims.qualify``: the
-# candidate's value appeared in none of the supplied sources, or no supplied
-# source could lend the authority its kind needs.  Of all 10,602 evaluations the
-# store had run, none of the 27 that promoted a fact was among them.
+# Skip an evaluation when no supplied source can provide the authority its kind needs, or when its required value
+# appears in none of the supplied sources.
 #
 # Each rule below is a necessary condition of ``claims.qualify``, checked no
 # more strictly than qualification checks it, so it only skips calls whose
@@ -94,7 +90,7 @@ def question_digest(evidence: object) -> str:
 #
 # Not covered: a verdict that changes the candidate's value.  The re-evaluation
 # keeps kind, subject and predicate but not the value; a new value reaches memory
-# through its own source's consolidation, and none of the 27 promotions changed it.
+# through its own source's consolidation.
 
 #: The claim kinds the rules below know; anything else is left to the model.
 _CLAIM_KINDS = frozenset({"fact", "preference", "constraint", "decision", "procedure", "intention", "alias"})

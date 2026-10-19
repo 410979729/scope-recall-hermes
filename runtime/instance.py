@@ -55,11 +55,8 @@ QUERY_EMBEDDING_SHARE = 0.7
 class _QueryEmbedding:
     """A recall's query embeddings, asked for when it starts instead of after the SQLite channels.
 
-    Behind the exact, lexical, claim and recent channels the embedding would have three quarters of what they left,
-    about 2.2 s of a prompt's 4 s window: enough on a warm connection, not for the new one a prompt more than 30 s after
-    the last needs (the proxy's tunnel, TLS, then the provider): measured, a remote client's server recalled 4 of 9
-    prompts by words alone that way (``AuxiliaryModelError:timeout``).  Asked for as the recall starts, it runs beside
-    those channels with its share of the whole window.
+    Query embeddings start alongside SQLite retrieval so connection setup shares the full recall window rather
+    than only the time left after the exact, lexical, claim and recent channels.
 
     ``queries`` is the question and the other ways recall reads it (``core/owner_view.py``), embedded in one request:
     one after the other, the second would wait for the first on the one persistent connection.
@@ -376,10 +373,9 @@ class RuntimeInstance:
         """Ask the query embedding route for one vector, off any prompt's time: a server's start, for its embedding
         worker and its connection.
 
-        Warming the vector store alone would leave them to the first recall: measured, a WorkBuddy entry's server
-        started cold lost the vector search of its first two recalls to the embedding's time
-        (``AuxiliaryModelError:timeout``) and answered with it from the third, 12.7 s after its start.  The text is
-        fixed and nothing of what comes back is kept; it writes nothing."""
+        Warm the query embedding worker and connection outside the prompt's time budget using fixed text.
+        The returned vector is discarded and no memory content is stored, but the embedding request still reserves
+        and settles usage in the auxiliary budget ledger."""
         self._ensure_open()
         if self.config.vector is None:
             return False
@@ -434,10 +430,10 @@ class RuntimeInstance:
     def memory_epoch(self) -> int:
         """Read the authority fence without counting the backlog.
 
-        Proving the binding with ``status()`` would cost six whole-store
-        aggregates and a JSON scan of every source -- measured at 4.4 seconds
-        on a store with 150,000 queued items, for a value that is discarded.
-        The epoch read proves the same binding from one indexed row.
+        Calling ``status()`` also aggregates work and source counts and, when
+        admission diagnostics are enabled, scans source metadata within the
+        caller's authorized context.  Reading the epoch avoids those diagnostics
+        while checking the same binding and fetching the singleton metadata row.
         """
         self._ensure_open()
         return self.core.memory_epoch(self.config.context())

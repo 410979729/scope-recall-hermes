@@ -1,10 +1,9 @@
 """Physical state of a Lance vector store, and when it needs compacting.
 
-Every publication is its own Lance commit, so the store gains one data
-fragment and one manifest per vector and never gives either back; and each
-manifest lists every fragment, so the manifest history grows as O(n^2).
-Measured on one production store at 2,243 vectors: 2,243 fragments (34 MB),
-2,245 manifests (238 MB), and a 142 ms search that took 29 ms once compacted.
+Repeated small vector commits can accumulate data fragments and version
+manifests.  Batched publication can write multiple vectors in one commit.
+Compaction merges fragments and removes obsolete versions to limit this storage
+overhead.
 
 This module owns the two inputs to that decision which neither the store nor
 the doctor should own privately: reading the footprint off the filesystem,

@@ -48,11 +48,8 @@ MAX_EMBED_RESPONSE_BYTES = 16 * 1024 * 1024
 EMBED_REQUEST_CONCURRENCY = 4
 
 
-#: Documents one embedding request may carry, measured against the live provider
-#: rather than assumed: 32 texts answered in 2.6s, 64 in 3.2s, 100 in 3.8s, and
-#: 250 was refused with HTTP 400.  A hundred 3072-wide vectors is about 4 MB of
-#: response, well inside the cap above, and it is the difference between seven
-#: requests for a pass of two hundred sources and two.
+#: Maximum documents per embedding request.  Batching reduces request overhead; the transport separately enforces
+#: ``MAX_EMBED_RESPONSE_BYTES``, since response size also depends on vector dimensions and JSON serialization.
 MAX_EMBED_BATCH = 100
 
 
@@ -342,13 +339,12 @@ class GeminiEmbeddingAdapter:
         return self.embed_texts(encoded, remaining_seconds=remaining_seconds)
 
     def embed_texts(self, encoded: Sequence[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
-        """Embed already-encoded document texts, in as few requests as the provider allows.
+        """Embed already-encoded document texts using ``MAX_EMBED_BATCH`` as a provider-compatibility cap,
+        splitting larger document groups so callers do not manage batch boundaries.
 
-        The provider takes ``MAX_EMBED_BATCH`` texts per request and refuses more, so a longer
-        group is sent as consecutive full requests rather than refused: what a caller asks for
-        is how many documents it has, not how the endpoint is shaped.  Measured against the
-        live provider: 32 texts in 2.6s, 100 in 3.8s, 250 refused with HTTP 400.  A request also
-        stays within the ledger's ``max_request_bytes`` (``request_chunks``).
+        Requests contain at most ``MAX_EMBED_BATCH`` texts.  Batches are also split against ``max_request_bytes``;
+        a single text whose request body exceeds that cap remains a one-text batch and is rejected by the ledger
+        before transmission.
         """
         texts = list(encoded)
         if not texts:

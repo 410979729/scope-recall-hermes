@@ -467,7 +467,7 @@ def test_every_store_connection_reads_through_the_memory_map_the_store_sets(stor
         limit = probe.execute(f"PRAGMA mmap_size={1 << 40}").fetchone()[0]
     if not limit:
         pytest.skip("this SQLite build maps nothing")
-    # The store asks for as much as the build allows, at least the 2 GB a recall of the shared store was measured with.
+    # The requested mapping is bounded by this SQLite build's supported limit.
     assert min(storage_module.STORE_MMAP_BYTES, limit) >= min(limit, 2 << 30)
     distinctive = 3 << 20
     monkeypatch.setattr(storage_module, "STORE_MMAP_BYTES", distinctive)

@@ -608,9 +608,8 @@ def _check_worker_status(report: DoctorReport, binding, data_directory: Path) ->
         report.capability_gaps.append("worker_status_unreadable")
         return
     report.worker_status = {key: value for key, value in status.items() if key in _WORKER_STATUS_KEYS}
-    # A pass that yielded failed nothing: another writer held the store, or another pass the worker lock, and the
-    # supervisor tries again after a pause (runtime/worker_entry.py, exit 75 with status busy).  It was reported as
-    # a failed exit (yuheng's audit of 3.4.2); its status says busy, and only other exits are failures.
+    # Exit 75 with status busy indicates contention: another writer holds the store or another pass holds the
+    # worker lock.  The supervisor retries after a pause; only other nonzero exits count as worker failures.
     if status.get("exit_code", 0) != 0 and not (status.get("exit_code") == 75 and status.get("status") == "busy"):
         report.capability_gaps.append("worker_last_exit_failed")
     if report.pending_work and status.get("unavailable_work_types"):

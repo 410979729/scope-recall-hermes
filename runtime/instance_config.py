@@ -84,13 +84,9 @@ _SECONDS_BOUNDS = {
 
 
 _COUNT_BOUNDS = {
-    # A pass's own bound, matching the core's (``core/worker.py``: 1..1000).  A
-    # group shares one embedding request and one vector commit, so what a bigger
-    # pass amortises is the cost of starting a pass at all -- measured at 8 of the
-    # 18 seconds a pass of two hundred took.  Model-bound work keeps its own
-    # per-pass bounds (``candidate_batch_limit``, and the deadline for
-    # consolidation), so this number decides how much cheap work shares one start,
-    # not how much money one pass may spend.
+    # A pass's own bound, matching the core's (``core/worker.py``: 1..1000).  Larger groups share embedding requests
+    # and vector commits to amortize worker startup.  Model-bound work retains its own limits
+    # (``candidate_batch_limit`` and the consolidation deadline), independently of this pass-size bound.
     "max_items": (1, 1000),
     "daily_work_limit": (0, 1_000_000),
     "max_auto_recoveries": (0, 4),
@@ -138,13 +134,9 @@ class RuntimeInstanceConfig:
     #: Names the store's owner is called by, beside the name the host attests for the person asking: a question that
     #: names them is recalled as they would ask it themselves (``core/owner_view.py``).  None by default.
     owner_names: tuple[str, ...] = ()
-    #: Queue items a day may attempt; 0 means no cap.  This is not the spend
-    #: guard: money, calls and tokens are governed by the auxiliary ledger
-    #: (``runtime/model_budget.py``) before every request.  A cap below the
-    #: arrival rate is not conservative, it is a permanent leak.  Measured on
-    #: one store: 1.4 work items per captured source (an embed and, for most, a
-    #: consolidation) plus 1.2 evaluations per candidate, so even a cap of 256
-    #: could not drain a busy day's output.
+    #: Queue items a day may attempt; 0 means no cap.  Money, calls and tokens are governed by the auxiliary ledger
+    #: (``runtime/model_budget.py``) before every request.  A daily work limit below the incoming work rate prevents
+    #: the queue from draining.
     daily_work_limit: int = 0
     auto_retry_cooldown_seconds: float = 3600.0
     max_auto_recoveries: int = 2

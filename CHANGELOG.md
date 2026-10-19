@@ -4,8 +4,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [3.11.3] - 2026-10-19
 
-The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change needs, the design and code rules, the
-checks before a merge and how releases are cut. Nothing changes for an installation.
+The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change needs, the design and code rules, the checks before a merge and how releases are cut. Examples in the documentation and code comments use generic names; comments and documents state their constraints and reasons without measurements from particular stores or review history; the evaluation notes under `verification/G0/` are removed. Nothing changes for an installation.
 
 ## [3.11.2] - 2026-10-18
 
@@ -130,7 +129,7 @@ Install the package, run `plan-install` and `apply-install` for each upgraded en
 
 ## [3.10.0] - 2026-10-11
 
-An agent that asks its memory about the owner by name ("Joy 对动画的运镜有什么要求？") finds the owner's own words, which say "I" and never the name. Recall searches such a question by meaning both as asked and as the owner would ask it ("我对…"), and by its words also without the name. The names are the one a host attests for the person asking (a Hermes gateway passes the user's name) and an optional `owner_names` list in an entry's runtime config; none is built in. Both readings are embedded in one request. On a copy of the shared store, of 52 questions agents ask about the owner, each answered by one of the owner's own messages, 16 came back in the top five before and 27 after, none lost; the owner's own 173 questions came back exactly as before.
+An agent that asks its memory about the owner by name ("Alice 对动画的运镜有什么要求？") finds the owner's own words, which say "I" and never the name. Recall searches such a question by meaning both as asked and as the owner would ask it ("我对…"), and by its words also without the name. The names are the one a host attests for the person asking (a Hermes gateway passes the user's name) and an optional `owner_names` list in an entry's runtime config; none is built in. Both readings are embedded in one request. On a copy of the shared store, of 52 questions agents ask about the owner, each answered by one of the owner's own messages, 16 came back in the top five before and 27 after, none lost; the owner's own 173 questions came back exactly as before.
 
 A Hermes gateway that restarts puts the messages that waited for a busy agent back into the conversation without opening a turn for them, and the person's next message opens one after them: they were never stored (two of the owner's on 2026-10-05). In a chat of the person's own they are now stored as the person's words, once, whichever hook reads them first; in a group nothing says whose they were.
 
@@ -140,13 +139,12 @@ Four tests that failed on slow Windows runners wait for what they test instead o
 
 ### Upgrading from 3.9.7
 
-Install the package, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110). An entry whose host attests no name (Claude Code, Codex, WorkBuddy, dsh, a remote client) finds the owner by name once its runtime config lists it: `"owner_names": ["Joy"]` (`docs/configuration.md`).
+Install the package, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110). An entry whose host attests no name (Claude Code, Codex, WorkBuddy, dsh, a remote client) finds the owner by name once its runtime config lists it: `"owner_names": ["Alice"]` (`docs/configuration.md`).
 
 ## [3.9.7] - 2026-10-10
 
 What the owner sends to a Hermes agent while it works (a steer) is stored as their words. Most were lost: they were read only at a turn's end and only after the last other row, and were gone once a compression or a turn without a reply came first. A steer is the owner's only when the gateway's origin names them; a parent agent's message to the agent it delegated to, a notice Hermes delivers the same way, and anything after another person's words in a row Hermes joined are not. A steer a compression carries into the next session is not stored a second time, and a deleted one stays deleted.
 
-From an audit by one of the agents (yuheng):
 - The worker's status counts only failed work as failed. A queued item keeps its last attempt's error, and counted among the failures it hid as many that need a look. The queued items' errors are reported apart, as `pending_error_counts`.
 - An everyday first-person statement (我不吃辣, I do not eat spicy food) is bound to the person who said it; someone else's words around a first person (a named speaker, a quote, a pasted transcript) are not.
 - A candidate's name the evaluating model writes differently is restored only when it is the same name: 不吃辣 no longer stands for 吃辣, nonprod for prod, nor "allow delete if approved" for "allow delete".

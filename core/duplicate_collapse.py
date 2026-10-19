@@ -3,9 +3,7 @@
 The retrieval pipeline de-duplicates on ``(kind, ref, revision)``, which is
 *identity*, not content.  A legacy import that re-delivers the same bodies
 under fresh identities would let one document hold most of a packet's slots
-and push the answer out entirely.  Collapsing copies prevents that;
-inverse-document-frequency weighting, measured alongside it, made both
-recall and abstention worse.
+and push the answer out entirely.  Collapsing copies prevents that.
 
 Collapsing is not truncation.  The surviving copy is byte-identical to the
 ones removed, so no content is lost and coverage is not reduced; that is why

@@ -138,10 +138,8 @@ its next pass. Only a file that names another store ends it, as `suspended` with
 
 `daily_work_limit` is not the spend guard. Money, calls and tokens are enforced
 per request by the auxiliary ledger (`runtime/model_budget.py`), which cannot see
-this counter, and this counter cannot see cost. A limit set below the rate at
-which work arrives is not thrift, it is a permanent backlog: on one measured
-instance roughly fifteen work items arrived per captured source, so a limit of
-256 could never drain one day's own output.
+this counter, and this counter cannot see cost. A daily limit below the incoming
+work rate causes a growing backlog.
 
 The maxima above are protections, not recommendations. `request_seconds` at
 45 seconds and `drain_seconds` at 120 seconds are the contract ceilings; a
@@ -211,37 +209,36 @@ another space, or one whose threshold was calibrated on it, keeps its own.
 ## `owner_names`
 
 A top-level list of the names the store's owner goes by, at most eight, each 2 to
-64 printable characters with no space at either end: `"owner_names": ["Joy", "乔伊"]`.
+64 printable characters with no space at either end: `"owner_names": ["Alice", "艾丽丝"]`.
 Optional; no installer writes it.
 
-An agent asks its memory about the owner by name ("Joy 对动画的运镜有什么要求？",
-"What does Joy prefer?"), while the owner's own messages say "I" and never their
-name. Such a question is searched by meaning twice: as asked, which finds what
+An agent may ask about the owner by name, for example "What does Alice prefer?",
+while relevant messages from the owner use the first person and omit the name.
+Such a question is searched by meaning twice: as asked, which finds what
 names the owner, and as the owner would ask it ("我对动画的运镜有什么要求？",
 "What does I prefer?"), which finds their own words, each search with the vector
-channel's slots. Both are embedded in one request where the embedding route takes
-several texts in one (the Gemini and OpenAI-compatible routes do): measured on the
-shipped route, one text took 420 ms at the median, both together 488 ms, and two
-requests one after the other 818 ms, too long for a recall tool's 2 s. By its
-words, a candidate is admitted by the question as asked or by the question without
-the name, so a short question's other words are enough for an answer in the
-owner's own words. A question that names no listed name, or asks nothing besides
-the name ("Joy 是谁？"), is recalled as asked.
+channel's slots. When the embedding route supports multiple texts per request,
+both forms are embedded together to avoid serial network requests consuming the
+recall budget. The Gemini and OpenAI-compatible routes support this batching. By its words,
+a candidate is admitted by the question as asked or by the question without the
+name, so a short question's other words are enough for an answer in the owner's
+own words. A question that names no listed name, or asks nothing besides the name
+("Alice 是谁？"), is recalled as asked.
 
 Besides this list, recall reads the name a host attests for the person asking, in
 reads only, never in a capture: a Hermes gateway passes the user's name for a
-verified person (Telegram's first and last name, `Joy Joy`), which gives the whole
-name and, when it has several words, the first: a middle name or a surname is as
+verified person (Telegram's first and last name, such as `Alice Lee`), which gives
+the whole name and, when it has several words, the first: a middle name or a surname is as
 often someone else's. A name that looks like an account id (12 or more letters and
 digits with a digit among them) is not taken. Claude Code, Codex, WorkBuddy, dsh
 and the remote clients attest no name: list it here in each of their runtime
 configs.
 
 A Latin-letter name is matched as a word of its own and with its case, so
-`Joyce`, `joy-hub`, `/opt/Joy`, `C:\Joy` and the word "joy" are not the name, nor
-is the first word of another person's name (`Joy Smith`, `Joy SMITH`) unless the
-next word is a listed name too. Chinese runs words together, so a Chinese name is
-matched where what follows it goes on with a question about the person (a
+`Aliceville`, `alice-hub`, `/opt/Alice`, `C:\Alice` and the word "alice" are not
+the name, nor is the first word of another person's name (`Alice Smith`,
+`Alice SMITH`) unless the next word is a listed name too. Chinese runs words
+together, so a Chinese name is matched where what follows it goes on with a question about the person (a
 particle, a preposition, a common verb or adverb, a time: `王芳对…`, `王芳喜欢…`,
 `王芳的…`), and not where more characters run it on into someone's longer name
 (`王芳芳`, `王芳林`); a name followed by a word outside that list is recalled as

@@ -175,7 +175,8 @@ def _words(text: object) -> str:
 
 
 def _without_subject(name: str, subject: str) -> str:
-    """A predicate without the subject's words at its start (``issue comments need joy's ok`` -> ``need joy's ok``)."""
+    """A predicate without the subject's words at its start
+    (``issue comments need alice's ok`` -> ``need alice's ok``)."""
     if subject and name.startswith(subject) and len(name) > len(subject):
         rest = name[len(subject) :]
         if rest[0] == " " or _CJK.match(rest[0]) is not None:

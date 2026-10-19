@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""Extract one clean GitHub Release body from a versioned changelog section.
+"""Extract one GitHub Release body from a versioned changelog section.
 
-The parser used to live in ``scripts/release_changelog.py``, which was removed
-with the 2.x tooling in d96a159 while this file kept importing it: the release
-workflow's last step has raised ``ModuleNotFoundError`` at import time ever
-since, past the handler below, and nothing in any gate ran this script.  It has
-one consumer, so it now carries its own parser, and ``tests/packaging`` runs it
-against the real changelog.
+The parser stays with its sole production consumer so release-note extraction
+does not depend on a separate repository tool.
 """
 
 from __future__ import annotations

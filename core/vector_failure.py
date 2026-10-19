@@ -1,27 +1,13 @@
-"""Name which vector fault happened, not which family it belongs to.
+"""Label vector failures with an exception class and a stable diagnostic token.
 
-``_vector_candidates`` reports an optional channel's failure as
-``vector_error:<class>``.  For an ``AuxiliaryModelError`` that is enough, because
-it carries an ``error_type`` from a fixed vocabulary.  For the native Lance
-helper it is not: that path raises twenty-three distinct ``RuntimeError``
-messages -- the helper lock timed out, the worker is closed, the worker exited
-mid-frame, the worker was never running, a request deadline was exhausted, a
-fence handshake mismatched, the table is not open, lancedb is not installed --
-and every one of them reaches the operator as the single word ``RuntimeError``.
+An exception's identifier-safe ASCII ``error_type`` takes precedence over its
+message, except when the kind is the generic ``RuntimeError``.  A three-digit
+HTTP status accompanies ``http_status`` when the exception supplies one.
 
-Measured: every recall of one day reported ``vector_unavailable`` together with
-``vector_error:RuntimeError``, the semantic channel was lost on all of them, and
-*which* of those faults it was could not be recovered from anywhere.
-The exception is caught and discarded, so the message survives nowhere else --
-not in the gap, not in a log, not in the database.
-
-The vocabulary is closed on purpose: a token derived from the message text would
-turn a test's own wording into
-``TimeoutError:synthetic_embedding_request_used_its_entire_allowance``.  A gap is
-something a reader groups on, so it may only take values from a set someone can
-enumerate -- which is the very reason ``error_type`` is preferred over a message
-three lines below.  An unrecognised message contributes nothing, and the label
-falls back to the bare class rather than inventing a category.
+Native helper messages are matched against an ordered, fixed vocabulary so
+operators can group failures without labels containing arbitrary message text.
+An unrecognised message, or one that cannot be read, falls back to the bare
+exception class.
 """
 
 from __future__ import annotations

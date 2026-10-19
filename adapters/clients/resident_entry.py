@@ -1,14 +1,13 @@
 """A client's prompt recall server, a process of its own beside the client's (``local_endpoint.ensure_resident``).
 
-WorkBuddy's agent (2.147.0) puts itself and every process it starts in a Windows job that ends them all with it, and
-this server cannot leave that job: under WorkBuddy it lives as long as the conversation's agent process that started
-it, or less (measured; docs/install.md, section 12).
+On Windows, a resident server that remains in a WorkBuddy job with kill-on-close behavior ends when that job closes.
+``start_detached`` attempts to leave the parent job and falls back to starting within it, so the server's lifetime
+also depends on the host's job policy.
 
 WorkBuddy starts the entry's MCP server, and with it the recall server its prompt hooks ask, with each conversation's
-agent process and stops it with that process.  A prompt that starts one meets a server still opening its vector store
-and its embedding connection, and is recalled by words alone: a cold server answered with its vector search 12.7 s
-after its start (measured), past the prompt hook's 6 s.  This server is started by the entry's hook or MCP
-server when none runs, names itself resident (hooks ask it first), and ends ``resident_recall_minutes`` after the last
+agent process and stops it with that process.  Cold vector and embedding startup can exceed the prompt hook's
+budget.  This server is started by the entry's hook or MCP server when none runs, names itself resident (hooks ask it
+first), and ends ``resident_recall_minutes`` after the last
 prompt's recall or the last mark of a live client process (``local_endpoint.keep_resident``), once the minutes are 0,
 once its package on disk is replaced, or once a recall has been stuck for minutes.  One runs for each entry and
 client: a second of the same version gives way to the first, and a prompt hook that finds one of another version stops
@@ -88,8 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.detach:
         # Started by the client's MCP server, which lives as long as the conversation, the server would be its child:
-        # WorkBuddy ending the conversation's process tree would end it too (measured: its tree is killed as
-        # ``taskkill /T`` does).  Started from this process, which ends now, it has no living parent in that tree.
+        # WorkBuddy ending the conversation's process tree would end it too.  Started from this process, which ends
+        # now, it has no living parent in that tree.
         from .local_endpoint import start_detached
 
         command = [
