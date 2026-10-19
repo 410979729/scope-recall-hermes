@@ -1,5 +1,6 @@
 """Deterministic P08 core retrieval contracts using synthetic TEST identity."""
 
+import itertools
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -508,6 +509,82 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     with core.storage.read(reader) as tx:
         pool = RetrievalStorage().lexical(tx, search, limit=100)
     assert (pool[0].ref, pool[-1].ref) == (target.ref, reinjected.ref)
+
+
+def test_P08_auto_lexical_pool_spends_its_limit_on_deliverable_sources(app):
+    """Automatic suppression is applied before the bounded lexical pool; history keeps suppressed sources."""
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+    from tests.contract.test_deletion import authorize, request
+
+    core, ctx = app
+    core.test_sequence = itertools.count(1)
+    live = capture(
+        core, ctx, "orion live memory", key="TEST-p08/suppressed-pool/live", when="2026-09-01T12:00:00Z"
+    )
+    hidden = capture(
+        core, ctx, "orion cobalt hidden memory", key="TEST-p08/suppressed-pool/hidden", when="2026-09-01T12:01:00Z"
+    )
+    authorize(core, ctx, hidden, mode="suppress")
+    core.forget(ctx, request(hidden, mode="suppress"), remaining_seconds=10)
+    reader = replace(ctx, session_id="TEST-p08-suppressed-pool-reader")
+
+    def pool(mode):
+        search = SearchContext.from_request(
+            recall_request(query="orion cobalt", mode=mode),
+            reader,
+            now=Clock.now,
+            deadline=core.clock.monotonic() + 5,
+        )
+        with core.storage.read(reader) as tx:
+            return RetrievalStorage().lexical(tx, search, limit=1)
+
+    auto_pool = pool("auto")
+    history_pool = pool("history")
+    assert [c.ref for c in auto_pool] == [live.ref]
+    assert [c.ref for c in history_pool] == [hidden.ref]
+
+
+def test_P08_auto_claim_pool_spends_its_scan_limit_on_deliverable_claims(app, monkeypatch):
+    """A suppressed claim cannot consume the bounded automatic prefilter before its live sibling is scored."""
+    from scope_recall.core import retrieval_storage
+    from tests.contract.test_deletion import authorize, request
+    from tests.contract.test_claims import accept, draft
+
+    core, ctx = app
+    core.test_sequence = itertools.count(1)
+    live_source = capture(
+        core, ctx, "TEST-project 配色 蓝色。", key="TEST-p08/suppressed-claims/live", when="2026-09-01T12:00:00Z"
+    )
+    hidden_source = capture(
+        core, ctx, "TEST-project cobalt 状态 配色。", key="TEST-p08/suppressed-claims/hidden", when="2026-09-01T12:01:00Z"
+    )
+    live = accept(
+        core, ctx, draft(live_source, "蓝色", subject="TEST-project", predicate="配色")
+    ).items[0]
+    hidden = accept(
+        core,
+        ctx,
+        draft(hidden_source, "配色", subject="TEST-project cobalt", predicate="状态"),
+    ).items[0]
+    authorize(core, ctx, hidden, mode="suppress")
+    core.forget(ctx, request(hidden, mode="suppress"), remaining_seconds=10)
+    monkeypatch.setattr(retrieval_storage, "_CLAIM_SCAN_LIMIT", 1)
+    reader = replace(ctx, session_id="TEST-p08-suppressed-claims-reader")
+
+    def pool(mode):
+        search = SearchContext.from_request(
+            recall_request(query="TEST-project 配色 cobalt", mode=mode),
+            reader,
+            now=Clock.now,
+            deadline=core.clock.monotonic() + 5,
+        )
+        with core.storage.read(reader) as tx:
+            return retrieval_storage.RetrievalStorage().claims(tx, search, limit=1)
+
+    auto_pool = pool("auto")
+    history_pool = pool("history")
+    assert [c.ref for c in auto_pool] == [live.ref]
+    assert [c.ref for c in history_pool] == [hidden.ref]
 
 
 # -- Chinese synonyms ------------------------------------------------------------

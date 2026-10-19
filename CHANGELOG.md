@@ -8,6 +8,10 @@ The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change ne
 
 Local owners can browse, search, inspect history, correct derived facts, mute or unmute memories and preview source-aware deletion through a shared management API and command line; a migrated SQLite audit records management actions separately from conversations. The same owner interface can export the visible store as a portable `scope-recall-export/1` directory or zip with original sources, current facts and their history, episodes, readable Markdown, optional retained attachments, per-artifact SHA-256 hashes and a manifest.
 
+## [Unreleased]
+
+Automatic lexical and claim-prefilter candidates now exclude suppressed rows before their bounded limits, so a more specific suppressed memory can no longer take the last candidate slot, hydrate to nothing, and leave a visible lower-ranked memory unreachable. Explicit history reads still include suppressed memory.
+
 ## [3.11.2] - 2026-10-18
 
 The README links the reproducible synthetic recall benchmark and states its limits. Installation guidance, contributor descriptions and capture and retry test documentation describe current contracts while preserving contributor credit. Host semantic fixtures share a store clock while retaining real non-store waits and explicit budget charges. Native dsh tests verify durable intake and authorized materialization of completed replies. Aggregation samples in the dev benchmark explicitly state the actions asked about, with a baseline measured on the corrected world; this is a data correction, not a retrieval improvement. Deletion replay tests cover delayed capture, checking that deleted content remains unreadable and distinct key collisions are stored once. Runtime behavior, configuration and the store schema are unchanged.
