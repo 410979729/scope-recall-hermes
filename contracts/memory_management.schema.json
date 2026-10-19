@@ -6,7 +6,7 @@
   "required": ["format", "action", "status"],
   "properties": {
     "format": {"type": "string", "const": "scope-recall-management/1"},
-    "action": {"type": "string", "enum": ["list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session"]},
+    "action": {"type": "string", "enum": ["list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session", "export"]},
     "status": {"type": "string", "enum": ["ok", "error"]},
     "code": {"type": "string"},
     "field": {"type": ["string", "null"]},
@@ -17,6 +17,17 @@
     {"if": {"properties": {"status": {"type": "string", "const": "error"}}}, "then": {"required": ["code", "field"]}}
   ],
   "$defs": {
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sources", "facts", "fact_history", "episodes", "attachments"],
+      "properties": {
+        "sources": {"type": "integer", "minimum": 0},
+        "facts": {"type": "integer", "minimum": 0},
+        "fact_history": {"type": "integer", "minimum": 0},
+        "episodes": {"type": "integer", "minimum": 0},
+        "attachments": {"type": "integer", "minimum": 0}
+      }
+    },
     "target": {
       "type": "object", "required": ["kind", "ref", "revision", "scope_id", "project_id", "branch_id"],
       "properties": {
@@ -67,7 +78,9 @@
         "result": {"type": "object"}, "kind": {"type": "string"}, "ref": {"type": "string"},
         "revision": {"type": "integer", "minimum": 1}, "value": {"type": "object"},
         "item": {"type": "object"}, "actor": {"type": "string", "const": "local_user_management"},
-        "action_id": {"type": "string"}, "source_ref": {"type": "string"}
+        "action_id": {"type": "string"}, "source_ref": {"type": "string"},
+        "out": {"type": "string"}, "package_format": {"type": "string", "const": "scope-recall-export/1"},
+        "zip": {"type": "boolean"}, "counts": {"$ref": "#/$defs/counts"}
       }
     }
   }

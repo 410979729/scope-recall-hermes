@@ -6,7 +6,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change needs, the design and code rules, the checks before a merge and how releases are cut. Examples in the documentation and code comments use generic names; comments and documents state their constraints and reasons without measurements from particular stores or review history; the evaluation notes under `verification/G0/` are removed. Nothing changes for an installation.
 
-Local owners can browse, search, inspect history, correct derived facts, mute or unmute memories and preview source-aware deletion through a shared management API and command line; a migrated SQLite audit records management actions separately from conversations.
+Local owners can browse, search, inspect history, correct derived facts, mute or unmute memories and preview source-aware deletion through a shared management API and command line; a migrated SQLite audit records management actions separately from conversations. The same owner interface can export the visible store as a portable `scope-recall-export/1` directory or zip with original sources, current facts and their history, episodes, readable Markdown, optional retained attachments, per-artifact SHA-256 hashes and a manifest.
 
 ## [3.11.2] - 2026-10-18
 

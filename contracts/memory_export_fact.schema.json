@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Exported current fact record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "ref",
+    "revision",
+    "scope",
+    "project",
+    "branch",
+    "claim_kind",
+    "subject",
+    "predicate",
+    "value",
+    "conditions",
+    "statement_kind",
+    "payload",
+    "state",
+    "basis",
+    "qualification_reason",
+    "valid_from",
+    "valid_to",
+    "recorded_from",
+    "recorded_to",
+    "replaces_revision",
+    "conflict_revisions",
+    "suppressed",
+    "sources"
+  ],
+  "properties": {
+    "kind": {"type": "string", "const": "fact"},
+    "ref": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "scope": {"type": "string", "minLength": 1},
+    "project": {"type": ["string", "null"]},
+    "branch": {"type": ["string", "null"]},
+    "claim_kind": {
+      "type": "string",
+      "enum": ["fact", "preference", "constraint", "decision", "procedure", "intention", "alias"]
+    },
+    "subject": {"type": "string"},
+    "predicate": {"type": "string"},
+    "value": {"type": "string"},
+    "conditions": {"type": "array", "items": {"type": "string"}},
+    "statement_kind": {"type": ["string", "null"]},
+    "payload": {"type": "object"},
+    "state": {"type": "string", "enum": ["proposed", "active", "disputed", "superseded", "retracted"]},
+    "basis": {
+      "type": "string",
+      "enum": ["direct_report", "observed", "derived_summary", "inferred_suggestion", "unknown"]
+    },
+    "qualification_reason": {"type": "string"},
+    "valid_from": {"type": ["string", "null"], "format": "date-time"},
+    "valid_to": {"type": ["string", "null"], "format": "date-time"},
+    "recorded_from": {"type": "string", "format": "date-time"},
+    "recorded_to": {"type": ["string", "null"], "format": "date-time"},
+    "replaces_revision": {"type": ["integer", "null"], "minimum": 1},
+    "conflict_revisions": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+    "suppressed": {"type": "boolean"},
+    "sources": {"type": "array", "items": {"$ref": "#/$defs/provenance"}}
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "revision", "entry_id", "agent", "session", "occurred_at", "recorded_at"],
+      "properties": {
+        "ref": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "entry_id": {"type": "string"},
+        "agent": {"type": "string"},
+        "session": {"type": "string"},
+        "occurred_at": {"type": ["string", "null"], "format": "date-time"},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

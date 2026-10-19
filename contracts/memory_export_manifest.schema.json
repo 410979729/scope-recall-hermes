@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scope Recall export manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "product",
+    "product_version",
+    "exported_at",
+    "memory_epoch",
+    "scopes",
+    "filters",
+    "with_attachments",
+    "counts",
+    "attachments",
+    "artifacts"
+  ],
+  "properties": {
+    "format": {"type": "string", "const": "scope-recall-export/1"},
+    "product": {"type": "string", "const": "scope-recall"},
+    "product_version": {"type": "string", "minLength": 1},
+    "exported_at": {"type": "string", "format": "date-time"},
+    "memory_epoch": {"type": "integer", "minimum": 0},
+    "scopes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "filters": {"$ref": "#/$defs/filters"},
+    "with_attachments": {"type": "boolean"},
+    "counts": {"$ref": "#/$defs/counts"},
+    "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}}
+  },
+  "$defs": {
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "scope", "agent", "session", "since", "until"],
+      "properties": {
+        "kind": {"type": ["string", "null"], "enum": ["event", "claim", "episode", null]},
+        "scope": {"type": ["string", "null"]},
+        "agent": {"type": ["string", "null"]},
+        "session": {"type": ["string", "null"]},
+        "since": {"type": ["string", "null"], "format": "date-time"},
+        "until": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sources", "facts", "fact_history", "episodes", "attachments"],
+      "properties": {
+        "sources": {"type": "integer", "minimum": 0},
+        "facts": {"type": "integer", "minimum": 0},
+        "fact_history": {"type": "integer", "minimum": 0},
+        "episodes": {"type": "integer", "minimum": 0},
+        "attachments": {"type": "integer", "minimum": 0}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "pattern": "^[^\\\\]+$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_ref", "revision", "media_type", "sha256", "bytes", "path", "suppressed"],
+      "properties": {
+        "artifact_ref": {"type": "string", "pattern": "^artifact-[0-9a-f]{64}$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "media_type": {
+          "type": "string",
+          "enum": ["image/png", "image/jpeg", "image/webp", "image/svg+xml", "text/plain"]
+        },
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "path": {"type": "string", "pattern": "^attachments/"},
+        "suppressed": {"type": "boolean"}
+      }
+    }
+  }
+}

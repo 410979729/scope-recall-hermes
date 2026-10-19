@@ -156,6 +156,7 @@ SUITES = {
     "contract": [
         "tests/contract/test_memory_admin.py",
         "tests/contract/test_memory_cli.py",
+        "tests/contract/test_memory_export.py",
         "tests/contract/test_fragment_quote_recovery.py",
         "tests/contract/test_protocol.py",
         "tests/contract/test_synthetic_inputs.py",

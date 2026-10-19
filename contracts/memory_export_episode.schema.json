@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Exported episode record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "ref",
+    "revision",
+    "scope",
+    "project",
+    "branch",
+    "state",
+    "suppressed",
+    "source_watermark",
+    "resume",
+    "gaps",
+    "sources"
+  ],
+  "properties": {
+    "kind": {"type": "string", "const": "episode"},
+    "ref": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "scope": {"type": "string", "minLength": 1},
+    "project": {"type": ["string", "null"]},
+    "branch": {"type": ["string", "null"]},
+    "state": {
+      "type": "string",
+      "enum": ["open", "completed", "failed", "cancelled", "interrupted", "unknown"]
+    },
+    "suppressed": {"type": "boolean"},
+    "source_watermark": {"type": "string"},
+    "resume": {"type": ["object", "null"]},
+    "gaps": {"type": "array", "items": {"type": "string"}},
+    "sources": {"type": "array", "items": {"$ref": "#/$defs/provenance"}}
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "revision", "entry_id", "agent", "session", "occurred_at", "recorded_at"],
+      "properties": {
+        "ref": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "entry_id": {"type": "string"},
+        "agent": {"type": "string"},
+        "session": {"type": "string"},
+        "occurred_at": {"type": ["string", "null"], "format": "date-time"},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}
