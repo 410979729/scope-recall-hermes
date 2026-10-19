@@ -17,8 +17,7 @@ from test_directories import TestDirectory
 from tier_allows import TIER_ALLOWS
 
 ROOT = Path(__file__).resolve().parents[1]
-#: No default path: a machine without uv says so, rather than asserting that
-#: one operator's directory exists on it.
+#: No default path: with neither ``SCOPE_RECALL_UV`` nor a uv on ``PATH``, no helper root is authorized.
 _DEFAULT_PACKAGING_UV = ""
 DEFAULT_WATCHDOG_SECONDS = 180
 RELEASE_WATCHDOG_SECONDS = 600

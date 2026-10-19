@@ -1,7 +1,11 @@
 # Changelog
 
-A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
-longer text this file once held is in its history.
+A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
+
+## [3.11.3] - 2026-10-19
+
+The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change needs, the design and code rules, the
+checks before a merge and how releases are cut. Nothing changes for an installation.
 
 ## [3.11.2] - 2026-10-18
 

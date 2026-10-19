@@ -1,9 +1,23 @@
 # Contributing to scope-recall
 
-Read `AGENTS.md` first: it holds the maintenance rules, the release and
-deployment procedure, and the rule that every `.py` file is either shipped
-(listed in `packaging/v11-module-allowlist.json`) or a test selected by a tier
-in `scripts/check.py`.
+## What a change needs
+
+A pull request says whose problem it solves, what shows that the problem exists
+(a reproduction, a failing test, numbers read from a running install, or a
+user's report), and what will measurably change once it is merged. A bug fix, a
+security fix, or a change that follows one made by a host (Hermes, Codex) needs
+only its reproduction.
+
+New capabilities are welcome, ideas from other memory systems included, when
+they fit the design: SQLite is the only source of truth, every memory can be
+traced to its source, several agents share one store and are kept apart by
+scope, and everything runs locally. Code from other projects is not copied in.
+
+A change that replaces an implementation removes the old one in the same pull
+request and gives the reason. Stored memories are never lost: a change to the
+stored format comes with an automatic migration, a migration test and a way
+back. A change that makes a user or a host edit a configuration or a call by
+hand says how, in the pull request and in `CHANGELOG.md`.
 
 ## Layout
 
@@ -19,6 +33,40 @@ in `scripts/check.py`.
 | `scripts/` | The gate runner, the quality check and its baseline, the manifest stamper and the dead-code scan |
 | `probes/hermes/` | The real-host A2A test kit for a TEST Hermes gateway (`probes/README.md`) |
 | `verification/` | Byte-exact evidence bundles cited by receipts; never edit by hand |
+
+## Design rules
+
+- SQLite is the only authority for facts, identity, permissions, lifecycle and
+  evidence. Vector and other derived indexes are optional and can be rebuilt
+  from it.
+- Each behaviour lives in one module. Host adapters translate requests and bind
+  the trusted identity; the policy they apply stays in `core/`. A change adds no
+  import cycle.
+- Migration orchestration, legacy conversion, host activation and background
+  indexing stay separate.
+- Multi-hop queries only join evidence: they do not infer identity, widen an
+  audience, revive invalid facts or store conclusions drawn at query time.
+- Long work runs in bounded stages with durable progress and retries that are
+  safe to repeat, and its failures are visible. Data a migration cannot read
+  stops the migration instead of counting as migrated, and no retry runs
+  forever.
+- A new public capability comes with a shared contract, support on each host
+  surface it applies to, operator documentation and tests at its boundaries.
+- A new dependency, stored state or abstraction gives its reason in the pull
+  request.
+
+## Code style
+
+- Comments and docstrings say what the code does, why, and the constraints a
+  reader would not see. The history of a change (dates, versions, issue numbers,
+  where an idea came from) belongs in the commit message and `CHANGELOG.md`.
+- Comments and documentation are written in the language of their file.
+- Tests are named for what they check.
+- A name another module uses is public (no leading underscore). Imports go at
+  the top of the module, except when moving one up would load more when an
+  entry point starts, when it needs an optional dependency, when tests replace
+  what it imports at call time, or when it is one of the lazy upward imports
+  `scripts/quality.py` names.
 
 ## Before a change is merged
 
@@ -40,9 +88,14 @@ in `scripts/check.py`.
 4. Update `CHANGELOG.md`, and `README.md` or `docs/` when behaviour visible to an
    operator or a host changed.
 
+Tests use synthetic data only, never a real memory store or a running
+installation.
+
 A new module enters the wheel only by being imported from an entry point named
 in `packaging_hooks/module_inventory.py`; the packaging tier fails when the
-committed allowlist and that computation disagree.
+committed allowlist and that computation disagree. A new `.py` file is either
+listed in `packaging/v11-module-allowlist.json` or a test under `tests/` that a
+tier in `scripts/check.py` selects.
 
 ## The recall benchmark
 
@@ -75,3 +128,16 @@ or the generator, which makes another world. Judge a change on the held-out
 split too: its templates were written apart from the dev ones. The vector
 channel there hashes words, not meaning, so a paraphrased question measures
 what the store finds without a model.
+
+## Releases
+
+- Wheels are built from a tagged commit on `main` (`v<major>.<minor>.<patch>`),
+  one wheel and one sha256 per tag. The first commit after a tag moves
+  `_version.py` past it.
+- Changes that belong together ship as one release once all of them are done
+  and verified. A fix a user is waiting for goes out as one pull request with
+  the fix, the version and its notes, and is tagged without a release candidate.
+- `CHANGELOG.md` gives each release a heading and one paragraph, plus anything
+  an operator must do beyond installing the package. The release workflow
+  publishes that section as the release notes on GitHub.
+- The `integration` and `native` tiers pass before a tag is pushed.

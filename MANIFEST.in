@@ -6,10 +6,8 @@ include CONTRIBUTING.md
 include CONTRIBUTORS.md
 include .env.example
 include py.typed
-# Docs ship by name, the way modules do. ``recursive-include docs *.md`` put
-# every internal note in the sdist as soon as anyone wrote one: a recovery plan
-# naming the fleet's machines and a handoff quoting one operator's directory
-# tree were both published to PyPI that way.
+# Docs ship by name, the way modules do: a Markdown file under docs/ reaches
+# the sdist only when it is listed here.
 include docs/install.md
 include docs/configuration.md
 include docs/capture-contract.md
