@@ -647,20 +647,15 @@ def _ends_clause(quote: str) -> bool:
 def assertion_clause(content: str, quote: str) -> str:
     """Return the clause the quote sits in, treating escaped breaks as breaks.
 
-    ``evidence_context`` cuts on real punctuation only, because its job is to
-    keep a quote's negation attached to it.  A tool envelope stored as an
-    escaped JSON body has no real punctuation to cut on: measured in one store,
-    **all 16** claims rejected as ``question_not_asserted`` came from sources
-    with zero real newlines and 14 to 46 escaped ones, so the context ran 155 to
-    1,581 characters and one ``?`` anywhere inside vetoed the claim.  Twelve of
-    the sixteen had no question marker in the quoted text at all -- the rejected
-    statements were version lines such as ``Version: 3.1.0.dev2``.
+    Treating escaped line breaks as clause boundaries prevents an unrelated
+    question elsewhere in a serialized JSON body from vetoing the quoted
+    assertion.  ``evidence_context`` retains the wider context for negation,
+    polarity, and condition checks.
 
-    This is for tests that must judge *this* assertion rather than everything
-    the source happens to mention.  Splitting on ``\\n`` also splits a literal
-    Windows path such as ``C:\\new``, which can only ever narrow what such a
-    test reads -- acceptable here, and the reason this is not used for the
-    negation, polarity or condition checks, which keep the wider context.
+    This narrower context is for checks of the assertion itself.  Splitting on
+    ``\\n`` also splits a literal Windows path such as ``C:\\new``, which can
+    only narrow what such a check reads.  Negation, polarity and condition checks
+    use the wider context instead.
     """
     clauses = []
     start = 0

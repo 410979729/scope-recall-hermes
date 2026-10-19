@@ -14,10 +14,9 @@ _MAX_TOOL_CHARS = 65536
 #: of the prompt unless it carries ``additionalContext`` (its ``executeUserPromptSubmitHooks``), so "{}" would stand
 #: before every prompt with nothing recalled; for it an empty answer is nothing at all.
 EMPTY_ANSWER = {"codex": "{}", "claude-code": "{}", "workbuddy": "", "dsh": "{}"}
-#: Where each client's hooks differ.  Claude Code's were the model for Codex's and send the
-#: same fields, except that a turn is named by ``prompt_id``.  Its tool output is not recorded:
-#: a tool result never becomes a memory, and a coding session's tool traffic would be most of
-#: the store for an embedding each.
+#: Turn identifiers use the host-specific fields below.  Claude Code uses ``prompt_id``, while Codex uses
+#: ``turn_id``.  Claude Code tool output is not captured, avoiding large volumes of tool traffic and the embedding
+#: work those captures would generate.
 TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id", "workbuddy": "generation_id", "dsh": "turn_id"}
 
 

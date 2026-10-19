@@ -73,12 +73,8 @@ CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503
 #: no migration is needed and an operator reading the row sees the history.
 _CAPACITY_TOKEN = re.compile(r"(?:^|\|)capacity:([0-9]+)(?=\||$)")
 
-#: First wait after a provider refuses for capacity, and the longest one.
-#: Sized against a measured outage: the median interval between one item's
-#: retries was 115 minutes, so the floor sits above that cycle rather than
-#: below it (a 60 s floor would have made the instance ask *more* often).
-#: There is no limit on how many times an item may check: it is never given
-#: up on, only asked less often.
+#: First wait after a provider refuses for capacity, and the longest one.  Repeated refusals increase the wait
+#: within these bounds.  There is no retry-count limit: an item is delayed rather than abandoned.
 CAPACITY_BACKOFF_FLOOR_SECONDS = 1800.0
 CAPACITY_BACKOFF_CEILING_SECONDS = 4 * 3600.0
 

@@ -36,8 +36,8 @@ older database is a separate, explicit operation — see
   manager reads a `pyproject.toml` before `plugin.yaml`'s `pip_dependencies`, and one written
   there by hand without `[lancedb]` builds an environment in which every recall runs without
   vectors. A gateway that starts on an environment older than the declaration may build it
-  again itself, with its own rights and Hermes's whole update tail (one took 13 minutes before it
-  answered), and a failure there turns memory off without a word. So after `apply-install`,
+  again itself, with its own rights and Hermes's whole update tail, and a failure there turns
+  memory off without a word. So after `apply-install`,
   rebuild it with Hermes's own sync before the restart (section 4), then run `doctor`, which
   reads the environment Hermes really runs (`hermes_runtime`). A plugin whose core is missing
   says so when Hermes loads it.
@@ -404,7 +404,7 @@ memory:
   provider: scope-recall
 ```
 
-Do not edit a sibling or production home to do it. Until that key is set,
+Set the provider in the target Hermes home's configuration. Until that key is set,
 `doctor` reports `host_registration_status: "host_config_missing"` or
 `"not_selected"` and the gap `host_registration_incomplete`.
 
@@ -834,13 +834,12 @@ config reaches only that entry's scopes. Run it after going back to an earlier
 release and forward again: a capture the earlier release could not read may have
 been given up meanwhile.
 
-Since 3.7.5 it also brings back the vector work of claim heads. Before 3.7.5 the
-automatic recovery made a claim's failed embedding obsolete instead of retrying
-it, and an earlier conversion left some heads without one. The command reopens
-the first (`claim_embeds_reopened`) and queues the second
-(`claim_embeds_queued`), a page at a time up to `--limit`. It does this only for
-heads that are readable in its config's scopes. A claim found by its words alone
-is then found by meaning too.
+With `--apply`, the command requeues obsolete embedding work for readable claim
+heads only when its error is `authority_revoked` (`claim_embeds_reopened`), and
+queues work for heads with no embedding work item (`claim_embeds_queued`). Each
+batch contains at most `--limit` heads in the configuration's scopes and exact
+project/branch partition. Those claims become available to semantic search after
+the worker successfully publishes their vectors.
 
 After changing the embedding model (see [configuration.md](configuration.md),
 "Changing the embedding model rebuilds the vector store"), re-embed what was
@@ -931,9 +930,6 @@ can be stopped and run again at any time; without `--until-done`, carry the
 printed `next_after_id` into `--after-id` while `more` is true. The sources stay,
 and so does the index of their error text. In a shared store, run it with the
 shared worker's config (`<root>\runtime-config.json`), which reaches every scope.
-On the shared store's copy it dropped 1,945,720 postings of 212,773 placeholders
-in 426 pages, the slowest 0.12 s, and kept the error text of the 4,348 that carry
-one.
 
 To re-frame the claims an earlier release stored in a frame this release would
 not write, among them a name given for the first time ("my cat is called ...")
@@ -1204,19 +1200,16 @@ session ends (a day at most). The MCP server serves the tools that read the stor
 `propose_memory`, `revise` or `forget`: WorkBuddy names no conversation with a call
 ([shared-store.md](shared-store.md)).
 
-The prompt's recall comes from a resident recall server (from 3.6.0), which keeps the entry's
-vector search and embedding connection warm. WorkBuddy 5.6.2 runs its MCP servers inside a
+The prompt's recall comes from a resident recall server, which keeps the entry's
+vector search and embedding connection warm. WorkBuddy runs its MCP servers inside a
 conversation's agent process: it starts one when a conversation opens or a prompt comes to a
-conversation without one, and stops it at its own time. A server started there met the prompt
-that started it still opening its vector store, and a cold server answered with its vector search
-only 12.7 s after its start, past the hook's 6 s. The resident server is a process of its own,
-started apart from the MCP server. It still lives only as long as the conversation's agent process
-that started it: WorkBuddy's agent puts itself and every process it starts in a Windows job that
-ends them all when the agent's process ends, and the server cannot leave that job (agent 2.147.0,
-measured 2026-10-04). While one conversation's process runs, another conversation's first prompt
-finds the server warm (1.48 s, with its vector search, measured the same day); the first
-conversation after WorkBuddy starts, and a prompt right after the conversation holding the server
-ended, are recalled without it (see Known limits):
+conversation without one, and stops it at its own time. Cold vector and embedding startup can
+exceed the prompt hook's budget. The resident server is a process of its own, started apart
+from the MCP server. On Windows, the resident server may still belong to the launching
+conversation's job if that job prevents breakaway, in which case closing the job also ends
+the resident server. Another conversation can reuse a running warm server. A prompt that
+finds no usable resident server uses the hook's fallback recall and can start the server
+for later prompts (see Known limits):
 
 - The prompt hook starts it after its answer when none runs, at most once a minute. The MCP
   server WorkBuddy runs with a conversation starts it too, and looks again every 30 s while that

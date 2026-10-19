@@ -1,9 +1,8 @@
 """A prompt's recall answered by the client's own MCP server, warm for as long as the client is open.
 
-Claude Code and Codex start a new process for every hook, and a prompt hook that starts LanceDB for its recall is often
-not ready before the recall's budget runs out: measured, 6 of 8 cold Claude Code prompts recalled by words alone
-(``helper_request_deadline``).  The client's MCP server lives exactly as long as the client, so it keeps a LanceDB
-helper ready and answers the entry's prompt hooks on this machine with the prompt's recall (``serve``).
+Claude Code and Codex start a new process for every hook.  Starting LanceDB in a prompt hook can exceed the recall
+budget (``helper_request_deadline``).  The client's MCP server keeps a LanceDB helper ready and answers the entry's
+prompt hooks on this machine with the prompt's recall (``serve``).
 
 Only the recall is asked for, and the server writes nothing.  The hook stores the prompt itself and asks for the recall
 after (``handler._resident_answer``), with all of its time; if the server has not answered when 1.5 s are left, the hook
@@ -61,10 +60,8 @@ CONNECT_SECONDS = 0.3
 #: A server serving several recalls at once proves itself in 0.15-0.3 s (each hand-over of Python's lock waits for a
 #: timer tick on Windows): at 0.3 s such a server would lose its name.
 PROOF_SECONDS = 0.5
-#: What a server's check of itself may take to name itself again, by the clock.  Made from inside the busy process, the
-#: check waits for its own share of Python's lock besides the answer, and reads what a hook sees times 1.3-1.9 as a
-#: rule (up to 3.7 under the heaviest load measured).  Held to ``PROOF_SECONDS`` it kept out 14% of the servers hooks
-#: reached in time; at twice, it let back 31% of those they could not; at one and a half, 4% and 10%.
+#: Wall-clock allowance for a server's self-check before it registers its endpoint again.  A check inside the
+#: serving process also waits for Python's lock, so it allows additional time for contention.
 SELF_CHECK_SECONDS = 1.5 * PROOF_SECONDS
 #: Servers a hook tries, newest first, and how long it may spend finding one.
 MAX_TRIED = 2
@@ -96,9 +93,8 @@ MAX_CONCURRENT = 8
 ADVERTISE_SECONDS = 2.0
 #: Minutes a client's resident recall server (``resident_entry``) stays up without a recall when the entry's runtime
 #: config names none (``resident_recall_minutes``).  WorkBuddy starts the entry's MCP server with each conversation's
-#: agent process, so a prompt that starts one meets a server still opening its vector store: a cold server answered
-#: with its vector search 12.7 s after its start (measured), past the prompt hook's 6 s.  Claude Code and
-#: Codex keep their server for as long as the client runs, and keep none.
+#: agent process.  A resident server avoids repeating cold vector startup within the prompt hook's budget.
+#: Claude Code and Codex keep their server for as long as the client runs, and keep no separate resident server.
 RESIDENT_DEFAULT_MINUTES = {"workbuddy": 120, "dsh": 120}
 #: How often a client starts a resident server when it finds none: a start warms for several seconds, and the next
 #: prompt's hook would otherwise start another meanwhile (the second gives way, ``resident_entry``).
@@ -443,10 +439,9 @@ class KeptRecaller:
     """One handler kept across a long-lived server's prompt recalls, with the vector store and embedding worker its
     runtime keeps open.
 
-    A server that made a handler for each recall would open the LanceDB table (about 2.3 s) and start the embedding
-    worker and its connection (about 1 s) for every prompt: measured, a warm server's recall took 3.9-4.1 s that way and
-    two of five lost their vector search to the time; with the handler kept, 1.6-2.1 s with it.  The handler only
-    recalls (``resident_recall_for``), which writes nothing.  One recall uses it at a time: another at the same moment
+    Reusing the handler avoids opening the LanceDB table and starting the embedding worker and its connection for
+    every prompt.  The handler performs recall without capturing memory events; query embedding requests still
+    record usage in the auxiliary budget ledger.  One recall uses it at a time: another at the same moment
     gets None, and its caller recalls without it.  It is made anew when ``stamp`` changes (the files it was made from),
     after a recall that raised, and while its runtime is not attached from a readable config; the handler it replaces is
     closed after, not within, the recall that replaced it.  Once closed it answers nothing."""
@@ -491,8 +486,8 @@ class KeptRecaller:
                         self._handler.warm_vectors(seconds)
                     except Exception:  # noqa: BLE001 - the first recall opens what is not open
                         pass
-                    # The query embedding route too, at the start only: warmed by the store alone, a cold server's
-                    # first recalls lose their vector search to the embedding's time (measured).
+                    # Warm the query embedding worker and connection before serving prompt recalls; warming the
+                    # vector store alone leaves their startup inside the first recall's budget.
                     warm_embedding = getattr(self._handler, "warm_embedding", None)
                     if callable(warm_embedding):
                         try:

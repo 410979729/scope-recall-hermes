@@ -205,7 +205,7 @@ def retire_rootless_proposals(
     evaluation, not in its own evidence, and the verdict on their words decides.
 
     Separate from ``requalify_claims`` on purpose: a re-judgement moves claims for every rule that
-    changed since they were written (154 of them in one store, promotions included), and retiring
+    changed since they were written, and retiring
     these must not bring that along.  The report names refs and verdicts only, never claim text.
     """
     refs = _page(tx, after_ref, limit)

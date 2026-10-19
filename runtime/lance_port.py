@@ -276,9 +276,8 @@ class LanceEmbedPort:
     ) -> None:
         """Publish a whole group's vectors in one fenced commit.
 
-        The store's own write API is plural; handed one row at a time, a pass of 32 sources
-        would take 32 lock-held handshakes -- measured at nine times the cost of one commit
-        carrying all 32.  The fence is the same as a single row's: ``lease_guard``
+        Publishing the group in one fenced commit avoids a separate lock-held handshake for each row.
+        The fence is the same as a single row's: ``lease_guard``
         answers for every member of the group while the helper holds the lock, and a group it
         refuses writes nothing, leaving each member to publish on its own fence.
         """

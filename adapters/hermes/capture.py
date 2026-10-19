@@ -206,9 +206,9 @@ class CaptureWriter:
         adapter = self._adapter
         holder = adapter._holder
         if release:
-            # The store I/O without the lock, which the caller (``sync_turn``, a tool hook) holds exactly once.  Held
-            # across the write, it would be taken straight back by this thread as it released it: measured, the next
-            # turn's start got in after 2 of 14 such captures.  Only the store is touched until it is taken again.
+            # Release the session lock during store I/O so other turn hooks can acquire it between captures.
+            # The caller (``sync_turn``, a tool hook) holds the lock exactly once; only the store is touched until
+            # the lock is acquired again.
             adapter._captures_in_flight += 1
             adapter._holder = None
             adapter._lock.release()

@@ -248,8 +248,7 @@ class _ChildOutput:
     receipt larger than that, and an owner that waits for exit before reading
     would leave the child blocked in ``write`` with its work already committed:
     it could never exit, so every pass would burn its whole drain window and be
-    reported as a timeout (measured: 200 items done in 34.8 s, the owner
-    returning 124 after 125.4 s).
+    reported as a timeout.
 
     The readers are daemon threads and the buffers are bounded, so a descendant
     that inherited the pipes cannot hold this owner up and a runaway child cannot

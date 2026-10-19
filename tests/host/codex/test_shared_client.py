@@ -542,8 +542,7 @@ def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(
 
 
 def test_a_long_prompt_is_stored_once_when_the_record_shows_it_again(store, tmp_path):
-    """A prompt over 65,536 characters is stored in segments under keys of their own, so the Stop's read of the
-    session record did not find it by its prompt id and stored it a second time (review of 3.4.0rc10)."""
+    """Segmented prompts are recognized by their prompt identity and stored once."""
     root, _homes, client, _capture = store
     text = "TEST 很长的提问。" + "长" * 70000
     record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl", _person("u1", _moments()(0), text))
@@ -640,8 +639,7 @@ def test_record_check_carries_stop_budget_and_defers_large_schema_upgrade(store,
 
 
 def test_a_locked_database_during_the_record_check_ends_the_read_not_the_hook(store, tmp_path, monkeypatch):
-    """SQLite's own "database is locked" escaped the Stop hook's check of the session record, which ended the hook
-    (rc13).  The read ends there instead, and the next Stop starts again from the same line."""
+    """A locked database ends the transcript read without ending the hook; the next Stop retries the same line."""
     root, _homes, client, _capture = store
     record = _record(
         tmp_path / "TEST-projects" / "TEST-cc-session.jsonl", _person("u1", _moments()(0), "TEST locked record")
@@ -664,9 +662,7 @@ def test_a_locked_database_during_the_record_check_ends_the_read_not_the_hook(st
 
 
 def test_a_deleted_message_in_the_session_record_does_not_stop_its_read(store, tmp_path, monkeypatch):
-    """A record line whose message was deleted is refused for good (``ACCESS_DENIED:source_unavailable``), but the read
-    took the refusal as a store it might write later, and every later Stop stopped at that line (review of rc13).  It
-    counts as settled, and the read goes on."""
+    """A permanently refused deleted message is settled, allowing the transcript read to continue."""
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -692,8 +688,7 @@ def test_a_deleted_message_in_the_session_record_does_not_stop_its_read(store, t
 
 
 def test_a_stop_s_capture_time_is_all_of_its_captures(store, tmp_path, monkeypatch):
-    """The remote server logs a hook's capture time; for a Stop it was only the last record line's, each capture
-    writing over the one before (review of rc13).  All of a hook's captures count."""
+    """A Stop hook's capture time includes every capture it performs."""
     import time
 
     _root, _homes, client, _capture = store
@@ -1818,8 +1813,7 @@ def test_a_long_prompt_s_recall_is_answered(resident, small_reserve, monkeypatch
     """The first version re-escaped the payload into a JSON body: 22,000 Chinese characters made it too large (413)."""
     from scope_recall.adapters.clients import handler as handler_module
 
-    # The budget an entry's config gives (the test store's default is 2 s): on a slow CI runner storing this prompt
-    # took 2.25 s of the 2, and the hook never asked its server (rc13's CI).  The size is what is tested here.
+    # Use sufficient hook time to test payload size independently of storage speed.
     monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
     root, client, endpoint = resident
     calls = _counted(endpoint, monkeypatch)
@@ -1896,9 +1890,7 @@ def test_a_prompt_with_half_of_a_broken_emoji_is_stored(store, capsys):
 def test_a_server_answer_that_ran_out_of_time_is_not_the_last_word(
     resident, small_reserve, ample_budget, monkeypatch, capsys
 ):
-    """A server's recall that ended in deadline_exceeded or recall_exception was taken as final, though the hook had
-    time for its own.  Then it was dropped and the hook said ``answered``: a server whose recalls kept failing looked
-    healthy (review of rc11)."""
+    """Incomplete server recalls trigger the hook's fallback and retain a diagnostic failure outcome."""
     _root, client, endpoint = resident
     marker = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST-server-marker"}}
     for reason, detail, said in (
@@ -1925,8 +1917,7 @@ def test_a_server_answer_that_ran_out_of_time_is_not_the_last_word(
 
 
 def test_a_prompt_whose_server_runs_still_starts_its_helper(resident, small_reserve, monkeypatch):
-    """A prompt whose server ran started no helper of its own, and every recall the hook then did itself (the server
-    busy, late or failing) ran by words alone (review of rc11)."""
+    """Prompt hooks prepare their own vector helper even when a recall server is available."""
     from scope_recall.adapters.clients import hook_entry
 
     _root, client, _endpoint = resident
@@ -1982,9 +1973,8 @@ def test_the_mcp_server_starts_whatever_its_endpoint_does(store, monkeypatch):
 def test_a_slow_server_s_answer_is_taken_while_the_hook_recalls_alongside(
     resident, storing_takes_no_hook_time, monkeypatch, capsys
 ):
-    """Given only what the hook kept back, a server's recall that needed most of the time had none, and neither had
-    the hook's (review of rc11).  The server has all of it now: the hook recalls alongside once little is left, and
-    takes the server's answer when it comes."""
+    """The server receives the available recall budget while the hook starts its fallback near the deadline
+    and accepts the server's answer when it arrives in time."""
     import time
 
     from scope_recall.adapters.clients import handler as handler_module
@@ -2013,9 +2003,7 @@ def test_a_slow_server_s_answer_is_taken_while_the_hook_recalls_alongside(
 
 
 def test_a_server_whose_recall_is_past_its_time_sends_hooks_on(resident, monkeypatch):
-    """A recall's time counted 2 s past what its hook gave it, and in between a hung server answered, named itself
-    again, and the next prompt waited on it (review of rc11).  It is stuck from that time, and until the recall ends
-    it tells every hook at once that it is busy."""
+    """A server with an overdue recall reports busy until that recall ends."""
     import time
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2046,8 +2034,7 @@ def test_a_server_whose_recall_is_past_its_time_sends_hooks_on(resident, monkeyp
 
 
 def test_a_hung_first_name_leaves_time_for_the_next(resident, monkeypatch):
-    """A name whose server did not prove itself took the whole second of finding, and the next was never asked
-    (review of rc11)."""
+    """An unresponsive endpoint leaves enough discovery time to try the next server."""
     import os
     import socket
     import time
@@ -2079,13 +2066,12 @@ def test_a_hung_first_name_leaves_time_for_the_next(resident, monkeypatch):
         os.utime(named, (newer, newer))  # the newest name, asked first
         recaller = local_endpoint.Recaller(client, "claude-code")
         assert recaller(_prompt("TEST 第一个不应答。"), (), (), 3.0) is not None
-    # Kept, a name whose process no longer answered cost every later prompt its wait (review of rc11).
+    # Remove the unresponsive endpoint registration after discovery fails.
     assert recaller.outcome == "answered" and not named.exists()
 
 
 def test_a_first_read_of_the_env_file_that_failed_is_tried_again(store, monkeypatch, tmp_path):
-    """A server that could not read its env file at its start recorded it as read, and recalled by words alone until
-    its client restarted (review of rc11)."""
+    """An initial environment-file read failure is retried on a later prompt."""
     import os
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2114,8 +2100,7 @@ def test_a_first_read_of_the_env_file_that_failed_is_tried_again(store, monkeypa
 
 
 def test_a_key_the_runtime_config_comes_to_name_is_taken_up(store, monkeypatch, tmp_path):
-    """Only the env file was watched: a runtime config that came to name another key was not read again, and a key
-    the server's own start could not read stayed out though its endpoint had read it (review of rc11)."""
+    """Runtime-config changes refresh the credential names used by the server."""
     import os
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2147,8 +2132,7 @@ def test_a_key_the_runtime_config_comes_to_name_is_taken_up(store, monkeypatch, 
 
 
 def test_a_payload_nested_past_the_interpreter_s_limit_is_cleaned():
-    """The cleaning walked a payload by calling itself: a tool's output nested 499 levels deep ended the hook with a
-    RecursionError on Python 3.11 (review of rc11)."""
+    """Payload cleaning handles nesting beyond Python's recursion limit."""
     from scope_recall.adapters.clients.boundary import without_lone_surrogates
 
     top = node = {}
@@ -2171,10 +2155,9 @@ def _marker(text):
 def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(
     resident, small_reserve, ample_budget, monkeypatch, capsys
 ):
-    """A server whose vector search failed on its own (its key lost, say) answered every prompt by words alone, and
-    the hook took that though it had the key, the helper and the time (review of rc11).  The hook's own recall is
-    used when it has its vector search, and the server's words when it has not either.  A provider's refusal the hook
-    would meet as well: that answer is used as it is, and the hook does not recall a second time."""
+    """Server-local vector failures permit the hook's vector fallback when it is available.
+    The hook uses the server's lexical result if its own recall also lacks vectors.
+    Shared provider failures do not duplicate the request."""
     from scope_recall.adapters.clients import handler as handler_module
 
     _root, client, endpoint = resident
@@ -2221,9 +2204,8 @@ def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(
 
 
 def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resident, ample_budget, monkeypatch, capsys):
-    """Recalling alongside, the hook stopped waiting the moment its own recall was done, dropped an answer that came in
-    the time it had given the server, and called the server late (review of rc11).  A hook whose own recall had no
-    vector search waits until its own time is up; one whose own had it does not."""
+    """A hook fallback without vectors waits for the server until the hook deadline;
+    a fallback with vectors can return immediately."""
     import time
 
     from scope_recall.adapters.clients import handler as handler_module
@@ -2259,8 +2241,7 @@ def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resid
 
 
 def test_a_server_whose_recall_raises_says_so_and_keeps_its_name(resident, monkeypatch, capsys):
-    """A recall that raised dropped the connection: the hook took the server for another program and removed its
-    name, which came back and failed the same way, with only the error's class in the log (review of rc11)."""
+    """A recall exception reports failure and a traceback without removing the server's endpoint registration."""
     from scope_recall.adapters.clients import local_endpoint
 
     _root, client, endpoint = resident
@@ -2278,8 +2259,7 @@ def test_a_server_whose_recall_raises_says_so_and_keeps_its_name(resident, monke
 
 
 def test_a_runtime_config_that_will_not_load_keeps_the_keys(store, monkeypatch, tmp_path):
-    """Read again whenever the runtime config changed, a config that did not load (a TypeError) raised out of the
-    server's recall (review of rc11); what is loaded stays, and it is read again at the next prompt."""
+    """A failed configuration refresh preserves loaded credentials and retries on the next prompt."""
     import os
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2313,8 +2293,7 @@ def test_a_runtime_config_that_will_not_load_keeps_the_keys(store, monkeypatch, 
 
 
 def test_a_payload_nested_past_the_parser_s_limit_is_answered_empty(store, monkeypatch, capsys, past_the_parser):
-    """Nested past what the JSON parser takes, a tool's output ended the hook with a RecursionError and no answer
-    (review of rc11)."""
+    """JSON beyond the parser's nesting limit receives an empty hook answer."""
     _root, _homes, client, _capture = store
     raw = past_the_parser(b'{"hook_event_name": "PostToolUse", "tool_response": ', b"}")
     assert _hook_entry(monkeypatch, raw, client) == 0
@@ -2324,8 +2303,7 @@ def test_a_payload_nested_past_the_parser_s_limit_is_answered_empty(store, monke
 def test_a_server_answer_from_an_unreadable_store_gives_way_to_the_hook_s_own(
     resident, small_reserve, ample_budget, monkeypatch, capsys
 ):
-    """A server whose store could not be read answered with an empty packet, which read as nothing found and was
-    taken over the hook's own recall (review of rc11)."""
+    """An unreadable store produces an incomplete server answer eligible for hook fallback."""
     from scope_recall.adapters.clients import handler as handler_module
 
     _root, client, endpoint = resident
@@ -2355,7 +2333,7 @@ def test_a_server_answer_from_an_unreadable_store_gives_way_to_the_hook_s_own(
 
 
 def test_a_hook_knows_whether_its_own_runtime_has_a_vector_search(store):
-    """Nothing tested what a hook took its own vector route from (review of rc11)."""
+    """The hook detects whether its attached runtime provides a vector route."""
     from types import SimpleNamespace
 
     _root, _homes, client, _capture = store
@@ -2375,8 +2353,7 @@ def test_a_hook_knows_whether_its_own_runtime_has_a_vector_search(store):
 
 
 def test_a_request_the_server_cannot_read_is_refused_and_its_name_kept(resident, monkeypatch, past_the_parser):
-    """A payload nested past what the server's parser takes was answered 400, which the hook took for another program
-    on the port, and it removed the server's name (review of rc11)."""
+    """A malformed request is refused without removing the verified server's endpoint registration."""
     import hashlib
     import http.client
 
@@ -2412,7 +2389,7 @@ def test_a_request_the_server_cannot_read_is_refused_and_its_name_kept(resident,
 
 
 def test_a_removed_name_comes_back_within_seconds(resident):
-    """A server that did not prove itself in time, being busy, was left out for 30 s (review of rc11)."""
+    """A responsive server restores a missing endpoint registration after a successful periodic self-check."""
     import time
 
     _root, _client, endpoint = resident
@@ -2424,8 +2401,7 @@ def test_a_removed_name_comes_back_within_seconds(resident):
 
 
 def test_a_first_read_of_the_key_that_raised_does_not_stop_the_server(store, monkeypatch, tmp_path):
-    """Only an OSError or a ValueError was caught at the server's first read of its key: another error kept the
-    endpoint from starting at all (review of rc11)."""
+    """An initial credential-read exception does not prevent endpoint startup."""
     import os
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2455,8 +2431,8 @@ def test_a_first_read_of_the_key_that_raised_does_not_stop_the_server(store, mon
 
 
 def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed_over(tmp_path, past_the_parser):
-    """A record line nested past what the parser takes ended every later Stop of the session, and so did a Codex
-    reply of that shape (review of rc11)."""
+    """Transcript lines beyond the parser's nesting limit produce no message; suggestion-reply detection returns
+    ``False`` for equally deep JSON without raising."""
     from scope_recall.adapters.clients import transcript
     from scope_recall.adapters.clients.boundary import is_codex_suggestions_reply
 
@@ -2468,9 +2444,8 @@ def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed
 
 
 def test_which_vector_faults_are_the_server_s_own():
-    """A server's own fault makes the hook recall a second time; one the hook meets as well only cost the prompt its
-    time and a second metered call.  The lists missed faults both ways (reviews of rc11).  Since the server keeps its
-    embedding connection and worker between prompts, their failures are its own (review of rc12)."""
+    """Fallback distinguishes server-local vector faults from faults the hook would encounter
+    through the same provider.  Persistent embedding connections and workers can fail locally."""
     from scope_recall.adapters.clients.hook_answer import server_own_vector_fault
 
     for gap in (
@@ -2527,9 +2502,8 @@ def test_which_vector_faults_are_the_server_s_own():
 
 
 def test_a_packet_emptied_because_its_read_did_not_finish_is_incomplete():
-    """Only a packet whose store was unreadable or whose time was gone before the read was taken for incomplete; one
-    whose time ran out later (collecting, compiling, releasing) came back empty as if nothing were found, and a server's
-    such answer was taken over the hook's own (review of rc11)."""
+    """Packets with ``status="unavailable"`` are classified as incomplete; ``ok``, ``partial``, and ``no_match``
+    packets are not classified as incomplete solely because they carry a deadline gap."""
     from scope_recall.adapters.clients.hook_answer import recall_incomplete
 
     assert (
@@ -2547,7 +2521,7 @@ def test_a_packet_emptied_because_its_read_did_not_finish_is_incomplete():
 
 
 def test_a_server_busy_for_less_than_a_hook_s_wait_is_answered(resident, monkeypatch):
-    """At 0.3 s, a server busy with other recalls did not prove itself in time and lost its name (review of rc11)."""
+    """The proof budget admits a responsive server briefly delayed by concurrent recalls."""
     import time
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2566,10 +2540,8 @@ def test_a_server_busy_for_less_than_a_hook_s_wait_is_answered(resident, monkeyp
 
 
 def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(store, monkeypatch):
-    """Checked from inside the server, a hello slowed by its own busy threads passed, and a server hooks could not
-    reach in time named itself again; held to a hook's 0.5 s, the check kept out a server hooks reached (reviews of
-    rc11).  A check that takes longer than a hook's wait but within its own allowance (0.75 s) names it again; one of
-    0.9 s does not."""
+    """Endpoint registration is restored only when the self-check finishes within its own allowance.
+    That allowance exceeds the hook's proof budget to accommodate contention inside the server."""
     import time
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2580,13 +2552,13 @@ def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(stor
     real = local_endpoint._hello
 
     def slow(connection, token):
-        time.sleep(0.9)  # over the check's 0.75 s, under the 1 s it was once allowed
+        time.sleep(0.9)  # Exceeds the self-check's 0.75 s allowance.
         return real(connection, token)
 
     connect = local_endpoint.http.client.HTTPConnection.connect
 
     def slow_connect(self):
-        time.sleep(0.9)  # over the check's 0.75 s, under the 1 s it was once allowed
+        time.sleep(0.9)  # Exceeds the self-check's 0.75 s allowance.
         return connect(self)
 
     _root, _homes, client, _capture = store
@@ -2616,7 +2588,7 @@ def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(stor
 
 
 def test_a_server_s_traceback_keeps_the_frame_that_raised(resident, monkeypatch, capsys):
-    """The server's traceback kept its outer frames and dropped the one that raised (review of rc11)."""
+    """The reported traceback retains the frame that raised the exception."""
     from scope_recall.adapters.clients import local_endpoint
 
     _root, client, endpoint = resident
@@ -2635,7 +2607,7 @@ def test_a_server_s_traceback_keeps_the_frame_that_raised(resident, monkeypatch,
 
 
 def test_a_refused_request_is_not_sent_to_the_next_server(resident, monkeypatch):
-    """A request one server could not read was sent to the next, which reads it no differently (review of rc11)."""
+    """A refused request is not resent to another server."""
     import os
     import threading
     import time
@@ -2714,9 +2686,7 @@ class _KeptFake:
 
 
 def test_a_kept_recaller_uses_one_handler_until_its_files_change():
-    """A server made a handler for each prompt's recall and opened its vector table and embedding worker each time:
-    3.9-4.1 s a recall, two of five without their vector search; kept, 1.6-2.1 s with it (rc12).  It is made anew
-    once the files it was made with change, and the one before is closed."""
+    """The recaller reuses its handler until its input files change, then closes the replaced handler."""
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
     _KeptFake.made = []
@@ -2805,9 +2775,8 @@ def test_a_kept_recaller_that_could_not_make_its_handler_makes_none_to_keep_warm
 
 
 def test_closing_a_recaller_does_not_wait_for_its_keep_warm_search_and_its_handler_is_closed(monkeypatch):
-    """Review of 3.5.0rc2: a keep-warm search holds the kept handler as the start's warming does, up to WARM_SECONDS
-    (a cold index, a helper to start again).  Closing waited CLOSE_WAIT_SECONDS for it, and when the search outlasted
-    that the handler was never closed: the search saw the recaller closed and left it open."""
+    """Closing a recaller does not wait for an active keep-warm search;
+    that search closes its handler when it finishes."""
     import threading
     import time
 
@@ -2838,9 +2807,7 @@ def test_closing_a_recaller_does_not_wait_for_its_keep_warm_search_and_its_handl
 
 
 def test_a_keep_warm_search_that_failed_is_tried_again_at_once(monkeypatch):
-    """Review of 3.5.0rc2: a keep-warm search that found the vector helper gone detaches it and closes the store for
-    the next request to open again (vector/process_store.py).  Counted as a use, it left that next request -- a new
-    helper, the table and the whole index -- to the next prompt's recall, the cold recall it is there to prevent."""
+    """A failed keep-warm search remains due and is retried without waiting for another prompt."""
     import time
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2873,9 +2840,7 @@ def test_a_keep_warm_search_that_failed_is_tried_again_at_once(monkeypatch):
 
 
 def test_a_recall_that_did_not_search_by_meaning_does_not_put_off_the_keep_warm_search(monkeypatch):
-    """Review of 3.5.0rc2: every recall that took the kept handler counted as a search of its index, also one whose
-    query embedding failed (a provider outage, a proxy down) and never reached it.  Prompts all through an outage kept
-    the index from being searched, and the first recall after it found the index cold."""
+    """A recall that performs no vector search does not postpone the keep-warm search."""
     import time
 
     from scope_recall.adapters.clients import local_endpoint
@@ -2932,9 +2897,7 @@ def test_a_recall_while_the_kept_handler_is_busy_is_answered_by_its_own():
 
 
 def test_a_kept_handler_that_raised_or_could_not_attach_its_runtime_is_made_anew():
-    """A handler whose runtime is not attached from a config it could read never attaches again: kept, it recalled
-    every later prompt without its vector search (review of rc12).  One whose recall raised is not trusted with the
-    next."""
+    """A handler is rebuilt after a recall exception or an unsuccessful runtime attachment."""
     import pytest
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
@@ -3017,8 +2980,8 @@ def _eventually(check, seconds=5.0):
 
 
 def test_a_server_without_a_runtime_config_makes_a_handler_for_each_recall(resident, monkeypatch):
-    """A handler whose runtime is not ready is not kept, so an entry without a runtime config costs each recall what
-    it did before rc12, and one whose config could not be read at one moment reads it again at the next."""
+    """Without a readable runtime configuration, each recall creates a fresh handler
+    and retries loading the configuration."""
     from scope_recall.adapters.clients import handler as handler_module
 
     _root, _client, endpoint = resident
@@ -3043,8 +3006,7 @@ def test_a_server_without_a_runtime_config_makes_a_handler_for_each_recall(resid
 
 
 def test_a_replaced_kept_handler_is_closed_off_the_request_s_time():
-    """Closing a handler stops its vector helper, which can take seconds; done inside the recall that replaced it,
-    it spent that recall's time and could make the server look stuck (review of rc12)."""
+    """Replaced handlers close outside the request's recall budget."""
     import time
 
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
@@ -3067,8 +3029,7 @@ def test_a_replaced_kept_handler_is_closed_off_the_request_s_time():
 
 
 def test_a_kept_handler_is_made_anew_when_the_entry_s_pointer_or_grants_change(resident):
-    """Before rc12 each prompt read the entry's pointer and the store's record of its grants again; a kept handler
-    watches them, so a re-attach that narrows the grants is taken up at the next prompt (review of rc12)."""
+    """Pointer or grant changes alter the handler's file stamp, causing the handler to be rebuilt on its next recall."""
     import os
 
     from scope_recall.adapters.clients.local_endpoint import entry_files
@@ -3239,10 +3200,7 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
 
 
 def test_a_kept_handler_recalls_with_its_vectors_across_a_pause(tmp_path, monkeypatch):
-    """A kept handler's embedding worker sent the next prompt's request on the connection its server had closed while
-    it sat idle, and the recall went without its vector search (review of rc12).  Asked after pauses longer than the
-    server's idle time, each prompt on a thread of its own as a server's are, one handler recalls with its vectors
-    every time, on a new connection after each pause."""
+    """A kept handler reconnects after idle connection expiry and continues to recall with vectors."""
     import threading
     import time
 
@@ -3384,8 +3342,8 @@ class _WarmedHandler:
 
 
 def test_closing_a_recaller_does_not_wait_for_its_warming():
-    """A warming holds the kept handler for up to a minute; closing waited for it, and a server stopped just after
-    its start hung that long (review of 3.4.1).  The warming sees the recaller closed and closes its handler."""
+    """Closing a recaller does not wait for startup warming;
+    warming closes the handler after observing closure."""
     import time
 
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
@@ -3402,8 +3360,7 @@ def test_closing_a_recaller_does_not_wait_for_its_warming():
 
 
 def test_a_warming_takes_its_stamp_before_its_build():
-    """Taken after the build, a change to the entry's files during the build counted as seen, and the handler made
-    from the old files was kept (review of 3.4.1)."""
+    """Capture the file stamp before building so changes during construction invalidate the resulting handler."""
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
     files = {"stamp": "v1"}

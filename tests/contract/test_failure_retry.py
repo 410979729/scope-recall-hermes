@@ -138,10 +138,8 @@ def test_a_new_stamp_replaces_the_earlier_one_and_keeps_the_rest():
 
 
 def test_a_code_past_the_bound_keeps_its_marks_and_its_kind():
-    """A release stamp longer than the schema's pushed a full code past the bound, and the cut took the end of the
-    failure kind (``derivation_inval``: no class, no doctor count; audit of 3.10.1).  Past the bound the history
-    between the marks and the kind gives way, and every budget mark stays, the automatic count among them: cut in
-    the middle, a count there was lost and its budget began again (audit of 3.10.1)."""
+    """Truncating an oversized error code preserves its failure kind and every retry-budget marker,
+    including the automatic retry count; history between the markers and kind gives way first."""
     from scope_recall.core.work_storage import CODE_BOUND, _auto_count, _operator_retry_ids, _within
 
     code = "retried:1110|derivation_retry:1|" + "timeout|" * 120 + "network_error|derivation_invalid"
@@ -152,7 +150,7 @@ def test_a_code_past_the_bound_keeps_its_marks_and_its_kind():
     assert _within(deferred) == "operator_retry:TEST-op|interrupted_retry:1|auto_retry:3|http_402"
     assert (_auto_count(_within(deferred)), _operator_retry_ids(_within(deferred))) == (3, ("TEST-op",))
     assert _within("short|code") == "short|code"
-    # A kind longer than any the worker writes no longer pushes the marks out (audit of 3.10.1).
+    # Oversized failure kinds preserve the retry markers.
     assert _within("operator_retry:TEST-op|prior:" + "x" * CODE_BOUND) == "operator_retry:TEST-op|" + "x" * 128
     # The one repair of an old oversized consolidation is a budget too: kept, it is not given again.
     repaired = "chunk_upgrade:1106|INPUT_INVALID|" + "http_402|" * 120 + "http_402"
@@ -160,8 +158,8 @@ def test_a_code_past_the_bound_keeps_its_marks_and_its_kind():
 
 
 def test_a_stamp_kept_behind_an_explicit_retry_still_counts():
-    """An explicit retry of one item keeps the code it found behind ``prior:``; the release's stamp there was not
-    seen, and a second run of the same release re-opened the row again (audit of 3.10.1)."""
+    """Release retry stamps remain effective when nested behind an explicit retry marker
+    (``prior:``), preventing a second reopening in the same release."""
     from scope_recall.core.work_storage import _budget_marks, _preserve_retry_history
 
     code = "operator_retry:TEST-op|prior:retried:3.10.1|http_400|http_400"
@@ -392,8 +390,7 @@ def _claim_and(core, ctx, *, error_code, recoverable):
 
 
 def test_a_row_this_release_re_opened_keeps_its_stamp_through_its_next_failure(app):
-    """A re-opened ``http_400`` that failed again had its code replaced, stamp and all, and each later run of the same
-    release re-opened it again, as often as anyone ran it (audit of 3.10.1)."""
+    """A subsequent failure preserves the release retry stamp and prevents another reopening in the same release."""
     core, ctx = app
     _fail_one(core, ctx, "http_400")
     assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 1

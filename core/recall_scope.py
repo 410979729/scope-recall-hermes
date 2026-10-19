@@ -11,11 +11,9 @@ in it goes before what was said at other times (``RetrievalPipeline._rank_hydrat
 since it often answers.  It is read by rule and only from what a question plainly writes, since a time misread moves
 the answer down; a question that names no time has none, and is recalled as if this reading did not exist.
 
-"9月29日工作机 Claude Code 聊了什么" asks for one entry's conversation on one day.  Searched by its words, the date and
-the entry's name match nothing useful ("聊了", "工作", "29") and the recall answers from other days and other entries:
-over two weeks of a shared store, 4 of 106 such questions found a message of the named entry from the named day.  The
-scope is read here and nowhere else; it adds a channel beside the lexical, vector and other channels, which search as
-for any question.
+A question that names only an entry and a day supplies metadata rather than the conversation's content words.
+A dedicated channel retrieves by entry and calendar day, while the lexical, vector, and other channels continue
+to search the question normally.
 
 Only a question about what was said or done on its day is read in it (``asks_what_was_said``): with its days and entries
 taken out, what is left must be, whole, one of a few forms of such a question or request ("聊了什么",

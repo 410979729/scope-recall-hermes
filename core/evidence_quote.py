@@ -8,12 +8,8 @@ always a substring of what is stored, and the byte-strict ``in`` checks in
 ``core/claim_storage.py``, ``core/consolidate.py`` and the alias path in
 ``core/mutate.py`` reject it as ``evidence_span`` / ``fragment_evidence``.
 
-On a live corpus almost every such rejection came from a backslash, a double
-quote or a newline; none differed under NFC normalisation and none involved
-tabs or non-breaking spaces.  So this ladder has no normalisation rung and no
-whitespace-tolerant rung: a rung is added when a corpus shows it is needed,
-not in anticipation.  Whitespace tolerance in particular would trade away the
-verbatim guarantee the whole quoting contract rests on.
+Resolution handles JSON escapes without Unicode normalisation or
+whitespace-tolerant matching, preserving literal evidence spans.
 
 Resolution is monotone.  Rung 1 is exactly the plain substring rule, so
 nothing that passes it can fail here.  Every later rung returns a slice

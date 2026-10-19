@@ -233,12 +233,10 @@ def _available_types(tx, scope_id, policy, important, candidates=WORK_TYPES):
 def _repeated_tool_output(tx, scope_id, text) -> bool:
     """Whether an earlier, still readable tool output in this scope has exactly this content.
 
-    Measured in one store, 77% of 132,000 tool outputs were byte-identical to an
-    earlier one.  The earlier copy already carries the vector and the lexical
-    index lists both, so a repeat is kept as a source only.  An earlier copy that
-    was itself kept as a source only (recall output, a repeat, a withheld summary)
-    carries no vector and does not count.  Text from a person is never a repeat:
-    saying it again is new.
+    A matching tool source that is not marked ``source_only`` suppresses another
+    embedding job, even if its own embedding is still pending, deferred, or failed.
+    The repeated source remains available to lexical retrieval.  Human messages
+    are not deduplicated by this rule.
     """
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return (

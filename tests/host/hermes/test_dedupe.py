@@ -506,9 +506,8 @@ def test_the_turn_s_own_message_says_whether_hermes_opened_it():
 
 
 def test_a_compression_mid_turn_keeps_the_turn(adapter, hermes_home):
-    """A compression gives the conversation a new session id in the middle of a turn that goes on.  The switch
-    cleared the turn: its post_llm_call no longer matched, so what it said on the way was never stored, and
-    sync_turn stored the opening message a second time under the new session."""
+    """Compression preserves the active turn across a session switch without losing replies
+    or duplicating the opening message."""
     provider, _clock = adapter
     provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-6", user_message="TEST 开始长任务")
     provider.on_turn_start(6, "TEST 开始长任务", turn_id="turn-6")

@@ -34,9 +34,7 @@ from ..vector.compaction import (
 from ..vector.store import VECTOR_INDEX_MIN_ROWS
 from .validation import utc_now
 
-#: Seconds of the drain budget set aside for one pass.  Measured: 0.12 s when
-#: there is nothing to do, 3.5 s to clear a 2,243-fragment backlog.  Below this
-#: the pass is skipped rather than started and abandoned half-way.
+#: Minimum remaining drain budget required before starting a compaction pass, to avoid abandoning it partway.
 RESERVE_SECONDS = 8.0
 
 
@@ -96,10 +94,9 @@ def compact_if_due(
     return receipt
 
 
-#: Seconds an index build takes per row and dimension: on a copy of a shared store the build took 7.7 s
-#: for 78,374 rows of 3,072 dimensions when the machine was quiet and 25.6 s when it was not, and this is twice the
-#: slow rate.  A pass starts a build only when the estimate fits in what is left of it: the watchdog ends a pass
-#: that outlives its budget.  An index already in place is looked at whatever the store's size.
+#: Estimated index-build seconds per row and dimension, including a safety margin.  A build starts only when the
+#: estimate fits the pass's remaining budget, because the watchdog ends a pass that exceeds it.  An index already
+#: in place is inspected regardless of the store's size.
 INDEX_SECONDS_PER_ROW_DIMENSION = 2.1e-7
 #: Seconds of the pass kept free beside the estimate, for the drain that follows.
 INDEX_MARGIN_SECONDS = 20.0

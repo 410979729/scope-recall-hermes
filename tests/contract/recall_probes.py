@@ -28,11 +28,8 @@ from __future__ import annotations
 
 import re
 
-#: Questions a corpus can answer, with a predicate identifying a correct answer.
-#: The shape is the contract; the corpus is whoever runs it.  These read as an
-#: operator's own notes because that is what the set is for -- the earlier
-#: version quoted one instance's real conversations, an installation id and a
-#: project id, in a repository anyone can read.
+#: Questions a corpus can answer, with a predicate identifying a correct answer.  The shape is the contract;
+#: callers supply their own corpus.  The questions represent an operator's notes.
 ANSWERABLE: tuple[tuple[str, str], ...] = (
     ("What installation id does this instance report?", r"install:[0-9a-f]{8,}"),
     (

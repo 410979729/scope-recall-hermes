@@ -671,7 +671,7 @@
   "core/storage.py": {
    "B010": 1,
    "BLE001": 4,
-   "E501": 7
+   "E501": 6
   },
   "core/trace.py": {
    "C901": {

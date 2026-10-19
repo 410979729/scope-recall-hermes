@@ -194,14 +194,9 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
     return [dict(role="system", content=system), dict(role="user", content=user)]
 
 
-#: Candidate re-evaluation carries the whole consolidation prompt (about 11.5 KB
-#: of instruction prose and inlined schema) plus a candidate block of its own,
-#: so the shared 16 KB consolidation ceiling would leave roughly 3.4 KB for
-#: evidence.  Measured against one live store, that admitted none of the 115
-#: oversized evaluations: the smallest was already 2,892 characters of evidence.
-#: This ceiling counts all message contents, including the candidate block.
-#: The transport's separate byte cap must also allow JSON escaping and its
-#: request envelope; it is not interchangeable with this content-byte bound.
+#: Candidate re-evaluation uses a larger content budget than consolidation so the shared prompt and candidate block
+#: leave room for evidence.  The 64,000-byte ceiling counts all message contents.  The transport needs a separate byte
+#: allowance for JSON escaping and the request envelope.
 CANDIDATE_EVALUATION_INPUT_BUDGET = 64000
 
 

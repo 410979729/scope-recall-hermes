@@ -391,8 +391,9 @@ def said_from_wire(value: object) -> Said | None:
     return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
 
 
-#: How much of a session record's end ``context_since`` reads for the last compaction.  At every prompt of 24 local
-#: sessions measured, the last one lay at most 12.2 MB back (median 5.4 MB).
+#: The 16 MiB tail bounds per-prompt I/O while leaving room for records after the latest compaction; if a larger
+#: session record has no compaction in that tail, ``context_since`` returns ``None`` instead of treating the whole
+#: session record as in context.
 _CONTEXT_TAIL_BYTES = 16 * 1024 * 1024
 #: What a record line naming a compaction holds: the summary that replaces what came before, or its boundary.  Only
 #: the names: a line is parsed and its values checked (``_compaction``) whatever spacing its JSON has.
