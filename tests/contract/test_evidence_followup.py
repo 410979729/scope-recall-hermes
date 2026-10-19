@@ -387,7 +387,7 @@ def test_a_quoted_clause_is_someone_s_words_and_a_quoted_term_the_writer_s_own()
 @pytest.mark.parametrize(
     ("question", "quoted", "own"),
     (
-        ("When does Orchard ship?", "Alice said 'Orchard Ships Friday'.", "Orchard ships Friday."),
+        ("When does Orchard ship?", "NameOne said 'Orchard Ships Friday'.", "Orchard ships Friday."),
         ("When does Orchard ship?", "The notice says ‘Orchard Ships Friday’.", "Orchard ships Friday."),
         ("When does Orchard ship?", "The note wrote: ‘Orchard Ships Friday’.", "Orchard ships Friday."),
         ("When does Orchard ship?", "Old notice: ‘Orchard Ships Friday’.", "Orchard ships Friday."),
@@ -429,7 +429,7 @@ def test_a_character_inside_a_name_does_not_introduce_a_quotation():
 
 @pytest.mark.parametrize("term", ("Orchard", "8443", "host:8443", "v3.1", "eu-west-1"))
 def test_a_source_introducing_a_single_identifier_or_value_does_not_make_it_a_clause(term):
-    text = f'Alice said "{term}".'
+    text = f'NameOne said "{term}".'
     assert unquoted(text) == text
 
 
@@ -616,12 +616,12 @@ def test_a_claim_answers_when_active_or_while_only_its_one_source_awaits_judgeme
         assert answering(question, (item,)) == Answers(True, ()), item.ref
     own = {
         "kind": "preference",
-        "subject": "principal:human:alice",
+        "subject": "principal:human:nameone",
         "predicate": "drink",
         "value_text": "don't drink coffee",
     }
     answer = _recalled("claim-own", json.dumps(own), kind="claim", state="active", reason="explicit_scoped_source")
-    assert answering("Does Alice drink coffee?", (answer,)) == Answers(True, (answer,))
+    assert answering("Does NameOne drink coffee?", (answer,)) == Answers(True, (answer,))
 
 
 def test_a_proposal_the_evaluator_found_insufficient_no_longer_answers(app):

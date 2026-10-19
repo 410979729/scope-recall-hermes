@@ -353,14 +353,14 @@ def test_candidate_deletion_in_scope_during_attempt_blocks_publication(app):
 
 def test_r1_candidate_hides_c1_principal_from_model_and_rebinds_via_c2(app):
     core, ctx = app
-    principal_ref = "principal:TEST-private-alice"
+    principal_ref = "principal:TEST-private-nameone"
     actor = replace(
         ctx,
         source_principal=TrustedSourcePrincipal(
             "human",
             "verified",
             principal_ref=principal_ref,
-            display_name="Alice",
+            display_name="NameOne",
         ),
     )
     source = capture(core, actor, "我喜欢蓝色。", key="TEST-r1/private-principal")

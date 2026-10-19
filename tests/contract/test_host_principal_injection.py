@@ -32,7 +32,7 @@ def test_trusted_principal_is_injected_when_event_does_not_claim_identity(tmp_pa
     principal = TrustedSourcePrincipal(
         "human",
         "verified",
-        principal_ref="principal:TEST-alice",
+        principal_ref="principal:TEST-nameone",
         display_name="Person A",
     )
 
@@ -41,13 +41,13 @@ def test_trusted_principal_is_injected_when_event_does_not_claim_identity(tmp_pa
     assert accepted["source_principal"] == {
         "kind": "human",
         "resolution": "verified",
-        "principal_ref": "principal:TEST-alice",
+        "principal_ref": "principal:TEST-nameone",
         "display_name": "Person A",
     }
 
 
 def test_event_cannot_self_assert_or_replace_verified_principal(tmp_path):
-    trusted = TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice")
+    trusted = TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-nameone")
     spoofed = {
         "kind": "human",
         "resolution": "verified",

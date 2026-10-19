@@ -59,7 +59,7 @@ def store(tmp_path, still_clocks):
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
     homes = {}
-    for name, display in (("tianshu", "天枢"), ("tianquan", "天权")):
+    for name, display in (("agent3", "天三"), ("agent2", "天二")):
         home = tmp_path / f"TEST-{name}-home"
         home.mkdir()
         attach_shared_entry(
@@ -158,7 +158,7 @@ def test_a_prompt_is_the_owner_s_under_the_client_s_entry_and_a_hermes_entry_rec
     # Attaching the client made its local user the owner, the way the Hermes CLI's is.
     assert principal_ref("human", store_id, "claude-code", "local") in rows[0][6]
 
-    asked = _hermes(homes["tianshu"])
+    asked = _hermes(homes["agent3"])
     try:
         injected = asked.prefetch("青鸟计划的代号 QX-17 是什么")
     finally:
@@ -172,7 +172,7 @@ def test_a_prompt_is_the_owner_s_under_the_client_s_entry_and_a_hermes_entry_rec
 
 def test_what_a_hermes_entry_was_told_reaches_the_client_s_prompt_marked_as_theirs(store, still_clocks):
     root, homes, client, _capture = store
-    told = _hermes(homes["tianquan"])
+    told = _hermes(homes["agent2"])
     try:
         told.on_turn_start(1, "TEST 白鹭项目的负责人是 KZ-42。", turn_id="TEST-turn-1", session_id="TEST-session-1")
         told.observe_pre_llm(
@@ -191,7 +191,7 @@ def test_what_a_hermes_entry_was_told_reaches_the_client_s_prompt_marked_as_thei
     guidance, _newline, body = context.partition("\n")
     assert "You are Claude Code (claude-code)" in guidance
     marked = [item for item in json.loads(body)["items"] if "KZ-42" in item["content"]]
-    assert marked and all(item["entries"] == [{"id": "tianquan", "name": "天权"}] for item in marked)
+    assert marked and all(item["entries"] == [{"id": "agent2", "name": "天二"}] for item in marked)
 
 
 def test_the_client_s_tool_traffic_is_not_recorded_and_a_turn_needs_its_prompt_id(store):
@@ -345,7 +345,7 @@ def test_a_pointer_binds_only_its_own_host_and_home(store, tmp_path):
     with pytest.raises(CodexConfigError):
         load_shared_client(client, "codex")
     with pytest.raises(CodexConfigError):
-        load_shared_client(homes["tianshu"], "claude-code")
+        load_shared_client(homes["agent3"], "claude-code")
     copied = tmp_path / "TEST-copied-home"
     (copied / "scope-recall").mkdir(parents=True)
     (copied / "scope-recall" / "attachment.json").write_bytes(
@@ -1055,7 +1055,7 @@ def test_the_doctor_names_owner_words_stored_with_a_reminder(store, monkeypatch)
     check_owner_words(report, "claude-code", root, "claude-code")
     assert report.capability_gaps == ["owner_words_with_client_reminder"]
     assert report.checks == [{"name": "owner_words", "result": "client_reminders", "detail": f"1: {event}@{revision}"}]
-    for entry in ("tianshu", None):
+    for entry in ("agent3", None):
         other = DoctorReport(host="claude-code", status="ok")
         check_owner_words(other, "claude-code", root, entry)
         assert other.capability_gaps == [] and other.checks == [], "another entry's, or another store's"
@@ -1284,7 +1284,7 @@ def test_the_doctor_names_codex_s_requests_stored_as_the_owner_s_words(store, tm
     refs = ",".join(f"{event}@{revision}" for event, revision in written_by_codex)
     assert report.checks == [{"name": "owner_words", "result": "host_requests", "detail": f"4: {refs}"}]
     other = DoctorReport(host="codex", status="ok")
-    check_owner_words(other, "codex", root, "tianshu")
+    check_owner_words(other, "codex", root, "agent3")
     assert other.capability_gaps == [] and other.checks == [], "another entry's"
 
 
@@ -1292,7 +1292,7 @@ def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store, still_
     """A recall request carries at most 8,192 characters of query.  A longer prompt went whole, the request was
     refused, and the turn had no recall at all: three of the work computer's Codex prompts in one morning."""
     _root, homes, client, _capture = store
-    told = _hermes(homes["tianquan"])
+    told = _hermes(homes["agent2"])
     try:
         told.on_turn_start(1, "TEST 白鹭项目的负责人是 KZ-42。", turn_id="TEST-turn-1", session_id="TEST-session-1")
         told.observe_pre_llm(
@@ -1304,7 +1304,10 @@ def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store, still_
     # Distinct characters, so the prompt has far more than 128 distinct terms as a real one would.
     prompt = (
         "白鹭项目的负责人 KZ-42 是谁？下面是附件：\n"
-        + "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰菜重芥姜海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐吊民伐罪周发殷汤坐朝问道垂拱平章爱育黎首臣伏戎羌遐迩一体率宾归王鸣凤在竹白驹食场化被草木赖及万方"
+        + (
+            "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰菜重芥姜"
+            "海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐吊民伐罪周发殷汤坐朝问道垂拱平章爱育黎首臣伏戎羌遐迩一体率宾归王鸣凤在竹白驹食场化被草木赖及万方"
+        )
         * 3
         + "\n"
         + "TEST 附件里的一行字。\n" * 800
@@ -1455,7 +1458,7 @@ def test_a_prompt_whose_capture_failed_before_the_secret_screen_still_keeps_a_cr
 
 def test_a_prompt_blank_for_its_first_8192_characters_is_recalled_by_what_follows(store):
     _root, homes, client, _capture = store
-    told = _hermes(homes["tianquan"])
+    told = _hermes(homes["agent2"])
     try:
         told.on_turn_start(1, "TEST 白鹭项目的负责人是 KZ-42。", turn_id="TEST-turn-1", session_id="TEST-session-1")
         told.observe_pre_llm(
@@ -3120,14 +3123,14 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
 
     root = base / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id="TEST-agent"))
-    home = base / "TEST-tianshu-home"
+    home = base / "TEST-agent3-home"
     home.mkdir()
     attach_shared_entry(
         root,
         build_installation_manifest(
             home, agent_id="TEST-agent", user_id="TEST-owner", agent_workspace="TEST-workspace"
         ),
-        entry_id="tianshu",
+        entry_id="agent3",
         display_name="TEST",
         now="2026-09-24T20:00:00Z",
     )
@@ -3185,8 +3188,8 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
         entry_id="claude-code",
         display_name="Claude Code",
         runtime_config_from=routes_path,
-        grants_like=("tianshu",),
-        capture_like="tianshu",
+        grants_like=("agent3",),
+        capture_like="agent3",
         now="2026-09-24T20:00:00Z",
     )
     entry_config = client / "scope-recall" / "runtime-config.json"
@@ -3498,7 +3501,7 @@ def test_workbuddy_stores_the_person_s_last_query_and_recalls_for_it(workbuddy, 
     ``<user_query>`` block; the reminders around it are WorkBuddy's, never stored and never searched for."""
     root, home, _projects = workbuddy
     _root, homes, _client, _capture = store
-    told = _hermes(homes["tianquan"])
+    told = _hermes(homes["agent2"])
     try:
         told.on_turn_start(1, "TEST 白鹭项目的负责人是 KZ-42。", turn_id="TEST-turn-1", session_id="TEST-session-1")
         told.observe_pre_llm(
@@ -3743,7 +3746,7 @@ def test_a_workbuddy_error_shown_in_place_of_a_reply_is_not_stored(workbuddy):
 
     root, home, projects = workbuddy
     at = _wb_ms()
-    question = "TEST 天姬今天出了什么事？"
+    question = "TEST 天一今天出了什么事？"
     record = _wb_record(projects, _wb_line("user", "u1", at(0), f"<user_query>{question}</user_query>"))
     _wb(home, _wb_prompt(question))
     _record(record, _wb_line("assistant", "a1", at(1), WB_NOTICE, status="incomplete", providerData=WB_ERROR))
@@ -4151,11 +4154,11 @@ def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(ds
 
 
 def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh, still_clocks):
-    """The plugin keeps a turn's messages and sends them with its Stop: the reply under the turn, and from the lines what
-    the model said while it worked and what the person sent meanwhile.  The answer's ``through`` is how many lines are
-    stored; the same lines sent again (an answer lost on the way, or the rest of a turn after a Stop that stored part
-    of it) store nothing twice: the reply sent again is the one stored, with nothing left in the inbox for the store's
-    worker to store under a key of its own."""
+    """The plugin keeps a turn's messages and sends them with its Stop: the reply under the turn, and from the lines
+    what the model said while it worked and what the person sent meanwhile.  The answer's ``through`` is how many
+    lines are stored; the same lines sent again (an answer lost on the way, or the rest of a turn after a Stop that
+    stored part of it) store nothing twice: the reply sent again is the one stored, with nothing left in the inbox
+    for the store's worker to store under a key of its own."""
     root, home = dsh
     at = _dsh_ms()
     _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "3", "prompt": "TEST 把两个文件改名。"})
@@ -4675,10 +4678,10 @@ def test_an_aborted_step_is_passed_on_untouched(dsh, tmp_path):
 
 @_NEEDS_NODE
 def test_the_plugin_stores_what_a_dsh_that_is_gone_left_and_leaves_a_running_one_s_file(dsh, tmp_path):
-    """A dsh that ended before its store did leaves its spool file; another dsh's plugin takes it, once it is idle and its
-    process is gone, and stores it.  That turn ended minutes ago, so its reply is stored from the record alone, once (the
-    plugin sends a reply with its Stop only while a store that dates it by the hook's moment would still know it).  A
-    message older than 14 days is dropped and said; the file of a process that still runs is left to it."""
+    """A dsh that ended before its store did leaves its spool file; another dsh's plugin takes it, once it is idle and
+    its process is gone, and stores it.  That turn ended minutes ago, so its reply is stored from the record alone,
+    once (the plugin sends a reply with its Stop only while a store that dates it by the hook's moment would still
+    know it).  A message older than 14 days is dropped and said; the file of a process that still runs is left to it."""
     root, home = dsh
     spool = tmp_path / "TEST-spool"
     spool.mkdir()
@@ -4750,9 +4753,9 @@ def test_the_plugin_stores_what_a_dsh_that_is_gone_left_and_leaves_a_running_one
 
 @_NEEDS_NODE
 def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp_path):
-    """Two dsh processes that are gone left a file each.  The store cannot be reached (here: no interpreter), so the pass
-    stops at the first session it tried, keeps that one's messages, leaves the other file as it was and says when it
-    tries again: a backlog after an outage is not sent to the store all at once, nor every minute."""
+    """Two dsh processes that are gone left a file each.  The store cannot be reached (here: no interpreter), so the
+    pass stops at the first session it tried, keeps that one's messages, leaves the other file as it was and says
+    when it tries again: a backlog after an outage is not sent to the store all at once, nor every minute."""
     _root, home = dsh
     spool = tmp_path / "TEST-spool"
     spool.mkdir()

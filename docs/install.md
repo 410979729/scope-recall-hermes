@@ -331,29 +331,31 @@ With a dashboard login (`hermes serve` with `dashboard.basic_auth`, or the Deskt
 app connected to such a host from another machine) the host passes the login to
 the adapter as the session's user, `basic:<name>`, and names no chat. Its local
 session transport names a login `auth:v1:["<provider>","<issuer>","<name>"]`
-(`auth:v1:["basic","","alice"]`) and the conversation as a chat of its own. The
+(`auth:v1:["basic","","nameone"]`) and the conversation as a chat of its own. The
 adapter routes either session as a one-to-one chat with the login: `chat_type`
 `private`, `chat_id` the login, `thread_id` `main`. A login is not the local
 owner. Until it is approved it binds no scope, nothing said there is captured or
 recalled, and the host log says so once per session:
 
 ```
-scope-recall: session bound to no memory scope: a desktop session for basic:alice (capability_gap:audience_unmapped, capability_gap:owner_private_denied, capability_gap:no_allowed_scope); nothing in it is captured or recalled; if this login is the owner's own, approve it with apply-install --owner-login desktop=basic:alice
+scope-recall: session bound to no memory scope: a desktop session for basic:nameone (capability_gap:audience_unmapped,
+capability_gap:owner_private_denied, capability_gap:no_allowed_scope); nothing in it is captured or recalled; if this
+login is the owner's own, approve it with apply-install --owner-login desktop=basic:nameone
 ```
 
 Approve your own login with `--owner-login <platform>=<login>`, repeatable,
 `desktop` or `tui` only, with the login exactly as the host sends it, which that
 line names. Windows PowerShell 5.1 drops the double quotes inside an argument
-unless each is written `\"`: `--owner-login 'desktop=auth:v1:[\"basic\",\"\",\"alice\"]'`.
+unless each is written `\"`: `--owner-login 'desktop=auth:v1:[\"basic\",\"\",\"nameone\"]'`.
 
 ```powershell
 scope-recall apply-install --host hermes `
   --target-plugin-dir $Plugin --instance-root $Instance `
   --project-root $Project --agent-id default --python $Python `
-  --owner-login desktop=basic:alice
+  --owner-login desktop=basic:nameone
 ```
 
-It adds the owner principal `(desktop, basic:alice)` and one grant of the owner's
+It adds the owner principal `(desktop, basic:nameone)` and one grant of the owner's
 private scope on that route, the way `--local-platform` does for a session that
 names no user, with the same backup, and approves nothing else: not that login on
 `tui`, not another login, not a session that names no user. Whoever holds that

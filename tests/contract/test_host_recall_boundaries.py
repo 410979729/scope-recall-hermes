@@ -259,12 +259,12 @@ def test_automatic_background_uses_latest_trusted_task_context(tmp_path):
 
 def test_c2_current_subject_is_bound_only_from_verified_c1_principal(tmp_path):
     base = context(tmp_path / "TEST-c2-consumer")
-    alice = replace(
+    nameone = replace(
         base,
         source_principal=TrustedSourcePrincipal(
             "human",
             "verified",
-            principal_ref="principal:TEST-alice",
+            principal_ref="principal:TEST-nameone",
         ),
     )
     bob = replace(
@@ -277,49 +277,49 @@ def test_c2_current_subject_is_bound_only_from_verified_c1_principal(tmp_path):
     )
     unresolved = replace(base, source_principal=TrustedSourcePrincipal("human", "unresolved"))
 
-    assert _profile_subject(alice, "我") == "principal:TEST-alice"
-    assert _profile_subject(alice, "current_user") == "principal:TEST-alice"
-    assert _profile_subject(alice, "TEST-project") == "TEST-project"
+    assert _profile_subject(nameone, "我") == "principal:TEST-nameone"
+    assert _profile_subject(nameone, "current_user") == "principal:TEST-nameone"
+    assert _profile_subject(nameone, "TEST-project") == "TEST-project"
     with pytest.raises(ContractError, match="IDENTITY_UNBOUND"):
         _profile_subject(unresolved, "user")
 
     request = recall_request(query="继续当前任务")
-    alice_search = SearchContext.from_request(
+    nameone_search = SearchContext.from_request(
         request,
-        alice,
+        nameone,
         now="2026-09-12T12:00:00Z",
         deadline=100.0,
     )
-    bob_search = replace(alice_search, trusted_context=bob)
-    unresolved_search = replace(alice_search, trusted_context=unresolved)
-    assert _subject_visible_to_current_principal("principal:TEST-alice", alice_search)
-    assert not _subject_visible_to_current_principal("principal:TEST-alice", bob_search)
-    assert not _subject_visible_to_current_principal("principal:TEST-alice", unresolved_search)
-    assert not _subject_visible_to_current_principal("unresolved-source:TEST", alice_search)
-    assert not _subject_visible_to_current_principal("user", alice_search)
+    bob_search = replace(nameone_search, trusted_context=bob)
+    unresolved_search = replace(nameone_search, trusted_context=unresolved)
+    assert _subject_visible_to_current_principal("principal:TEST-nameone", nameone_search)
+    assert not _subject_visible_to_current_principal("principal:TEST-nameone", bob_search)
+    assert not _subject_visible_to_current_principal("principal:TEST-nameone", unresolved_search)
+    assert not _subject_visible_to_current_principal("unresolved-source:TEST", nameone_search)
+    assert not _subject_visible_to_current_principal("user", nameone_search)
     assert _subject_visible_to_current_principal("TEST-project", unresolved_search)
 
 
 def test_entity_current_subject_reads_only_the_verified_principal(tmp_path):
     base = context(tmp_path / "TEST-c2-entity-consumer")
-    alice = replace(
+    nameone = replace(
         base,
         source_principal=TrustedSourcePrincipal(
             "human",
             "verified",
-            principal_ref="principal:TEST-alice",
+            principal_ref="principal:TEST-nameone",
         ),
     )
     core = MemoryCore(CoreConfig(base.binding), clock=Clock())
     core.initialize()
     core.test_sequence = itertools.count(1)
-    source = capture(core, alice, "principal:TEST-alice 配色 蓝色。")
+    source = capture(core, nameone, "principal:TEST-nameone 配色 蓝色。")
     claim = accept(
         core,
-        alice,
+        nameone,
         draft(
             source,
-            subject="principal:TEST-alice",
+            subject="principal:TEST-nameone",
             value="蓝色",
             kind="fact",
             predicate="配色",
@@ -328,7 +328,7 @@ def test_entity_current_subject_reads_only_the_verified_principal(tmp_path):
     ).items[0]
 
     result = core.entity(
-        alice,
+        nameone,
         {
             "protocol_version": "1.1",
             "request_id": "TEST-current-principal-entity",
@@ -341,5 +341,5 @@ def test_entity_current_subject_reads_only_the_verified_principal(tmp_path):
     )
 
     assert result["subject"] == "我"
-    assert result["resolved_subject"] == "principal:TEST-alice"
+    assert result["resolved_subject"] == "principal:TEST-nameone"
     assert [item["ref"] for item in result["statements"]] == [claim.ref]

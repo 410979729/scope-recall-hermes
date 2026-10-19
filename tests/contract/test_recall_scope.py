@@ -18,7 +18,7 @@ from tests.contract.test_recall_dating_and_order import _say
 from tests.v11_support import recall_request, slowdown
 
 ENTRIES = {
-    "tianji": "天姬",
+    "agent1": "天一",
     "claude-code": "Claude Code",
     "codex": "Codex",
     "workpc-claude-code": "工作机 Claude Code",
@@ -54,7 +54,7 @@ def _scoped_candidates(core, ctx, query, *, limit=12, **request):
     (
         ("9月29日工作机 Claude Code聊了什么", ("29",), ("workpc-claude-code",)),
         ("工作机的Codex在9月28号都说了些什么", ("28",), ("workpc-codex",)),
-        ("昨天天姬说了什么", ("29",), ("tianji",)),
+        ("昨天天一说了什么", ("29",), ("agent1",)),
         ("2026-09-29 claude code 的进度", ("29",), ("claude-code",)),
         ("9月29日和9月28日 Codex", ("29", "28"), ("codex",)),
         ("今天做了什么", ("30",), ()),
@@ -77,7 +77,7 @@ def test_a_question_s_days_and_entries(query, days, entries):
 @pytest.mark.parametrize(
     "query",
     (
-        "天姬的模型换成什么了",
+        "天一的模型换成什么了",
         "3.4.2 修了什么",
         "工作机 Codex 上次说的方案",
         "如今天下聊了什么",
@@ -148,18 +148,18 @@ def test_entries_joined_as_days_are_joined_are_all_read():
     from scope_recall.core.recall_scope import asks_what_was_said
 
     entries = {
-        "tianxuan": "天璇",
-        "tianquan": "天权",
+        "agent4": "天四",
+        "agent2": "天二",
         "workpc-claude-code": "工作机 Claude Code",
         "workpc-codex": "工作机 Codex",
     }
     for query, named in (
-        ("昨天天璇和天权聊了什么", ("tianxuan", "tianquan")),
+        ("昨天天四和天二聊了什么", ("agent4", "agent2")),
         (
             "9月28日、9月29日和9月30日工作机 Claude Code 和工作机 Codex 都聊了什么",
             ("workpc-claude-code", "workpc-codex"),
         ),
-        ("昨天和天璇聊了什么", ("tianxuan",)),
+        ("昨天和天四聊了什么", ("agent4",)),
     ):
         scope = query_scope(query, now=NOW, zone=NEW_YORK, entries=entries)
         assert scope.entry_ids == named and asks_what_was_said(scope.rest), (query, scope.rest)
@@ -295,7 +295,7 @@ def test_a_long_message_or_one_naming_many_entries_names_no_scope_and_is_read_at
         return named_days(text, today)
 
     monkeypatch.setattr(recall_scope, "_named_days", days)
-    assert query_scope("昨天" + "天姬" * 4095, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
+    assert query_scope("昨天" + "天一" * 4095, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
     assert query_scope("今天codex" + "1" * 8000 + "-", now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
     assert read == [], "neither is read for its days or its entries"
     assert query_scope("今天 " + "codex " * 20, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
@@ -426,7 +426,7 @@ def test_a_question_naming_a_day_is_given_that_day_s_conversation(app):
     told = _say(
         core,
         ctx,
-        "好的，先升天枢，再升其余。",
+        "好的，先升天三，再升其余。",
         origin="assistant_visible",
         role="assistant",
         when="2026-09-02T14:00:20Z",
@@ -712,10 +712,10 @@ def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_p
     storage = SQLiteStorage(binding)
     storage.initialize()
     with storage.write(shared_context(binding)) as tx:
-        tx.registry.register_entry("tianshu", "天枢", "hermes", now="2026-09-01T00:00:00Z")
-        tx.registry.register_entry("tianxuan", "天璇", "hermes", now="2026-09-01T00:00:00Z")
+        tx.registry.register_entry("agent3", "天三", "hermes", now="2026-09-01T00:00:00Z")
+        tx.registry.register_entry("agent4", "天四", "hermes", now="2026-09-01T00:00:00Z")
     said: dict[str, list[str]] = {}
-    for entry in ("tianshu", "tianxuan"):
+    for entry in ("agent3", "agent4"):
         with storage.write(shared_context(binding, entry_id=entry)) as tx:
             for index in range(3):
                 event = source_event(
@@ -731,15 +731,15 @@ def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_p
     def asked(query):
         context = SearchContext.from_request(
             recall_request(query=query, mode="auto", max_items=6),
-            shared_context(binding, entry_id="tianshu"),
+            shared_context(binding, entry_id="agent3"),
             now="2026-09-03T12:00:00Z",
             deadline=_time.monotonic() + 30,
             zone=timezone.utc,
         )
         return {item.ref for item in recall(context, storage=storage).items}
 
-    assert asked("9月2日天璇聊了什么") == set(said["tianxuan"])
-    assert asked("9月2日聊了什么") == {*said["tianshu"], *said["tianxuan"]}
+    assert asked("9月2日天四聊了什么") == set(said["agent4"])
+    assert asked("9月2日聊了什么") == {*said["agent3"], *said["agent4"]}
 
 
 def test_a_day_question_naming_an_entry_is_not_judged_by_the_names_it_gives(tmp_path):
@@ -898,7 +898,7 @@ def test_a_day_that_never_mentions_the_subject_does_not_answer_for_it(app):
     settled = _say(
         core,
         ctx,
-        "金丝雀发布定了：先升天枢，再升其余。",
+        "金丝雀发布定了：先升天三，再升其余。",
         origin="human_direct",
         role="user",
         when="2026-09-03T10:00:00Z",

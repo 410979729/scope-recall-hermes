@@ -33,9 +33,10 @@ _WRAPPING = " \"'“”‘’()[]{}<>.,;:!?|*~_-"
 
 def name_forms(display_name: object) -> tuple[str, ...]:
     """What a person is called, from the name a host attests: the whole name and, for a name of several words, the
-    first, the one people are called by (``Alice Lee`` gives ``Alice Lee`` and ``Alice``).  The others are left out: a
-    middle name or a surname (``Ann``, ``Lee`` of ``Mary Ann Lee``) is someone else's as often.  A host's account id
-    and a name without a letter give nothing; a first word of one character gives the whole name alone."""
+    first, the one people are called by (``NameOne SurnameOne`` gives ``NameOne SurnameOne`` and ``NameOne``).
+    The others are left out: a middle name or a surname (``Ann``, ``Lee`` of ``Mary Ann Lee``) is someone else's as
+    often.  A host's account id and a name without a letter give nothing; a first word of one character gives the
+    whole name alone."""
     if type(display_name) is not str:
         return ()
     name = " ".join(display_name.split()).strip(_WRAPPING)
@@ -63,7 +64,7 @@ def _chinese(text: str) -> bool:
 
 def _glued(text: str, index: int) -> bool:
     """Whether the character at ``index`` runs a Latin name on into a longer word, name or identifier: a letter or a
-    digit of any script but Chinese, which is written straight against a name (``Alice对辣``), or ``_./-\\`` of a
+    digit of any script but Chinese, which is written straight against a name (``NameOne对辣``), or ``_./-\\`` of a
     path or an identifier."""
     if not 0 <= index < len(text):
         return False
@@ -72,7 +73,7 @@ def _glued(text: str, index: int) -> bool:
 
 
 #: An ASCII word beginning with an uppercase letter after a Latin name is treated as a possible continuation of that
-#: name (``Alice Smith``, ``Alice SMITH``); the pronoun ``I`` is excluded.
+#: name (``NameOne SurnameTwo``, ``NameOne SURNAMETWO``); the pronoun ``I`` is excluded.
 _NEXT_WORD = re.compile(r"[^\S\n]+(?!I\b)([A-Z][A-Za-z]+)")
 #: What may follow a Chinese name in a question about the person: a particle, a preposition, a common verb or adverb,
 #: a time.  Another character runs the name on into someone's longer one (``王芳芳``, ``王芳林``), which is no name
@@ -152,7 +153,8 @@ def _tidy(text: str, chinese: bool) -> str:
 @lru_cache(maxsize=256)
 def owner_view(query: str, names: tuple[str, ...]) -> OwnerView | None:
     """The question asked as the owner would ask it, or None when it names none of ``names``.  The longest name is
-    read first (``Alice Lee`` before ``Alice``), and a question in Chinese takes 我 where an English one takes I."""
+    read first (``NameOne SurnameOne`` before ``NameOne``), and a question in Chinese takes 我 where an English one
+    takes I."""
     chosen: list[tuple[int, int, bool]] = []
     for name in sorted(set(names), key=lambda name: (-len(name), name)):
         for span in _spans(query, name, names):

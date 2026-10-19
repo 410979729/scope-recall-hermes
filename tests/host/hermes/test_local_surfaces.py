@@ -351,7 +351,7 @@ def test_an_owner_login_is_never_a_reserved_name_in_any_case():
     for value in ("desktop=local", "desktop=LOCAL", "tui=Unknown", "desktop=*"):
         with pytest.raises(HermesIdentityError, match="an owner login is"):
             normalize_owner_logins([value])
-    assert normalize_owner_logins(["desktop=basic:alice"]) == (("desktop", "basic:alice"),)
+    assert normalize_owner_logins(["desktop=basic:nameone"]) == (("desktop", "basic:nameone"),)
 
 
 def test_a_platform_that_names_its_chats_keeps_the_route_it_sent(hermes_home, initialize_kwargs):

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "source_event",
-  "description": "Scope Recall v1.1 working-tree contract with P01 independent-adjudication amendments. See verification/P01/contract-decision.md. Not a deployed API.",
+  "description": "Design specification v1.1. Not an installed API. Source events and their evidence references.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

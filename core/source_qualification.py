@@ -56,7 +56,7 @@ UNASSERTED_CONTEXT = re.compile(
 _STATEMENT = r"(?:是|为|用|改|换|调整|应该|应当|要|\b(?:is|are|was|were|uses?|should|will|must|change|switch)\b)"
 #: A named or unnamed speaker other than the one writing, before what they said: ``张三说：``, ``张三说，``, a name
 #: opening a clause before 说 with nothing between (``张三说配色换成了银色``), or before 表示, 称, 提到, 认为, 觉得,
-#: 指出 or 声称 and a statement (``张三表示配色换成银色``; ``红色表示错误`` states nothing), ``Alice said``, ``the
+#: 指出 or 声称 and a statement (``张三表示配色换成银色``; ``红色表示错误`` states nothing), ``NameOne said``, ``the
 #: wiki says``, ``Everyone thinks``.  ``我说：``, ``我表示`` and ``I said`` are the writer's own; 说 in a noun (小说,
 #: 传说, 学说) says nothing, nor does it in 说错 (misspoke), 说好 (agreed), 说明 (explain) or 说得 (put it), nor 称 in
 #: a name (名称, 简称, 称为); and a verb that opens an identifier (``claim-4daf…``, a claim's ref) is no verb.
@@ -78,9 +78,9 @@ _SURNAME = (
 #: Surnames of two characters (欧阳明明, 司马懿, 上官婉儿).
 _COMPOUND_SURNAME = "(?:欧阳|司马|上官|诸葛|东方|皇甫|慕容|司徒|公孙|夏侯|令狐|尉迟|长孙|宇文)"
 #: A speaker's name as a line's label: a surname and one or two characters after it (张三, 李经理, 欧阳明明), 小 or 老
-#: before one (小王, 老张), 阿 and a character (阿乙), a role (同事, 客户, 老板), a handle (@alice), or a capitalised
-#: Latin word that is no heading, log level or key (Alice; not Note, Update, Remember, Status, Value); and a role or a
-#: time after it in brackets (Alice (PM), 张三（产品）).  An instruction or a key before its value (记住：, 配色：), a
+#: before one (小王, 老张), 阿 and a character (阿乙), a role (同事, 客户, 老板), a handle (@nameone), or a capitalised
+#: Latin word that is no heading, log level or key (NameOne; not Note, Update, Remember, Status, Value); and a role or a
+#: time after it in brackets (NameOne (PM), 张三（产品）).  An instruction or a key before its value (记住：, 配色：), a
 #: log's level (INFO:, ERROR:) and a key in lower case (status:, value:) are no name.
 _SPEAKER_NAME = (
     rf"(?:{_COMPOUND_SURNAME}[\u3400-\u9fff]{{1,2}}|[小老]{_SURNAME}|{_SURNAME}[\u3400-\u9fff]{{1,2}}|阿[\u3400-\u9fff]"
@@ -93,13 +93,14 @@ _SPEAKER_NAME = (
     r"(?:[^\S\n]*[(（][^()（）\n]{1,24}[)）])?"
 )
 #: What a line says when it holds a sentence rather than a key's value: a statement (``_STATEMENT``), a negation, a
-#: person or a liking (张三：我不吃辣, Alice: I prefer blue).
+#: person or a liking (张三：我不吃辣, NameOne: I prefer blue).
 _SAYS = (
     rf"(?i:{_STATEMENT}|不|没|别|我|你|他|她|喜欢|偏好|讨厌"
     r"|\b(?:i|my|me|we|our|you|he|she|they|not|never|no|prefer|like|love|hate|want|need)\b|n['’]t\b)"
 )
 #: A line that opens with another speaker's name (``_SPEAKER_NAME``) and a colon before a sentence (``_SAYS``), on it or
-#: on the next line (``张三：TEST-project 配色换成银色``, ``Alice (PM): the CI is GitLab``, ``Alice: I prefer blue``),
+#: on the next line (``张三：TEST-project 配色换成银色``, ``NameOne (PM): the CI is GitLab``,
+#: ``NameOne: I prefer blue``),
 #: after a list marker, a ``[10:32]`` or in Markdown emphasis.  The writer's own ``我：``, a heading or a correction of
 #: theirs (``更正：``, ``Update:``, ``刚才写错了：``), a head that is a phrase (``库里只有这一句：``), a log's line
 #: (``INFO: …``) and a key before its value (``status: …``, ``Region: us-east-1``) give no one else's words.
@@ -108,7 +109,7 @@ _SPEAKER_LINE = re.compile(
     rf"{_SPEAKER_NAME}(?:\*\*|__)?[：:](?!//)(?=[^\n]*?{_SAYS}|[^\S\n]*\n[^\n]*?{_SAYS})"
 )
 #: Someone else's words, or an example, around a first person: a speaker other than the writer
-#: (``_SAID_BY_ANOTHER``, and ``Alice writes``, ``Alice hears``), a quoted first person in double, CJK or single
+#: (``_SAID_BY_ANOTHER``, and ``NameOne writes``, ``NameOne hears``), a quoted first person in double, CJK or single
 #: quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a
 #: first person after a speaker's label (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one
 #: else's words.
@@ -121,11 +122,12 @@ _REPORTED_SELF = re.compile(
     r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
 )
-#: A line opening with a speaker's label: a short head ending in a colon (``儿子：``, ``Alice:``, ``Alice (10:32):``,
-#: ``From Alice on Monday:``), a chat log's ``<alice>``, a ``[10:32]`` before either, after a list marker, on a quoted
-#: line or in Markdown emphasis (``**Alice:**``).  Any such head counts, the owner's own ``Update:`` too: telling a
-#: speaker's name from a heading is not this rule's to try.  A head that begins with the first person (``我说：``,
-#: ``I think:``) is no label, nor is a URL's scheme.
+#: A line opening with a speaker's label: a short head ending in a colon (``儿子：``, ``NameOne:``,
+#: ``NameOne (10:32):``,
+#: ``From NameOne on Monday:``), a chat log's ``<nameone>``, a ``[10:32]`` before either, after a list marker, on a
+#: quoted line or in Markdown emphasis (``**NameOne:**``).  Any such head counts, the owner's own ``Update:`` too:
+#: telling a speaker's name from a heading is not this rule's to try.  A head that begins with the first person
+#: (``我说：``, ``I think:``) is no label, nor is a URL's scheme.
 _SPEAKER_LABEL = re.compile(
     r"(?:^|[\n。！？!?；;])[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?"
     r"(?:\[[^\]\n]{0,24}\][^\S\n]*)?(?:\*\*|__|\*|_)?"
@@ -439,7 +441,7 @@ def in_pasted_text(content: str, quote: str) -> bool:
     """Whether a first person in the quoted words stands in text the owner pasted rather than said, judged in the
     whole message: after a line opening with a speaker's label (``_SPEAKER_LABEL``), inside a fenced block, inside a
     quotation still open across lines, or on a quoted line (``> ...``).  A claim's evidence is read in a context
-    narrowed to the quote's sentence, which leaves all of these out (``Alice:`` ... ``My preference is blue.``), and a
+    narrowed to the quote's sentence, which leaves all of these out (``NameOne:`` ... ``My preference is blue.``), and a
     quote may hold a fence's opening line itself."""
     at = content.rfind(quote) if quote else -1
     if at < 0:

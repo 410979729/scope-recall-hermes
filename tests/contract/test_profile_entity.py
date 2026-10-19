@@ -75,11 +75,11 @@ def test_profile_groups_admitted_current_claims_and_entity_one_hop(app):
     incoming, _ = _accept(
         core,
         ctx,
-        "TEST-alice 负责 TEST-project。",
+        "TEST-nameone 负责 TEST-project。",
         value="TEST-project",
         kind="fact",
         predicate="负责",
-        subject="TEST-alice",
+        subject="TEST-nameone",
     )
     conditional, _ = _accept(
         core,
@@ -94,11 +94,11 @@ def test_profile_groups_admitted_current_claims_and_entity_one_hop(app):
     cooccur, _ = _accept(
         core,
         ctx,
-        "TEST-alice 合作伙伴是 Bob, Carol。",
+        "TEST-nameone 合作伙伴是 Bob, Carol。",
         value="Bob, Carol",
         kind="fact",
         predicate="合作伙伴",
-        subject="TEST-alice",
+        subject="TEST-nameone",
     )
 
     profile = core.profile(
@@ -182,12 +182,12 @@ def test_profile_groups_admitted_current_claims_and_entity_one_hop(app):
     assert bob["status"] == "no_match"
     assert bob["statements"] == []
     assert bob["coverage"] != "complete_for_query"
-    alice = core.entity(
+    nameone = core.entity(
         ctx,
         {
             "protocol_version": "1.1",
-            "request_id": "TEST-alice",
-            "subject": "TEST-alice",
+            "request_id": "TEST-nameone",
+            "subject": "TEST-nameone",
             "action": "related",
             "direction": "outgoing",
             "predicate": "合作伙伴",
@@ -195,8 +195,8 @@ def test_profile_groups_admitted_current_claims_and_entity_one_hop(app):
             "budget_tokens": 4096,
         },
     )
-    assert alice["statements"] == [
-        item for item in alice["statements"] if item["value_text"] == "Bob, Carol" and item["ref"] == cooccur.ref
+    assert nameone["statements"] == [
+        item for item in nameone["statements"] if item["value_text"] == "Bob, Carol" and item["ref"] == cooccur.ref
     ]
     assert pref.ref not in {item["ref"] for item in probe["statements"]}
 
@@ -665,11 +665,11 @@ def test_candidate_union_and_alias_scan_cap_use_local_seam(app, monkeypatch):
     _accept(
         core,
         ctx,
-        "TEST-alice 负责 TEST-project。",
+        "TEST-nameone 负责 TEST-project。",
         value="TEST-project",
         kind="fact",
         predicate="负责",
-        subject="TEST-alice",
+        subject="TEST-nameone",
     )
     _accept(
         core,

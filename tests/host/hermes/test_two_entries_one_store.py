@@ -64,11 +64,11 @@ def root(tmp_path):
 
 @pytest.fixture
 def entries(tmp_path, root):
-    tianshu = _home(tmp_path, "tianshu")
-    tianquan = _home(tmp_path, "tianquan")
-    attach_shared_entry(root, tianshu, entry_id="tianshu", display_name="天枢", now=NOW)
-    attach_shared_entry(root, tianquan, entry_id="tianquan", display_name="天权", now=NOW)
-    return tianshu.hermes_home, tianquan.hermes_home
+    agent3 = _home(tmp_path, "agent3")
+    agent2 = _home(tmp_path, "agent2")
+    attach_shared_entry(root, agent3, entry_id="agent3", display_name="天三", now=NOW)
+    attach_shared_entry(root, agent2, entry_id="agent2", display_name="天二", now=NOW)
+    return agent3.hermes_home, agent2.hermes_home
 
 
 def _provider(home, session="TEST-session-1"):
@@ -100,22 +100,22 @@ def _items(injected):
 
 
 def test_an_attached_home_binds_the_shared_store_as_its_own_entry(root, entries):
-    tianshu, _tianquan = entries
-    identity = bind_hermes_identity("TEST-session-1", **_kwargs(tianshu))
+    agent3, _agent2 = entries
+    identity = bind_hermes_identity("TEST-session-1", **_kwargs(agent3))
 
     assert identity.binding.installation_kind == "shared"
     assert identity.binding.data_directory == root.resolve()
     assert identity.binding.installation_id == read_shared_payload(root)["installation_id"]
-    assert identity.entry_id == identity.scope.entry_id == "tianshu"
+    assert identity.entry_id == identity.scope.entry_id == "agent3"
     assert identity.session_id == "TEST-session-1", "the host dispatches hooks by its own session id"
     context = identity.trusted_context()
-    assert (context.session_id, context.entry_id) == ("tianshu:TEST-session-1", "tianshu")
-    assert not (tianshu / "scope-recall" / "installation.json").exists()
+    assert (context.session_id, context.entry_id) == ("agent3:TEST-session-1", "agent3")
+    assert not (agent3 / "scope-recall" / "installation.json").exists()
 
 
 def test_what_one_entry_is_told_another_recalls_marked_with_where_it_came_in(root, entries):
-    tianshu, tianquan = entries
-    told, asked = _provider(tianquan), _provider(tianshu)
+    agent3, agent2 = entries
+    told, asked = _provider(agent2), _provider(agent3)
     try:
         _say(told, "TEST 青鸟计划的代号是 QX-17。")
         injected = asked.prefetch("青鸟计划的代号 QX-17 是什么")
@@ -125,13 +125,13 @@ def test_what_one_entry_is_told_another_recalls_marked_with_where_it_came_in(roo
 
     guidance, items = _items(injected)
     marked = [item for item in items if "QX-17" in item["content"]]
-    assert marked and all(item["entries"] == [{"id": "tianquan", "name": "天权"}] for item in marked)
-    assert "You are 天枢 (tianshu)" in guidance
+    assert marked and all(item["entries"] == [{"id": "agent2", "name": "天二"}] for item in marked)
+    assert "You are 天三 (agent3)" in guidance
 
 
 def test_an_entry_reading_only_its_own_memories_gets_no_entry_guidance(root, entries):
-    tianshu, _tianquan = entries
-    provider = _provider(tianshu)
+    agent3, _agent2 = entries
+    provider = _provider(agent3)
     try:
         _say(provider, "TEST 白鹭计划的代号是 BL-3。")
         provider.on_session_switch("TEST-session-2")
@@ -145,8 +145,8 @@ def test_an_entry_reading_only_its_own_memories_gets_no_entry_guidance(root, ent
 
 
 def test_the_same_host_session_and_turn_on_two_entries_are_two_sources(root, entries):
-    tianshu, tianquan = entries
-    for home in (tianshu, tianquan):
+    agent3, agent2 = entries
+    for home in (agent3, agent2):
         provider = _provider(home, session="TEST-same-session")
         try:
             _say(provider, "TEST 两个入口听到同一句话。", session="TEST-same-session", turn="TEST-turn-1")
@@ -155,16 +155,16 @@ def test_the_same_host_session_and_turn_on_two_entries_are_two_sources(root, ent
 
     rows = _sources(root)
     assert [(entry, session) for entry, session, _key in rows] == [
-        ("tianquan", "tianquan:TEST-same-session"),
-        ("tianshu", "tianshu:TEST-same-session"),
+        ("agent2", "agent2:TEST-same-session"),
+        ("agent3", "agent3:TEST-same-session"),
     ]
     assert len({key for _entry, _session, key in rows}) == 2
     assert all(f":{entry}:TEST-same-session:" in key for entry, _session, key in rows)
 
 
 def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
-    tianshu, tianquan = entries
-    told, deleting = _provider(tianquan), _provider(tianshu)
+    agent3, agent2 = entries
+    told, deleting = _provider(agent2), _provider(agent3)
     try:
         told.observe_pre_llm(
             session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 我的储物柜密码是 4471。"
@@ -214,12 +214,12 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
 
 
 def test_an_entry_attached_later_leaves_a_running_one_bound_as_it_was(tmp_path, root, entries):
-    tianshu, _tianquan = entries
-    running = _provider(tianshu)
+    agent3, _agent2 = entries
+    running = _provider(agent3)
     try:
         before = running._identity.binding
-        tianxuan = _home(tmp_path, "tianxuan", platform="telegram", conversation_key="TEST-group-9")
-        attach_shared_entry(root, tianxuan, entry_id="tianxuan", display_name="天璇", now=NOW)
+        agent4 = _home(tmp_path, "agent4", platform="telegram", conversation_key="TEST-group-9")
+        attach_shared_entry(root, agent4, entry_id="agent4", display_name="天四", now=NOW)
         assert set(read_shared_payload(root)["scope_ids"]) > before.scope_ids
 
         running.on_session_switch("TEST-session-2")
@@ -227,12 +227,12 @@ def test_an_entry_attached_later_leaves_a_running_one_bound_as_it_was(tmp_path, 
         _say(running, "TEST 新入口接入之后这里照常记。", session="TEST-session-2")
     finally:
         running.shutdown()
-    assert ("tianshu", "tianshu:TEST-session-2") in {(entry, session) for entry, session, _key in _sources(root)}
+    assert ("agent3", "agent3:TEST-session-2") in {(entry, session) for entry, session, _key in _sources(root)}
 
 
 def test_a_shared_entry_never_starts_a_worker(root, entries, monkeypatch):
-    tianshu, _tianquan = entries
-    identity = bind_hermes_identity("TEST-session-1", **_kwargs(tianshu))
+    agent3, _agent2 = entries
+    identity = bind_hermes_identity("TEST-session-1", **_kwargs(agent3))
     binding = identity.binding
     config = {
         "binding": {
@@ -248,11 +248,11 @@ def test_a_shared_entry_never_starts_a_worker(root, entries, monkeypatch):
         "owner_id": "TEST-entry",
         "auxiliary": {"external_embedding": False, "external_consolidation": False},
     }
-    (tianshu / "scope-recall" / "runtime-config.json").write_text(json.dumps(config), encoding="utf-8")
+    (agent3 / "scope-recall" / "runtime-config.json").write_text(json.dumps(config), encoding="utf-8")
     launch = Mock()
     monkeypatch.setattr("scope_recall.adapters.hermes.runtime_wiring.launch_worker", launch)
 
-    provider = _provider(tianshu)
+    provider = _provider(agent3)
     try:
         assert provider._host_runtime.configured, "the entry's own runtime config, beside its pointer"
         _say(provider, "TEST 这句话由主库的 worker 整理。")
@@ -265,36 +265,34 @@ def test_a_shared_entry_never_starts_a_worker(root, entries, monkeypatch):
 
 
 def test_a_session_switch_keeps_the_entry_and_a_pointer_binds_only_its_own_home(tmp_path, root, entries):
-    tianshu, tianquan = entries
-    current = bind_hermes_identity("TEST-session-1", **_kwargs(tianshu))
-    assert switch_hermes_identity(current, "TEST-session-2").entry_id == "tianshu"
+    agent3, agent2 = entries
+    current = bind_hermes_identity("TEST-session-1", **_kwargs(agent3))
+    assert switch_hermes_identity(current, "TEST-session-2").entry_id == "agent3"
 
     stray = tmp_path / "TEST-stray-home"
     (stray / "scope-recall").mkdir(parents=True)
-    (stray / "scope-recall" / "attachment.json").write_bytes(
-        (tianquan / "scope-recall" / "attachment.json").read_bytes()
-    )
+    (stray / "scope-recall" / "attachment.json").write_bytes((agent2 / "scope-recall" / "attachment.json").read_bytes())
     with pytest.raises(HermesIdentityError, match="another home"):
         load_binding_for_home(stray)
 
 
 def test_a_home_with_its_own_installation_and_a_pointer_binds_nothing(tmp_path, root, entries):
-    tianshu, _tianquan = entries
+    agent3, _agent2 = entries
     write_installation_manifest(
-        build_installation_manifest(tianshu, agent_id=AGENT, user_id=OWNER, agent_workspace=WORKSPACE)
+        build_installation_manifest(agent3, agent_id=AGENT, user_id=OWNER, agent_workspace=WORKSPACE)
     )
     with pytest.raises(HermesIdentityError, match="both its own installation and a shared store"):
-        bind_hermes_identity("TEST-session-1", **_kwargs(tianshu))
+        bind_hermes_identity("TEST-session-1", **_kwargs(agent3))
 
 
 def test_attach_refuses_an_entry_id_from_another_home_and_a_home_twice(tmp_path, root, entries):
     other = _home(tmp_path, "other")
     with pytest.raises(HermesIdentityError, match="another home"):
-        attach_shared_entry(root, other, entry_id="tianshu", display_name="天枢", now=NOW)
-    tianshu_home, _tianquan = entries
-    again = build_installation_manifest(tianshu_home, agent_id=AGENT, user_id=OWNER, agent_workspace=WORKSPACE)
+        attach_shared_entry(root, other, entry_id="agent3", display_name="天三", now=NOW)
+    agent3_home, _agent2 = entries
+    again = build_installation_manifest(agent3_home, agent_id=AGENT, user_id=OWNER, agent_workspace=WORKSPACE)
     with pytest.raises(HermesIdentityError, match="another entry"):
-        attach_shared_entry(root, again, entry_id="tianshu-2", display_name="天枢二", now=NOW)
+        attach_shared_entry(root, again, entry_id="agent3-2", display_name="天三二", now=NOW)
     wrong_agent = build_installation_manifest(tmp_path / "TEST-wrong-agent", agent_id="TEST-other-agent", user_id=OWNER)
     with pytest.raises(HermesIdentityError, match="agent_id or test_mode"):
         attach_shared_entry(root, wrong_agent, entry_id="wrong", display_name="错", now=NOW)
@@ -333,28 +331,28 @@ def _scope(home):
 def test_each_entry_brings_its_old_store_and_the_same_old_id_stays_two_memories(root, entries):
     from scope_recall.maintenance.shared_import import import_entry
 
-    tianshu, tianquan = entries
-    *_, shu_old = _old_store(tianshu, _scope(tianshu), "TEST 天枢旧库记着：仓库钥匙挂在北门 K-12。")
+    agent3, agent2 = entries
+    *_, shu_old = _old_store(agent3, _scope(agent3), "TEST 天三旧库记着：仓库钥匙挂在北门 K-12。")
     *_, quan_old = _old_store(
-        tianquan, _scope(tianquan), "TEST 天权旧库记着：备用电源放在西侧 W-7。", session="TEST-old-session-2"
+        agent2, _scope(agent2), "TEST 天二旧库记着：备用电源放在西侧 W-7。", session="TEST-old-session-2"
     )
-    for entry, old in (("tianshu", shu_old), ("tianquan", quan_old)):
+    for entry, old in (("agent3", shu_old), ("agent2", quan_old)):
         result = import_entry(root=root, entry_id=entry, source=old)
         assert (result["status"], result["counts"]["sources"]) == ("imported", 1), result
 
     rows = _query(root, "SELECT entry_id, session_id, source_event_key FROM source_events ORDER BY entry_id")
     assert rows == [
-        ("tianquan", "tianquan:TEST-old-session-2", "import:tianquan:legacy:memories:0"),
-        ("tianshu", "tianshu:TEST-old-session", "import:tianshu:legacy:memories:0"),
+        ("agent2", "agent2:TEST-old-session-2", "import:agent2:legacy:memories:0"),
+        ("agent3", "agent3:TEST-old-session", "import:agent3:legacy:memories:0"),
     ]
-    asked = _provider(tianshu)
+    asked = _provider(agent3)
     try:
         _guidance, items = _items(asked.prefetch("仓库钥匙 北门 K-12 挂在哪里"))
     finally:
         asked.shutdown()
     brought = [item for item in items if "K-12" in item["content"]]
-    assert brought and all(item["entries"] == [{"id": "tianshu", "name": "天枢"}] for item in brought)
-    again = import_entry(root=root, entry_id="tianshu", source=shu_old)
+    assert brought and all(item["entries"] == [{"id": "agent3", "name": "天三"}] for item in brought)
+    again = import_entry(root=root, entry_id="agent3", source=shu_old)
     assert again["status"] == "already_imported"
     assert _query(root, "SELECT count(*) FROM source_events") == [(2,)]
     # The embedding each old store had queued for it is queued again, under the source's new id.
@@ -369,25 +367,25 @@ def test_an_id_two_old_stores_share_otherwise_refuses_the_second_and_writes_noth
     from scope_recall.maintenance.shared import SharedStoreError
     from scope_recall.maintenance.shared_import import import_entry
 
-    tianshu, tianquan = entries
-    *_, shu_old = _old_store(tianshu, _scope(tianshu), "TEST 同一场旧对话，天枢这边。")
-    *_, quan_old = _old_store(tianquan, _scope(tianquan), "TEST 同一场旧对话，天权这边。")
-    import_entry(root=root, entry_id="tianshu", source=shu_old)
+    agent3, agent2 = entries
+    *_, shu_old = _old_store(agent3, _scope(agent3), "TEST 同一场旧对话，天三这边。")
+    *_, quan_old = _old_store(agent2, _scope(agent2), "TEST 同一场旧对话，天二这边。")
+    import_entry(root=root, entry_id="agent3", source=shu_old)
     with pytest.raises(SharedStoreError, match="cannot be imported as it is"):
-        import_entry(root=root, entry_id="tianquan", source=quan_old)
-    assert _query(root, "SELECT entry_id, count(*) FROM source_events GROUP BY entry_id") == [("tianshu", 1)]
+        import_entry(root=root, entry_id="agent2", source=quan_old)
+    assert _query(root, "SELECT entry_id, count(*) FROM source_events GROUP BY entry_id") == [("agent3", 1)]
 
 
 def test_a_rehearsal_writes_nothing_and_another_homes_store_is_refused(root, entries):
     from scope_recall.maintenance.shared import SharedStoreError
     from scope_recall.maintenance.shared_import import import_entry
 
-    tianshu, _tianquan = entries
-    *_, old = _old_store(tianshu, _scope(tianshu), "TEST 只在排练里导入的一句话。")
-    assert import_entry(root=root, entry_id="tianshu", source=old, dry_run=True)["status"] == "rehearsed"
+    agent3, _agent2 = entries
+    *_, old = _old_store(agent3, _scope(agent3), "TEST 只在排练里导入的一句话。")
+    assert import_entry(root=root, entry_id="agent3", source=old, dry_run=True)["status"] == "rehearsed"
     assert _query(root, "SELECT count(*) FROM source_events") == [(0,)]
     with pytest.raises(SharedStoreError, match="not of this entry's home"):
-        import_entry(root=root, entry_id="tianquan", source=old)
+        import_entry(root=root, entry_id="agent2", source=old)
 
 
 def test_what_an_old_store_forgot_stays_forgotten(root, entries):
@@ -395,9 +393,9 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
     from scope_recall.maintenance.shared_import import import_entry
     from v11_support import source_event
 
-    tianshu, _tianquan = entries
-    scope = _scope(tianshu)
-    core, context, (secret,), old = _old_store(tianshu, scope, "TEST 旧库里的保险柜密码是 5520。")
+    agent3, _agent2 = entries
+    scope = _scope(agent3)
+    core, context, (secret,), old = _old_store(agent3, scope, "TEST 旧库里的保险柜密码是 5520。")
     for index in range(1, 9):  # the old store ran for a while: its epoch is well past the new store's
         core.record_event(
             context,
@@ -422,7 +420,7 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
         remaining_seconds=10,
     )
 
-    result = import_entry(root=root, entry_id="tianshu", source=old)
+    result = import_entry(root=root, entry_id="agent3", source=old)
     assert result["counts"]["group_blocks_without_sources"] == 0
     # Recorded at the import, not at the old store's own epoch: one above this store's read as a
     # deletion after every read in its scopes, emptying recall and failing derived work there.
@@ -431,9 +429,9 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
     # A deletion takes the message that asked for it along; both groups stay blocked under the store's id.
     store = SimpleNamespace(installation_id=read_shared_payload(root)["installation_id"])
     assert set(_query(root, "SELECT group_sha256 FROM source_group_blocks")) == {
-        (group_digest(store, scope, None, None, f"import:tianshu:legacy:memories:{index}"),) for index in (0, 9)
+        (group_digest(store, scope, None, None, f"import:agent3:legacy:memories:{index}"),) for index in (0, 9)
     }
-    asked = _provider(tianshu)
+    asked = _provider(agent3)
     try:
         injected = asked.prefetch("保险柜密码 5520")
     finally:
@@ -446,8 +444,8 @@ def test_a_legacy_source_id_is_renamed_wherever_the_old_store_names_it(root, ent
     columns only, or their queued embeddings name no source and the worker drops every one."""
     from scope_recall.maintenance.shared_import import _Names, import_entry
 
-    tianshu, _tianquan = entries
-    _core, _context, (said,), old = _old_store(tianshu, _scope(tianshu), "TEST 一条从 2.x 迁移来的旧记录。")
+    agent3, _agent2 = entries
+    _core, _context, (said,), old = _old_store(agent3, _scope(agent3), "TEST 一条从 2.x 迁移来的旧记录。")
     legacy = "event-legacy-" + "0123456789abcdef" * 2
     with closing(sqlite3.connect(old / "memory.sqlite3")) as db:
         # The store as a 2.x migration left it: the legacy id in every column that names the source.
@@ -461,8 +459,8 @@ def test_a_legacy_source_id_is_renamed_wherever_the_old_store_names_it(root, ent
         )
         db.commit()
 
-    import_entry(root=root, entry_id="tianshu", source=old)
-    new = _Names("tianshu").event(legacy)
+    import_entry(root=root, entry_id="agent3", source=old)
+    new = _Names("agent3").event(legacy)
     assert _query(root, f"SELECT count(*) FROM work_items WHERE work_type='embed' AND subject_ref='{new}'") == [(1,)]
     assert _query(root, "SELECT count(*) FROM work_items WHERE subject_ref LIKE 'event-legacy-%'") == [(0,)]
     ((extra,),) = _query(root, f"SELECT extra_json FROM source_events WHERE event_id='{new}'")
@@ -481,9 +479,9 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
     from scope_recall.maintenance.shared_import import _Names, import_entry
     from v11_support import source_event
 
-    tianshu, _tianquan = entries
-    scope = _scope(tianshu)
-    core, context, (said,), old = _old_store(tianshu, scope, "TEST 一句用户说过的话。")
+    agent3, _agent2 = entries
+    scope = _scope(agent3)
+    core, context, (said,), old = _old_store(agent3, scope, "TEST 一句用户说过的话。")
     tool = replace(context, actor_origin="tool_observation")
     outputs = (
         "Tool execution summary: TEST-list-files (exit 0) — output omitted",
@@ -534,13 +532,13 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
             )
         db.commit()
 
-    result = import_entry(root=root, entry_id="tianshu", source=old)
+    result = import_entry(root=root, entry_id="agent3", source=old)
     assert result["counts"]["embeddings_retention_would_expire"] == 2, result["counts"]
     assert result["counts"]["withheld_outputs"] == 2, result["counts"]
     held = (
         "SELECT count(*) FROM lexical_postings p JOIN source_events e ON e.source_id=p.source_id WHERE e.event_id='{}'"
     )
-    names = _Names("tianshu", frozenset({said.ref, errored.ref, *(ref.ref for ref in made)}))
+    names = _Names("agent3", frozenset({said.ref, errored.ref, *(ref.ref for ref in made)}))
     queued = {
         row[0] for row in _query(root, "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")
     }
@@ -578,10 +576,10 @@ def test_an_imported_store_holds_no_denial_as_a_value(root, entries):
     from scope_recall.maintenance.shared_import import import_entry
     from v11_support import source_event
 
-    tianshu, _tianquan = entries
-    scope = _scope(tianshu)
+    agent3, _agent2 = entries
+    scope = _scope(agent3)
     core, context, (region, jenkins, ended), old = _old_store(
-        tianshu,
+        agent3,
         scope,
         "TEST-project deploy region 不是 us-east-2。",
         "TEST-project CI service 是 Jenkins。",
@@ -626,7 +624,7 @@ def test_an_imported_store_holds_no_denial_as_a_value(root, entries):
             previous=head,
         )
 
-    result = import_entry(root=root, entry_id="tianshu", source=old)
+    result = import_entry(root=root, entry_id="agent3", source=old)
     assert (result["status"], result["counts"]["denials_settled"]) == ("imported", 2), result
     heads = dict(
         _query(
@@ -650,12 +648,12 @@ def test_an_imported_store_holds_no_denial_as_a_value(root, entries):
 
 def test_import_preserves_every_tabulated_description_and_settles_only_denials(root, entries):
     """An imported store retains every description and its history; repeating the import changes no claim."""
-    tianshu, _ = entries
-    scope = _scope(tianshu)
+    agent3, _ = entries
+    scope = _scope(agent3)
     states = (*NEGATED_STATES["zh"], *NEGATED_STATES["en"])
     values = (*states, "不是 CircleCI", "not Jenkins")
     texts = [f"TEST-project state {i} 是 {value}。" for i, value in enumerate(values)]
-    core, context, sources, old = _old_store(tianshu, scope, *texts)
+    core, context, sources, old = _old_store(agent3, scope, *texts)
     with core.storage.write(context) as tx:
         for i, (value, source) in enumerate(zip(values, sources, strict=True)):
             event = core.source(context, source.ref, source.revision).event
@@ -676,10 +674,10 @@ def test_import_preserves_every_tabulated_description_and_settles_only_denials(r
                 Qualification("active", "direct_report", "explicit_scoped_source"),
                 recorded_at=core.clock.utc_now(),
             )
-    report = import_entry(root=root, entry_id="tianshu", source=old, dry_run=True)
+    report = import_entry(root=root, entry_id="agent3", source=old, dry_run=True)
     assert report["status"] == "rehearsed" and report["counts"]["denials_settled"] == 2
     assert _query(root, "SELECT count(*) FROM claims") == [(0,)]
-    report = import_entry(root=root, entry_id="tianshu", source=old)
+    report = import_entry(root=root, entry_id="agent3", source=old)
     assert report["status"] == "imported" and report["counts"]["denials_settled"] == 2
     query = (
         "SELECT c.predicate,v.state,json_extract(v.payload_json,'$.value_text') FROM claims c"
@@ -693,5 +691,5 @@ def test_import_preserves_every_tabulated_description_and_settles_only_denials(r
             (f"state {i}", "active", value),
             (f"state {i}", "retracted", value),
         ]
-    assert import_entry(root=root, entry_id="tianshu", source=old)["status"] == "already_imported"
+    assert import_entry(root=root, entry_id="agent3", source=old)["status"] == "already_imported"
     assert _query(root, query) == versions

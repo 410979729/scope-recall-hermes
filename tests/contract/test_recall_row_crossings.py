@@ -1,7 +1,8 @@
-"""A read transaction keeps what it loaded, and hydration loads its candidates' sources, visibility and versions together:
-the same answers, in a count of statements and rows that does not grow with the evidence.
+"""A read transaction keeps what it loaded, and hydration loads its candidates' sources, visibility and versions
+together: the same answers, in a count of statements and rows that does not grow with the evidence.
 
-A recall that loaded each evidence source up to five times, three statements each, would take thousands of statements and rows for one question.
+A recall that loaded each evidence source up to five times, three statements each, would take thousands of
+statements and rows for one question.
 In a busy Hermes gateway every statement and every row waits for the GIL (``test_capture_row_crossings``).
 """
 
@@ -447,7 +448,7 @@ def test_a_claim_in_a_scope_the_reader_lacks_stays_out_of_reach_loaded_together(
     from scope_recall.core.claims import Qualification
 
     storage, binding = shared
-    writer = shared_context(binding, entry_id="tianshu")
+    writer = shared_context(binding, entry_id="agent3")
     written = put(storage, writer, "TEST-group-claim/1", scope="TEST-group-a", content="TEST-project 外壳 银色。")
     with storage.write(writer) as tx:
         source = tx.source(written.ref, written.revision)
@@ -483,7 +484,7 @@ def test_an_episode_s_sources_keep_their_order(app):
 
 def test_a_source_in_a_scope_the_reader_lacks_stays_out_of_reach_loaded_together(shared):
     storage, binding = shared
-    writer = shared_context(binding, entry_id="tianshu")
+    writer = shared_context(binding, entry_id="agent3")
     theirs = put(storage, writer, "TEST-group-source/1", scope="TEST-group-a", content="TEST 别的范围的一条。")
     mine = put(storage, writer, "TEST-scope-source/1", scope="TEST-scope", content="TEST 本范围的一条。")
     narrow = shared_context(binding, scopes={"TEST-scope"})
