@@ -19,6 +19,7 @@ from ..core.file_lock import advisory_file_lock
 from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, replayable
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
+from .backup_upkeep import next_backup_wake
 from .model_budget import provider_holds
 from .worker_entry import (
     DAILY_COUNTER_MAX,
@@ -249,6 +250,14 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                     continue
                 due = _utc(row["due"]) + timedelta(seconds=config.auto_retry_cooldown_seconds)
                 candidates.append(scheduled(row["work_type"], due, "failure_cooldown"))
+    return _wake_plan(config, now, candidates, pending, blocked, failed)
+
+
+def _wake_plan(config, now, candidates, pending, blocked, failed) -> WakePlan:
+    """Choose one wake from queue work and independent local maintenance."""
+    backup_wake = next_backup_wake(config.binding.data_directory, now)
+    if backup_wake is not None:
+        candidates.append(backup_wake)
     if not candidates:
         reason = "capability_unavailable" if blocked else ("failed_terminal" if failed else "idle")
         return WakePlan(None, reason, pending, blocked, failed)

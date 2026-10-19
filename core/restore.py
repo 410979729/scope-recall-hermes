@@ -67,6 +67,20 @@ def ledger_digest(ledger) -> str:
     return hashlib.sha256(canonical(ledger).encode()).hexdigest()
 
 
+def deletion_operation_record(conn, row) -> dict:
+    """Content-free operation and effective members for rollback and disaster mirrors."""
+    members = [
+        dict(member)
+        for member in conn.execute(
+            """SELECT b.object_kind,b.object_ref,b.scope_id,b.project_id,b.branch_id
+            FROM deletion_members m JOIN object_blocks b USING(object_kind,object_ref)
+            WHERE m.operation_id=? AND (?='delete' OR b.suppressed=1) ORDER BY object_kind,object_ref""",
+            (row["operation_id"], row["mode"]),
+        )
+    ]
+    return dict(operation=dict(row), members=members)
+
+
 def _ledger_in_transaction(tx, context, ledger_format=LEDGER_FORMAT) -> dict:
     from .suppression import snapshot
 
@@ -77,16 +91,7 @@ def _ledger_in_transaction(tx, context, ledger_format=LEDGER_FORMAT) -> dict:
     for row in conn.execute("SELECT * FROM deletion_operations ORDER BY memory_epoch,operation_id"):
         if not set(json.loads(row["scope_ids_json"])) <= context.allowed_scope_ids:
             raise ContractError("ACCESS_DENIED")
-        members = [
-            dict(r)
-            for r in conn.execute(
-                """SELECT b.object_kind,b.object_ref,b.scope_id,b.project_id,b.branch_id
-            FROM deletion_members m JOIN object_blocks b USING(object_kind,object_ref)
-            WHERE m.operation_id=? AND (?='delete' OR b.suppressed=1) ORDER BY object_kind,object_ref""",
-                (row["operation_id"], row["mode"]),
-            )
-        ]
-        operations.append(dict(operation=dict(row), members=members))
+        operations.append(deletion_operation_record(conn, row))
     withdrawals = [
         dict(row)
         for row in conn.execute("""SELECT c.claim_id,c.scope_id,c.project_id,c.branch_id,c.current_revision,
@@ -248,6 +253,25 @@ def begin_restore(
         _write_whole(data_directory / LEDGER_FILENAME, canonical(ledger) + "\n")
         if write_marker:
             _write_whole(data_directory / MARKER_FILENAME, canonical(payload) + "\n")
+
+
+def stage_recovery_ledger(storage, authority: InstallationMaintenance, ledger) -> None:
+    """Close a restored destination while an independently verified disaster ledger replays.
+
+    Only installation maintenance can mint this checkpoint. Replay verifies its
+    identity, digest and complete shape before opening ordinary admission again.
+    """
+    context = _maintenance_context(storage, authority)
+    directory = storage.binding.data_directory
+    payload = dict(
+        installation_id=context.binding.installation_id,
+        agent_id=context.binding.agent_id,
+        data_directory=str(directory),
+        expected_ledger_sha256=ledger_digest(ledger),
+    )
+    with storage._transaction(context, writable=True, remaining_seconds=10, restoring=True):
+        _write_whole(directory / LEDGER_FILENAME, canonical(ledger) + "\n")
+        _write_whole(directory / MARKER_FILENAME, canonical(payload) + "\n")
 
 
 def _pending_marker(storage, context):
@@ -573,7 +597,12 @@ def _replay_absence(conn, context, absent) -> None:
 
 
 def replay_deletion_ledger(
-    storage, authority: InstallationMaintenance, ledger, *, remaining_seconds: float = 10.0
+    storage,
+    authority: InstallationMaintenance,
+    ledger,
+    *,
+    remaining_seconds: float = 10.0,
+    preserve_capture_inbox: bool = False,
 ) -> dict:
     context = _maintenance_context(storage, authority)
     marker, checkpoint_epoch = _restore_checkpoint(storage, context, ledger)
@@ -583,7 +612,10 @@ def replay_deletion_ledger(
         # Transient input captured before this explicit restore cannot be
         # treated as fresh post-restore authorization. Rebuild partial derived
         # summaries from the restored source, with its normal tombstone checks.
-        conn.execute("DELETE FROM capture_inbox")
+        # A disaster snapshot also owns its pending captures. Deletion replay
+        # removes affected rows through apply_blocks; unrelated rows survive.
+        if not preserve_capture_inbox:
+            conn.execute("DELETE FROM capture_inbox")
         conn.execute("DELETE FROM consolidation_fragments")
         conn.execute(
             "UPDATE work_items SET consolidation_offset=0 WHERE state IN ('pending','leased') AND work_type='consolidate'"

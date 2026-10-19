@@ -6,7 +6,6 @@ day, model output and the budget ledger; ``doctor.run_doctor`` runs them beside 
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import time
@@ -701,44 +700,23 @@ def check_owner_words(report: DoctorReport, host: str, data_directory: Path, ent
 
 
 def check_deletion_mirror(report: DoctorReport, data_directory: Path) -> None:
-    """Report lag or failure in the deletion ledger mirror."""
-    from scope_recall.core.deletion_mirror import (
-        configured_backup_dir,
-        mirror_file_path,
-        read_mirrored_epochs,
-    )
+    """Report record-level lag, including an invalid or incomplete mirror."""
+    from ..core.deletion_mirror import MIRROR_ERRORS, configured_backup_dir, mirror_pending, read_mirror_lag
 
-    backup_dir = configured_backup_dir(data_directory)
-    if backup_dir is None:
-        record_check(report, "deletion_mirror", "ok", "deletion mirror not configured")
-        return
-
-    lag_file = data_directory / "deletion-mirror-lag.json"
-    lag_error = None
-    if lag_file.is_file():
-        try:
-            raw = json.loads(lag_file.read_text(encoding="utf-8"))
-            if raw.get("lag_operations") or raw.get("error") or raw.get("failed"):
-                lag_error = raw.get("error") or "pending catchup"
-        except (json.JSONDecodeError, OSError):
-            lag_error = "corrupt_lag_file"
-
-    db_path = data_directory / "memory.sqlite3"
-    unmirrored_count = 0
-    if db_path.is_file():
-        try:
-            mirror_path = mirror_file_path(backup_dir)
-            mirrored_epochs = read_mirrored_epochs(mirror_path)
-            with closing(sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)) as conn:
-                ops = conn.execute("SELECT memory_epoch FROM deletion_operations").fetchall()
-                unmirrored_count = sum(1 for (epoch,) in ops if epoch not in mirrored_epochs)
-        except Exception:
-            pass
-
-    if lag_error or unmirrored_count > 0:
+    try:
+        backup_dir = configured_backup_dir(data_directory)
+        if backup_dir is None:
+            record_check(report, "deletion_mirror", "ok", "deletion mirror not configured")
+            return
+        pending = mirror_pending(data_directory, backup_dir)
+        lag = read_mirror_lag(data_directory)
+        detail = str(lag.get("error", "pending catchup")) if lag else ""
+        if pending:
+            detail = f"{pending} unmirrored records pending catchup"
+    except MIRROR_ERRORS as exc:
+        detail = f"mirror unavailable: {type(exc).__name__}"
+    if detail:
         report.capability_gaps.append("deletion_mirror_lag")
-        detail = lag_error or f"{unmirrored_count} unmirrored operations pending catchup"
-        record_check(report, "deletion_mirror", "lag", f"deletion mirror lagging: {detail}")
-        return
-
-    record_check(report, "deletion_mirror", "ok", "deletion mirror up to date")
+        record_check(report, "deletion_mirror", "lag", detail)
+    else:
+        record_check(report, "deletion_mirror", "ok", "deletion mirror up to date")

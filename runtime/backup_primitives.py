@@ -11,11 +11,13 @@ import json
 import os
 import sqlite3
 import stat
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from ..core.file_lock import advisory_file_lock
 from ..core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
@@ -23,6 +25,46 @@ from ..core.writer_lease import holding_truth_writer_lease, truth_writer_process
 
 class BackupError(RuntimeError):
     pass
+
+
+_BACKUP_DEADLINE: ContextVar[float | None] = ContextVar("backup_deadline", default=None)
+
+
+@contextmanager
+def backup_deadline(deadline: float | None) -> Iterator[None]:
+    """Bound this backup's chunked I/O without changing other threads or manual snapshots."""
+    token = _BACKUP_DEADLINE.set(deadline if deadline is not None else _BACKUP_DEADLINE.get())
+    try:
+        check_backup_deadline()
+        yield
+    finally:
+        _BACKUP_DEADLINE.reset(token)
+
+
+def check_backup_deadline() -> None:
+    """Stop between I/O chunks when the worker's pass has no time left."""
+    deadline = _BACKUP_DEADLINE.get()
+    if deadline is not None and time.monotonic() >= deadline:
+        raise BackupError("backup deadline exceeded")
+
+
+def copy_stream(source: BinaryIO, target: BinaryIO) -> None:
+    """Copy bounded chunks, respecting the active backup deadline."""
+    while True:
+        check_backup_deadline()
+        chunk = source.read(1024 * 1024)
+        if not chunk:
+            return
+        target.write(chunk)
+
+
+def stream_digest(stream: BinaryIO) -> str:
+    """Hash bounded chunks under the same deadline as the snapshot."""
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        check_backup_deadline()
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def sqlite_busy(exc: sqlite3.OperationalError) -> bool:
@@ -88,11 +130,8 @@ def create_output(path: Path, *, error_type=BackupError) -> None:
 
 
 def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return stream_digest(stream)
 
 
 def atomic_write(path: Path, content: str | bytes) -> None:
@@ -130,7 +169,7 @@ def backup_sqlite(source: str | Path, destination: str | Path, *, manifest: str 
     try:
         reader = sqlite3.connect(f"{source_path.as_uri()}?mode=ro", uri=True)
         writer = sqlite3.connect(destination_path)
-        reader.backup(writer)
+        reader.backup(writer, pages=256, progress=lambda _status, _remaining, _total: check_backup_deadline())
         writer.commit()
         writer.execute("PRAGMA journal_mode=DELETE")
         quick = str(writer.execute("PRAGMA quick_check").fetchone()[0])

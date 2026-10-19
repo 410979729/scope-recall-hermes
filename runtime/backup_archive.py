@@ -20,6 +20,7 @@ from typing import Any
 from .backup_primitives import BackupError, first_link
 
 _DRIVE_PATH = re.compile(r"^[A-Za-z]:")
+_DEVICE_NAME = re.compile(r"^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)", re.IGNORECASE)
 
 
 class ArchiveLayoutError(BackupError):
@@ -56,6 +57,11 @@ def canonical_member_name(name: str) -> str:
         raise ArchiveLayoutError(f"archive member name has an empty segment: {name}")
     if any(part in {".", ".."} for part in parts):
         raise ArchiveLayoutError(f"archive member name is not a canonical relative path: {name}")
+    if any(
+        part[-1:] in {".", " "} or _DEVICE_NAME.match(part) or any(c in '<>:"|?*' or ord(c) < 32 for c in part)
+        for part in parts
+    ):
+        raise ArchiveLayoutError(f"archive member name is not portable: {name}")
     return name
 
 
@@ -133,15 +139,16 @@ def verify_archive_layout(archive: zipfile.ZipFile, manifest: dict[str, Any]) ->
     members: list[ArchiveMember] = []
     for name in declared:
         dest = destination_relative(name)
-        folded = os.path.normcase(dest)
+        folded = dest.casefold()
         previous = destinations.get(folded)
         if previous is not None:
-            raise ArchiveLayoutError(
-                "archive members map to the same destination "
-                f"{dest}: {previous} and {name}"
-            )
+            raise ArchiveLayoutError(f"archive members map to the same destination {dest}: {previous} and {name}")
         destinations[folded] = name
         members.append(ArchiveMember(name, dest))
+    for dest in destinations:
+        parts = dest.split("/")
+        if any("/".join(parts[:end]) in destinations for end in range(1, len(parts))):
+            raise ArchiveLayoutError(f"archive member overlaps a directory: {dest}")
     return tuple(members)
 
 
@@ -171,16 +178,6 @@ def member_destination(root: Path, relative: str) -> Path:
     return current
 
 
-def _matching_info(archive: zipfile.ZipFile, archive_name: str) -> zipfile.ZipInfo:
-    matches = [info for info in archive.infolist() if info.filename == archive_name]
-    if len(matches) != 1:
-        raise ArchiveLayoutError(f"duplicate archive member: {archive_name}")
-    info = matches[0]
-    if _is_link_member(info):
-        raise ArchiveLayoutError(f"archive member is a symlink: {archive_name}")
-    return info
-
-
 def _ensure_parent(root: Path, target: Path) -> None:
     current = root
     for part in target.relative_to(root).parts[:-1]:
@@ -200,12 +197,11 @@ def _write_one(archive: zipfile.ZipFile, root: Path, member: ArchiveMember, targ
     if first_link(target) is not None or target.exists():
         raise ArchiveLayoutError(f"refusing to overwrite {target.name}")
     _ensure_parent(root, target)
-    info = _matching_info(archive, member.archive_name)
+    info = archive.getinfo(member.archive_name)
     # Binary mode prevents the Windows CRT from translating newline bytes in
     # SQLite pages and attachments written through the file descriptor.
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(target, flags, 0o600)
     try:
         with archive.open(info, "r") as source:
@@ -221,9 +217,7 @@ def _write_one(archive: zipfile.ZipFile, root: Path, member: ArchiveMember, targ
         os.close(descriptor)
 
 
-def write_verified_members(
-    archive: zipfile.ZipFile, root: Path, members: tuple[ArchiveMember, ...]
-) -> None:
+def write_verified_members(archive: zipfile.ZipFile, root: Path, members: tuple[ArchiveMember, ...]) -> None:
     """Write ``members`` under ``root``.
 
     Every destination is checked before the root is created. Member bytes are

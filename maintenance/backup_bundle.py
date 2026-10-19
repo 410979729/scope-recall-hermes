@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scope_recall.contracts import InstanceBinding
+
 from ..adapters.hermes.shared_entries import read_shared_payload
-from ..contracts import InstanceBinding
 from ..runtime.backup_bundle import (
     BUNDLE_FORMAT,
     BackupBundleError,
@@ -17,13 +18,14 @@ from ..runtime.backup_bundle import (
     verify_backup_bundle,
 )
 from .doctor import load_binding
+from .doctor_report import HostChoice
 from .shared import store_binding
 
 
 def resolve_store_binding(
     *,
     root: Path | None = None,
-    host: str | None = None,
+    host: HostChoice | None = None,
     instance_root: Path | None = None,
 ) -> InstanceBinding:
     """Resolve an InstanceBinding from CLI parameters."""

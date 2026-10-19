@@ -2,7 +2,8 @@
 
 Supports:
 - Legacy database snapshot: scope-recall backup --database <db> --output <out> [--manifest <manifest>]
-- Full bundle creation: scope-recall backup create --output <bundle> [--root <dir>] [--host <h> --instance-root <d>] [--with-vectors]
+- Full bundle creation: scope-recall backup create --output <bundle>, with a
+  shared --root or local --host/--instance-root, and optional --with-vectors.
 - Bundle verification: scope-recall backup verify --bundle <bundle> [--temp-restore-check]
 """
 
@@ -35,7 +36,12 @@ def _run_legacy_backup(args: argparse.Namespace) -> int:
 def _run_create_bundle(args: argparse.Namespace) -> int:
     binding = resolve_store_binding(root=args.root, host=args.host, instance_root=args.instance_root)
     output = safe_path(args.output)
-    receipt = create_backup_bundle(binding=binding, output=output, with_vectors=bool(args.with_vectors))
+    receipt = create_backup_bundle(
+        binding=binding,
+        output=output,
+        with_vectors=bool(args.with_vectors),
+        client_configs=tuple(args.client_config),
+    )
     _emit(receipt)
     return 0
 
@@ -61,6 +67,13 @@ def main(argv: list[str]) -> int:
         parser.add_argument("--instance-root", type=Path, help="local instance root directory")
         parser.add_argument("--host", choices=("hermes", "codex", "claude-code", "workbuddy", "dsh"), help="host type")
         parser.add_argument("--with-vectors", action="store_true", help="include vector files in backup")
+        parser.add_argument(
+            "--client-config",
+            type=Path,
+            action="append",
+            default=[],
+            help="also pack this local remote client's spool; repeat for each client",
+        )
         args = parser.parse_args(argv[1:])
         try:
             return _run_create_bundle(args)

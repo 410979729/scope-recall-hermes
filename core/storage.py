@@ -851,7 +851,7 @@ class SQLiteStorage:
         try:
             from .deletion_mirror import mirror_committed_deletions
 
-            mirror_committed_deletions(self.binding.data_directory, self.path, [])
+            mirror_committed_deletions(self.binding.data_directory, self.path)
         except Exception:  # noqa: BLE001
             pass
 

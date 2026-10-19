@@ -18,12 +18,26 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..contracts import InstanceBinding, TrustedContext
-from ..core.deletion_mirror import DELETION_MIRROR_FILENAME, replay_deletion_mirror
+from scope_recall.contracts import InstanceBinding, TrustedContext
+
+from ..adapters.hermes.shared_entries import read_shared_payload
+from ..core.deletion_mirror import DELETION_MIRROR_FILENAME, installation_mirror
+from ..core.restore import InstallationMaintenance
 from ..core.storage import SQLiteStorage, _directory
 from ..runtime.backup_archive import write_verified_members
 from ..runtime.backup_bundle import inspect_backup_archive, verify_backup_bundle
-from ..runtime.backup_primitives import first_link, safe_path
+from ..runtime.backup_primitives import BackupError, first_link, safe_path
+from ..runtime.backup_resources import rewrite_budget_fields
+from .backup_relocation import (
+    RestoreLayout,
+    command_text,
+    relocate_installation,
+    relocate_remote_clients,
+    reregistration_arguments,
+    restore_layout,
+)
+from .backup_replay import replay_deletion_mirror
+from .doctor import load_binding
 from .doctor_report import DoctorReport
 from .doctor_store import (
     check_backlog,
@@ -37,6 +51,7 @@ from .doctor_store import (
     check_schema,
     check_storage,
 )
+from .shared import store_binding
 
 
 class DisasterRestoreError(RuntimeError):
@@ -47,7 +62,7 @@ def _now_utc() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _find_mirror_path(bundle_path: Path, explicit_mirror: Path | None) -> Path | None:
+def _find_mirror_path(bundle_path: Path, explicit_mirror: Path | None) -> Path:
     if explicit_mirror is not None:
         p = safe_path(explicit_mirror, must_exist=True)
         if p.is_file():
@@ -56,7 +71,7 @@ def _find_mirror_path(bundle_path: Path, explicit_mirror: Path | None) -> Path |
     sibling = bundle_path.parent / DELETION_MIRROR_FILENAME
     if sibling.is_file() and first_link(sibling) is None:
         return sibling
-    return None
+    raise DisasterRestoreError("deletion mirror is required; supply --mirror from the original backup directory")
 
 
 def _validate_destination(to: Path) -> Path:
@@ -87,11 +102,14 @@ def plan_disaster_restore(
 
     with zipfile.ZipFile(safe_bundle, "r") as zf:
         manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+    installation_mirror(mirror_path, manifest["installation_id"])
+    layout = restore_layout(dest, manifest)
 
     return {
         "status": "planned",
         "bundle": str(safe_bundle),
         "destination": str(dest),
+        "data_directory": str(layout.data),
         "recovery_point_utc": manifest.get("created_at_utc"),
         "with_vectors": manifest.get("with_vectors", False),
         "entries": manifest.get("entries", []),
@@ -101,66 +119,37 @@ def plan_disaster_restore(
     }
 
 
-def _rewrite_extracted_configs(dest: Path) -> None:
-    """Rewrite absolute data directory and child paths in restored configuration files."""
-    runtime_config_path = dest / "runtime-config.json"
-    if runtime_config_path.is_file():
+def _rewrite_extracted_configs(dest: Path, manifest: dict[str, Any]) -> None:
+    """Rewrite restored configuration paths this backup can actually place.
+
+    Auxiliary ledger fields follow the bundle resource list. Binding, vector
+    and installation paths below are the store's own restored locations.
+    """
+    # Recovery must not write into the source machine's backup location.
+    # The operator can enable scheduling in a new location after reattachment.
+    backup_config = dest / "backup-config.json"
+    if backup_config.is_file():
+        backup_config.write_text('{"backup_dir": null}\n', encoding="utf-8")
+    configs = ["runtime-config.json"] + [
+        f"entries/{entry['entry_id']}/runtime-config.json" for entry in manifest.get("entries", [])
+    ]
+    for name in configs:
+        runtime_config_path = dest / name
+        if not runtime_config_path.is_file():
+            continue
         try:
             data = json.loads(runtime_config_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                data.pop("backup_dir", None)
                 if "binding" in data and isinstance(data["binding"], dict):
                     data["binding"]["data_directory"] = str(dest)
                 if "vector" in data and isinstance(data["vector"], dict) and "storage_dir" in data["vector"]:
                     old_vdir = Path(data["vector"]["storage_dir"])
                     data["vector"]["storage_dir"] = str(dest / "vectors" / old_vdir.name)
-                if "auxiliary" in data and isinstance(data["auxiliary"], dict) and data["auxiliary"].get("ledger_path"):
-                    old_ledger = Path(data["auxiliary"]["ledger_path"])
-                    data["auxiliary"]["ledger_path"] = str(dest / "budget" / old_ledger.name)
+                rewrite_budget_fields(data, dest, manifest.get("resources"), config_file=name)
                 runtime_config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, OSError, BackupError) as exc:
             raise DisasterRestoreError(f"failed rewriting runtime-config.json: {exc}") from exc
-
-    for inst_name in ("installation.json", "codex-installation.json"):
-        inst_path = dest / inst_name
-        if inst_path.is_file():
-            try:
-                data = json.loads(inst_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    data["data_directory"] = str(dest)
-                    inst_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    shared_manifest_path = dest / "shared-manifest.json"
-    if shared_manifest_path.is_file():
-        try:
-            data = json.loads(shared_manifest_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                data["root"] = str(dest)
-                shared_manifest_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except (json.JSONDecodeError, OSError):
-            pass
-
-
-def _generate_reregistration_commands(dest: Path, entries: list[dict[str, Any]]) -> list[str]:
-    """Generate exact CLI commands for operators to re-register clients against the new store."""
-    commands: list[str] = []
-    seen: set[str] = set()
-
-    for entry in entries:
-        host = entry.get("host")
-        entry_id = entry.get("entry_id")
-        if host and host not in seen:
-            seen.add(host)
-            if host in ("hermes", "codex", "claude-code", "workbuddy", "dsh"):
-                commands.append(
-                    f"scope-recall attach --root {dest} --host {host} --instance-root <path-to-{host}-home>"
-                )
-
-    if not commands:
-        commands.append(f"scope-recall doctor --host <host> --instance-root {dest.parent}")
-
-    return sorted(commands)
 
 
 def _restored_binding(dest: Path) -> InstanceBinding:
@@ -176,15 +165,21 @@ def _restored_binding(dest: Path) -> InstanceBinding:
     return InstanceBinding(row[0], row[1], Path(row[2]), scopes, bool(row[3]), row[4])
 
 
-def _run_doctor_checks(dest: Path) -> dict[str, Any]:
+def _run_doctor_checks(layout: RestoreLayout) -> dict[str, Any]:
     """Run store diagnostics on the newly restored directory."""
     report = DoctorReport(host="hermes", status="ok")
+    dest = layout.data
+    readable = False
+    if layout.host is not None:
+        binding, _ = load_binding(layout.host, layout.root)
+    else:
+        payload = read_shared_payload(dest)
+        binding = store_binding(payload, dest, frozenset(payload["scope_ids"]))
     try:
         check_runtime_config_present(report, dest)
         db_path = dest / "memory.sqlite3"
-        readable = False
         if db_path.is_file():
-            readable = check_storage(report, _restored_binding(dest), dest)
+            readable = check_storage(report, binding, dest)
         check_footprint(report, dest, None)
         if readable:
             check_schema(report)
@@ -204,6 +199,7 @@ def _run_doctor_checks(dest: Path) -> dict[str, Any]:
         "status": report.status,
         "capability_gaps": sorted(set(report.capability_gaps)),
         "checks_count": len(report.checks),
+        "binding_verified": readable,
     }
 
 
@@ -227,10 +223,14 @@ def apply_disaster_restore(
 
     with zipfile.ZipFile(safe_bundle, "r") as archive:
         inspection = inspect_backup_archive(archive)
-        write_verified_members(archive, dest, inspection.members)
+        records = installation_mirror(mirror_path, inspection.manifest["installation_id"])
+        layout = restore_layout(dest, inspection.manifest)
+        write_verified_members(archive, dest, layout.members(inspection.members))
     manifest = inspection.manifest
-
-    _rewrite_extracted_configs(dest)
+    relocate_installation(layout)
+    dest = layout.data
+    _rewrite_extracted_configs(dest, manifest)
+    credential_references = relocate_remote_clients(dest, manifest.get("resources", []))
 
     db_path = dest / "memory.sqlite3"
     if not db_path.is_file():
@@ -252,19 +252,21 @@ def apply_disaster_restore(
     mirror_result: dict[str, Any] = {"status": "none", "replayed_operations": 0, "latest_mirrored_at": None}
     if mirror_path is not None:
         try:
-            mirror_result = replay_deletion_mirror(db_path, mirror_path)
-        except Exception as exc:
+            binding = _restored_binding(dest)
+            context = TrustedContext(binding, "disaster-restore", binding.scope_ids, "human_direct")
+            mirror_result = replay_deletion_mirror(SQLiteStorage(binding), InstallationMaintenance(context), records)
+        except (OSError, ValueError, sqlite3.Error) as exc:
             raise DisasterRestoreError(f"failed replaying deletion mirror: {exc}") from exc
 
     entries = manifest.get("entries", [])
-    reregistration_commands = _generate_reregistration_commands(dest, entries)
-    doctor_summary = _run_doctor_checks(dest)
+    reregistration_argv = reregistration_arguments(layout, entries)
+    doctor_summary = _run_doctor_checks(layout)
 
     recovery_point_utc = manifest.get("created_at_utc", "")
     latest_mirrored_at = mirror_result.get("latest_mirrored_at")
     restore_moment = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    interval_start = latest_mirrored_at or recovery_point_utc
+    interval_start = recovery_point_utc
     try:
         t0 = datetime.fromisoformat(interval_start.replace("Z", "+00:00"))
         t1 = datetime.fromisoformat(restore_moment.replace("Z", "+00:00"))
@@ -275,7 +277,8 @@ def apply_disaster_restore(
     return {
         "status": "restored",
         "bundle": str(safe_bundle),
-        "destination": str(dest),
+        "destination": str(layout.root),
+        "data_directory": str(dest),
         "recovery_point_utc": recovery_point_utc,
         "latest_mirrored_at": latest_mirrored_at,
         "mirror_replayed_operations": mirror_result.get("replayed_operations", 0),
@@ -285,9 +288,12 @@ def apply_disaster_restore(
             "start_utc": interval_start,
             "end_utc": restore_moment,
             "duration_seconds": round(unrecoverable_seconds, 1),
-            "note": "Regular captures and updates after recovery point are unrecoverable; post-backup deletions were replayed.",
+            "note": "Regular captures and updates after recovery point are unrecoverable; "
+            "available mirrored deletions were replayed.",
         },
-        "reregistration_commands": reregistration_commands,
+        "reregistration_commands": [command_text(arguments) for arguments in reregistration_argv],
+        "reregistration_argv": reregistration_argv,
+        "credential_references": credential_references,
         "doctor": doctor_summary,
     }
 

@@ -1,8 +1,8 @@
 """Full backup bundle creation and verification for disaster recovery.
 
-Creates a complete self-contained backup bundle containing a consistent SQLite snapshot,
-instance configuration (with credential bodies refused or redacted), retained attachments,
-pending captures, remote outbox and retry buffers, budget ledgers, optional vectors,
+Creates a self-contained backup bundle containing a consistent SQLite snapshot,
+instance configuration (with credential bodies refused or redacted), retained
+attachments, kept captures, one auxiliary budget snapshot, optional vectors,
 and a cryptographic manifest covering all files.
 """
 
@@ -23,20 +23,36 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
+from scope_recall.contracts import ENTRY_ID, InstanceBinding
+
 from .._version import __version__
-from ..contracts import InstanceBinding
-from ..core.schema import APPLICATION_ID, SCHEMA_VERSION
+from ..core.deletion_mirror import DELETION_MIRROR_FILENAME, configured_backup_dir, sync_deletion_mirror
+from ..core.schema import APPLICATION_ID, SCHEMA_VERSION, UPGRADE_CHAIN
 from ..core.secret_patterns import contains_secret_like_text, is_sensitive_mapping_key
 from .backup_archive import ArchiveLayoutError, ArchiveMember, verify_archive_layout, write_verified_members
-from .backup_primitives import BackupError, backup_sqlite, exclusive_store, safe_path, sha256
+from .backup_external import configured_client_paths, stage_entry_resources, stage_remote_clients
+from .backup_primitives import (
+    BackupError,
+    atomic_write,
+    backup_deadline,
+    backup_sqlite,
+    check_backup_deadline,
+    copy_stream,
+    exclusive_store,
+    safe_path,
+    sha256,
+    stream_digest,
+)
+from .backup_resources import real_files, stage_instance_resources
 
 BUNDLE_FORMAT = "scope-recall-backup-bundle/1"
 CONFIG_NAMES = (
     "runtime-config.json",
     "installation.json",
     "codex-installation.json",
-    "shared-manifest.json",
     "attachment.json",
+    "remote-server.json",
     "backup-config.json",
 )
 
@@ -91,9 +107,18 @@ def _sanitize_config_dict(data: Any) -> tuple[Any, int]:
     return copy.deepcopy(data), 0
 
 
-def _discover_included_entries(data_directory: Path) -> list[dict[str, Any]]:
+def _discover_included_entries(data_directory: Path, binding: InstanceBinding) -> list[dict[str, Any]]:
     """Discover registered shared entries or local hosts for inclusion in manifest."""
     entries: list[dict[str, Any]] = []
+    if binding.installation_kind == "shared":
+        manifest = safe_path(data_directory / "installation.json", must_exist=True)
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if payload.get("installation_id") != binding.installation_id or type(payload.get("entries")) is not list:
+            raise BackupBundleError("shared installation identity or entries mismatch")
+        for entry in payload["entries"]:
+            if type(entry) is not dict or not ENTRY_ID.fullmatch(str(entry.get("entry_id", ""))):
+                raise BackupBundleError("shared entry identifier is invalid")
+        return payload["entries"]
     db_path = data_directory / "memory.sqlite3"
     if db_path.is_file():
         try:
@@ -113,24 +138,216 @@ def _discover_included_entries(data_directory: Path) -> list[dict[str, Any]]:
         except (sqlite3.Error, OSError):
             pass
 
-    shared_manifest = data_directory / "shared-manifest.json"
-    if shared_manifest.is_file() and not entries:
-        try:
-            data = json.loads(shared_manifest.read_text(encoding="utf-8"))
-            for entry_id, meta in data.get("entries", {}).items():
-                entries.append(
-                    {
-                        "entry_id": entry_id,
-                        "display_name": meta.get("display_name", entry_id),
-                        "host": meta.get("host", "unknown"),
-                        "first_seen": meta.get("first_seen", ""),
-                        "last_seen": meta.get("last_seen", ""),
-                    }
-                )
-        except (json.JSONDecodeError, OSError):
-            pass
-
     return entries
+
+
+def _bundle_busy(what: str) -> BackupBundleError:
+    return BackupBundleError(f"store busy during bundle creation ({what})")
+
+
+def _bundle_locations(output: Path, binding: InstanceBinding) -> tuple[Path, Path]:
+    """Reject an output inside the store, and a store path that is a link."""
+    output_path = safe_path(output)
+    if output_path.exists():
+        raise BackupBundleError("refusing to overwrite existing bundle")
+    data_directory = safe_path(binding.data_directory, must_exist=True)
+    inside = output_path == data_directory or output_path in data_directory.parents
+    if inside or data_directory in output_path.parents:
+        raise BackupBundleError("output bundle must be outside data directory")
+    return output_path, data_directory
+
+
+def _ensure_backup_mirror(data_directory: Path, output_path: Path) -> Path:
+    """Register a backup directory when the store has none, then refresh its mirror."""
+    mirror_dir = configured_backup_dir(data_directory)
+    if mirror_dir is None:
+        mirror_dir = output_path.parent
+        atomic_write(data_directory / "backup-config.json", json.dumps({"backup_dir": str(mirror_dir)}) + "\n")
+    sync_deletion_mirror(data_directory, mirror_dir)
+    return mirror_dir
+
+
+def _stage_database(data_directory: Path, stage_dir: Path, manifest_files: list[dict[str, Any]]) -> None:
+    db_source = data_directory / "memory.sqlite3"
+    if not db_source.is_file():
+        raise BackupBundleError("database file memory.sqlite3 not found in instance data directory")
+    staged_db = stage_dir / "database.sqlite3"
+    backup_sqlite(db_source, staged_db)
+    manifest_files.append(
+        {"path": "database.sqlite3", "sha256": sha256(staged_db), "size_bytes": staged_db.stat().st_size}
+    )
+
+
+def _stage_one_config(
+    src_conf: Path,
+    stage_dir: Path,
+    relative: str,
+    manifest_files: list[dict[str, Any]],
+) -> int:
+    name = src_conf.name
+    try:
+        raw = json.loads(safe_path(src_conf, must_exist=True).read_text(encoding="utf-8"))
+        sanitized, count = _sanitize_config_dict(raw)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise BackupBundleError(f"failed reading config {name}: {exc}") from exc
+    dst_conf = stage_dir / relative
+    dst_conf.parent.mkdir(parents=True, exist_ok=True)
+    dst_conf.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest_files.append({"path": relative, "sha256": sha256(dst_conf), "size_bytes": dst_conf.stat().st_size})
+    return count
+
+
+def _stage_named_configs(
+    data_directory: Path,
+    stage_dir: Path,
+    manifest_files: list[dict[str, Any]],
+) -> int:
+    """Copy the store's configs and its local client manifest in the host home."""
+    redacted = 0
+    for name in CONFIG_NAMES:
+        candidate_dir = data_directory.parent if name == "codex-installation.json" else data_directory
+        src_conf = candidate_dir / name
+        if src_conf.is_file():
+            redacted += _stage_one_config(src_conf, stage_dir, f"configs/{name}", manifest_files)
+    return redacted
+
+
+def _stage_tree(stage_dir: Path, src_root: Path, target_prefix: str, manifest_files: list[dict[str, Any]]) -> None:
+    """Copy regular files without entering linked directories."""
+    if not src_root.is_dir():
+        return
+    for item in real_files(safe_path(src_root, must_exist=True)):
+        if item.is_file():
+            rel = item.relative_to(src_root).as_posix()
+            bundle_rel = f"{target_prefix}/{rel}"
+            dst = stage_dir / bundle_rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with item.open("rb") as source, dst.open("wb") as target:
+                copy_stream(source, target)
+            manifest_files.append({"path": bundle_rel, "sha256": sha256(dst), "size_bytes": dst.stat().st_size})
+
+
+def _manifest_document(
+    *,
+    timestamp: str,
+    binding: InstanceBinding,
+    with_vectors: bool,
+    entries: list[dict[str, Any]],
+    redacted: int,
+    manifest_files: list[dict[str, Any]],
+    resources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    manifest_content: dict[str, Any] = {
+        "bundle_format": BUNDLE_FORMAT,
+        "product_version": __version__,
+        "schema_version": SCHEMA_VERSION,
+        "application_id": APPLICATION_ID,
+        "created_at_utc": timestamp,
+        "source_machine": platform.node() or "unknown-host",
+        "installation_id": binding.installation_id,
+        "installation_kind": binding.installation_kind,
+        "deletion_mirror": DELETION_MIRROR_FILENAME,
+        "with_vectors": with_vectors,
+        "entries": [
+            {
+                key: entry[key]
+                for key in ("entry_id", "display_name", "host", "first_seen", "last_seen", "detached_at")
+                if key in entry
+            }
+            for entry in entries
+        ],
+        "resources": resources,
+        "secrets_redacted_count": redacted,
+        "files": sorted(manifest_files, key=lambda item: item["path"]),
+    }
+    canonical = json.dumps(manifest_content, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    manifest_content["manifest_sha256"] = hashlib.sha256(canonical).hexdigest()
+    return manifest_content
+
+
+def _write_archive(stage_dir: Path, output_path: Path, manifest_content: dict[str, Any]) -> None:
+    manifest_staged = stage_dir / "manifest.json"
+    manifest_staged.write_text(json.dumps(manifest_content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_archive = stage_dir.parent / "bundle.zip"
+    with zipfile.ZipFile(tmp_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(manifest_staged, "manifest.json")
+        for staged_file in sorted(stage_dir.rglob("*")):
+            if staged_file.is_file() and staged_file != manifest_staged:
+                with (
+                    staged_file.open("rb") as source,
+                    archive.open(staged_file.relative_to(stage_dir).as_posix(), "w", force_zip64=True) as target,
+                ):
+                    copy_stream(source, target)
+    check_backup_deadline()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_target = output_path.with_name(f".{output_path.name}.tmp")
+    shutil.move(str(tmp_archive), str(tmp_target))
+    os.replace(tmp_target, output_path)
+
+
+def _stage_resources(data_directory: Path, stage_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Stage kept captures and the budget snapshot. Link paths become bundle errors."""
+    try:
+        return stage_instance_resources(data_directory, stage_dir)
+    except BackupError as exc:
+        raise BackupBundleError(str(exc)) from exc
+
+
+def _assemble_bundle(
+    data_directory: Path,
+    output_path: Path,
+    binding: InstanceBinding,
+    with_vectors: bool,
+    timestamp: str,
+    client_configs: tuple[Path, ...],
+) -> dict[str, Any]:
+    """Stage the store and write the zip. The caller holds the store lock."""
+    entries = _discover_included_entries(data_directory, binding)
+    manifest_files: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="sr-bundle-") as tmpdir_raw:
+        stage_dir = Path(tmpdir_raw) / "staged"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        _stage_database(data_directory, stage_dir, manifest_files)
+        redacted = _stage_named_configs(data_directory, stage_dir, manifest_files)
+        extra_files, resources = _stage_resources(data_directory, stage_dir)
+        manifest_files.extend(extra_files)
+        redacted += stage_entry_resources(entries, stage_dir, manifest_files, resources, _stage_one_config)
+        redacted += stage_remote_clients(
+            client_configs, stage_dir, manifest_files, resources, _stage_one_config, _stage_tree
+        )
+        _stage_tree(stage_dir, data_directory / "retained", "retained", manifest_files)
+        if with_vectors:
+            _stage_tree(stage_dir, data_directory / "vectors", "vectors", manifest_files)
+        manifest_content = _manifest_document(
+            timestamp=timestamp,
+            binding=binding,
+            with_vectors=with_vectors,
+            entries=entries,
+            redacted=redacted,
+            manifest_files=manifest_files,
+            resources=resources,
+        )
+        _write_archive(stage_dir, output_path, manifest_content)
+    return manifest_content
+
+
+def _created_receipt(
+    output_path: Path,
+    timestamp: str,
+    manifest_content: dict[str, Any],
+    with_vectors: bool,
+    mirror_dir: Path,
+) -> dict[str, Any]:
+    return {
+        "status": "created",
+        "bundle_path": str(output_path),
+        "created_at_utc": timestamp,
+        "files_count": len(manifest_content["files"]) + 1,
+        "with_vectors": with_vectors,
+        "manifest_sha256": manifest_content["manifest_sha256"],
+        "secrets_redacted": manifest_content["secrets_redacted_count"],
+        "deletion_mirror": str(mirror_dir / DELETION_MIRROR_FILENAME),
+    }
 
 
 def create_backup_bundle(
@@ -139,149 +356,28 @@ def create_backup_bundle(
     output: Path,
     with_vectors: bool = False,
     now: datetime | None = None,
+    client_configs: tuple[Path, ...] = (),
+    deadline: float | None = None,
 ) -> dict[str, Any]:
-    """Create a complete backup bundle for an instance.
+    """Create a backup bundle for an instance.
 
-    Holds exclusive store locks to ensure consistency between SQLite, retained
-    attachments, and background queues.
+    Holds the store lock while the database, kept captures, retained files and
+    the auxiliary budget ledger are snapshotted. The budget ledger is read with
+    the SQLite backup API.
     """
-    output_path = safe_path(output)
-    if output_path.exists():
-        raise BackupBundleError("refusing to overwrite existing bundle")
-    data_directory = safe_path(binding.data_directory, must_exist=True)
-    if output_path == data_directory or output_path in data_directory.parents or data_directory in output_path.parents:
-        raise BackupBundleError("output bundle must be outside data directory")
-
-    timestamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    source_machine = platform.node() or "unknown-host"
-
-    def _busy(what: str) -> BackupBundleError:
-        return BackupBundleError(f"store busy during bundle creation ({what})")
-
-    with exclusive_store(data_directory, busy=_busy):
-        entries = _discover_included_entries(data_directory)
-        manifest_files: list[dict[str, Any]] = []
-
-        with tempfile.TemporaryDirectory(prefix="sr-bundle-") as tmpdir_raw:
-            tmpdir = Path(tmpdir_raw)
-            stage_dir = tmpdir / "staged"
-            stage_dir.mkdir(parents=True, exist_ok=True)
-
-            db_source = data_directory / "memory.sqlite3"
-            if not db_source.is_file():
-                raise BackupBundleError("database file memory.sqlite3 not found in instance data directory")
-            staged_db = stage_dir / "database.sqlite3"
-            backup_sqlite(db_source, staged_db)
-            db_sha256 = sha256(staged_db)
-            manifest_files.append(
-                {
-                    "path": "database.sqlite3",
-                    "sha256": db_sha256,
-                    "size_bytes": staged_db.stat().st_size,
-                }
-            )
-
-            configs_staged = stage_dir / "configs"
-            configs_staged.mkdir(parents=True, exist_ok=True)
-            redacted_total = 0
-            seen_configs: set[str] = set()
-            for name in CONFIG_NAMES:
-                for candidate_dir in (data_directory, data_directory.parent):
-                    src_conf = candidate_dir / name
-                    if src_conf.is_file() and name not in seen_configs:
-                        seen_configs.add(name)
-                        try:
-                            raw = json.loads(src_conf.read_text(encoding="utf-8"))
-                            sanitized, count = _sanitize_config_dict(raw)
-                            redacted_total += count
-                            dst_conf = configs_staged / name
-                            dst_conf.write_text(
-                                json.dumps(sanitized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                            )
-                            manifest_files.append(
-                                {
-                                    "path": f"configs/{name}",
-                                    "sha256": sha256(dst_conf),
-                                    "size_bytes": dst_conf.stat().st_size,
-                                }
-                            )
-                        except (json.JSONDecodeError, OSError) as exc:
-                            raise BackupBundleError(f"failed reading config {name}: {exc}") from exc
-                        break
-
-            def _stage_tree(src_root: Path, target_prefix: str) -> None:
-                if not src_root.is_dir():
-                    return
-                for item in sorted(src_root.rglob("*")):
-                    if item.is_file() and not item.is_symlink():
-                        rel = item.relative_to(src_root).as_posix()
-                        bundle_rel = f"{target_prefix}/{rel}"
-                        dst = stage_dir / bundle_rel
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(item, dst)
-                        manifest_files.append(
-                            {
-                                "path": bundle_rel,
-                                "sha256": sha256(dst),
-                                "size_bytes": dst.stat().st_size,
-                            }
-                        )
-
-            _stage_tree(data_directory / "retained", "retained")
-            _stage_tree(data_directory / "inbox", "inbox")
-            _stage_tree(data_directory / "outbox", "outbox")
-            _stage_tree(data_directory / "retry", "retry")
-            _stage_tree(data_directory / "budget", "budget")
-
-            if with_vectors:
-                vectors_dir = data_directory / "vectors"
-                if vectors_dir.is_dir():
-                    _stage_tree(vectors_dir, "vectors")
-
-            manifest_content: dict[str, Any] = {
-                "bundle_format": BUNDLE_FORMAT,
-                "product_version": __version__,
-                "schema_version": SCHEMA_VERSION,
-                "application_id": APPLICATION_ID,
-                "created_at_utc": timestamp,
-                "source_machine": source_machine,
-                "with_vectors": with_vectors,
-                "entries": entries,
-                "secrets_redacted_count": redacted_total,
-                "files": sorted(manifest_files, key=lambda f: f["path"]),
-            }
-            canonical_manifest_bytes = json.dumps(
-                manifest_content, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8")
-            manifest_content["manifest_sha256"] = hashlib.sha256(canonical_manifest_bytes).hexdigest()
-
-            manifest_staged = stage_dir / "manifest.json"
-            manifest_staged.write_text(
-                json.dumps(manifest_content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-
-            tmp_archive = tmpdir / "bundle.zip"
-            with zipfile.ZipFile(tmp_archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(manifest_staged, "manifest.json")
-                for staged_file in sorted(stage_dir.rglob("*")):
-                    if staged_file.is_file() and staged_file != manifest_staged:
-                        rel = staged_file.relative_to(stage_dir).as_posix()
-                        zf.write(staged_file, rel)
-
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_target = output_path.with_name(f".{output_path.name}.tmp")
-            shutil.move(str(tmp_archive), str(tmp_target))
-            os.replace(tmp_target, output_path)
-
-    return {
-        "status": "created",
-        "bundle_path": str(output_path),
-        "created_at_utc": timestamp,
-        "files_count": len(manifest_files) + 1,
-        "with_vectors": with_vectors,
-        "manifest_sha256": manifest_content["manifest_sha256"],
-        "secrets_redacted": redacted_total,
-    }
+    try:
+        with backup_deadline(deadline):
+            output_path, data_directory = _bundle_locations(output, binding)
+            timestamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            with exclusive_store(data_directory, busy=_bundle_busy):
+                mirror_dir = _ensure_backup_mirror(data_directory, output_path)
+                client_configs = client_configs or configured_client_paths(data_directory)
+                manifest_content = _assemble_bundle(
+                    data_directory, output_path, binding, with_vectors, timestamp, client_configs
+                )
+    except BackupError as exc:
+        raise BackupBundleError(str(exc)) from exc
+    return _created_receipt(output_path, timestamp, manifest_content, with_vectors, mirror_dir)
 
 
 @dataclass(frozen=True)
@@ -322,30 +418,56 @@ def _verify_checksums(archive: zipfile.ZipFile, manifest: dict[str, Any]) -> int
             raise BackupBundleError(
                 f"size mismatch for {file_rel}: expected {entry['size_bytes']}, found {info.file_size}"
             )
-        digest = hashlib.sha256(archive.read(info)).hexdigest()
+        with archive.open(info) as stream:
+            digest = stream_digest(stream)
         if digest != entry["sha256"]:
-            raise BackupBundleError(
-                f"checksum mismatch for {file_rel}: expected {entry['sha256']}, found {digest}"
-            )
+            raise BackupBundleError(f"checksum mismatch for {file_rel}: expected {entry['sha256']}, found {digest}")
         checked += 1
     return checked
 
 
-def _quick_check_database(archive: zipfile.ZipFile) -> tuple[str, int, int]:
+def _verify_manifest_document(manifest: dict[str, Any]) -> None:
+    """The manifest has one published shape and a digest of its canonical document."""
+    schema_path = Path(__file__).parent.parent / "contracts" / "backup_manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    error = next(Draft202012Validator(schema).iter_errors(manifest), None)
+    if error is not None:
+        raise BackupBundleError(f"invalid backup manifest: {error.message}")
+    document = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    canonical = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != manifest["manifest_sha256"]:
+        raise BackupBundleError("manifest checksum mismatch")
+
+
+def _check_database_identity(conn: sqlite3.Connection, manifest: dict[str, Any], version: int, app_id: int) -> None:
+    """An intact SQLite file must also be the supported installation the manifest names."""
+    if app_id != APPLICATION_ID or manifest["application_id"] != app_id:
+        raise BackupBundleError("database application identity mismatch")
+    if version not in (*UPGRADE_CHAIN, SCHEMA_VERSION) or manifest["schema_version"] != version:
+        raise BackupBundleError("database schema is unsupported or differs from manifest")
+    row = conn.execute(
+        "SELECT installation_id,installation_kind,schema_version FROM instance_meta WHERE singleton=1"
+    ).fetchone()
+    if row != (manifest["installation_id"], manifest["installation_kind"], version):
+        raise BackupBundleError("database installation identity differs from manifest")
+
+
+def _quick_check_database(archive: zipfile.ZipFile, manifest: dict[str, Any]) -> tuple[str, int, int]:
     try:
         info = archive.getinfo("database.sqlite3")
     except KeyError as exc:
         raise BackupBundleError("bundle is missing database.sqlite3") from exc
-    data = archive.read(info)
     with tempfile.TemporaryDirectory(prefix="sr-verify-") as raw:
         target = Path(raw) / "database.sqlite3"
-        target.write_bytes(data)
+        with archive.open(info) as source, target.open("wb") as output:
+            copy_stream(source, output)
         with closing(sqlite3.connect(f"{target.as_uri()}?mode=ro", uri=True)) as conn:
             quick = str(conn.execute("PRAGMA quick_check").fetchone()[0])
             if quick.lower() != "ok":
                 raise BackupBundleError(f"database quick_check failed: {quick}")
             user_ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
             app_id = int(conn.execute("PRAGMA application_id").fetchone()[0])
+            _check_database_identity(conn, manifest, user_ver, app_id)
     return quick, user_ver, app_id
 
 
@@ -362,8 +484,9 @@ def inspect_backup_archive(archive: zipfile.ZipFile) -> BackupInspection:
         raise BackupBundleError(str(exc)) from exc
     if not any(member.archive_name == "database.sqlite3" for member in members):
         raise BackupBundleError("bundle is missing database.sqlite3")
+    _verify_manifest_document(manifest)
     files_verified = _verify_checksums(archive, manifest)
-    quick, user_ver, app_id = _quick_check_database(archive)
+    quick, user_ver, app_id = _quick_check_database(archive, manifest)
     return BackupInspection(manifest, members, files_verified, quick, user_ver, app_id)
 
 
@@ -391,6 +514,7 @@ def verify_backup_bundle(bundle_path: Path, *, temp_restore_check: bool = False)
         "status": "verified",
         "bundle_path": str(safe_bundle),
         "bundle_format": manifest.get("bundle_format"),
+        "installation_id": manifest.get("installation_id"),
         "created_at_utc": manifest.get("created_at_utc"),
         "files_verified": inspection.files_verified,
         "database_quick_check": inspection.quick_check,

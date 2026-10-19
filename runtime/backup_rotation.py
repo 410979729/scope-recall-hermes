@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import os
 import re
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .backup_bundle import BackupBundleError, verify_backup_bundle
 from .backup_primitives import first_link, safe_path
 
 BUNDLE_FILENAME_PATTERN = re.compile(
-    r"^scope-recall-backup-(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})T(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})Z\.zip$"
+    r"^scope-recall-backup-(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})T"
+    r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})Z(?:-[0-9a-f]{12})?\.zip$"
 )
 BUNDLE_ALT_PATTERN = re.compile(
     r"^scope-recall-backup-(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T(?P<hour>\d{2})-(?P<minute>\d{2})-(?P<second>\d{2})Z\.zip$"
@@ -30,6 +33,7 @@ class BackupCandidate:
     path: Path
     timestamp: datetime
     filename: str
+    signature: tuple[int, int, int, int]
 
     @property
     def date_key(self) -> str:
@@ -68,7 +72,7 @@ def _parse_bundle_timestamp(filename: str) -> datetime | None:
         return None
 
 
-def find_owned_backup_bundles(backup_directory: Path) -> list[BackupCandidate]:
+def find_owned_backup_bundles(backup_directory: Path, installation_id: str) -> list[BackupCandidate]:
     """Find and validate owned backup bundle files in the backup directory.
 
     Rejects symlinks, directories, and non-conforming filenames.
@@ -82,23 +86,37 @@ def find_owned_backup_bundles(backup_directory: Path) -> list[BackupCandidate]:
         if first_link(entry) is not None or not entry.is_file():
             continue
         ts = _parse_bundle_timestamp(entry.name)
-        if ts is not None:
-            candidates.append(BackupCandidate(path=entry, timestamp=ts, filename=entry.name))
+        if ts is None:
+            continue
+        before = _signature(entry)
+        try:
+            receipt = verify_backup_bundle(entry)
+            recorded = datetime.fromisoformat(receipt["created_at_utc"].replace("Z", "+00:00"))
+        except (BackupBundleError, OSError, ValueError, zipfile.BadZipFile):
+            continue
+        if receipt.get("installation_id") == installation_id and recorded == ts and before == _signature(entry):
+            candidates.append(BackupCandidate(entry, ts, entry.name, before))
 
     candidates.sort(key=lambda c: c.timestamp, reverse=True)
     return candidates
 
 
+def _signature(path: Path) -> tuple[int, int, int, int]:
+    info = path.stat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
 def rotate_backup_bundles(
     backup_directory: Path,
     *,
+    installation_id: str,
     now: datetime | None = None,
 ) -> RotationResult:
     """Apply 7 daily and 4 weekly retention policy to verified owned bundles.
 
     Removes obsolete bundles by individual file unlinks only.
     """
-    candidates = find_owned_backup_bundles(backup_directory)
+    candidates = find_owned_backup_bundles(backup_directory, installation_id)
     if not candidates:
         return RotationResult(kept_daily=[], kept_weekly=[], removed=[], retained_total=0)
 
@@ -118,7 +136,7 @@ def rotate_backup_bundles(
     removed: list[str] = []
     for cand in candidates:
         if cand.path not in keep_paths:
-            if cand.path.is_file() and first_link(cand.path) is None:
+            if cand.path.is_file() and first_link(cand.path) is None and _signature(cand.path) == cand.signature:
                 os.unlink(cand.path)
                 removed.append(cand.filename)
 

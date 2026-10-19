@@ -9,6 +9,10 @@
     "application_id",
     "created_at_utc",
     "source_machine",
+    "installation_id",
+    "installation_kind",
+    "deletion_mirror",
+    "resources",
     "with_vectors",
     "entries",
     "secrets_redacted_count",
@@ -38,6 +42,24 @@
     "source_machine": {
       "type": "string"
     },
+    "installation_id": {"type": "string", "minLength": 1},
+    "installation_kind": {"enum": ["local", "shared"]},
+    "deletion_mirror": {"const": "deletion-mirror.jsonl"},
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "archive_path", "target_relative", "config_file", "field"],
+        "properties": {
+          "role": {"enum": ["kept_captures", "budget_ledger", "budget_installation_dir", "remote_client"]},
+          "archive_path": {"type": "string", "minLength": 1},
+          "target_relative": {"type": "string", "minLength": 1},
+          "config_file": {"type": ["string", "null"]},
+          "field": {"type": ["string", "null"]}
+        }
+      }
+    },
     "with_vectors": {
       "type": "boolean"
     },
@@ -49,9 +71,7 @@
         "required": [
           "entry_id",
           "display_name",
-          "host",
-          "first_seen",
-          "last_seen"
+          "host"
         ],
         "properties": {
           "entry_id": {
@@ -63,6 +83,7 @@
           "host": {
             "type": "string"
           },
+          "detached_at": {"type": ["string", "null"]},
           "first_seen": {
             "type": "string"
           },

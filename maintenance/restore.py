@@ -365,7 +365,8 @@ def main(argv: list[str]) -> int:
     if any(arg == "--bundle" or arg.startswith("--bundle=") for arg in argv):
         bundle_parser = argparse.ArgumentParser(
             prog="scope-recall restore",
-            description="Restore a full backup bundle to a fresh destination directory. Without --apply nothing is written.",
+            description="Restore a full backup bundle to a fresh destination directory. "
+            "Without --apply nothing is written.",
         )
         bundle_parser.add_argument("--bundle", type=Path, required=True, help="backup bundle zip file")
         bundle_parser.add_argument("--to", type=Path, required=True, help="fresh destination directory")
