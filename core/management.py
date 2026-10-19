@@ -85,6 +85,12 @@ class MemoryManagement:
         items = [self.show(ref, revision=r) for r in revisions[:limit]]
         return dict(items=items, next_before=revisions[limit - 1] if len(revisions) > limit else None)
 
+    def export_reader(self, filters: MemoryFilter):
+        """Open one owner-authorized, page-at-a-time stream of the visible store."""
+        from .management_export import MemoryExport
+
+        return MemoryExport(self.core, self._context(), filters)
+
     def _plan(self, tx, refs, mode, expected=None):
         groups = {}
         context = self._context()

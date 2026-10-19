@@ -277,6 +277,11 @@ _SCHEMAS = frozenset(
         "entity_view",
         "trace_request",
         "trace_view",
+        "memory_export_source",
+        "memory_export_fact",
+        "memory_export_fact_history",
+        "memory_export_episode",
+        "memory_export_manifest",
     }
 )
 _MODEL_REQUESTS = frozenset(
