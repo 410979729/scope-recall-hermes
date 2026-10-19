@@ -37,7 +37,7 @@ HOST = "claude-code"
 #: recall (the entry's ``hook_processing_seconds``, at most 6 s) after the interpreter starts.
 HOOK_TIMEOUTS = {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10}
 #: The skills a Claude Code session gets.  ``scope-recall-setup`` stays out: installing and
-#: upgrading the fleet is an operator's procedure, not something a coding session is asked.
+#: upgrading are operator procedures, not something a coding session is asked to do.
 CLAUDE_CODE_SKILLS = ("scope-recall-memory",)
 SHELL_WORD = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
 _ENTRY = install_client.AttachedEntry(HOST, "Claude Code")
