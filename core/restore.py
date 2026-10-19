@@ -16,6 +16,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..contracts import ContractError, TrustedContext
@@ -33,7 +34,8 @@ LEDGER_FILENAME = "restore-ledger.json"
 #: fields, and a release replays a ledger of this format whatever schema the exporting release wrote: a ledger
 #: exported where the latest store lives is replayed by the release that reads the snapshot.  A release whose
 #: deletions need anything this format does not carry exports another one, which the releases before it refuse.
-LEDGER_FORMAT = "scope-recall-deletion-ledger/1"
+LEDGER_FORMAT = "scope-recall-deletion-ledger/2"
+LEGACY_LEDGER_FORMAT = "scope-recall-deletion-ledger/1"
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,11 @@ def ledger_digest(ledger) -> str:
     return hashlib.sha256(canonical(ledger).encode()).hexdigest()
 
 
-def _ledger_in_transaction(tx, context) -> dict:
+def _ledger_in_transaction(tx, context, ledger_format=LEDGER_FORMAT) -> dict:
+    from .suppression import snapshot
+
+    if ledger_format not in {LEDGER_FORMAT, LEGACY_LEDGER_FORMAT}:
+        raise ContractError("INPUT_INVALID", "ledger_format")
     conn = tx._check()
     operations = []
     for row in conn.execute("SELECT * FROM deletion_operations ORDER BY memory_epoch,operation_id"):
@@ -75,8 +81,9 @@ def _ledger_in_transaction(tx, context) -> dict:
             dict(r)
             for r in conn.execute(
                 """SELECT b.object_kind,b.object_ref,b.scope_id,b.project_id,b.branch_id
-            FROM deletion_members m JOIN object_blocks b USING(object_kind,object_ref) WHERE m.operation_id=? ORDER BY object_kind,object_ref""",
-                (row["operation_id"],),
+            FROM deletion_members m JOIN object_blocks b USING(object_kind,object_ref)
+            WHERE m.operation_id=? AND (?='delete' OR b.suppressed=1) ORDER BY object_kind,object_ref""",
+                (row["operation_id"], row["mode"]),
             )
         ]
         operations.append(dict(operation=dict(row), members=members))
@@ -88,8 +95,8 @@ def _ledger_in_transaction(tx, context) -> dict:
         WHERE (v.state='retracted' OR json_extract(v.payload_json,'$.intention.state') IN ('cancelled','completed','expired'))
         AND c.read_blocked=0 ORDER BY c.claim_id""")
     ]
-    return dict(
-        format=LEDGER_FORMAT,
+    ledger = dict(
+        format=ledger_format,
         schema_version=SCHEMA_VERSION,
         memory_epoch=tx.status().memory_epoch,
         installation_id=context.binding.installation_id,
@@ -102,12 +109,16 @@ def _ledger_in_transaction(tx, context) -> dict:
             dict(row) for row in conn.execute("SELECT * FROM restored_absence_blocks ORDER BY object_kind,object_ref")
         ],
     )
+    if ledger_format == LEDGER_FORMAT:
+        ledger["suppressed_objects"] = snapshot(conn)
+    return ledger
 
 
-def export_deletion_ledger(storage, authority: InstallationMaintenance) -> dict:
+def export_deletion_ledger(storage, authority: InstallationMaintenance, *, ledger_format=LEDGER_FORMAT) -> dict:
+    """Export the current ledger, or the monotone format for a pre-management rollback."""
     context = _maintenance_context(storage, authority)
     with storage.read(context) as tx:
-        return _ledger_in_transaction(tx, context)
+        return _ledger_in_transaction(tx, context, ledger_format)
 
 
 def _digest_shaped(value) -> bool:
@@ -207,7 +218,9 @@ def _closable(storage, context, ledger) -> bool:
     raise ContractError("RESTORE_UNVERIFIED", "ledger_missing")
 
 
-def begin_restore(storage, authority: InstallationMaintenance, *, expected_ledger_sha256: str) -> None:
+def begin_restore(
+    storage, authority: InstallationMaintenance, *, expected_ledger_sha256: str, ledger_format=LEDGER_FORMAT
+) -> None:
     """Close admission on the store's ledger, the one ``expected_ledger_sha256`` names.
 
     The ledger is written beside the store first and the marker after it, each whole (``_write_whole``): once the
@@ -228,7 +241,7 @@ def begin_restore(storage, authority: InstallationMaintenance, *, expected_ledge
     # The same writer lease and transaction as ordinary mutations, so the independently supplied checkpoint cannot go
     # stale before admission closes; through the fence, so that a store closed already can be closed again.
     with storage._transaction(context, writable=True, remaining_seconds=None, restoring=True) as tx:
-        ledger = _ledger_in_transaction(tx, context)
+        ledger = _ledger_in_transaction(tx, context, ledger_format)
         if ledger_digest(ledger) != expected_ledger_sha256:
             raise ContractError("RESTORE_UNVERIFIED", "checkpoint_changed")
         write_marker = _closable(storage, context, ledger)
@@ -287,7 +300,13 @@ def _restore_checkpoint(storage, context, ledger):
         "absent_objects",
     }
     # Whatever schema the exporting release wrote: the format names what the ledger holds.
-    if set(ledger) != sections or ledger["format"] != LEDGER_FORMAT or type(ledger["schema_version"]) is not int:
+    if ledger.get("format") == LEDGER_FORMAT:
+        sections.add("suppressed_objects")
+    if (
+        set(ledger) != sections
+        or ledger["format"] not in {LEDGER_FORMAT, LEGACY_LEDGER_FORMAT}
+        or type(ledger["schema_version"]) is not int
+    ):
         raise ContractError("RESTORE_UNVERIFIED", "ledger_format")
     if (ledger["installation_id"], ledger["agent_id"], ledger["scope_ids"]) != (
         context.binding.installation_id,
@@ -569,6 +588,12 @@ def replay_deletion_ledger(
         conn.execute(
             "UPDATE work_items SET consolidation_offset=0 WHERE state IN ('pending','leased') AND work_type='consolidate'"
         )
+        from .suppression import reset_snapshot_suppression, resume_candidates
+
+        # Older ledgers did not enumerate inherited suppression. They can only
+        # add blocks; a complete snapshot is required to release old ones.
+        if ledger["format"] == LEDGER_FORMAT:
+            reset_snapshot_suppression(conn, context.allowed_scope_ids, ledger["suppressed_objects"])
         for entry in ledger["operations"]:
             count += _replay_operation(tx, conn, context, entry, checkpoint_epoch)
         for group in ledger["source_groups"]:
@@ -581,6 +606,14 @@ def replay_deletion_ledger(
         # epoch. The independently obtained latest checkpoint is the floor.
         conn.execute(
             "UPDATE instance_meta SET memory_epoch=max(memory_epoch,?)+1 WHERE singleton=1", (checkpoint_epoch,)
+        )
+        resume_candidates(tx, now=datetime.now(UTC).isoformat())
+        # A restored pre-release request key must not turn the next mute into
+        # an idempotent replay of a suppression that was already released.
+        conn.execute(
+            "INSERT INTO management_actions VALUES (?,'local_user_management','restore','[]',?,?) "
+            "ON CONFLICT(action_id) DO NOTHING",
+            ("restore-" + ledger_digest(ledger), datetime.now(UTC).isoformat(), checkpoint_epoch + 1),
         )
     # The write-ahead log holds the snapshot's pages, deleted words included, until it is truncated, so admission
     # reopens only after that.  A reader still on an older snapshot holds the truncation back (wal_busy); a crash

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scope_recall.contracts import InstanceBinding, TrustedContext, validate_capture
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
+from scope_recall.core.schema import SUPPRESSION_TRIGGERS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -156,6 +157,10 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1111: {
+        "before": tuple(f"DROP TRIGGER {name}" for name, _sql in SUPPRESSION_TRIGGERS),
+        "tables": ("management_actions", "restored_suppression_blocks"),
+    },
     1110: {"tables": ("entries",), "columns": (("source_events", "entry_id"), ("instance_meta", "installation_kind"))},
     1109: {
         "before": _LEXICAL_PROJECTION_1108,

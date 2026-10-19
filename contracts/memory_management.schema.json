@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local memory management response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "action", "status"],
+  "properties": {
+    "format": {"type": "string", "const": "scope-recall-management/1"},
+    "action": {"type": "string", "enum": ["list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session"]},
+    "status": {"type": "string", "enum": ["ok", "error"]},
+    "code": {"type": "string"},
+    "field": {"type": ["string", "null"]},
+    "data": {"type": "object", "$ref": "#/$defs/data"}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"type": "string", "const": "ok"}}}, "then": {"required": ["data"]}},
+    {"if": {"properties": {"status": {"type": "string", "const": "error"}}}, "then": {"required": ["code", "field"]}}
+  ],
+  "$defs": {
+    "target": {
+      "type": "object", "required": ["kind", "ref", "revision", "scope_id", "project_id", "branch_id"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["event", "claim", "episode", "artifact", "reference"]},
+        "ref": {"type": "string", "minLength": 1}, "revision": {"type": "integer", "minimum": 1},
+        "scope_id": {"type": "string"}, "project_id": {"type": ["string", "null"]}, "branch_id": {"type": ["string", "null"]}
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "revision", "entry_id", "agent", "session", "occurred_at", "recorded_at"],
+      "properties": {
+        "ref": {"type": "string"}, "revision": {"type": "integer", "minimum": 1},
+        "entry_id": {"type": "string"}, "agent": {"type": "string"}, "session": {"type": "string"},
+        "occurred_at": {"type": ["string", "null"], "format": "date-time"},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "preview": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "memory_epoch", "targets", "affected", "sources", "preview_id"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["delete", "suppress", "unmute"]},
+        "memory_epoch": {"type": "integer", "minimum": 0},
+        "targets": {"type": "array", "items": {"$ref": "#/$defs/target"}},
+        "affected": {"type": "array", "items": {"$ref": "#/$defs/target"}},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "preview_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "item": {
+      "type": "object", "required": ["kind", "ref", "revision"],
+      "properties": {
+        "kind": {"type": "string"}, "ref": {"type": "string"}, "revision": {"type": "integer", "minimum": 1},
+        "scope_id": {"type": "string"}, "project_id": {"type": ["string", "null"]}, "branch_id": {"type": ["string", "null"]},
+        "suppressed": {"type": "integer", "enum": [0, 1]}, "content": {"type": "string"}, "state": {"type": "string"},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "value": {"type": "object"}, "memory_epoch": {"type": "integer", "minimum": 0}
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+        "next_cursor": {"type": ["string", "null"]}, "next_before": {"type": ["integer", "null"]},
+        "memory_epoch": {"type": "integer", "minimum": 0},
+        "preview": {"type": "object", "$ref": "#/$defs/preview"}, "applied": {"type": "boolean"},
+        "result": {"type": "object"}, "kind": {"type": "string"}, "ref": {"type": "string"},
+        "revision": {"type": "integer", "minimum": 1}, "value": {"type": "object"},
+        "item": {"type": "object"}, "actor": {"type": "string", "const": "local_user_management"},
+        "action_id": {"type": "string"}, "source_ref": {"type": "string"}
+      }
+    }
+  }
+}

@@ -66,7 +66,7 @@ from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
 from .shared_run import Run, SharedStoreError, store_lock
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
-SOURCE_SCHEMAS = frozenset({1109, 1110})
+SOURCE_SCHEMAS = frozenset({1109, 1110, 1111})
 #: Anything shaped like a source id; renamed only when the old store holds exactly that id.
 _EVENT_TOKEN = re.compile(r"(?<![0-9A-Za-z_-])event-[0-9A-Za-z_-]+")
 _CHUNK = 2000
@@ -182,6 +182,41 @@ def _open_source(database: Path, home: str) -> sqlite3.Connection:
     if src.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]:
         raise SourceRefused("the source has captures waiting in its inbox; open it once with its own host first")
     return src
+
+
+def _import_blocks(conn, src, names, left_out, epoch):
+    """Preserve content-free controls under the imported objects' identities.
+
+    Newer stores also retain constraints for objects absent from a snapshot;
+    those identities must be renamed even when no source row exists yet.
+    """
+    counts = {}
+    tables = {row[0] for row in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in ("object_blocks", "restored_absence_blocks", "restored_suppression_blocks"):
+        if table in tables:
+            counts[table] = _copy(
+                conn,
+                src,
+                table,
+                lambda r: (
+                    None
+                    if r["object_kind"] == "claim" and r["object_ref"] in left_out
+                    else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
+                ),
+            )
+    if "management_actions" in tables:
+        counts["management_actions"] = _copy(
+            conn,
+            src,
+            "management_actions",
+            lambda r: {
+                **r,
+                "action_id": names.key(r["action_id"]),
+                "targets_json": names.text(r["targets_json"]),
+                "memory_epoch": epoch,
+            },
+        )
+    return counts
 
 
 def _import_rows(conn, src, names: _Names, *, store_installation: str, store_scopes: frozenset[str], now: str) -> dict:
@@ -387,19 +422,7 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
             else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
         ),
     )
-    counts["object_blocks"] = _copy(
-        conn,
-        src,
-        "object_blocks",
-        lambda r: (
-            None
-            if r["object_kind"] == "claim" and r["object_ref"] in left_out
-            else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
-        ),
-    )
-    counts["restored_absence_blocks"] = _copy(
-        conn, src, "restored_absence_blocks", lambda r: None if r["object_ref"] in left_out else r
-    )
+    counts.update(_import_blocks(conn, src, names, left_out, imported_epoch))
     orphans = 0
 
     def group_block(row):
