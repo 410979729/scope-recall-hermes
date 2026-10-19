@@ -60,13 +60,13 @@ def entry(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "TEST-venv"))
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
-    hermes = tmp_path / "TEST-tianshu-home"
+    hermes = tmp_path / "TEST-agent3-home"
     hermes.mkdir()
     attach_shared_entry(
         root,
         build_installation_manifest(hermes, agent_id=AGENT, user_id="TEST-owner", agent_workspace="TEST-workspace"),
-        entry_id="tianshu",
-        display_name="天枢",
+        entry_id="agent3",
+        display_name="天三",
         now=NOW,
     )
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")

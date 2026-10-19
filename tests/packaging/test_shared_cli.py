@@ -137,17 +137,17 @@ def root(tmp_path, capsys):
 
 
 def test_a_home_moved_aside_attaches_with_the_grants_it_had(tmp_path, capsys, root):
-    home, options = _installed(tmp_path, "tianshu")
+    home, options = _installed(tmp_path, "agent3")
     own = json.loads((home / "scope-recall" / "installation.json").read_text(encoding="utf-8"))
     archive = _moved_aside(home, _routes(home))
 
-    code, result = _attach(capsys, home, root, archive, "tianshu", "天枢")
-    assert (code, result["status"], result["entry_id"]) == (0, "attached", "tianshu")
+    code, result = _attach(capsys, home, root, archive, "agent3", "天三")
+    assert (code, result["status"], result["entry_id"]) == (0, "attached", "agent3")
     assert result["new_scopes"] == result["store_scopes"] == len(own["scope_ids"])
     assert Path(result["receipt"]).is_file()
 
     identity = _bind(home)
-    assert identity.entry_id == "tianshu" and identity.binding.installation_kind == "shared"
+    assert identity.entry_id == "agent3" and identity.binding.installation_kind == "shared"
     assert identity.manifest.audiences == tuple(own["audiences"]), "the grants it had, unchanged"
     entry = load_config(home / "scope-recall" / "runtime-config.json")
     assert entry.binding == identity.binding
@@ -174,15 +174,15 @@ def test_a_home_moved_aside_attaches_with_the_grants_it_had(tmp_path, capsys, ro
 
     report = run_doctor(host="hermes", instance_root=home, python_executable=Path(sys.executable))
     assert report.binding_ok and report.database_present
-    assert report.shared_store == {"root": str(root), "entry_id": "tianshu", "entry_name": "天枢"}
+    assert report.shared_store == {"root": str(root), "entry_id": "agent3", "entry_name": "天三"}
 
     code, listing = _run(capsys, "entries", "--root", str(root))
     assert code == 0 and listing["store"] == "ok"
-    assert [(row["entry_id"], row["pointer_present"]) for row in listing["entries"]] == [("tianshu", True)]
+    assert [(row["entry_id"], row["pointer_present"]) for row in listing["entries"]] == [("agent3", True)]
 
 
 def test_attach_refuses_a_home_whose_own_store_is_still_in_place(tmp_path, capsys, root):
-    home, _options = _installed(tmp_path, "tianshu")
+    home, _options = _installed(tmp_path, "agent3")
     code, result = _run(
         capsys,
         "attach",
@@ -193,32 +193,32 @@ def test_attach_refuses_a_home_whose_own_store_is_still_in_place(tmp_path, capsy
         "--root",
         str(root),
         "--entry",
-        "tianshu",
+        "agent3",
         "--display-name",
-        "天枢",
+        "天三",
     )
     assert code == 2 and "still has its own store" in result["error"]
     assert read_shared_payload(root)["entries"] == []
 
 
 def test_a_second_entry_must_use_the_worker_s_embedding_model(tmp_path, capsys, root):
-    first, _options = _installed(tmp_path, "tianshu")
-    _attach(capsys, first, root, _moved_aside(first, _routes(first)), "tianshu", "天枢")
-    second, _options = _installed(tmp_path, "tianquan")
+    first, _options = _installed(tmp_path, "agent3")
+    _attach(capsys, first, root, _moved_aside(first, _routes(first)), "agent3", "天三")
+    second, _options = _installed(tmp_path, "agent2")
     archive = _moved_aside(second, _routes(second, model="TEST-other-embedding"))
 
-    code, result = _attach(capsys, second, root, archive, "tianquan", "天权")
+    code, result = _attach(capsys, second, root, archive, "agent2", "天二")
     assert code == 2 and result["error"].startswith("embedding_space_differs")
-    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["tianshu"]
+    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["agent3"]
     assert not (second / "scope-recall" / "attachment.json").exists()
 
 
 def test_a_later_entry_widens_the_worker_and_keeps_its_routes(tmp_path, capsys, root):
-    first, _options = _installed(tmp_path, "tianshu")
-    _attach(capsys, first, root, _moved_aside(first, _routes(first)), "tianshu", "天枢")
+    first, _options = _installed(tmp_path, "agent3")
+    _attach(capsys, first, root, _moved_aside(first, _routes(first)), "agent3", "天三")
     before = json.loads((root / "runtime-config.json").read_text(encoding="utf-8"))
-    second, _options = _installed(tmp_path, "tianquan")
-    code, result = _attach(capsys, second, root, _moved_aside(second, _routes(second)), "tianquan", "天权")
+    second, _options = _installed(tmp_path, "agent2")
+    code, result = _attach(capsys, second, root, _moved_aside(second, _routes(second)), "agent2", "天二")
     assert code == 0
     after = json.loads((root / "runtime-config.json").read_text(encoding="utf-8"))
     assert set(after["binding"]["scope_ids"]) == set(read_shared_payload(root)["scope_ids"])
@@ -226,8 +226,8 @@ def test_a_later_entry_widens_the_worker_and_keeps_its_routes(tmp_path, capsys, 
 
 
 def test_detach_leaves_the_memories_and_the_record(tmp_path, capsys, root):
-    home, _options = _installed(tmp_path, "tianshu")
-    _attach(capsys, home, root, _moved_aside(home, _routes(home)), "tianshu", "天枢")
+    home, _options = _installed(tmp_path, "agent3")
+    _attach(capsys, home, root, _moved_aside(home, _routes(home)), "agent3", "天三")
 
     code, result = _run(capsys, "detach", "--instance-root", str(home))
     assert (code, result["status"], result["home_directory_left"]) == (0, "detached", False)
@@ -239,14 +239,14 @@ def test_detach_leaves_the_memories_and_the_record(tmp_path, capsys, root):
     with pytest.raises(HermesIdentityError):
         _bind(home)
     record = read_shared_payload(root)["entries"][0]
-    assert record["entry_id"] == "tianshu" and record["detached_at"]
+    assert record["entry_id"] == "agent3" and record["detached_at"]
     code, listing = _run(capsys, "entries", "--root", str(root))
     assert listing["entries"][0]["pointer_present"] is False and listing["entries"][0]["first_seen"]
 
 
 def test_a_copied_store_opens_only_after_adopt_and_takes_its_entries_from_new_homes(tmp_path, capsys, root):
-    home, _options = _installed(tmp_path, "tianshu")
-    _attach(capsys, home, root, _moved_aside(home, _routes(home)), "tianshu", "天枢")
+    home, _options = _installed(tmp_path, "agent3")
+    _attach(capsys, home, root, _moved_aside(home, _routes(home)), "agent3", "天三")
     copy = (tmp_path / "TEST-shared-moved").resolve()
     shutil.copytree(root, copy)
 
@@ -260,8 +260,8 @@ def test_a_copied_store_opens_only_after_adopt_and_takes_its_entries_from_new_ho
     assert listing["store"] == "ok"
 
     # The old home still points at the original store, so the copy takes the entry from a new home.
-    new_home, _options = _installed(tmp_path, "tianshu-new")
-    code, result = _attach(capsys, new_home, copy, _moved_aside(new_home, _routes(new_home)), "tianshu", "天枢")
+    new_home, _options = _installed(tmp_path, "agent3-new")
+    code, result = _attach(capsys, new_home, copy, _moved_aside(new_home, _routes(new_home)), "agent3", "天三")
     assert code == 0 and _bind(new_home).binding.data_directory == copy
     assert _bind(home).binding.data_directory == root, "the original is untouched"
 
@@ -272,7 +272,7 @@ def test_init_refuses_a_directory_in_use_or_inside_an_agent_home(tmp_path, capsy
     (used / "something").write_text("TEST", encoding="utf-8")
     code, result = _run(capsys, "init-shared", "--root", str(used))
     assert code == 2 and "new or empty" in result["error"]
-    home, _options = _installed(tmp_path, "tianshu")
+    home, _options = _installed(tmp_path, "agent3")
     code, result = _run(capsys, "init-shared", "--root", str(home / "shared"))
     assert code == 2 and "inside an agent's home" in result["error"]
 
@@ -302,7 +302,7 @@ def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, c
     """The worker's config lists every scope of the store twice, about 120 bytes each, so a store of a few hundred
     scopes gives it more than 64 KB: attach, detach and adopt still read and write it."""
     homes = []
-    for name in ("tianshu", "tianji", "yuheng"):
+    for name in ("agent3", "agent1", "agent5"):
         home, _options = _installed(tmp_path, name)
         _with_scopes(home, name, 120)
         code, result = _attach(capsys, home, root, _moved_aside(home, _routes(home)), name, name)
@@ -322,17 +322,17 @@ def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, c
 
 def _hermes_pair(tmp_path, capsys, root, *, second_workspace=None):
     """Two Hermes entries of the store, the first one's routes the worker's."""
-    first, _options = _installed(tmp_path, "tianshu")
-    _attach(capsys, first, root, _moved_aside(first, _routes(first)), "tianshu", "天枢")
-    second, _options = _installed(tmp_path, "tianquan", workspace=second_workspace)
-    _attach(capsys, second, root, _moved_aside(second, _routes(second)), "tianquan", "天权")
+    first, _options = _installed(tmp_path, "agent3")
+    _attach(capsys, first, root, _moved_aside(first, _routes(first)), "agent3", "天三")
+    second, _options = _installed(tmp_path, "agent2", workspace=second_workspace)
+    _attach(capsys, second, root, _moved_aside(second, _routes(second)), "agent2", "天二")
     return first, second
 
 
 CLIENT_NAMES = {"codex": "Codex", "claude-code": "Claude Code", "workbuddy": "WorkBuddy", "dsh": "DeepSeek Harness"}
 
 
-def _attach_client(capsys, root, home, *, host="claude-code", like="all", capture="tianshu", routes=None):
+def _attach_client(capsys, root, home, *, host="claude-code", like="all", capture="agent3", routes=None):
     """``attach`` for a client entry named after its host; ``like`` or ``capture`` None leaves that option out."""
     argv = ["attach", "--host", host, "--instance-root", str(home), "--root", str(root)]
     argv += ["--entry", host, "--display-name", CLIENT_NAMES[host]]
@@ -357,11 +357,11 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
     assert (root / "runtime-config.json").read_bytes() == worker_before, "an unchanged worker is not restarted"
     assert read_attachment(client).host == "claude-code"
     config = load_shared_client(client, "claude-code")
-    tianshu_owner = next(
+    agent3_owner = next(
         row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private"
     )
-    assert config.audience.capture_scope_id == tianshu_owner["capture_scope_id"]
-    assert config.audience.allowed_scope_ids == frozenset(tianshu_owner["allowed_scope_ids"])
+    assert config.audience.capture_scope_id == agent3_owner["capture_scope_id"]
+    assert config.audience.allowed_scope_ids == frozenset(agent3_owner["allowed_scope_ids"])
     entry = load_config(client / "scope-recall" / "runtime-config.json")
     assert entry.binding == config.to_binding() and entry.host_adapter == "claude-code"
     assert (entry.session_id, entry.owner_id) == ("claude-code-background", "claude-code-scope-recall")
@@ -472,7 +472,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
         "--grants-like",
         "all",
         "--capture-like",
-        "tianshu",
+        "agent3",
         "--runtime-config-from",
         str(first / "scope-recall" / "runtime-config.json"),
     )
@@ -757,9 +757,9 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
     original = json.loads(manifest.read_text(encoding="utf-8"))
     edit = tmp_path / "TEST-grants.json"
     code, shown = _run(capsys, "grants", "--instance-root", str(first), "--out", str(edit))
-    assert (code, shown["status"], shown["entry_id"]) == (0, "shown", "tianshu"), shown
+    assert (code, shown["status"], shown["entry_id"]) == (0, "shown", "agent3"), shown
     document = json.loads(edit.read_text(encoding="utf-8"))
-    record = next(entry for entry in original["entries"] if entry["entry_id"] == "tianshu")
+    record = next(entry for entry in original["entries"] if entry["entry_id"] == "agent3")
     assert {key: document[key] for key in ("owner_principals", "audience_scopes", "audiences")} == {
         key: record[key] for key in ("owner_principals", "audience_scopes", "audiences")
     }
@@ -773,7 +773,7 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
     assert _weixin(first).runtime_audience.capability_gaps, "the gateway DM binds no owner scope yet"
 
     owner = next(row for row in document["audiences"] if row["kind"] == "owner_private" and row["platform"] == "cli")
-    elsewhere = next(entry for entry in original["entries"] if entry["entry_id"] == "tianquan")["scope_ids"][0]
+    elsewhere = next(entry for entry in original["entries"] if entry["entry_id"] == "agent2")["scope_ids"][0]
     assert elsewhere not in owner["allowed_scope_ids"]
     document["owner_principals"].append({"platform": "weixin", "user_id": "TEST-wx-1"})
     owner["allowed_scope_ids"].append(elsewhere)  # the owner reads what the other entry's chats hold, writes as it did
@@ -815,7 +815,7 @@ def test_an_attached_entry_s_grants_change_from_an_edited_copy_and_back(tmp_path
 
     code, back = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", applied["rollback"], "--apply")
     assert (code, back["status"]) == (0, "applied"), back
-    restored = next(entry for entry in read_shared_payload(root)["entries"] if entry["entry_id"] == "tianshu")
+    restored = next(entry for entry in read_shared_payload(root)["entries"] if entry["entry_id"] == "agent3")
     assert restored == record and _weixin(first).runtime_audience.capability_gaps
     code, same = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", applied["rollback"])
     assert (code, same["status"]) == (0, "unchanged"), same
@@ -854,7 +854,7 @@ def test_a_grants_apply_that_fails_puts_back_what_it_replaced_and_a_second_run_f
     assert (code, applied["status"]) == (0, "applied")
     copy = Path(applied["receipt"]).with_suffix("") / f"entry-{entry.name}"
     entry.write_bytes(copy.read_bytes())  # as a run that died between the two writes left it
-    document = tmp_path / "TEST-grants-tianshu.json"
+    document = tmp_path / "TEST-grants-agent3.json"
     code, again = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(document))
     assert (code, again["status"], again["entry_runtime_config_rebound"]) == (0, "preview", True), again
     code, again = _run(capsys, "grants", "--instance-root", str(first), "--grants-from", str(document), "--apply")
@@ -887,8 +887,8 @@ def test_a_grants_change_started_while_another_is_written_cannot_undo_it(tmp_pat
     code, applied = _run(capsys, *apply_second)
     assert (code, applied["status"]) == (0, "applied"), applied
     entries = {entry["entry_id"]: entry for entry in read_shared_payload(root)["entries"]}
-    assert {"platform": "weixin", "user_id": "TEST-wx-1"} in entries["tianshu"]["owner_principals"]
-    assert mine in entries["tianquan"]["audiences"][0]["allowed_scope_ids"]
+    assert {"platform": "weixin", "user_id": "TEST-wx-1"} in entries["agent3"]["owner_principals"]
+    assert mine in entries["agent2"]["audiences"][0]["allowed_scope_ids"]
 
 
 def test_two_rows_on_one_route_are_each_a_grant(tmp_path, capsys, root):
@@ -981,7 +981,7 @@ def test_a_grants_change_is_refused_whole_when_any_of_it_is_wrong(tmp_path, caps
         assert code == 2 and needle in result["error"], result
         assert manifest.read_bytes() == before, "nothing is written"
 
-    refused(lambda d: d.update(entry_id="tianquan"), "another entry")
+    refused(lambda d: d.update(entry_id="agent2"), "another entry")
     refused(lambda d: d.update(extra=1), "holds schema")
     refused(lambda d: d["audiences"].append(dict(owner, platform="weixin", user_id="unknown")), "explicit exact")
     refused(lambda d: d["audiences"].append(dict(owner, writable_scope_ids=["TEST-not-read"])), "subset")
@@ -1133,11 +1133,11 @@ def test_a_client_entry_s_grants_change_and_keep_its_own_route(tmp_path, capsys,
     has to read the other's owner scope first, which is a grants change too.  Then the client's own row reads more."""
     first, second = _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-elsewhere")
     payload = read_shared_payload(root)
-    mine = next(e for e in payload["entries"] if e["entry_id"] == "tianshu")["audience_scopes"]["owner_private"]
-    elsewhere = next(e for e in payload["entries"] if e["entry_id"] == "tianquan")["audience_scopes"]["owner_private"]
+    mine = next(e for e in payload["entries"] if e["entry_id"] == "agent3")["audience_scopes"]["owner_private"]
+    elsewhere = next(e for e in payload["entries"] if e["entry_id"] == "agent2")["audience_scopes"]["owner_private"]
     client = (tmp_path / "TEST-claude-code-home").resolve()
-    code, result = _attach_client(capsys, root, client, like="tianshu", capture="tianshu")
-    assert code == 2, "tianquan's owner rows do not read tianshu's scope"
+    code, result = _attach_client(capsys, root, client, like="agent3", capture="agent3")
+    assert code == 2, "agent2's owner rows do not read agent3's scope"
 
     def read_mine(document):
         for row in document["audiences"]:
@@ -1146,7 +1146,7 @@ def test_a_client_entry_s_grants_change_and_keep_its_own_route(tmp_path, capsys,
 
     code, applied = _granted(capsys, tmp_path, second, read_mine)
     assert (code, applied["status"]) == (0, "applied"), applied
-    code, result = _attach_client(capsys, root, client, like="tianshu", capture="tianshu")
+    code, result = _attach_client(capsys, root, client, like="agent3", capture="agent3")
     assert code == 0, result
     assert elsewhere not in load_shared_client(client, "claude-code").audience.allowed_scope_ids
     code, shown = _run(capsys, "grants", "--instance-root", str(client))
@@ -1191,10 +1191,10 @@ def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root
     client = (tmp_path / "TEST-claude-code-home").resolve()
     client.mkdir()
     code, result = _attach_client(capsys, root, client)
-    assert code == 2 and "not read by these owner rows: tianquan:cli" in result["error"], result
-    code, result = _attach_client(capsys, root, client, like="tianshu,nobody")
+    assert code == 2 and "not read by these owner rows: agent2:cli" in result["error"], result
+    code, result = _attach_client(capsys, root, client, like="agent3,nobody")
     assert code == 2 and "nobody" in result["error"], result
-    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["tianshu", "tianquan"]
+    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["agent3", "agent2"]
     assert read_attachment(client) is None
     with pytest.raises(InstallError):
         apply_install(
@@ -1795,14 +1795,14 @@ def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(t
         }
         return routes
 
-    first, _options = _installed(tmp_path, "tianshu")
+    first, _options = _installed(tmp_path, "agent3")
     code, result = _attach(
-        capsys, first, root, _moved_aside(first, with_table(first, "scope_recall")), "tianshu", "天枢"
+        capsys, first, root, _moved_aside(first, with_table(first, "scope_recall")), "agent3", "天三"
     )
     assert code == 0, result
-    second, _options = _installed(tmp_path, "tianji")
+    second, _options = _installed(tmp_path, "agent1")
     code, result = _attach(
-        capsys, second, root, _moved_aside(second, with_table(second, "source_embeddings")), "tianji", "天姬"
+        capsys, second, root, _moved_aside(second, with_table(second, "source_embeddings")), "agent1", "天一"
     )
     assert code == 0, result
     worker = load_config(root / "runtime-config.json").vector
@@ -1873,7 +1873,7 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
         "--grants-like",
         "all",
         "--capture-like",
-        "tianshu",
+        "agent3",
         "--runtime-config-from",
         str(first / "scope-recall" / "runtime-config.json"),
     )
@@ -1980,11 +1980,13 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
         ("- [\n", "is not YAML dsh can read"),
         ("- insert:\n    - id: scope-recall\n      name: TEST-another\n", "already has a row scope-recall"),
         (
-            "- insert:\n    - id: TEST-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: scope-recall\n",
+            "- insert:\n    - id: TEST-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n"
+            "      config:\n        serverName: scope-recall\n",
             "already has an MCP server named scope-recall",
         ),
         (
-            "# SCOPE_RECALL_DSH_START (scope-recall 3.7.0 for C:/TEST/another-entry; apply-uninstall takes this block out)\n"
+            "# SCOPE_RECALL_DSH_START (scope-recall 3.7.0 for C:/TEST/another-entry; "
+            "apply-uninstall takes this block out)\n"
             "- insert:\n    - id: scope-recall\n      name: TEST\n# SCOPE_RECALL_DSH_END\n",
             "another Scope Recall entry",
         ),

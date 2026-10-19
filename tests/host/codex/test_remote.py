@@ -49,13 +49,13 @@ def store(tmp_path, still_clocks):
     """
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
-    home = tmp_path / "TEST-tianshu-home"
+    home = tmp_path / "TEST-agent3-home"
     home.mkdir()
     attach_shared_entry(
         root,
         build_installation_manifest(home, agent_id=AGENT, user_id="TEST-owner", agent_workspace="TEST-workspace"),
-        entry_id="tianshu",
-        display_name="天枢",
+        entry_id="agent3",
+        display_name="天三",
         now=NOW,
     )
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
@@ -579,7 +579,7 @@ def test_the_hook_answers_in_ascii_whatever_the_code_page(tmp_path, monkeypatch,
 
     config = _client(tmp_path, "claude-code", _free_port())
     recalled = {
-        "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST 天枢记得 QX-17。"}
+        "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST 天三记得 QX-17。"}
     }
     monkeypatch.setattr(remote_client, "run_hook", lambda *args, **kwargs: recalled)
     monkeypatch.setattr(remote_client.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(b"{}")})())
@@ -1652,7 +1652,8 @@ WB_NOTICE = "TEST Authentication required. Please use /login command to sign in 
 
 
 def _remote_workbuddy(store, tmp_path, monkeypatch, post):
-    """A WorkBuddy on another machine, its entry beside the store's others, its posts handled by ``post``; its record."""
+    """A WorkBuddy on another machine, its entry beside the store's others, its posts handled by ``post``;
+    its record."""
     root, _homes = store
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
     home = tmp_path / "TEST-workpc-workbuddy-home"

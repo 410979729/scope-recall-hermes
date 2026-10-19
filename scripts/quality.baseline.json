@@ -1098,9 +1098,6 @@
    "E501": 1,
    "F841": 1
   },
-  "tests/contract/test_recall_row_crossings.py": {
-   "E501": 2
-  },
   "tests/contract/test_recall_scope.py": {
    "E501": 1,
    "UP017": 15
@@ -1117,9 +1114,6 @@
   },
   "tests/contract/test_running_code.py": {
    "UP017": 5
-  },
-  "tests/contract/test_runtime_auxiliary.py": {
-   "E501": 2
   },
   "tests/contract/test_settle_window_wake.py": {
    "B905": 1,
@@ -1159,12 +1153,10 @@
    }
   },
   "tests/host/codex/test_remote.py": {
-   "E501": 1,
    "UP017": 7
   },
   "tests/host/codex/test_shared_client.py": {
    "B023": 2,
-   "E501": 5,
    "UP017": 7
   },
   "tests/host/hermes/test_a2a_prepare.py": {
@@ -1215,7 +1207,6 @@
    "B007": 1
   },
   "tests/packaging/test_shared_cli.py": {
-   "E501": 2,
    "PLR0915": {
     "test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own": 82
    }

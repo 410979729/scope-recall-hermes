@@ -307,7 +307,7 @@ class RetrievalPipeline:
 
     def _owner_view(self, context: SearchContext) -> OwnerView | None:
         """The question as the store's owner would ask it, when it names them and asks something besides
-        (``core/owner_view.py``); a question about the name alone ("Alice 是谁？") is read as asked."""
+        (``core/owner_view.py``); a question about the name alone ("NameOne 是谁？") is read as asked."""
         names = owner_names(self.policy.owner_names, context.trusted_context.source_principal)
         view = owner_view(context.query, names) if names else None
         return view if view is not None and meaningful_query_terms(view.bare) else None

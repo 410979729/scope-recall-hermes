@@ -240,38 +240,38 @@ def _self_preference(source, value):
 
 def test_verified_speakers_get_distinct_internal_subjects_in_a_shared_scope(app):
     core, ctx = app
-    alice = replace(
+    nameone = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-nameone"),
     )
     bob = replace(
         ctx,
         source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-bob"),
     )
-    alice_source = capture(core, alice, "我喜欢蓝色。")
-    alice_item = accept(core, alice, _self_preference(alice_source, "蓝色")).items[0]
+    nameone_source = capture(core, nameone, "我喜欢蓝色。")
+    nameone_item = accept(core, nameone, _self_preference(nameone_source, "蓝色")).items[0]
     bob_source = capture(core, bob, "我喜欢绿色。")
     bob_item = accept(core, bob, _self_preference(bob_source, "绿色")).items[0]
 
-    assert alice_item.state == bob_item.state == "active"
-    assert alice_item.ref != bob_item.ref
-    assert core.current_claim(ctx, alice_item.ref).payload["subject"] == "principal:TEST-alice"
+    assert nameone_item.state == bob_item.state == "active"
+    assert nameone_item.ref != bob_item.ref
+    assert core.current_claim(ctx, nameone_item.ref).payload["subject"] == "principal:TEST-nameone"
     assert core.current_claim(ctx, bob_item.ref).payload["subject"] == "principal:TEST-bob"
 
 
 def test_multiple_verified_speakers_cannot_jointly_authorize_one_self_claim(app):
     core, ctx = app
-    alice = replace(
+    nameone = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-nameone"),
     )
     bob = replace(
         ctx,
         source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-bob"),
     )
-    alice_source = capture(core, alice, "我喜欢蓝色。")
+    nameone_source = capture(core, nameone, "我喜欢蓝色。")
     bob_source = capture(core, bob, "我喜欢蓝色。")
-    proposal = _self_preference(alice_source, "蓝色")
+    proposal = _self_preference(nameone_source, "蓝色")
     proposal["evidence_spans"].append(
         {
             "source_ref": bob_source.ref,
@@ -279,7 +279,7 @@ def test_multiple_verified_speakers_cannot_jointly_authorize_one_self_claim(app)
             "quote": bob_source.event["content"],
         }
     )
-    result = accept(core, alice, proposal).items[0]
+    result = accept(core, nameone, proposal).items[0]
     history = core.claim_history(ctx, result.ref)
 
     assert result.state == "proposed"
@@ -289,21 +289,21 @@ def test_multiple_verified_speakers_cannot_jointly_authorize_one_self_claim(app)
 
 def test_default_conditional_and_one_turn_preferences_use_distinct_slots(app):
     core, ctx = app
-    alice = replace(
+    nameone = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-nameone"),
     )
     sources = (
-        capture(core, alice, "我平时喜欢简短回复。"),
-        capture(core, alice, "写小说时，我喜欢详细回复。"),
-        capture(core, alice, "这次我喜欢展开说明。"),
+        capture(core, nameone, "我平时喜欢简短回复。"),
+        capture(core, nameone, "写小说时，我喜欢详细回复。"),
+        capture(core, nameone, "这次我喜欢展开说明。"),
     )
     proposals = (
         _self_preference(sources[0], "简短回复"),
         {**_self_preference(sources[1], "详细回复"), "conditions": ["写小说时"]},
         {**_self_preference(sources[2], "展开说明"), "conditions": ["这次"]},
     )
-    items = [accept(core, alice, proposal).items[0] for proposal in proposals]
+    items = [accept(core, nameone, proposal).items[0] for proposal in proposals]
 
     states = [(item.state, core.claim_history(ctx, item.ref)[0].reason) for item in items]
     assert states == [
@@ -384,21 +384,21 @@ def test_unresolved_self_reports_are_isolated_and_never_become_current(app):
 
 def test_verified_first_person_correction_cannot_cross_speakers(app):
     core, ctx = app
-    alice = replace(
+    nameone = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-nameone"),
     )
     bob = replace(
         ctx,
         source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-bob"),
     )
-    source = capture(core, alice, "我喜欢蓝色。")
-    item = accept(core, alice, _self_preference(source, "蓝色")).items[0]
+    source = capture(core, nameone, "我喜欢蓝色。")
+    item = accept(core, nameone, _self_preference(source, "蓝色")).items[0]
 
     capture(core, bob, "我把喜欢改成绿色。", when="2026-09-04T12:00:00Z")
     assert core.current_claim(ctx, item.ref).payload["value_text"] == "蓝色"
 
-    capture(core, alice, "我把喜欢改成红色。", when="2026-09-05T12:00:00Z")
+    capture(core, nameone, "我把喜欢改成红色。", when="2026-09-05T12:00:00Z")
     current = core.current_claim(ctx, item.ref)
     assert current.payload["value_text"] == "红色"
     assert current.revision == 2

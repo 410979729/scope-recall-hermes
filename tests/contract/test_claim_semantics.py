@@ -146,8 +146,8 @@ def test_an_everyday_self_report_is_the_speaker_s():
         ("我妈不吃辣。", "不吃辣"),
         ("张三说：我不吃辣。", "不吃辣"),
         ("张三说：'我不吃辣'", "不吃辣"),
-        ("Alice said: 'I eat spicy food.'", "eat spicy food"),
-        ("Alice said I do not eat spicy food.", "do not eat spicy food"),
+        ("NameOne said: 'I eat spicy food.'", "eat spicy food"),
+        ("NameOne said I do not eat spicy food.", "do not eat spicy food"),
         ("我对象对花生过敏。", "对花生过敏"),
         ("我对象过敏。", "对象过敏"),
         ("我看不吃辣更健康。", "不吃辣"),
@@ -163,22 +163,22 @@ def test_an_everyday_self_report_is_the_speaker_s():
         ("张三说，我不吃辣。", "不吃辣"),
         ("张三表示，我不喝酒。", "不喝酒"),
         ("张三跟你说，我不吃辣。", "不吃辣"),
-        ("Alice sent a message that said, I never drink coffee.", "never drink coffee"),
-        ("Alice:\n- I eat spicy food.", "eat spicy food"),
+        ("NameOne sent a message that said, I never drink coffee.", "never drink coffee"),
+        ("NameOne:\n- I eat spicy food.", "eat spicy food"),
         ("儿子：\n- 我不喝牛奶。", "不喝牛奶"),
-        ("Alice:\nIn general I never drink coffee.", "never drink coffee"),
+        ("NameOne:\nIn general I never drink coffee.", "never drink coffee"),
         ("儿子：老实说，我不喝牛奶。", "不喝牛奶"),
-        ("Alice:\nMy preference is blue.", "blue"),
-        ("- Alice:\nMy preference is blue.", "blue"),
-        ("* Alice:\nMy preference is blue.", "blue"),
-        ("1. Alice:\nMy preference is blue.", "blue"),
-        ("- [10:32] Alice:\nMy preference is blue.", "blue"),
+        ("NameOne:\nMy preference is blue.", "blue"),
+        ("- NameOne:\nMy preference is blue.", "blue"),
+        ("* NameOne:\nMy preference is blue.", "blue"),
+        ("1. NameOne:\nMy preference is blue.", "blue"),
+        ("- [10:32] NameOne:\nMy preference is blue.", "blue"),
         ("- 儿子：\n我不喝牛奶。", "不喝牛奶"),
-        ("Alice:\nWell,\nin general I never drink coffee.", "never drink coffee"),
-        ("[10:32] Alice: I never drink coffee.", "never drink coffee"),
-        ("[10:32] Alice:\nI never drink coffee.", "never drink coffee"),
-        ("<alice> I never drink coffee.", "never drink coffee"),
-        ("<alice>\nI never drink coffee.", "never drink coffee"),
+        ("NameOne:\nWell,\nin general I never drink coffee.", "never drink coffee"),
+        ("[10:32] NameOne: I never drink coffee.", "never drink coffee"),
+        ("[10:32] NameOne:\nI never drink coffee.", "never drink coffee"),
+        ("<nameone> I never drink coffee.", "never drink coffee"),
+        ("<nameone>\nI never drink coffee.", "never drink coffee"),
         ("- The rumor that I eat spicy food is false.", "eat spicy food"),
         ("Son: I don't drink milk.", "don't drink milk"),
         ("他和我都不吃辣。", "不吃辣"),
@@ -200,28 +200,28 @@ def test_a_transcript_s_label_outside_the_quote_s_sentence_still_names_someone_e
     label are theirs."""
     preference = ("My preference is blue.", "blue")
     for text, (quote, value) in (
-        ("Alice:\nHello.\nMy preference is blue.", preference),
-        ("**Alice:**\nMy preference is blue.", preference),
-        ("**Alice**: hi\nMy preference is blue.", preference),
-        ("> Alice: hi\nMy preference is blue.", preference),
-        ("Alice (10:32):\nHello.\nMy preference is blue.", preference),
-        ("Alice sent this.\n```\nMy preference is blue.\n```", preference),
-        ("Alice sent this.\n~~~\nHi.\nMy preference is blue.\n~~~", preference),
+        ("NameOne:\nHello.\nMy preference is blue.", preference),
+        ("**NameOne:**\nMy preference is blue.", preference),
+        ("**NameOne**: hi\nMy preference is blue.", preference),
+        ("> NameOne: hi\nMy preference is blue.", preference),
+        ("NameOne (10:32):\nHello.\nMy preference is blue.", preference),
+        ("NameOne sent this.\n```\nMy preference is blue.\n```", preference),
+        ("NameOne sent this.\n~~~\nHi.\nMy preference is blue.\n~~~", preference),
         ("张三发来这段。\n> 你好。\n> 我不吃辣。", ("我不吃辣。", "不吃辣")),
-        ("Alice sent this.\n```\nMy preference is blue.\n```", ("```\nMy preference is blue.\n```", "blue")),
-        ("Alice sent this.\n~~~markdown\n```\nMy preference is blue.\n```\n~~~", preference),
-        ("Alice sent this.\n“Hello.\nMy preference is blue.\n”", preference),
-        ('Alice sent this.\n"Hello.\nMy preference is blue."', preference),
+        ("NameOne sent this.\n```\nMy preference is blue.\n```", ("```\nMy preference is blue.\n```", "blue")),
+        ("NameOne sent this.\n~~~markdown\n```\nMy preference is blue.\n```\n~~~", preference),
+        ("NameOne sent this.\n“Hello.\nMy preference is blue.\n”", preference),
+        ('NameOne sent this.\n"Hello.\nMy preference is blue."', preference),
         ("张三发来这段。\n「你好。\n我不吃辣。」", ("我不吃辣。", "不吃辣")),
-        ("Alice sent this.\n‘Hello.\nMy preference is blue.\n’", preference),
-        ("Alice sent this.\n‘I don’t mind.\nMy preference is blue.\n’", preference),
-        ("Alice sent this.\n‘The others’ choices are fine.\nMy preference is blue.\n’", preference),
-        ("Alice sent this.\n'Hello.\nMy preference is blue.\n'", preference),
-        ("Alice wrote ‘Hello.\nMy preference is blue.\n’", preference),
-        ("Alice wrote 'Hello.\nMy preference is blue.\n'", preference),
-        ("Alice sent ‘The users' choices include ‘blue’.\nMy preference is blue.\n’", preference),
-        ("Alice sent this.\n```\n```python\nMy preference is blue.\n```", preference),
-        ("[2026-10-10 Saturday] Alice Wonderland-Smith:\nMy preference is blue.", preference),
+        ("NameOne sent this.\n‘Hello.\nMy preference is blue.\n’", preference),
+        ("NameOne sent this.\n‘I don’t mind.\nMy preference is blue.\n’", preference),
+        ("NameOne sent this.\n‘The others’ choices are fine.\nMy preference is blue.\n’", preference),
+        ("NameOne sent this.\n'Hello.\nMy preference is blue.\n'", preference),
+        ("NameOne wrote ‘Hello.\nMy preference is blue.\n’", preference),
+        ("NameOne wrote 'Hello.\nMy preference is blue.\n'", preference),
+        ("NameOne sent ‘The users' choices include ‘blue’.\nMy preference is blue.\n’", preference),
+        ("NameOne sent this.\n```\n```python\nMy preference is blue.\n```", preference),
+        ("[2026-10-10 Saturday] NameOne SurnameThree-SurnameTwo:\nMy preference is blue.", preference),
     ):
         assert qualification(text, value=value, quote=quote).state == "proposed", text
     for owner_text in (
@@ -237,7 +237,7 @@ def test_a_transcript_s_label_outside_the_quote_s_sentence_still_names_someone_e
         "‘Hello.’\nMy preference is blue.",
         "The others’ choices are fine.\nMy preference is blue.",
         "'Hi.\nBye.'\nMy preference is blue.",
-        "Alice said ‘hi’.\nMy preference is blue.",
+        "NameOne said ‘hi’.\nMy preference is blue.",
         "It's done, and the students' books are back.\nMy preference is blue.",
         "‘The service runs’\nMy preference is blue.",
         "We call it 'Cypress' and use blue. My preference is blue.",
@@ -256,14 +256,14 @@ def test_a_name_ending_in_s_closes_before_the_writers_own_preference(opening, cl
     assert not in_pasted_text(own, quote)
     separate = f"We call it {opening}Blue Cypress{closing}. My preference is blue{tail}."
     assert qualification(separate, value="blue", quote="My preference is blue").state == "active"
-    reported = f"Alice wrote {opening}The users{closing} choices are fine and {quote}.{closing}"
+    reported = f"NameOne wrote {opening}The users{closing} choices are fine and {quote}.{closing}"
     assert in_pasted_text(reported, quote)
     assert qualification(reported, value="blue", quote=quote).state == "proposed"
 
 
 def test_a_possessive_inside_a_quotation_stays_open_through_a_nested_quote():
     """An inner quotation does not end the outer one at a plural possessive, so the quoted preference stays quoted."""
-    text = "Alice wrote 'The users' choices are fine and my preference is blue and the flag is 'on'.'"
+    text = "NameOne wrote 'The users' choices are fine and my preference is blue and the flag is 'on'.'"
     assert in_pasted_text(text, "my preference is blue")
     assert "my preference is blue" not in unquoted(text)
 

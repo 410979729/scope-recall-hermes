@@ -137,9 +137,11 @@ def test_what_counts_as_the_same_name():
     for expected, proposed in different:
         assert not candidate_name_matches(expected, proposed), (expected, proposed)
     # A predicate that repeats its subject is the same predicate without it; a negation never falls away with it.
-    said = ("issue comments need Joy's OK", "need Joy's OK")
+    said = ("issue comments need NameOne's OK", "need NameOne's OK")
     assert candidate_name_matches(*said, subject="issue comments")
     assert not candidate_name_matches(*said)
-    assert not candidate_name_matches("issue comments need Joy's OK", "do not need Joy's OK", subject="issue comments")
-    assert not candidate_name_matches("Joy吃辣", "不吃辣", subject="Joy")
+    assert not candidate_name_matches(
+        "issue comments need NameOne's OK", "do not need NameOne's OK", subject="issue comments"
+    )
+    assert not candidate_name_matches("NameOne吃辣", "不吃辣", subject="NameOne")
     assert not candidate_name_matches("prodigy plan", "igy plan", subject="prod")

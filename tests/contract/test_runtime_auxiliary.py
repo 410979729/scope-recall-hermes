@@ -231,11 +231,11 @@ def test_several_queries_go_in_one_request_in_their_order(tmp_path, monkeypatch)
     runtime.query_embedding._transport = FakeTransport(
         lambda **kwargs: pytest.fail("queries go on the query connection")
     )
-    first, second = runtime.query_embedding.embed_queries(["Joy 吃辣吗？", "我吃辣吗？"], remaining_seconds=2.0)
+    first, second = runtime.query_embedding.embed_queries(["NameOne 吃辣吗？", "我吃辣吗？"], remaining_seconds=2.0)
     assert transport.calls == 1
     texts = [request["content"]["parts"][0]["text"] for request in sent[0]["requests"]]
     # Normalised as every embedded text is (NFKC): the full-width question mark becomes "?".
-    assert texts == ["task: question answering | query: Joy 吃辣吗?", "task: question answering | query: 我吃辣吗?"]
+    assert texts == ["task: question answering | query: NameOne 吃辣吗?", "task: question answering | query: 我吃辣吗?"]
     assert (first[0], second[0]) == (0.01, 0.02)
     with pytest.raises(AuxiliaryModelError) as refused:
         runtime.query_embedding.embed_queries(["TEST", "sk-ant-api03-" + ("A" * 32)], remaining_seconds=2.0)
@@ -1131,8 +1131,10 @@ def test_import_modules_in_either_order():
     bootstrap = (
         "import importlib, importlib.util, sys; "
         f"root={str(root)!r}; "
-        "spec=importlib.util.spec_from_file_location('scope_recall',root+'/__init__.py',submodule_search_locations=[root]); "
-        "package=importlib.util.module_from_spec(spec); sys.modules['scope_recall']=package; spec.loader.exec_module(package); "
+        "spec=importlib.util.spec_from_file_location('scope_recall',root+'/__init__.py',"
+        "submodule_search_locations=[root]); "
+        "package=importlib.util.module_from_spec(spec); sys.modules['scope_recall']=package; "
+        "spec.loader.exec_module(package); "
     )
     for order in (("runtime.models", "runtime.auxiliary"), ("runtime.auxiliary", "runtime.models")):
         program = bootstrap + (

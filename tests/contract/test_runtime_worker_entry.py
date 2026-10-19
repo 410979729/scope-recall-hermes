@@ -466,16 +466,16 @@ def test_a_question_naming_the_owner_is_embedded_both_ways_in_one_request(tmp_pa
     store = _VectorsSearched()
     instance, binding = _vector_instance(tmp_path, store, embeddings)
     pipeline = instance.core.recall_pipeline
-    pipeline.policy = replace(pipeline.policy, owner_names=("Joy",))
+    pipeline.policy = replace(pipeline.policy, owner_names=("NameOne",))
     try:
-        result = pipeline.search(replace(_search_context(binding, 5.0), query="Joy 对辣的饮食偏好是什么？"))
+        result = pipeline.search(replace(_search_context(binding, 5.0), query="NameOne 对辣的饮食偏好是什么？"))
         assert not [gap for gap in result.gaps if gap.startswith("vector")], result.gaps
-        asked, first = "Joy 对辣的饮食偏好是什么？", "我对辣的饮食偏好是什么？"
+        asked, first = "NameOne 对辣的饮食偏好是什么？", "我对辣的饮食偏好是什么？"
         assert store.searches == [embeddings.vectors[asked], embeddings.vectors[first]], "each search its own vector"
         if batched:
-            assert embeddings.requests == [("Joy 对辣的饮食偏好是什么？", "我对辣的饮食偏好是什么？")]
+            assert embeddings.requests == [("NameOne 对辣的饮食偏好是什么？", "我对辣的饮食偏好是什么？")]
         else:
-            assert embeddings.requests == [("Joy 对辣的饮食偏好是什么？",), ("我对辣的饮食偏好是什么？",)]
+            assert embeddings.requests == [("NameOne 对辣的饮食偏好是什么？",), ("我对辣的饮食偏好是什么？",)]
     finally:
         instance.close()
 

@@ -209,10 +209,10 @@ another space, or one whose threshold was calibrated on it, keeps its own.
 ## `owner_names`
 
 A top-level list of the names the store's owner goes by, at most eight, each 2 to
-64 printable characters with no space at either end: `"owner_names": ["Alice", "艾丽丝"]`.
+64 printable characters with no space at either end: `"owner_names": ["NameOne", "名字一"]`.
 Optional; no installer writes it.
 
-An agent may ask about the owner by name, for example "What does Alice prefer?",
+An agent may ask about the owner by name, for example "What does NameOne prefer?",
 while relevant messages from the owner use the first person and omit the name.
 Such a question is searched by meaning twice: as asked, which finds what
 names the owner, and as the owner would ask it ("我对动画的运镜有什么要求？",
@@ -223,11 +223,11 @@ recall budget. The Gemini and OpenAI-compatible routes support this batching. By
 a candidate is admitted by the question as asked or by the question without the
 name, so a short question's other words are enough for an answer in the owner's
 own words. A question that names no listed name, or asks nothing besides the name
-("Alice 是谁？"), is recalled as asked.
+("NameOne 是谁？"), is recalled as asked.
 
 Besides this list, recall reads the name a host attests for the person asking, in
 reads only, never in a capture: a Hermes gateway passes the user's name for a
-verified person (Telegram's first and last name, such as `Alice Lee`), which gives
+verified person (Telegram's first and last name, such as `NameOne SurnameOne`), which gives
 the whole name and, when it has several words, the first: a middle name or a surname is as
 often someone else's. A name that looks like an account id (12 or more letters and
 digits with a digit among them) is not taken. Claude Code, Codex, WorkBuddy, dsh
@@ -235,9 +235,9 @@ and the remote clients attest no name: list it here in each of their runtime
 configs.
 
 A Latin-letter name is matched as a word of its own and with its case, so
-`Aliceville`, `alice-hub`, `/opt/Alice`, `C:\Alice` and the word "alice" are not
-the name, nor is the first word of another person's name (`Alice Smith`,
-`Alice SMITH`) unless the next word is a listed name too. Chinese runs words
+`NameOneville`, `nameone-hub`, `/opt/NameOne`, `C:\NameOne` and the word "nameone" are not
+the name, nor is the first word of another person's name (`NameOne SurnameTwo`,
+`NameOne SURNAMETWO`) unless the next word is a listed name too. Chinese runs words
 together, so a Chinese name is matched where what follows it goes on with a question about the person (a
 particle, a preposition, a common verb or adverb, a time: `王芳对…`, `王芳喜欢…`,
 `王芳的…`), and not where more characters run it on into someone's longer name

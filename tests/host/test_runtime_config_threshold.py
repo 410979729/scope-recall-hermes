@@ -182,12 +182,12 @@ def test_runtime_mapping_wires_the_owner_s_names(tmp_path):
         "session_id": "TEST-owner-session",
         "allowed_scope_ids": ["TEST-owner-scope"],
         "auxiliary": {"external_embedding": False, "external_consolidation": False},
-        "owner_names": ["Joy", "乔伊"],
+        "owner_names": ["NameOne", "名字一"],
     }
     instance = build_runtime_instance(RuntimeInstanceConfig.from_mapping(raw))
     try:
-        assert instance.core.recall_pipeline.policy.owner_names == ("Joy", "乔伊")
+        assert instance.core.recall_pipeline.policy.owner_names == ("NameOne", "名字一")
     finally:
         instance.close()
     with pytest.raises(ContractError):
-        build_runtime_instance(RuntimeInstanceConfig.from_mapping(dict(raw, owner_names="Joy")))
+        build_runtime_instance(RuntimeInstanceConfig.from_mapping(dict(raw, owner_names="NameOne")))

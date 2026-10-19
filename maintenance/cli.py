@@ -346,7 +346,7 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="PLATFORM=LOGIN",
-        help="Hermes only, repeatable: approve a dashboard login on a local surface (desktop=basic:alice) as the "
+        help="Hermes only, repeatable: approve a dashboard login on a local surface (desktop=basic:nameone) as the "
         "owner's own. The host passes the login as the session's user; without this such a session binds no "
         "memory. Whoever holds that login gets the owner's private memory there, from any machine that reaches "
         "the host.",

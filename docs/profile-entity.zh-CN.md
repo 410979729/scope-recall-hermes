@@ -116,7 +116,7 @@
 ```json
 {
   "direction": "incoming",
-  "subject": "TEST-alice",
+  "subject": "TEST-nameone",
   "predicate": "负责",
   "value_text": "TEST-project",
   "ref": "claim-…",

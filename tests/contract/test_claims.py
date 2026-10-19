@@ -1402,10 +1402,10 @@ def test_negative_and_questioned_operations_do_not_change_current(app, raw):
         ("张三称 TEST-project 配色换成银色。", "银色"),
         ("张三提到 TEST-project 配色换成银色了。", "银色"),
         ("张三认为 TEST-project 配色应该换成银色。", "银色"),
-        ("Alice: TEST-project 配色 should change to 银色.", "银色"),
-        ("Alice claims TEST-project 配色 should switch to 银色.", "银色"),
-        ("@alice: TEST-project 配色改成银色。", "银色"),
-        ("Alice (PM): TEST-project 配色改成银色。", "银色"),
+        ("NameOne: TEST-project 配色 should change to 银色.", "银色"),
+        ("NameOne claims TEST-project 配色 should switch to 银色.", "银色"),
+        ("@nameone: TEST-project 配色改成银色。", "银色"),
+        ("NameOne (PM): TEST-project 配色改成银色。", "银色"),
         ("欧阳明明：TEST-project 配色换成银色。", "银色"),
         ("司马懿：TEST-project 配色换成银色。", "银色"),
         ("> TEST-project 配色改成银色。", "银色"),
@@ -1490,10 +1490,10 @@ def test_a_replacement_that_names_more_than_a_value_is_left_for_the_person_to_se
         ("库里只有这一句：TEST-project 配色是银色。", "active"),
         ("记住：TEST-project 配色是银色。", "active"),
         ("Remember: TEST-project 配色 is 银色.", "active"),
-        ("Alice (PM): TEST-project 配色是银色。", "proposed"),
-        ("@alice: TEST-project 配色是银色。", "proposed"),
+        ("NameOne (PM): TEST-project 配色是银色。", "proposed"),
+        ("@nameone: TEST-project 配色是银色。", "proposed"),
         ("欧阳明明：TEST-project 配色是银色。", "proposed"),
-        ("Alice: I prefer TEST-project 配色 银色.", "proposed"),
+        ("NameOne: I prefer TEST-project 配色 银色.", "proposed"),
         ("INFO: TEST-project 配色是银色。", "active"),
         ("status: TEST-project 配色是银色。", "active"),
         ("Value: TEST-project 配色是银色。", "active"),
@@ -1508,16 +1508,16 @@ def test_a_claim_in_words_given_to_someone_else_is_not_the_person_s(app, raw, st
 
 
 def test_a_labelled_third_party_neither_ends_nor_retracts_a_value(app):
-    """Alice (PM)'s "not Jenkins any more" is her word, not the person's, so Jenkins stays; nor does her 不再使用
+    """NameOne (PM)'s "not Jenkins any more" is her word, not the person's, so Jenkins stays; nor does her 不再使用
     retract anything."""
     core, ctx = app
     jenkins = _stated(core, ctx, "The TEST-project CI service is Jenkins.", "Jenkins")
-    text = "Alice (PM): The TEST-project CI service is not Jenkins any more."
+    text = "NameOne (PM): The TEST-project CI service is not Jenkins any more."
     denial = _stated(core, ctx, text, "not Jenkins", _LATER)
     assert (denial.state, core.claim_history(ctx, jenkins.ref)[-1].reason) == ("proposed", "other_speaker")
     assert core.current_claim(ctx, jenkins.ref).payload["value_text"] == "Jenkins"
     item, _ = initial(core, ctx)
-    capture(core, ctx, "Alice (PM): 不再使用 TEST-project 配色蓝色。", when=_LATER)
+    capture(core, ctx, "NameOne (PM): 不再使用 TEST-project 配色蓝色。", when=_LATER)
     current = core.current_claim(ctx, item.ref)
     assert current is not None and current.payload["value_text"] == "蓝色"
 

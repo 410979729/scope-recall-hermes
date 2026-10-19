@@ -67,7 +67,7 @@ def normalize_local_platforms(values: object) -> tuple[str, ...]:
 
 
 def normalize_owner_logins(values: object) -> tuple[tuple[str, str], ...]:
-    """Dashboard logins an installer approves as the owner's own, each on one local surface: ``desktop=basic:alice``.
+    """Dashboard logins an installer approves as the owner's own, each on one local surface: ``desktop=basic:nameone``.
 
     The host passes a login there as the session's ``user_id`` (``<provider>:<user>``) and names no
     chat.  Approving one is the owner principal ``(platform, login)``, as approving the surface for a
@@ -87,7 +87,7 @@ def normalize_owner_logins(values: object) -> tuple[tuple[str, str], ...]:
         ):
             raise HermesIdentityError(
                 f"an owner login is <platform>=<login>, the platform one of {sorted(LOCAL_PLATFORMS)} and the "
-                "login exactly as the host sends it, such as desktop=basic:alice"
+                "login exactly as the host sends it, such as desktop=basic:nameone"
             )
         if (platform, login) not in result:
             result.append((platform, login))
