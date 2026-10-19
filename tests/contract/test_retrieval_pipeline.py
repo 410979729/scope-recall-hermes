@@ -514,6 +514,7 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
 def test_P08_auto_lexical_pool_spends_its_limit_on_deliverable_sources(app):
     """Automatic suppression is applied before the bounded lexical pool; history keeps suppressed sources."""
     from scope_recall.core.retrieval_storage import RetrievalStorage
+
     from tests.contract.test_deletion import authorize, request
 
     core, ctx = app
@@ -547,8 +548,9 @@ def test_P08_auto_lexical_pool_spends_its_limit_on_deliverable_sources(app):
 def test_P08_auto_claim_pool_spends_its_scan_limit_on_deliverable_claims(app, monkeypatch):
     """A suppressed claim cannot consume the bounded automatic prefilter before its live sibling is scored."""
     from scope_recall.core import retrieval_storage
-    from tests.contract.test_deletion import authorize, request
+
     from tests.contract.test_claims import accept, draft
+    from tests.contract.test_deletion import authorize, request
 
     core, ctx = app
     core.test_sequence = itertools.count(1)
@@ -556,7 +558,11 @@ def test_P08_auto_claim_pool_spends_its_scan_limit_on_deliverable_claims(app, mo
         core, ctx, "TEST-project 配色 蓝色。", key="TEST-p08/suppressed-claims/live", when="2026-09-01T12:00:00Z"
     )
     hidden_source = capture(
-        core, ctx, "TEST-project cobalt 状态 配色。", key="TEST-p08/suppressed-claims/hidden", when="2026-09-01T12:01:00Z"
+        core,
+        ctx,
+        "TEST-project cobalt 状态 配色。",
+        key="TEST-p08/suppressed-claims/hidden",
+        when="2026-09-01T12:01:00Z",
     )
     live = accept(
         core, ctx, draft(live_source, "蓝色", subject="TEST-project", predicate="配色")
