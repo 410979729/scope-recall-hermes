@@ -1095,6 +1095,22 @@ class WorkItems:
             .fetchone()[0]
         )
 
+    def rebuild_lost_vectors(self, *, now: str) -> int:
+        """Requeue prior embeddings after restoring a store without its vectors.
+
+        The restore owns an unopened destination. Previously completed or leased
+        embeddings become pending with fresh leases; expired outputs stay expired
+        and failed work keeps its retry history. Already pending work also counts
+        toward the restore receipt.
+        """
+        self._tx._check(write=True).execute(
+            f"""UPDATE work_items AS w SET state='pending',attempt=0,available_at=?,
+                lease_token=lease_token+1,lease_owner=NULL,lease_until=NULL,last_error_code=NULL
+                WHERE w.work_type='embed' AND w.state IN ('done','leased') AND {_NOT_EXPIRED}""",
+            (now,),
+        )
+        return self.embed_queue()["pending"]
+
     def start_respace(self, space_id: str, *, now: str, restart: bool = False) -> dict:
         """Start a run into ``space_id`` over every embedding done so far, from the newest down (``respace_refusal``
         says when it may).  Work queued after the start is embedded into the new space as it comes and lies above the

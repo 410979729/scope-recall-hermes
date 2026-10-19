@@ -82,6 +82,12 @@ def _restore(argv: list[str]) -> int:
     return main(argv[1:])
 
 
+def _backup_cli_entry(argv: list[str]) -> int:
+    from .backup_cli import main
+
+    return main(argv)
+
+
 _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
@@ -98,6 +104,7 @@ _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "entries": ("list a shared store's entries and when each was last heard from", _shared),
     "import-entry": ("copy an entry's own store, moved aside at attach, into its shared store", _shared),
     "resident": ("see or stop an entry's resident prompt recall server, as before a package upgrade", _resident),
+    "backup": ("create or verify consistent snapshot or full backup bundle", _backup_cli_entry),
     "restore": ("go back to a snapshot backup took, keeping every deletion made since", _restore),
 }
 
@@ -679,7 +686,6 @@ _COMMANDS: tuple[
         _add_respace_arguments,
         _respace_embeddings,
     ),
-    ("backup", "create a new consistent SQLite snapshot and manifest", _add_backup_arguments, _backup),
     ("plan-install", None, _add_install_arguments, _plan_install),
     ("apply-install", None, _add_install_arguments, _apply_install),
     ("doctor", None, _add_doctor_arguments, _doctor),

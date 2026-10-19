@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_format",
+    "product_version",
+    "schema_version",
+    "application_id",
+    "created_at_utc",
+    "source_machine",
+    "with_vectors",
+    "entries",
+    "secrets_redacted_count",
+    "files",
+    "manifest_sha256"
+  ],
+  "properties": {
+    "bundle_format": {
+      "type": "string",
+      "const": "scope-recall-backup-bundle/1"
+    },
+    "product_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "application_id": {
+      "type": "integer"
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_machine": {
+      "type": "string"
+    },
+    "with_vectors": {
+      "type": "boolean"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entry_id",
+          "display_name",
+          "host",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "entry_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "first_seen": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "secrets_redacted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256",
+          "size_bytes"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

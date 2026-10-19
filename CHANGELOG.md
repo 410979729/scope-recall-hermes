@@ -4,7 +4,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [3.11.3] - 2026-10-19
 
-The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change needs, the design and code rules, the checks before a merge and how releases are cut. Examples in the documentation and code comments use generic names; comments and documents state their constraints and reasons without measurements from particular stores or review history; the evaluation notes under `verification/G0/` are removed. Nothing changes for an installation.
+The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change needs, the design and code rules, the checks before a merge and how releases are cut. Examples in the documentation and code comments use generic names; comments and documents state their constraints and reasons without measurements from particular stores or review history; the evaluation notes under `verification/G0/` are removed. Nothing changes for an installation. Full backup bundles package a consistent database snapshot, redacted configurations, retained attachments, queues and manifests, with disaster recovery restoring to a fresh destination while rewriting paths, replaying deletion mirrors, and queueing background vector rebuilds when vectors are omitted.
 
 ## [3.11.2] - 2026-10-18
 

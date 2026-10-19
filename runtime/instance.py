@@ -43,6 +43,7 @@ from .validation import (
     strict_float,
     utc_now,
 )
+from .backup_upkeep import backup_if_due
 from .vector_retention import expire_if_due
 from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
 from .worker_launch import failure_reason
@@ -491,6 +492,16 @@ class RuntimeInstance:
                 available_seconds=max(0.0, deadline - time.monotonic()),
             )
         )
+        self.backup_upkeep = backup_if_due(
+            self.core.storage,
+            self.config,
+            available_seconds=max(0.0, deadline - time.monotonic()),
+        )
+        if (self.backup_upkeep or {}).get("outcome") == "failed":
+            self.background_gaps = (
+                *self.background_gaps,
+                f"backup_failed:{self.backup_upkeep.get('error', 'unknown')}",
+            )
         from ..core.worker import WorkerConfig, drain_worker  # only a process that drains loads the worker
 
         model, candidate = self._consolidation_ports(consolidation)

@@ -810,10 +810,16 @@ class SQLiteStorage:
             # for the writer lease. Recheck after acquiring the transaction.
             if not restoring and restore_pending(self.binding.data_directory):
                 raise ContractError("RESTORE_UNVERIFIED")
+            # Derived transaction views share this SQLite connection. Reading
+            # its durable sequence also excludes rolled-back savepoint writes.
+            deletion_sequence = tx.deletions.last_sequence() if writable else 0
             yield tx
             if writable:
                 tx._assert_committable()
+                mirror = tx.deletions.last_sequence() != deletion_sequence
                 conn.commit()
+                if mirror:
+                    self._after_commit_deletions()
             else:
                 conn.rollback()
         except BaseException as exc:
@@ -827,6 +833,18 @@ class SQLiteStorage:
         finally:
             tx._finish()
             self._close(conn, original)
+
+    def _after_commit_deletions(self) -> None:
+        """Safely trigger deletion ledger mirror append after transaction commit.
+
+        Failures in the mirror write never raise, block, or roll back the committed deletion.
+        """
+        try:
+            from .deletion_mirror import mirror_committed_deletions
+
+            mirror_committed_deletions(self.binding.data_directory, self.path, [])
+        except Exception:  # noqa: BLE001
+            pass
 
     def write(self, context: TrustedContext, *, remaining_seconds: float | None = None):
         return self._transaction(context, writable=True, remaining_seconds=remaining_seconds)

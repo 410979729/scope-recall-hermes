@@ -33,6 +33,7 @@ from .doctor_report import DoctorReport, HostChoice, record_check
 from .doctor_store import (
     check_backlog,
     check_candidates,
+    check_deletion_mirror,
     check_embedding_health,
     check_embedding_respace,
     check_footprint,
@@ -812,6 +813,7 @@ def run_doctor(
         check_model_output(report)
         check_ledger(report)
         check_owner_words(report, host, data_directory, report.shared_store.get("entry_id"))
+        check_deletion_mirror(report, data_directory)
         _classify_status(report)
     check_index(report, data_directory, store_readable=readable, config=config)
     return report

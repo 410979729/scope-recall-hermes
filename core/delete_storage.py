@@ -93,6 +93,14 @@ class Deletions:
     def __init__(self, tx):
         self._tx = tx
 
+    def last_sequence(self) -> int:
+        """Return the last operation row in this transaction without reading bodies.
+
+        Operations are retained for replay. Their SQLite row order lets the
+        owning transaction notice inserts through any view of its connection.
+        """
+        return self._tx._check().execute("SELECT coalesce(max(rowid),0) FROM deletion_operations").fetchone()[0]
+
     def target(self, ref: str) -> DeleteTarget:
         conn, ctx = self._tx._check(), self._tx.context
         # No target body is returned during eligibility/ownership checks.
