@@ -33,6 +33,7 @@ from .schema import (
     upgrade_1107,
     upgrade_1108,
     upgrade_1109,
+    upgrade_1110,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -107,6 +108,18 @@ class Transaction:
         #: transaction.
         self.__memo: dict | None = None if writable else {}
         self.__memo_bytes = 0
+        self.__parent: Transaction | None = None
+
+    def with_context(self, context: TrustedContext, *, writable: bool = False) -> Transaction:
+        """Borrow this transaction for an authorized partition, without widening its scopes or lifetime."""
+        connection = self._check(write=writable)
+        if context.binding != self.context.binding or not context.allowed_scope_ids <= self.context.allowed_scope_ids:
+            raise ContractError("ACCESS_DENIED", "transaction_scope")
+        view = Transaction(connection, context, writable=writable)
+        view.__parent = self
+        if self.__writable:
+            view.__memo = None
+        return view
 
     def entry_label(self, entry_id: str) -> dict[str, str] | None:
         """The ``{id, name}`` a reader is shown for a source's entry, or None.
@@ -124,6 +137,8 @@ class Transaction:
         return dict(label) if label is not None else None
 
     def _check(self, *, write: bool = False) -> sqlite3.Connection:
+        if self.__parent is not None:
+            self.__parent._check(write=write)
         if not self.__active or self.__poisoned:
             raise ContractError("STORAGE_UNAVAILABLE", "transaction_closed")
         if write and not self.__writable:
@@ -650,6 +665,14 @@ class SQLiteStorage:
                 raise
             _cleanup_error(original, cleanup, "close")
 
+    def _upgrade_schema(self, conn: sqlite3.Connection) -> None:
+        """Apply each supported migration in order after checking its input identity."""
+        migrations = (upgrade_1105, upgrade_1106, upgrade_1107, upgrade_1108, upgrade_1109, upgrade_1110)
+        for version, migrate in zip(UPGRADE_CHAIN, migrations, strict=True):
+            if conn.execute("PRAGMA user_version").fetchone()[0] == version:
+                self.verify(conn, expected_schema=version)
+                migrate(conn)
+
     def initialize(self) -> StoreStatus:
         conn = self._open("rwc")
         original = None
@@ -664,21 +687,7 @@ class SQLiteStorage:
             conn.execute("BEGIN IMMEDIATE")
             exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone()
             if exists:
-                if conn.execute("PRAGMA user_version").fetchone()[0] == 1105:
-                    self.verify(conn, expected_schema=1105)
-                    upgrade_1105(conn)
-                if conn.execute("PRAGMA user_version").fetchone()[0] == 1106:
-                    self.verify(conn, expected_schema=1106)
-                    upgrade_1106(conn)
-                if conn.execute("PRAGMA user_version").fetchone()[0] == 1107:
-                    self.verify(conn, expected_schema=1107)
-                    upgrade_1107(conn)
-                if conn.execute("PRAGMA user_version").fetchone()[0] == 1108:
-                    self.verify(conn, expected_schema=1108)
-                    upgrade_1108(conn)
-                if conn.execute("PRAGMA user_version").fetchone()[0] == 1109:
-                    self.verify(conn, expected_schema=1109)
-                    upgrade_1109(conn)
+                self._upgrade_schema(conn)
                 self.verify(conn)
             else:
                 if (

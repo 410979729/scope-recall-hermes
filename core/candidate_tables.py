@@ -397,6 +397,37 @@ class CandidateTables:
             .rowcount
         )
 
+    def _requeue_suppressed(self, candidate, digest, rule_version, epoch, now) -> int | None:
+        """Resume the unchanged, unasked question retired by a reversible block.
+
+        An attempted model call keeps its fence. Reusing the existing work item
+        also advances its lease token so no pre-suppression lease can complete.
+        """
+        conn = self._write()
+        row = conn.execute(
+            """SELECT evaluation_id,work_id FROM candidate_evaluations
+            WHERE candidate_ref=? AND candidate_revision=? AND evidence_fingerprint=? AND rule_version=?
+            AND state='obsolete' AND reason='authority_revoked' AND model_attempted_at IS NULL""",
+            (candidate.ref, candidate.revision, digest, rule_version),
+        ).fetchone()
+        if row is None:
+            return None
+        changed = conn.execute(
+            """UPDATE work_items SET state='pending',available_at=?,attempt=0,
+            lease_token=lease_token+1,lease_owner=NULL,lease_until=NULL,last_error_code=NULL
+            WHERE work_id=? AND state='obsolete' AND last_error_code='authority_revoked'""",
+            (now, row["work_id"]),
+        ).rowcount
+        if not changed:
+            return None
+        conn.execute(
+            """UPDATE candidate_evaluations SET state='queued',reason='suppression_released',
+            memory_epoch=?,completed_at=NULL,failure_code=NULL WHERE evaluation_id=?""",
+            (epoch, row["evaluation_id"]),
+        )
+        self._move(candidate.ref, candidate.revision, "pending_evaluation", "suppression_released", now=now)
+        return row["evaluation_id"]
+
     def _retire_evaluations(self, ref: str, revision: int, code: str, now: str, *, others: bool = False) -> None:
         """Obsolete a candidate's queued evaluations and fence their unfinished work.
 

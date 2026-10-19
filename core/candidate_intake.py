@@ -102,7 +102,14 @@ class CandidateIntake(CandidateTables):
         if is_reachable(state, reason):
             self._index(candidate, now)
             if state == "pending_evaluation" and schedule_initial:
-                evaluation_id, queued = self._schedule(candidate, now=now, rule_version=rule_version)
+                released = (
+                    prior is not None
+                    and prior["processing_state"] == "blocked"
+                    and str(prior["reason"]).startswith("suppressed:")
+                )
+                evaluation_id, queued = self._schedule(
+                    candidate, now=now, rule_version=rule_version, resume_suppressed=released
+                )
             elif state == "pending_evaluation":
                 self._move(
                     candidate.ref,
@@ -391,7 +398,9 @@ class CandidateIntake(CandidateTables):
             return None, False
         return self._schedule(candidate, now=now, rule_version=rule_version)
 
-    def _schedule(self, candidate, *, now: str, rule_version: str) -> tuple[int | None, bool]:
+    def _schedule(
+        self, candidate, *, now: str, rule_version: str, resume_suppressed: bool = False
+    ) -> tuple[int | None, bool]:
         """Queue one evaluation for the candidate's current question.
 
         Returns ``(evaluation_id, queued)``; ``queued`` is False when the
@@ -440,6 +449,11 @@ class CandidateIntake(CandidateTables):
                 "UPDATE candidate_lifecycle SET evidence_fingerprint=? WHERE candidate_ref=? AND candidate_revision=?",
                 (digest, candidate.ref, candidate.revision),
             )
+            if resume_suppressed:
+                evaluation_id = self._requeue_suppressed(candidate, digest, rule_version, epoch, now)
+                if evaluation_id is not None:
+                    return evaluation_id, True
+                self._move(candidate.ref, candidate.revision, "waiting_evidence", "suppression_released", now=now)
             return None, False
         evaluation_id = int(inserted.lastrowid)
         self._supersede_unstarted(candidate, evaluation_id, now)
@@ -679,8 +693,12 @@ def _registration_target(candidate, prior, rule_version: str, now: str) -> tuple
         state, reason = "archived", f"fact_{candidate.state}"
     if prior is None:
         return state, reason, now
-    if prior["processing_state"] == "blocked":
+    if prior["processing_state"] == "blocked" and not (
+        str(prior["reason"]).startswith("suppressed:") and not candidate.suppressed
+    ):
         return "blocked", prior["reason"], now
+    if prior["processing_state"] == "blocked":
+        return state, reason, now
     if judgeable and prior["rule_version"] == rule_version:
         # A replayed registration is a no-op: it cannot turn waiting or dormant
         # back into pending without a new evidence fingerprint.

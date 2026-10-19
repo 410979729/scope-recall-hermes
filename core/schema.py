@@ -1,10 +1,56 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1110
+SCHEMA_VERSION = 1111
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110)
 APPLICATION_ID = 0x5352434C
+
+OBJECT_TABLES = {
+    "event": ("source_events", "event_id"),
+    "claim": ("claims", "claim_id"),
+    "episode": ("episodes", "episode_id"),
+    "artifact": ("artifacts", "artifact_id"),
+    "reference": ("reference_bindings", "reference_id"),
+}
+
+#: A restore can precede a muted object's arrival. Source suppression is per
+#: revision; derived heads use revision zero for their whole-object flag.
+RESTORED_SUPPRESSION_STATEMENT = """CREATE TABLE restored_suppression_blocks (
+    object_kind TEXT NOT NULL CHECK(object_kind IN ('event','claim','episode','artifact','reference')),
+    object_ref TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>=0),
+    scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id), project_id TEXT, branch_id TEXT,
+    PRIMARY KEY(object_kind,object_ref,revision)
+) STRICT, WITHOUT ROWID"""
+
+#: Enforce late-arriving restore constraints at the sole SQLite write boundary,
+#: including source replay and all derived writers. Unmute removes the constraint
+#: first. The WHEN clause prevents recursive updates when the flag is already set.
+SUPPRESSION_TRIGGERS = tuple(
+    (
+        f"restored_suppression_{table}_{action}",
+        f"""CREATE TRIGGER restored_suppression_{table}_{action} AFTER {action} ON {table}
+        WHEN NEW.suppressed=0 AND EXISTS (
+            SELECT 1 FROM restored_suppression_blocks b WHERE b.object_kind='{kind}'
+            AND b.object_ref=NEW.{key} AND b.revision={"NEW.source_revision" if kind == "event" else "0"}
+            AND b.scope_id=NEW.scope_id AND b.project_id IS NEW.project_id AND b.branch_id IS NEW.branch_id)
+        BEGIN UPDATE {table} SET suppressed=1 WHERE {key}=NEW.{key}
+            {"AND source_revision=NEW.source_revision" if kind == "event" else ""}; END""",
+    )
+    for kind, (table, key) in OBJECT_TABLES.items()
+    for action in ("INSERT", "UPDATE")
+)
+
+#: Management actions carry object identities and versions, never a copied
+#: conversation body. They are distinct from host-captured user messages.
+MANAGEMENT_STATEMENT = """CREATE TABLE management_actions (
+    action_id TEXT PRIMARY KEY NOT NULL,
+    actor TEXT NOT NULL CHECK(actor='local_user_management'),
+    action TEXT NOT NULL,
+    targets_json TEXT NOT NULL CHECK(json_valid(targets_json)),
+    recorded_at TEXT NOT NULL,
+    memory_epoch INTEGER NOT NULL CHECK(memory_epoch>=0)
+) STRICT"""
 
 WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
         work_id INTEGER PRIMARY KEY,
@@ -169,6 +215,7 @@ STATEMENTS = (
         installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared'))
     ) STRICT""",
         """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
+        MANAGEMENT_STATEMENT,
         """CREATE TABLE source_events (
         event_id TEXT NOT NULL, source_event_key TEXT NOT NULL,
         source_revision INTEGER NOT NULL CHECK(source_revision>=1),
@@ -353,6 +400,8 @@ STATEMENTS = (
     )
     + RECOVERY_STATEMENTS
     + CANDIDATE_STATEMENTS
+    + (RESTORED_SUPPRESSION_STATEMENT,)
+    + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
 
 
@@ -526,6 +575,16 @@ def upgrade_1109(connection):
     connection.execute(ENTRIES_STATEMENT)
     connection.execute("UPDATE instance_meta SET schema_version=1110 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1110")
+
+
+def upgrade_1110(connection):
+    """Record local management separately from conversation evidence."""
+    connection.execute(MANAGEMENT_STATEMENT)
+    connection.execute(RESTORED_SUPPRESSION_STATEMENT)
+    for _name, statement in SUPPRESSION_TRIGGERS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1111 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1111")
 
 
 def normalize_scope_authorizations(connection) -> int:

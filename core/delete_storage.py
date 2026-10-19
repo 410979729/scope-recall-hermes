@@ -10,14 +10,7 @@ from ..contracts import ContractError
 from . import lexical_index, lineage
 from .claims import canonical_time
 from .inbox_rules import deleted_forms, deleted_text, holds, taking_a_new_key
-
-OBJECT_TABLES = {
-    "event": ("source_events", "event_id"),
-    "claim": ("claims", "claim_id"),
-    "episode": ("episodes", "episode_id"),
-    "artifact": ("artifacts", "artifact_id"),
-    "reference": ("reference_bindings", "reference_id"),
-}
+from .schema import OBJECT_TABLES
 
 
 def canonical(value):
@@ -173,6 +166,18 @@ class Deletions:
             sorted(request["target_refs"]),
             request["expected_revisions"],
         ]
+        if request["mode"] == "suppress":
+            # After an owner releases a suppression, an identical later request
+            # is a new action rather than a replay of the earlier mute receipt.
+            generation = (
+                self._tx._check()
+                .execute(
+                    "SELECT coalesce(max(memory_epoch),0) FROM management_actions WHERE action IN ('unmute','restore')"
+                )
+                .fetchone()[0]
+            )
+            if generation:
+                material.append(["suppression_generation", generation])
         digest = hashlib.sha256(canonical(material).encode()).hexdigest()
         return "forget-" + digest, digest
 

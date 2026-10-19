@@ -551,7 +551,7 @@ def test_a_ledger_of_this_format_is_replayed_whatever_schema_wrote_it_and_anothe
 
     entry = newer["operations"][0]
     others = [
-        (dict(newer, format="scope-recall-deletion-ledger/2"), "ledger_format"),
+        (dict(newer, format="scope-recall-deletion-ledger/3"), "ledger_format"),
         ({key: value for key, value in newer.items() if key != "absent_objects"}, "ledger_format"),
         (dict(newer, schema_version="1111"), "ledger_format"),
         (dict(newer, operations=[dict(entry, operation=dict(entry["operation"], TEST_column=1))]), "operation_shape"),
@@ -621,7 +621,7 @@ def test_the_deletion_ledger_format_holds_these_sections_and_fields(app, tmp_pat
     replay_deletion_ledger(core.storage, authority, ledger)
     restored = export_deletion_ledger(core.storage, authority)
 
-    assert ledger["format"] == "scope-recall-deletion-ledger/1"
+    assert ledger["format"] == "scope-recall-deletion-ledger/2"
     assert set(ledger) == {
         "format",
         "schema_version",
@@ -633,6 +633,7 @@ def test_the_deletion_ledger_format_holds_these_sections_and_fields(app, tmp_pat
         "withdrawals",
         "source_groups",
         "absent_objects",
+        "suppressed_objects",
     }
     entry = ledger["operations"][0]
     assert set(entry) == {"operation", "members"}

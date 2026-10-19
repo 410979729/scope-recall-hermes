@@ -548,9 +548,9 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
     context = TrustedContext(binding, "TEST-session", frozenset({"TEST-scope"}), "human_direct")
     core = MemoryCore(CoreConfig(binding))
     status = core.status(context)
-    assert status.schema_version == SCHEMA_VERSION == 1110 and status.sources == 12
+    assert status.schema_version == SCHEMA_VERSION and status.sources == 12
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1110
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal", (
             "the previous release wrote a rollback-journal store"
         )
@@ -562,10 +562,10 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
     assert {"expired_vectors", "authorization_payloads", "source_authorizations"} <= tables
     (episode,) = core.episodes(replace(context, task_anchor="TEST-previous-release"))
     assert len(episode.evidence_refs) == 12
-    assert core.initialize().schema_version == 1110
+    assert core.initialize().schema_version == SCHEMA_VERSION
 
 
-def test_a_store_the_3_1_2_release_wrote_opens_at_1110_with_every_source_its_own(tmp_path):
+def test_a_store_the_3_1_2_release_wrote_opens_current_with_every_source_its_own(tmp_path):
     """The step 3.2 users meet: 3.1.2's own code writes the store, this tree opens it once."""
     path = build_previous_release_store(tmp_path / "latest", repo_root=Path.cwd(), sources=12, release=LATEST_RELEASE)
     with sqlite3.connect(path) as conn:
@@ -573,9 +573,9 @@ def test_a_store_the_3_1_2_release_wrote_opens_at_1110_with_every_source_its_own
     binding = InstanceBinding("TEST-agent", "TEST-installation", tmp_path / "latest", frozenset({"TEST-scope"}), True)
     context = TrustedContext(binding, "TEST-session", frozenset({"TEST-scope"}), "human_direct")
     status = MemoryCore(CoreConfig(binding)).status(context)
-    assert status.schema_version == SCHEMA_VERSION == 1110 and status.sources == 12
+    assert status.schema_version == SCHEMA_VERSION and status.sources == 12
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1110
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert conn.execute("SELECT installation_kind FROM instance_meta").fetchone()[0] == "local"
         assert conn.execute("SELECT entry_id, count(*) FROM source_events GROUP BY entry_id").fetchall() == [
             ("local", 12)

@@ -48,6 +48,8 @@ from scope_recall.adapters.hermes.audiences import HermesIdentityError
 from scope_recall.adapters.hermes.shared_entries import read_shared_payload
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core.restore import (
+    LEDGER_FORMAT,
+    LEGACY_LEDGER_FORMAT,
     InstallationMaintenance,
     begin_restore,
     export_deletion_ledger,
@@ -161,7 +163,7 @@ def _checked(binding: InstanceBinding, snapshot: Path) -> Iterator[_Checked]:
     authority = InstallationMaintenance(TrustedContext(binding, "restore", binding.scope_ids, "host_generated"))
     with _held(snapshot) as (source, stream):
         schema = _snapshot_schema(storage, source)
-        ledger, kept = _ledger(storage, authority)
+        ledger, kept = _ledger(storage, authority, schema)
         stream.seek(0)
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
         yield _Checked(storage, authority, source, schema, digest, ledger, kept)
@@ -241,10 +243,15 @@ def _schema_hint(schema: int) -> str:
     )
 
 
-def _ledger(storage: SQLiteStorage, authority: InstallationMaintenance) -> tuple[dict[str, Any], bool]:
+def _ledger(
+    storage: SQLiteStorage, authority: InstallationMaintenance, snapshot_schema: int
+) -> tuple[dict[str, Any], bool]:
     """The ledger to replay, and whether it is the one kept beside a pending restore's marker."""
     if not restore_pending(storage.binding.data_directory):
-        return export_deletion_ledger(storage, authority), False
+        # Releases reading pre-management schemas understand the monotone
+        # ledger only. They preserve deletions but may retain an older mute.
+        ledger_format = LEGACY_LEDGER_FORMAT if snapshot_schema < 1111 else LEDGER_FORMAT
+        return export_deletion_ledger(storage, authority, ledger_format=ledger_format), False
     return pending_restore_ledger(storage, authority)
 
 
@@ -258,6 +265,7 @@ def _described(checked: _Checked, snapshot: Path) -> dict[str, Any]:
         snapshot_sha256=checked.snapshot_sha256,
         ledger_sha256=ledger_digest(ledger),
         ledger_schema=ledger["schema_version"],
+        ledger_format=ledger["format"],
         ledger_operations=len(ledger["operations"]),
         ledger_kept=checked.kept,
     )
@@ -295,7 +303,12 @@ def apply_restore(binding: InstanceBinding, snapshot: Path, *, backup_dir: Path 
                     "backup_required", "give --backup-dir: the store is kept there before it is replaced"
                 )
             receipt["backup"] = _backed_up(checked.storage.path, backup_dir, now)
-            begin_restore(checked.storage, checked.authority, expected_ledger_sha256=ledger_digest(checked.ledger))
+            begin_restore(
+                checked.storage,
+                checked.authority,
+                expected_ledger_sha256=ledger_digest(checked.ledger),
+                ledger_format=checked.ledger["format"],
+            )
         if checked.snapshot_schema != SCHEMA_VERSION:
             return dict(
                 receipt,
