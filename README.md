@@ -32,7 +32,10 @@ also check contracts, storage and host integration.
 
 Use `scope-recall memory` to browse, search, inspect history, correct a fact, mute it or delete a conversation.
 It runs as the local store owner and makes no model request. Deletion shows the dependent sources and facts before
-`--yes` applies it. [The management guide](docs/manage.md) covers store selection, filters, version checks and receipts.
+`--yes` applies it. `scope-recall memory export --out <new directory or .zip>` writes the visible store as a portable
+package with original sources, facts, history, episodes, readable Markdown and optional retained attachments.
+[The management guide](docs/manage.md) covers store selection, filters, version checks and receipts; the
+[export guide](docs/export.md) covers package layout, hashes and filtering.
 
 ## For agents: install or upgrade on the user's behalf
 

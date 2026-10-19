@@ -49,10 +49,21 @@ def parser():
     """Build command arguments without opening a database or calling a provider."""
     root = argparse.ArgumentParser(prog="scope-recall memory", description=__doc__)
     commands = root.add_subparsers(dest="action", required=True)
-    for action in ("list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session"):
+    for action in (
+        "list",
+        "search",
+        "show",
+        "history",
+        "revise",
+        "mute",
+        "unmute",
+        "forget",
+        "forget-session",
+        "export",
+    ):
         command = commands.add_parser(action)
         _common(command)
-        if action in {"list", "search", "forget-session"}:
+        if action in {"list", "search", "forget-session", "export"}:
             _filters(command)
         if action in {"list", "search", "history"}:
             command.add_argument("--limit", type=int, default=30)
@@ -77,6 +88,9 @@ def parser():
         if action in {"mute", "unmute", "forget"}:
             command.add_argument("refs", nargs="+")
             command.add_argument("--expected-revision", type=int, help="expected head for a single selected object")
+        if action == "export":
+            command.add_argument("--out", required=True, help="new directory, or a new file ending in .zip")
+            command.add_argument("--with-attachments", action="store_true", help="include retained attachments")
     return root
 
 
@@ -109,6 +123,12 @@ def execute(api, args):
         return api.revise(
             args.ref, expected_revision=args.expected_revision, value=None if args.retract else args.value
         )
+    if args.action == "export":
+        from .memory_export import write_export
+
+        filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS})
+        with api.export_reader(filters) as reader:
+            return write_export(reader, args.out, with_attachments=args.with_attachments)
     return _preview(api, args)
 
 
@@ -138,6 +158,13 @@ def render(payload, *, as_json):
             print("Review this selection, then repeat with --yes and --preview-id to require the same preview.")
         else:
             print(json.dumps(data["result"], ensure_ascii=False, indent=2))
+    elif "counts" in data:
+        counts = data["counts"]
+        print(
+            f"Exported {counts['sources']} sources, {counts['facts']} facts, "
+            f"{counts['fact_history']} historical versions, {counts['episodes']} episodes and "
+            f"{counts['attachments']} attachments to {data['out']}."
+        )
     elif "items" in data:
         rows = [
             dict(

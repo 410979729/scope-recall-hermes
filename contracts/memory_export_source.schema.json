@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Exported original source record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "ref",
+    "revision",
+    "scope",
+    "project",
+    "branch",
+    "session",
+    "agent",
+    "entry_id",
+    "role",
+    "origin",
+    "occurred_at",
+    "recorded_at",
+    "time_precision",
+    "content",
+    "content_sha256",
+    "suppressed",
+    "segment",
+    "capture_gaps"
+  ],
+  "properties": {
+    "kind": {"type": "string", "const": "source"},
+    "ref": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "scope": {"type": "string", "minLength": 1},
+    "project": {"type": ["string", "null"]},
+    "branch": {"type": ["string", "null"]},
+    "session": {"type": "string"},
+    "agent": {"type": "string"},
+    "entry_id": {"type": "string"},
+    "role": {"type": "string", "enum": ["user", "assistant", "tool", "system", "document", "unknown"]},
+    "origin": {
+      "type": "string",
+      "enum": [
+        "human_direct",
+        "assistant_visible",
+        "tool_observation",
+        "external_document",
+        "host_generated",
+        "memory_reinjection",
+        "imported",
+        "origin_unknown"
+      ]
+    },
+    "occurred_at": {"type": ["string", "null"], "format": "date-time"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "time_precision": {"type": "string", "enum": ["instant", "day", "approximate", "unknown"]},
+    "content": {"type": "string"},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "suppressed": {"type": "boolean"},
+    "capture_gaps": {"type": "array", "items": {"type": "string"}},
+    "segment": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["group_key", "index", "total", "truncated"],
+      "properties": {
+        "group_key": {"type": "string", "minLength": 1},
+        "index": {"type": "integer", "minimum": 0},
+        "total": {"type": ["integer", "null"], "minimum": 1},
+        "truncated": {"type": "boolean"}
+      }
+    }
+  }
+}
