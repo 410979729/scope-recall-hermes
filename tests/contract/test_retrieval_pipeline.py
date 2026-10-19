@@ -511,17 +511,16 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     assert (pool[0].ref, pool[-1].ref) == (target.ref, reinjected.ref)
 
 
-def test_P08_auto_lexical_pool_spends_its_limit_on_deliverable_sources(app):
-    """Automatic suppression is applied before the bounded lexical pool; history keeps suppressed sources."""
+@pytest.mark.parametrize("mode", ["auto", "current", "method", "history", "as_of"])
+def test_P08_lexical_pool_applies_suppression_only_to_automatic_reads(app, mode):
+    """Automatic pools reserve their limit for visible sources; explicit reads retain suppressed sources."""
     from scope_recall.core.retrieval_storage import RetrievalStorage
 
     from tests.contract.test_deletion import authorize, request
 
     core, ctx = app
     core.test_sequence = itertools.count(1)
-    live = capture(
-        core, ctx, "orion live memory", key="TEST-p08/suppressed-pool/live", when="2026-09-01T12:00:00Z"
-    )
+    live = capture(core, ctx, "orion live memory", key="TEST-p08/suppressed-pool/live", when="2026-09-01T12:00:00Z")
     hidden = capture(
         core, ctx, "orion cobalt hidden memory", key="TEST-p08/suppressed-pool/hidden", when="2026-09-01T12:01:00Z"
     )
@@ -529,24 +528,20 @@ def test_P08_auto_lexical_pool_spends_its_limit_on_deliverable_sources(app):
     core.forget(ctx, request(hidden, mode="suppress"), remaining_seconds=10)
     reader = replace(ctx, session_id="TEST-p08-suppressed-pool-reader")
 
-    def pool(mode):
-        search = SearchContext.from_request(
-            recall_request(query="orion cobalt", mode=mode),
-            reader,
-            now=Clock.now,
-            deadline=core.clock.monotonic() + 5,
-        )
-        with core.storage.read(reader) as tx:
-            return RetrievalStorage().lexical(tx, search, limit=1)
-
-    auto_pool = pool("auto")
-    history_pool = pool("history")
-    assert [c.ref for c in auto_pool] == [live.ref]
-    assert [c.ref for c in history_pool] == [hidden.ref]
+    search = SearchContext.from_request(
+        recall_request(query="orion cobalt", mode=mode, **({"as_of": Clock.now} if mode == "as_of" else {})),
+        reader,
+        now=Clock.now,
+        deadline=core.clock.monotonic() + 5,
+    )
+    with core.storage.read(reader) as tx:
+        pool = RetrievalStorage().lexical(tx, search, limit=1)
+    assert [c.ref for c in pool] == [live.ref if mode == "auto" else hidden.ref]
 
 
-def test_P08_auto_claim_pool_spends_its_scan_limit_on_deliverable_claims(app, monkeypatch):
-    """A suppressed claim cannot consume the bounded automatic prefilter before its live sibling is scored."""
+@pytest.mark.parametrize("mode", ["auto", "current", "method", "history", "as_of"])
+def test_P08_claim_pool_applies_suppression_only_to_automatic_reads(app, monkeypatch, mode):
+    """Suppression reserves the automatic scan for live claims while preserving explicitly requested reads."""
     from scope_recall.core import retrieval_storage
 
     from tests.contract.test_claims import accept, draft
@@ -564,9 +559,7 @@ def test_P08_auto_claim_pool_spends_its_scan_limit_on_deliverable_claims(app, mo
         key="TEST-p08/suppressed-claims/hidden",
         when="2026-09-01T12:01:00Z",
     )
-    live = accept(
-        core, ctx, draft(live_source, "蓝色", subject="TEST-project", predicate="配色")
-    ).items[0]
+    live = accept(core, ctx, draft(live_source, "蓝色", subject="TEST-project", predicate="配色")).items[0]
     hidden = accept(
         core,
         ctx,
@@ -577,20 +570,17 @@ def test_P08_auto_claim_pool_spends_its_scan_limit_on_deliverable_claims(app, mo
     monkeypatch.setattr(retrieval_storage, "_CLAIM_SCAN_LIMIT", 1)
     reader = replace(ctx, session_id="TEST-p08-suppressed-claims-reader")
 
-    def pool(mode):
-        search = SearchContext.from_request(
-            recall_request(query="TEST-project 配色 cobalt", mode=mode),
-            reader,
-            now=Clock.now,
-            deadline=core.clock.monotonic() + 5,
-        )
-        with core.storage.read(reader) as tx:
-            return retrieval_storage.RetrievalStorage().claims(tx, search, limit=1)
-
-    auto_pool = pool("auto")
-    history_pool = pool("history")
-    assert [c.ref for c in auto_pool] == [live.ref]
-    assert [c.ref for c in history_pool] == [hidden.ref]
+    search = SearchContext.from_request(
+        recall_request(
+            query="TEST-project 配色 cobalt", mode=mode, **({"as_of": Clock.now} if mode == "as_of" else {})
+        ),
+        reader,
+        now=Clock.now,
+        deadline=core.clock.monotonic() + 5,
+    )
+    with core.storage.read(reader) as tx:
+        pool = retrieval_storage.RetrievalStorage().claims(tx, search, limit=1)
+    assert [c.ref for c in pool] == [live.ref if mode == "auto" else hidden.ref]
 
 
 # -- Chinese synonyms ------------------------------------------------------------

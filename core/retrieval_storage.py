@@ -336,8 +336,8 @@ class RetrievalStorage(RetrievalHydration):
             if context.mode in {"history", "as_of"}
             else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
         )
-        automatic = "" if context.mode in {"history", "as_of"} else "AND e.suppressed=0"
-        automatic_block = "" if context.mode in {"history", "as_of"} else "OR b.suppressed=1"
+        automatic = "AND e.suppressed=0" if context.mode == "auto" else ""
+        automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
         as_of = ""
         params: list[object] = [
             *terms,
@@ -447,8 +447,8 @@ class RetrievalStorage(RetrievalHydration):
         scopes = tuple(sorted(trusted.allowed_scope_ids))
         needles = tuple(sorted(terms, key=lambda term: (-len(term), term))[:_CLAIM_PREFILTER_TERMS])
         matched = " + ".join("(instr(statement,?)>0)" for _ in needles)
-        automatic = "" if context.mode in {"history", "as_of"} else "AND c.suppressed=0"
-        automatic_block = "" if context.mode in {"history", "as_of"} else "OR b.suppressed=1"
+        automatic = "AND c.suppressed=0" if context.mode == "auto" else ""
+        automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
         rows = (
             tx._check()
             .execute(
