@@ -538,9 +538,9 @@ def test_doctor_reports_a_pending_schema_upgrade_without_applying_it(tmp_path, m
     assert "schema_upgrade_pending" in result.capability_gaps and result.schema_version == 1108
     assert next(item for item in result.checks if item["name"] == "schema")["result"] == "upgrade_pending"
     assert _schema_facts(app.storage.path) == before and app.storage.path.read_bytes() == image
-    assert app.status(ctx).schema_version == 1110
+    assert app.status(ctx).schema_version == 1111
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
-    assert "schema_upgrade_pending" not in result.capability_gaps and result.schema_version == 1110
+    assert "schema_upgrade_pending" not in result.capability_gaps and result.schema_version == 1111
 
 
 def test_a_secret_refusal_is_a_terminal_failure_not_a_degraded_instance(tmp_path, monkeypatch):

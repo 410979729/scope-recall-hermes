@@ -2,16 +2,18 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, and for Codex, Claude Code, WorkBuddy and DeepSeek Harness (dsh), which share one adapter of hooks and an MCP server (the MCP tools need the optional `codex` extra; dsh runs the hooks through a plugin). The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.11.3`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
+This checkout is `3.12.0`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that is not
 attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
 are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
 [GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later is
-`pip install -U`, `apply-install` and a host restart, and the store's schema does not change; on a shared store in
+`pip install -U`, `apply-install` and a host restart; the first store open adds the local management audit table. Back up
+before upgrading and follow the [management migration and rollback guide](docs/manage.md#migration-and-rollback).
+On a shared store in
 the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
-([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the
-first time it is opened, after which a 3.1 process cannot open it. Section 9 of the
+([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order to schema 1111;
+an earlier release cannot open the upgraded store. Section 9 of the
 [3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
 migration procedure for a 2.0.1 memory database.
 Facts are drawn from accumulated evidence rather than judged one sentence on
@@ -25,6 +27,12 @@ scope isolation, packet size and latency. It uses proposed claims and a word-has
 embedder without a model or network, so it does not establish consolidation quality,
 semantic embedding quality or performance on private conversations. The test tiers
 also check contracts, storage and host integration.
+
+## Manage your memories
+
+Use `scope-recall memory` to browse, search, inspect history, correct a fact, mute it or delete a conversation.
+It runs as the local store owner and makes no model request. Deletion shows the dependent sources and facts before
+`--yes` applies it. [The management guide](docs/manage.md) covers store selection, filters, version checks and receipts.
 
 ## For agents: install or upgrade on the user's behalf
 

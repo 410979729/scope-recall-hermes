@@ -376,6 +376,39 @@ def test_an_id_two_old_stores_share_otherwise_refuses_the_second_and_writes_noth
     assert _query(root, "SELECT entry_id, count(*) FROM source_events GROUP BY entry_id") == [("agent3", 1)]
 
 
+def test_import_keeps_owner_actions_and_missing_source_suppression(root, entries):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    agent3, _agent2 = entries
+    scope = _scope(agent3)
+    core, context, (source,), old = _old_store(agent3, scope, "TEST suppressed import source")
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    owner.apply(owner.preview([source.ref], mode="suppress"))
+    missing = "event-" + "f" * 64
+    with core.storage.write(context, remaining_seconds=10) as tx:
+        tx._check(write=True).executemany(
+            "INSERT INTO restored_suppression_blocks VALUES ('event',?,1,?,NULL,NULL)",
+            [(source.ref, scope), (missing, scope)],
+        )
+
+    result = import_entry(root=root, entry_id="agent3", source=old)
+    assert result["counts"]["management_actions"] == 1
+    assert result["counts"]["restored_suppression_blocks"] == 2
+    ((imported, suppressed),) = _query(root, "SELECT event_id,suppressed FROM source_events")
+    assert imported != source.ref and suppressed == 1
+    ((actor, targets),) = _query(root, "SELECT actor,targets_json FROM management_actions")
+    assert actor == "local_user_management"
+    assert imported in {target["ref"] for target in json.loads(targets)}
+    assert source.ref not in targets
+    blocks = _query(root, "SELECT object_ref,revision FROM restored_suppression_blocks")
+    assert (imported, 1) in blocks
+    assert all(ref not in {source.ref, missing} and revision == 1 for ref, revision in blocks)
+    with sqlite3.connect(root / "memory.sqlite3") as db:
+        db.execute("UPDATE source_events SET suppressed=0 WHERE event_id=?", (imported,))
+        assert db.execute("SELECT suppressed FROM source_events").fetchone()[0] == 1
+
+
 def test_a_rehearsal_writes_nothing_and_another_homes_store_is_refused(root, entries):
     from scope_recall.maintenance.shared import SharedStoreError
     from scope_recall.maintenance.shared_import import import_entry

@@ -632,6 +632,40 @@ def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds:
     return MutationReceipt((item,), epoch)
 
 
+def revise_from_management(tx, clock, request, source) -> Mutation:
+    """Apply an owner's literal correction using its distinct management source.
+
+    Only the local management capability calls this entry. Its source is a
+    host-generated management record, never a fabricated conversation message.
+    Version writes, candidate resolution and indexing use ordinary revision
+    storage; existing evidence remains on the earlier claim versions.
+    """
+    head = _revision_head(tx, request)
+    if request["conditions"] != head.payload["conditions"]:
+        raise ContractError("INPUT_INVALID", "management_conditions")
+    retraction = request["new_value"] is None
+    updated = _revised_payload(head, request, retraction)
+    updated["evidence_spans"] = [
+        dict(source_ref=source.ref, source_revision=source.revision, quote=source.event["content"])
+    ]
+    if "intention" in updated:
+        updated["intention"]["state_evidence_refs"] = [f"{source.ref}@{source.revision}"]
+    validate_claims(
+        tx,
+        dict(
+            protocol_version="1.1",
+            source_refs=[f"{source.ref}@{source.revision}"],
+            claim_proposals=[updated],
+            resume_proposals=[],
+            reference_proposals=[],
+        ),
+        head.scope_id,
+    )
+    qualification = Qualification("retracted" if retraction else "active", "direct_report", "local_user_management")
+    authority = _Authority(source, source.event["content"], True, False, retraction)
+    return _record_revision(tx, clock, head, updated, qualification, request, authority)
+
+
 #: A value said as one word: letters, digits, CJK and the marks identifiers carry ("#ops-pager", "@owner", "v3.1").
 _WORD_VALUE = r"[#@]?[\w./+-]{1,120}"
 #: Where such a word ends: a space, a clause's punctuation, a full stop before a space or the end, or the end.

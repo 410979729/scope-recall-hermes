@@ -116,8 +116,12 @@ again: the kept ledger, or the store itself while nothing has replaced it, is
 checked against the marker before anything else is written, and a marker left
 partial is written again while nothing has replaced the store. A snapshot copied
 back by hand, without its ledger, brings back what was forgotten after it was
-taken. The ledger's format (`scope-recall-deletion-ledger/1`) names what it holds
+taken. The ledger's format (`scope-recall-deletion-ledger/2`) names what it holds
 whatever schema the exporting release writes, so the release that reads a
 snapshot's schema replays the ledger a newer release exported; a ledger of another
 format, or of this one with other fields, is refused (`RESTORE_UNVERIFIED`,
 `ledger_format` or a `*_shape` field) and admission stays closed.
+
+The complete suppression checkpoint includes inherited source and derived-object flags. Replay replaces reversible
+suppression with this latest state, while deletion blocks remain monotone. The original ledger format is still read
+and is prepared when rolling back to a pre-management snapshot; it can add blocks but cannot release an older mute.

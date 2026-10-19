@@ -80,7 +80,7 @@ def test_a_local_store_marks_every_row_local(tmp_path):
     put(storage, ctx, "TEST-local/1")
     assert rows(storage) == [("TEST-local/1", "local")]
     assert meta(storage, "installation_kind") == "local"
-    assert meta(storage, "schema_version") == SCHEMA_VERSION == 1110
+    assert meta(storage, "schema_version") == SCHEMA_VERSION
 
 
 def test_a_local_store_refuses_a_source_that_names_an_entry(tmp_path):
@@ -314,7 +314,7 @@ def test_a_1109_store_upgrades_with_every_row_local(tmp_path):
     assert "entry_id" not in columns
     storage.initialize()
     assert rows(storage) == [("TEST-old/1", "local")]
-    assert (meta(storage, "installation_kind"), meta(storage, "schema_version")) == ("local", 1110)
+    assert (meta(storage, "installation_kind"), meta(storage, "schema_version")) == ("local", SCHEMA_VERSION)
     put(storage, ctx, "TEST-new/1")
     assert rows(storage) == [("TEST-new/1", "local"), ("TEST-old/1", "local")]
 
