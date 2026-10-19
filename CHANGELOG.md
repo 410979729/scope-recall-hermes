@@ -5,7 +5,7 @@ longer text this file once held is in its history.
 
 ## [3.11.2] - 2026-10-18
 
-The README links the reproducible synthetic recall benchmark and states its limits. Installation guidance, contributor descriptions and capture and retry test documentation describe current contracts while preserving contributor credit. Host semantic fixtures share a store clock while retaining real non-store waits and explicit budget charges. Native dsh tests verify durable intake and authorized materialization of completed replies. Aggregation samples in the dev benchmark explicitly state the actions asked about, with a baseline measured on the corrected world; this is a data correction, not a retrieval improvement. Runtime behavior, configuration and the store schema are unchanged.
+The README links the reproducible synthetic recall benchmark and states its limits. Installation guidance, contributor descriptions and capture and retry test documentation describe current contracts while preserving contributor credit. Host semantic fixtures share a store clock while retaining real non-store waits and explicit budget charges. Native dsh tests verify durable intake and authorized materialization of completed replies. Aggregation samples in the dev benchmark explicitly state the actions asked about, with a baseline measured on the corrected world; this is a data correction, not a retrieval improvement. Deletion replay tests cover delayed capture, checking that deleted content remains unreadable and distinct key collisions are stored once. Runtime behavior, configuration and the store schema are unchanged.
 
 ## [3.11.1] - 2026-10-18
 

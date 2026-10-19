@@ -1106,7 +1106,7 @@
    "UP017": 15
   },
   "tests/contract/test_restart_and_failure_recovery.py": {
-   "E501": 5,
+   "E501": 4,
    "UP017": 1
   },
   "tests/contract/test_retained_artifacts.py": {

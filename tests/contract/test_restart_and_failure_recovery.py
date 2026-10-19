@@ -1,5 +1,6 @@
 """Release-critical offline failure/restart checks, without model/network calls."""
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -33,6 +34,8 @@ from test_worker import (
     worker_app as worker_app,
 )
 from v11_support import downgrade_store, source_event
+
+from tests.host.conftest import slow_capture_store as slow_capture_store
 
 
 def test_capture_commit_failure_survives_fresh_process_and_dedupes(worker_app, monkeypatch, tmp_path):
@@ -961,12 +964,104 @@ def test_retry_failures_returns_a_given_up_capture_to_the_replay(worker_app):
     assert core.operations.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_given_up"] == 0
 
 
-def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refused(worker_app):
-    """Compared part by part, a long deleted message sent again with its first character changed would be stored under
-    a new key, and its second part, word for word, would be found again; a later version of a deleted message would
-    be stored; a copy spaced otherwise would come back once the delete was purged; and a message of another length
-    under a deleted message's key would be dropped.  The whole message is compared, a version the deleted group never had
-    is refused, the purge keeps the forms of the deleted words, and another message is a key collision."""
+def _source_fingerprint(core):
+    """Snapshot source keys, visibility and content without expanding long messages in assertion output."""
+    with sqlite3.connect(core.storage.path) as conn:
+        rows = conn.execute(
+            "SELECT source_event_key, read_blocked, content FROM source_events ORDER BY event_id"
+        ).fetchall()
+    return tuple((key, blocked, hashlib.sha256(content.encode("utf-8")).hexdigest()) for key, blocked, content in rows)
+
+
+def _queued_capture(core, ctx, key, content, revision):
+    """The deferred row keeps the submitted message, its scope and the session that sent it."""
+    with sqlite3.connect(core.storage.path) as conn:
+        rows = conn.execute("SELECT scope_id, project_id, branch_id, payload_json FROM capture_inbox").fetchall()
+    matched = []
+    for scope_id, project_id, branch_id, payload in rows:
+        body = json.loads(payload)
+        events = body["events"]
+        if "".join(event["content"] for event in events) != content:
+            continue
+        segment = events[0].get("segment") or {}
+        matched.append((scope_id, project_id, branch_id, segment.get("group_key", events[0]["source_event_key"]), body))
+    assert len(matched) == 1
+    scope_id, project_id, branch_id, group, body = matched[0]
+    assert (scope_id, project_id, branch_id, group) == ("TEST-scope", ctx.project_id, ctx.branch_id, key)
+    assert body["events"][0]["source_revision"] == revision
+    assert body["context"]["session_id"] == ctx.session_id
+    assert body["context"]["actor_origin"] == ctx.actor_origin
+    assert "TEST-scope" in body["context"]["allowed_scope_ids"]
+
+
+def _settled_deleted_key(core, ctx, clock, key, content, *, require_queued=False, **changes):
+    """The disposition after the deletion policy runs.
+
+    The capture uses its default one-second budget and enqueues first. When that write leaves too little time for
+    the comparison, the receipt is queued and no new readable source appears. One replay for this scope and session
+    then applies the same policy: a copy is cancelled, and a different message is a key collision.
+    """
+    before = _source_fingerprint(core)
+    event = source_event(source_event_key=key, content=content, **changes)
+    receipt = capture_inbox.durable_record_event(
+        core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None
+    )
+    assert _source_fingerprint(core) == before
+    if require_queued:
+        assert receipt.disposition == "queued"
+    if receipt.disposition != "queued":
+        return receipt.disposition
+    assert receipt.error_code == "DEADLINE_EXCEEDED" and capture_inbox.INGRESS_PENDING_GAP in receipt.gaps
+    _queued_capture(core, ctx, key, content, event["source_revision"])
+    replayed = capture_inbox.replay_inbox(
+        core.storage,
+        clock,
+        ctx,
+        authorize=lambda _: ctx.allowed_scope_ids,
+        admission_policy=core.config.admission_policy,
+        remaining_seconds=10,
+    )
+    assert _source_fingerprint(core) == before
+    assert len(replayed) == 1
+    settled = replayed[0]
+    if settled.disposition == "cancelled":
+        assert settled.error_code == "ACCESS_DENIED" and capture_inbox.SOURCE_DELETED_GAP in settled.gaps
+    else:
+        assert settled.disposition == "conflict" and settled.error_code == "VERSION_CONFLICT"
+    return settled.disposition
+
+
+def _visible_sources(core, needle, *, prefix=False):
+    """Count only source rows the deletion gate still permits readers to see."""
+    clause = "content LIKE ?" if prefix else "content=?"
+    value = f"{needle}%" if prefix else needle
+    with sqlite3.connect(core.storage.path) as conn:
+        return conn.execute(
+            f"SELECT count(*) FROM source_events WHERE read_blocked=0 AND {clause}", (value,)
+        ).fetchone()[0]
+
+
+def _assert_deleted_key_outcome(core, ctx, other_long):
+    """Refused copies stay unreadable, both key collisions are stored, and the inbox has no row left."""
+    assert _inbox_rows(core) == 0
+    assert _visible_sources(core, "[10:02]", prefix=True) == 0
+    assert _visible_sources(core, "!EST", prefix=True) == 0
+    assert _visible_sources(core, "TEST 改过的一句。") == 0
+    assert _visible_sources(core, "test 要删的一句短话。") == 0
+    assert _visible_sources(core, "TEST 第0句要删的长话。", prefix=True) == 0
+    assert _visible_sources(core, "TEST 同一个键上的一句短话。") == 1
+    parts = capture_inbox.prepare_capture(source_event(source_event_key="TEST-short", content=other_long), ctx).events
+    assert "".join(event["content"] for event in parts) == other_long
+    assert all(_visible_sources(core, event["content"]) == 1 for event in parts)
+
+
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refused(worker_app, slow_capture_store, pace):
+    """Deleted group keys refuse equivalent text and later revisions before and after purge.
+
+    A slow inbox write defers the same policy to authorized replay. Distinct messages sharing those keys are
+    rekeyed and stored once, without changing the deleted sources.
+    """
     core, ctx, clock = worker_app
     long_text = "".join(f"TEST 第{i}句要删的长话。" for i in range(6000))
     short = "TEST 要删的 一句 短话。"
@@ -974,19 +1069,14 @@ def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refuse
     authorize(core, ctx, *stored)
     operation = core.forget(ctx, request(*stored), remaining_seconds=5)
 
-    def store(key, content, **changes):
-        return capture_inbox.durable_record_event(
-            core.storage,
-            clock,
-            ctx,
-            source_event(source_event_key=key, content=content, **changes),
-            scope_id="TEST-scope",
-            host_scope=None,
-        ).disposition
+    def store(key, content, *, slow=False, **changes):
+        if slow:
+            slow_capture_store()
+        return _settled_deleted_key(core, ctx, clock, key, content, require_queued=slow, **changes)
 
     # Before the purge: its first character changed, or eight characters put before it, the long message is a copy.
     assert store("TEST-long", "!" + long_text[1:]) == "cancelled"
-    assert store("TEST-long", "[10:02] " + long_text) == "cancelled"
+    assert store("TEST-long", "[10:02] " + long_text, slow=pace == "slow") == "cancelled"
     # A later version is refused, as the deletion contract says.
     assert store("TEST-short", "TEST 改过的一句。", source_revision=2) == "cancelled"
     core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
@@ -1004,12 +1094,16 @@ def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refuse
     assert store("TEST-short", "test 要删的一句短话。") == "cancelled"
     assert store("TEST-long", "!" + long_text[1:]) == "cancelled"
     # Another message of another length under either key is a key collision, stored under a key of its own.
+    other_long = "".join(f"TEST 第{i}句另一段长话。" for i in range(6000))
     assert store("TEST-long", "TEST 同一个键上的一句短话。") == "conflict"
-    assert store("TEST-short", "".join(f"TEST 第{i}句另一段长话。" for i in range(6000))) == "conflict"
+    assert store("TEST-short", other_long) == "conflict"
+    before_rekey = set(_source_fingerprint(core))
     receipts = capture_inbox.resolve_conflicted_ingress(
         core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=10
     )
-    assert [receipt.durability for receipt in receipts] == ["persisted", "persisted"] and _inbox_rows(core) == 0
+    assert [receipt.durability for receipt in receipts] == ["persisted", "persisted"]
+    assert before_rekey <= set(_source_fingerprint(core))
+    _assert_deleted_key_outcome(core, ctx, other_long)
 
 
 def test_a_message_purged_by_an_earlier_release_still_refuses_what_comes_under_its_key(worker_app):
