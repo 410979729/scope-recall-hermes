@@ -8,8 +8,6 @@ The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change ne
 
 Local owners can browse, search, inspect history, correct derived facts, mute or unmute memories and preview source-aware deletion through a shared management API and command line; a migrated SQLite audit records management actions separately from conversations. The same owner interface can export the visible store as a portable `scope-recall-export/1` directory or zip with original sources, current facts and their history, episodes, readable Markdown, optional retained attachments, per-artifact SHA-256 hashes and a manifest.
 
-## [3.11.3] - 2026-10-19
-
 Automatic lexical and claim-prefilter candidates now exclude suppressed rows before their bounded limits, so a more specific suppressed memory can no longer take the last candidate slot, hydrate to nothing, and leave a visible lower-ranked memory unreachable. Explicit current, method, history and as-of reads still include suppressed memory.
 
 ## [3.11.2] - 2026-10-18

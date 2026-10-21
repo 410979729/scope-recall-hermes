@@ -511,12 +511,30 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     assert (pool[0].ref, pool[-1].ref) == (target.ref, reinjected.ref)
 
 
+def _keep_candidate_marker(core, ctx, item, *, kind, field, marker):
+    """Exercise each independently authoritative marker in a synthetic store."""
+    from scope_recall.core.delete_storage import OBJECT_TABLES
+
+    if marker == "both":
+        return
+    table, key = OBJECT_TABLES[kind]
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        if marker == "row":
+            conn.execute(f"UPDATE object_blocks SET {field}=0 WHERE object_kind=? AND object_ref=?", (kind, item.ref))
+        else:
+            conn.execute(f"UPDATE {table} SET {field}=0 WHERE {key}=?", (item.ref,))
+
+
 @pytest.mark.parametrize("mode", ["auto", "current", "method", "history", "as_of"])
-def test_P08_lexical_pool_applies_suppression_only_to_automatic_reads(app, mode):
-    """Automatic pools reserve their limit for visible sources; explicit reads retain suppressed sources."""
+@pytest.mark.parametrize("field", ["suppressed", "read_blocked"])
+@pytest.mark.parametrize("marker", ["both", "row", "block"])
+def test_P08_lexical_pool_applies_read_policy_before_limit(app, mode, field, marker):
+    """Blocked sources never consume the limit; suppressed sources remain available to explicit reads."""
     from scope_recall.core.retrieval_storage import RetrievalStorage
 
     from tests.contract.test_deletion import authorize, request
+    from tests.contract.test_memory_admin import management
 
     core, ctx = app
     core.test_sequence = itertools.count(1)
@@ -524,8 +542,10 @@ def test_P08_lexical_pool_applies_suppression_only_to_automatic_reads(app, mode)
     hidden = capture(
         core, ctx, "orion cobalt hidden memory", key="TEST-p08/suppressed-pool/hidden", when="2026-09-01T12:01:00Z"
     )
-    authorize(core, ctx, hidden, mode="suppress")
-    core.forget(ctx, request(hidden, mode="suppress"), remaining_seconds=10)
+    action = "suppress" if field == "suppressed" else "delete"
+    authorize(core, ctx, hidden, mode=action)
+    core.forget(ctx, request(hidden, mode=action), remaining_seconds=10)
+    _keep_candidate_marker(core, ctx, hidden, kind="event", field=field, marker=marker)
     reader = replace(ctx, session_id="TEST-p08-suppressed-pool-reader")
 
     search = SearchContext.from_request(
@@ -536,16 +556,24 @@ def test_P08_lexical_pool_applies_suppression_only_to_automatic_reads(app, mode)
     )
     with core.storage.read(reader) as tx:
         pool = RetrievalStorage().lexical(tx, search, limit=1)
-    assert [c.ref for c in pool] == [live.ref if mode == "auto" else hidden.ref]
+    assert [c.ref for c in pool] == [live.ref if mode == "auto" or field == "read_blocked" else hidden.ref]
+    if mode == "auto" and field == "suppressed":
+        owner = management(core, ctx)
+        owner.apply(owner.preview([hidden.ref], mode="unmute"))
+        with core.storage.read(reader) as tx:
+            assert [c.ref for c in RetrievalStorage().lexical(tx, search, limit=1)] == [hidden.ref]
 
 
 @pytest.mark.parametrize("mode", ["auto", "current", "method", "history", "as_of"])
-def test_P08_claim_pool_applies_suppression_only_to_automatic_reads(app, monkeypatch, mode):
-    """Suppression reserves the automatic scan for live claims while preserving explicitly requested reads."""
+@pytest.mark.parametrize("field", ["suppressed", "read_blocked"])
+@pytest.mark.parametrize("marker", ["both", "row", "block"])
+def test_P08_claim_pool_applies_read_policy_before_limit(app, monkeypatch, mode, field, marker):
+    """Both marker locations protect the bounded claim scan, and unmuting restores automatic reads."""
     from scope_recall.core import retrieval_storage
 
     from tests.contract.test_claims import accept, draft
     from tests.contract.test_deletion import authorize, request
+    from tests.contract.test_memory_admin import management
 
     core, ctx = app
     core.test_sequence = itertools.count(1)
@@ -565,8 +593,10 @@ def test_P08_claim_pool_applies_suppression_only_to_automatic_reads(app, monkeyp
         ctx,
         draft(hidden_source, "配色", subject="TEST-project cobalt", predicate="状态"),
     ).items[0]
-    authorize(core, ctx, hidden, mode="suppress")
-    core.forget(ctx, request(hidden, mode="suppress"), remaining_seconds=10)
+    action = "suppress" if field == "suppressed" else "delete"
+    authorize(core, ctx, hidden, mode=action)
+    core.forget(ctx, request(hidden, mode=action), remaining_seconds=10)
+    _keep_candidate_marker(core, ctx, hidden, kind="claim", field=field, marker=marker)
     monkeypatch.setattr(retrieval_storage, "_CLAIM_SCAN_LIMIT", 1)
     reader = replace(ctx, session_id="TEST-p08-suppressed-claims-reader")
 
@@ -580,7 +610,12 @@ def test_P08_claim_pool_applies_suppression_only_to_automatic_reads(app, monkeyp
     )
     with core.storage.read(reader) as tx:
         pool = retrieval_storage.RetrievalStorage().claims(tx, search, limit=1)
-    assert [c.ref for c in pool] == [live.ref if mode == "auto" else hidden.ref]
+    assert [c.ref for c in pool] == [live.ref if mode == "auto" or field == "read_blocked" else hidden.ref]
+    if mode == "auto" and field == "suppressed":
+        owner = management(core, ctx)
+        owner.apply(owner.preview([hidden.ref], mode="unmute"))
+        with core.storage.read(reader) as tx:
+            assert [c.ref for c in retrieval_storage.RetrievalStorage().claims(tx, search, limit=1)] == [hidden.ref]
 
 
 # -- Chinese synonyms ------------------------------------------------------------
