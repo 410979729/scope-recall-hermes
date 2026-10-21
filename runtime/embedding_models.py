@@ -25,6 +25,7 @@ from .models import (
     RESERVE_ENVELOPE_MARGIN,
     AuxiliaryModelError,
     HttpsTransport,
+    HttpsTransportPool,
     HttpTransport,
     json_bytes,
     load_credential,
@@ -36,6 +37,9 @@ from .models import (
 )
 
 MAX_EMBED_RESPONSE_BYTES = 16 * 1024 * 1024
+
+#: Separate concurrent recalls without creating an unbounded number of HTTP helpers.
+QUERY_EMBED_CONNECTIONS = 3
 
 
 #: Embedding requests one group may have in flight.  A document request spawns its
@@ -278,7 +282,7 @@ class GeminiEmbeddingAdapter:
         self._query_transport = (
             transport
             if transport is not None
-            else HttpsTransport(persistent=True, allow_insecure_endpoint=route.allow_insecure_endpoint)
+            else HttpsTransportPool(size=QUERY_EMBED_CONNECTIONS, allow_insecure_endpoint=route.allow_insecure_endpoint)
         )
         self._owns_transport = transport is None
         space = route.space()
@@ -297,11 +301,7 @@ class GeminiEmbeddingAdapter:
         return self._embed(encoded, remaining_seconds=remaining_seconds, transport=self._query_transport)
 
     def embed_queries(self, texts: Sequence[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
-        """Several queries in one request on the query connection, answered in the order they were sent.
-
-        A question recall reads two ways (``core/owner_view.py``) is embedded once: asked one after the other, the
-        second waited for the first on the one persistent connection, and a recall tool's 2 s left it no time.
-        """
+        """Batch one recall's query phrasings on one borrowed connection, preserving their order."""
         for text in texts:
             # The whole query, before the input bound cuts it; the screen reads it normalised, as it is sent.
             reject_secrets(text)

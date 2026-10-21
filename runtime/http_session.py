@@ -30,13 +30,18 @@ class HttpWorkerSession:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._process = None
         self._io_thread = None
         self._closed = False
         _SESSIONS.add(self)
 
     def discard(self):
-        process, self._process = self._process, None
+        # Thread startup and publication form one lifecycle step. Cleanup must
+        # neither join an unstarted thread nor close pipes while it is starting.
+        with self._state_lock:
+            process, self._process = self._process, None
+            thread, self._io_thread = self._io_thread, None
         if process is None:
             return
         try:
@@ -45,7 +50,6 @@ class HttpWorkerSession:
             process.wait(timeout=0.2)
         except (OSError, subprocess.TimeoutExpired):
             pass
-        thread = self._io_thread
         if thread is not None:
             thread.join(timeout=0.2)
         if thread is None or not thread.is_alive():
@@ -89,9 +93,12 @@ class HttpWorkerSession:
                 except (OSError, ValueError):
                     replies.put(None)
 
-            io_thread = threading.Thread(target=exchange_line, daemon=True)
-            self._io_thread = io_thread
-            io_thread.start()
+            with self._state_lock:
+                if self._closed or self._process is not process:
+                    raise OSError("http_session_closed")
+                thread = threading.Thread(target=exchange_line, daemon=True)
+                thread.start()
+                io_thread = self._io_thread = thread
             try:
                 result = replies.get(timeout=max(0, deadline - time.monotonic()))
             except queue.Empty:
