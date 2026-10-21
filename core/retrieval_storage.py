@@ -336,6 +336,8 @@ class RetrievalStorage(RetrievalHydration):
             if context.mode in {"history", "as_of"}
             else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
         )
+        automatic = "AND e.suppressed=0" if context.mode == "auto" else ""
+        automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
         as_of = ""
         params: list[object] = [
             *terms,
@@ -360,10 +362,10 @@ class RetrievalStorage(RetrievalHydration):
                        GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
                 FROM {lexical_index.JOIN}
                 WHERE t.term IN ({term_marks}) AND +e.scope_id IN ({scope_marks})
-                  AND e.read_blocked=0 AND (e.project_id IS NULL OR e.project_id=?)
+                  AND e.read_blocked=0 {automatic} AND (e.project_id IS NULL OR e.project_id=?)
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
-                      AND b.object_ref=e.event_id AND b.read_blocked=1)
+                      AND b.object_ref=e.event_id AND (b.read_blocked=1 {automatic_block}))
                   {current}{as_of}{said}
                 GROUP BY e.event_id,e.source_revision
                 ORDER BY CASE
@@ -445,6 +447,8 @@ class RetrievalStorage(RetrievalHydration):
         scopes = tuple(sorted(trusted.allowed_scope_ids))
         needles = tuple(sorted(terms, key=lambda term: (-len(term), term))[:_CLAIM_PREFILTER_TERMS])
         matched = " + ".join("(instr(statement,?)>0)" for _ in needles)
+        automatic = "AND c.suppressed=0" if context.mode == "auto" else ""
+        automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
         rows = (
             tx._check()
             .execute(
@@ -453,10 +457,10 @@ class RetrievalStorage(RetrievalHydration):
                            lower(c.subject || ' ' || c.predicate || ' ' ||
                                  coalesce(json_extract(v.payload_json,'$.value_text'),'')) AS statement
                     FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
-                    WHERE c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 AND c.kind!='alias'
+                    WHERE c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 {automatic} AND c.kind!='alias'
                       AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
                       AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
-                          AND b.object_ref=c.claim_id AND b.read_blocked=1))
+                          AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block})))
                 SELECT claim_id FROM (SELECT claim_id, {matched} AS hits FROM heads)
                 WHERE hits>0 ORDER BY hits DESC, claim_id LIMIT ?""",
                 (*scopes, trusted.project_id, trusted.branch_id, *needles, _CLAIM_SCAN_LIMIT),
