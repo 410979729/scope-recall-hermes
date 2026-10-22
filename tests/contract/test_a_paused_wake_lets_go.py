@@ -55,6 +55,8 @@ def _run(tmp_path, monkeypatch, *, delay_seconds, enabled_at):
         worker_min_interval_seconds = 0
         drain_seconds = 5.0
         auto_retry_cooldown_seconds = 60.0
+        auxiliary = None
+        vector = None
 
     config = Config()
     monkeypatch.setattr(scheduling, "load_config", lambda path: config)
