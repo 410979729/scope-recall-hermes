@@ -4538,14 +4538,37 @@ def test_the_plugin_recalls_before_the_first_step_and_stores_the_turn_at_its_end
 
 
 @_NEEDS_NODE
-def test_a_turn_that_did_not_complete_has_no_reply_and_keeps_what_was_said(dsh, tmp_path):
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_a_turn_that_did_not_complete_has_no_reply_and_keeps_what_was_said(dsh, tmp_path, pace):
     """A turn the person stopped (or that failed) after the model said something has no reply: what was said is stored
-    from the turn's messages, once, and nothing is stored as the turn's reply."""
+    from the turn's messages, once, and nothing is stored as the turn's reply. Its prompt may wait in the inbox."""
     root, home = dsh
+    prompt = "TEST 我的猫叫什么名字？"
     result = _run_plugin(
-        {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "endReason": "aborted"}
+        {
+            "python": sys.executable,
+            "home": str(home),
+            "spool": str(tmp_path / "TEST-spool"),
+            "endReason": "aborted",
+            "prompt": prompt,
+        },
+        env={"SR_DSH_SLOW_CAPTURE": prompt, "SR_DSH_SLOW_CAPTURE_DELAY": "1.1"} if pace == "slow" else {},
     )
     assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None
+    expected = sorted(
+        [
+            ("user", "human_direct", prompt),
+            ("assistant", "assistant_visible", "TEST 我先查一下记忆。"),
+            ("assistant", "assistant_visible", "TEST 它叫 Mochi。"),
+        ]
+    )
+    stored, held = _received_plugin_rows(root)
+    assert sorted(stored + [(event["role"], event["origin"], event["content"]) for event in held]) == expected
+    if pace == "slow":
+        assert any(event["content"] == prompt and event["source_event_key"].endswith(":user:1@1") for event in held)
+    _replay_received_plugin_inbox(home)
+    assert _plugin_rows(root) == expected
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
     assert _plugin_keys(root) == ["record:a-1", "record:a-2", "user:1"], result["status"]
 
 
@@ -4595,23 +4618,35 @@ def test_a_message_that_comes_while_a_turn_is_stored_is_kept_and_stored_with_the
 
 
 @_NEEDS_NODE
-def test_a_turn_larger_than_one_stop_is_stored_in_several_within_the_hook_s_input(dsh, tmp_path):
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_a_turn_larger_than_one_stop_is_stored_in_several_within_the_hook_s_input(dsh, tmp_path, pace):
     """Two model messages of 20,000 CJK characters each (60 KB of UTF-8 apiece): each is clipped to what one Stop can
     carry, they go in Stops of their own under the hook's 64 KiB of input, and the reply, too large to go beside its
-    line, is stored from it."""
+    line, is stored from it. A prompt accepted into the inbox is materialized before checking all three sources."""
     root, home = dsh
+    prompt = "TEST 我的猫叫什么名字？"
     result = _run_plugin(
         {
             "python": sys.executable,
             "home": str(home),
             "spool": str(tmp_path / "TEST-spool"),
             "bigText": {"char": "长", "count": 20_000},
-        }
+            "prompt": prompt,
+        },
+        env={"SR_DSH_SLOW_CAPTURE": prompt, "SR_DSH_SLOW_CAPTURE_DELAY": "1.1"} if pace == "slow" else {},
     )
     assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None, result["warnings"]
+    stored, held = _received_plugin_rows(root)
+    received = sorted(stored + [(event["role"], event["origin"], event["content"]) for event in held])
+    assert ("user", "human_direct", prompt) in received
+    if pace == "slow":
+        assert any(event["content"] == prompt and event["source_event_key"].endswith(":user:1@1") for event in held)
+    _replay_received_plugin_inbox(home)
+    assert _plugin_rows(root) == received
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
     assert _plugin_keys(root) == ["record:a-1", "record:a-2", "user:1"], result["status"]
     stored = [content for role, _origin, content in _plugin_rows(root) if role == "assistant"]
-    assert all(
+    assert len(stored) == 2 and all(
         content.endswith("more characters not kept by Scope Recall]") and len(content.encode("utf-8")) < 36_000
         for content in stored
     )

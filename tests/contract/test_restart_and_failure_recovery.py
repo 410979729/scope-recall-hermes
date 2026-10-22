@@ -35,11 +35,23 @@ from test_worker import (
 )
 from v11_support import downgrade_store, source_event
 
+from tests.host.conftest import metered_store as metered_store
 from tests.host.conftest import slow_capture_store as slow_capture_store
 
 
-def test_capture_commit_failure_survives_fresh_process_and_dedupes(worker_app, monkeypatch, tmp_path):
-    core, ctx, clock = worker_app
+@pytest.fixture
+def ingress_app(worker_app, metered_store):
+    """Exercise capture and recovery semantics without charging physical SQLite transaction time.
+
+    Real transactions still run, so source writes and failure codes are checked. The admission budget must reach
+    those operations regardless of disk speed; the slow deleted-key cases exercise deferral on the real clock.
+    """
+    metered_store(0.0)
+    return worker_app
+
+
+def test_capture_commit_failure_survives_fresh_process_and_dedupes(ingress_app, monkeypatch, tmp_path):
+    core, ctx, clock = ingress_app
     event = source_event(source_event_key="TEST-durable", content="TEST-project 配色 蓝色。")
     real = capture_inbox.record_event
 
@@ -338,7 +350,7 @@ def test_backup_cli_writes_a_verified_snapshot_beside_a_waiting_capture(worker_a
         assert db.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 1
 
 
-def test_key_collided_capture_is_stored_under_its_own_identity(worker_app):
+def test_key_collided_capture_is_stored_under_its_own_identity(ingress_app):
     """A reused turn number must not lose the second message.
 
     Storage refuses a second, different message under an existing key: same
@@ -347,7 +359,7 @@ def test_key_collided_capture_is_stored_under_its_own_identity(worker_app):
     their own — so the payload sat in the inbox permanently, captured but never
     stored, visible only as a doctor gap.
     """
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-42", content="TEST first message")
     assert (
         capture_inbox.durable_record_event(
@@ -406,11 +418,11 @@ def test_key_collided_capture_is_stored_under_its_own_identity(worker_app):
     )
 
 
-def test_every_message_sent_into_one_running_turn_is_stored(worker_app):
+def test_every_message_sent_into_one_running_turn_is_stored(ingress_app):
     """Codex gives a message sent into a running turn that turn's id.  The second such message conflicts with the first
     and waits in the inbox for a key of its own; a third sent before that pass would come under the second's place in
     the inbox, be refused as changed evidence and lost."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-7", content="TEST 先看一下日志")
     assert (
         capture_inbox.durable_record_event(
@@ -446,12 +458,12 @@ def test_every_message_sent_into_one_running_turn_is_stored(worker_app):
     assert contents == sorted(["TEST 先看一下日志", "TEST 顺便查一下锁", "TEST 好"])
 
 
-def test_a_message_sent_again_with_a_moment_of_its_own_is_resolved_as_the_one_stored(worker_app):
+def test_a_message_sent_again_with_a_moment_of_its_own_is_resolved_as_the_one_stored(ingress_app):
     """A host can send a message again dated anew (dsh's plugin sends a turn's reply with each later Stop that carries
     its line): the same words under the same key, another moment, refused on that alone.  Resolved, it is the message
     its key holds and leaves the inbox; re-keyed it would be stored a second time.  Other words under the key are
     still a message of their own."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-9/reply", role="assistant", content="TEST 已经存下的回答")
     assert (
         capture_inbox.durable_record_event(
@@ -514,10 +526,10 @@ def _first_of_the_turn_waits(core, clock, ctx, monkeypatch, key):
     return stored.event_refs[0]
 
 
-def test_a_message_sent_while_the_turn_s_first_still_waits_is_stored(worker_app, monkeypatch):
+def test_a_message_sent_while_the_turn_s_first_still_waits_is_stored(ingress_app, monkeypatch):
     """A second message sent while the turn's first still waits is not refused: both are stored, the first under a key
     of its own once its turn comes."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     _first_of_the_turn_waits(core, clock, ctx, monkeypatch, "TEST-turn-9")
     _a_pass(core, clock, ctx)
     with sqlite3.connect(core.storage.path) as conn:
@@ -526,12 +538,12 @@ def test_a_message_sent_while_the_turn_s_first_still_waits_is_stored(worker_app,
     assert keys["TEST 第二句"] == "TEST-turn-9" and keys["TEST 第一句"].startswith("TEST-turn-9#rekey:")
 
 
-def test_deleting_one_message_keeps_another_waiting_under_its_key(worker_app, monkeypatch):
+def test_deleting_one_message_keeps_another_waiting_under_its_key(ingress_app, monkeypatch):
     """A delete cancels a waiting capture that holds the deleted message, not every capture of its source group: the
     turn's first message, still waiting when the second, stored under the key, is deleted, is not cancelled with it,
     since it would be lost without ever being deleted itself.  A later version of the deleted message is still
     cancelled."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     deleted = _first_of_the_turn_waits(core, clock, ctx, monkeypatch, "TEST-turn-10")
     later = source_event(source_event_key="TEST-turn-10", source_revision=2, content="TEST 第二句（改）")
     capture_inbox.enqueue(core.storage, clock, ctx, later, scope_id="TEST-scope", host_scope=None)
@@ -545,10 +557,10 @@ def test_deleting_one_message_keeps_another_waiting_under_its_key(worker_app, mo
     assert [content for content, _key in kept] == ["TEST 第一句"] and kept[0][1].startswith("TEST-turn-10#rekey:")
 
 
-def test_the_same_words_sent_twice_into_one_turn_before_the_pass_are_kept_once(worker_app):
+def test_the_same_words_sent_twice_into_one_turn_before_the_pass_are_kept_once(ingress_app):
     """The same words under the same key while the first still waits are the same capture: a retried hook sends them
     so, with a later moment, and the first moment is kept."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-12", content="TEST 开始")
     assert (
         capture_inbox.durable_record_event(
@@ -571,10 +583,10 @@ def test_the_same_words_sent_twice_into_one_turn_before_the_pass_are_kept_once(w
     assert kept == [("2026-09-05T12:00:03Z",)]
 
 
-def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_app):
+def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(ingress_app):
     """Given a new key, the segments of a long message move into one new group; each keeping the first message's
     group would meet it again and never be stored."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-77", content="TEST 第一条很长的消息。" * 6000)
     assert (
         capture_inbox.durable_record_event(
@@ -603,11 +615,11 @@ def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_a
     assert groups[1][0].startswith("TEST-turn-77#rekey:")
 
 
-def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are_stored(worker_app, monkeypatch):
+def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are_stored(ingress_app, monkeypatch):
     """A row whose stored capture raises on revalidation must not stop its whole page, on every pass.  Made final
     instead, a row this release merely cannot read yet (a newer release's field, an installation being reinstalled)
     would never be stored.  It is put off, and the replay that put it off takes it again in a minute."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     other = replace(ctx, session_id="TEST-session-2")
     for key in ("TEST-turn-50", "TEST-turn-51"):
         first = source_event(source_event_key=key, content=f"TEST first {key}")
@@ -769,14 +781,14 @@ def _keys_like(core, prefix):
         )
 
 
-def test_a_copy_of_a_deleted_message_under_its_key_leaves_the_inbox(worker_app):
+def test_a_copy_of_a_deleted_message_under_its_key_leaves_the_inbox(ingress_app):
     """A copy of a deleted message under that message's key is refused for good.  Staying in the inbox with its
     code, it would keep the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by
     hand.  It leaves the inbox, and the hook and the pass are told it was cancelled.  The words spaced otherwise are
     the same words while the deleted text is kept, as a delete compares them (``inbox_rules.holds``)."""
     from scope_recall.runtime.worker_entry import _ingress_report
 
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     source = capture(core, ctx, "TEST 要删掉的一句。", key="TEST-deleted-key")
     authorize(core, ctx, source)
     core.forget(ctx, request(source), remaining_seconds=5)
@@ -811,12 +823,12 @@ def test_a_copy_of_a_deleted_message_under_its_key_leaves_the_inbox(worker_app):
     assert _keys_like(core, "TEST-deleted-key") == [("TEST 要删掉的一句。",)], "the deleted row alone"
 
 
-def test_another_message_under_a_deleted_message_s_key_is_stored_under_its_own(worker_app):
+def test_another_message_under_a_deleted_message_s_key_is_stored_under_its_own(ingress_app):
     """A restarted Hermes gateway numbers its turns from 1 again, and a delete removes its own command's key: the next
     message at that turn must not be refused, nor dropped without a trace.  It is
     a key collision, stored under a key of its own, before the delete is purged and after; once purged, the deleted
     message's digest still refuses a copy."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     source = capture(core, ctx, "TEST 要删掉的一句。", key="TEST-deleted-key")
     command = authorize(core, ctx, source)
     operation = core.forget(ctx, request(source), remaining_seconds=5)
@@ -880,11 +892,11 @@ def test_a_host_check_that_raises_puts_off_that_row_only(worker_app):
     assert code.endswith("|1|replay|RuntimeError")
 
 
-def test_a_row_the_rekey_path_put_off_is_taken_again_by_that_path_alone_and_its_tries_count(worker_app, monkeypatch):
+def test_a_row_the_rekey_path_put_off_is_taken_again_by_that_path_alone_and_its_tries_count(ingress_app, monkeypatch):
     """A row put off while it is given a new key is not due for the plain replay, which would meet the old collision
     and write it back as a bare conflict: its tries would begin again each round, and it would never be given up.
     Only the rekey path takes it again, once its time is up, and it counts on."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-60", content="TEST first TEST-turn-60")
     capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
     other = replace(ctx, session_id="TEST-session-2")
@@ -1106,13 +1118,13 @@ def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refuse
     _assert_deleted_key_outcome(core, ctx, other_long)
 
 
-def test_a_message_purged_by_an_earlier_release_still_refuses_what_comes_under_its_key(worker_app):
+def test_a_message_purged_by_an_earlier_release_still_refuses_what_comes_under_its_key(ingress_app):
     """A purge by an earlier release kept no digests of the deleted words, and hashed a long message's group key once
     for each of its parts.  Nothing kept tells a near copy under such a key from another message, so whatever comes
     under it is refused, as that release refused it: a copy spaced otherwise is not stored as another message."""
     from scope_recall.core.delete_storage import purged_group_key
 
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     long_text = "".join(f"TEST 第{i}句旧时删掉的长话。" for i in range(6000))
     stored = [
         capture(core, ctx, "TEST 旧时删掉的一句话。", key="TEST-old-short"),
@@ -1147,11 +1159,11 @@ def test_a_message_purged_by_an_earlier_release_still_refuses_what_comes_under_i
         )
 
 
-def test_a_deleted_message_with_no_text_is_not_taken_for_an_old_purge(worker_app):
+def test_a_deleted_message_with_no_text_is_not_taken_for_an_old_purge(ingress_app):
     """A message with attachments alone has no text.  Deleted and not purged yet, it has no text and no kept forms, like
     a row purged by an earlier release, and must not have every other message under its key refused until the purge
     runs.  Only a purged row counts as an old purge."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     source = capture(core, ctx, "TEST 带附件的一条。", key="TEST-attachments")
     authorize(core, ctx, source)
     core.forget(ctx, request(source), remaining_seconds=5)
@@ -1171,11 +1183,11 @@ def test_a_deleted_message_with_no_text_is_not_taken_for_an_old_purge(worker_app
     )
 
 
-def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_version_once(worker_app, monkeypatch):
+def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_version_once(ingress_app, monkeypatch):
     """A restore purges its file again: written over from the empty text, the digests a first purge kept would be lost,
     and a copy spaced otherwise would come back.  And a long message's words must not be joined and read again for each
     part, which makes its purge grow with the square of its parts under the writer lease."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     short, long_text = "TEST 要删的 一句话。", "".join(f"TEST 第{i}句要删的长话。" for i in range(6000))
     stored = [capture(core, ctx, short, key="TEST-short"), capture(core, ctx, long_text, key="TEST-long")]
     authorize(core, ctx, *stored)
@@ -1478,10 +1490,10 @@ def test_a_delete_puts_each_deleted_text_together_once_and_only_when_it_needs_it
     assert len(calls) == 4
 
 
-def test_a_passing_failure_keeps_a_row_on_its_path(worker_app, monkeypatch):
+def test_a_passing_failure_keeps_a_row_on_its_path(ingress_app, monkeypatch):
     """A store error that passes (the store busy) is not written over a collision's code, which would take it off the
     rekey path and out of what a delete keeps."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-70", content="TEST first TEST-turn-70")
     capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
     other = replace(ctx, session_id="TEST-session-2")
@@ -1571,11 +1583,11 @@ def test_a_suppress_leaves_the_inbox_alone(worker_app):
         assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 4
 
 
-def test_a_collided_copy_of_a_suppressed_message_is_stored_suppressed(worker_app):
+def test_a_collided_copy_of_a_suppressed_message_is_stored_suppressed(ingress_app):
     """A message sent again under a key another message held is stored under a new key, a group of its own that the
     first message's suppression would not reach, and a suppressed message would come back to automatic recall that
     way.  A copy of a suppressed message is stored suppressed; other words under the same key are not."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     text, plain = "TEST 别再主动提这件私事，说过很多次了。", "TEST 一句没有被压下的话。"
     capture(core, ctx, plain, key="TEST-plain")
     source = capture(core, ctx, text, key="TEST-suppressed")
@@ -1612,12 +1624,12 @@ def test_a_collided_copy_of_a_suppressed_message_is_stored_suppressed(worker_app
         ).fetchall() == [(0,)]
 
 
-def test_a_collided_copy_is_compared_as_a_delete_compares_and_its_group_suppressed_whole(worker_app):
+def test_a_collided_copy_is_compared_as_a_delete_compares_and_its_group_suppressed_whole(ingress_app):
     """Compared by each part's exact digest, a collided copy spaced otherwise would come back to automatic recall, and
     so would the last part of a long copy that differed in one character, while its first part is suppressed.  The
     words of the message whose key it took are compared as a delete compares them, and a source group is
     suppressed whole.  A copy of another role, or in another project, is not the suppressed message's."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     # Two parts, whose words do not repeat: each part is compared on its own.
     short, long_text = "TEST 这件私事别再主动提了，谢谢。", "".join(f"TEST 第{i}句私事。" for i in range(8000))
 
@@ -2042,12 +2054,13 @@ def test_a_message_with_no_copy_of_its_own_does_not_take_one_said_alike_after_it
     assert tuple(said) == (False, True)
 
 
-def test_a_message_stored_and_waiting_again_in_the_inbox_is_one_copy(worker_app):
+def test_a_message_stored_and_waiting_again_in_the_inbox_is_one_copy(ingress_app):
     """A retried capture of a stored message waits in the inbox under the same key: counted as a second copy, it held
     a later message said alike that was never stored."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     event = source_event(source_event_key="TEST-stored-and-waiting", content="TEST 继续")
     capture_inbox.durable_record_event(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    assert _visible_sources(core, event["content"]) == 1
     token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
     assert token is not None
     later = (datetime.fromisoformat(event["occurred_at"].replace("Z", "+00:00")) + timedelta(seconds=30)).isoformat()
@@ -2078,10 +2091,10 @@ def test_a_named_message_stored_in_another_session_is_held_across_sessions(worke
     assert tuple(core.said_in_session(later, "TEST-scope", items, across_sessions=True)) == (True, True, True)
 
 
-def test_a_long_key_that_was_taken_is_cut_to_fit_its_new_key(worker_app):
+def test_a_long_key_that_was_taken_is_cut_to_fit_its_new_key(ingress_app):
     """A host key of 490 characters or more went past the 512-character limit once the marker and the fingerprint
     were added, and was refused on every pass."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     key = "TEST-" + "k" * 500
     first = source_event(source_event_key=key, content="TEST first long-keyed message")
     capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
@@ -2118,10 +2131,10 @@ def test_a_long_message_waiting_in_the_inbox_counts_as_said(worker_app):
     assert tuple(said) == (True,)
 
 
-def test_a_capture_that_conflicts_again_under_its_new_key_stays_final(worker_app, monkeypatch):
+def test_a_capture_that_conflicts_again_under_its_new_key_stays_final(ingress_app, monkeypatch):
     """Written back as a bare conflict, such a row would be given the same new key and refused on every pass, and wake
     the worker every 30 s."""
-    core, ctx, clock = worker_app
+    core, ctx, clock = ingress_app
     first = source_event(source_event_key="TEST-turn-43", content="TEST first message")
     capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
     other = replace(ctx, session_id="TEST-session-2")
