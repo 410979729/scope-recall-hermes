@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPResponse
 from io import BytesIO
 from pathlib import Path
-from threading import Condition, Event, Lock
+from threading import Condition, Event, Lock, get_ident
 from types import SimpleNamespace
 
 import pytest
@@ -210,18 +210,22 @@ def _persistent_post(transport, body=b"request", *, timeout=2, limit=1024):
 
 
 class _WaitingCondition(Condition):
-    """Expose actual waits while preserving the lock handoff used by the pool."""
+    """Expose each caller's first wait while preserving the lock handoff used by the pool.
+
+    ``wait_for`` waits again for the same caller when a timed wait ends before its clock reaches the deadline,
+    which Windows timer resolution allows, so the events belong to calling threads rather than to calls.
+    """
 
     def __init__(self, count=1, *, first_resumes_first=False):
         super().__init__()
         self.waiting = [Event() for _ in range(count)]
         self.first_resumed = Event()
         self.first_resumes_first = first_resumes_first
-        self.calls = 0
+        self._callers = {}
 
     def wait(self, timeout=None):
-        index = self.calls
-        self.calls += 1
+        # Every caller holds this condition's lock here, so the caller table needs no lock of its own.
+        index = self._callers.setdefault(get_ident(), len(self._callers))
         self.waiting[index].set()
         result = super().wait(timeout)
         if index == 0:
