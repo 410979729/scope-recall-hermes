@@ -35,7 +35,9 @@ from test_worker import (
 )
 from v11_support import downgrade_store, source_event
 
-from tests.host.conftest import slow_capture_store as slow_capture_store
+from tests.store_clock import metered_store as metered_store
+from tests.store_clock import semantic_store as semantic_store
+from tests.store_clock import slow_capture_store as slow_capture_store
 
 
 def test_capture_commit_failure_survives_fresh_process_and_dedupes(worker_app, monkeypatch, tmp_path):
@@ -1055,7 +1057,7 @@ def _assert_deleted_key_outcome(core, ctx, other_long):
     assert all(_visible_sources(core, event["content"]) == 1 for event in parts)
 
 
-@pytest.mark.parametrize("pace", ["normal", "slow"])
+@pytest.mark.parametrize("pace", ["normal", pytest.param("slow", marks=pytest.mark.real_store_time)])
 def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refused(worker_app, slow_capture_store, pace):
     """Deleted group keys refuse equivalent text and later revisions before and after purge.
 
@@ -2048,6 +2050,7 @@ def test_a_message_stored_and_waiting_again_in_the_inbox_is_one_copy(worker_app)
     core, ctx, clock = worker_app
     event = source_event(source_event_key="TEST-stored-and-waiting", content="TEST 继续")
     capture_inbox.durable_record_event(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    assert _visible_sources(core, event["content"]) == 1
     token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
     assert token is not None
     later = (datetime.fromisoformat(event["occurred_at"].replace("Z", "+00:00")) + timedelta(seconds=30)).isoformat()

@@ -57,6 +57,7 @@ def _home(tmp_path, name, **options):
 
 @pytest.fixture
 def root(tmp_path):
+    """Create the synthetic shared store to which both entries attach."""
     store = tmp_path / "TEST-shared"
     write_shared_payload(store, new_shared_payload(store, agent_id=AGENT))
     return store
@@ -162,10 +163,14 @@ def test_the_same_host_session_and_turn_on_two_entries_are_two_sources(root, ent
     assert all(f":{entry}:TEST-same-session:" in key for entry, _session, key in rows)
 
 
-def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
+@pytest.mark.parametrize("slow_write", [False, True], ids=["store", "slow_store"])
+def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries, slow_capture_store, slow_write):
+    """Deletion blocks every entry's recall and purges the shared source, including after a slow capture."""
     agent3, agent2 = entries
     told, deleting = _provider(agent2), _provider(agent3)
     try:
+        if slow_write:
+            slow_capture_store()
         told.observe_pre_llm(
             session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 我的储物柜密码是 4471。"
         )
@@ -185,9 +190,7 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
         assert receipt["result"]["mode"] == "delete", receipt
         told.on_session_switch("TEST-session-2")
         injected = told.prefetch("储物柜密码 4471")
-        # The text itself is erased by the worker, which the deletion queued.  Its subject names the scope, and a
-        # scope id here holds colons: the worker split the subject at the last one, found no operation, and marked
-        # the purge obsolete, leaving the text on disk behind the read block.
+        # A shared scope id contains colons; the queued purge must still resolve its whole operation subject.
         purged = []
 
         class Purge:

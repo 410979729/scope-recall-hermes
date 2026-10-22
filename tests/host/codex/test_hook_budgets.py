@@ -16,7 +16,7 @@ from scope_recall.adapters.clients.handler import _TOTAL_BUDGET_S
 from scope_recall.core.capture_inbox import replay_inbox
 
 from tests.host.codex.test_runtime_wiring import _runtime_payload, _write_runtime_config
-from tests.host.conftest import HOOK_MARGIN_SECONDS, assert_hook_budget
+from tests.store_clock import HOOK_MARGIN_SECONDS, assert_hook_budget
 
 
 @pytest.fixture

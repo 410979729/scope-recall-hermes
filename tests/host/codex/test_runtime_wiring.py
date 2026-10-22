@@ -111,7 +111,7 @@ def test_handler_and_mcp_share_runtime_core(codex_install):
     handler.close()
 
 
-def test_session_end_launches_owned_worker_without_foreground_model(codex_install, still_clocks):
+def test_session_end_launches_owned_worker_without_foreground_model(codex_install):
     config, _core, project, runtime_path = codex_install
     handler = CodexHookHandler.from_config_path(
         str(config.config_path),

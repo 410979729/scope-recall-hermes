@@ -39,7 +39,7 @@ from scope_recall.contracts import ContractError, InstanceBinding
 from scope_recall.core.capture import CaptureReceipt
 from scope_recall.core.capture_inbox import replay_inbox
 
-from tests.host.conftest import assert_hook_budget
+from tests.store_clock import assert_hook_budget
 
 NOW = "2026-09-24T20:00:00Z"
 AGENT = "TEST-agent"
@@ -48,14 +48,8 @@ OWNER = "TEST-owner"
 
 
 @pytest.fixture
-def store(tmp_path, still_clocks):
-    """Shared store whose hooks, core and inbox read the semantic admission clock.
-
-    Physical SQL time is not charged. ``metered_store(cost)`` after this fixture, including
-    ``busy_store``, replaces the zero charge. A lease wait, a network wait and any other time
-    outside a store transaction still run. ``slow_capture_store`` is armed after this fixture
-    returns.
-    """
+def store(tmp_path):
+    """Create a synthetic store shared by the attached host entries."""
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
     homes = {}
@@ -170,7 +164,7 @@ def test_a_prompt_is_the_owner_s_under_the_client_s_entry_and_a_hermes_entry_rec
     )
 
 
-def test_what_a_hermes_entry_was_told_reaches_the_client_s_prompt_marked_as_theirs(store, still_clocks):
+def test_what_a_hermes_entry_was_told_reaches_the_client_s_prompt_marked_as_theirs(store):
     root, homes, client, _capture = store
     told = _hermes(homes["agent2"])
     try:
@@ -468,7 +462,7 @@ def _said_in_store(root):
     return sorted(_rows(root, "SELECT role, origin, content FROM source_events WHERE entry_id='claude-code'"))
 
 
-def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(store, tmp_path, still_clocks):
+def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(store, tmp_path):
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -792,7 +786,7 @@ def test_a_prompt_still_in_the_inbox_is_not_stored_again_from_the_record(store, 
     assert _rows(root, "SELECT count(*) FROM source_events WHERE source_event_key LIKE '%:record:u1@1'") == [(0,)]
 
 
-def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch, still_clocks):
+def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch):
     root, _homes, client, _capture = store
     at = _moments()
     record = _record(
@@ -955,7 +949,7 @@ def test_a_reminder_the_desktop_app_puts_in_a_prompt_is_not_the_owner_s_words(st
     assert asked[2:] == ["TEST 服务这边的问题。"]
 
 
-def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(store, tmp_path, still_clocks):
+def test_a_reminder_the_desktop_app_puts_in_the_record_is_not_the_owner_s_words(store, tmp_path):
     """A reminder in a person-role record is excluded whether it is a separate text block or precedes the typed text
     in one string.  A message containing only reminders is not captured as the person's words."""
     root, _homes, client, _capture = store
@@ -1001,7 +995,7 @@ def _compaction(stamp):
     ]
 
 
-def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store, tmp_path, still_clocks):
+def test_a_prompt_s_recall_leaves_out_what_claude_code_s_model_still_holds(store, tmp_path):
     """Recall excludes this session's messages that the model still holds, including every message when no compaction
     has occurred.  Messages before compaction remain recallable because the model holds only their summary."""
     root, _homes, client, _capture = store
@@ -1288,7 +1282,7 @@ def test_the_doctor_names_codex_s_requests_stored_as_the_owner_s_words(store, tm
     assert other.capability_gaps == [] and other.checks == [], "another entry's"
 
 
-def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store, still_clocks):
+def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):
     """A recall request carries at most 8,192 characters of query.  A longer prompt went whole, the request was
     refused, and the turn had no recall at all: three of the work computer's Codex prompts in one morning."""
     _root, homes, client, _capture = store
@@ -3260,9 +3254,10 @@ def _kept_prompt(kept, index, budget=10.0):
     return diagnostics["recall_vectors"], diagnostics["recall_vector_gap"]
 
 
+@pytest.mark.real_store_time
 def test_a_kept_handler_recalls_with_its_vectors_when_its_provider_and_store_are_slow(tmp_path, monkeypatch):
-    """Query embedding overlaps the SQLite channels: with 2.8 s of channel work and a 0.8 s provider reply, a 4 s
-    prompt keeps its vector results. The retained handler preserves this behavior after a pause."""
+    """Query embedding overlaps 2.8 s SQLite channels and a 0.8 s provider reply within the 4 s retrieval budget.
+    The retained handler preserves this behavior after a pause."""
     import time
 
     from scope_recall.adapters.clients.handler import CodexHookHandler
@@ -3271,9 +3266,12 @@ def test_a_kept_handler_recalls_with_its_vectors_when_its_provider_and_store_are
 
     client, entry_config, server, connections = _embedding_entry(tmp_path, monkeypatch, delay=0.8)
     lexical = RetrievalStorage.lexical
+    delays = []
 
     def slow_lexical(self, tx, context, *, limit):
+        started = time.monotonic()
         time.sleep(2.8)
+        delays.append(time.monotonic() - started)
         return lexical(self, tx, context, limit=limit)
 
     monkeypatch.setattr(RetrievalStorage, "lexical", slow_lexical)
@@ -3291,6 +3289,7 @@ def test_a_kept_handler_recalls_with_its_vectors_when_its_provider_and_store_are
         server.shutdown()
         server.server_close()
     assert outcomes == [(True, None)] * 2, outcomes
+    assert delays and min(delays) >= 2.7, delays
 
 
 def test_a_kept_handler_warmed_when_its_server_starts_recalls_its_first_prompt_with_vectors(tmp_path, monkeypatch):
@@ -3496,7 +3495,7 @@ def _wb_turns(root, kind):
     return [key[len(prefix) : -len("@1")] for (key,) in keys if key.startswith(prefix)]
 
 
-def test_workbuddy_stores_the_person_s_last_query_and_recalls_for_it(workbuddy, store, still_clocks):
+def test_workbuddy_stores_the_person_s_last_query_and_recalls_for_it(workbuddy, store):
     """WorkBuddy hands its prompt hook every user message of the input, joined.  The person's words are the last
     ``<user_query>`` block; the reminders around it are WorkBuddy's, never stored and never searched for."""
     root, home, _projects = workbuddy
@@ -4132,7 +4131,7 @@ def _dsh_said(root, role=None):
     return sorted(_rows(root, f"SELECT role, origin, content FROM source_events WHERE entry_id='dsh'{where}"))
 
 
-def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(dsh, still_clocks, slow_capture_store):
+def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(dsh, slow_capture_store):
     """The plugin runs the prompt hook before a turn's first step: the prompt is the owner's, named by the session and
     dsh's turn number, and the answer is what is remembered, which the plugin appends to the step."""
     slow_capture_store()
@@ -4153,7 +4152,7 @@ def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(ds
     assert "Mochi" in context, "a new session's first prompt recalls what another one said"
 
 
-def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh, still_clocks):
+def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh):
     """The plugin keeps a turn's messages and sends them with its Stop: the reply under the turn, and from the lines
     what the model said while it worked and what the person sent meanwhile.  The answer's ``through`` is how many
     lines are stored; the same lines sent again (an answer lost on the way, or the rest of a turn after a Stop that
@@ -4206,7 +4205,7 @@ def _dsh_resent_cleanly(diagnostics, root):
     return diagnostics.capture_error_detail is None and _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
 
 
-def test_a_dsh_reply_whose_line_carries_no_moment_is_stored_once_when_sent_again(dsh, still_clocks):
+def test_a_dsh_reply_whose_line_carries_no_moment_is_stored_once_when_sent_again(dsh):
     """A line without a moment the store can read shows nothing, so the reply it holds is dated by the hook that first
     stores it; a later Stop that sends the reply again keeps that moment, and is the reply already stored."""
     root, home = dsh
@@ -4228,7 +4227,7 @@ def test_a_dsh_reply_whose_line_carries_no_moment_is_stored_once_when_sent_again
     assert _dsh_kept(root) == stored and [key for key, *_rest in stored] == ["assistant:4", "record:u1"]
 
 
-def test_a_dsh_reply_stored_at_another_moment_is_the_one_a_later_stop_sends_again(dsh, still_clocks):
+def test_a_dsh_reply_stored_at_another_moment_is_the_one_a_later_stop_sends_again(dsh):
     """A reply stored under its turn's key at a moment other than its line's (a Stop that names no line for its reply
     dates it by the hook) is the reply a later Stop sends with its line: it keeps the moment it was stored with, and its
     line is that reply, not a message of its own."""
@@ -4252,7 +4251,7 @@ def test_a_dsh_reply_stored_at_another_moment_is_the_one_a_later_stop_sends_agai
     assert _dsh_kept(root) == stored and [key for key, *_rest in stored] == ["assistant:5"]
 
 
-def test_two_dsh_replies_alike_in_one_session_are_two_messages(dsh, still_clocks):
+def test_two_dsh_replies_alike_in_one_session_are_two_messages(dsh):
     """The model said the same words at the end of a turn and again in the next, still running when the first one's
     Stop was sent.  The Stop's reply is the line the plugin names (``reply_id``), never the last with its words, and
     that line is held as the reply stored under the turn's key, whatever the moment the reply was stored with: each is
@@ -4306,9 +4305,7 @@ def _dsh_inbox_resolved(home):
         hook.close()
 
 
-def test_a_dsh_reply_sent_again_when_its_key_cannot_be_read_is_resolved_as_the_one_stored(
-    dsh, still_clocks, monkeypatch
-):
+def test_a_dsh_reply_sent_again_when_its_key_cannot_be_read_is_resolved_as_the_one_stored(dsh, monkeypatch):
     """The Stop reads what its turn's key holds to keep a reply's stored moment.  When that read fails, the reply sent
     again with a moment of its own is refused and waits in the inbox, and the store's worker resolves it as the reply
     already stored: one copy, and nothing under a key of its own."""
@@ -4332,7 +4329,7 @@ def test_a_dsh_reply_sent_again_when_its_key_cannot_be_read_is_resolved_as_the_o
 
 
 @pytest.mark.parametrize("reply", ["TEST 改之前的回答。", "TEST 改之后的回答。"])
-def test_an_edited_dsh_reply_is_its_own_line_under_the_id_it_shares(dsh, still_clocks, reply):
+def test_an_edited_dsh_reply_is_its_own_line_under_the_id_it_shares(dsh, reply):
     """dsh sent the model's message again, edited, under the same id.  The Stop's reply is the line with its id and its
     words, whichever version it is, and is said when that line was; the id is one message, held with its reply, as the
     read of a record holds every line of an id it holds."""
@@ -4538,14 +4535,37 @@ def test_the_plugin_recalls_before_the_first_step_and_stores_the_turn_at_its_end
 
 
 @_NEEDS_NODE
-def test_a_turn_that_did_not_complete_has_no_reply_and_keeps_what_was_said(dsh, tmp_path):
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_a_turn_that_did_not_complete_has_no_reply_and_keeps_what_was_said(dsh, tmp_path, pace):
     """A turn the person stopped (or that failed) after the model said something has no reply: what was said is stored
-    from the turn's messages, once, and nothing is stored as the turn's reply."""
+    from the turn's messages, once, and nothing is stored as the turn's reply. Its prompt may wait in the inbox."""
     root, home = dsh
+    prompt = "TEST 我的猫叫什么名字？"
     result = _run_plugin(
-        {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "endReason": "aborted"}
+        {
+            "python": sys.executable,
+            "home": str(home),
+            "spool": str(tmp_path / "TEST-spool"),
+            "endReason": "aborted",
+            "prompt": prompt,
+        },
+        env={"SR_DSH_SLOW_CAPTURE": prompt, "SR_DSH_SLOW_CAPTURE_DELAY": "1.1"} if pace == "slow" else {},
     )
     assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None
+    expected = sorted(
+        [
+            ("user", "human_direct", prompt),
+            ("assistant", "assistant_visible", "TEST 我先查一下记忆。"),
+            ("assistant", "assistant_visible", "TEST 它叫 Mochi。"),
+        ]
+    )
+    stored, held = _received_plugin_rows(root)
+    assert sorted(stored + [(event["role"], event["origin"], event["content"]) for event in held]) == expected
+    if pace == "slow":
+        assert any(event["content"] == prompt and event["source_event_key"].endswith(":user:1@1") for event in held)
+    _replay_received_plugin_inbox(home)
+    assert _plugin_rows(root) == expected
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
     assert _plugin_keys(root) == ["record:a-1", "record:a-2", "user:1"], result["status"]
 
 
@@ -4595,23 +4615,35 @@ def test_a_message_that_comes_while_a_turn_is_stored_is_kept_and_stored_with_the
 
 
 @_NEEDS_NODE
-def test_a_turn_larger_than_one_stop_is_stored_in_several_within_the_hook_s_input(dsh, tmp_path):
+@pytest.mark.parametrize("pace", ["normal", "slow"])
+def test_a_turn_larger_than_one_stop_is_stored_in_several_within_the_hook_s_input(dsh, tmp_path, pace):
     """Two model messages of 20,000 CJK characters each (60 KB of UTF-8 apiece): each is clipped to what one Stop can
     carry, they go in Stops of their own under the hook's 64 KiB of input, and the reply, too large to go beside its
-    line, is stored from it."""
+    line, is stored from it. A prompt accepted into the inbox is materialized before checking all three sources."""
     root, home = dsh
+    prompt = "TEST 我的猫叫什么名字？"
     result = _run_plugin(
         {
             "python": sys.executable,
             "home": str(home),
             "spool": str(tmp_path / "TEST-spool"),
             "bigText": {"char": "长", "count": 20_000},
-        }
+            "prompt": prompt,
+        },
+        env={"SR_DSH_SLOW_CAPTURE": prompt, "SR_DSH_SLOW_CAPTURE_DELAY": "1.1"} if pace == "slow" else {},
     )
     assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None, result["warnings"]
+    stored, held = _received_plugin_rows(root)
+    received = sorted(stored + [(event["role"], event["origin"], event["content"]) for event in held])
+    assert ("user", "human_direct", prompt) in received
+    if pace == "slow":
+        assert any(event["content"] == prompt and event["source_event_key"].endswith(":user:1@1") for event in held)
+    _replay_received_plugin_inbox(home)
+    assert _plugin_rows(root) == received
+    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
     assert _plugin_keys(root) == ["record:a-1", "record:a-2", "user:1"], result["status"]
     stored = [content for role, _origin, content in _plugin_rows(root) if role == "assistant"]
-    assert all(
+    assert len(stored) == 2 and all(
         content.endswith("more characters not kept by Scope Recall]") and len(content.encode("utf-8")) < 36_000
         for content in stored
     )
