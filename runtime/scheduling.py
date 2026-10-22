@@ -41,6 +41,9 @@ BUSY_BACKOFF_SECONDS = 30.0
 #: a backoff, is a worker that
 #: is not going to work, and then standing down is right.
 MAX_CONSECUTIVE_WORKER_FAILURES = 3
+#: The work types a model or embedding route does.  A pass can find one unavailable (no port, or a port that
+#: refused before any attempt); the supervisor then cools it down and records how long it stays unavailable.
+ROUTED_WORK_TYPES = frozenset({"embed", "consolidate", "evaluate_candidate"})
 #: Seconds between two reads of the operator pause while a supervisor sleeps its start delay.
 PAUSE_POLL_SECONDS = 5.0
 #: Seconds before a worker is woken for settled candidates again after a pass that did not sweep them: a provider
@@ -86,6 +89,61 @@ def capable_work_types(config) -> set[str]:
     if ledger and aux.external_embedding and aux.embedding is not None and config.vector is not None:
         capable.add("embed")
     return capable
+
+
+def _unavailable_streaks(previous: object, payload: dict, tracked: set[str], stamp: str) -> dict:
+    """The passes in a row that left each tracked work type unavailable, updated by a pass that ran its queue.
+
+    A tracked type the pass lists in ``unavailable_work_types`` extends its entry, or starts one at ``stamp``, and
+    takes this pass's gaps, its items' error codes and its worker error, bounded as the worker status file bounds
+    them.  A tracked type the pass does not list ran or had nothing queued, and its entry goes.  An entry or a
+    receipt field of another shape counts as empty instead of stopping the supervisor.  Only the owning supervisor
+    writes the record.
+    """
+    gaps, items, worker_error = payload.get("capability_gaps"), payload.get("items"), payload.get("worker_error")
+    gaps = [str(gap)[:120] for gap in gaps[:16]] if isinstance(gaps, list) else []
+    items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    worker_error = " ".join(worker_error.splitlines()).strip()[:200] if isinstance(worker_error, str) else ""
+    result = {}
+    for kind in sorted(tracked & set(payload.get("unavailable_work_types", ()))):
+        prior = previous.get(kind) if isinstance(previous, dict) else None
+        if not (
+            isinstance(prior, dict)
+            and type(prior.get("passes")) is int
+            and prior["passes"] > 0
+            and isinstance(prior.get("since"), str)
+        ):
+            prior = {}
+        codes = dict.fromkeys(
+            str(item["error_code"])[:64] for item in items if item.get("work_type") == kind and item.get("error_code")
+        )
+        entry = {
+            "passes": prior.get("passes", 0) + 1,
+            "since": prior.get("since", stamp),
+            "last_at": stamp,
+            "capability_gaps": list(gaps),
+            "error_codes": list(codes)[:4],
+        }
+        if worker_error:
+            entry["worker_error"] = worker_error
+        result[kind] = entry
+    return result
+
+
+def _unavailable_fields(control: SupervisorControl, config, code: int, payload: dict, began: str) -> dict:
+    """The ``unavailable_streaks`` field a pass writes to the control file, or nothing to write.
+
+    Only a pass that ran its queue says which work it could not do.  A busy or cut-short pass (exit 75 or 124) did
+    not, and neither did a pass that only purged because the daily item cap was spent (gap ``daily_queue_budget``):
+    each leaves the record as it was.  A route the config does not enable is a choice, never a run of unavailable
+    passes.
+    """
+    gaps = payload.get("capability_gaps")
+    if code != 0 or (isinstance(gaps, list) and "daily_queue_budget" in gaps):
+        return {}
+    previous = control.read().get("unavailable_streaks")
+    tracked = capable_work_types(config) & ROUTED_WORK_TYPES
+    return {"unavailable_streaks": _unavailable_streaks(previous, payload, tracked, began)}
 
 
 def _daily_items_used(config, now: datetime) -> int:
@@ -500,11 +558,7 @@ def supervise(
                 "monotonic": clock(),
                 "progress": int(payload.get("completed", 0)) + int(payload.get("recovered", 0)),
             }
-            unavailable = set(payload.get("unavailable_work_types", ())) & {
-                "embed",
-                "consolidate",
-                "evaluate_candidate",
-            }
+            unavailable = set(payload.get("unavailable_work_types", ())) & ROUTED_WORK_TYPES
             unavailable_until = {
                 kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, 300))
                 for kind in unavailable
@@ -548,7 +602,13 @@ def supervise(
                 stamps = {"unswept_pass_at": None}
             else:
                 stamps = {"unswept_pass_at": began}
-            control.update(drains=count, last_exit_code=code, worker_failures=0, **stamps)
+            control.update(
+                drains=count,
+                last_exit_code=code,
+                worker_failures=0,
+                **stamps,
+                **_unavailable_fields(control, config, code, payload, began),
+            )
     except BaseException:
         control.update(
             accepting=False, state="failed", reason="supervisor_failed", drains=count, finished_at=_stamp(utc_now())
