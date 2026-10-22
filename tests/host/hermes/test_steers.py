@@ -15,7 +15,7 @@ from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_herme
 from scope_recall.adapters.hermes.identity import host_scope_payload
 from scope_recall.core import capture_inbox
 
-from tests.host.conftest import assert_hook_budget
+from tests.store_clock import assert_hook_budget
 
 _NOTICE = "[IMPORTANT: Background process TEST-proc finished (exit code 0).\nCommand: TEST make build]"
 _SUMMARY = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. TEST 摘要"
@@ -57,14 +57,8 @@ def _stored(hermes_home) -> list[tuple[str, str, str]]:
 
 
 @pytest.fixture
-def telegram(hermes_home, initialize_kwargs, metered_store):
-    """A Telegram private chat bound to its person, as a gateway binds one.
-
-    The zero semantic charge is installed before the core and the adapter, so the handler, core and inbox share
-    it. A budget test's ``metered_store(cost)`` replaces that charge. A real wait, including a deadline slept out
-    beside the store, still advances the clock. ``slow_capture_store`` is armed after this fixture returns.
-    """
-    metered_store(0.0)
+def telegram(hermes_home, initialize_kwargs):
+    """A Telegram private chat bound to its person, as a gateway binds one."""
     _binding, core = install_hermes_scope_recall(
         hermes_home,
         agent_id=initialize_kwargs["agent_identity"],
@@ -576,9 +570,7 @@ def test_a_steer_the_retry_buffer_gave_up_is_read_again(telegram, hermes_home, m
 
 
 @pytest.mark.parametrize("spent_at_lock", [True, False])
-def test_compression_retries_keep_the_hook_deadline(
-    telegram, hermes_home, monkeypatch, retry_passes_have_time, spent_at_lock
-):
+def test_compression_retries_keep_the_hook_deadline(telegram, hermes_home, monkeypatch, spent_at_lock):
     """A pending inbox and memory retry share the hook's time, including time already spent waiting for its lock.
     Exhausting it keeps both captures for a later pass, rather than granting either another full wait."""
 

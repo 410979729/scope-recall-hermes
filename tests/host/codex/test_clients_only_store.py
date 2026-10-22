@@ -84,7 +84,7 @@ def _stored(root, entry_id):
         ).fetchall()
 
 
-def test_two_clients_share_a_store_no_hermes_home_is_attached_to(tmp_path, capsys, made, still_clocks):
+def test_two_clients_share_a_store_no_hermes_home_is_attached_to(tmp_path, capsys, made):
     """WorkBuddy, attached first to the new store, brings the owner's scope; dsh, attached naming it, reads and
     captures there.  Each recalls what the owner told the other, marked with the entry it came in through."""
     root = made
@@ -104,7 +104,7 @@ def test_two_clients_share_a_store_no_hermes_home_is_attached_to(tmp_path, capsy
     assert ["dsh"] in _came_through(recalled, "KZ-42")
 
 
-def test_a_hermes_home_attached_later_reads_and_is_read_in_the_clients_scope(tmp_path, capsys, made, still_clocks):
+def test_a_hermes_home_attached_later_reads_and_is_read_in_the_clients_scope(tmp_path, capsys, made):
     """A Hermes home attached without ``--grants-from`` gets a fresh installation's owner grants, and the store's first
     client brought exactly that owner scope: the Hermes entry brings no scope of its own, and the owner's words reach
     every agent both ways, with no grants changed."""

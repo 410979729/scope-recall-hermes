@@ -40,13 +40,8 @@ TOKEN = "TEST-token-0123456789-abcdefghijklmnopqrstuvwxyz"
 
 
 @pytest.fixture
-def store(tmp_path, still_clocks):
-    """Shared store whose handler, core and inbox read the semantic admission clock.
-
-    Physical SQL time is not charged. A later ``metered_store(cost)`` replaces that zero charge.
-    Time outside a store transaction, including the server's start and a client's HTTP wait, still
-    runs. A slow-write check calls ``slow_capture_store`` after this fixture has returned.
-    """
+def store(tmp_path):
+    """Create a synthetic store shared by the attached host entries."""
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
     home = tmp_path / "TEST-agent3-home"
@@ -200,7 +195,7 @@ def test_a_wrong_token_is_refused_and_nothing_is_stored(served, tmp_path):
     assert refused.value.code == 401
 
 
-def test_claude_code_prompt_and_record_reach_the_entry_once(served, tmp_path, still_clocks):
+def test_claude_code_prompt_and_record_reach_the_entry_once(served, tmp_path):
     root, _homes, ports = served
     config = _client(tmp_path, "claude-code", ports["claude-code"])
     at = _moments()
@@ -1053,7 +1048,7 @@ def test_a_fast_client_s_context_moment_is_not_used():
     assert on_time == timedelta(0)
 
 
-def test_an_older_client_s_reminders_are_taken_out_by_the_server(store, still_clocks):
+def test_an_older_client_s_reminders_are_taken_out_by_the_server(store):
     """A client on another machine still on 3.10.4 sends the prompt as its hook got it and the person's messages
     as its record has them, with the <system-reminder> Claude's desktop app put in them; the entry's server stores only
     the person's words, and nothing for a message that is only reminders."""
@@ -1109,7 +1104,7 @@ def test_an_older_client_s_reminders_are_taken_out_by_the_server(store, still_cl
     )
 
 
-def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds(store, tmp_path, still_clocks):
+def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds(store, tmp_path):
     """The server opens no path a request names, so a Claude Code client reads since when its model holds the
     session's turns from its own record and sends it with the prompt; the server's recall leaves those turns out.  A
     client that cannot read its record sends nothing, and keeps nothing a payload carried of its own."""
@@ -1155,7 +1150,7 @@ def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds
     assert "QX-17。" in held and "KZ-42。" not in held, held
 
 
-def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch, still_clocks):
+def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch):
     """Clamped one time at a time, a client 90 s fast lost its order: a reply said 10 s into the turn kept its time
     (within the minute of the Stop that sent it), the next prompt was clamped to now, and the reply sorted after it
     and joined the next turn.  Every time a request carries moves back by the same lead."""
@@ -1287,7 +1282,7 @@ def test_a_hook_the_busy_store_did_not_store_is_kept_to_send_again(store, tmp_pa
     assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 1, "and the hook is kept to send again"
 
 
-def test_a_locked_database_fails_the_capture_or_the_recall_not_the_request(store, monkeypatch, still_clocks):
+def test_a_locked_database_fails_the_capture_or_the_recall_not_the_request(store, monkeypatch):
     """SQLite's own "database is locked" (``BEGIN IMMEDIATE`` past its wait) does not escape the hook as a 500 that
     leaves the prompt with no recall at all.  The capture fails and the hook is kept to send again; a recall that
     meets it fails alone."""
@@ -1445,7 +1440,7 @@ def test_the_server_refuses_a_body_nested_past_the_parser_s_limit(served, past_t
     assert refused.value.code == 400
 
 
-def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_path, still_clocks):
+def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_path):
     """A prompt's recall is asked of the server's kept recaller, not of a handler made for each request, which would
     open its vector table and embedding worker every time (3-5 s of a 5 s budget).  The request's handler stores the
     prompt, and recalls itself only while the kept one is busy."""
@@ -1539,7 +1534,7 @@ def test_the_server_log_says_how_the_kept_recall_went(served, tmp_path, monkeypa
     assert " ms (build 120 ms, capture 850 ms, close 40 ms), warm recall" in log
 
 
-def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store, caplog, still_clocks):
+def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store, caplog):
     """A kept recall that raises is not swallowed by the request's handler: the server's log names it, and the request
     recalls itself."""
     import logging
@@ -1567,7 +1562,7 @@ def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store
     assert any("kept recall failed" in record.getMessage() and record.exc_info for record in caplog.records)
 
 
-def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_path, monkeypatch, still_clocks):
+def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_path, monkeypatch):
     """A WorkBuddy on another machine is forwarded as the claude-code host is: its Stop sends what its own session
     record shows (read with WorkBuddy's reader, the record found by its session when the hook names it wrongly), and
     the server stores each message once.  A Stop that only repeats the last reply sends nothing new."""

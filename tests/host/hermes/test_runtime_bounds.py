@@ -31,7 +31,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import MAX_SEGMENT_CHARS
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
-from tests.host.conftest import assert_hook_budget
+from tests.store_clock import assert_hook_budget
 
 _MODES = ("history", "current", "auto")
 

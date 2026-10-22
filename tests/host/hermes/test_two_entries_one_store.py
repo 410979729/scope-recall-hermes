@@ -56,9 +56,8 @@ def _home(tmp_path, name, **options):
 
 
 @pytest.fixture
-def root(tmp_path, metered_store):
-    """Shared-entry semantics use the same admission clock, excluding physical transaction latency."""
-    metered_store(0.0)
+def root(tmp_path):
+    """Create the synthetic shared store to which both entries attach."""
     store = tmp_path / "TEST-shared"
     write_shared_payload(store, new_shared_payload(store, agent_id=AGENT))
     return store
