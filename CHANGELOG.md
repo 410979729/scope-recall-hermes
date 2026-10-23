@@ -2,6 +2,12 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [3.13.0] - 2026-10-23
+
+Consolidation and candidate evaluation no longer refuse a source that capture admitted. The request guard read the sources in the JSON a request carries them in, where a value at a source's end that the scan exempts only before a space or the end of the text (`api_key: null`, `the password is required.`) is followed by the next field, and a quoted placeholder (`api_key: "<your-api-key>"`) has its quotes escaped; either read as a credential, and the request was refused as `sensitive_request` on every attempt. A model's result quoting such a line was refused the same way (`plaintext_secret_rejected`). The guard and the result check now read each text a structure carries as written, and a member under a key that names a credential as JSON writes it, so a credential held there is still refused whatever holds it. A candidate's evidence window, and a page of a long line with no sentence end, are cut where neither side holds a run the source does not, instead of inside a value or a key's name.
+
+Consolidation and evaluation work refused this way stays failed until re-opened: `retry-failures --config <file> --include-terminal --apply` re-opens it with the store's other by-design failures (one re-look per release), and `worker_entry --retry-failed` re-opens it by id.
+
 ## [3.12.2] - 2026-10-23
 
 Recall on the `sqlite-bruteforce` vector backend answered without vectors whenever the store's write-ahead log files were present, as they are while the worker holds it open, and a long-running gateway that opened the store while no worker held it could, after the next pass, return stale vector hits or fail with `database disk image is malformed`. Recall reads the store through SQLite's write-ahead log, so it sees every embedding the worker has committed, and a read waits for a lock no longer than the recall has left; on Linux and macOS a worker pass keeps the lock that tells other processes its WAL index is in use. `doctor` opens the configured `sqlite-bruteforce` store as recall does and, when it cannot, reports `vector_store_unreadable` with the label of recall's `vector_error:<label>` gap. No configuration or schema change is needed. Thanks to xiaokai8 for reporting the refused reads in #304.

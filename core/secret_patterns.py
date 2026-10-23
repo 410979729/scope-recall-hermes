@@ -11,6 +11,7 @@ reporting and classification, not for slicing or redacting the original text.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -322,3 +323,92 @@ def secret_like_text_starts_before(value: Any, end: int) -> bool:
         text = text[: line_end + 1]
     boundary = len(secret_scan_shadow(text[:end]))
     return any(match.start < boundary for match in scan_secret_like_text(text))
+
+
+def _after_key(item: Any) -> str:
+    """``item`` as JSON writes it after its key, a container as one holding something whose texts are read on their
+    own.  The something is a digit, which no placeholder name starts with (``{0}``, not ``{S}``)."""
+    if isinstance(item, dict):
+        return "{0}" if item else "{}"
+    if isinstance(item, (list, tuple)):
+        return "[0]" if item else "[]"
+    if item is None or isinstance(item, (str, bool, int, float)):
+        return json.dumps(item, ensure_ascii=False)
+    return str(item)
+
+
+def _names_a_credential(key: Any) -> bool:
+    """Whether the scan reads a plain value after ``key`` as a credential (``password``, ``api_key``, ``x_token``)."""
+    return contains_secret_like_text(f"{key}: Q")
+
+
+def structure_contains_secret_like_text(value: Any) -> bool:
+    """Whether a JSON-like value carries secret-like text, each of its texts read as written.
+
+    For a structure that crosses a boundary as JSON (a model request's sources, a model's result).  Read through that
+    encoding, a text's end is followed by the next field where the scan expects a space or the end of the text, and
+    its quotes are escaped: ``api_key: null`` ending a text and ``api_key: "<your-api-key>"`` anywhere in one read as
+    credentials.  Each text and each key is read alone.  A member under a key that names a credential is also read as
+    JSON writes it, ``key: value`` (``_after_key``), so a credential held there is still one whatever holds it
+    (``{"password": 123456}``, ``{"password": ["hunter2"]}``, ``{"password": "null hunter2"}``).  The walk keeps its own
+    stack, so nesting depth costs no recursion.
+    """
+
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if contains_secret_like_text(item):
+                return True
+        elif isinstance(item, dict):
+            for key, member in item.items():
+                if contains_secret_like_text(key) or (
+                    _names_a_credential(key) and contains_secret_like_text(f"{key}: {_after_key(member)}")
+                ):
+                    return True
+                pending.append(member)
+        elif isinstance(item, (list, tuple)):
+            pending.extend(item)
+    return False
+
+
+#: How far ``cut_between_runs`` moves a cut, and a quarter of how much text it reads on each side of one.  A key, a
+#: placeholder or a word is shorter than this, and on a long line the reading stays bounded.
+CUT_REACH = 200
+
+
+def _runs(text: str, shift: int = 0) -> set[tuple[str, int, int]]:
+    """The secret-like runs of ``text`` (``scan_secret_like_text``), their positions moved by ``shift``."""
+    return {(match.name, match.start + shift, match.end + shift) for match in scan_secret_like_text(text)}
+
+
+def cut_between_runs(text: str, cut: int, *, toward: int, reach: int = CUT_REACH) -> int:
+    """Where to cut ``text`` near ``cut`` so that neither side holds a secret-like run the uncut text does not.
+
+    The nearest position just after a whitespace character, from ``cut`` toward ``toward`` and at most ``reach``
+    away, where every run either side holds is a run of the uncut text, at the same place.  Cut inside a value the
+    scan exempts only whole, a side would carry its first letters (``credential_env: nu`` of ``null``,
+    ``api_key: <your api`` of ``<your api key>``), or the end of a key's name (``token:`` of ``mytoken:``), and read as
+    a credential.  The sides and the uncut text are read on the cut's line, at most ``4 * reach`` to each side of it;
+    a run that bound cuts into lies on a side and in the uncut text alike, so it neither blocks a cut nor excuses one.
+    ``cut`` itself when no such position is within reach, as on a run of characters with no space in it.
+    """
+
+    span = 4 * reach
+    step = 1 if toward > cut else -1
+    stop = (min(cut + reach, toward) if step > 0 else max(cut - reach, toward)) + step
+    for position in range(cut, stop, step):
+        if position <= 0 or position >= len(text):
+            return position
+        if not text[position - 1].isspace():
+            continue
+        low, high = max(0, position - span), min(len(text), position + span)
+        newline = text.rfind("\n", low, position)
+        start = newline + 1 if newline >= 0 else low
+        newline = text.find("\n", position, high)
+        end = newline if newline >= 0 else high
+        left = _runs(text[start:position])
+        right = _runs(text[position:end], len(secret_scan_shadow(text[start:position])))
+        if left | right <= _runs(text[start:end]):
+            return position
+    return cut

@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.12.2",
+  "package_version": "3.13.0",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",

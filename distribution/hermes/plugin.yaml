@@ -1,5 +1,5 @@
 name: scope-recall
-version: 3.12.2
+version: 3.13.0
 description: Scope Recall long-term memory, local and source-backed, one store shared by your agents
 provider_entry: register:register
 hooks:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -44,7 +43,7 @@ from .claims import (
 from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmation
 from .corroboration import CORROBORATED_REASON, corroboration_promotes
 from .evidence_quote import resolve_evidence_quotes
-from .secret_patterns import contains_secret_like_text
+from .secret_patterns import structure_contains_secret_like_text
 from .source_qualification import (
     AUTHORITY_QUESTION,
     CONDITIONAL,
@@ -76,7 +75,8 @@ def validate_claims(tx, value, scope_id: str, *, ungrounded_values: list[int] | 
     their value (``contracts.validate_proposal_references``); omitted, such a claim refuses the proposal."""
     tx._scope(scope_id)
     result = validate_payload("consolidation_result", value)
-    if contains_secret_like_text(json.dumps(result, ensure_ascii=False)):
+    # Text by text, as written: a quote copies its source verbatim, and the source was admitted as written.
+    if structure_contains_secret_like_text(result):
         raise ContractError("INPUT_INVALID", "plaintext_secret_rejected")
     snapshots = []
     for ref in result["source_refs"]:
