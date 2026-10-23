@@ -1,15 +1,17 @@
 """Every management command uses the same tested owner API and JSON envelope."""
 
+import base64
 import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from jsonschema import validate
+from scope_recall.core import management_query
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
 from scope_recall.maintenance import cli, memory
-from test_claims import app, initial
+from test_claims import app, capture, initial
 from test_restore import backup, run, store
 from v11_support import downgrade_store
 
@@ -82,6 +84,76 @@ def test_cli_selects_real_installed_store_and_prints_a_table(store, capsys):
     assert "KIND" in text and "REF" in text and source.ref in text
     assert cli.main(["memory", "list", *store.target(), "--agent", "agent2"]) == 0
     assert "KIND" in capsys.readouterr().out
+
+
+def test_complete_search_without_match_reports_examined(command, capsys):
+    assert cli.main(["memory", "search", "TEST absent needle"]) == 0
+    text = capsys.readouterr().out
+    assert "None of the " in text and "objects examined matched" in text
+    assert "Scan complete" in text and "Continue:" not in text
+
+
+def test_match_limit_stop_reports_reason_and_continuation(command, capsys):
+    call, _item, _source = command
+    api = memory.open_management(None)
+    for i in range(2):
+        capture(api.core, api.authority.context, f"TEST matching needle {i}")
+    code, result = call("search", "TEST matching needle", "--limit", "1")
+    assert code == 0 and result["data"]["stop_reason"] == "limit"
+    assert len(result["data"]["items"]) == 1
+    assert cli.main(["memory", "search", "TEST matching needle", "--limit", "1"]) == 0
+    text = capsys.readouterr().out
+    assert "Scan stopped at the match limit." in text
+    assert "Repeat the same command with --cursor " in text
+
+
+def test_budget_stop_without_match_reports_continuation(command, capsys, monkeypatch):
+    call, _item, _source = command
+    api = memory.open_management(None)
+    for i in range(40):
+        capture(api.core, api.authority.context, f"TEST haystack {i}")
+    monkeypatch.setattr(management_query, "SCAN_SECONDS", 0)
+    assert cli.main(["memory", "search", "TEST absent needle", "--kind", "event"]) == 0
+    text = capsys.readouterr().out
+    assert "No object matched among the 16 examined" in text
+    assert "time budget" in text and "more remain" in text
+    assert "Repeat the same command with --cursor " in text
+
+
+def test_json_reports_scan_progress_and_a_usable_cursor(command, monkeypatch):
+    call, _item, _source = command
+    api = memory.open_management(None)
+    for i in range(40):
+        capture(api.core, api.authority.context, f"TEST haystack {i}")
+    monkeypatch.setattr(management_query, "SCAN_SECONDS", 0)
+    code, result = call("search", "TEST absent needle", "--kind", "event")
+    assert code == 0
+    data = result["data"]
+    assert data["examined"] == 16 and data["scan_complete"] is False
+    assert data["stop_reason"] == "time_budget"
+    assert set(data) == {"items", "memory_epoch", "examined", "scan_complete", "stop_reason", "next_cursor"}
+    assert data["next_cursor"].replace("-", "").replace("_", "").isalnum()
+    monkeypatch.setattr(management_query, "SCAN_SECONDS", 30)
+    code, result = call("search", "TEST absent needle", "--kind", "event", "--cursor", data["next_cursor"])
+    assert code == 0 and result["data"]["scan_complete"]
+    assert result["data"]["examined"] == 25 and result["data"]["next_cursor"] is None
+
+
+def test_malformed_cursor_returns_input_invalid_without_traceback(command):
+    call, _item, _source = command
+    value = dict(after=["0001-01-01T00:00:00+01:00", "event-TEST"], binding="a" * 64, version=1)
+    invalid = ["not base64!", json.dumps(value)]
+    for decoded in (
+        value,
+        [],
+        None,
+        {"after": None},
+        dict(value, after=["2026-01-01T00:00:00.000000+00:00", "\ud800"]),
+    ):
+        invalid.append(base64.urlsafe_b64encode(json.dumps(decoded).encode()).decode().rstrip("="))
+    for cursor in invalid:
+        code, result = call("list", "--cursor", cursor)
+        assert code == 2 and result["code"] == "INPUT_INVALID" and result["field"] == "cursor"
 
 
 def test_previous_schema_upgrades_without_changing_sources(store):

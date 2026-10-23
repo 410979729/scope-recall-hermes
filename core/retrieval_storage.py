@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Iterable, cast
@@ -812,6 +813,17 @@ class RetrievalStorage(RetrievalHydration):
     # -- hydration ------------------------------------------------------------
 
     # -- collection paging ----------------------------------------------------
+
+    def collection_objects(self, tx, context: SearchContext, candidates) -> Iterator[RetrievedObject | None]:
+        """Yield one rendered object or None per identity in the caller's snapshot.
+
+        Collection and owner inventory use the same hydration and visibility
+        policy. The caller bounds the batch, owns its transaction lifetime and
+        can stop consuming at its match limit or deadline.
+        """
+        self.prefetch(tx, candidates, context)
+        for candidate in candidates:
+            yield self.hydrate(tx, candidate, context)
 
     def collection(
         self, tx, context: SearchContext, query: CollectionQuery, cursor: PageCursor | None = None

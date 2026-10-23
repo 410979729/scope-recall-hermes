@@ -2,7 +2,13 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [3.12.0] - 2026-10-19
+## [3.12.1] - 2026-10-22
+
+`memory search` and `memory list` answer in one call on large, active stores. A call reads one SQLite snapshot and examines objects newest first until it holds `--limit` matches or has examined everything the filters admit, within a 30-second budget checked between small hydration batches once the inventory is ordered; ordering repeats for every continuation and takes longer as the store grows, and every call advances by at least one batch. Events are ordered by the occurrence time of their earliest readable revision (its recording time when unknown) and other objects by the recording time of their first revision, so a later revision does not move an object between pages. Tables and JSON report how many objects a call examined, whether the scan is complete and whether it stopped at the match limit or the budget. Cursors are opaque URL-safe tokens bound to the installation, the owner's scopes and the filters, and captures no longer invalidate them; a malformed cursor returns `INPUT_INVALID`, and cursors from 3.12.0 are refused, so restart such a listing. Listings cover every project and branch in the owner's scopes. `forget-session` selects and previews in one snapshot and is never cut short by a time budget; a capture during the selection makes applying that preview refuse. Thanks to 849506054 for reporting the paged search in #303.
+
+Capture diagnostics measure durations with a high-resolution clock, so a Stop hook's capture times are accurate on Windows with Python 3.11 and 3.12, whose monotonic clock ticks every 15.6 ms. Tests no longer depend on that clock or on the runner's speed: query embedding tests leave auxiliary ledger transactions out of their budgets while every reservation and settlement still runs, and concurrency tests hand work over with events instead of short timing windows. Runtime budgets are unchanged.
+
+## [3.12.0] - 2026-10-22
 
 The contributor rules move from AGENTS.md into CONTRIBUTING.md: what a change needs, the design and code rules, the checks before a merge and how releases are cut. Examples in the documentation and code comments use generic names; comments and documents state their constraints and reasons without measurements from particular stores or review history; the evaluation notes under `verification/G0/` are removed. Nothing changes for an installation.
 
