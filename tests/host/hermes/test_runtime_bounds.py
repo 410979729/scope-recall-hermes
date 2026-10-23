@@ -35,6 +35,9 @@ from tests.store_clock import assert_hook_budget
 
 _MODES = ("history", "current", "auto")
 
+# This generous limit only bounds a hang; event handoffs determine worker ordering.
+_HANG_TIMEOUT_SECONDS = 60.0
+
 
 def _recall(provider, mode: str, request_id: str) -> str:
     return provider.handle_tool_call(
@@ -243,6 +246,7 @@ def test_overflow_clears_exactly_where_current_refs_reset(adapter, initialize_kw
 
 
 def test_worker_keeps_one_active_and_one_coalesced_wakeup():
+    """Hold active work until all wakeups are coalesced, independently of dispatch speed."""
     worker = AdapterWorker()
     started = threading.Event()
     release = threading.Event()
@@ -251,16 +255,21 @@ def test_worker_keeps_one_active_and_one_coalesced_wakeup():
     def first():
         calls.append("first")
         started.set()
-        release.wait(1.0)
+        assert release.wait(_HANG_TIMEOUT_SECONDS), "the active callback must be released"
 
-    assert worker.submit(first)
-    assert started.wait(1.0)
-    for index in range(20):
-        assert worker.submit(lambda index=index: calls.append(f"coalesced-{index}"))
-    state = worker.shutdown(timeout=0.02)
-    assert state["active_tasks"] == 1
-    release.set()
-    worker.shutdown(timeout=1.0)
+    try:
+        assert worker.submit(first)
+        assert started.wait(_HANG_TIMEOUT_SECONDS), "the first callback must start"
+        for index in range(20):
+            assert worker.submit(lambda index=index: calls.append(f"coalesced-{index}"))
+        state = worker.shutdown(timeout=0.02)
+        assert state["active_tasks"] == 1
+    finally:
+        release.set()
+        worker.shutdown(timeout=0)
+        if worker._thread is not None:
+            worker._thread.join(timeout=_HANG_TIMEOUT_SECONDS)
+            assert not worker._thread.is_alive(), "the released worker must exit"
     assert len(calls) <= 2
 
 

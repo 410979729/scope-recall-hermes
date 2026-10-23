@@ -569,7 +569,8 @@ class CodexHookHandler:
         """
         if event is None:
             return (), gaps
-        started = time.monotonic()
+        # Diagnostic milliseconds need a precise clock even when deadline clocks tick coarsely.
+        started = time.perf_counter()
         self.diagnostics.capture_stage = "ingress"
         self.diagnostics.capture_durability = "not_persisted"
         if self.remaining(deadline) <= 0:
@@ -607,7 +608,7 @@ class CodexHookHandler:
             self.note("capture_exception", gaps=gaps)
             return (), gaps
         finally:
-            elapsed = round((time.monotonic() - started) * 1000)
+            elapsed = round((time.perf_counter() - started) * 1000)
             self.diagnostics.capture_elapsed_ms = elapsed
             self.diagnostics.capture_total_ms = (self.diagnostics.capture_total_ms or 0) + elapsed
         self.diagnostics.capture_disposition = receipt.disposition
