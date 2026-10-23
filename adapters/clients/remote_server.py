@@ -44,6 +44,7 @@ from . import transcript
 from .boundary import IN_CONTEXT_FIELD, without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, SystemHookClock
+from .identity import resolve_runtime_audience, trusted_context
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
 from .record_reader import RecordLines
 
@@ -310,6 +311,38 @@ class _Asked:
         return answer
 
 
+def private_check(config: RemoteServerConfig, body: dict[str, Any]) -> dict[str, Any]:
+    """Answer a client's metadata-only private-mode query before it sends a hook.
+
+    The request carries a session, a project path and event instants, never a
+    message, prompt or attachment.  The answer is computed by the same core
+    policy the hook ultimately uses, so a client never has to reimplement it.
+    """
+    if not isinstance(body, dict):
+        raise RemoteServerError("private check must be an object")
+    session = body.get("session_id")
+    project = body.get("project")
+    times = body.get("times", [])
+    if type(session) is not str or not session.strip() or len(session) > 240:
+        raise RemoteServerError("private check needs a session_id")
+    if project is not None and (type(project) is not str or not project.strip() or len(project) > 1024):
+        raise RemoteServerError("private check project must be an absolute path")
+    if not isinstance(times, list) or len(times) > 64:
+        raise RemoteServerError("private check times must be a bounded list")
+    client = load_shared_client(config.home, config.host)
+    audience = resolve_runtime_audience(client, project)
+    context = trusted_context(
+        client,
+        audience,
+        session_id=session.strip(),
+        actor_origin="host_generated",
+        project_root=project,
+    )
+    from ...core import CoreConfig, MemoryCore
+
+    return MemoryCore(CoreConfig(client.to_binding())).private_check(context, times)
+
+
 def handle_request(
     config: RemoteServerConfig,
     body: dict[str, Any],
@@ -465,10 +498,26 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
         )
         return JSONResponse(answer)
 
+    async def private_state(request: Request) -> JSONResponse:
+        raw = await request.body()
+        if len(raw) > 65536:
+            return JSONResponse({"error": "request_too_large"}, status_code=413)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+            answer = await run_in_threadpool(private_check, config, body)
+        except (UnicodeError, json.JSONDecodeError, RecursionError, RemoteServerError) as exc:
+            return JSONResponse({"error": "invalid_request", "detail": str(exc)[:200]}, status_code=400)
+        except ValueError as exc:
+            # A contract refusal, including an invalid timestamp or project path:
+            # the client must not send the hook when it cannot verify the state.
+            return JSONResponse({"error": "invalid_request", "detail": str(exc)[:200]}, status_code=400)
+        return JSONResponse(answer)
+
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({"entry_id": client.entry_id, "host": config.host, "version": __version__})
 
     app.router.routes.append(Route("/hook", hook, methods=["POST"]))
+    app.router.routes.append(Route("/private/check", private_state, methods=["POST"]))
     app.router.routes.append(Route("/health", health, methods=["GET"]))
     return _TokenGate(app, config.token_sha256)
 

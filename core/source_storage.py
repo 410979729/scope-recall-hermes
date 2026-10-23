@@ -417,8 +417,10 @@ class Sources:
             """INSERT INTO source_events(event_id,source_revision,scope_id,session_id,project_id,branch_id,
             source_event_key,origin,role,content,occurred_at,recorded_at,time_precision,capture_state,
             content_sha256,event_sha256,persisted_at,source_original_origin,dataset_id,extra_json,
-            source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,entry_id,source_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(source_id),0)+1 FROM source_events))""",
+            source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,entry_id,source_id,
+            project_root)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+            (SELECT COALESCE(MAX(source_id),0)+1 FROM source_events),?)""",
             (
                 ref,
                 revision,
@@ -439,6 +441,7 @@ class Sources:
                 canonical(capture_gaps),
                 provenance_hash,
                 self._tx.context.entry_id or "local",
+                self._tx.context.project_root,
             ),
         )
         if (

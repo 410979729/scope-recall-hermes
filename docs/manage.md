@@ -76,10 +76,12 @@ files are outside that active-content receipt.
 
 ## Migration and rollback
 
-The first open of a supported older store migrates it transactionally to schema 1111. The added tables contain local
-management action identities, actor, action, target versions, timestamp and memory epoch, plus content-free suppression
-constraints for records that can arrive after a restore. Original source rows are preserved. Earlier executables
-refuse this newer schema.
+The first open of a supported older store migrates it transactionally to schema 1112. The added tables contain local
+management action identities, actor, action, target versions, timestamp and memory epoch, content-free suppression
+constraints for records that can arrive after a restore, and private intervals that hold only target, session or
+project path, mode and UTC boundaries. Original source rows are preserved; the new `project_root` column is metadata
+and existing rows keep NULL. Earlier executables refuse this newer schema; see
+[private-mode.md](private-mode.md#migration-and-rollback) for the rollback consequence.
 
 Before installing the new executable, stop the installation's writers and take a `scope-recall backup` SQLite
 snapshot; keep the old executable and configuration alongside it. To roll back, use the existing

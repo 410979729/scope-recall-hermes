@@ -11,6 +11,7 @@ from functools import partial
 from typing import Callable, Protocol
 
 from ..contracts import ContractError
+from . import private
 from .delete_storage import purge_finished, purge_work_parts
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
@@ -147,10 +148,18 @@ def prepare_embed_group(storage, clock, context, items, *, embed, started: float
     subjects: dict[str, list] = {"source": [], "claim": []}
     try:
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+            intervals = private.active_intervals(tx, clock.utc_now())
             for item in items:
                 kind = _subject_kind(item)
                 subject = _EMBED_SUBJECTS[kind].live(tx, item.subject_ref, item.subject_revision)
-                if subject is not None:
+                if subject is None:
+                    continue
+                blocked = (
+                    private.source_blocked(intervals, subject)
+                    if kind == "source"
+                    else private.claim_blocked(tx, intervals, subject)
+                )
+                if not blocked:
                     subjects[kind].append(subject)
     except ContractError:
         return {}

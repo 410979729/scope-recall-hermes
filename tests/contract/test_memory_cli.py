@@ -8,6 +8,7 @@ import pytest
 from jsonschema import validate
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
+from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import cli, memory
 from test_claims import app, initial
 from test_restore import backup, run, store
@@ -87,7 +88,7 @@ def test_cli_selects_real_installed_store_and_prints_a_table(store, capsys):
 def test_previous_schema_upgrades_without_changing_sources(store):
     source = store.say("NameOne uses green.")
     downgrade_store(store.core.storage.path, 1110)
-    assert store.core.initialize().schema_version == 1111
+    assert store.core.initialize().schema_version == SCHEMA_VERSION
     assert store.core.source(store.ctx, source.ref, 1).event == source.event
     with store.core.storage.read(store.ctx) as tx:
         assert tx._check().execute("SELECT count(*) FROM management_actions").fetchone()[0] == 0

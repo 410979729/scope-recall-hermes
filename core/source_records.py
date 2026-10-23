@@ -23,6 +23,8 @@ class StoredSource:
     capture_gaps: tuple[str, ...] = ()
     import_provenance_sha256: str | None = None
     entry_id: str = "local"
+    #: The normalized project directory the host supplied, when it supplied one.
+    project_root: str | None = None
 
 
 #: The columns a loaded source is built from (``stored_source``).
@@ -51,6 +53,7 @@ SOURCE_COLUMNS = (
     "suppressed",
     "import_provenance_sha256",
     "entry_id",
+    "project_root",
 )
 
 
@@ -96,6 +99,7 @@ def stored_source(row, segment_count: int | None) -> StoredSource:
         tuple(dict.fromkeys(gaps)),
         row["import_provenance_sha256"],
         row["entry_id"],
+        row["project_root"] if "project_root" in row.keys() else None,
     )
 
 

@@ -157,6 +157,7 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1112: {"tables": ("private_intervals",), "columns": (("source_events", "project_root"),)},
     1111: {
         "before": tuple(f"DROP TRIGGER {name}" for name, _sql in SUPPRESSION_TRIGGERS),
         "tables": ("management_actions", "restored_suppression_blocks"),

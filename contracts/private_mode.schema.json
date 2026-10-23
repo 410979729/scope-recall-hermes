@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local private-mode response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "action", "status"],
+  "properties": {
+    "format": {"type": "string", "const": "scope-recall-private/1"},
+    "action": {"type": "string", "enum": ["on", "off", "status", "list"]},
+    "status": {"type": "string", "enum": ["ok", "error"]},
+    "code": {"type": "string", "minLength": 1},
+    "field": {"type": ["string", "null"]},
+    "data": {"$ref": "#/$defs/data"}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "ok"}}}, "then": {"required": ["data"]}},
+    {"if": {"properties": {"status": {"const": "error"}}}, "then": {"required": ["code", "field"]}}
+  ],
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "target", "session", "project", "mode", "started_at", "ends_at", "active"],
+      "properties": {
+        "rule_id": {"type": "integer", "minimum": 1},
+        "target": {"type": "string", "enum": ["session", "project", "global"]},
+        "session": {"type": ["string", "null"], "maxLength": 240},
+        "project": {"type": ["string", "null"], "maxLength": 1024},
+        "mode": {"type": "string", "enum": ["full", "read-only"]},
+        "started_at": {"type": "string", "format": "date-time"},
+        "ends_at": {"type": ["string", "null"], "format": "date-time"},
+        "active": {"type": "boolean"}
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rule": {"$ref": "#/$defs/rule"},
+        "closed": {"type": "integer", "minimum": 0},
+        "mode": {"type": "string", "enum": ["full", "read-only", "none"]},
+        "global_mode": {"type": "string", "enum": ["full", "read-only", "none"]},
+        "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
+        "active_rules": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

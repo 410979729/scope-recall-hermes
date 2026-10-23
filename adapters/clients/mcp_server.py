@@ -6,8 +6,9 @@ startup; clients cannot supply identity, paths, scopes, or SQL.  The MCP
 session id is an adapter capability (there is no Codex conversation id on the
 stdio boundary), so it is reported as such and is never treated as a user
 identity.  A client attached to a shared store (Codex or Claude Code) is given
-its entry instead, and has no workspace: its audience is the entry's.  Claude
-Code sends no conversation id at all, so its mutations are refused.
+its entry instead: its audience is the entry's, while the server's working
+directory names the project for a project-scoped private interval.  Claude Code
+sends no conversation id at all, so its mutations are refused.
 """
 
 from __future__ import annotations
@@ -171,7 +172,10 @@ class CodexMCPServer:
         self.host = config.host if shared else "codex"
         self.config = config
         if shared:
-            self.workspace = None
+            # The process was started in the client's project (or in the entry's
+            # home when it was not); this gives a project interval a directory
+            # to match without letting a tool argument name one.
+            self.workspace = (workspace or Path.cwd()).resolve()
             if trusted_runtime_config_path is None:
                 # The store's directory holds the worker's config; the entry's is beside its pointer.
                 trusted_runtime_config_path = config.runtime_config_path
@@ -191,6 +195,7 @@ class CodexMCPServer:
                 self.audience,
                 session_id=f"{self.host}-mcp:{config.installation_id}",
                 actor_origin="host_generated",
+                project_root=str(self.workspace),
             )
             host_runtime = attach_trusted_host_runtime(
                 config_path=trusted_runtime_config_path,
@@ -217,6 +222,7 @@ class CodexMCPServer:
             self.audience,
             session_id=self.session_id,
             actor_origin="memory_reinjection",
+            project_root=str(self.workspace),
         )
         self.server = MCPServer(
             name=f"scope-recall-{self.host}",
@@ -249,7 +255,13 @@ class CodexMCPServer:
     def _context(self, origin: Origin = "memory_reinjection") -> TrustedContext:
         if origin == self.context.actor_origin:
             return self.context
-        return trusted_context(self.config, self.audience, session_id=self.session_id, actor_origin=origin)
+        return trusted_context(
+            self.config,
+            self.audience,
+            session_id=self.session_id,
+            actor_origin=origin,
+            project_root=str(self.workspace),
+        )
 
     def _thread_id(self, ctx: Context) -> str | None:
         """Codex's reserved MCP thread metadata, or None when absent, malformed or not sent by this client."""
@@ -282,7 +294,14 @@ class CodexMCPServer:
             self._host_runtime.rebind_session(thread_id, self.audience.allowed_scope_ids)
         # Codex Hook stores the raw host session_id; MCP must use the same
         # value so Core current_human evidence can interoperate.
-        return trusted_context(self.config, self.audience, session_id=thread_id, actor_origin=origin, mutation=mutation)
+        return trusted_context(
+            self.config,
+            self.audience,
+            session_id=thread_id,
+            actor_origin=origin,
+            mutation=mutation,
+            project_root=str(self.workspace),
+        )
 
     def _capability_gaps(self, ctx: Context) -> tuple[str, ...]:
         if self._thread_id(ctx) is not None:

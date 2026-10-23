@@ -132,7 +132,8 @@ def execute(api, args):
     return _preview(api, args)
 
 
-def _table(rows, columns):
+def table(rows, columns):
+    """Print one bounded plain-text table for the local management commands."""
     values = [[str(row.get(key, "")) for key in columns] for row in rows]
     widths = [min(72, max([len(key), *(len(row[i]) for row in values)])) for i, key in enumerate(columns)]
     print("  ".join(key.upper().ljust(widths[i]) for i, key in enumerate(columns)))
@@ -151,7 +152,7 @@ def render(payload, *, as_json):
     data = payload["data"]
     if "preview" in data:
         plan = data["preview"]
-        _table(plan["affected"], ("kind", "ref", "revision", "scope_id"))
+        table(plan["affected"], ("kind", "ref", "revision", "scope_id"))
         entries = sorted({s["entry_id"] for s in plan["sources"]})
         print(f"Sources: {len(plan['sources'])}; entries: {', '.join(entries)}; preview: {plan['preview_id']}")
         if not data["applied"]:
@@ -175,7 +176,7 @@ def render(payload, *, as_json):
             )
             for item in data["items"]
         ]
-        _table(rows, ("kind", "ref", "revision", "content"))
+        table(rows, ("kind", "ref", "revision", "content"))
         if data.get("next_cursor"):
             print("Next cursor: " + data["next_cursor"])
         if data.get("next_before") is not None:

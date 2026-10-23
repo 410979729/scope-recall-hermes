@@ -25,6 +25,8 @@ _CAPTURE_ERROR_CODES = frozenset(
         "STORAGE_UNAVAILABLE",
         "SOURCE_MISSING",
         "SECRET_DETECTED",
+        "PRIVATE_MODE",
+        "PRIVATE_MODE_UNVERIFIED",
     }
 )
 

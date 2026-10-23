@@ -15,6 +15,7 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.admission import AdmissionPolicy
 from scope_recall.core.recall_policy import SPACE_ID
+from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor, doctor_store
 from test_autonomous_admission import app_at, capture
 from v11_support import downgrade_store
@@ -538,9 +539,9 @@ def test_doctor_reports_a_pending_schema_upgrade_without_applying_it(tmp_path, m
     assert "schema_upgrade_pending" in result.capability_gaps and result.schema_version == 1108
     assert next(item for item in result.checks if item["name"] == "schema")["result"] == "upgrade_pending"
     assert _schema_facts(app.storage.path) == before and app.storage.path.read_bytes() == image
-    assert app.status(ctx).schema_version == 1111
+    assert app.status(ctx).schema_version == SCHEMA_VERSION
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
-    assert "schema_upgrade_pending" not in result.capability_gaps and result.schema_version == 1111
+    assert "schema_upgrade_pending" not in result.capability_gaps and result.schema_version == SCHEMA_VERSION
 
 
 def test_a_secret_refusal_is_a_terminal_failure_not_a_degraded_instance(tmp_path, monkeypatch):

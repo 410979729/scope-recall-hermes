@@ -120,6 +120,18 @@ class CaptureWriter:
             self.record_failure(identity, "capability_gap")
             adapter._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return None
+        private_state = self._private_state(context, event, remaining_seconds)
+        if private_state is not None:
+            # A retry buffer or kept-captures file is still a durable copy of the
+            # person's words.  The check runs before either is written, and the
+            # authoritative store checks again in the same transaction.
+            code = "PRIVATE_MODE" if private_state == "blocked" else "PRIVATE_MODE_UNVERIFIED"
+            gap = "private_mode" if private_state == "blocked" else "private_mode_unverified"
+            self.record_failure(identity, gap)
+            adapter._merge_gaps(gaps, (f"capture_gap:{gap}",))
+            return CaptureReceipt(
+                "rejected", (), "not_persisted", "not_indexed", "not_scheduled", (*gaps, gap), code
+            )
         started = time.monotonic()
         snapshot = self._snapshot(context, event, identity, gaps, scope_id, bound)
         retry = adapter._retry.captures
@@ -134,6 +146,21 @@ class CaptureWriter:
         if receipt.durability != "persisted":
             return self._refused(identity, receipt, snapshot, gaps, replay)
         return self._stored(context, identity, receipt, gaps, replay)
+
+    def _private_state(self, context, event: dict, remaining_seconds: float) -> str | None:
+        """``blocked``, ``unknown`` when the rule table could not be read, or None when capture may go on.
+
+        A fake core used by adapter tests need not implement this optional read;
+        production ``MemoryCore`` always does.
+        """
+        check = getattr(self._adapter._require_core(), "private_capture_blocked", None)
+        if check is None:
+            return None
+        try:
+            blocked = check(context, event, remaining_seconds=max(0.001, min(0.2, remaining_seconds)))
+        except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            return "unknown"
+        return "blocked" if blocked else None
 
     @staticmethod
     def _with_source_context(event, bound: HermesIdentity, replay: bool) -> dict:
@@ -181,6 +208,12 @@ class CaptureWriter:
             adapter._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return
         event = self._with_source_context(event, bound, False)
+        private_state = self._private_state(context, event, 0.2)
+        if private_state is not None:
+            gap = "private_mode" if private_state == "blocked" else "private_mode_unverified"
+            self.record_failure(identity, gap)
+            adapter._merge_gaps(gaps, (f"capture_gap:{gap}",))
+            return
         self._keep(identity, self._snapshot(context, event, identity, gaps, scope_id, bound))
         self.record_failure(identity, "DEADLINE_EXCEEDED")
         adapter._merge_gaps(gaps, ("capture_gap:write_deferred",))
@@ -191,6 +224,12 @@ class CaptureWriter:
         retry = self._adapter._retry
         if identity is None or identity in retry.captures:
             return
+        if snapshot is not None:
+            state = self._private_state(snapshot.context, snapshot.event, 0.2)
+            if state is not None:
+                gap = "private_mode" if state == "blocked" else "private_mode_unverified"
+                self._adapter._merge_gaps((f"capture_gap:{gap}",))
+                return
         if snapshot is not None and len(retry.captures) < RETRY_CAPACITY:
             retry.captures[identity] = snapshot
             retry.start()

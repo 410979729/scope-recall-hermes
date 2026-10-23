@@ -34,7 +34,7 @@ from .hook_events import (
     WORKER_START_MIN_S,
     HookEvents,
 )
-from .identity import resolve_runtime_audience, trusted_context
+from .identity import project_root_of, resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
 from .record_reader import RecordLines, RecordReader
 from .runtime_wiring import (
@@ -148,6 +148,10 @@ class CodexHookHandler:
         self.call = HookCall()
         self._pending_runtime_config_path: str | None = None
         self._runtime_attach_attempted = host_runtime is not None
+        #: The normalized project directory this hook's payload names, if any.  A
+        #: shared entry's configured audience has none, so the request's cwd is
+        #: used for project-scoped private intervals only; it grants no scope.
+        self._project_root: str | None = None
         #: An attach the last hook stopped waiting for (``ensure_runtime``), still this handler's.
         self._attaching: BoundedCall | None = None
         self._starting: BoundedCall | None = None
@@ -249,8 +253,27 @@ class CodexHookHandler:
 
     # -- trusted runtime -------------------------------------------------
 
+    def bind_project_root(self, payload: dict[str, Any], audience) -> str | None:
+        """Bind the directory a hook names for project-scoped private intervals.
+
+        The local installation's matched root wins; a shared entry's fixed audience
+        has none, so the request's absolute cwd is used.  A tool argument never
+        supplies either value.
+        """
+        value = payload.get("cwd")
+        self._project_root = project_root_of(audience.matched_project_root) or (
+            None if not isinstance(value, str) else project_root_of(value)
+        )
+        return self._project_root
+
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
-        return trusted_context(self.config, audience, session_id=session_id, actor_origin=origin)
+        return trusted_context(
+            self.config,
+            audience,
+            session_id=session_id,
+            actor_origin=origin,
+            project_root=self._project_root,
+        )
 
     def ensure_runtime(self, audience=None, *, deadline: float | None = None) -> None:
         """Attach Lance/worker runtime only after Source persist, or for wakeup.
@@ -477,6 +500,7 @@ class CodexHookHandler:
         audience = self.audience_of(payload)
         if audience is None:
             return None
+        self.bind_project_root(payload, audience)
         if self._host_runtime is not None:
             self._host_runtime.rebind_session(session_id, audience.allowed_scope_ids)
             self._merge_runtime_gaps()
@@ -619,6 +643,11 @@ class CodexHookHandler:
             self.diagnostics.capture_stage = "durable_inbox"
             gaps = (*gaps, "capture_gap:durable_ingress_pending")
             self.note("capture_queued", gaps=gaps)
+            return (), gaps
+        if receipt.error_code in {"PRIVATE_MODE", "PRIVATE_MODE_UNVERIFIED"}:
+            gap = "private_mode" if receipt.error_code == "PRIVATE_MODE" else "private_mode_unverified"
+            gaps = (*gaps, f"capture_gap:{gap}")
+            self.note("private_mode", gaps=gaps)
             return (), gaps
         if receipt.durability != "persisted":
             gaps = (*gaps, f"capture_gap:{receipt.disposition}")

@@ -14,16 +14,18 @@ from ..contracts import (
     InstanceBinding,
     SourceEvent,
     TrustedContext,
+    utc_timestamp,
     validate_model_request,
     validate_payload,
 )
+from . import private
 from .admission import AdmissionPolicy
 from .capture import CaptureReceipt, record_event
 from .delete_storage import retraction_after
 from .operations import Operations
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .records import Records
-from .retrieval import CandidateRef, SearchContext, SearchLimits
+from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits
 from .source_records import StoredSource
 from .storage import SQLiteStorage, StoreStatus
 
@@ -193,21 +195,84 @@ class MemoryCore:
             return InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
         return inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
 
+    def private_mode(self, context: TrustedContext) -> str | None:
+        """The stricter private mode active for this context now, or None.
+
+        This is the adapter-facing read used for the injected notice; capture and
+        recall gates use the same core helper and never a copy of this policy.
+        """
+        now = utc_timestamp(self.clock.utc_now())
+        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+            return private.mode_at(private.matching_intervals(tx, context), now)
+
+    def private_capture_blocked(
+        self, context: TrustedContext, value: SourceEvent | dict | str | bytes, *, remaining_seconds: float = 1.0
+    ) -> bool:
+        """Whether this event's own occurrence time falls in any private interval.
+
+        The caller uses this before keeping a failed capture on disk.  The same
+        check runs again at the authoritative write, so a rule opened between the
+        two cannot be bypassed.
+        """
+        from .events import prepare_capture
+
+        prepared = prepare_capture(value, context)
+        if prepared.rejection:
+            return False
+        now = utc_timestamp(self.clock.utc_now())
+        with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
+            intervals = private.matching_intervals(tx, context)
+            if private.capture_mode(intervals, prepared.events) is not None:
+                return True
+            return private.mode_at(intervals, now) == "full"
+
+    def private_check(self, context: TrustedContext, times) -> dict:
+        """Metadata-only answer for a remote client: whether these moments or a recall are private.
+
+        ``times`` are event instants the client is about to send; an empty list
+        asks about now.  No prompt, attachment or record line travels here.
+        """
+        if times is None:
+            moments = []
+        elif isinstance(times, (list, tuple)) and len(times) <= 64:
+            moments = [utc_timestamp(value) for value in times]
+        else:
+            raise ContractError("INPUT_INVALID", "times")
+        now = utc_timestamp(self.clock.utc_now())
+        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+            intervals = private.matching_intervals(tx, context)
+            mode = private.mode_at(intervals, now)
+            blocked = bool(moments) and any(private.mode_at(intervals, moment) is not None for moment in moments)
+        return {
+            "mode": mode or private.MODE_NONE,
+            "capture_blocked": blocked or mode is not None,
+            "recall_blocked": mode == "full",
+            "notice": private.notice_for_mode(mode),
+        }
+
+    def _private_read_refusal(self, context: TrustedContext) -> None:
+        """Refuse profile, entity and trace reads under a full interval, before any read or call."""
+        if self.private_mode(context) == "full":
+            raise ContractError("ACCESS_DENIED", "private_mode")
+
     def profile(self, context: TrustedContext, request):
         """Read-only categorized current-fact profile for one explicit subject."""
         from .read_views import read_profile
 
+        self._private_read_refusal(context)
         return read_profile(self.storage, self.clock, context, request)
 
     def trace(self, context: TrustedContext, request, *, deadline_seconds=5.0):
         from .trace import read_trace
 
+        self._private_read_refusal(context)
         return read_trace(self.storage, self.clock, context, request, seconds=deadline_seconds)
 
     def entity(self, context: TrustedContext, request):
         """Read-only exact one-hop entity probe or related-statement view."""
         from .read_views import read_entity
 
+        self._private_read_refusal(context)
         return read_entity(self.storage, self.clock, context, request)
 
     def record_event(
@@ -266,6 +331,24 @@ class MemoryCore:
                 scope_id, tuple(items), window_seconds=window_seconds, across_sessions=across_sessions
             )
 
+    @staticmethod
+    def _private_recall_packet(search_context):
+        """The empty packet a full interval returns before any embedding, network or model call."""
+        packet = dict(
+            protocol_version="1.1",
+            request_id=search_context.request_id,
+            status="no_match",
+            memory_epoch=None,
+            items=[],
+            gaps=["private_mode:full"],
+            diagnostic_ref=None,
+            answerability="unknown",
+            coverage="unknown",
+            unmet_needs=[],
+        )
+        validate_payload("recall_packet", packet)
+        return packet
+
     def _search_context(
         self,
         context: TrustedContext,
@@ -321,6 +404,10 @@ class MemoryCore:
         search_context, _deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone
         )
+        if self.private_mode(context) == "full":
+            return RetrievalResult(
+                (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
+            )
         return self.recall_pipeline.search(search_context)
 
     def recall_packet(
@@ -345,6 +432,10 @@ class MemoryCore:
         search_context, effective_deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone, in_context_since
         )
+        if self.private_mode(context) == "full":
+            # Before the vector channel, so a full interval makes no query embedding
+            # request and reaches no provider.
+            return self._private_recall_packet(search_context)
         # Candidate collection is optional work. Reserve part of the original
         # deadline for the mandatory fresh SQLite release checks and rendering.
         retrieval_context = replace(
@@ -387,6 +478,7 @@ class MemoryCore:
     def collection(self, context: TrustedContext, query, *, cursor=None, deadline_seconds: float = 2.0):
         if type(deadline_seconds) not in (int, float) or deadline_seconds <= 0:
             raise ContractError("INPUT_INVALID", "deadline_seconds")
+        self._private_read_refusal(context)
         search_context = SearchContext(
             query="collection",
             mode=query.mode,

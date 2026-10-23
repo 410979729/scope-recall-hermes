@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from scope_recall.core.private import notice_for_mode
+
 from . import transcript
 from .boundary import EMPTY_ANSWER, IN_CONTEXT_FIELD, is_workbuddy_agent_run, without_lone_surrogates
 
@@ -205,6 +207,88 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
     return answer if isinstance(answer, dict) else None
 
 
+# -- private state before anything is sent -----------------------------------
+
+
+def _private_times(body: dict[str, Any], observed_at: str | None) -> list[str]:
+    """The moments a request carries: the hook's own and every record line's, bounded."""
+    times = [observed_at] if type(observed_at) is str else []
+    payload = body.get("payload")
+    record = body.get("record")
+    if isinstance(record, dict):
+        for item in record.get("lines") or ():
+            if isinstance(item, list) and len(item) == 2 and isinstance(item[1], dict):
+                value = item[1].get("occurred_at")
+                if type(value) is str:
+                    times.append(value)
+    if isinstance(payload, dict):
+        for item in payload.get("record") or ():
+            if isinstance(item, dict) and type(item.get("time")) is str:
+                times.append(item["time"])
+    return times[:64]
+
+
+def _private_drop(state: dict[str, Any], event: object) -> bool:
+    """Whether this hook must not be sent: full blocks everything; read-only keeps only the prompt's recall."""
+    if state.get("recall_blocked"):
+        return True
+    if not state.get("capture_blocked"):
+        return False
+    return not (state.get("mode") == "read-only" and event == "UserPromptSubmit")
+
+
+def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[str, Any] | None:
+    """Ask the entry's server whether this request or a recall is private, before sending any content.
+
+    Only a session id, a project path and event instants travel here.  A missing
+    answer means the state could not be verified: the caller must not send the
+    hook's content.
+    """
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    session = payload.get("session_id")
+    if type(session) is not str or not session.strip():
+        return None
+    request = {
+        "session_id": session.strip(),
+        "project": payload.get("cwd"),
+        "times": _private_times(body, body.get("observed_at")),
+    }
+    try:
+        token = config["token_file"].read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    url = urllib.parse.urlsplit(config["url"])
+    kind = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+    timeout = max(0.2, min(1.0, timeout))
+    connection = kind(url.hostname, url.port, timeout=timeout)
+    try:
+        connection.request(
+            "POST",
+            f"{url.path}/private/check",
+            body=json.dumps(request, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        )
+        response = connection.getresponse()
+        raw = response.read()
+        if response.status != 200:
+            _log(config, f"private check: HTTP {response.status}; not sending the hook")
+            return None
+        answer = json.loads(raw.decode("utf-8"))
+    except (OSError, http.client.HTTPException, ValueError):
+        return None
+    finally:
+        connection.close()
+    if (
+        not isinstance(answer, dict)
+        or type(answer.get("capture_blocked")) is not bool
+        or type(answer.get("recall_blocked")) is not bool
+    ):
+        return None
+    return answer
+
+
 # -- the spool (Codex) -------------------------------------------------------
 
 
@@ -264,6 +348,14 @@ def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
             except (OSError, ValueError) as exc:
                 _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
                 item.unlink(missing_ok=True)
+                continue
+            state = _private_check(config, kept, min(left, 1.0))
+            if state is None:
+                break
+            event = (kept.get("payload") or {}).get("hook_event_name") if isinstance(kept, dict) else None
+            if _private_drop(state, event):
+                item.unlink(missing_ok=True)
+                _log(config, f"flush: dropped one kept hook under private mode {state.get('mode')}")
                 continue
             answer = _post(config, kept, min(left, 30.0))
             if answer is None or answer.get("retry"):
@@ -408,12 +500,29 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     # Kept before it is sent: Codex ends Interrupt and SessionEnd at 3 s, and with the interpreter's start and
     # a connection that does not open that is all of it, so a hook that waited for the server would be killed
     # before it could keep anything.  An answer that stored it removes it again.
-    spooled = _spool(config, payload, observed_at) if host == "codex" and event in _SPOOLED else None
+    def keep() -> Path | None:
+        return _spool(config, payload, observed_at) if host == "codex" and event in _SPOOLED else None
+
     if _server_away(config):
+        keep()
         _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
-        answer = None
-    else:
-        answer = _post(config, body, until - time.monotonic())
+        return {}
+    # The server answers whether these moments are private before any content
+    # leaves this machine.  If it cannot answer, the hook is not sent; Codex may
+    # keep it locally, where flush checks again before sending.
+    state = _private_check(config, body, until - time.monotonic())
+    if state is None:
+        keep()
+        _log(config, f"{event}: private state unverified, not sent")
+        return {}
+    if _private_drop(state, event):
+        _log(config, f"{event}: private mode {state.get('mode')}, not sent")
+        if event == "UserPromptSubmit" and state.get("mode") == "full":
+            notice = notice_for_mode("full") or ""
+            return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": notice}}
+        return {}
+    spooled = keep()
+    answer = _post(config, body, until - time.monotonic())
     if answer is None:
         return {}
     if spooled is not None and not answer.get("retry"):

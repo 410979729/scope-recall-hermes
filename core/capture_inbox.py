@@ -19,7 +19,9 @@ from ..contracts import (
     DisplaySnapshot,
     TrustedContext,
     TrustedSourcePrincipal,
+    utc_timestamp,
 )
+from . import private
 from .capture import CaptureReceipt, record_event
 from .deadline import fits
 from .delete_storage import canonical
@@ -68,6 +70,10 @@ def context_payload(context):
         source_principal=(context.source_principal.to_payload() if context.source_principal is not None else None),
         display_snapshot=context.display_snapshot.to_payload() if context.display_snapshot else None,
     )
+    # A local store's old inbox rows have no project root.  Omitting it when absent
+    # keeps their envelope byte-for-byte equal to a retried capture's.
+    if context.project_root is not None:
+        payload["project_root"] = context.project_root
     # The entry is part of the original actor a replay keeps.  Whoever replays --
     # the shared worker, or another entry's provider -- otherwise files the
     # capture under its own name, and a busy shared store sends more captures
@@ -116,6 +122,12 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     ).hexdigest()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         conn = tx._check(write=True)
+        # Before the inbox row: a private capture must not leave its words in
+        # durable ingress either, where a worker's later replay would meet them.
+        intervals = private.matching_intervals(tx, context)
+        current = private.mode_at(intervals, utc_timestamp(clock.utc_now()))
+        if current == "full" or private.capture_mode(intervals, prepared.events) is not None:
+            return None, prepared
         prior = conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()
         if prior:
             previous = json.loads(prior[0])
@@ -132,9 +144,15 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
                     for event in events
                 ]
 
+            # A row written before the project-root metadata existed is the same
+            # capture, not a changed envelope: retries must not conflict on a field
+            # the old row could not carry.
+            old_context, new_context = dict(previous["context"]), dict(body["context"])
+            old_context.pop("project_root", None)
+            new_context.pop("project_root", None)
             if (
                 normalize(previous["events"]) != normalize(body["events"])
-                or previous["context"] != body["context"]
+                or old_context != new_context
                 or previous["host_scope"] != host_scope
             ):
                 raise ContractError("VERSION_CONFLICT", "ingress_identity")
@@ -160,8 +178,15 @@ def durable_record_event(
         storage, clock, context, value, scope_id=scope_id, host_scope=host_scope, remaining_seconds=remaining_seconds
     )
     if token is None:
+        refused = prepared.rejection is None
         return CaptureReceipt(
-            "rejected", (), "not_persisted", "not_indexed", "not_scheduled", prepared.gaps, prepared.rejection
+            "rejected",
+            (),
+            "not_persisted",
+            "not_indexed",
+            "not_scheduled",
+            (*prepared.gaps, "private_mode") if refused else prepared.gaps,
+            "PRIVATE_MODE" if refused else None,
         )
     # The commit is a second write.  Started with less time left than the inbox write took, on a store that slow it
     # would run past the capture's time: the capture is durable in the inbox already, and the worker's replay, or the
@@ -498,6 +523,7 @@ def stored_context(binding, payload, *, allowed_scope_ids: frozenset[str] | None
             if snapshot
             else None,
             source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
+            project_root=raw.pop("project_root", None),
             **raw,
         )
     except ContractError:

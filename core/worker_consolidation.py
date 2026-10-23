@@ -11,6 +11,7 @@ from functools import partial
 from typing import Any, Protocol
 
 from ..contracts import ContractError, decode_payload, utc_instant, validate_payload
+from . import private
 from .consolidate import (
     ConsolidationWorkFence,
     accept_consolidation,
@@ -279,6 +280,7 @@ def _read_batch(tx, item, clock) -> _ConsolidationBatch:
             source = None
     if source is None:
         return _ConsolidationBatch()
+    intervals = private.active_intervals(tx, clock.utc_now())
     seed = ()
     offset = tx.work.consolidation_offset(*item.lease, now=clock.utc_now())
     if offset:
@@ -287,6 +289,9 @@ def _read_batch(tx, item, clock) -> _ConsolidationBatch:
         episode_ref, batch, pending_sources = episode.ref if episode else None, (source,), ()
     else:
         episode_ref, batch, pending_sources = _episode_batch(tx, source, item, now=clock.utc_now())
+    # A full interval may cover only some sources of an episode.  Leave those out
+    # of this request; their own work items stay pending and will run when it ends.
+    batch = private.filter_sources(intervals, batch)
     roots = _root_only_sources(tx, batch)
     # The dependencies come from the same snapshot as the batch itself.
     dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=(source, *batch), episode_ref=episode_ref)

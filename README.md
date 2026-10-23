@@ -8,11 +8,11 @@ which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). A
 attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
 are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
 [GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later is
-`pip install -U`, `apply-install` and a host restart; the first store open adds the local management audit table. Back up
+`pip install -U`, `apply-install` and a host restart; the first store open adds the local management audit and private-interval tables. Back up
 before upgrading and follow the [management migration and rollback guide](docs/manage.md#migration-and-rollback).
 On a shared store in
 the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
-([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order to schema 1111;
+([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order to schema 1112;
 an earlier release cannot open the upgraded store. Section 9 of the
 [3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
 migration procedure for a 2.0.1 memory database.
@@ -36,6 +36,14 @@ It runs as the local store owner and makes no model request. Deletion shows the 
 package with original sources, facts, history, episodes, readable Markdown and optional retained attachments.
 [The management guide](docs/manage.md) covers store selection, filters, version checks and receipts; the
 [export guide](docs/export.md) covers package layout, hashes and filtering.
+
+Use `scope-recall private on --session <id> | --project <path> | --all` to stop keeping a session,
+directory or the whole store. `--mode full` refuses capture, recall and background model work;
+`--mode read-only` refuses capture while recall continues; `--for 2h` sets a duration and `off`
+closes a rule. Rules are stored as metadata only, overlap takes the stricter mode, and an event is
+refused by its own occurrence time even when a later retry or transcript read arrives after the
+rule ends. [The private-mode guide](docs/private-mode.md) lists every host path, injection notice,
+migration and what is stored or sent in each mode.
 
 ## For agents: install or upgrade on the user's behalf
 

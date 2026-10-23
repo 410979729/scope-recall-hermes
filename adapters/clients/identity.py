@@ -15,7 +15,8 @@ from typing import Mapping
 
 from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
 from scope_recall.adapters.hermes.identity import host_scope_payload, principal_ref
-from scope_recall.contracts import Origin, TrustedContext, TrustedSourcePrincipal
+from scope_recall.contracts import ContractError, Origin, TrustedContext, TrustedSourcePrincipal
+from scope_recall.core.private import normalize_project_path
 
 from .config import CodexInstallationConfig, SharedClientConfig
 
@@ -129,6 +130,16 @@ def stored_session_id(config: CodexInstallationConfig | SharedClientConfig, sess
     return f"{config.entry_id}:{session_id}" if isinstance(config, SharedClientConfig) else session_id
 
 
+def project_root_of(value: object) -> str | None:
+    """A host-supplied working directory in its comparable form, or None when it is not one."""
+    if type(value) is not str or not value.strip():
+        return None
+    try:
+        return normalize_project_path(value)
+    except ContractError:
+        return None
+
+
 def trusted_context(
     config: CodexInstallationConfig | SharedClientConfig,
     audience: CodexRuntimeAudience,
@@ -136,6 +147,7 @@ def trusted_context(
     session_id: str,
     actor_origin: Origin = "human_direct",
     mutation: bool = False,
+    project_root: str | None = None,
 ) -> TrustedContext:
     if not session_id.strip():
         raise ValueError("session_id is required")
@@ -159,4 +171,5 @@ def trusted_context(
         task_anchor=anchor,
         source_principal=_source_principal(config, actor_origin),
         entry_id=config.entry_id if shared else None,
+        project_root=project_root_of(project_root) or project_root_of(audience.matched_project_root),
     )
