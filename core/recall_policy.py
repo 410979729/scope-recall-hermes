@@ -12,11 +12,12 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from ..contracts import ContractError
-from .embedding_budget import bounded_embedding_text
+from .embedding_budget import bounded_embedding_text, kept_length
 from .endpoint_policy import endpoint_url_shape_ok
 from .events import CJK_RUN, lexical_terms, query_terms, version_suffixes
 from .owner_view import OWNER_NAME_LENGTH, OWNER_NAMES_LIMIT
 from .retrieval import CandidateRef, SearchContext
+from .secret_patterns import secret_like_text_starts_before
 
 EMBEDDING_SPACE = {
     "model": "gemini-embedding-2",
@@ -172,6 +173,13 @@ def build_embedding_space(*, model: str, dimensions: int, endpoint: str, dialect
     )
 
 
+def _bound_input(raw_text: object) -> str:
+    """``raw_text`` as the input bound cuts it and every embedded body carries it: in NFKC form."""
+    if type(raw_text) is not str:
+        raise ContractError("INPUT_INVALID", "embedding_text")
+    return unicodedata.normalize("NFKC", raw_text)
+
+
 def encode_embedding_text(raw_text: str, *, kind: str) -> str:
     """Encode raw source/query text for Gem2 without changing raw identity.
 
@@ -181,13 +189,27 @@ def encode_embedding_text(raw_text: str, *, kind: str) -> str:
     ``core/embedding_budget.py``.
     """
 
-    if type(raw_text) is not str or kind not in {"document", "query"}:
+    if kind not in {"document", "query"}:
         raise ContractError("INPUT_INVALID", "embedding_text")
-    normalized = unicodedata.normalize("NFKC", raw_text)
-    bounded, _truncated = bounded_embedding_text(normalized)
+    bounded, _truncated = bounded_embedding_text(_bound_input(raw_text))
     if kind == "query":
         return f"task: question answering | query: {bounded}"
     return f"title: none | text: {bounded}"
+
+
+def embedding_sends_secret_like_text(raw_text: str) -> bool:
+    """Whether the part of ``raw_text`` that ``encode_embedding_text`` sends holds secret-like text.
+
+    A run counts when it starts in the part the input bound keeps, and is judged with the rest of the line the cut
+    falls in (``secret_like_text_starts_before``); the template around the text and the marker after a cut are this
+    module's own words.  Judged in the encoded body, a cut right after a key name puts the marker where its value
+    would be (``credential_env: …[truncated]``), and a cut inside a value exempt only whole leaves its start
+    (``credential_env: nu`` of ``null``); either reads as a credential, and a text is cut in the same place every
+    time, so its source could never be embedded.  Judged with the rest of its line, a key the cut runs through is
+    caught although too few of its characters are sent for its pattern.
+    """
+    text = _bound_input(raw_text)
+    return secret_like_text_starts_before(text, kept_length(text))
 
 
 def claim_embedding_text(payload: dict) -> str:
