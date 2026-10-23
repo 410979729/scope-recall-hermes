@@ -12,7 +12,9 @@ from threading import Barrier
 
 import pytest
 from scope_recall.contracts import ContractError, SourceEvent
+from scope_recall.core.embedding_budget import EMBEDDING_INPUT_TOKENS, TRUNCATION_MARKER
 from scope_recall.core.recall_policy import EMBEDDING_SPACE, encode_embedding_text
+from scope_recall.core.secret_patterns import contains_secret_like_text
 from scope_recall.core.source_records import StoredSource
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, auxiliary_runtime_status, build_auxiliary_runtime
 from scope_recall.runtime.consolidation_models import ConsolidationRouteConfig, OpenAIConsolidationAdapter
@@ -212,6 +214,94 @@ def test_a_key_across_the_query_s_input_bound_is_not_sent_in_part(tmp_path):
         runtime.query_embedding.embed_query(query, remaining_seconds=2.0)
     assert refused.value.error_type == "sensitive_request"
     assert transport.calls == 0
+
+
+#: Characters of a document the input bound keeps when it cuts.
+_KEPT = EMBEDDING_INPUT_TOKENS - len(TRUNCATION_MARKER)
+
+
+def _cut_after(head: str, tail: str) -> str:
+    """A document the input bound cuts right after ``head``, with ``tail`` the first thing the cut leaves out."""
+    lines = "TEST line\n" * (_KEPT // 10 + 1)
+    return lines[: _KEPT - len(head) - 1] + "\n" + head + tail + "\n" + lines
+
+
+def _recorded_embeddings(sent: list):
+    """A provider that answers every text with a vector and records the texts of each request."""
+
+    def answer(**kwargs):
+        requests = json.loads(kwargs["body"])["requests"]
+        sent.append([request["content"]["parts"][0]["text"] for request in requests])
+        vectors = [{"values": _vector()} for _ in requests]
+        return 200, json.dumps({"embeddings": vectors, "usageMetadata": {"promptTokenCount": 10}}).encode()
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    "head,tail",
+    [
+        # The marker the cut appends stands where the value would be.
+        ("credential_env: ", "\nroute: TEST"),
+        # Read as a cookie's value, which no exemption of an assignment's value would cover.
+        ("Cookie: sid=", ""),
+        # The start of a value that is exempt only whole.
+        ("credential_env: nu", "ll"),
+        ("api_key: ${TEST_", "KEY}"),
+        # However far past the cut the value ends.
+        ("api_key: {TEST", "A" * 1100 + "}"),
+    ],
+    ids=["marker_after_key", "marker_as_cookie_value", "inside_null", "inside_placeholder", "long_placeholder"],
+)
+def test_a_document_cut_where_a_value_begins_is_embedded(tmp_path, monkeypatch, head, tail):
+    """A document is cut in the same place every time, so a document refused for where its cut fell was refused for
+    good: the guard reads what the document says, not what the cut and its marker make of it."""
+    document = _cut_after(head, tail)
+    encoded = encode_embedding_text(document, kind="document")
+    assert encoded.endswith(head + TRUNCATION_MARKER)
+    assert not contains_secret_like_text(document)
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "test-key")
+    sent = []
+    runtime = build_auxiliary_runtime(config, transport=FakeTransport(_recorded_embeddings(sent)))
+    runtime.source_embedding.embed_source(_source(document), remaining_seconds=2.0)
+    runtime.source_embedding.embed_sources([_source("TEST"), _source(document)], remaining_seconds=2.0)
+    assert sent == [[encoded], [encode_embedding_text("TEST", kind="document"), encoded]]
+
+
+@pytest.mark.parametrize(
+    "head,tail",
+    [
+        ("api_key=TESTsecretvalue1234567890 ", "TEST"),
+        # Runs on across the cut, too few of its characters sent for its pattern to know it.
+        ("sk-proj-Ab1Ab1Ab1", "Ab1" * 10),
+        # null and a thousand dots read as exempt until the last character, which makes the whole a value.
+        ("credential_env: nu", "ll" + "." * 1000 + "X"),
+    ],
+    ids=["key_before_cut", "key_across_cut", "value_ending_far_past_cut"],
+)
+def test_a_document_that_sends_part_of_a_key_is_refused_before_anything_is_sent(tmp_path, head, tail):
+    config, _, _ = _runtime_config(tmp_path)
+    transport = FakeTransport(lambda **kwargs: (200, b"{}"))
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    document = _cut_after(head, tail)
+    with pytest.raises(AuxiliaryModelError) as single:
+        runtime.source_embedding.embed_source(_source(document), remaining_seconds=2.0)
+    with pytest.raises(AuxiliaryModelError) as group:
+        runtime.source_embedding.embed_sources([_source("TEST"), _source(document)], remaining_seconds=2.0)
+    assert single.value.error_type == group.value.error_type == "sensitive_request"
+    assert transport.calls == 0
+
+
+def test_a_key_after_the_cut_does_not_refuse_the_part_before_it(tmp_path, monkeypatch):
+    """What the cut leaves out is not sent; it is read only to judge a run the cut falls in."""
+    document = _cut_after("TEST ", "\napi_key=TESTsecretvalue1234567890")
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "test-key")
+    sent = []
+    runtime = build_auxiliary_runtime(config, transport=FakeTransport(_recorded_embeddings(sent)))
+    runtime.source_embedding.embed_source(_source(document), remaining_seconds=2.0)
+    assert sent == [[encode_embedding_text(document, kind="document")]]
 
 
 def test_several_queries_go_in_one_request_in_their_order(tmp_path, monkeypatch):

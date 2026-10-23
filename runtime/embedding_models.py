@@ -17,6 +17,7 @@ from ..core.recall_policy import (
     EMBEDDING_DIALECTS,
     EMBEDDING_SPACE,
     build_embedding_space,
+    embedding_sends_secret_like_text,
     encode_embedding_text,
 )
 from ..core.source_records import StoredSource
@@ -264,6 +265,15 @@ class EmbeddingRouteConfig:
         return self.dialect or "gemini"
 
 
+def _encoded_document(text: str) -> str:
+    """``text`` encoded as a document, refused before anything is sent when the part of it the request carries holds
+    secret-like text (``embedding_sends_secret_like_text``)."""
+    encoded = encode_embedding_text(text, kind="document")
+    if embedding_sends_secret_like_text(text):
+        raise AuxiliaryModelError("sensitive_request")
+    return encoded
+
+
 class GeminiEmbeddingAdapter:
     def __init__(
         self,
@@ -294,8 +304,8 @@ class GeminiEmbeddingAdapter:
         self._dialect = route.wire_dialect()
 
     def embed_query(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
-        # The whole query first: the request guard sees only what the input bound keeps, so a key that straddled
-        # the cut went out in part.  A query is the owner's message as typed, screened by nothing before this.
+        # The whole query, before the input bound cuts it, so a key the cut runs through is not sent in part.  A query
+        # is the owner's message as typed, screened by nothing before this.
         reject_secrets(text)
         encoded = encode_embedding_text(text, kind="query")
         return self._embed(encoded, remaining_seconds=remaining_seconds, transport=self._query_transport)
@@ -323,8 +333,7 @@ class GeminiEmbeddingAdapter:
             self._transport.close()
 
     def embed_source(self, source: StoredSource, *, remaining_seconds: float) -> Sequence[float]:
-        encoded = encode_embedding_text(source.event["content"], kind="document")
-        return self._embed(encoded, remaining_seconds=remaining_seconds)
+        return self._embed(_encoded_document(source.event["content"]), remaining_seconds=remaining_seconds)
 
     def embed_sources(
         self, sources: Sequence[StoredSource], *, remaining_seconds: float
@@ -335,22 +344,22 @@ class GeminiEmbeddingAdapter:
         request, and a store with a hundred thousand sources is a hundred
         thousand requests to rebuild one at a time.
         """
-        encoded = [encode_embedding_text(source.event["content"], kind="document") for source in sources]
-        return self.embed_texts(encoded, remaining_seconds=remaining_seconds)
+        return self.embed_texts([source.event["content"] for source in sources], remaining_seconds=remaining_seconds)
 
-    def embed_texts(self, encoded: Sequence[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
-        """Embed already-encoded document texts using ``MAX_EMBED_BATCH`` as a provider-compatibility cap,
-        splitting larger document groups so callers do not manage batch boundaries.
+    def embed_texts(self, texts: Sequence[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
+        """Embed document texts, each encoded and screened as ``embed_text`` does, using ``MAX_EMBED_BATCH`` as a
+        provider-compatibility cap, splitting larger document groups so callers do not manage batch boundaries.
 
         Requests contain at most ``MAX_EMBED_BATCH`` texts.  Batches are also split against ``max_request_bytes``;
         a single text whose request body exceeds that cap remains a one-text batch and is rejected by the ledger
-        before transmission.
+        before transmission.  A text the guard refuses refuses the group before any request is sent.
         """
-        texts = list(encoded)
+        texts = list(texts)
         if not texts:
             return ()
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        chunks = request_chunks(texts, body=self._request_body, limit=self._ledger.policy.max_request_bytes)
+        encoded = [_encoded_document(text) for text in texts]
+        chunks = request_chunks(encoded, body=self._request_body, limit=self._ledger.policy.max_request_bytes)
         if len(chunks) == 1:
             return tuple(self._embed_many(chunks[0], remaining_seconds=seconds_left(deadline)))
 
@@ -375,8 +384,7 @@ class GeminiEmbeddingAdapter:
         here as the rendered assertion. Same encoding as a source, so both land
         in one comparable space.
         """
-        encoded = encode_embedding_text(text, kind="document")
-        return self._embed(encoded, remaining_seconds=remaining_seconds)
+        return self._embed(_encoded_document(text), remaining_seconds=remaining_seconds)
 
     def _request_body(self, texts: Sequence[str]) -> bytes:
         """The request body for ``texts`` in this route's dialect."""
@@ -387,10 +395,9 @@ class GeminiEmbeddingAdapter:
         )
 
     def _embed_many(self, texts: list[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
-        """The one-request path, for any number of texts; identical bounds to ``_embed``."""
+        """The one-request path, for any number of encoded texts their callers screened; identical bounds to
+        ``_embed``."""
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        for text in texts:
-            reject_secrets(text)
         return self._send(
             self._request_body(texts),
             deadline,
@@ -401,8 +408,10 @@ class GeminiEmbeddingAdapter:
     def _embed(
         self, encoded_text: str, *, remaining_seconds: float, transport: HttpTransport | None = None
     ) -> Sequence[float]:
+        """One request for an encoded text.  Its caller screened the text it was encoded from (the whole query, or
+        ``embedding_sends_secret_like_text``): the body adds the template and the cut's marker, which hold nothing
+        secret."""
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        reject_secrets(encoded_text)
         return self._send(
             self._request_body(encoded_text),
             deadline,
