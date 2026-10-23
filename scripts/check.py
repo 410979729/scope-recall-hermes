@@ -38,16 +38,22 @@ INTEGRATION_WATCHDOG_SECONDS = 2700
 #: Twenty seconds a file leaves such a runner room and still bounds a hang at
 #: the release budget.
 WATCHDOG_SECONDS_PER_FILE = 20
-#: Test files that build a whole store before their first test, and the
-#: seconds each adds to its tier's watchdog.  The allowance comes after the
-#: release budget has capped the twenty seconds a file, so the cap that bounds
-#: a tier of many files never cuts it, and a hang stays bounded by the sum.
+#: Test files that build whole stores, and the seconds each adds to its tier's
+#: watchdog.  The allowance comes after the release budget has capped the
+#: twenty seconds a file, so the cap that bounds a tier of many files never
+#: cuts it, and a hang stays bounded by the sum.
 #: The recall bench's file builds a synthetic shared store of four weeks
 #: through the real capture, worker and recall paths, and a two-day one twice:
 #: about 60 s under this gate on a local SSD, and up to six and a half times
 #: that on GitHub's Windows runners, whose file operations are the slowest it
-#: meets.  Its 600 s are that and half as much again.
-HEAVY_FILE_SECONDS = {"tests/recall_bench/test_recall_bench.py": 600}
+#: meets.  Its 600 s are that and half as much again.  The memory export file
+#: captures stores of a hundred and a thousand sources to show that export
+#: memory stays bounded, about 30 s on the same SSD; its 300 s follow the same
+#: rule.
+HEAVY_FILE_SECONDS = {
+    "tests/recall_bench/test_recall_bench.py": 600,
+    "tests/contract/test_memory_export.py": 300,
+}
 
 
 def pytest_watchdog_seconds(

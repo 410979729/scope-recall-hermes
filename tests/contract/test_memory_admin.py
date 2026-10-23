@@ -80,14 +80,17 @@ def test_capture_during_scan_uses_one_snapshot(app, monkeypatch):
     assert [item["ref"] for item in owner.list(filters)["items"]] == [captured[0].ref]
 
 
-def test_search_reaches_oldest_match_across_inventory_batches(app):
+def test_search_reaches_oldest_match_across_inventory_batches(app, monkeypatch):
     core, context = app
-    sources = [capture(core, context, f"TEST haystack {i}") for i in range(300)]
+    # Small batches cross the same inventory and hydration boundaries with a few captures.
+    monkeypatch.setattr(management_query, "_SCAN_BATCH", 8)
+    monkeypatch.setattr(management_query, "_HYDRATE_BATCH", 2)
+    sources = [capture(core, context, f"TEST haystack {i}") for i in range(20)]
     last = max(sources, key=lambda source: source.ref)
     target = capture(core, context, "TEST oldest needle", key=last.event["source_event_key"], revision=2)
     page = management(core, context).list(MemoryFilter(kind="event", query="OLDEST needle"))
     assert [item["ref"] for item in page["items"]] == [target.ref]
-    assert page["examined"] == 300
+    assert page["examined"] == 20
     assert page["scan_complete"] and page["next_cursor"] is None
 
 
@@ -233,8 +236,11 @@ def test_time_budget_cursor_resumes_without_skipping_a_batch(app, monkeypatch):
 
 def test_budget_stop_in_second_inventory_batch_bounds_prefetch_and_resumes(app, monkeypatch):
     core, context = app
+    # Small batches put the budget stop inside the second inventory page with a few captures.
+    monkeypatch.setattr(management_query, "_SCAN_BATCH", 8)
+    monkeypatch.setattr(management_query, "_HYDRATE_BATCH", 2)
     target = capture(core, context, "TEST oldest needle", when="2026-01-01T00:00:00Z")
-    for i in range(299):
+    for i in range(19):
         capture(core, context, f"TEST haystack {i}")
     filters = MemoryFilter(kind="event", query=target.event["content"])
     owner = management(core, context)
@@ -247,19 +253,19 @@ def test_budget_stop_in_second_inventory_batch_bounds_prefetch_and_resumes(app, 
     def prefetch(tx, candidates, search):
         batches.append(len(candidates))
         result = original(tx, candidates, search)
-        if sum(batches) > 256:
+        if sum(batches) > 8:
             clock[0] = 31.0
         return result
 
     monkeypatch.setattr(reader, "prefetch", prefetch)
     page = owner.list(filters)
-    assert page["items"] == [] and 256 < page["examined"] < 300
+    assert page["items"] == [] and 8 < page["examined"] < 20
     assert page["stop_reason"] == "time_budget" and page["next_cursor"]
-    assert max(batches) <= 16
+    assert max(batches) <= 2
     monkeypatch.setattr(reader, "prefetch", original)
     resumed = owner.list(filters, cursor=page["next_cursor"])
     assert [row["ref"] for row in resumed["items"]] == [target.ref]
-    assert resumed["examined"] + page["examined"] == 300 and resumed["scan_complete"]
+    assert resumed["examined"] + page["examined"] == 20 and resumed["scan_complete"]
 
 
 def test_inventory_using_up_budget_still_advances_and_avoids_queue_counts(app, monkeypatch):
