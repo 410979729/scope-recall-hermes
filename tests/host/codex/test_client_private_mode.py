@@ -3,6 +3,7 @@
 import json
 from contextlib import closing
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -16,6 +17,137 @@ from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
 
 from tests.host.codex.test_remote import NOW, _client, store
+
+
+def _cached_rules(config, value):
+    """Seed only the server's metadata answer, as a preceding hook would."""
+    config["state_dir"].mkdir(parents=True, exist_ok=True)
+    (config["state_dir"] / "private-rules.json").write_text(json.dumps({"private_rules": value}), encoding="utf-8")
+
+
+def _fake_transport(monkeypatch, *, private_rules=False):
+    """Count physical requests and simulate outages without contacting a server."""
+    transport = SimpleNamespace(away=False, connections=0, calls=[], private_rules=private_rules)
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            self.sock = SimpleNamespace(settimeout=lambda value: None)
+
+        def connect(self):
+            transport.connections += 1
+            if transport.away:
+                raise ConnectionRefusedError("TEST server unreachable")
+
+        def request(self, _method, path, **kwargs):
+            self.path, self.body = path, json.loads(kwargs["body"])
+            transport.calls.append((path, self.body))
+
+        def getresponse(self):
+            if self.path.endswith("/private/check"):
+                answer = dict(
+                    mode="full",
+                    capture_blocked=True,
+                    recall_blocked=True,
+                    decisions=[True] * len(self.body["times"]),
+                    private_rules=transport.private_rules,
+                )
+            else:
+                answer = dict(result={}, private_rules=transport.private_rules)
+            return SimpleNamespace(status=200, read=lambda: json.dumps(answer).encode())
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(remote_client.http.client, "HTTPConnection", Connection)
+    return transport
+
+
+@pytest.mark.parametrize("cached", [False, None], ids=["stored-false", "fresh"])
+def test_remote_without_known_rules_spools_offline_and_replays_on_next_hook(tmp_path, monkeypatch, cached):
+    config = _client(tmp_path, "codex", 1)
+    if cached is not None:
+        _cached_rules(config, cached)
+    transport = _fake_transport(monkeypatch)
+    transport.away = True
+    payload = dict(hook_event_name="Stop", session_id="TEST-session-1", last_assistant_message="TEST offline body")
+    remote_client.run_hook(config, json.dumps(payload).encode())
+    kept = list(remote_client._spool_dir(config).glob("*.json"))
+    assert len(kept) == 1, "an ordinary offline hook must remain queued"
+    assert json.loads(kept[0].read_text(encoding="utf-8"))["payload"] == payload
+    remote_client.run_hook(config, json.dumps({**payload, "last_assistant_message": "TEST cooldown body"}).encode())
+    assert len(list(remote_client._spool_dir(config).glob("*.json"))) == 2
+    assert transport.connections == 1, "the cooldown keeps hooks without reconnecting"
+    transport.away = False
+    monkeypatch.setattr(remote_client, "_server_away", lambda config: False)
+    monkeypatch.setattr(remote_client, "_start_flush", lambda config: remote_client.flush_spool(config))
+    remote_client.run_hook(
+        config, json.dumps(dict(hook_event_name="SessionStart", session_id="TEST-session-1")).encode()
+    )
+    assert [path for path, _body in transport.calls] == ["/hook"] * 3
+    assert [body["payload"].get("last_assistant_message") for _path, body in transport.calls[1:]] == [
+        "TEST offline body",
+        "TEST cooldown body",
+    ]
+    assert list(remote_client._spool_dir(config).glob("*.json")) == []
+
+
+@pytest.mark.parametrize("cached", [False, None], ids=["stored-false", "fresh"])
+def test_remote_first_content_answer_enables_strict_checks_for_next_process(tmp_path, monkeypatch, cached):
+    config = _client(tmp_path, "codex", 1)
+    if cached is not None:
+        _cached_rules(config, cached)
+    transport = _fake_transport(monkeypatch, private_rules=True)
+    payload = dict(hook_event_name="Stop", session_id="TEST-session-1", last_assistant_message="TEST body")
+    remote_client.run_hook(config, json.dumps(payload).encode())
+    assert [path for path, _body in transport.calls] == ["/hook"], "ordinary hooks need no metadata round trips"
+    assert json.loads((config["state_dir"] / "private-rules.json").read_text(encoding="utf-8")) == {
+        "private_rules": True
+    }
+    config = remote_client.load_client_config(config["config"])
+    remote_client.run_hook(config, json.dumps(payload).encode())
+    assert [path for path, _body in transport.calls] == ["/hook", "/private/check"]
+    assert list(remote_client._spool_dir(config).glob("*.json")) == []
+
+
+def test_remote_known_rules_keep_nothing_during_an_outage(tmp_path, monkeypatch):
+    config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, True)
+    transport = _fake_transport(monkeypatch, private_rules=True)
+    transport.away = True
+    remote_client.run_hook(
+        config,
+        json.dumps(
+            dict(hook_event_name="Stop", session_id="TEST-session-1", last_assistant_message="TEST private body")
+        ).encode(),
+    )
+    assert transport.connections == 1
+    assert transport.calls == []
+    assert list(remote_client._spool_dir(config).glob("*.json")) == []
+
+
+def test_remote_metadata_answer_overwrites_cached_rule_presence(tmp_path, monkeypatch):
+    config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, True)
+    _fake_transport(monkeypatch, private_rules=False)
+    remote_client._private_batch(config, dict(payload=dict(session_id="TEST-session-1")), [NOW], 1)
+    assert json.loads((config["state_dir"] / "private-rules.json").read_text(encoding="utf-8")) == {
+        "private_rules": False
+    }
+
+
+def test_flush_uses_the_rule_answer_received_from_the_preceding_record(tmp_path, monkeypatch):
+    config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, False)
+    transport = _fake_transport(monkeypatch, private_rules=True)
+    for number in range(2):
+        remote_client._spool(
+            config,
+            dict(hook_event_name="Stop", session_id="TEST-session-1", last_assistant_message=f"TEST queued {number}"),
+            NOW,
+        )
+    assert remote_client.flush_spool(config) == 1
+    assert [path for path, _body in transport.calls] == ["/hook", "/private/check"]
+    assert list(remote_client._spool_dir(config).glob("*.json")) == []
 
 
 class PrivateClock:
@@ -71,6 +203,40 @@ def _bound(client_store, host):
 def _rows(core, ctx):
     with core.storage.read(ctx) as tx:
         return [tuple(row) for row in tx._check().execute("SELECT content,extra_json FROM source_events")]
+
+
+@pytest.mark.parametrize("host", ["codex", "dsh"])
+def test_server_hooks_report_rules_even_for_other_sessions_and_closed_intervals(client_store, host):
+    hook, _core, _ctx, clock, owner = _bound(client_store, host)
+    server = remote_server.RemoteServerConfig(hook.config.home, host, "127.0.0.1", 1, "0" * 64)
+    body = dict(payload=dict(hook_event_name="Stop", session_id="TEST-other-session", cwd="C:/work/app"))
+    try:
+        answer = remote_server.handle_request(server, body)
+        assert answer["private_rules"] is False
+        if host == "dsh":
+            assert answer["result"]["private_rules"] is False
+        owner.private_on(target="session", session="TEST-unrelated")
+        assert remote_server.handle_request(server, body)["private_rules"] is True
+        clock.advance()
+        owner.private_off(target="session", session="TEST-unrelated")
+        assert remote_server.handle_request(server, body)["private_rules"] is True
+        assert (
+            remote_server.private_check(server, dict(session_id="TEST-other-session", times=[]))["private_rules"]
+            is True
+        )
+    finally:
+        hook.close()
+
+
+def test_local_dsh_hook_answers_teach_the_native_spool_about_rule_history(client_store):
+    hook, _core, _ctx, _clock, owner = _bound(client_store, "dsh")
+    payload = dict(hook_event_name="Stop", session_id="TEST-other-session", cwd="C:/work/app")
+    try:
+        assert hook.handle_bytes(json.dumps(payload).encode())["private_rules"] is False
+        owner.private_on(target="session", session="TEST-unrelated")
+        assert hook.handle_bytes(json.dumps(payload).encode())["private_rules"] is True
+    finally:
+        hook.close()
 
 
 @pytest.mark.parametrize("host", ["codex", "claude-code", "workbuddy", "dsh"])
@@ -175,6 +341,7 @@ def test_server_discards_late_spool_event_by_its_original_time(client_store, mon
 @pytest.mark.parametrize("state", [None, dict(mode="full", capture_blocked=True, recall_blocked=True)])
 def test_remote_full_or_unverified_sends_no_content_and_keeps_no_spool(tmp_path, monkeypatch, state):
     config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, True)
     post = Mock(return_value={})
     monkeypatch.setattr(remote_client, "_private_check", lambda *args: state)
     monkeypatch.setattr(remote_client, "_post", post)
@@ -196,6 +363,7 @@ def test_remote_full_or_unverified_sends_no_content_and_keeps_no_spool(tmp_path,
 
 def test_spool_flush_checks_private_state_before_sending(tmp_path, monkeypatch):
     config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, True)
     remote_client._spool(
         config, dict(hook_event_name="Stop", session_id="TEST-session-1", last_assistant_message="TEST private"), NOW
     )
@@ -236,6 +404,7 @@ def test_dsh_preflight_translates_millisecond_record_times():
 
 def test_read_only_remote_sends_only_a_question_and_keeps_no_spool(tmp_path, monkeypatch):
     config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, True)
     post = Mock(return_value={"retry": True})
     monkeypatch.setattr(
         remote_client,
@@ -340,6 +509,7 @@ def test_local_hook_uses_child_cwd_for_private_rules(installed):
 
 def test_remote_rechecks_after_spooling_before_content_send(tmp_path, monkeypatch):
     config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, True)
     states = iter(
         [
             dict(mode="none", capture_blocked=False, recall_blocked=False),
@@ -414,6 +584,7 @@ def test_remote_mixed_record_drops_private_lines_and_advances_cursor(tmp_path, m
     from scope_recall.adapters.clients import transcript
 
     config = _client(tmp_path, "claude-code", 1)
+    _cached_rules(config, True)
     public = "2026-09-26T14:00:00Z"
     lines = [
         [10, transcript.said_to_wire(transcript.Said("TEST-1", "user", "TEST private", NOW))],
@@ -599,6 +770,7 @@ def test_remote_content_connection_rechecks_privacy_after_connect(tmp_path, monk
     from types import SimpleNamespace
 
     config = _client(tmp_path, "codex", 1)
+    _cached_rules(config, True)
     sent = []
 
     class Connection:
@@ -704,7 +876,9 @@ def test_read_only_sends_only_questions_that_were_never_full_private(client_stor
     if not private:
         body["clock"] = dict(client_at=at, server_at=at, received_at=at)
     try:
-        remote_client._send_checked(_client(tmp_path, "codex", 1), body, remote_client.time.monotonic() + 10)
+        client = _client(tmp_path, "codex", 1)
+        _cached_rules(client, True)
+        remote_client._send_checked(client, body, remote_client.time.monotonic() + 10)
         assert len(sent) == (0 if private else 1)
     finally:
         hook.close()

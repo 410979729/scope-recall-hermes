@@ -70,6 +70,17 @@ export function apply(ctx, raw) {
   let sweepAfter = 0
   try { mkdirSync(cfg.spool, { recursive: true }) } catch (error) { warn(`spool folder: ${error}`) }
 
+  const rulesFile = join(cfg.spool, 'private-rules.json')
+  const privateRules = () => safe(() => JSON.parse(readFileSync(rulesFile, 'utf8')).private_rules === true) ?? false
+  const rememberRules = (answer) => {
+    if (typeof answer?.private_rules !== 'boolean') return
+    try {
+      const pending = `${rulesFile}.${process.pid}.tmp`
+      writeFileSync(pending, JSON.stringify({ private_rules: answer.private_rules }))
+      renameSync(pending, rulesFile)
+    } catch (error) { warn(`private rule metadata: ${error}`) }
+  }
+
   const writeStatus = (force = false) => {
     const now = Date.now()
     if (!force && now - statusWritten < STATUS_EVERY_MS) return
@@ -82,6 +93,7 @@ export function apply(ctx, raw) {
   // Group by the directory that owns each event; adopting an older file must
   // obtain the same decision as a new message before copying any plaintext.
   const eligible = async (sessionId, entries, fresh = false) => {
+    if (!privateRules()) return { permitted: entries, unchecked: [] }
     const groups = new Map()
     for (const entry of entries) {
       const cwd = entry.cwd ?? process.cwd()
@@ -118,13 +130,19 @@ export function apply(ctx, raw) {
 
   // A line is written with a line break before it as well as after, so that one a crash cut short ends there.
   const keep = (sessionId, entry) => {
-    // Serialize the decision and append so a turn end cannot drain ahead of its
-    // messages. Only metadata travels before Core permits a plaintext disk copy.
-    const pending = (pendingKeeps.get(sessionId) ?? Promise.resolve()).then(async () => {
-      if (!(await eligible(sessionId, [entry], true)).permitted.length) return
+    const append = () => {
       try {
         appendFileSync(ownFile(sessionId), `\n${JSON.stringify({ k: `${process.pid}-${Date.now()}-${counter++}`, sessionId, ...entry })}\n`)
       } catch (error) { warn(`a message of session ${sessionId} was not kept on disk: ${error}`) }
+    }
+    // Ordinary messages reach disk in the event callback. Once private history
+    // is known, serialize verification so a turn cannot drain ahead of it.
+    if (!privateRules() && !pendingKeeps.has(sessionId)) {
+      append()
+      return Promise.resolve()
+    }
+    const pending = (pendingKeeps.get(sessionId) ?? Promise.resolve()).then(async () => {
+      if ((await eligible(sessionId, [entry], true)).permitted.length) append()
     }).catch((error) => warn(`capture decision: ${error}`))
     pendingKeeps.set(sessionId, pending)
     pending.finally(() => { if (pendingKeeps.get(sessionId) === pending) pendingKeeps.delete(sessionId) })
@@ -149,6 +167,7 @@ export function apply(ctx, raw) {
       if (settled) return
       settled = true
       signal?.removeEventListener?.('abort', onAbort)
+      if (result.ok) rememberRules(result.answer)
       resolve(result)
     }
     const stop = (why) => { try { child.kill() } catch {} finish({ ok: false, error: why }) }
@@ -303,7 +322,16 @@ export function apply(ctx, raw) {
     // only a Stop that stores nothing ends the store.
     let queue = messages
     while (queue.length) {
-      const [chunk] = chunks(queue)
+      let [chunk] = chunks(queue)
+      if (privateRules()) {
+        const { permitted, unchecked } = await eligible(sessionId, chunk)
+        if (unchecked.length) { failure = 'private state unverified'; break }
+        const allowed = new Set(permitted)
+        for (const entry of chunk) { if (!allowed.has(entry)) dropped.add(entry.k) }
+        queue = queue.filter((entry) => !dropped.has(entry.k))
+        chunk = permitted
+        if (!chunk.length) continue
+      }
       const payload = { hook_event_name: 'Stop', session_id: sessionId, cwd: lastEnd?.cwd ?? chunk[0]?.cwd ?? process.cwd(),
                         record: chunk.map(({ id, role, text, time, clock }) => ({ id, role, text, time, clock })) }
       if (reply && chunk.includes(reply) && bytes(payload) + bytes(reply.text) <= PAYLOAD_BYTES) {
@@ -327,7 +355,7 @@ export function apply(ctx, raw) {
     }
     if (dropped.size) {
       status.dropped += dropped.size
-      warn(`session ${sessionId}: ${dropped.size} message(s) dropped unstored, older than 14 days or past ${MAX_KEPT} waiting`)
+      warn(`session ${sessionId}: ${dropped.size} message(s) dropped unstored by private rules or queue limits`)
     }
     status.backlog = countBacklog()
     status.lastStore = { at: new Date().toISOString(), stored: stored.size, left: status.backlog, error: failure }

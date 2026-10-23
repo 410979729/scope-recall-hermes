@@ -352,6 +352,13 @@ def unverified_project_rule(tx) -> list[dict]:
     return _unverified_connection_rule(tx._check())
 
 
+def has_rules(tx) -> bool:
+    """Whether this store snapshot has any interval history, using only a covering index."""
+    return (
+        tx._check().execute("SELECT 1 FROM private_intervals INDEXED BY private_target LIMIT 1").fetchone() is not None
+    )
+
+
 def _unverified_connection_rule(conn) -> list[dict]:
     row = conn.execute(
         "SELECT 1 FROM private_intervals INDEXED BY private_target WHERE target_kind='project' LIMIT 1"
