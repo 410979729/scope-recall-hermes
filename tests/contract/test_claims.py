@@ -1784,3 +1784,20 @@ def test_quote_absent_from_both_forms_is_still_rejected(app):
     proposal["evidence_spans"][0]["quote"] = "TEST-project 配色定为红色。"
     with pytest.raises(ContractError):
         accept(core, ctx, proposal)
+
+
+def test_a_quote_copying_a_quoted_placeholder_is_accepted(app):
+    """A result is screened text by text, as written.  Read through its JSON encoding, the placeholder's quotes are
+    escaped and the quote the model copied from the source reads as a credential, refusing the whole result."""
+    core, ctx = app
+    content = "TEST config" + chr(10) + 'api_key: "<your-api-key>"' + chr(10) + "TEST-project 配色 蓝色。"
+    source = capture(core, ctx, content)
+    assert accept(core, ctx, draft(source)).items[0].state == "active"
+
+
+def test_a_result_carrying_a_credential_is_refused(app):
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project 配色 蓝色。")
+    with pytest.raises(ContractError) as refused:
+        accept(core, ctx, draft(source, conditions=["password: hunter2-not-a-placeholder"]))
+    assert refused.value.field == "plaintext_secret_rejected"

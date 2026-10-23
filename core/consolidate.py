@@ -18,6 +18,7 @@ from .episodes import source_origin, source_watermark
 from .evidence_quote import resolve_evidence_quotes
 from .failure_retry import validation_feedback as safe_feedback
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
+from .secret_patterns import cut_between_runs
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
 
 if TYPE_CHECKING:
@@ -256,6 +257,11 @@ def evidence_window(source: StoredSource, needles, evidence_spans=()) -> StoredS
     if anchor is not None:
         start = max(0, anchor[0] - EVIDENCE_WINDOW_RADIUS)
         end = min(total, anchor[1] + EVIDENCE_WINDOW_RADIUS)
+    # Each edge moves inward, never past what the window is built around, to where the request guard reads the window
+    # as the source reads: cut inside a value or a key's name, the evaluation would be refused every time it is asked.
+    keep = anchor or (start, start)
+    start = cut_between_runs(content, start, toward=keep[0])
+    end = cut_between_runs(content, end, toward=keep[1])
     return ChunkedSource(
         **dict(source.__dict__, event=dict(source.event, content=content[start:end])),
         consolidation_window=ConsolidationChunk(start, end, total),

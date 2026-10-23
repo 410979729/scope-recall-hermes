@@ -3,6 +3,7 @@ text and usage, and the adapters that send them through the metered transport (`
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -15,6 +16,7 @@ from typing import Any
 
 from ..contracts import ContractError
 from ..core.endpoint_policy import endpoint_scheme_allowed
+from ..core.secret_patterns import structure_contains_secret_like_text
 from .model_budget import AuxiliaryBudgetLedger, BudgetPolicy
 from .models import (
     MAX_CHAT_RESPONSE_BYTES,
@@ -55,8 +57,8 @@ _CHAT_ROLES = frozenset({"system", "user", "assistant", "tool"})
 def _reject_secrets_outside_contents(build_body: Callable[[list[dict]], bytes], messages: list[dict]) -> None:
     """The body gate: everything a request carries besides its message contents.
 
-    ``validate_chat_messages`` has already scanned every content as it was
-    written.  Scanning the serialised body would scan each of them again through
+    ``validate_chat_messages`` has already scanned every text the contents carry,
+    as written.  Scanning the serialised body would scan each of them again through
     one more layer of escaping, where a line break inside a content reads
     ``\\\\n``: the scanner's break rule restored the break and left a backslash
     behind it, which an empty credential slot ("AppSecret:" and nothing after
@@ -67,6 +69,40 @@ def _reject_secrets_outside_contents(build_body: Callable[[list[dict]], bytes], 
     and each text is scanned once.
     """
     reject_secrets(build_body([dict(message, content="") for message in messages]).decode("utf-8"))
+
+
+def _json_content(content: str) -> Any:
+    """The structure a content that is JSON encodes, as ``{label: value}`` when a label and ``=`` lead it
+    (``candidate=``); None for any other text, nesting too deep to read included.  Every member of an object is kept
+    as an object of its own, a repeated key's too: the request carries them all."""
+    label, separator, rest = content.partition("=")
+    forms = [("", content)]
+    if separator and label.isidentifier():
+        forms.append((label, rest))
+    for prefix, payload in forms:
+        if payload[:1] in ("{", "["):
+            try:
+                value = json.loads(payload, object_pairs_hook=lambda pairs: [{key: item} for key, item in pairs])
+            except (ValueError, RecursionError):
+                continue
+            return {prefix: value} if prefix else value
+    return None
+
+
+def _reject_secrets_in_content(content: str) -> None:
+    """Refuse a message content that carries secret-like text, each of its texts read as written.
+
+    A consolidation or candidate request carries its sources, and a candidate after ``candidate=``, as JSON
+    (``core/consolidate.py``), and such a content is read as the structure it encodes
+    (``structure_contains_secret_like_text``), a label as the key of what follows it.  Read in its encoding, a source
+    that capture admitted could read as a credential: ``api_key: null`` at its end, followed by the next field, or
+    ``api_key: "<your-api-key>"`` anywhere in it, its quotes escaped.  Any other content is one text.
+    """
+    structure = _json_content(content)
+    if structure is None:
+        reject_secrets(content)
+    elif structure_contains_secret_like_text(structure):
+        raise AuxiliaryModelError("sensitive_request")
 
 
 def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_ROLES) -> None:
@@ -86,7 +122,7 @@ def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_RO
             or type(message["content"]) is not str
         ):
             raise AuxiliaryModelError("input_invalid")
-        reject_secrets(message["content"])
+        _reject_secrets_in_content(message["content"])
 
 
 #: ``finish_reason`` values with which DeepSeek ends a generation it did not finish, for lack of capacity or by

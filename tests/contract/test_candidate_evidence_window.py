@@ -168,6 +168,32 @@ def test_oversized_saved_quote_does_not_bypass_the_default_budget():
     assert failure.value.field == "consolidation_input_budget"
 
 
+def test_a_window_edge_falls_between_words():
+    """Cut inside a word, a window could carry the first letters of a value the request guard judges whole
+    (``credential_env: nu`` of ``null``) or the end of a key's name (``token:`` of ``mytoken:``), and the evaluation
+    would be refused every time it is asked."""
+    from scope_recall.runtime.consolidation_models import validate_chat_messages
+
+    line = "TEST line of ordinary tool output" + chr(10)
+    # No saved quote or needle matches, so the window is the source's first 3000 characters.
+    before = _source((line * 100)[:2981] + chr(10) + "credential_env: null" + chr(10) + line * 100)
+    window = evidence_window(before, ("absent",))
+    assert window.event["content"][-1].isspace() and not window.event["content"].endswith("nu")
+    validate_chat_messages(candidate_evaluation_messages(_candidate(before, []), (before,)))
+    # Nor is a space inside a placeholder a place to stop: the window would end on "<your api".
+    spaced = _source("x" * 2975 + chr(10) + 'api_key: "<your api key>"' + chr(10) + "x" * 1000)
+    assert evidence_window(spaced, ("absent",)).event["content"].endswith("api_key: ")
+    validate_chat_messages(candidate_evaluation_messages(_candidate(spaced, []), (spaced,)))
+    # The window opens 1500 characters before the quote, inside "mytoken".
+    after = _source("TEST " * 499 + "ab mytoken: TESTvalue " + "TEST " * 296 + "ab " + "QUOTE-TEST" + " TEST" * 700)
+    assert after.event["content"].index("QUOTE-TEST") - 1500 == after.event["content"].index("mytoken") + 2
+    candidate = _candidate(after, [_span(after, "QUOTE-TEST")])
+    window = evidence_window(after, (), [_span(after, "QUOTE-TEST")])
+    start = window.consolidation_window.start
+    assert after.event["content"][start - 1].isspace() and not window.event["content"].startswith("token")
+    validate_chat_messages(candidate_evaluation_messages(candidate, (after,)))
+
+
 def test_window_selection_does_not_mutate_candidate_identity_or_source():
     quote = "TEST-build result ready"
     source = _source("ready" + "x" * 4000 + quote + "z" * 4000)
