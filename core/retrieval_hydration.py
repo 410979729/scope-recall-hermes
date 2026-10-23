@@ -395,7 +395,16 @@ class RetrievalHydration:
         if context.as_of is not None:
             newer_sql += " AND (newer.occurred_at IS NULL OR newer.occurred_at<=?)"
             newer_params.append(context.as_of)
-        superseded = tx._check().execute(newer_sql, newer_params).fetchone() is not None
+        if context.as_of is None:
+            # Prefetch records whether each source version is its group's head.
+            # That answer is stable for this read snapshot; as-of needs its own
+            # occurrence-time fence instead of the unqualified head cache.
+            superseded = not tx.remembered(
+                ("head", candidate.ref, candidate.revision),
+                lambda: tx._check().execute(newer_sql, newer_params).fetchone() is None,
+            )
+        else:
+            superseded = tx._check().execute(newer_sql, newer_params).fetchone() is not None
         replaced = () if superseded else self._replaced_by(tx, source, context)
         event = source.event
         context_meta = bounded_source_context(event.get("source_context"))

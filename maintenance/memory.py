@@ -140,6 +140,43 @@ def _table(rows, columns):
         print("  ".join(value.replace("\n", " ")[: widths[i]].ljust(widths[i]) for i, value in enumerate(row)))
 
 
+def _render_scan(data):
+    """Distinguish an exhausted search from a bounded call with work remaining."""
+    if "examined" not in data:
+        return
+    count = data["examined"]
+    if not data["items"]:
+        if data["scan_complete"]:
+            print(f"None of the {count} objects examined matched. Scan complete.")
+        else:
+            print(f"No object matched among the {count} examined; more remain.")
+    else:
+        print(f"Examined {count} objects. " + ("Scan complete." if data["scan_complete"] else "More remain."))
+    if data["stop_reason"] == "time_budget":
+        print("Scan stopped early at the time budget.")
+    elif data["stop_reason"] == "limit":
+        print("Scan stopped at the match limit.")
+    if data.get("next_cursor"):
+        print("Repeat the same command with --cursor " + data["next_cursor"])
+
+
+def _render_items(data):
+    """Render inventory and history rows with their respective continuation."""
+    rows = [
+        dict(
+            kind=item.get("kind", ""),
+            ref=item.get("ref", ""),
+            revision=item.get("revision", ""),
+            content=item.get("content", json.dumps(item.get("value", {}), ensure_ascii=False)),
+        )
+        for item in data["items"]
+    ]
+    _table(rows, ("kind", "ref", "revision", "content"))
+    _render_scan(data)
+    if data.get("next_before") is not None:
+        print("Next history page: --before " + str(data["next_before"]))
+
+
 def render(payload, *, as_json):
     """Render readable output by default, keeping JSON output independent of locale."""
     if as_json:
@@ -166,20 +203,7 @@ def render(payload, *, as_json):
             f"{counts['attachments']} attachments to {data['out']}."
         )
     elif "items" in data:
-        rows = [
-            dict(
-                kind=item.get("kind", ""),
-                ref=item.get("ref", ""),
-                revision=item.get("revision", ""),
-                content=item.get("content", json.dumps(item.get("value", {}), ensure_ascii=False)),
-            )
-            for item in data["items"]
-        ]
-        _table(rows, ("kind", "ref", "revision", "content"))
-        if data.get("next_cursor"):
-            print("Next cursor: " + data["next_cursor"])
-        if data.get("next_before") is not None:
-            print("Next history page: --before " + str(data["next_before"]))
+        _render_items(data)
     else:
         print(json.dumps(data, ensure_ascii=False, indent=2))
 
