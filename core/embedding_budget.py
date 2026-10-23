@@ -30,8 +30,8 @@ def estimated_tokens(text: str) -> int:
     return len(text)
 
 
-def bounded_embedding_text(text: str, *, limit: int = EMBEDDING_INPUT_TOKENS) -> tuple[str, bool]:
-    """Return the text to embed and whether it had to be cut.
+def kept_length(text: str, *, limit: int = EMBEDDING_INPUT_TOKENS) -> int:
+    """How many leading characters of ``text`` the bound keeps: all of them when ``text`` fits ``limit``.
 
     The cut is the longest prefix whose estimate, with the marker, fits ``limit``.
     Cutting on a character boundary is deliberate: a sentence or word boundary would
@@ -43,9 +43,16 @@ def bounded_embedding_text(text: str, *, limit: int = EMBEDDING_INPUT_TOKENS) ->
     if type(limit) is not int or type(limit) is bool or limit < 1:
         raise ValueError("limit")
     if estimated_tokens(text) <= limit:
+        return len(text)
+    return max(1, limit - estimated_tokens(TRUNCATION_MARKER))
+
+
+def bounded_embedding_text(text: str, *, limit: int = EMBEDDING_INPUT_TOKENS) -> tuple[str, bool]:
+    """Return the text to embed and whether it had to be cut (``kept_length``)."""
+    kept = kept_length(text, limit=limit)
+    if kept == len(text):
         return text, False
-    kept = max(1, limit - estimated_tokens(TRUNCATION_MARKER))
     return text[:kept] + TRUNCATION_MARKER, True
 
 
-__all__ = ["EMBEDDING_INPUT_TOKENS", "TRUNCATION_MARKER", "bounded_embedding_text", "estimated_tokens"]
+__all__ = ["EMBEDDING_INPUT_TOKENS", "TRUNCATION_MARKER", "bounded_embedding_text", "estimated_tokens", "kept_length"]

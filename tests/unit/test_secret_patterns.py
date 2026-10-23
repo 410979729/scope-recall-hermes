@@ -11,7 +11,11 @@ candidate evaluations on one instance, none of which held a secret.
 import json
 
 from scope_recall.core.capture_filters import redact_secret_like_text
-from scope_recall.core.secret_patterns import contains_secret_like_text, secret_scan_shadow
+from scope_recall.core.secret_patterns import (
+    contains_secret_like_text,
+    secret_like_text_starts_before,
+    secret_scan_shadow,
+)
 from v11_support import slowdown
 
 
@@ -203,3 +207,25 @@ def test_two_secrets_side_by_side_are_both_redacted():
         redacted = redact_secret_like_text(text)
         assert "abc123def" not in redacted, redacted
         assert not contains_secret_like_text(redacted), redacted
+
+
+def test_a_run_counts_by_where_it_starts_and_is_judged_with_the_rest_of_its_line():
+    """For a caller that hands on only a text's first characters, as the embedding input bound does."""
+    exempt = "TEST credential_env: null"
+    cut = exempt.index("ll")
+    assert contains_secret_like_text(exempt[:cut]), "alone, the start of null reads as a password"
+    assert not secret_like_text_starts_before(exempt, cut)
+    long = "TEST credential_env: null" + "." * 1000 + "X\nTEST next line"
+    assert secret_like_text_starts_before(long, long.index("ll")), "a value is read to its end, however long"
+    key = "TEST sk-proj-" + "Ab1" * 10
+    assert not contains_secret_like_text(key[:20]), "too few of the key's characters for its pattern"
+    assert secret_like_text_starts_before(key, 20)
+    later = "TEST line\npassword: Xk9#mP2q"
+    assert not secret_like_text_starts_before(later, later.index("password"))
+    assert secret_like_text_starts_before(later, later.index("password") + 1)
+    spaced = "TEST Authorization: Bearer\n" + "Ab1" * 10
+    assert contains_secret_like_text(spaced)
+    assert not secret_like_text_starts_before(spaced, spaced.index("\n")), "the token on the next line is not sent"
+    hidden = "\u200b" * 3 + "password: Xk9#mP2q"
+    assert not secret_like_text_starts_before(hidden, 3), "the characters the scan drops still count as characters"
+    assert secret_like_text_starts_before(hidden, 4)
