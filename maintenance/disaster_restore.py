@@ -11,6 +11,7 @@ Does not execute live registration, host installation, or autostart restarts.
 from __future__ import annotations
 
 import json
+import platform
 import sqlite3
 import zipfile
 from contextlib import closing
@@ -19,14 +20,17 @@ from pathlib import Path
 from typing import Any
 
 from scope_recall.contracts import InstanceBinding, TrustedContext
+from scope_recall.core.restore import InstallationMaintenance, fence_disaster_recovery, finish_disaster_recovery
+from scope_recall.core.storage import SQLiteStorage, _directory
+from scope_recall.maintenance.backup_replay import replay_deletion_mirror
 
 from ..adapters.hermes.shared_entries import read_shared_payload
 from ..core.deletion_mirror import DELETION_MIRROR_FILENAME, installation_mirror
-from ..core.restore import InstallationMaintenance
-from ..core.storage import SQLiteStorage, _directory
+from ..core.recall_policy import EMBEDDING_SPACE, embedding_space_id
+from ..runtime.auxiliary import AuxiliaryRuntimeConfig
 from ..runtime.backup_archive import write_verified_members
 from ..runtime.backup_bundle import inspect_backup_archive, verify_backup_bundle
-from ..runtime.backup_primitives import BackupError, first_link, safe_path
+from ..runtime.backup_primitives import BackupError, atomic_json, first_link, safe_path
 from ..runtime.backup_resources import rewrite_budget_fields
 from .backup_relocation import (
     RestoreLayout,
@@ -36,7 +40,6 @@ from .backup_relocation import (
     reregistration_arguments,
     restore_layout,
 )
-from .backup_replay import replay_deletion_mirror
 from .doctor import load_binding
 from .doctor_report import DoctorReport
 from .doctor_store import (
@@ -58,13 +61,11 @@ class DisasterRestoreError(RuntimeError):
     """Raised when disaster restore validation or application fails."""
 
 
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _find_mirror_path(bundle_path: Path, explicit_mirror: Path | None) -> Path:
     if explicit_mirror is not None:
         p = safe_path(explicit_mirror, must_exist=True)
+        if p.name != DELETION_MIRROR_FILENAME:
+            raise DisasterRestoreError("mirror must be named deletion-mirror.jsonl; keep that name when copying it")
         if p.is_file():
             return p
         raise DisasterRestoreError(f"specified mirror file does not exist: {p}")
@@ -97,11 +98,10 @@ def plan_disaster_restore(
     if safe_bundle == dest or safe_bundle in dest.parents or dest in safe_bundle.parents:
         raise DisasterRestoreError("bundle cannot be inside target destination or vice-versa")
 
-    verify_receipt = verify_backup_bundle(safe_bundle, temp_restore_check=False)
+    verify_receipt = verify_backup_bundle(safe_bundle, manifest_check=_require_same_system)
     mirror_path = _find_mirror_path(safe_bundle, mirror)
 
-    with zipfile.ZipFile(safe_bundle, "r") as zf:
-        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+    manifest = verify_receipt
     installation_mirror(mirror_path, manifest["installation_id"])
     layout = restore_layout(dest, manifest)
 
@@ -113,23 +113,42 @@ def plan_disaster_restore(
         "recovery_point_utc": manifest.get("created_at_utc"),
         "with_vectors": manifest.get("with_vectors", False),
         "entries": manifest.get("entries", []),
-        "files_count": len(manifest.get("files", [])),
+        "files_count": verify_receipt["files_verified"],
         "mirror_path": str(mirror_path) if mirror_path else None,
         "verification": verify_receipt,
     }
 
 
-def _rewrite_extracted_configs(dest: Path, manifest: dict[str, Any]) -> None:
+def _require_same_system(manifest: dict[str, Any]) -> None:
+    """Host configuration paths are supported only within their source OS family."""
+    if manifest["source_os"] != platform.system():
+        raise DisasterRestoreError("restore on the same kind of system as the backup source")
+
+
+def _rewrite_extracted_configs(dest: Path, manifest: dict[str, Any], mirror_directory: Path | None = None) -> None:
     """Rewrite restored configuration paths this backup can actually place.
 
     Auxiliary ledger fields follow the bundle resource list. Binding, vector
     and installation paths below are the store's own restored locations.
     """
-    # Recovery must not write into the source machine's backup location.
-    # The operator can enable scheduling in a new location after reattachment.
+    # Keep deletion protection at the supplied mirror; snapshot scheduling
+    # stays disabled until the operator chooses a destination.
     backup_config = dest / "backup-config.json"
-    if backup_config.is_file():
-        backup_config.write_text('{"backup_dir": null}\n', encoding="utf-8")
+    backup_config.write_text(
+        json.dumps(
+            {
+                "backup_dir": str(mirror_directory) if mirror_directory else None,
+                "snapshots_enabled": False,
+                "client_configs": [
+                    str(dest / item["config_file"])
+                    for item in manifest.get("resources", [])
+                    if item["role"] == "remote_client"
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     configs = ["runtime-config.json"] + [
         f"entries/{entry['entry_id']}/runtime-config.json" for entry in manifest.get("entries", [])
     ]
@@ -144,8 +163,11 @@ def _rewrite_extracted_configs(dest: Path, manifest: dict[str, Any]) -> None:
                 if "binding" in data and isinstance(data["binding"], dict):
                     data["binding"]["data_directory"] = str(dest)
                 if "vector" in data and isinstance(data["vector"], dict) and "storage_dir" in data["vector"]:
-                    old_vdir = Path(data["vector"]["storage_dir"])
-                    data["vector"]["storage_dir"] = str(dest / "vectors" / old_vdir.name)
+                    auxiliary = AuxiliaryRuntimeConfig.from_mapping(
+                        data.get("auxiliary") or {"external_embedding": False, "external_consolidation": False}
+                    )
+                    space = auxiliary.embedding.space() if auxiliary.embedding else EMBEDDING_SPACE
+                    data["vector"]["storage_dir"] = str(dest / "vectors" / embedding_space_id(space))
                 rewrite_budget_fields(data, dest, manifest.get("resources"), config_file=name)
                 runtime_config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except (json.JSONDecodeError, OSError, BackupError) as exc:
@@ -179,7 +201,7 @@ def _run_doctor_checks(layout: RestoreLayout) -> dict[str, Any]:
         check_runtime_config_present(report, dest)
         db_path = dest / "memory.sqlite3"
         if db_path.is_file():
-            readable = check_storage(report, binding, dest)
+            readable = check_storage(report, binding, dest, restoring=True)
         check_footprint(report, dest, None)
         if readable:
             check_schema(report)
@@ -222,14 +244,15 @@ def apply_disaster_restore(
         raise DisasterRestoreError("bundle is not a valid zip archive")
 
     with zipfile.ZipFile(safe_bundle, "r") as archive:
-        inspection = inspect_backup_archive(archive)
+        inspection = inspect_backup_archive(archive, manifest_check=_require_same_system)
         records = installation_mirror(mirror_path, inspection.manifest["installation_id"])
         layout = restore_layout(dest, inspection.manifest)
+        fence_disaster_recovery(layout.data)
         write_verified_members(archive, dest, layout.members(inspection.members))
     manifest = inspection.manifest
     relocate_installation(layout)
     dest = layout.data
-    _rewrite_extracted_configs(dest, manifest)
+    _rewrite_extracted_configs(dest, manifest, mirror_path.parent)
     credential_references = relocate_remote_clients(dest, manifest.get("resources", []))
 
     db_path = dest / "memory.sqlite3"
@@ -246,7 +269,7 @@ def apply_disaster_restore(
         moment = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
         binding = _restored_binding(dest)
         context = TrustedContext(binding, "disaster-restore", binding.scope_ids, "host_generated")
-        with SQLiteStorage(binding).write(context, remaining_seconds=30) as tx:
+        with SQLiteStorage(binding)._transaction(context, writable=True, remaining_seconds=30, restoring=True) as tx:
             vector_rebuild_queued = tx.work.rebuild_lost_vectors(now=moment)
 
     mirror_result: dict[str, Any] = {"status": "none", "replayed_operations": 0, "latest_mirrored_at": None}
@@ -260,6 +283,8 @@ def apply_disaster_restore(
 
     entries = manifest.get("entries", [])
     reregistration_argv = reregistration_arguments(layout, entries)
+    binding = _restored_binding(dest)
+    context = TrustedContext(binding, "disaster-restore", binding.scope_ids, "human_direct")
     doctor_summary = _run_doctor_checks(layout)
 
     recovery_point_utc = manifest.get("created_at_utc", "")
@@ -274,7 +299,7 @@ def apply_disaster_restore(
     except (ValueError, TypeError):
         unrecoverable_seconds = 0.0
 
-    return {
+    receipt = {
         "status": "restored",
         "bundle": str(safe_bundle),
         "destination": str(layout.root),
@@ -282,6 +307,14 @@ def apply_disaster_restore(
         "recovery_point_utc": recovery_point_utc,
         "latest_mirrored_at": latest_mirrored_at,
         "mirror_replayed_operations": mirror_result.get("replayed_operations", 0),
+        "deletion_protection": {
+            "status": mirror_result["status"],
+            "mirror_path": str(mirror_path),
+            "installation_id": manifest["installation_id"],
+            "latest_mirrored_at": latest_mirrored_at,
+            "note": "All deletions in the supplied mirror were replayed; "
+            "deletions absent from that copy cannot be recovered.",
+        },
         "with_vectors": with_vectors,
         "vector_rebuild_queued": vector_rebuild_queued,
         "unrecoverable_later_interval": {
@@ -296,6 +329,12 @@ def apply_disaster_restore(
         "credential_references": credential_references,
         "doctor": doctor_summary,
     }
+    finish_disaster_recovery(
+        SQLiteStorage(binding),
+        InstallationMaintenance(context),
+        before_reopen=lambda: atomic_json(dest / "recovery-receipt.json", receipt),
+    )
+    return receipt
 
 
 __all__ = [

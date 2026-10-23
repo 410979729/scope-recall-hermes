@@ -119,10 +119,12 @@ def _ledger_in_transaction(tx, context, ledger_format=LEDGER_FORMAT) -> dict:
     return ledger
 
 
-def export_deletion_ledger(storage, authority: InstallationMaintenance, *, ledger_format=LEDGER_FORMAT) -> dict:
+def export_deletion_ledger(
+    storage, authority: InstallationMaintenance, *, ledger_format=LEDGER_FORMAT, restoring=False
+) -> dict:
     """Export the current ledger, or the monotone format for a pre-management rollback."""
     context = _maintenance_context(storage, authority)
-    with storage.read(context) as tx:
+    with storage._transaction(context, writable=False, remaining_seconds=None, restoring=restoring) as tx:
         return _ledger_in_transaction(tx, context, ledger_format)
 
 
@@ -192,6 +194,33 @@ def _kept_ledger(storage) -> dict | None:
     except (OSError, ValueError):
         return None
     return ledger if isinstance(ledger, dict) else None
+
+
+def fence_disaster_recovery(directory: Path) -> None:
+    """Durably block ordinary opens before extracting even the first database byte."""
+    directory.mkdir(parents=True, exist_ok=True)
+    _write_whole(directory / MARKER_FILENAME, canonical({"disaster_recovery": True}) + "\n")
+
+
+def reconcile_recovery_scopes(storage, authority: InstallationMaintenance, scopes: frozenset[str]) -> None:
+    """Retain tombstone-only scope identities without granting them to an entry."""
+    context = _maintenance_context(storage, authority)
+    with storage._transaction(context, writable=True, remaining_seconds=10, restoring=True) as tx:
+        tx._check(write=True).executemany(
+            "INSERT OR IGNORE INTO instance_scopes(scope_id) VALUES (?)", [(s,) for s in sorted(scopes)]
+        )
+
+
+def finish_disaster_recovery(storage, authority: InstallationMaintenance, *, before_reopen=lambda: None) -> None:
+    """Verify truth and persist the caller's receipt while fenced, then reopen admission."""
+    context = _maintenance_context(storage, authority)
+    marker, _ = _pending_marker(storage, context)
+    with storage._transaction(context, writable=False, remaining_seconds=10, restoring=True) as tx:
+        if tx._check().execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise ContractError("RESTORE_UNVERIFIED", "integrity")
+    before_reopen()
+    extended_path(marker).unlink()
+    _sync_directory(marker.parent)
 
 
 def _closable(storage, context, ledger) -> bool:
@@ -603,6 +632,7 @@ def replay_deletion_ledger(
     *,
     remaining_seconds: float = 10.0,
     preserve_capture_inbox: bool = False,
+    reopen: bool = True,
 ) -> dict:
     context = _maintenance_context(storage, authority)
     marker, checkpoint_epoch = _restore_checkpoint(storage, context, ledger)
@@ -656,8 +686,9 @@ def replay_deletion_ledger(
     found = extended_path(marker)
     if found.is_symlink() or marker.parent.resolve() != storage.binding.data_directory.resolve():
         raise ContractError("RESTORE_UNVERIFIED", "marker_path")
-    found.unlink()
-    _sync_directory(marker.parent)
+    if reopen:
+        found.unlink()
+        _sync_directory(marker.parent)
     return dict(
         status="deletion_ledger_replayed",
         affected_objects=count,

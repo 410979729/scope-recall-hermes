@@ -13,10 +13,10 @@ import hashlib
 import json
 import os
 import platform
-import shutil
 import sqlite3
 import tempfile
 import zipfile
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,10 +28,18 @@ from scope_recall.contracts import ENTRY_ID, InstanceBinding
 
 from .._version import __version__
 from ..core.deletion_mirror import DELETION_MIRROR_FILENAME, configured_backup_dir, sync_deletion_mirror
+from ..core.endpoint_policy import endpoint_url_shape_ok
+from ..core.file_lock import advisory_file_lock
+from ..core.installation_copy import installation_copy_id
 from ..core.schema import APPLICATION_ID, SCHEMA_VERSION, UPGRADE_CHAIN
 from ..core.secret_patterns import contains_secret_like_text, is_sensitive_mapping_key
-from .backup_archive import ArchiveLayoutError, ArchiveMember, verify_archive_layout, write_verified_members
-from .backup_external import configured_client_paths, stage_entry_resources, stage_remote_clients
+from .backup_archive import ArchiveLayoutError, ArchiveMember, destination_relative, verify_archive_layout
+from .backup_external import (
+    configured_client_paths,
+    reject_credential_overlap,
+    stage_entry_resources,
+    stage_remote_clients,
+)
 from .backup_primitives import (
     BackupError,
     atomic_write,
@@ -45,8 +53,13 @@ from .backup_primitives import (
     stream_digest,
 )
 from .backup_resources import real_files, stage_instance_resources
+from .validation import validate_worker_day
 
 BUNDLE_FORMAT = "scope-recall-backup-bundle/1"
+# Limits apply before any member body is decompressed, including the manifest.
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 100_000
+MAX_EXPANDED_BYTES = 256 * 1024 * 1024 * 1024
 CONFIG_NAMES = (
     "runtime-config.json",
     "installation.json",
@@ -59,10 +72,6 @@ CONFIG_NAMES = (
 
 class BackupBundleError(BackupError):
     """Raised when bundle creation, structure or verification fails."""
-
-
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _sanitize_config_dict(data: Any) -> tuple[Any, int]:
@@ -84,7 +93,7 @@ def _sanitize_config_dict(data: Any) -> tuple[Any, int]:
                 child, count = _sanitize_config_dict(val)
                 sanitized[key] = child
                 redacted_count += count
-            elif isinstance(val, str) and contains_secret_like_text(val):
+            elif isinstance(val, str) and _unsafe_config_string(val):
                 sanitized[key] = "[REDACTED_SECRET]"
                 redacted_count += 1
             else:
@@ -98,13 +107,20 @@ def _sanitize_config_dict(data: Any) -> tuple[Any, int]:
                 child, count = _sanitize_config_dict(item)
                 sanitized_list.append(child)
                 redacted_count += count
-            elif isinstance(item, str) and contains_secret_like_text(item):
+            elif isinstance(item, str) and _unsafe_config_string(item):
                 sanitized_list.append("[REDACTED_SECRET]")
                 redacted_count += 1
             else:
                 sanitized_list.append(item)
         return sanitized_list, redacted_count
     return copy.deepcopy(data), 0
+
+
+def _unsafe_config_string(value: str) -> bool:
+    """Apply endpoint credential rules even when a password has no token prefix."""
+    return contains_secret_like_text(value) or (
+        value.lstrip().lower().startswith(("http:", "https:")) and not endpoint_url_shape_ok(value)
+    )
 
 
 def _discover_included_entries(data_directory: Path, binding: InstanceBinding) -> list[dict[str, Any]]:
@@ -162,8 +178,11 @@ def _ensure_backup_mirror(data_directory: Path, output_path: Path) -> Path:
     mirror_dir = configured_backup_dir(data_directory)
     if mirror_dir is None:
         mirror_dir = output_path.parent
-        atomic_write(data_directory / "backup-config.json", json.dumps({"backup_dir": str(mirror_dir)}) + "\n")
-    sync_deletion_mirror(data_directory, mirror_dir)
+        config_path = data_directory / "backup-config.json"
+        raw = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+        raw["backup_dir"] = str(mirror_dir)
+        atomic_write(config_path, json.dumps(raw) + "\n")
+    sync_deletion_mirror(data_directory, mirror_dir, check=check_backup_deadline)
     return mirror_dir
 
 
@@ -234,6 +253,7 @@ def _manifest_document(
     with_vectors: bool,
     entries: list[dict[str, Any]],
     redacted: int,
+    spool_counts: tuple[int, int],
     manifest_files: list[dict[str, Any]],
     resources: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -244,7 +264,9 @@ def _manifest_document(
         "application_id": APPLICATION_ID,
         "created_at_utc": timestamp,
         "source_machine": platform.node() or "unknown-host",
+        "source_os": platform.system(),
         "installation_id": binding.installation_id,
+        "copy_id": installation_copy_id(binding.data_directory, binding.installation_id),
         "installation_kind": binding.installation_kind,
         "deletion_mirror": DELETION_MIRROR_FILENAME,
         "with_vectors": with_vectors,
@@ -258,6 +280,8 @@ def _manifest_document(
         ],
         "resources": resources,
         "secrets_redacted_count": redacted,
+        "spool_entries_redacted": spool_counts[0],
+        "spool_entries_omitted": spool_counts[1],
         "files": sorted(manifest_files, key=lambda item: item["path"]),
     }
     canonical = json.dumps(manifest_content, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -268,21 +292,42 @@ def _manifest_document(
 def _write_archive(stage_dir: Path, output_path: Path, manifest_content: dict[str, Any]) -> None:
     manifest_staged = stage_dir / "manifest.json"
     manifest_staged.write_text(json.dumps(manifest_content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp_archive = stage_dir.parent / "bundle.zip"
-    with zipfile.ZipFile(tmp_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.write(manifest_staged, "manifest.json")
-        for staged_file in sorted(stage_dir.rglob("*")):
-            if staged_file.is_file() and staged_file != manifest_staged:
-                with (
-                    staged_file.open("rb") as source,
-                    archive.open(staged_file.relative_to(stage_dir).as_posix(), "w", force_zip64=True) as target,
-                ):
-                    copy_stream(source, target)
-    check_backup_deadline()
+    _check_archive_limits(
+        [(manifest_staged.name, manifest_staged.stat().st_size)]
+        + [(item["path"], item["size_bytes"]) for item in manifest_content["files"]]
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_target = output_path.with_name(f".{output_path.name}.tmp")
-    shutil.move(str(tmp_archive), str(tmp_target))
-    os.replace(tmp_target, output_path)
+    safe_path(output_path.parent, must_exist=True)
+    descriptor, name = tempfile.mkstemp(dir=output_path.parent, prefix=f".{output_path.name}.", suffix=".tmp")
+    temporary = Path(name)
+    owned = os.fstat(descriptor)
+    try:
+        with os.fdopen(descriptor, "w+b") as stream:
+            with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for staged_file in sorted(stage_dir.rglob("*")):
+                    if staged_file.is_file():
+                        with (
+                            staged_file.open("rb") as source,
+                            archive.open(
+                                staged_file.relative_to(stage_dir).as_posix(), "w", force_zip64=True
+                            ) as target,
+                        ):
+                            copy_stream(source, target)
+            stream.flush()
+            os.fsync(stream.fileno())
+        check_backup_deadline()
+        safe_path(output_path.parent, must_exist=True)
+        if not os.path.samestat(owned, temporary.lstat()):
+            raise BackupBundleError("owned temporary archive was replaced")
+        # A same-directory hard link publishes the complete file atomically and
+        # refuses a concurrent output. No cross-volume copy or replace is used.
+        try:
+            os.link(temporary, output_path, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise BackupBundleError("refusing to overwrite existing bundle") from exc
+    finally:
+        if temporary.exists() and os.path.samestat(owned, temporary.lstat()):
+            temporary.unlink()
 
 
 def _stage_resources(data_directory: Path, stage_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -303,18 +348,26 @@ def _assemble_bundle(
 ) -> dict[str, Any]:
     """Stage the store and write the zip. The caller holds the store lock."""
     entries = _discover_included_entries(data_directory, binding)
+    reject_credential_overlap(data_directory, entries, client_configs, with_vectors=with_vectors)
     manifest_files: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="sr-bundle-") as tmpdir_raw:
         stage_dir = Path(tmpdir_raw) / "staged"
         stage_dir.mkdir(parents=True, exist_ok=True)
         _stage_database(data_directory, stage_dir, manifest_files)
         redacted = _stage_named_configs(data_directory, stage_dir, manifest_files)
+        if binding.installation_kind == "shared":
+            staged = json.loads((stage_dir / "configs" / "installation.json").read_text(encoding="utf-8"))
+            if staged.get("entries") != entries:
+                raise BackupBundleError("staged installation entries differ from bundle entries")
         extra_files, resources = _stage_resources(data_directory, stage_dir)
         manifest_files.extend(extra_files)
-        redacted += stage_entry_resources(entries, stage_dir, manifest_files, resources, _stage_one_config)
-        redacted += stage_remote_clients(
-            client_configs, stage_dir, manifest_files, resources, _stage_one_config, _stage_tree
+        redacted += stage_entry_resources(
+            data_directory, entries, stage_dir, manifest_files, resources, _stage_one_config
         )
+        client_redacted, spool_redacted, spool_omitted = stage_remote_clients(
+            client_configs, stage_dir, manifest_files, resources, _stage_one_config
+        )
+        redacted += client_redacted
         _stage_tree(stage_dir, data_directory / "retained", "retained", manifest_files)
         if with_vectors:
             _stage_tree(stage_dir, data_directory / "vectors", "vectors", manifest_files)
@@ -324,6 +377,7 @@ def _assemble_bundle(
             with_vectors=with_vectors,
             entries=entries,
             redacted=redacted,
+            spool_counts=(spool_redacted, spool_omitted),
             manifest_files=manifest_files,
             resources=resources,
         )
@@ -346,6 +400,8 @@ def _created_receipt(
         "with_vectors": with_vectors,
         "manifest_sha256": manifest_content["manifest_sha256"],
         "secrets_redacted": manifest_content["secrets_redacted_count"],
+        "spool_entries_redacted": manifest_content["spool_entries_redacted"],
+        "spool_entries_omitted": manifest_content["spool_entries_omitted"],
         "deletion_mirror": str(mirror_dir / DELETION_MIRROR_FILENAME),
     }
 
@@ -369,7 +425,10 @@ def create_backup_bundle(
         with backup_deadline(deadline):
             output_path, data_directory = _bundle_locations(output, binding)
             timestamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            with exclusive_store(data_directory, busy=_bundle_busy):
+            with (
+                advisory_file_lock(data_directory / "commands.lock", timeout_seconds=0),
+                exclusive_store(data_directory, busy=_bundle_busy),
+            ):
                 mirror_dir = _ensure_backup_mirror(data_directory, output_path)
                 client_configs = client_configs or configured_client_paths(data_directory)
                 manifest_content = _assemble_bundle(
@@ -396,7 +455,11 @@ def _read_manifest(archive: zipfile.ZipFile) -> dict[str, Any]:
     if "manifest.json" not in archive.namelist():
         raise BackupBundleError("bundle is missing manifest.json")
     try:
-        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        with archive.open("manifest.json") as stream:
+            raw = stream.read(MAX_MANIFEST_BYTES + 1)
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise BackupBundleError("manifest size limit exceeded")
+        manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise BackupBundleError(f"manifest.json is unreadable or malformed: {exc}") from exc
     if type(manifest) is not dict:
@@ -433,6 +496,10 @@ def _verify_manifest_document(manifest: dict[str, Any]) -> None:
     error = next(Draft202012Validator(schema).iter_errors(manifest), None)
     if error is not None:
         raise BackupBundleError(f"invalid backup manifest: {error.message}")
+    # Entry identifiers also form paths during configuration relocation.
+    # Use the same identity constraint as installation and attachment loaders.
+    if any(not ENTRY_ID.fullmatch(entry["entry_id"]) for entry in manifest["entries"]):
+        raise BackupBundleError("invalid backup manifest: entry identifier")
     document = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
     canonical = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if hashlib.sha256(canonical).hexdigest() != manifest["manifest_sha256"]:
@@ -471,12 +538,32 @@ def _quick_check_database(archive: zipfile.ZipFile, manifest: dict[str, Any]) ->
     return quick, user_ver, app_id
 
 
-def inspect_backup_archive(archive: zipfile.ZipFile) -> BackupInspection:
+def _verify_worker_budgets(archive: zipfile.ZipFile, manifest: dict[str, Any]) -> None:
+    """Reject malformed or foreign counters before a restore can extract them."""
+    paths = {"runtime-worker-day.json"} | {
+        f"entries/{entry['entry_id']}/runtime-worker-day.json" for entry in manifest["entries"]
+    }
+    for item in manifest["files"]:
+        if destination_relative(item["path"]) not in paths:
+            continue
+        if item["size_bytes"] > 4096:
+            raise BackupBundleError("worker budget size limit exceeded")
+        try:
+            validate_worker_day(json.loads(archive.read(item["path"])), manifest["installation_id"])
+        except ValueError as exc:
+            raise BackupBundleError(f"invalid worker budget: {exc}") from exc
+
+
+def inspect_backup_archive(
+    archive: zipfile.ZipFile, *, manifest_check: Callable[[dict[str, Any]], None] | None = None
+) -> BackupInspection:
     """Check layout, checksums and the database snapshot without writing a store.
 
     The returned members are the shared write list. Checksums run only after
     the member set and destination mapping have been accepted.
+    Recovery policy runs on the validated manifest before any payload is read.
     """
+    _check_archive_limits([(info.filename, info.file_size) for info in archive.infolist()])
     manifest = _read_manifest(archive)
     try:
         members = verify_archive_layout(archive, manifest)
@@ -485,17 +572,32 @@ def inspect_backup_archive(archive: zipfile.ZipFile) -> BackupInspection:
     if not any(member.archive_name == "database.sqlite3" for member in members):
         raise BackupBundleError("bundle is missing database.sqlite3")
     _verify_manifest_document(manifest)
+    if manifest_check is not None:
+        manifest_check(manifest)
     files_verified = _verify_checksums(archive, manifest)
+    _verify_worker_budgets(archive, manifest)
     quick, user_ver, app_id = _quick_check_database(archive, manifest)
     return BackupInspection(manifest, members, files_verified, quick, user_ver, app_id)
 
 
-def verify_backup_bundle(bundle_path: Path, *, temp_restore_check: bool = False) -> dict[str, Any]:
+def _check_archive_limits(members: list[tuple[str, int]]) -> None:
+    """Apply the same decompression bounds to publication and inspection."""
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        raise BackupBundleError("archive member count limit exceeded")
+    if sum(size for _, size in members) > MAX_EXPANDED_BYTES:
+        raise BackupBundleError("archive expanded size limit exceeded")
+    if any(name == "manifest.json" and size > MAX_MANIFEST_BYTES for name, size in members):
+        raise BackupBundleError("manifest size limit exceeded")
+
+
+def verify_backup_bundle(
+    bundle_path: Path, *, manifest_check: Callable[[dict[str, Any]], None] | None = None
+) -> dict[str, Any]:
     """Verify a backup bundle without altering a store.
 
     Member names, the exact manifest set, link entries and destination
-    collisions are rejected before any checksum or optional unpack. The optional
-    unpack writes only the verified members into a temporary directory.
+    collisions are rejected before any checksum. Maintenance owns the optional
+    rehearsal through the same disaster restore used for recovery.
     """
     safe_bundle = safe_path(bundle_path, must_exist=True)
     if not safe_bundle.is_file():
@@ -504,17 +606,17 @@ def verify_backup_bundle(bundle_path: Path, *, temp_restore_check: bool = False)
         raise BackupBundleError("bundle is not a valid zip archive")
 
     with zipfile.ZipFile(safe_bundle, "r") as archive:
-        inspection = inspect_backup_archive(archive)
-        if temp_restore_check:
-            with tempfile.TemporaryDirectory(prefix="sr-verify-") as raw:
-                write_verified_members(archive, Path(raw), inspection.members)
+        inspection = inspect_backup_archive(archive, manifest_check=manifest_check)
 
     manifest = inspection.manifest
     return {
         "status": "verified",
         "bundle_path": str(safe_bundle),
         "bundle_format": manifest.get("bundle_format"),
+        "source_os": manifest["source_os"],
         "installation_id": manifest.get("installation_id"),
+        "installation_kind": manifest.get("installation_kind"),
+        "copy_id": manifest.get("copy_id"),
         "created_at_utc": manifest.get("created_at_utc"),
         "files_verified": inspection.files_verified,
         "database_quick_check": inspection.quick_check,

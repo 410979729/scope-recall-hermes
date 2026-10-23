@@ -198,7 +198,7 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
     return False
 
 
-def check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
+def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
     """Copy the store's queue, source and candidate status onto the report.
 
     False when there is no database or it cannot be read; the report then keeps
@@ -211,12 +211,14 @@ def check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
         return False
     report.journal_mode = read_journal_mode(data_directory / "memory.sqlite3")
     record_check(report, "database", "ok", f"journal_mode={report.journal_mode}")
-    if _unopened(report, data_directory):
+    if not restoring and _unopened(report, data_directory):
         return False
     context = TrustedContext(binding, "doctor-readonly", binding.scope_ids, "origin_unknown")
     try:
         core = MemoryCore(CoreConfig(binding), storage=SQLiteStorage(binding, upgrade_on_open=False))
-        with core.storage.read(context) as transaction:
+        with core.storage._transaction(
+            context, writable=False, remaining_seconds=10, restoring=restoring
+        ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
             report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
@@ -700,19 +702,37 @@ def check_owner_words(report: DoctorReport, host: str, data_directory: Path, ent
 
 
 def check_deletion_mirror(report: DoctorReport, data_directory: Path) -> None:
-    """Report record-level lag, including an invalid or incomplete mirror."""
-    from ..core.deletion_mirror import MIRROR_ERRORS, configured_backup_dir, mirror_pending, read_mirror_lag
+    """Report record-level lag, including an invalid or incomplete mirror.
+
+    A store that has never been backed up has no archive that could bring a
+    deleted memory back, so its missing mirror is recorded without a gap.
+    """
+    from ..core.deletion_mirror import (
+        MIRROR_ERRORS,
+        configured_backup_dir,
+        deletion_protection_expected,
+        mirror_pending,
+        read_mirror_lag,
+    )
+    from ..runtime.backup_upkeep import backup_job_problem
+
+    if problem := backup_job_problem(data_directory):
+        report.capability_gaps.append("scheduled_backup_incomplete")
+        record_check(report, "scheduled_backup", "incomplete", problem)
 
     try:
         backup_dir = configured_backup_dir(data_directory)
         if backup_dir is None:
-            record_check(report, "deletion_mirror", "ok", "deletion mirror not configured")
-            return
-        pending = mirror_pending(data_directory, backup_dir)
-        lag = read_mirror_lag(data_directory)
-        detail = str(lag.get("error", "pending catchup")) if lag else ""
-        if pending:
-            detail = f"{pending} unmirrored records pending catchup"
+            if not deletion_protection_expected(data_directory):
+                record_check(report, "deletion_mirror", "not_configured", "no backups; deletions are not mirrored")
+                return
+            detail = "backup directory removed; later deletions are not mirrored"
+        else:
+            pending = mirror_pending(data_directory, backup_dir)
+            lag = read_mirror_lag(data_directory)
+            detail = str(lag.get("error", "pending catchup")) if lag else ""
+            if pending:
+                detail = f"{pending} unmirrored records pending catchup"
     except MIRROR_ERRORS as exc:
         detail = f"mirror unavailable: {type(exc).__name__}"
     if detail:

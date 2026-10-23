@@ -17,7 +17,11 @@
     "entries",
     "secrets_redacted_count",
     "files",
-    "manifest_sha256"
+    "manifest_sha256",
+    "copy_id",
+    "source_os",
+    "spool_entries_redacted",
+    "spool_entries_omitted"
   ],
   "properties": {
     "bundle_format": {
@@ -42,21 +46,64 @@
     "source_machine": {
       "type": "string"
     },
-    "installation_id": {"type": "string", "minLength": 1},
-    "installation_kind": {"enum": ["local", "shared"]},
-    "deletion_mirror": {"const": "deletion-mirror.jsonl"},
+    "installation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "installation_kind": {
+      "type": "string",
+      "enum": [
+        "local",
+        "shared"
+      ]
+    },
+    "deletion_mirror": {
+      "type": "string",
+      "const": "deletion-mirror.jsonl"
+    },
     "resources": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["role", "archive_path", "target_relative", "config_file", "field"],
+        "required": [
+          "role",
+          "archive_path",
+          "target_relative",
+          "config_file",
+          "field"
+        ],
         "properties": {
-          "role": {"enum": ["kept_captures", "budget_ledger", "budget_installation_dir", "remote_client"]},
-          "archive_path": {"type": "string", "minLength": 1},
-          "target_relative": {"type": "string", "minLength": 1},
-          "config_file": {"type": ["string", "null"]},
-          "field": {"type": ["string", "null"]}
+          "role": {
+            "type": "string",
+            "enum": [
+              "kept_captures",
+              "budget_ledger",
+              "budget_installation_dir",
+              "remote_client",
+              "worker_day"
+            ]
+          },
+          "archive_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_relative": {
+            "type": "string",
+            "minLength": 1
+          },
+          "config_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       }
     },
@@ -83,7 +130,12 @@
           "host": {
             "type": "string"
           },
-          "detached_at": {"type": ["string", "null"]},
+          "detached_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "first_seen": {
             "type": "string"
           },
@@ -125,6 +177,22 @@
     "manifest_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "copy_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "source_os": {
+      "type": "string",
+      "minLength": 1
+    },
+    "spool_entries_redacted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "spool_entries_omitted": {
+      "type": "integer",
+      "minimum": 0
     }
   }
 }

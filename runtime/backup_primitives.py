@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import IO, Any
 
 from ..core.file_lock import advisory_file_lock
 from ..core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
@@ -28,27 +28,33 @@ class BackupError(RuntimeError):
 
 
 _BACKUP_DEADLINE: ContextVar[float | None] = ContextVar("backup_deadline", default=None)
+_BACKUP_CANCELLED: ContextVar[Callable[[], bool] | None] = ContextVar("backup_cancelled", default=None)
 
 
 @contextmanager
-def backup_deadline(deadline: float | None) -> Iterator[None]:
+def backup_deadline(deadline: float | None, *, cancelled: Callable[[], bool] | None = None) -> Iterator[None]:
     """Bound this backup's chunked I/O without changing other threads or manual snapshots."""
     token = _BACKUP_DEADLINE.set(deadline if deadline is not None else _BACKUP_DEADLINE.get())
+    cancellation = _BACKUP_CANCELLED.set(cancelled if cancelled is not None else _BACKUP_CANCELLED.get())
     try:
         check_backup_deadline()
         yield
     finally:
         _BACKUP_DEADLINE.reset(token)
+        _BACKUP_CANCELLED.reset(cancellation)
 
 
 def check_backup_deadline() -> None:
     """Stop between I/O chunks when the worker's pass has no time left."""
     deadline = _BACKUP_DEADLINE.get()
+    cancelled = _BACKUP_CANCELLED.get()
+    if cancelled is not None and cancelled():
+        raise BackupError("backup cancelled")
     if deadline is not None and time.monotonic() >= deadline:
         raise BackupError("backup deadline exceeded")
 
 
-def copy_stream(source: BinaryIO, target: BinaryIO) -> None:
+def copy_stream(source: IO[bytes], target: IO[bytes]) -> None:
     """Copy bounded chunks, respecting the active backup deadline."""
     while True:
         check_backup_deadline()
@@ -58,7 +64,7 @@ def copy_stream(source: BinaryIO, target: BinaryIO) -> None:
         target.write(chunk)
 
 
-def stream_digest(stream: BinaryIO) -> str:
+def stream_digest(stream: IO[bytes]) -> str:
     """Hash bounded chunks under the same deadline as the snapshot."""
     digest = hashlib.sha256()
     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -135,14 +141,29 @@ def sha256(path: Path) -> str:
 
 
 def atomic_write(path: Path, content: str | bytes) -> None:
-    """Write through a temporary file in the same directory."""
+    """Flush a complete checkpoint before atomically publishing it beside its target."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    if isinstance(content, bytes):
-        temporary.write_bytes(content)
-    else:
-        temporary.write_text(content, encoding="utf-8")
-    os.replace(temporary, path)
+    owned = None
+    try:
+        with temporary.open("xb") as stream:
+            owned = os.fstat(stream.fileno())
+            # Installation receipts rely on the platform's text newline convention.
+            stream.write(content if isinstance(content, bytes) else content.replace("\n", os.linesep).encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        if not os.path.samestat(owned, temporary.lstat()):
+            raise BackupError("checkpoint temporary file identity changed")
+        os.replace(temporary, path)
+        if os.name != "nt":
+            descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    finally:
+        if owned is not None and temporary.exists() and os.path.samestat(owned, temporary.lstat()):
+            temporary.unlink()
 
 
 def atomic_json(path: Path, value: object, *, sort_keys: bool = False) -> None:

@@ -4,7 +4,6 @@ operator's own timer (systemd or cron) to run."""
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex
@@ -12,9 +11,10 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ..core.installation_copy import copy_task_name, installation_copy_id
 from ..core.storage import SQLiteStorage
 from ..runtime.scheduling import control_path, read_control
 from ..runtime.worker_entry import load_config, write_worker_metadata
@@ -69,9 +69,14 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
         tx.status()
     if env_file and (not Path(env_file).is_absolute() or not Path(env_file).is_file()):
         raise ValueError("autostart_environment_missing")
-    name = "ScopeRecall-" + hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
+    copy_id = installation_copy_id(config.binding.data_directory, config.binding.installation_id)
+    previous = read_control(config)
+    # Keep an already registered task's name when binding legacy control to its
+    # copy identity; a fresh recovery has no registration to inherit.
+    name = previous["task_name"] if previous is not None else copy_task_name(copy_id)
     recorded = dict(
         installation_id=config.binding.installation_id,
+        copy_id=copy_id,
         enabled=True,
         task_name=name,
         # The interpreter is recorded as given: the task must start the
@@ -107,7 +112,7 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
     repeat = node(timer, "Repetition")
     node(repeat, "Interval", "PT5M")
     node(repeat, "StopAtDurationEnd", "false")
-    node(timer, "StartBoundary", (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(timespec="seconds"))
+    node(timer, "StartBoundary", (datetime.now(UTC) + timedelta(minutes=1)).isoformat(timespec="seconds"))
     node(timer, "Enabled", "true")
     principal = node(node(task, "Principals"), "Principal", id="Author")
     node(principal, "UserId", user_id)

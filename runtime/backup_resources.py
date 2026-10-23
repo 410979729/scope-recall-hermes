@@ -9,9 +9,12 @@ those budget fields. Other config fields are left untouched.
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from ..core.file_lock import advisory_file_lock
 from .auxiliary import DEFAULT_LEDGER_NAME
 from .backup_archive import ArchiveLayoutError, canonical_member_name
 from .backup_primitives import (
@@ -23,6 +26,7 @@ from .backup_primitives import (
     safe_path,
     sha256,
 )
+from .validation import validate_worker_day
 
 #: Directory of Hermes kept captures beside the store (``kept_captures.DIRECTORY``).
 KEPT_CAPTURES_DIRECTORY = "kept-captures"
@@ -234,10 +238,35 @@ def stage_instance_resources(
     """
     files: list[dict[str, Any]] = []
     resources: list[dict[str, Any]] = []
-    _stage_kept_captures(data_directory, stage_dir, files, resources)
-    _stage_budget(data_directory, stage_dir, files, resources)
+    with advisory_file_lock(data_directory / "runtime-worker.lock", timeout_seconds=0):
+        _stage_kept_captures(data_directory, stage_dir, files, resources)
+        _stage_budget(data_directory, stage_dir, files, resources)
+        _stage_worker_day(data_directory, stage_dir, files, resources)
     resources.sort(key=lambda item: (item["role"], item["archive_path"], item["field"] or ""))
     return files, resources
+
+
+def _stage_worker_day(data: Path, stage: Path, files: list[dict], resources: list[dict]) -> None:
+    """Save the reserved queue allowance while its worker cannot alter it."""
+    source = data / "runtime-worker-day.json"
+    if not source.exists():
+        return
+    source = safe_path(source, must_exist=True)
+    config = _read_runtime_config(data) or {}
+    installation = config.get("binding", {}).get("installation_id")
+    if not installation:
+        with closing(sqlite3.connect(f"{(data / 'memory.sqlite3').as_uri()}?mode=ro", uri=True)) as conn:
+            installation = conn.execute("SELECT installation_id FROM instance_meta WHERE singleton=1").fetchone()[0]
+    try:
+        if source.stat().st_size > 4096:
+            raise ValueError("worker_budget_size")
+        validate_worker_day(json.loads(source.read_text(encoding="utf-8")), installation)
+    except ValueError as exc:
+        raise BackupError(f"invalid worker budget: {exc}") from exc
+    destination = stage / source.name
+    _copy_regular(source, destination)
+    files.append(_file_entry(source.name, destination))
+    resources.append(_resource("worker_day", source.name, source.name, field=None))
 
 
 def restored_resource_path(dest: Path, relative: str) -> Path:

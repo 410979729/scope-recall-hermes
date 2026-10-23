@@ -1,127 +1,101 @@
-# Backup and Disaster Recovery
+# Backup and disaster recovery
 
-Keep both the backup archive and its current `deletion-mirror.jsonl`. The archive restores memories and configuration; the mirror keeps later deletions from returning. Restore always writes into a new or empty location.
+Keep the backup archive and its current `deletion-mirror.jsonl` together. The archive recovers saved memories and settings. The mirror records later deletions so forgotten memories stay deleted. Recovery requires both files and writes into a new or empty directory.
 
-## Architecture and Scope
+## Choose a backup location
 
-A ScopeRecall backup bundle is a single archive holding:
-- A consistent SQLite snapshot of the truth database (`memory.sqlite3`), taken via SQLite's online backup interface while holding truth writer and background worker locks.
-- Instance configuration documents, with embedded secret bodies refused or redacted to reference names.
-- Retained attachments (`retained/`).
-- Pending captures already in SQLite and the Hermes retry buffer's durable `kept-captures/` files. A retry still held only in a running process is outside a disk backup; let the host finish saving before a planned move.
-- Registered shared-entry configuration, authorization and independent budget ledgers, plus the shared worker's budget. SQLite ledgers are snapshotted with their committed WAL contents.
-- Remote-client spools explicitly selected with `--client-config`. A server cannot recover unsent captures from another computer's disk.
-- Optional vector companion directories (`vectors/`).
-- A cryptographic manifest with SHA-256 digests and file sizes for every archive member.
+Use a disk that will survive losing the original computer. Keep another copy of the archives and the latest mirror on separate storage. Copying an archive alone loses its protection against later deletions. If the archive and mirror live in different directories, supply the mirror's location when restoring.
 
-The archive is not encrypted. Use an encrypted disk such as a BitLocker or LUKS volume, restrict access to backups, and protect the mirror alongside them. Configuration credentials are redacted; credential reference names remain, and the referenced credential files are never copied. Memories and retained attachments remain private content in the archive.
+Archives contain private memories and attachments and are not encrypted. Use an encrypted disk, such as a BitLocker or LUKS volume, and restrict access. Credential values, including passwords and access keys in HTTP addresses, are redacted from configuration; credential reference names remain. A backup refuses credential files that overlap a copied resource, including aliases to the same file. Move those credential files outside the copied directories before creating a backup, and reconnect the references on the recovery computer.
 
-## Creating Backup Bundles
+A bundle contains the database, installation settings, registered entries and grants, retained attachments, pending database captures, saved retry files, and auxiliary budget ledgers, including committed ledger writes still waiting in SQLite's write-ahead log. It also saves each included worker's installation-bound UTC day and count of daily queue items already used or reserved for a pass, so a same-day recovery keeps the remaining daily work allowance. Later spending and work performed after the snapshot are unavailable. Vectors are optional. A retry held only in a running process cannot be backed up: let the host finish saving before a planned move.
 
-### Manual Creation
+## Create a backup
 
-To create a full backup bundle from a shared store root:
+For a shared store:
 
-```bash
-scope-recall backup create --root /path/to/shared-store --output /var/backups/scope-recall-backup-20261019T140000Z.zip
+```sh
+scope-recall backup create --root /path/to/shared-store --output /path/to/backups/memory.zip
 ```
 
-To include vector companion directories directly in the archive:
+For a local installation, select its host and home:
 
-```bash
-scope-recall backup create --root /path/to/shared-store --output /var/backups/scope-recall-backup-20261019T140000Z.zip --with-vectors
+```sh
+scope-recall backup create --host hermes --instance-root /path/to/agent1 --output /path/to/backups/memory.zip
 ```
 
-When `--with-vectors` is omitted, the backup remains compact and portable. Restoring without vector files automatically enqueues background embedding rebuilds for all eligible sources.
+Use `--host codex` for a local client installation. Choose a new output filename for each manual backup; existing archives are never overwritten, including files created while a backup is being assembled. The destination filesystem must support hard links for atomic publication. Backups require exclusive access to the store. If the command reports that it is busy, let the current write finish and try again.
 
-To include the pending uploads of a remote client accessible on this computer, add `--client-config /path/to/client.json`. Repeat the option for each client. Its configured `state_dir/spool` is included; its `token_file` contents are not read. Run a backup where those files are accessible before retiring a remote computer. Do not assume a server-only archive contains offline clients' unsent data.
+Add `--with-vectors` to copy the vector files too. Without it, recovery queues their rebuilding; source text remains searchable while semantic search catches up.
 
-For local stores attached to a single agent (such as Hermes or Codex):
+For unsent uploads from a remote client on this computer, add `--client-config /path/to/client.json`. Repeat this option for each client. Each upload is checked with capture admission's secret policy: refused or unreadable entries are omitted individually, and transport payloads are removed from the included entries. The receipt counts redacted and omitted spool entries. Originals stay on the client. Its credential file must be outside every copied resource. A server cannot back up unsent uploads still on another computer. Save those files there before retiring it.
 
-```bash
-scope-recall backup create --host hermes --instance-root ~/.hermes --output /var/backups/hermes-backup.zip
-```
+## Daily backups and retention
 
-### Automatic Daily Upkeep and Rotation
+The first manual backup sets its output directory as the backup directory if none is configured. The receipt reports the deletion mirror's location. Keep that mirror even if later manual archives are written elsewhere.
 
-The first manual bundle records its output directory in `backup-config.json` when no backup directory is configured. Keep the reported mirror at that configured location even when later archives are written elsewhere. The worker uses this directory for daily backups. You can also set it explicitly inside the instance data directory:
+The existing background worker wakes for a backup once per UTC day and for deletion mirror catch-up, including when no model work is queued. A scheduled backup has its own 30-minute job budget, separate from model work and daily queue allowances; the operator's background pause also cancels it. A published archive is recorded before retention begins, and concurrent mirror upkeep preserves that record, so interrupted retention does not publish another archive that day. Verification progress for retention is saved and reused while each archive is unchanged. It retains the latest seven daily snapshots and one snapshot from each of the latest four weeks; these selections can overlap. Only verified, automatically named archives belonging to this writable copy take part in rotation. A recovered copy has its own retention and background-task identity. Manual names such as `memory.zip`, other copies' archives and unreadable archives are left alone.
+
+To choose a directory explicitly, edit `backup-config.json` beside `memory.sqlite3`:
 
 ```json
 {
-  "backup_dir": "/var/backups/scope-recall",
+  "backup_dir": "/path/to/backups",
+  "snapshots_enabled": true,
   "client_configs": ["/path/to/client.json"]
 }
 ```
 
-The optional `client_configs` list includes those local clients' spools in daily backups too. Leave it empty when this computer holds no remote-client spool.
+Use absolute paths. Omit `client_configs` when this computer has no remote-client uploads to save. A local Hermes store keeps this file in `scope-recall/` under its home; a local client store keeps it in `data/` under its home. A shared store keeps it directly under the store root. Set `snapshots_enabled` to `false` to disable automatic snapshots while keeping `backup_dir` configured for deletion protection. Removing that directory or setting it to `null` after a backup leaves later deletions unprotected, and `doctor` reports a warning. A store that has never been backed up has no archive that could bring a deletion back; `doctor` only notes that its deletions are not mirrored.
 
-The existing background worker wakes for backup upkeep even when no model work is queued:
-1. Deletion Ledger Mirroring: Appends any recent deletion operations to `deletion-mirror.jsonl` in the configured backup directory.
-2. Daily Bundle Creation: Generates a timestamped full backup bundle once per UTC day without vector weight.
-3. Retention Rotation: Retains the newest 7 daily and 4 weekly snapshots of this installation. Foreign, unreadable and manually named files are left alone.
+A deletion succeeds even if the backup disk is unavailable, and other writes never wait for the mirror: right after the deletion one short attempt, of about a tenth of a second, copies it, and the background worker copies whatever is left every five minutes while it runs. Rolling back to an older snapshot is mirrored too, so a later recovery keeps what the rollback withdrew. The mirror and its checkpoint must be ordinary files with a single name: a hard link, symbolic link or junction in their place stops mirroring with an error instead of writing through it. `doctor` reports records that have not reached the mirror yet. Resolve that warning before relying on a backup for a planned move.
 
-A failed daily backup is recorded in `backup-state.json` and retried after a delay. Snapshot copying and hashing stop at the worker pass's deadline; a manual backup has no worker-pass limit. A deletion succeeds even if its mirror cannot be written. Doctor reports the missing mirror records, and later upkeep attempts to copy them again. Resolve that warning before relying on the mirror for a planned move.
+Failed daily backups are recorded in `backup-state.json` beside the database. Ordinary failures retry after a delay. A backup that exceeds its job budget pauses automatic snapshots, and `doctor` reports the budget problem; mirror catch-up continues. Check the disk's availability, speed and free space and create a manual backup. To allow another scheduled attempt after resolving the cause, set `backup_blocked` to `false` in `backup-state.json`. Retention failures keep the publication checkpoint and retry retention separately. The worker must remain running for scheduled backups to occur.
 
-## Verifying Backup Bundles
+## Verify and rehearse recovery
 
-To inspect and cryptographically verify a backup bundle without modifying any store:
-
-```bash
-scope-recall backup verify --bundle /var/backups/scope-recall-backup-20261019T140000Z.zip
+```sh
+scope-recall backup verify --bundle /path/to/backups/memory.zip
 ```
 
-Verification validates:
-- Manifest schema, canonical document checksum and format compatibility.
-- Presence, size, and SHA-256 digest of every member file.
-- SQLite structural integrity (`PRAGMA quick_check`), schema and installation identity on a temporary read-only snapshot.
+Verification checks the manifest, the exact archive contents, every file's size and SHA-256 digest, and the database's integrity, schema and installation identity. Unexpected, missing, duplicated or unsafe archive paths are rejected. Creation and verification limit a bundle to 100,000 members, 256 GiB of expanded data and an 8 MiB manifest.
 
-An optional `--temp-restore-check` flag unpacks all members to an isolated temporary sandbox to verify archive decompression.
+Rehearse the complete recovery in a temporary directory:
 
-## Disaster Recovery and Migration
-
-To restore an instance to a fresh target directory on the same or a new machine:
-
-### 1. Plan and Validate First
-
-```bash
-scope-recall restore --bundle /var/backups/scope-recall-backup-20261019T140000Z.zip --to /srv/scoperecall-fresh
+```sh
+scope-recall backup verify --bundle /path/to/backups/memory.zip --temp-restore-check
 ```
 
-Without `--apply`, the command validates the bundle and deletion mirror, checks that the target is new or empty, and reports the plan. The mirror is required. It is found beside the archive, or supplied explicitly with `--mirror /path/to/deletion-mirror.jsonl`. A missing or unrelated mirror refuses recovery.
+The rehearsal uses the same path relocation, deletion replay, vector rebuilding queue and diagnostic checks as a real recovery. It reports its results without registering or starting a host. It requires the current mirror beside the archive, or `--mirror /path/to/deletion-mirror.jsonl` when it is elsewhere.
 
-For a shared store, `--to` is the new store root. For a local installation, it is the new host home: Hermes stores its recovered files in `scope-recall/`, and Codex stores them in `data/` with its installation configuration beside that directory. The receipt's `data_directory` names the actual store.
+## Restore on another computer
 
-### 2. Apply Restoration
+Install Scope Recall on the recovery computer and make the archive and latest mirror available there. Recovery requires the same operating-system family as the source: restore Windows bundles on Windows, Linux bundles on Linux and macOS bundles on macOS. The source system is recorded in the manifest; a different family refuses recovery before extraction. First check the recovery plan:
 
-```bash
-scope-recall restore --bundle /var/backups/scope-recall-backup-20261019T140000Z.zip --to /srv/scoperecall-fresh --apply
+```sh
+scope-recall restore --bundle /path/to/backups/memory.zip --to /path/to/recovered
 ```
 
-Restoration performs the following deterministic sequence:
-1. Validates bundle checksums and database integrity.
-2. Extracts files exclusively into the fresh target directory.
-3. Rewrites SQLite and installation paths to the new store, and points runtime budgets and client spools at their recovered files. The stable installation identifier remains the same so source references and deletion groups still match.
-4. If vectors were omitted from the bundle, enqueues embedding work items so the background worker rebuilds vector indices cleanly.
-5. Replays post-backup deletion ledger records from `deletion-mirror.jsonl` so that any items forgotten after the snapshot was created remain forgotten.
-6. Runs instance diagnostic checks.
-7. Emits operator re-registration commands for attached agents and outputs recovery gap details.
+Without `--apply`, this checks the bundle, mirror and destination without extracting anything. A missing mirror or one belonging to another installation refuses recovery. Use `--mirror /path/to/deletion-mirror.jsonl` if the mirror is elsewhere. Keep that exact filename when copying it; other mirror filenames are refused before extraction.
 
-### 3. Re-register Client Entries
+For a shared store, `--to` names its new store root. For a local installation, it names the new host home: Hermes recovers its store under `scope-recall/`, and a local client under `data/`. The receipt's `data_directory` gives the actual store location.
 
-The receipt includes `reregistration_argv` and shell-quoted `reregistration_commands`. Substitute the bracketed home, interpreter, plugin and project paths with the intended destinations. Local installations use `plan-install` followed by `apply-install`; shared stores print one `attach` command for every active entry, including its original identifier and name:
+Apply the recovery:
 
-```bash
-scope-recall attach --root /srv/scoperecall-fresh --host hermes --entry agent1 --display-name agent1 --instance-root /srv/agent1 --runtime-config-from /srv/scoperecall-fresh/entries/agent1/runtime-config.json
+```sh
+scope-recall restore --bundle /path/to/backups/memory.zip --to /path/to/recovered --apply
 ```
 
-Shared-entry grants stay inactive until that explicit attachment. Reattachment preserves the recovered grants and spend history. Review external project mappings in a local client's `codex-installation.json` when project directories also moved. Restore cannot infer where projects now live.
+Recovery relocates bundled resource paths, preserves the installation identity, replays the mirror's deletions and runs store diagnostics. Vector paths come from the embedding-space identity. If vectors were omitted, recovery queues their rebuilding. Host bindings, diagnostic checks and the recovery receipt are prepared while ordinary admission remains closed. The receipt is saved as `recovery-receipt.json` beside the database before admission reopens. A failure before that point keeps the destination fenced against ordinary use. Automatic snapshots are disabled in the recovered settings; deletion protection continues at the supplied mirror. The relocated client configurations are retained in `backup-config.json`, so subsequent backups also include their spools without repeating `--client-config`. Select a new backup directory before enabling automatic snapshots.
 
-Restore does not restart hosts or services. Reconnect the credential references reported in the receipt before enabling remote clients or model services. Check remote-server configuration and addresses for the new machine. Run the normal host doctor and a real recall after reinstallation. Automatic backups are disabled in the recovered configuration until you choose a new backup directory, so the restored copy cannot write into the old machine's backup location.
+The receipt includes commands to reconnect each entry. Replace bracketed placeholders with the new computer's paths. Local installations print `plan-install` and `apply-install` commands. Shared stores print one `attach` command per active entry, including its identifier and display name. Reattachment keeps recovered grants and budget history; entries stay inactive until attached.
 
-## Understanding the Recovery Gap
+Reconnect the credential references named in the receipt. Review remote addresses and project mappings when those locations also moved. Local client project mappings are in `codex-installation.json` under the recovered home; recovered remote-client settings are listed in the receipt. Recovery does not restart hosts or services. After reinstallation, run the normal host `doctor` and check a real recall before enabling ordinary use.
 
-A restored instance represents the exact state captured at `recovery_point_utc`.
+## What recovery loses
 
-Use the latest mirror: only deletions that reached that mirror can be replayed. A stale copy cannot prove that no newer deletion occurred on a lost machine. The receipt reports the latest mirrored time. Normal captures and updates after the recovery point cannot be reconstructed from this archive; the receipt reports that later interval with its start, end and duration. Remote uploads and retries still held only outside the saved files are also unavailable.
+`recovery_point_utc` is the snapshot time. Captures and updates after it cannot be reconstructed from this archive, even when a newer deletion mirror is available. The receipt reports that lost interval separately from `deletion_protection`, which describes the supplied mirror and the deletions replayed from it.
 
-The existing snapshot rollback command remains separate: use it when the original store still exists and you want to return to an older database snapshot while preserving the current deletion ledger.
+Only deletions that reached the supplied mirror can be replayed. Its latest deletion time cannot prove that a lost computer had no newer deletion. Unsent uploads and retries outside the files saved in the bundle are unavailable too. Keep the mirror current and check `doctor` before a planned move.
+
+For a rollback while the original store still exists, use the existing snapshot `restore` command. It reads the current store's deletion ledger before returning to the older snapshot. Disaster recovery uses `restore --bundle ... --to ...` because the original store is unavailable.

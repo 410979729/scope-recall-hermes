@@ -64,14 +64,16 @@ def test_backup_output_creation_race_never_overwrites_an_existing_file(tmp_path,
 
     source = database(tmp_path / "TEST-source.sqlite3")
     output = tmp_path / "TEST-raced.sqlite3"
-    actual_open = backup.os.open
+    from scope_recall.runtime import backup_primitives
+
+    actual_open = backup_primitives.os.open
 
     def raced_open(path, flags, mode=0o777, **kwargs):
         if Path(path) == output:
             output.write_bytes(b"TEST preserve concurrently created file")
         return actual_open(path, flags, mode, **kwargs)
 
-    monkeypatch.setattr(backup.os, "open", raced_open)
+    monkeypatch.setattr(backup_primitives.os, "open", raced_open)
     with pytest.raises(BackupError, match="overwrite"):
         backup_sqlite(source, output)
     assert output.read_bytes() == b"TEST preserve concurrently created file"

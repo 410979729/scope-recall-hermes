@@ -6,6 +6,7 @@ recursive cleanup, bulk rm, or generic directory removal.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import zipfile
@@ -14,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .backup_bundle import BackupBundleError, verify_backup_bundle
-from .backup_primitives import first_link, safe_path
+from .backup_primitives import atomic_json, check_backup_deadline, first_link, safe_path
 
 BUNDLE_FILENAME_PATTERN = re.compile(
     r"^scope-recall-backup-(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})T"
@@ -72,7 +73,9 @@ def _parse_bundle_timestamp(filename: str) -> datetime | None:
         return None
 
 
-def find_owned_backup_bundles(backup_directory: Path, installation_id: str) -> list[BackupCandidate]:
+def find_owned_backup_bundles(
+    backup_directory: Path, installation_id: str, copy_id: str, *, progress_path: Path | None = None
+) -> list[BackupCandidate]:
     """Find and validate owned backup bundle files in the backup directory.
 
     Rejects symlinks, directories, and non-conforming filenames.
@@ -82,7 +85,9 @@ def find_owned_backup_bundles(backup_directory: Path, installation_id: str) -> l
         return []
 
     candidates: list[BackupCandidate] = []
-    for entry in sorted(safe_dir.iterdir()):
+    cache = _verification_progress(progress_path)
+    for entry in safe_dir.iterdir():
+        check_backup_deadline()
         if first_link(entry) is not None or not entry.is_file():
             continue
         ts = _parse_bundle_timestamp(entry.name)
@@ -90,15 +95,35 @@ def find_owned_backup_bundles(backup_directory: Path, installation_id: str) -> l
             continue
         before = _signature(entry)
         try:
-            receipt = verify_backup_bundle(entry)
+            saved = cache.get(str(entry), {})
+            receipt = saved["receipt"] if saved.get("signature") == list(before) else verify_backup_bundle(entry)
+            cache[str(entry)] = {"signature": list(before), "receipt": receipt}
+            if progress_path is not None:
+                atomic_json(progress_path, cache)
             recorded = datetime.fromisoformat(receipt["created_at_utc"].replace("Z", "+00:00"))
         except (BackupBundleError, OSError, ValueError, zipfile.BadZipFile):
             continue
-        if receipt.get("installation_id") == installation_id and recorded == ts and before == _signature(entry):
+        if (
+            receipt.get("installation_id") == installation_id
+            and receipt.get("copy_id") == copy_id
+            and recorded == ts
+            and before == _signature(entry)
+        ):
             candidates.append(BackupCandidate(entry, ts, entry.name, before))
 
     candidates.sort(key=lambda c: c.timestamp, reverse=True)
     return candidates
+
+
+def _verification_progress(path: Path | None) -> dict:
+    """Resume archive verification only while its filesystem identity is unchanged."""
+    if path is None or not path.exists():
+        return {}
+    try:
+        value = json.loads(safe_path(path, must_exist=True).read_text(encoding="utf-8"))
+        return value if type(value) is dict else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _signature(path: Path) -> tuple[int, int, int, int]:
@@ -110,13 +135,15 @@ def rotate_backup_bundles(
     backup_directory: Path,
     *,
     installation_id: str,
+    copy_id: str,
     now: datetime | None = None,
+    progress_path: Path | None = None,
 ) -> RotationResult:
     """Apply 7 daily and 4 weekly retention policy to verified owned bundles.
 
     Removes obsolete bundles by individual file unlinks only.
     """
-    candidates = find_owned_backup_bundles(backup_directory, installation_id)
+    candidates = find_owned_backup_bundles(backup_directory, installation_id, copy_id, progress_path=progress_path)
     if not candidates:
         return RotationResult(kept_daily=[], kept_weekly=[], removed=[], retained_total=0)
 
@@ -135,12 +162,16 @@ def rotate_backup_bundles(
 
     removed: list[str] = []
     for cand in candidates:
+        check_backup_deadline()
         if cand.path not in keep_paths:
             if cand.path.is_file() and first_link(cand.path) is None and _signature(cand.path) == cand.signature:
                 os.unlink(cand.path)
                 removed.append(cand.filename)
 
     remaining = [cand.filename for cand in candidates if cand.path in keep_paths]
+    if progress_path is not None:
+        cache = _verification_progress(progress_path)
+        atomic_json(progress_path, {str(path): cache[str(path)] for path in keep_paths if str(path) in cache})
 
     return RotationResult(
         kept_daily=[cand.filename for cand in daily_selected.values()],

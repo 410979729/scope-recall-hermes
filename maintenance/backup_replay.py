@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
 from ..contracts import ContractError
 from ..core.restore import (
     InstallationMaintenance,
     export_deletion_ledger,
+    reconcile_recovery_scopes,
     replay_deletion_ledger,
     stage_recovery_ledger,
 )
+from ..core.storage import SQLiteStorage
 
 
 def replay_deletion_mirror(storage, authority: InstallationMaintenance, records: list[dict]) -> dict:
     """Preserve snapshot suppression and queued input while adding later deletion constraints."""
-    ledger = export_deletion_ledger(storage, authority)
+    scopes = set(storage.binding.scope_ids)
+    for item in records:
+        if item["kind"] == "operation":
+            scopes.update(json.loads(item["operation"]["scope_ids_json"]))
+        elif item["kind"] in {"source_group", "absence"}:
+            scopes.add(item["data"]["scope_id"])
+    reconcile_recovery_scopes(storage, authority, frozenset(scopes))
+    binding = replace(storage.binding, scope_ids=frozenset(scopes))
+    storage = SQLiteStorage(binding)
+    authority = InstallationMaintenance(
+        replace(authority.context, binding=binding, allowed_scope_ids=binding.scope_ids)
+    )
+    ledger = export_deletion_ledger(storage, authority, restoring=True)
     operations = {item["operation"]["operation_id"]: item for item in ledger["operations"]}
     groups = {item["group_sha256"]: item for item in ledger["source_groups"]}
     absent = {(item["object_kind"], item["object_ref"]): item for item in ledger["absent_objects"]}
@@ -37,7 +54,7 @@ def replay_deletion_mirror(storage, authority: InstallationMaintenance, records:
         operations=list(operations.values()), source_groups=list(groups.values()), absent_objects=list(absent.values())
     )
     stage_recovery_ledger(storage, authority, ledger)
-    result = replay_deletion_ledger(storage, authority, ledger, preserve_capture_inbox=True)
+    result = replay_deletion_ledger(storage, authority, ledger, preserve_capture_inbox=True, reopen=False)
     return {
         "status": "replayed",
         "replayed_operations": new_count,

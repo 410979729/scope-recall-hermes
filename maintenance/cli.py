@@ -6,8 +6,10 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Callable
+from datetime import UTC
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from scope_recall.core.failure_retry import TERMINAL_FAILURES
 from scope_recall.core.schema import SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema
@@ -303,19 +305,6 @@ def _respace_embeddings(args: argparse.Namespace) -> int:
     )
 
 
-def _add_backup_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--database", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--manifest")
-
-
-def _backup(args: argparse.Namespace) -> int:
-    target = _path(args.output, "output")
-    manifest = _path(args.manifest, "manifest") if args.manifest else target.with_suffix(target.suffix + ".json")
-    _emit(backup_sqlite(_path(args.database, "database"), target, manifest=manifest))
-    return 0
-
-
 def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy", "dsh"))
     parser.add_argument(
@@ -491,7 +480,7 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     """
     import sqlite3
     import time
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from scope_recall.contracts import ContractError
 
@@ -519,7 +508,7 @@ def _upgrade_store(args: argparse.Namespace) -> int:
         )
         _emit(result)
         return 2
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     snapshot = _path(args.backup_dir, "backup_dir") / f"memory-{before}-{stamp}.sqlite3"
     backup_sqlite(database, snapshot, manifest=snapshot.with_suffix(".json"))
     result["backup"] = str(snapshot)

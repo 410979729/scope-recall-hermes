@@ -5,7 +5,7 @@ Delegates canonical implementation of backup primitives to runtime.backup_primit
 
 from __future__ import annotations
 
-from ..runtime.backup_primitives import (
+from scope_recall.runtime.backup_primitives import (
     BackupError,
     atomic_json,
     atomic_write,

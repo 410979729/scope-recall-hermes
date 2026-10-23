@@ -11,6 +11,7 @@ from typing import Literal
 
 from ..adapters.hermes.installation import load_installation_manifest
 from ..adapters.installation_identity import path_identity
+from ..core.installation_copy import installation_copy_id
 from ..runtime.backup_archive import ArchiveMember
 from ..runtime.backup_primitives import BackupError
 from ..runtime.backup_resources import restored_resource_path
@@ -55,6 +56,7 @@ def relocate_installation(layout: RestoreLayout) -> None:
     """Reanchor only the new copy; its stable SQLite identity is preserved."""
     path = layout.root / "codex-installation.json" if layout.host == "codex" else layout.data / "installation.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
+    installation_copy_id(layout.data, payload["installation_id"])
     if type(payload) is not dict:
         raise BackupError("installation configuration must be an object")
     payload["data_directory"] = str(layout.data)

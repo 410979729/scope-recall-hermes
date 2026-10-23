@@ -12,12 +12,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from ..runtime.backup_bundle import BackupBundleError, create_backup_bundle, verify_backup_bundle
+from ..core.file_lock import advisory_file_lock
+from ..runtime.backup_bundle import BackupBundleError, create_backup_bundle
 from ..runtime.backup_primitives import BackupError, backup_sqlite, safe_path
-from .backup_bundle import resolve_store_binding
+from .backup_bundle import resolve_store_binding, verify_backup_bundle
+from .disaster_restore import DisasterRestoreError
 
 
 def _emit(data: dict[str, Any]) -> None:
@@ -34,21 +37,25 @@ def _run_legacy_backup(args: argparse.Namespace) -> int:
 
 
 def _run_create_bundle(args: argparse.Namespace) -> int:
-    binding = resolve_store_binding(root=args.root, host=args.host, instance_root=args.instance_root)
-    output = safe_path(args.output)
-    receipt = create_backup_bundle(
-        binding=binding,
-        output=output,
-        with_vectors=bool(args.with_vectors),
-        client_configs=tuple(args.client_config),
-    )
+    # Shared commands take this reentrant lock before resolving the binding;
+    # runtime assembly takes it before the truth writer and worker locks too.
+    held = advisory_file_lock(args.root / "commands.lock", timeout_seconds=0) if args.root else nullcontext()
+    with held:
+        binding = resolve_store_binding(root=args.root, host=args.host, instance_root=args.instance_root)
+        output = safe_path(args.output)
+        receipt = create_backup_bundle(
+            binding=binding,
+            output=output,
+            with_vectors=bool(args.with_vectors),
+            client_configs=tuple(args.client_config),
+        )
     _emit(receipt)
     return 0
 
 
 def _run_verify_bundle(args: argparse.Namespace) -> int:
     bundle_path = safe_path(args.bundle, must_exist=True)
-    receipt = verify_backup_bundle(bundle_path, temp_restore_check=bool(args.temp_restore_check))
+    receipt = verify_backup_bundle(bundle_path, temp_restore_check=bool(args.temp_restore_check), mirror=args.mirror)
     _emit(receipt)
     return 0
 
@@ -86,11 +93,14 @@ def main(argv: list[str]) -> int:
             prog="scope-recall backup verify", description="Verify integrity of a backup bundle."
         )
         parser.add_argument("--bundle", type=Path, required=True, help="bundle zip file path")
-        parser.add_argument("--temp-restore-check", action="store_true", help="perform temporary full unpack check")
+        parser.add_argument(
+            "--temp-restore-check", action="store_true", help="rehearse disaster restore in a temporary directory"
+        )
+        parser.add_argument("--mirror", type=Path, help="deletion mirror for a restore rehearsal")
         args = parser.parse_args(argv[1:])
         try:
             return _run_verify_bundle(args)
-        except (BackupBundleError, BackupError, ValueError, OSError) as exc:
+        except (BackupError, DisasterRestoreError, ValueError, OSError) as exc:
             _emit({"status": "error", "error": str(exc)})
             return 2
 

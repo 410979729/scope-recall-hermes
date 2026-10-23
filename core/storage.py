@@ -18,7 +18,7 @@ from ..contracts import (
     TrustedContext,
 )
 from .deadline import remaining_seconds as request_remaining_seconds
-from .delete_storage import Deletions
+from .delete_storage import Deletions, watch_mirrored_tombstones
 from .failure_retry import failure_kind, retry_class
 from .registry_storage import Registry
 from .restore import restore_pending
@@ -812,6 +812,7 @@ class SQLiteStorage:
             conn = self._open("rw" if writable else "ro", remaining_seconds, restoring=restoring)
         tx = Transaction(conn, context, writable=writable)
         original = None
+        mirror = False
         try:
             conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
             self.verify(conn)
@@ -819,16 +820,12 @@ class SQLiteStorage:
             # for the writer lease. Recheck after acquiring the transaction.
             if not restoring and restore_pending(self.binding.data_directory):
                 raise ContractError("RESTORE_UNVERIFIED")
-            # Derived transaction views share this SQLite connection. Reading
-            # its durable sequence also excludes rolled-back savepoint writes.
-            deletion_sequence = tx.deletions.last_sequence() if writable else 0
-            yield tx
+            with watch_mirrored_tombstones(conn) as touched:
+                yield tx
             if writable:
                 tx._assert_committable()
-                mirror = tx.deletions.last_sequence() != deletion_sequence
                 conn.commit()
-                if mirror:
-                    self._after_commit_deletions()
+                mirror = bool(touched)
             else:
                 conn.rollback()
         except BaseException as exc:
@@ -842,12 +839,11 @@ class SQLiteStorage:
         finally:
             tx._finish()
             self._close(conn, original)
+        if mirror:
+            self._after_commit_deletions()
 
     def _after_commit_deletions(self) -> None:
-        """Safely trigger deletion ledger mirror append after transaction commit.
-
-        Failures in the mirror write never raise, block, or roll back the committed deletion.
-        """
+        """Try bounded mirroring after lease cleanup; I/O errors leave durable catch-up."""
         try:
             from .deletion_mirror import mirror_committed_deletions
 
