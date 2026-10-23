@@ -37,6 +37,14 @@ from scope_recall.maintenance.shared import init_shared, store_binding
 from v11_support import source_event
 
 
+@pytest.fixture(autouse=True)
+def _immediate_mirror_attempt_fits_a_slow_runner(monkeypatch):
+    """These tests check what reaches the mirror; the runner's disk speed must not decide it."""
+    from scope_recall.core import deletion_mirror
+
+    monkeypatch.setattr(deletion_mirror, "IMMEDIATE_MIRROR_SECONDS", 60.0)
+
+
 @pytest.mark.parametrize("tree", ["spool", "retained", "kept-captures", "vectors", "database", "codex-config"])
 @pytest.mark.parametrize("alias", [False, True])
 def test_credential_overlap_with_any_copied_tree_refuses_backup(tmp_path, tree, alias):

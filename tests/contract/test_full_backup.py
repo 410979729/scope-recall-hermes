@@ -66,6 +66,30 @@ from scope_recall.runtime.scheduling import next_wake
 from v11_support import recall_request, source_event
 
 
+@pytest.fixture(autouse=True)
+def _immediate_mirror_attempt_fits_a_slow_runner(monkeypatch):
+    """These tests check what reaches the mirror; the runner's disk speed must not decide it."""
+    from scope_recall.core import deletion_mirror
+
+    monkeypatch.setattr(deletion_mirror, "IMMEDIATE_MIRROR_SECONDS", 60.0)
+
+
+def test_an_immediate_mirror_attempt_out_of_time_leaves_durable_catch_up(tmp_path, monkeypatch):
+    from scope_recall.core import deletion_mirror
+
+    core, ctx, binding = _create_synthetic_store(tmp_path)
+    source = _say(core, ctx, "NameOne note")
+    create_backup_bundle(binding=binding, output=tmp_path / "backup.zip")
+    monkeypatch.setattr(deletion_mirror, "IMMEDIATE_MIRROR_SECONDS", 0.0)
+    _forget(core, ctx, source)
+    lag = json.loads((binding.data_directory / "deletion-mirror-lag.json").read_text(encoding="utf-8"))
+    assert "immediate deletion mirror budget exceeded" in lag["error"]
+    assert load_mirror_operations(tmp_path / DELETION_MIRROR_FILENAME) == []
+    assert catchup_deletion_mirror(core.storage, tmp_path)["status"] == "caught_up"
+    assert len(load_mirror_operations(tmp_path / DELETION_MIRROR_FILENAME)) == 1
+    assert not (binding.data_directory / "deletion-mirror-lag.json").exists()
+
+
 def test_raw_client_spools_apply_capture_secret_policy(tmp_path):
     from scope_recall.adapters.clients.remote_client import _spool
 
