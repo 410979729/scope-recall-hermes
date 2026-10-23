@@ -10,6 +10,7 @@ from scope_recall.adapters.hermes.capture import RetryCapture
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
 
+from tests.host.hermes.test_steers import _steer
 from tests.v11_support import source_event
 
 
@@ -183,7 +184,7 @@ def test_post_llm_keeps_only_metadata_for_private_observations(adapter, mode, ca
             dict(role="user", content="TEST opener"),
             dict(role="assistant", content="TEST interim", tool_calls=[dict(id="TEST-tool")]),
             dict(role="tool", content="TEST result", tool_call_id="TEST-tool"),
-            dict(role="user", content="TEST steer", display_kind=STEER_KIND),
+            dict(role="user", content=_steer("TEST steer", origin=False), display_kind=STEER_KIND),
             dict(role="assistant", content="TEST final"),
         ],
     )
@@ -196,7 +197,7 @@ def test_post_llm_keeps_only_metadata_for_private_observations(adapter, mode, ca
         "TEST opener",
         "TEST final",
         session_id="TEST-session-1",
-        messages=[dict(role="user", content="TEST steer", display_kind=STEER_KIND)],
+        messages=[dict(role="user", content=_steer("TEST steer", origin=False), display_kind=STEER_KIND)],
     )
     assert _contents(provider, ctx) == []
 
@@ -221,4 +222,57 @@ def test_discarding_private_retry_removes_it_once_and_does_not_count_as_persiste
     else:
         assert provider._retry.keep_all_on_disk() == (0, 0)
     assert provider._retry.captures == {}
+    assert key not in provider._retry.on_disk
+
+
+def test_public_steer_is_cached_before_sync(adapter):
+    provider, _clock = adapter
+    provider.on_turn_start(1, "TEST opener", turn_id="TEST-turn")
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="TEST-turn",
+        assistant_response="TEST final",
+        conversation_history=[
+            dict(role="user", content=_steer("TEST public steer", origin=False), display_kind=STEER_KIND)
+        ],
+    )
+    assert provider._steer_said["TEST-turn"][0].words == "TEST public steer"
+
+
+@pytest.mark.parametrize("kind", ["interim", "steer"])
+def test_historical_untimed_messages_are_checked_before_caching_after_off(adapter, kind):
+    provider, clock = adapter
+    owner, ctx = _owner(provider)
+    provider.on_turn_start(1, "TEST opener", turn_id="TEST-turn")
+    owner.private_on(target="global")
+    clock.now = "2026-09-06T13:00:00Z"
+    owner.private_off(target="global")
+    history = [dict(role="assistant", content="TEST private interim", tool_calls=[dict(id="TEST-tool")])]
+    if kind == "steer":
+        history = [dict(role="user", content=_steer("TEST private steer", origin=False), display_kind=STEER_KIND)]
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="TEST-turn",
+        assistant_response="TEST public final",
+        conversation_history=history,
+    )
+    assert provider._interim_said == provider._steer_said == {}
+
+
+def test_late_writer_does_not_resurrect_a_discarded_private_capture(adapter):
+    provider, clock = adapter
+    owner, ctx = _owner(provider)
+    identity = provider._require_identity()
+    key = ("TEST-late-private", 1)
+    pending = RetryCapture(
+        ctx,
+        source_event(source_event_key=key[0], occurred_at=clock.now, recorded_at=clock.now),
+        (),
+        identity.local_scope_id,
+        identity.scope,
+        0,
+    )
+    owner.private_on(target="global")
+    provider._writer._closed_meanwhile(key, RuntimeError("TEST retryable write"), False, pending)
+    assert key not in provider._retry.captures
     assert key not in provider._retry.on_disk

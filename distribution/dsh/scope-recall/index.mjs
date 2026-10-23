@@ -20,7 +20,7 @@
 // message is dropped and said.
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const name = 'scope-recall'
@@ -81,7 +81,7 @@ export function apply(ctx, raw) {
 
   // Group by the directory that owns each event; adopting an older file must
   // obtain the same decision as a new message before copying any plaintext.
-  const eligible = async (sessionId, entries) => {
+  const eligible = async (sessionId, entries, fresh = false) => {
     const groups = new Map()
     for (const entry of entries) {
       const cwd = entry.cwd ?? process.cwd()
@@ -89,13 +89,23 @@ export function apply(ctx, raw) {
       groups.get(cwd).push(entry)
     }
     const allowed = new Set()
+    const unchecked = new Set(entries)
     for (const [cwd, group] of groups) {
       for (let start = 0; start < group.length; start += 64) {
         const batch = group.slice(start, start + 64)
         const times = batch.map((entry) => Number.isFinite(entry.time) ? new Date(entry.time).toISOString() : null)
-        const result = await runHook({ hook_event_name: 'PrivateCheck', session_id: sessionId, cwd, times }, cfg.storeTimeoutMs)
+        const clocks = batch.map((entry) => entry.clock ?? null)
+        const result = await runHook({ hook_event_name: 'PrivateCheck', session_id: sessionId, cwd, times, clocks,
+          calibration_started_at: fresh ? times[0] : null, fresh_observation: fresh }, cfg.storeTimeoutMs)
         if (!result.ok) continue
         const answer = result.answer
+        if (typeof answer?.capture_blocked !== 'boolean' || typeof answer?.recall_blocked !== 'boolean') continue
+        const decisions = answer?.capture_blocked === false ? batch.map(() => false) : answer?.decisions
+        if (!Array.isArray(decisions) || decisions.length !== batch.length || decisions.some((value) => typeof value !== 'boolean')) continue
+        batch.forEach((entry, index) => {
+          unchecked.delete(entry)
+          if (Array.isArray(answer.clocks)) entry.clock = answer.clocks[index] ?? null
+        })
         if (answer?.capture_blocked === false) {
           for (const entry of batch) allowed.add(entry)
         } else if (answer?.mode === 'none' && Array.isArray(answer.decisions) && answer.decisions.length === batch.length) {
@@ -103,7 +113,7 @@ export function apply(ctx, raw) {
         }
       }
     }
-    return entries.filter((entry) => allowed.has(entry))
+    return { permitted: entries.filter((entry) => allowed.has(entry)), unchecked: entries.filter((entry) => unchecked.has(entry)) }
   }
 
   // A line is written with a line break before it as well as after, so that one a crash cut short ends there.
@@ -111,7 +121,7 @@ export function apply(ctx, raw) {
     // Serialize the decision and append so a turn end cannot drain ahead of its
     // messages. Only metadata travels before Core permits a plaintext disk copy.
     const pending = (pendingKeeps.get(sessionId) ?? Promise.resolve()).then(async () => {
-      if (!(await eligible(sessionId, [entry])).length) return
+      if (!(await eligible(sessionId, [entry], true)).permitted.length) return
       try {
         appendFileSync(ownFile(sessionId), `\n${JSON.stringify({ k: `${process.pid}-${Date.now()}-${counter++}`, sessionId, ...entry })}\n`)
       } catch (error) { warn(`a message of session ${sessionId} was not kept on disk: ${error}`) }
@@ -295,7 +305,7 @@ export function apply(ctx, raw) {
     while (queue.length) {
       const [chunk] = chunks(queue)
       const payload = { hook_event_name: 'Stop', session_id: sessionId, cwd: lastEnd?.cwd ?? chunk[0]?.cwd ?? process.cwd(),
-                        record: chunk.map(({ id, role, text, time }) => ({ id, role, text, time })) }
+                        record: chunk.map(({ id, role, text, time, clock }) => ({ id, role, text, time, clock })) }
       if (reply && chunk.includes(reply) && bytes(payload) + bytes(reply.text) <= PAYLOAD_BYTES) {
         Object.assign(payload, { turn_id: String(lastEnd.turn), last_assistant_message: reply.text, reply_id: reply.id })
       }
@@ -351,7 +361,15 @@ export function apply(ctx, raw) {
       warn(`spool: ${file} holds nothing readable; kept as ${taken}.unreadable`)
       return null
     }
-    const permitted = await eligible(sessionId, entries)
+    const { permitted, unchecked } = await eligible(sessionId, entries)
+    // Unchecked plaintext remains only in its original file. Retrying never
+    // manufactures a second disk copy when privacy could not be established.
+    if (unchecked.length) {
+      // A live owner can have created its next file while this one was checked.
+      // Keep the claimed filename in that case so neither original is overwritten.
+      try { if (!existsSync(file)) renameSync(taken, file) } catch (error) { warn(`spool recovery: ${error}`) }
+      return null
+    }
     if (permitted.length) appendFileSync(ownFile(sessionId), `\n${permitted.map((entry) => JSON.stringify(entry)).join('\n')}\n`)
     rmSync(taken, { force: true })
     return sessionId

@@ -17,6 +17,7 @@ from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
 from scope_recall.adapters.hermes.identity import host_scope_payload, principal_ref
 from scope_recall.contracts import ContractError, Origin, TrustedContext, TrustedSourcePrincipal
 from scope_recall.core.private import normalize_project_path
+from scope_recall.runtime.remote_clock import stored_session_id as session_identity
 
 from .config import CodexInstallationConfig, SharedClientConfig
 
@@ -127,7 +128,7 @@ def resolve_runtime_audience(config: CodexInstallationConfig | SharedClientConfi
 def stored_session_id(config: CodexInstallationConfig | SharedClientConfig, session_id: str) -> str:
     """The session id storage sees.  In a shared store two entries can see the same host
     session id, so there it carries the entry, as a Hermes entry's does."""
-    return f"{config.entry_id}:{session_id}" if isinstance(config, SharedClientConfig) else session_id
+    return session_identity(session_id, entry_id=config.entry_id if isinstance(config, SharedClientConfig) else None)
 
 
 def project_root_of(value: object, *, resolve_links: bool = True) -> str | None:

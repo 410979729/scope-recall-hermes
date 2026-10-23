@@ -430,9 +430,10 @@ def process_consolidate(
         repair = {"validation_feedback": feedback} if feedback is not None else {}
         if private.outbound_blocked(storage, clock, context, sources=roots):
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
-        raw = model.propose(
-            roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair
-        )
+        with private.using_outbound_check(lambda: private.outbound_blocked(storage, clock, context, sources=roots)):
+            raw = model.propose(
+                roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair
+            )
     except ContractError as exc:
         # A probabilistic model occasionally emits an invalid derivation; give
         # the work item a bounded fresh attempt instead of killing it on the

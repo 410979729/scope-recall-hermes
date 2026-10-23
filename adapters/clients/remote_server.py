@@ -39,6 +39,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..._version import __version__
+from ...core.private import calibrated_event_time
+from ...runtime.remote_clock import private_metadata
 from ...runtime.worker_entry import host_process_credential_environment
 from . import transcript
 from .boundary import IN_CONTEXT_FIELD, without_lone_surrogates
@@ -47,6 +49,7 @@ from .handler import CodexHookHandler, SystemHookClock
 from .identity import resolve_runtime_audience, trusted_context
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
 from .record_reader import RecordLines
+from .remote_client import eligible_body
 
 CONFIG_NAME = "remote-server.json"
 LOG_NAME = "remote-server.log"
@@ -259,17 +262,27 @@ def client_times_and_lead(
         if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
             return (_stamp(observed) if observed is not None else None), record, timedelta(0)
     if record is not None:
+        metadata = private_metadata(body)
+        clocks = dict(zip(metadata["times"], metadata["clocks"], strict=True))
         record = replace(
             record,
             lines=[
                 (
                     offset,
-                    replace(said, occurred_at=_stamp(_moment(said.occurred_at) - lead)) if said is not None else None,
+                    replace(said, occurred_at=_record_instant(said.occurred_at, clocks.get(said.occurred_at), lead))
+                    if said is not None
+                    else None,
                 )
                 for offset, said in record.lines
             ],
         )
     return (_stamp(observed - lead) if observed is not None else None), record, lead
+
+
+def _record_instant(moment, calibration, legacy_lead):
+    """Keep each record's original clock rather than the later uploading hook's clock."""
+    span = calibrated_event_time(moment, calibration)
+    return span["latest"] if span is not None else _stamp(_moment(moment) - legacy_lead)
 
 
 def _context_since_kept(payload: dict[str, Any], lead: timedelta) -> dict[str, Any]:
@@ -347,25 +360,23 @@ def private_check(config: RemoteServerConfig, body: dict[str, Any]) -> dict[str,
         actor_origin="host_generated",
         project_root=project,
     )
+    context = replace(context, project_identity="remote")
     from scope_recall.core import CoreConfig, MemoryCore
 
     clock = body.get("clock")
     sent_at = _observed_at(body.get("sent_at"))
     if not isinstance(clock, dict) and sent_at is not None:
         clock = {"client_at": _stamp(sent_at), "server_at": _stamp(_now())}
-    if isinstance(clock, dict):
-        client_at, server_at = _observed_at(clock.get("client_at")), _observed_at(clock.get("server_at"))
-        if client_at is None or server_at is None:
-            raise RemoteServerError("clock needs client_at and server_at")
-        offset = server_at - client_at
-        corrected = [
-            _stamp(moment + offset) if (moment := _observed_at(value)) is not None else None for value in times
-        ]
-    else:
-        # A historical timestamp without calibration cannot establish the event
-        # instant. Receipt time only bounds which earlier intervals are possible.
-        corrected = [None for _value in times]
+    clocks = body.get("clocks")
+    if clocks is not None and (not isinstance(clocks, list) or len(clocks) != len(times)):
+        raise RemoteServerError("clocks must accompany each event time")
+    corrected = [
+        calibrated_event_time(value, clocks[index] if clocks is not None else clock)
+        for index, value in enumerate(times)
+    ]
     options = {"rule_marker": body["rule_marker"]} if type(body.get("rule_marker")) is int else {}
+    if body.get("project_unverified") is True:
+        options["project_unverified"] = True
     result = MemoryCore(CoreConfig(client.to_binding())).private_check(context, corrected, **options)
     return {**result, "clock": clock}
 
@@ -391,22 +402,21 @@ def handle_request(
         raise RemoteServerError("payload too large")
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
     payload = {key: value for key, value in payload.items() if key != "transcript_path"}
+    body, refused = _checked_body(config, {**body, "payload": payload})
+    payload = body["payload"]
+    if refused:
+        record = RecordLines.from_dsh(payload) if config.host == "dsh" else record_from_wire(body.get("record"))
+        return dict(
+            result={},
+            through=record.lines[-1][0] if record is not None and record.lines else None,
+            retry=False,
+            reason="private_mode",
+        )
     # The hook's own times are the client's (moved back if more than a minute ahead, see CLOCK_AHEAD_SECONDS), so a
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
     # now are this machine's: a client clock a day fast would hold back a message's embedding by a day.
     observed_at, record, lead = client_times_and_lead({**body, "payload": payload}, config.host)
     payload = _context_since_kept(payload, lead)
-    if not isinstance(body.get("clock"), dict) or observed_at is None:
-        unknown = private_check(
-            config, {"session_id": payload.get("session_id"), "project": payload.get("cwd"), "times": [None]}
-        )
-        if unknown["capture_blocked"]:
-            return {
-                "result": {},
-                "through": record.lines[-1][0] if record is not None and record.lines else None,
-                "retry": False,
-                "reason": "private_mode",
-            }
     building = time.monotonic()
     handler = CodexHookHandler.from_home(
         str(config.home),
@@ -451,6 +461,32 @@ def handle_request(
         "attach_ms": handler.diagnostics.runtime_attach_ms,
         "close_ms": closed,
     }
+
+
+def _checked_body(config, body):
+    """Recheck each retained calibration at ingress before a hook can reconstruct content."""
+    metadata = private_metadata(body)
+    moments = metadata["times"] or [None]
+    clocks = metadata["clocks"] or [None]
+    decisions, full_decisions, state = {}, {}, {}
+    for start in range(0, len(moments), 64):
+        answer = private_check(
+            config, {**metadata, "times": moments[start : start + 64], "clocks": clocks[start : start + 64]}
+        )
+        decisions.update(zip(moments[start : start + 64], answer["decisions"], strict=True))
+        full = answer.get("full_decisions", [answer["capture_blocked"]] * len(answer["decisions"]))
+        full_decisions.update(zip(moments[start : start + 64], full, strict=True))
+        if not state:
+            state = dict(answer)
+        else:
+            state["recall_blocked"] |= answer["recall_blocked"]
+    state["event_decisions"] = decisions
+    state["full_event_decisions"] = full_decisions
+    filtered, state = eligible_body(body, state)
+    refused = state["recall_blocked"] or (
+        state["capture_blocked"] and body["payload"].get("hook_event_name") != "UserPromptSubmit"
+    )
+    return filtered, refused
 
 
 def build_app(config: RemoteServerConfig, *, warm: bool = False):

@@ -135,9 +135,10 @@ class _LazyVectorPort:
 
     def _checked_query(self, context, route, texts, seconds):
         """Check the current conversation at each actual query embedding request."""
-        if self._instance.core.private_mode(context.trusted_context) == "full":
-            raise ContractError("ACCESS_DENIED", "private_mode")
-        return route(texts, seconds)
+        from ..core.private import using_outbound_check
+
+        with using_outbound_check(lambda: self._instance.core.private_mode(context.trusted_context) == "full"):
+            return route(texts, seconds)
 
     def prefetch_query(self, context: SearchContext, *, also: tuple[str, ...] = ()) -> _QueryEmbedding | None:
         """Ask for the query's embedding now, beside the SQLite channels; ``search`` takes it from there.  ``also``
@@ -455,15 +456,16 @@ class RuntimeInstance:
         now = time.monotonic()
         deadline = RequestDeadline.from_absolute(now + float(seconds), now=now)
         with using_request_deadline(deadline):
-            from ..core.private import outbound_blocked
+            from ..core.private import outbound_blocked, using_outbound_check
 
             if outbound_blocked(self.core.storage, self.core.clock, self.config.context()):
                 return False
 
             def checked(budget):
-                if outbound_blocked(self.core.storage, self.core.clock, self.config.context()):
-                    raise ContractError("ACCESS_DENIED", "private_mode")
-                return embed("scope recall warm-up", budget)
+                with using_outbound_check(
+                    lambda: outbound_blocked(self.core.storage, self.core.clock, self.config.context())
+                ):
+                    return embed("scope recall warm-up", budget)
 
             embed_with_one_retry(
                 checked,

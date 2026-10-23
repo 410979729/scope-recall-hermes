@@ -8,6 +8,7 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -372,7 +373,7 @@ class GeminiEmbeddingAdapter:
         with ThreadPoolExecutor(
             max_workers=min(EMBED_REQUEST_CONCURRENCY, len(chunks)), thread_name_prefix="scope-recall-embed"
         ) as pool:
-            answers = [pool.submit(request, chunk) for chunk in chunks]
+            answers = [pool.submit(copy_context().run, request, chunk) for chunk in chunks]
             for answer in answers:  # in the order they were asked
                 vectors.extend(answer.result())
         return tuple(vectors)

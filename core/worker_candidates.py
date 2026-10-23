@@ -289,12 +289,17 @@ def process_candidate_evaluation(
         repair = {"validation_feedback": feedback} if feedback is not None else {}
         if private.outbound_blocked(storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)):
             return fail(code="private_mode", budget_pause=True)
-        raw = evaluator.evaluate_candidate(
-            evaluation.candidate,
-            evidence_sources,
-            remaining_seconds=budget_left(started, clock, budget),
-            **repair,
-        )
+        with private.using_outbound_check(
+            lambda: private.outbound_blocked(
+                storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)
+            )
+        ):
+            raw = evaluator.evaluate_candidate(
+                evaluation.candidate,
+                evidence_sources,
+                remaining_seconds=budget_left(started, clock, budget),
+                **repair,
+            )
     except ContractError as exc:
         code = (exc.code or "candidate_evaluation_failed").lower()
         return fail(code=code, field=exc.field, budget_pause=code in BUDGET_PAUSE_ERRORS)

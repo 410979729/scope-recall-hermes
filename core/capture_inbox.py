@@ -74,6 +74,8 @@ def context_payload(context):
     # keeps their envelope byte-for-byte equal to a retried capture's.
     if context.project_root is not None:
         payload["project_root"] = context.project_root
+    if context.project_identity != "local":
+        payload["project_identity"] = context.project_identity
     # The entry is part of the original actor a replay keeps.  Whoever replays --
     # the shared worker, or another entry's provider -- otherwise files the
     # capture under its own name, and a busy shared store sends more captures
@@ -152,6 +154,8 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
             old_context, new_context = dict(previous["context"]), dict(body["context"])
             if "project_root" not in old_context:
                 new_context.pop("project_root", None)
+            if "project_identity" not in old_context:
+                new_context.pop("project_identity", None)
             if (
                 normalize(previous["events"]) != normalize(body["events"])
                 or old_context != new_context

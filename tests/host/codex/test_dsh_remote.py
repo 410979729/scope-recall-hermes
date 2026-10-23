@@ -525,8 +525,13 @@ def test_plugin_checks_old_spool_before_copying_plaintext(remote, tmp_path, monk
     monkeypatch.setenv("SR_FAKE_HOOK", str(HARNESS / "fake_hook.mjs"))
     monkeypatch.setenv("SR_FAKE_HOOK_MODE", mode)
     result = _plugin(home, config, "sweep")
-    assert result["spool"] == []
-    assert not any("TEST private old body" in path.read_text(encoding="utf-8") for path in spool.glob("*.jsonl"))
+    if mode == "broken":
+        assert old.exists()
+        assert "TEST private old body" in old.read_text(encoding="utf-8")
+        assert list(spool.glob("*.jsonl")) == [old]
+    else:
+        assert result["spool"] == []
+        assert not any("TEST private old body" in path.read_text(encoding="utf-8") for path in spool.glob("*.jsonl"))
 
 
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is not installed, or this tier may not start it")
@@ -548,6 +553,13 @@ def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote,
     failed = _plugin(home, {**config, "expectBacklog": True, "waitStatus": "lastStore", "waitMs": 15000})
     assert failed["spool"] == ["user", "assistant", "assistant", "turn_end"]
     assert failed["status"]["lastStore"]["error"] and failed["decisionKept"]
+    queued = [
+        json.loads(line)
+        for file in spool.glob("*.jsonl")
+        for line in file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert queued and all(isinstance(row.get("clock"), dict) and "received_at" in row["clock"] for row in queued)
     assert not any("session-TEST-plugin" in row[1] for row in _rows(root))
     monkeypatch.setattr(remote_server, "handle_request", handle)
     for file in spool.glob("*.jsonl"):

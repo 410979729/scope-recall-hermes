@@ -12,8 +12,10 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+from ..core import private
 from ..core.file_lock import advisory_file_lock
 from .auxiliary import DEFAULT_LEDGER_NAME
 from .backup_archive import ArchiveLayoutError, canonical_member_name
@@ -26,6 +28,7 @@ from .backup_primitives import (
     safe_path,
     sha256,
 )
+from .remote_clock import private_metadata, stored_session_id
 from .validation import validate_worker_day
 
 #: Directory of Hermes kept captures beside the store (``kept_captures.DIRECTORY``).
@@ -41,6 +44,98 @@ _BUDGET_KEYS = {
     LEDGER_FIELD: "ledger_path",
     INSTALLATION_DIR_FIELD: "installation_dir",
 }
+
+
+class BackupPrivacy:
+    """Check deferred bodies against the bundle's interval snapshot without changing originals."""
+
+    def __init__(self, database: Path, *, entry_ids: tuple[str, ...] = ()):
+        self.connection = sqlite3.connect(database)
+        self.connection.row_factory = sqlite3.Row
+        self.has_rules = self.connection.execute("SELECT 1 FROM private_intervals LIMIT 1").fetchone() is not None
+        self.entry_ids = entry_ids
+
+    def close(self):
+        """Release the staged database connection before hashing and archiving it."""
+        self.connection.close()
+
+    def permits(
+        self, session, project, events, *, project_identity: str = "local", project_unverified: bool = False
+    ) -> bool:
+        """An unknown event time is ordinary only when no applicable history could cover it."""
+        if not self.has_rules:
+            return True
+        if not isinstance(session, str) or not session or not events:
+            return False
+        context = SimpleNamespace(session_id=session, project_root=project, project_identity=project_identity)
+        intervals = private.matching_connection_intervals(
+            self.connection, context, events=events, project_unverified=project_unverified
+        )
+        return private.capture_mode(intervals, events) is None
+
+    def permits_kept(self, value) -> bool:
+        """A kept capture or inbox entry uses its original context and event time."""
+        if not self.has_rules:
+            return True
+        if not isinstance(value, dict) or not isinstance(value.get("context"), dict):
+            return False
+        events = value.get("events") if "events" in value else [value.get("event")]
+        if not isinstance(events, (list, tuple)) or not events or any(not isinstance(event, dict) for event in events):
+            return False
+        context = value["context"]
+        return self.permits(
+            context.get("session_id"),
+            context.get("project_root"),
+            events,
+            project_identity=context.get("project_identity", "local"),
+        )
+
+    def permits_remote(self, value) -> bool:
+        """A remote spool preserves per-record calibration; upload clocks never date history."""
+        if not self.has_rules:
+            return True
+        if not isinstance(value, dict) or not isinstance(value.get("payload"), dict):
+            return False
+        metadata = private_metadata(value)
+        events = []
+        for moment, clock in zip(metadata["times"], metadata["clocks"], strict=True):
+            span = private.calibrated_event_time(moment, clock)
+            events.append(
+                dict(occurred_at=span["earliest"], occurred_until=span["latest"]) if span else dict(occurred_at=None)
+            )
+        # Client configs need not identify one entry. Refuse if any possible
+        # entry makes the record private; unrelated raw sessions stay ordinary.
+        sessions = [metadata["session_id"]]
+        if isinstance(metadata["session_id"], str):
+            sessions.extend(stored_session_id(metadata["session_id"], entry_id=entry) for entry in self.entry_ids)
+        return all(
+            self.permits(
+                session,
+                metadata["project"],
+                events or [dict(occurred_at=None)],
+                project_identity="remote",
+                project_unverified=metadata["project_unverified"],
+            )
+            for session in sessions
+        )
+
+    def filter_inbox(self):
+        """Erase refused queued bodies only in the snapshot, including freed SQLite pages."""
+        if not self.has_rules:
+            return
+        refused = []
+        for token, encoded in self.connection.execute("SELECT token,payload_json FROM capture_inbox"):
+            try:
+                allowed = self.permits_kept(json.loads(encoded))
+            except (ValueError, TypeError):
+                allowed = False
+            if not allowed:
+                refused.append((token,))
+        if refused:
+            self.connection.execute("PRAGMA secure_delete=ON")
+            self.connection.executemany("DELETE FROM capture_inbox WHERE token=?", refused)
+            self.connection.commit()
+            self.connection.execute("VACUUM")
 
 
 def _absolute_path(value: object, field: str) -> Path:
@@ -182,6 +277,7 @@ def _stage_kept_captures(
     stage_dir: Path,
     files: list[dict[str, Any]],
     resources: list[dict[str, Any]],
+    privacy: BackupPrivacy | None = None,
 ) -> None:
     root = data_directory / KEPT_CAPTURES_DIRECTORY
     if not root.exists():
@@ -190,6 +286,12 @@ def _stage_kept_captures(
     if not checked.is_dir():
         return
     for item in real_files(checked):
+        if privacy is not None and privacy.has_rules:
+            try:
+                if not privacy.permits_kept(json.loads(item.read_bytes())):
+                    continue
+            except (OSError, ValueError, TypeError):
+                continue
         relative = f"{KEPT_CAPTURES_DIRECTORY}/{item.relative_to(checked).as_posix()}"
         try:
             canonical_member_name(relative)
@@ -229,7 +331,7 @@ def _stage_budget(
 
 
 def stage_instance_resources(
-    data_directory: Path, stage_dir: Path
+    data_directory: Path, stage_dir: Path, *, privacy: BackupPrivacy | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Stage kept captures and one consistent budget snapshot.
 
@@ -239,7 +341,7 @@ def stage_instance_resources(
     files: list[dict[str, Any]] = []
     resources: list[dict[str, Any]] = []
     with advisory_file_lock(data_directory / "runtime-worker.lock", timeout_seconds=0):
-        _stage_kept_captures(data_directory, stage_dir, files, resources)
+        _stage_kept_captures(data_directory, stage_dir, files, resources, privacy)
         _stage_budget(data_directory, stage_dir, files, resources)
         _stage_worker_day(data_directory, stage_dir, files, resources)
     resources.sort(key=lambda item: (item["role"], item["archive_path"], item["field"] or ""))

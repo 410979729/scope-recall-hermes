@@ -177,7 +177,7 @@ class MemoryCore:
     def inspect_object(self, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24):
         from .inspect_service import InspectedObject, inspect_object
 
-        self._private_read_refusal(context)
+        marker = self._private_read_refusal(context)
         if type(ref) is str and ref.startswith(RECALL_DIAGNOSTIC_PREFIX):
             # A recall packet's ``diagnostic_ref`` names a record this process keeps for its last recalls
             # (``recall_diagnostics``), never a stored object: looked up in the store it would always be
@@ -193,8 +193,11 @@ class MemoryCore:
                 # Gone from this process's last recalls, recalled by another process (a prompt hook), or not the
                 # caller's: all read the same.
                 raise ContractError("SOURCE_MISSING", "recall_diagnostic")
-            return InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
-        return inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
+            result = InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
+        else:
+            result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
+        self._private_read_refusal(context, after=marker)
+        return result
 
     def private_mode(self, context: TrustedContext) -> str | None:
         """The stricter private mode active for this context now, or None.
@@ -244,7 +247,9 @@ class MemoryCore:
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
             return private.CaptureGuard.read(tx, observations)
 
-    def private_check(self, context: TrustedContext, times, *, rule_marker: int | None = None) -> dict:
+    def private_check(
+        self, context: TrustedContext, times, *, rule_marker: int | None = None, project_unverified: bool = False
+    ) -> dict:
         """Metadata-only answer for a remote client: whether these moments or a recall are private.
 
         ``times`` are event instants the client is about to send; an empty list
@@ -253,15 +258,26 @@ class MemoryCore:
         if times is None:
             moments = []
         elif isinstance(times, (list, tuple)) and len(times) <= 64:
-            moments = [utc_timestamp(value) if value is not None else None for value in times]
+            moments = []
+            for value in times:
+                if isinstance(value, dict):
+                    first, last = utc_timestamp(value.get("earliest")), utc_timestamp(value.get("latest"))
+                    if first > last:
+                        raise ContractError("INPUT_INVALID", "times")
+                    moments.append(dict(occurred_at=first, occurred_until=last))
+                else:
+                    moments.append(dict(occurred_at=utc_timestamp(value) if value is not None else None))
         else:
             raise ContractError("INPUT_INVALID", "times")
         now = utc_timestamp(self.clock.utc_now())
         with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
-            events = [{"occurred_at": moment, "recorded_at": now} for moment in [now, *moments]]
+            events = [dict(occurred_at=now, recorded_at=now), *[dict(moment, recorded_at=now) for moment in moments]]
             intervals = private.matching_intervals(tx, context, events=events)
+            if project_unverified:
+                intervals.extend(private.unverified_project_rule(tx))
             mode = private.mode_at(intervals, now)
-            decisions = [private.capture_mode(intervals, [event]) is not None for event in events[1:]]
+            event_modes = [private.capture_mode(intervals, [event]) for event in events[1:]]
+            decisions = [mode is not None for mode in event_modes]
             invalidated, marker = private.rules_changed(tx, context, after=rule_marker)
             if invalidated:
                 mode = "full"
@@ -269,35 +285,44 @@ class MemoryCore:
             "mode": mode or private.MODE_NONE,
             "capture_blocked": any(decisions) or mode is not None,
             "decisions": decisions,
+            "full_decisions": [mode == "full" for mode in event_modes],
             "rule_marker": marker,
             "recall_blocked": mode == "full",
             "notice": private.notice_for_mode(mode),
         }
 
-    def _private_read_refusal(self, context: TrustedContext) -> None:
-        """Refuse profile, entity and trace reads under a full interval, before any read or call."""
-        if self.private_mode(context) == "full":
+    def _private_read_refusal(self, context: TrustedContext, *, after: int | None = None) -> int:
+        """Fence read entry and release, including a full interval closed during the read."""
+        mode, marker = self._recall_private_state(context, after=after)
+        if mode == "full":
             raise ContractError("ACCESS_DENIED", "private_mode")
+        return marker
 
     def profile(self, context: TrustedContext, request):
         """Read-only categorized current-fact profile for one explicit subject."""
         from .read_views import read_profile
 
-        self._private_read_refusal(context)
-        return read_profile(self.storage, self.clock, context, request)
+        marker = self._private_read_refusal(context)
+        result = read_profile(self.storage, self.clock, context, request)
+        self._private_read_refusal(context, after=marker)
+        return result
 
     def trace(self, context: TrustedContext, request, *, deadline_seconds=5.0):
         from .trace import read_trace
 
-        self._private_read_refusal(context)
-        return read_trace(self.storage, self.clock, context, request, seconds=deadline_seconds)
+        marker = self._private_read_refusal(context)
+        result = read_trace(self.storage, self.clock, context, request, seconds=deadline_seconds)
+        self._private_read_refusal(context, after=marker)
+        return result
 
     def entity(self, context: TrustedContext, request):
         """Read-only exact one-hop entity probe or related-statement view."""
         from .read_views import read_entity
 
-        self._private_read_refusal(context)
-        return read_entity(self.storage, self.clock, context, request)
+        marker = self._private_read_refusal(context)
+        result = read_entity(self.storage, self.clock, context, request)
+        self._private_read_refusal(context, after=marker)
+        return result
 
     def record_event(
         self,
@@ -511,7 +536,7 @@ class MemoryCore:
     def collection(self, context: TrustedContext, query, *, cursor=None, deadline_seconds: float = 2.0):
         if type(deadline_seconds) not in (int, float) or deadline_seconds <= 0:
             raise ContractError("INPUT_INVALID", "deadline_seconds")
-        self._private_read_refusal(context)
+        marker = self._private_read_refusal(context)
         search_context = SearchContext(
             query="collection",
             mode=query.mode,
@@ -533,7 +558,9 @@ class MemoryCore:
             now=self.clock.utc_now(),
             trusted_context=context,
         )
-        return self.recall_pipeline.collection(search_context, query, cursor)
+        result = self.recall_pipeline.collection(search_context, query, cursor)
+        self._private_read_refusal(context, after=marker)
+        return result
 
     def revise(self, context: TrustedContext, value, *, remaining_seconds: float | None = None):
         from .mutate import revise

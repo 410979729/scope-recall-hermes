@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import atexit
 import queue
+import sqlite3
 import subprocess
 import threading
 import time
 import weakref
+from contextvars import copy_context
+
+from ..contracts import ContractError
+from ..core.private import require_outbound
 
 _SESSIONS = weakref.WeakSet()
 
@@ -23,6 +28,21 @@ def _close_sessions():
 
 
 atexit.register(_close_sessions)
+
+
+def _exchange_line(process, request, replies, max_stdout):
+    """Recheck on the I/O thread before passing plaintext to its owned helper."""
+    try:
+        require_outbound()
+    except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
+        replies.put(exc)
+        return
+    try:
+        process.stdin.write(request + b"\n")
+        process.stdin.flush()
+        replies.put(process.stdout.readline(max_stdout + 1))
+    except (OSError, ValueError):
+        replies.put(None)
 
 
 class HttpWorkerSession:
@@ -67,6 +87,7 @@ class HttpWorkerSession:
         process = None
         io_thread = None
         try:
+            require_outbound()
             if self._closed:
                 raise OSError("http_session_closed")
             if self._process is None or self._process.poll() is not None:
@@ -84,25 +105,20 @@ class HttpWorkerSession:
                 raise OSError("http_session_closed")
             replies = queue.Queue(maxsize=1)
 
-            def exchange_line():
-                try:
-                    process.stdin.write(request + b"\n")
-                    process.stdin.flush()
-                    result = process.stdout.readline(max_stdout + 1)
-                    replies.put(result)
-                except (OSError, ValueError):
-                    replies.put(None)
-
             with self._state_lock:
                 if self._closed or self._process is not process:
                     raise OSError("http_session_closed")
-                thread = threading.Thread(target=exchange_line, daemon=True)
+                thread = threading.Thread(
+                    target=copy_context().run, args=(_exchange_line, process, request, replies, max_stdout), daemon=True
+                )
                 thread.start()
                 io_thread = self._io_thread = thread
             try:
                 result = replies.get(timeout=max(0, deadline - time.monotonic()))
             except queue.Empty:
                 raise TimeoutError from None
+            if isinstance(result, Exception):
+                raise result
             if result is None or not result.endswith(b"\n") or len(result) > max_stdout:
                 raise OSError("http_worker_protocol")
             return result, b""

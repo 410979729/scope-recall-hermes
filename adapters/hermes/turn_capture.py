@@ -299,19 +299,27 @@ class TurnCapture:
         if isinstance(answer, str) and answer.strip():
             key = sync_assistant_key(context, session, turn_id)
             self._adapter._ledger.witness((key, 1), observed_at, observed_at)
+        # Conversation history is retrospective. Only a host timestamp or an
+        # earlier witness establishes when its message occurred.
         said = tuple(
-            (text, moment or observed_at)
-            for text, moment in interim_messages(history, answer=answer if isinstance(answer, str) else "")
+            (
+                text,
+                self._adapter._ledger.witness(
+                    (interim_source_key(context, session, turn_id, ordinal), 1), observed_at, moment
+                )[1],
+            )
+            for ordinal, (text, moment) in enumerate(
+                interim_messages(history, answer=answer if isinstance(answer, str) else ""), start=1
+            )
         )
         steered = tuple(
-            steer._replace(occurred_at=steer.occurred_at or observed_at) for steer in _said_aside(identity, history)
-        )
-        for ordinal, (_text, moment) in enumerate(said, start=1):
-            self._adapter._ledger.witness(
-                (interim_source_key(context, session, turn_id, ordinal), 1), observed_at, moment
+            steer._replace(
+                occurred_at=self._adapter._ledger.witness(
+                    (steer_source_key(context, steer), 1), observed_at, steer.occurred_at
+                )[1]
             )
-        for steer in steered:
-            self._adapter._ledger.witness((steer_source_key(context, steer), 1), observed_at, steer.occurred_at)
+            for steer in _said_aside(identity, history)
+        )
         try:
             check = self._adapter._require_core().private_check
             moments = [moment for _text, moment in said] + [steer.occurred_at for steer in steered]

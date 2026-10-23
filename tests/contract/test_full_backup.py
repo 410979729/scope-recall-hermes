@@ -65,6 +65,8 @@ from scope_recall.runtime.model_budget import default_budget_policy, initialize_
 from scope_recall.runtime.scheduling import next_wake
 from v11_support import recall_request, source_event
 
+from tests.host.codex.test_remote import store as shared_store
+
 
 @pytest.fixture(autouse=True)
 def _immediate_mirror_attempt_fits_a_slow_runner(monkeypatch):
@@ -110,6 +112,145 @@ def test_raw_client_spools_apply_capture_secret_policy(tmp_path):
     assert receipt["spool_entries_omitted"] == 2
     assert receipt["spool_entries_redacted"] == 1
     assert len(list((state / "spool").glob("*.json"))) == 4
+
+
+def test_full_backup_omits_private_spools_and_kept_capture_bodies(tmp_path):
+    from scope_recall.adapters.clients.remote_client import _spool
+    from test_private_mode import PrivateClock
+
+    core, ctx, binding = _create_synthetic_store(tmp_path)
+    clock = PrivateClock()
+    core.clock = clock
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=binding.scope_ids)))
+    owner.private_on(target="session", session=ctx.session_id)
+    private_at = clock.utc_now()
+    clock.advance(3600)
+    owner.private_off(target="session", session=ctx.session_id)
+    state = tmp_path / "TEST-client-state"
+    config = tmp_path / "TEST-client.json"
+    config.write_text(json.dumps(dict(state_dir=str(state), token_file=str(tmp_path / "TEST-credential.ref"))))
+    for at, word in [(private_at, "private"), (clock.utc_now(), "public")]:
+        _spool(
+            dict(state_dir=state),
+            dict(hook_event_name="Stop", session_id=ctx.session_id, last_assistant_message=f"TEST {word} spool body"),
+            at,
+            clock=dict(client_at=at, server_at=at, received_at=at),
+        )
+        kept = binding.data_directory / "kept-captures" / f"TEST-{word}.json"
+        kept.parent.mkdir(exist_ok=True)
+        kept.write_text(
+            json.dumps(
+                dict(
+                    context=dict(session_id=ctx.session_id),
+                    event=source_event(content=f"TEST {word} kept body", occurred_at=at, recorded_at=at),
+                )
+            )
+        )
+    bundle = tmp_path / "TEST-backup.zip"
+    create_backup_bundle(binding=binding, output=bundle, client_configs=(config,))
+    with zipfile.ZipFile(bundle) as archive:
+        bodies = b"".join(archive.read(name) for name in archive.namelist())
+    assert b"TEST private spool body" not in bodies
+    assert b"TEST private kept body" not in bodies
+    assert b"TEST public spool body" in bodies
+    assert b"TEST public kept body" in bodies
+    assert len(list((state / "spool").glob("*.json"))) == 2
+
+
+def test_backup_filters_private_inbox_and_restores_the_interval_history(tmp_path):
+    from test_private_mode import PrivateClock
+
+    core, ctx, binding = _create_synthetic_store(tmp_path)
+    clock = PrivateClock()
+    clock.advance(-60)
+    core.clock = clock
+    event = source_event(
+        content="TEST private queued body", occurred_at="2026-09-05T12:05:00Z", recorded_at="2026-09-05T12:05:00Z"
+    )
+    capture_inbox.enqueue(
+        core.storage,
+        clock,
+        ctx,
+        event,
+        scope_id=next(iter(ctx.allowed_scope_ids)),
+        host_scope=None,
+        remaining_seconds=5,
+    )
+    public = dict(event, source_event_key="TEST-public-queued", content="TEST public queued body")
+    capture_inbox.enqueue(
+        core.storage,
+        clock,
+        replace(ctx, session_id="TEST-other-session"),
+        public,
+        scope_id=next(iter(ctx.allowed_scope_ids)),
+        host_scope=None,
+        remaining_seconds=5,
+    )
+    clock.advance(60)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=binding.scope_ids)))
+    owner.private_on(target="session", session=ctx.session_id)
+    clock.advance(3600)
+    owner.private_off(target="session", session=ctx.session_id)
+    bundle = tmp_path / "TEST-backup.zip"
+    create_backup_bundle(binding=binding, output=bundle)
+    with zipfile.ZipFile(bundle) as archive:
+        assert b"TEST private queued body" not in archive.read("database.sqlite3")
+        assert b"TEST public queued body" in archive.read("database.sqlite3")
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 2
+    result = apply_disaster_restore(bundle, tmp_path / "TEST-restored")
+    restored = replace(binding, data_directory=Path(result["data_directory"]))
+    recovered = MemoryCore(CoreConfig(restored), clock=clock)
+    recovered_ctx = replace(ctx, binding=restored)
+    assert (
+        recovered.record_event(recovered_ctx, event, scope_id=next(iter(ctx.allowed_scope_ids))).error_code
+        == "PRIVATE_MODE"
+    )
+    with recovered.storage.read(recovered_ctx) as tx:
+        assert (
+            tx._check().execute("SELECT count(*) FROM private_intervals WHERE ends_at IS NOT NULL").fetchone()[0] == 1
+        )
+
+
+def test_shared_backup_checks_the_stored_entry_session_for_remote_spools(shared_store, tmp_path):
+    from scope_recall.adapters.clients.config import load_shared_client
+    from scope_recall.adapters.clients.identity import resolve_runtime_audience, trusted_context
+    from scope_recall.adapters.clients.remote_client import _spool
+    from test_private_mode import PrivateClock
+
+    root, homes = shared_store
+    client = load_shared_client(homes["codex"], "codex")
+    clock = PrivateClock()
+    core = MemoryCore(CoreConfig(client.to_binding()), clock=clock)
+    audience = resolve_runtime_audience(client, "C:/TEST/project1")
+    ctx = trusted_context(client, audience, session_id="TEST-session1")
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.private_on(target="session", session=ctx.session_id)
+    private_at = clock.utc_now()
+    clock.advance(3600)
+    owner.private_off(target="session", session=ctx.session_id)
+    state = tmp_path / "TEST-shared-client-state"
+    config = tmp_path / "TEST-shared-client.json"
+    config.write_text(json.dumps(dict(host="codex", state_dir=str(state), token_file=str(tmp_path / "TEST-token.ref"))))
+    for session, at, words in [
+        ("TEST-session1", private_at, "TEST private shared spool"),
+        ("TEST-session1", clock.utc_now(), "TEST public shared spool"),
+        ("TEST-session2", private_at, "TEST unrelated shared spool"),
+    ]:
+        _spool(
+            dict(state_dir=state),
+            dict(hook_event_name="Stop", session_id=session, last_assistant_message=words),
+            at,
+            clock=dict(client_at=at, server_at=at, received_at=at),
+        )
+    bundle = tmp_path / "TEST-shared-backup.zip"
+    create_backup_bundle(binding=core.config.binding, output=bundle, client_configs=(config,))
+    with zipfile.ZipFile(bundle) as archive:
+        bodies = b"".join(archive.read(name) for name in archive.namelist() if "/spool/" in name)
+    assert b"TEST private shared spool" not in bodies
+    assert b"TEST public shared spool" in bodies
+    assert b"TEST unrelated shared spool" in bodies
+    assert len(list((state / "spool").glob("*.json"))) == 3
 
 
 @pytest.mark.parametrize("kind", ["mirror", "checkpoint"])

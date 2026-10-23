@@ -13,15 +13,20 @@ mode; closing one target never closes another.
 
 from __future__ import annotations
 
+import json
 import ntpath
 import os
 import posixpath
 import re
+from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ..contracts import ContractError, utc_timestamp
+from .source_records import PROJECT_IDENTITY_KEY
 
 if TYPE_CHECKING:
     from .storage import SQLiteStorage
@@ -35,6 +40,29 @@ MAX_PROJECT_PATH = 1024
 MAX_SESSION_ID = 240
 _DURATION = re.compile(r"([1-9][0-9]{0,5})([smhd])\Z")
 _WINDOWS_ABSOLUTE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+_OUTBOUND_CHECK: ContextVar[Callable[[], bool] | None] = ContextVar("private_outbound_check", default=None)
+# An empty project identity cannot be an absolute path. It selects the conservative
+# project policy without confusing an unresolvable directory with a missing cwd.
+_UNVERIFIED_PROJECT = ""
+
+
+@contextmanager
+def using_outbound_check(blocked: Callable[[], bool]):
+    """Carry a Core decision through provider queues; split requests copy this context."""
+    previous = _OUTBOUND_CHECK.get()
+    token = _OUTBOUND_CHECK.set(lambda: blocked() or (previous is not None and previous()))
+    try:
+        require_outbound()
+        yield
+    finally:
+        _OUTBOUND_CHECK.reset(token)
+
+
+def require_outbound() -> None:
+    """Refuse at a physical request boundary when its Core guard cannot permit it."""
+    blocked = _OUTBOUND_CHECK.get()
+    if blocked is not None and blocked():
+        raise ContractError("ACCESS_DENIED", "private_mode")
 
 
 def _text(value: object, field: str, limit: int) -> str:
@@ -43,7 +71,7 @@ def _text(value: object, field: str, limit: int) -> str:
     return value.strip()
 
 
-def normalize_project_path(value: object, *, resolve_links: bool = True) -> str:
+def normalize_project_path(value: object, *, resolve_links: bool = True, require_identity: bool = False) -> str:
     """The comparable form of an absolute project path.
 
     Windows paths use forward slashes and case folding, so ``C:\\Work\\Project``,
@@ -63,16 +91,38 @@ def normalize_project_path(value: object, *, resolve_links: bool = True) -> str:
         # Resolve on the directory's owner only. A POSIX server cannot resolve a
         # client's Windows junction; that client binds its canonical cwd before sending.
         if resolve_links and os.name == "nt":
-            candidate = os.path.realpath(candidate)
+            candidate = _resolved_project(candidate, require_identity)
         if candidate.lower().startswith("\\\\?\\unc\\"):
             candidate = "\\\\" + candidate[8:]
         elif candidate.startswith("\\\\?\\"):
             candidate = candidate[4:]
-        return ntpath.normpath(candidate).replace("\\", "/").casefold()
+        normalized = ntpath.normpath(candidate).replace("\\", "/").casefold()
+        # Share roots have one spelling whether dirname supplied a trailing slash.
+        return normalized.rstrip("/") if normalized.startswith("//") else normalized
     candidate = text.replace("\\", "/")
     if not posixpath.isabs(candidate):
         raise ContractError("INPUT_INVALID", "project")
-    return posixpath.normpath(os.path.realpath(candidate) if resolve_links and os.name != "nt" else candidate)
+    return posixpath.normpath(
+        _resolved_project(candidate, require_identity) if resolve_links and os.name != "nt" else candidate
+    )
+
+
+def _resolved_project(path: str, required: bool) -> str:
+    """Resolve existing directories strictly; nonexistent paths keep their normalized spelling."""
+    try:
+        return os.path.realpath(path, strict=True)
+    except FileNotFoundError:
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return path
+        except OSError:
+            pass
+    except OSError:
+        pass
+    if required:
+        raise ContractError("ACCESS_DENIED", "project_identity")
+    return path
 
 
 def project_contains(parent: str, child: str) -> bool:
@@ -116,6 +166,30 @@ def _event_time(event) -> str | None:
         return None
 
 
+def calibrated_event_time(value, clock) -> dict | None:
+    """Possible UTC event times from its original clock round trip, or unknown.
+
+    Receipt by the server falls between client send and client response receipt.
+    The possible offset therefore spans at least that measured transit time.
+    A calibration obtained while uploading history cannot date that history.
+    """
+    if not isinstance(clock, dict):
+        return None
+    try:
+        moment = datetime.fromisoformat(utc_timestamp(value))
+        sent = datetime.fromisoformat(utc_timestamp(clock.get("client_at")))
+        server = datetime.fromisoformat(utc_timestamp(clock.get("server_at")))
+        received = datetime.fromisoformat(utc_timestamp(clock.get("received_at")))
+    except ContractError:
+        return None
+    if received < sent:
+        return None
+    return dict(
+        earliest=utc_timestamp((moment + (server - received)).isoformat()),
+        latest=utc_timestamp((moment + (server - sent)).isoformat()),
+    )
+
+
 def _covers(interval, at: str) -> bool:
     return interval["starts_at"] <= at and (interval["ends_at"] is None or interval["ends_at"] > at)
 
@@ -154,7 +228,12 @@ def capture_mode(intervals, events) -> str | None:
             if possible:
                 return _strictest(possible)
             continue
-        mode = mode_at(intervals, at)
+        until = event.get("occurred_until") or at
+        mode = _strictest(
+            row["mode"]
+            for row in intervals
+            if row["starts_at"] <= until and (row["ends_at"] is None or row["ends_at"] > at)
+        )
         if mode is not None:
             found.append(mode)
     return _strictest(found)
@@ -164,18 +243,25 @@ def _project_for(context) -> str | None:
     value = getattr(context, "project_root", None)
     if value is None:
         return None
+    identity = getattr(context, "project_identity", "local")
+    if identity == "unverified":
+        return _UNVERIFIED_PROJECT
     try:
-        return normalize_project_path(value, resolve_links=False)
+        return normalize_project_path(value, require_identity=True, resolve_links=identity != "remote")
     except ContractError:
-        return None
+        return _UNVERIFIED_PROJECT
 
 
 def _target_matches(interval, context, project: str | None) -> bool:
     kind = interval["target_kind"]
+    if kind == "unverified_project":
+        return project == _UNVERIFIED_PROJECT
     if kind == "global":
         return True
     if kind == "session":
         return interval["session_id"] == context.session_id
+    if project == _UNVERIFIED_PROJECT:
+        return True
     return (
         project is not None
         and interval["project_path"] is not None
@@ -187,6 +273,8 @@ def _target_keys(context):
     """Exact indexed keys, including ancestors of the already bound directory."""
     project = _project_for(context)
     targets = [("global", None, None), ("session", context.session_id, None)]
+    if project == _UNVERIFIED_PROJECT:
+        targets.append(("project", None, _UNVERIFIED_PROJECT))
     while project:
         targets.append(("project", None, project))
         parent = (
@@ -194,6 +282,7 @@ def _target_keys(context):
             if _WINDOWS_ABSOLUTE.match(project) or project.startswith("//")
             else posixpath.dirname(project)
         )
+        parent = normalize_project_path(parent, resolve_links=False) if parent else parent
         if parent == project:
             break
         project = parent
@@ -209,24 +298,28 @@ def _event_bounds(events):
             recorded = utc_timestamp(event.get("recorded_at")) if at is None else None
         except ContractError:
             recorded = None
-        bounds.add((at, recorded))
-    return list(bounds) or [(None, None)]
+        bounds.add((at, event.get("occurred_until") or at, recorded))
+    return list(bounds) or [(None, None, None)]
 
 
 def _matching_query_keys(targets, events):
     bounds = _event_bounds(events)
     target_values = ",".join("(?,?,?)" for _target in targets)
-    time_values = ",".join("(?,?)" for _bound in bounds)
+    time_values = ",".join("(?,?,?)" for _bound in bounds)
     # Separate open and closed ranges let SQLite seek past closed history in
     # the target index. CROSS JOIN keeps the small request keys outside that seek.
     select = """SELECT p.* FROM moments m CROSS JOIN targets t
         JOIN private_intervals p INDEXED BY private_target
         ON p.target_kind=t.kind AND p.session_id IS t.session AND p.project_path IS t.project"""
     query = f"""WITH targets(kind,session,project) AS (VALUES {target_values}),
-        moments(at,recorded) AS (VALUES {time_values})
-        {select} WHERE m.at IS NOT NULL AND p.ends_at IS NULL AND p.starts_at<=m.at
-        UNION {select} WHERE m.at IS NOT NULL AND p.ends_at>m.at AND p.starts_at<=m.at
-        UNION {select} WHERE m.at IS NULL AND (m.recorded IS NULL OR p.starts_at<=m.recorded)"""
+        moments(at,until,recorded) AS (VALUES {time_values}), modes(mode) AS (VALUES ('full'),('read-only'))
+        {select} WHERE m.at IS NOT NULL AND p.ends_at IS NULL AND p.starts_at<=m.until
+        UNION {select} WHERE m.at IS NOT NULL AND p.ends_at>m.at AND p.starts_at<=m.until
+        UNION SELECT p.* FROM moments m CROSS JOIN targets t CROSS JOIN modes s
+        JOIN private_intervals p ON p.interval_id=(SELECT interval_id FROM private_intervals INDEXED BY private_target
+            WHERE target_kind=t.kind AND session_id IS t.session AND project_path IS t.project
+            AND mode=s.mode AND (m.recorded IS NULL OR starts_at<=m.recorded) LIMIT 1)
+        WHERE m.at IS NULL"""
     return query, [value for target in targets for value in target] + [value for bound in bounds for value in bound]
 
 
@@ -240,8 +333,43 @@ def matching_intervals(tx, context, *, now: str | None = None, events=()) -> lis
     Receipt times of undated events bound possible history without inventing an
     occurrence time. One read serves every part of a capture or metadata batch.
     """
-    query, parameters = _matching_query(context, [{"occurred_at": now}] if now is not None else events)
-    return [dict(row) for row in tx._check().execute(query, parameters)]
+    return matching_connection_intervals(
+        tx._check(), context, events=[{"occurred_at": now}] if now is not None else events
+    )
+
+
+def matching_connection_intervals(conn, context, *, events, project_unverified: bool = False) -> list[dict]:
+    """Apply indexed capture policy to an already opened SQLite snapshot."""
+    query, parameters = _matching_query(context, events)
+    rows = [dict(row) for row in conn.execute(query, parameters)]
+    if project_unverified or _project_for(context) == _UNVERIFIED_PROJECT:
+        rows.extend(_unverified_connection_rule(conn))
+    return rows
+
+
+def unverified_project_rule(tx) -> list[dict]:
+    """One metadata sentinel refuses an unknown directory while any project rule exists."""
+    return _unverified_connection_rule(tx._check())
+
+
+def _unverified_connection_rule(conn) -> list[dict]:
+    row = conn.execute(
+        "SELECT 1 FROM private_intervals INDEXED BY private_target WHERE target_kind='project' LIMIT 1"
+    ).fetchone()
+    return (
+        [
+            dict(
+                target_kind="unverified_project",
+                session_id=None,
+                project_path=None,
+                mode="full",
+                starts_at="0001-01-01T00:00:00+00:00",
+                ends_at=None,
+            )
+        ]
+        if row
+        else []
+    )
 
 
 def recall_state(tx, context, now: str, *, after: int | None = None):
@@ -299,7 +427,10 @@ class CaptureGuard:
         if not targets:
             return cls(())
         query, parameters = _matching_query_keys(list(targets), events)
-        return cls(tuple(dict(row) for row in tx._check().execute(query, parameters)))
+        rows = [dict(row) for row in tx._check().execute(query, parameters)]
+        if ("project", None, _UNVERIFIED_PROJECT) in targets:
+            rows.extend(unverified_project_rule(tx))
+        return cls(tuple(rows))
 
     def blocked(self, context, events) -> bool:
         """Judge the batch member at its event time with the Core target policy."""
@@ -322,17 +453,40 @@ def active_intervals(tx, now: str) -> list[dict]:
         )
         .fetchall()
     )
-    return [{key: row[key] for key in row.keys()} for row in rows]
+    return [{key: row[key] for key in row.keys()} for row in rows] + unverified_project_rule(tx)
 
 
 def _source_field(source, name: str):
     if hasattr(source, "keys"):
-        return source[name]
+        return source[name] if name in source.keys() else None
     return getattr(source, name, None)
+
+
+def _source_identity(source):
+    """Read the trusted directory owner from a source or its evidence-row metadata."""
+    identity = _source_field(source, "project_identity")
+    if identity is not None:
+        return identity
+    extras = _source_field(source, "extra_json")
+    return json.loads(extras).get(PROJECT_IDENTITY_KEY, "local") if extras else "local"
 
 
 def _source_matches(interval, source) -> bool:
     kind = interval["target_kind"]
+    if kind == "unverified_project":
+        project = _source_field(source, "project_root")
+        if project is None:
+            return False
+        identity = _source_identity(source)
+        if identity == "unverified":
+            return True
+        if identity == "remote":
+            return False
+        try:
+            normalize_project_path(project, require_identity=True)
+        except ContractError:
+            return True
+        return False
     if kind == "global":
         return True
     if kind == "session":
@@ -341,7 +495,10 @@ def _source_matches(interval, source) -> bool:
     return (
         project is not None
         and interval["project_path"] is not None
-        and project_contains(interval["project_path"], project)
+        and project_contains(
+            interval["project_path"],
+            normalize_project_path(project, resolve_links=_source_identity(source) != "remote"),
+        )
     )
 
 
@@ -413,7 +570,7 @@ def claim_blocked(tx, intervals, claim) -> bool:
     rows = (
         tx._check()
         .execute(
-            """SELECT e.session_id,e.project_root FROM evidence_links l
+            """SELECT e.session_id,e.project_root,e.extra_json FROM evidence_links l
            JOIN source_events e ON e.event_id=l.source_ref AND e.source_revision=l.source_revision
            WHERE l.object_kind='claim' AND l.object_ref=? AND l.object_revision=?""",
             (claim.ref, claim.revision),
@@ -574,6 +731,7 @@ def status(
                 and project_contains(row["project_path"], project_path)
             )
         ]
+    rows = [row for row in rows if row["target_kind"] != "unverified_project"]
     global_mode = _strictest(row["mode"] for row in rows if row["target_kind"] == "global")
     mode = global_mode if session_id is None and project_path is None else _strictest(row["mode"] for row in rows)
     return {

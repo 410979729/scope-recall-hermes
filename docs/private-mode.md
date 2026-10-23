@@ -43,6 +43,11 @@ A rule targets exactly one of:
   controls authorization, but does not replace the hook's working directory.
   A remote client resolves its own directory before sending its identity; the
   server compares that identity without resolving it against server directories.
+  UNC share roots include their children. A directory that does not exist yet
+  uses its normalized spelling. If a directory exists but its real location
+  cannot be verified, capture and outbound work for it are refused while the
+  store has any project-rule history, even after those rules end. Fix access to
+  the directory before using it again. Without project rules it behaves normally.
 - `--all`: the whole store.
 
 `--mode full` (the default) refuses capture, recall and background model work for
@@ -75,9 +80,11 @@ is refused. That refusal survives turning the rule off: a transcript backfill, a
 retry, a replay or a late spool entry still sees its old time. Events that
 occurred after a closed interval are ordinary capture again.
 
-If an event has no occurrence time, an adapter can retain the time it first
-observed it. The time an old event was uploaded or written is not its occurrence
-time. Without either an occurrence time or a retained first-observation time,
+A callback that observes a new reply can retain that observation's time. An old
+message first encountered in conversation history keeps an unknown occurrence
+time unless an earlier observation or the host established it. Uploading, writing
+or finishing a turn does not give its old messages a new occurrence time.
+Without an established occurrence time,
 Scope Recall refuses it if any rule for its targets started before it was
 recorded, even if that rule has ended. An event with no possible earlier private
 interval is captured as usual; stores that never use private mode are unaffected.
@@ -110,11 +117,13 @@ source evidence and the evidence selected for the question. A private source
 cannot be sent indirectly through a candidate's value or conditions. Startup
 embedding warm-up also obeys global full mode.
 
-A rule change invalidates an automatic or explicit recall already running;
-recall checks again before releasing its answer, including when full mode was
-opened and closed during the lookup. Background model and embedding work checks
-again immediately before its request. Remote clients recheck after queue
-preparation and immediately before sending content. There remains a small window
+A full rule invalidates automatic recall and explicit reads, including profile,
+entity, trace, object inspection and collection. Each checks again before releasing
+content, including when full mode opened and closed during the lookup. Provider
+requests carry that conversation's or source's privacy check through queues and
+transport locks. Each physical request checks after obtaining its connection or
+lock, including each part of a split embedding batch. Remote clients also recheck
+after opening the content connection. There remains a window
 between the last check and transmission: content already leaving a remote client
 can reach the owner's own entry server. That server still rejects captures whose
 event time falls inside the interval. A request already transmitted to a
@@ -160,19 +169,26 @@ conversation history under the host's control.
   routing metadata to the configured entry server, without attachments or a new
   capture spool. The server checks the same event time on receipt, so a
   spool entry that was already late is still discarded. The protocol records
-  paired client and server timestamps to correct clocks that are ahead or behind;
-  queued records retain that calibration so replay uses the same correction.
-  Upload arrival alone never establishes a historical event's time. Without
-  calibration the server applies the undated-event rule. Each transcript line
+  the client's send and response-receipt times together with the server's receipt.
+  These establish a range of possible times, including network delay. A record is
+  refused if any part of that range overlaps an applicable private interval;
+  public records near its boundaries can therefore also be refused. Each queued
+  observation, including a native dsh spool record, retains its own calibration.
+  A new upload's calibration never dates older transcript lines. Without their
+  own calibration the server applies the undated-event rule. Each transcript line
   receives its own decision: private lines are dropped locally, their cursor
   positions advance, and eligible later lines are delivered.
+  An old question that could belong to a full interval is refused as well; turning
+  on read-only mode later does not release it as a recall question.
 - Hermes writes turns, compressed context, steers, tool results, retries and
   kept captures through the capture writer, which checks before writing its retry
   buffer or `kept-captures/` file. A `full` or `read-only` interval therefore
   refuses the event before those local copies exist. Deferred assistant replies
   and user steers keep no private body in memory; only identity and observation
   times are retained for delayed callbacks. A discarded retry is removed once
-  and is not counted as persisted at shutdown or expiry. A Hermes project rule uses
+  and is not counted as persisted at shutdown or expiry, including a write that
+  finishes after shutdown. Historical messages without an established time are
+  checked before their bodies enter those caches. A Hermes project rule uses
   the gateway's `agent_workspace` only when it is an absolute path; a workspace
   label is not treated as a filesystem path.
 - A shared-store client's local MCP server uses that MCP server process's
@@ -188,13 +204,22 @@ conversation history under the host's control.
   message to its local spool. Full, read-only or an unverifiable decision drops
   the record before plaintext reaches disk. Recovery checks each old spool record
   before copying it, using its original time and directory in bounded metadata
-  batches. The host's own conversation log
+  batches. A refused record is discarded. When the check is unavailable, the old
+  file stays available for retry and its plaintext is not copied. The host's own conversation log
   remains under the host's control.
 
 Current-state checks query active rules; capture queries only the indexed
 session, global and ancestor-directory intervals that can cover the event.
 Closed history remains available for late events without being loaded for every
 ordinary hook or recall.
+
+Full backup applies the same capture decisions to upload spools, kept captures
+and the database's waiting capture queue. Refused bodies are omitted from the
+bundle; the original queues are left alone. The database snapshot and disaster
+recovery preserve private-interval history, so late events from those intervals
+remain refused after recovery. Backups do not include Hermes's live memory buffer.
+When a remote spool cannot be tied to one shared entry, a matching private
+interval for any possible entry refuses its copy. Other sessions remain eligible.
 
 ## Migration and rollback
 

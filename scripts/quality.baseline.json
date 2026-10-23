@@ -217,7 +217,7 @@
    "reportAttributeAccessIssue": 2
   },
   "runtime/http_session.py": {
-   "reportOptionalMemberAccess": 7
+   "reportOptionalMemberAccess": 4
   },
   "runtime/instance.py": {
    "reportArgumentType": 6,

@@ -198,7 +198,8 @@ def _prepare_in_halves(batch, members: list, *, clock, started: float, budget: f
     if blocked(members):
         return {}
     try:
-        prepared = batch(members, remaining_seconds=budget_left(started, clock, budget))
+        with private.using_outbound_check(lambda: blocked(members)):
+            prepared = batch(members, remaining_seconds=budget_left(started, clock, budget))
     except Exception as exc:
         _disposition, error_code = port_failure(exc)
         if _provider_refusal(error_code):
@@ -440,7 +441,12 @@ def process_embed(
         ):
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
         try:
-            prepared = prepare(subject, remaining_seconds=budget_left(started, clock, budget))
+            with private.using_outbound_check(
+                lambda: private.outbound_blocked(
+                    storage, clock, context, **{("sources" if kind.keyword == "source" else "claims"): (subject,)}
+                )
+            ):
+                prepared = prepare(subject, remaining_seconds=budget_left(started, clock, budget))
         except Exception as exc:
             return finish(*port_failure(exc), error_detail=_refusal_field(exc))
     if budget_left(started, clock, budget) <= 0:

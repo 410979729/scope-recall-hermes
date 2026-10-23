@@ -10,6 +10,7 @@ if (process.env.SR_FAKE_HOOK_MODE === 'broken' || (process.env.SR_FAKE_HOOK_MODE
   process.exit(1)
 }
 const answer = payload.hook_event_name === 'PrivateCheck'
-  ? { capture_blocked: process.env.SR_FAKE_HOOK_MODE === 'private', recall_blocked: false, mode: 'none' }
+  ? { capture_blocked: process.env.SR_FAKE_HOOK_MODE === 'private', recall_blocked: false, mode: 'none',
+      decisions: (payload.times ?? []).map(() => process.env.SR_FAKE_HOOK_MODE === 'private') }
   : payload.hook_event_name === 'Stop' ? { through: process.env.SR_FAKE_HOOK_MODE === 'private' ? 0 : Math.min(1, (payload.record ?? []).length) } : {}
 process.stdout.write(JSON.stringify(answer))

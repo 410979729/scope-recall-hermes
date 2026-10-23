@@ -424,7 +424,8 @@ def test_missing_time_without_prior_private_history_keeps_ordinary_capture(app):
     "ordinary,alias",
     [(r"C:\Work\Private", r"\\?\C:\Work\Private"), (r"\\server\share\Private", r"\\?\UNC\server\share\Private")],
 )
-def test_extended_windows_paths_share_the_rule_identity(app, ordinary, alias):
+def test_extended_windows_paths_share_the_rule_identity(app, monkeypatch, ordinary, alias):
+    monkeypatch.setattr(private, "_resolved_project", lambda path, required: path)
     core, ctx, _clock, owner = app
     owner.private_on(target="project", project=ordinary)
     assert core.private_mode(replace(ctx, project_root=alias)) == "full"
@@ -435,7 +436,9 @@ def test_extended_windows_paths_share_the_rule_identity(app, ordinary, alias):
 def test_directory_bind_resolves_alias_on_owning_machine(monkeypatch, tmp_path):
     alias, real = str(tmp_path / "TEST-alias"), str(tmp_path / "TEST-real")
     resolve = private.os.path.realpath
-    monkeypatch.setattr(private.os.path, "realpath", lambda value: real if str(value) == alias else resolve(value))
+    monkeypatch.setattr(
+        private.os.path, "realpath", lambda value, **kwargs: real if str(value) == alias else resolve(value, **kwargs)
+    )
     assert private.normalize_project_path(alias) == private.normalize_project_path(real)
     assert private.normalize_project_path(alias, resolve_links=False) != private.normalize_project_path(real)
 
@@ -561,3 +564,219 @@ def test_durable_capture_reads_intervals_once_unless_a_rule_changes(app, monkeyp
         == "PRIVATE_MODE"
     )
     assert len(calls) == 2
+
+
+def test_unc_share_root_covers_children_with_either_separator(app, monkeypatch):
+    monkeypatch.setattr(private, "_resolved_project", lambda path, required: path)
+    core, ctx, _clock, owner = app
+    owner.private_on(target="project", project="//server/share")
+    for path in ("//server/share/child", r"\\server\share\child"):
+        assert core.private_mode(replace(ctx, project_root=path)) == "full"
+    assert core.private_mode(replace(ctx, project_root="//server/share2/child")) is None
+
+
+def test_unresolvable_existing_project_refuses_only_when_project_rules_exist(app, monkeypatch, tmp_path):
+    core, ctx, clock, owner = app
+    alias = tmp_path / "TEST-alias"
+    alias.mkdir()
+    bound = replace(ctx, project_root=str(alias))
+    realpath = private.os.path.realpath
+
+    def inaccessible(path, **kwargs):
+        if str(path).replace("\\", "/").casefold() == str(alias).replace("\\", "/").casefold():
+            if kwargs.get("strict"):
+                raise PermissionError("TEST unresolved directory")
+            return str(path)
+        return realpath(path, **kwargs)
+
+    monkeypatch.setattr(private.os.path, "realpath", inaccessible)
+    assert core.record_event(bound, _event(key="TEST-ordinary/1"), scope_id="TEST-scope").disposition == "inserted"
+    owner.private_on(target="project", project=str(tmp_path / "TEST-real"), mode="read-only")
+    clock.advance(3600)
+    owner.private_off(target="project", project=str(tmp_path / "TEST-real"))
+    assert core.record_event(bound, _event(), scope_id="TEST-scope").error_code == "PRIVATE_MODE"
+    assert core.private_mode(bound) == "full"
+    assert private.outbound_blocked(
+        core.storage, clock, ctx, sources=[dict(session_id=ctx.session_id, project_root=str(alias))]
+    )
+
+
+@pytest.mark.parametrize("method", ["profile", "entity", "trace", "inspect_object", "collection"])
+@pytest.mark.parametrize("close", [False, True])
+def test_every_read_checks_rule_changes_before_releasing_content(app, monkeypatch, method, close):
+    from types import SimpleNamespace
+
+    from scope_recall.core import inspect_service, read_views, trace
+
+    core, ctx, _clock, owner = app
+
+    def interrupted(*args, **kwargs):
+        owner.private_on(target="global")
+        if close:
+            owner.private_off(target="global")
+        return "TEST private read body"
+
+    targets = {
+        "profile": (read_views, "read_profile"),
+        "entity": (read_views, "read_entity"),
+        "trace": (trace, "read_trace"),
+        "inspect_object": (inspect_service, "inspect_object"),
+        "collection": (core.recall_pipeline, "collection"),
+    }
+    monkeypatch.setattr(*targets[method], interrupted)
+    argument = SimpleNamespace(mode="current", as_of=None) if method == "collection" else "TEST-ref"
+    with pytest.raises(ContractError) as refused:
+        getattr(core, method)(ctx, argument)
+    assert refused.value.field == "private_mode"
+
+
+def test_undated_event_materializes_a_bounded_history(app, monkeypatch):
+    core, ctx, clock, _owner = app
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).executemany(
+            "INSERT INTO private_intervals(target_kind,mode,starts_at,ends_at,created_at) "
+            "VALUES ('global','full',?,?,?)",
+            [("2026-09-01T12:00:00+00:00", "2026-09-01T13:00:00+00:00", "2026-09-01T12:00:00+00:00")] * 10000,
+        )
+    with core.storage.read(ctx) as tx:
+        rows = private.matching_intervals(tx, ctx, events=[dict(occurred_at=None, recorded_at=clock.utc_now())])
+    assert 0 < len(rows) <= 2
+
+
+def test_query_guard_is_rechecked_after_the_transport_lock(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.instance import _LazyVectorPort
+    from scope_recall.runtime.models import HttpsTransport
+
+    core, ctx, _clock, owner = app
+    transport = HttpsTransport(persistent=True)
+    sent = []
+
+    class WaitForPrivate:
+        def acquire(self, **kwargs):
+            owner.private_on(target="global")
+            return True
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(transport, "_post_lock", WaitForPrivate())
+    monkeypatch.setattr(transport, "_post", lambda *args, **kwargs: sent.append("TEST query") or (200, b"{}"))
+
+    def route(text, seconds):
+        return transport.post(
+            "https://test.invalid", body=text.encode(), headers={}, timeout_seconds=seconds, max_response_bytes=100
+        )
+
+    try:
+        _LazyVectorPort(SimpleNamespace(core=core))._checked_query(
+            SimpleNamespace(trusted_context=ctx), route, "TEST query", 2
+        )
+    except ContractError as refused:
+        assert refused.field == "private_mode"
+    finally:
+        transport.close()
+    assert sent == []
+
+
+def test_every_physical_request_in_a_split_embedding_batch_checks_private_mode(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from scope_recall.core.worker_projection import _prepare_in_halves
+    from scope_recall.runtime import embedding_models
+
+    core, ctx, clock, owner = app
+    sent = []
+
+    class Transport:
+        def post(self, _url, **kwargs):
+            count = len(json.loads(kwargs["body"])["input"])
+            sent.append(count)
+            owner.private_on(target="global")
+            return 200, json.dumps(
+                dict(data=[dict(embedding=[1.0] * 8) for _ in range(count)], usage=dict(prompt_tokens=1))
+            ).encode()
+
+    ledger = SimpleNamespace(
+        policy=SimpleNamespace(max_request_bytes=1000000),
+        provider_hold_until=lambda model: None,
+        reserve=lambda *args, **kwargs: 1,
+        finish_embedding=lambda *args, **kwargs: "ok",
+    )
+    monkeypatch.setenv("TEST_EMBED_KEY", "TEST synthetic credential")
+    monkeypatch.setattr(embedding_models, "EMBED_REQUEST_CONCURRENCY", 1)
+    route = embedding_models.EmbeddingRouteConfig(
+        "TEST_EMBED_KEY", model="TEST-model", endpoint="https://test.invalid", dimensions=8, dialect="openai"
+    )
+    embed = embedding_models.GeminiEmbeddingAdapter(route, ledger=ledger, transport=Transport())
+    members = [SimpleNamespace(ref=f"TEST-{index}", revision=1) for index in range(500)]
+    _prepare_in_halves(
+        lambda items, **kwargs: embed.embed_texts(["TEST document"] * len(items), **kwargs),
+        members,
+        clock=clock,
+        started=0,
+        budget=5,
+        blocked=lambda subjects: core.private_mode(ctx) == "full",
+    )
+    assert sent == [100]
+
+
+def test_remote_project_identity_is_not_resolved_again_on_the_server(app, monkeypatch, tmp_path):
+    core, ctx, _clock, owner = app
+    directory = tmp_path / "TEST-remote-project"
+    directory.mkdir()
+    remote = replace(ctx, project_root=str(directory), project_identity="remote")
+    owner.private_on(target="project", project=str(tmp_path / "TEST-other-project"))
+
+    def unavailable(path, required):
+        raise ContractError("ACCESS_DENIED", "project_identity")
+
+    monkeypatch.setattr(private, "_resolved_project", unavailable)
+    assert core.private_mode(remote) is None
+    receipt = core.record_event(remote, _event(), scope_id="TEST-scope")
+    assert receipt.disposition == "inserted"
+    stored = core.source(remote, receipt.event_refs[0].ref, 1)
+    assert not private.outbound_blocked(core.storage, core.clock, ctx, sources=[stored])
+    assert "_scope_recall_project_identity" not in stored.event
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "INSERT INTO private_intervals(target_kind,project_path,mode,starts_at,created_at) "
+            "VALUES ('project',?,'full',?,?)",
+            (
+                private.normalize_project_path(str(directory), resolve_links=False),
+                "2026-09-05T12:00:00+00:00",
+                "2026-09-05T12:00:00+00:00",
+            ),
+        )
+    assert core.private_mode(remote) == "full"
+    assert private.outbound_blocked(core.storage, core.clock, ctx, sources=[stored])
+
+
+def test_unverified_remote_identity_survives_capture_and_inbox_replay(app):
+    from scope_recall.core.capture_inbox import context_payload, stored_context
+
+    core, ctx, clock, owner = app
+    unknown = replace(ctx, project_root="C:/TEST/remote-alias", project_identity="unverified")
+    replayed = stored_context(ctx.binding, context_payload(unknown))
+    assert replayed.project_identity == "unverified"
+    receipt = core.record_event(replayed, _event(), scope_id="TEST-scope")
+    assert receipt.disposition == "inserted"
+    source = core.source(ctx, receipt.event_refs[0].ref, 1)
+    owner.private_on(target="project", project="C:/TEST/real", mode="read-only")
+    clock.advance(3600)
+    owner.private_off(target="project", project="C:/TEST/real")
+    assert core.private_mode(replayed) == "full"
+    assert private.outbound_blocked(core.storage, clock, ctx, sources=[source])
+
+
+def test_undated_question_keeps_the_strictest_historical_mode(app):
+    core, ctx, clock, owner = app
+    owner.private_on(target="global", mode="read-only")
+    clock.advance(3600)
+    owner.private_off(target="global")
+    clock.advance(3600)
+    owner.private_on(target="global", mode="full")
+    clock.advance(3600)
+    owner.private_off(target="global")
+    assert core.private_check(ctx, [None])["full_decisions"] == [True]

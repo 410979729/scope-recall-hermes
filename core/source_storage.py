@@ -25,7 +25,7 @@ from .events import (
     withheld_tool_output,
 )
 from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
-from .source_records import SourceWrite, StoredSource
+from .source_records import PROJECT_IDENTITY_KEY, SourceWrite, StoredSource
 from .visibility import allowed
 
 
@@ -413,6 +413,8 @@ class Sources:
             for k, v in event.items()
             if k not in {*columns, "protocol_version", "source_revision", "source_original_origin", "dataset_id"}
         }
+        if self._tx.context.project_identity != "local":
+            extras[PROJECT_IDENTITY_KEY] = self._tx.context.project_identity
         conn.execute(
             """INSERT INTO source_events(event_id,source_revision,scope_id,session_id,project_id,branch_id,
             source_event_key,origin,role,content,occurred_at,recorded_at,time_precision,capture_state,

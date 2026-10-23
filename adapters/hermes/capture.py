@@ -327,7 +327,10 @@ class CaptureWriter:
             adapter._retry.done(identity)
             return receipt
         retry = adapter._retry
-        if identity in retry.on_disk or (snapshot is not None and retry.keep_on_disk(identity, snapshot) == "kept"):
+        disposition = retry.keep_on_disk(identity, snapshot) if snapshot is not None else "retained"
+        if disposition == "discarded":
+            return receipt
+        if disposition == "kept":
             _log.warning(
                 "scope-recall: not stored before the shutdown, kept on disk for the next start: %s", label(identity)
             )

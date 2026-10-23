@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -263,18 +263,24 @@ class CodexHookHandler:
         remains the audience authorization boundary, independently of this directory.
         """
         value = payload.get("cwd")
+        self._project_identity = "unverified" if payload.get("project_unverified") is True else "remote"
         self._project_root = project_root_of(
             value, resolve_links=not getattr(self, "remote_paths", False)
         ) or project_root_of(audience.matched_project_root)
         return self._project_root
 
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
-        return trusted_context(
+        context = trusted_context(
             self.config,
             audience,
             session_id=session_id,
             actor_origin=origin,
             project_root=self._project_root,
+        )
+        return (
+            replace(context, project_identity=getattr(self, "_project_identity", "remote"))
+            if self.remote_paths
+            else context
         )
 
     def ensure_runtime(self, audience=None, *, deadline: float | None = None) -> None:

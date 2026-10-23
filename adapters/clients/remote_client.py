@@ -48,6 +48,9 @@ from typing import Any, cast
 
 from scope_recall.core.private import normalize_project_path, notice_for_mode
 
+from ...contracts import ContractError
+from ...runtime.remote_clock import event_times as _private_times
+from ...runtime.remote_clock import private_metadata
 from . import transcript
 from .boundary import EMPTY_ANSWER, IN_CONTEXT_FIELD, is_workbuddy_agent_run, without_lone_surrogates
 
@@ -186,6 +189,14 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
             _connection_failed(config, event, exc)
             return None
         connection.sock.settimeout(max(0.2, until - time.monotonic()))
+        state = _private_check(config, body, until - time.monotonic())
+        if state is None:
+            return None
+        body, state = eligible_body(body, state)
+        if _private_drop(state, event):
+            return None
+        if state["capture_blocked"]:
+            body = _recall_only(body)
         connection.request(
             "POST",
             f"{url.path}/hook",
@@ -216,25 +227,6 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
 # -- private state before anything is sent -----------------------------------
 
 
-def _private_times(body: dict[str, Any], observed_at: str | None) -> list[str]:
-    """Every event instant the existing hook and record readers will accept."""
-    payload = body.get("payload")
-    if isinstance(payload, dict) and payload.get("hook_event_name") == "PrivateCheck":
-        return payload.get("times") or []
-    times = [observed_at] if type(observed_at) is str else []
-    payload = body.get("payload")
-    record = body.get("record")
-    if isinstance(record, dict):
-        for item in record.get("lines") or ():
-            if isinstance(item, list) and len(item) == 2 and isinstance(item[1], dict):
-                value = item[1].get("occurred_at")
-                if type(value) is str:
-                    times.append(value)
-    if isinstance(payload, dict):
-        times.extend(said.occurred_at for _end, said in transcript.dsh_lines(payload.get("record")) if said)
-    return list(dict.fromkeys(times))
-
-
 def _private_drop(state: dict[str, Any], event: object) -> bool:
     """Whether this hook must not be sent: full blocks everything; read-only keeps only the prompt's recall."""
     if state.get("recall_blocked"):
@@ -247,22 +239,20 @@ def _private_drop(state: dict[str, Any], event: object) -> bool:
 def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[str, Any] | None:
     """Check all record instants in bounded metadata requests before sending any content."""
     times = _private_times(body, body.get("observed_at"))
-    try:
-        latest = (
-            max(
-                (stamp for stamp in times if isinstance(stamp, str)),
-                key=lambda stamp: datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp(),
-            )
-            if any(isinstance(stamp, str) for stamp in times)
-            else None
-        )
-    except ValueError:
-        return None
-    # Every batch uses the complete request's clock lead, as the receive path does.
-    body["private_latest_at"] = latest
     until = time.monotonic() + timeout
+    fresh = body.get("fresh_observation") is True or body["payload"].get("fresh_observation") is True
+    if fresh and not isinstance(body.get("clock"), dict):
+        calibration = _private_batch(config, body, [], timeout)
+        if calibration is None:
+            return None
+        body["clock"] = calibration.get("clock")
+        if type(calibration.get("rule_marker")) is int:
+            body.setdefault("rule_marker", calibration["rule_marker"])
+        if calibration.get("recall_blocked"):
+            return calibration
     state = None
     decisions = {}
+    full_decisions = {}
     for start in range(0, max(1, len(times)), 64):
         left = until - time.monotonic()
         if left <= 0:
@@ -270,13 +260,15 @@ def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float)
         answer = _private_batch(config, body, times[start : start + 64], left)
         if answer is None:
             return None
-        if isinstance(answer.get("clock"), dict) and not isinstance(body.get("clock"), dict):
-            body["clock"] = answer["clock"]
         if type(answer.get("rule_marker")) is int and "rule_marker" not in body:
             body["rule_marker"] = answer["rule_marker"]
         verdicts = answer.get("decisions")
         if isinstance(verdicts, list) and len(verdicts) == len(times[start : start + 64]):
             decisions.update(zip(times[start : start + 64], verdicts, strict=True))
+        full = answer.get("full_decisions")
+        if not isinstance(full, list) or len(full) != len(times[start : start + 64]):
+            full = [answer["capture_blocked"]] * len(times[start : start + 64])
+        full_decisions.update(zip(times[start : start + 64], full, strict=True))
         if state is None:
             state = dict(answer)
         else:
@@ -284,10 +276,12 @@ def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float)
             state["recall_blocked"] |= answer["recall_blocked"]
     if state is not None:
         state["event_decisions"] = decisions
+        state["full_event_decisions"] = full_decisions
+        state["clocks"] = private_metadata(body, times)["clocks"]
     return state
 
 
-def _eligible_body(body: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def eligible_body(body: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Translate per-event Core decisions to content-free record lines, preserving cursor progress."""
     decisions = state.get("event_decisions") or {}
     body, state = dict(body), dict(state)
@@ -301,15 +295,41 @@ def _eligible_body(body: dict[str, Any], state: dict[str, Any]) -> tuple[dict[st
             ],
         }
     payload = dict(body["payload"])
+    refused_replies = []
+    if isinstance(record, dict):
+        refused_replies.extend(
+            said
+            for _end, said in record.get("lines", [])
+            if isinstance(said, dict) and decisions.get(said.get("occurred_at"), True)
+        )
     if isinstance(payload.get("record"), list):
         lines = dict(transcript.dsh_lines(payload["record"]))
+        refused_replies.extend(
+            dict(id=said.entry_id, text=said.text, role=said.role)
+            for said in lines.values()
+            if said is not None and decisions.get(said.occurred_at, True)
+        )
         payload["record"] = [
             None if (said := lines.get(index)) is not None and decisions.get(said.occurred_at, True) else row
             for index, row in enumerate(payload["record"], start=1)
         ]
+    if any(
+        said.get("role") == "assistant"
+        and (
+            (payload.get("reply_id") is not None and said.get("id", said.get("entry_id")) == payload.get("reply_id"))
+            or said.get("text") == payload.get("last_assistant_message")
+        )
+        for said in refused_replies
+    ):
+        payload.pop("last_assistant_message", None)
+        payload.pop("reply_id", None)
     body["payload"] = payload
     if decisions:
         state["capture_blocked"] = state.get("mode") != "none" or decisions.get(body.get("observed_at"), True)
+    if (state.get("full_event_decisions") or {}).get(body.get("observed_at"), False):
+        # Read-only permits ordinary questions, never the replay of words from
+        # a full interval or an undated question that could belong to one.
+        state["recall_blocked"] = True
     return body, state
 
 
@@ -329,13 +349,8 @@ def _private_batch(
     if type(session) is not str or not session.strip():
         return None
     request = {
-        "session_id": session.strip(),
-        "project": payload.get("cwd"),
-        "sent_at": _now(),
-        "rule_marker": body.get("rule_marker"),
-        "clock": body.get("clock"),
-        "times": times,
-        "latest_at": body.get("private_latest_at"),
+        **private_metadata(body, times),
+        "sent_at": body.get("observed_at") or payload.get("calibration_started_at") or _now(),
     }
     try:
         token = config["token_file"].read_text(encoding="utf-8").strip()
@@ -364,6 +379,8 @@ def _private_batch(
             _log(config, f"{payload.get('hook_event_name')}: HTTP {response.status}; private state unverified")
             return None
         answer = json.loads(raw.decode("utf-8"))
+        if isinstance(answer, dict) and isinstance(answer.get("clock"), dict) and "received_at" not in answer["clock"]:
+            answer["clock"]["received_at"] = _now()
     except (OSError, http.client.HTTPException, ValueError):
         return None
     finally:
@@ -564,7 +581,11 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     event = payload.get("hook_event_name")
     cwd = payload.get("cwd")
     if isinstance(cwd, str):
-        payload["cwd"] = normalize_project_path(cwd)
+        try:
+            payload["cwd"] = normalize_project_path(cwd, require_identity=True)
+        except ContractError:
+            payload["cwd"] = normalize_project_path(cwd, resolve_links=False)
+            payload["project_unverified"] = True
     host = config["host"]
     if event == "PrivateCheck":
         return _private_check(config, {"payload": payload}, 2.0) or {}
@@ -577,7 +598,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     observed_at = _now()
     if host == "claude-code" and event == "UserPromptSubmit":
         payload = _with_context_since(payload)
-    body: dict[str, Any] = {"payload": payload, "observed_at": observed_at}
+    body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
     cursor = None
     if (
         host in _RECORD_HOSTS
@@ -618,7 +639,7 @@ def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) ->
     if state is None:
         _log(config, f"{event}: private state unverified, not sent")
         return None
-    body, state = _eligible_body(body, state)
+    body, state = eligible_body(body, state)
     payload = body["payload"]
     if _private_drop(state, event):
         _log(config, f"{event}: private mode {state.get('mode')}, not sent")
@@ -630,8 +651,7 @@ def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) ->
         return None
     if state["capture_blocked"]:
         # Read-only prompts travel only as recall questions, without attachments or a durable spool copy.
-        fields = {"hook_event_name", "session_id", "turn_id", "prompt_id", "cwd", "prompt", IN_CONTEXT_FIELD}
-        body = {**body, "payload": {key: value for key, value in payload.items() if key in fields}}
+        body = _recall_only(body)
         spooled = None
     else:
         spooled = (
@@ -643,14 +663,13 @@ def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) ->
     # the last boundary before content is transmitted, using the original clock.
     fresh = _private_check(config, body, until - time.monotonic())
     if fresh is not None:
-        body, fresh = _eligible_body(body, fresh)
+        body, fresh = eligible_body(body, fresh)
     if fresh is None or _private_drop(fresh, event):
         if spooled is not None:
             spooled.unlink(missing_ok=True)
         return None
     if fresh["capture_blocked"]:
-        fields = {"hook_event_name", "session_id", "turn_id", "prompt_id", "cwd", "prompt", IN_CONTEXT_FIELD}
-        body["payload"] = {key: value for key, value in body["payload"].items() if key in fields}
+        body = _recall_only(body)
         if spooled is not None:
             spooled.unlink(missing_ok=True)
             spooled = None
@@ -660,6 +679,21 @@ def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) ->
     if spooled is not None and not answer.get("retry"):
         spooled.unlink(missing_ok=True)
     return answer
+
+
+def _recall_only(body):
+    """Read-only prompts carry only the question and its routing metadata."""
+    fields = {
+        "hook_event_name",
+        "session_id",
+        "turn_id",
+        "prompt_id",
+        "cwd",
+        "project_unverified",
+        "prompt",
+        IN_CONTEXT_FIELD,
+    }
+    return {**body, "payload": {key: value for key, value in body["payload"].items() if key in fields}}
 
 
 # -- setup on this machine ---------------------------------------------------

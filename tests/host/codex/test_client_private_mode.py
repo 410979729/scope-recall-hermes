@@ -211,10 +211,8 @@ def test_spool_flush_checks_private_state_before_sending(tmp_path, monkeypatch):
 
 def test_metadata_preflight_checks_every_record_in_bounded_batches(monkeypatch):
     checked = []
-    latest = []
 
     def batch(_config, _body, times, _timeout):
-        latest.append(_body["private_latest_at"])
         checked.extend(times)
         return dict(mode="none", capture_blocked=NOW in times, recall_blocked=False)
 
@@ -226,7 +224,6 @@ def test_metadata_preflight_checks_every_record_in_bounded_batches(monkeypatch):
     )
     assert state["capture_blocked"] is True
     assert len(checked) == 131
-    assert latest == [NOW, NOW, NOW]
 
 
 def test_dsh_preflight_translates_millisecond_record_times():
@@ -301,12 +298,16 @@ def test_preflight_batches_share_the_receive_protocol_clock_correction(client_st
     raw = (at + timedelta(seconds=90)).isoformat()
     latest = (at + timedelta(seconds=150)).isoformat()
     try:
-        first = remote_server.private_check(server, dict(session_id="TEST-clock-session", times=[raw], sent_at=latest))
-        remote_server.private_check(server, dict(session_id="TEST-clock-session", times=[latest], clock=first["clock"]))
-        assert [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in seen] == [
+        first = remote_server.private_check(server, dict(session_id="TEST-clock-session", times=[], sent_at=latest))
+        first["clock"]["received_at"] = latest
+        remote_server.private_check(
+            server, dict(session_id="TEST-clock-session", times=[raw, latest], clock=first["clock"])
+        )
+        assert [datetime.fromisoformat(value["earliest"].replace("Z", "+00:00")) for value in seen] == [
             at - timedelta(seconds=60),
             at,
         ]
+        assert all(value["earliest"] == value["latest"] for value in seen)
     finally:
         hook.close()
 
@@ -396,6 +397,7 @@ def test_remote_calibrates_both_directions_and_replays_the_same_time(client_stor
     assert first["capture_blocked"] is True
     calibration = first.get("clock")
     assert isinstance(calibration, dict)
+    calibration["received_at"] = client_at.isoformat()
     monkeypatch.setattr(remote_server, "_now", lambda: server_at + timedelta(days=1))
     replay = remote_server.private_check(
         config, dict(session_id="TEST-session-1", times=[client_at.isoformat()], clock=calibration)
@@ -423,7 +425,11 @@ def test_remote_mixed_record_drops_private_lines_and_advances_cursor(tmp_path, m
 
     def batch(_config, _body, times, _timeout):
         return dict(
-            mode="none", capture_blocked=NOW in times, recall_blocked=False, decisions=[stamp == NOW for stamp in times]
+            mode="none",
+            capture_blocked=NOW in times,
+            recall_blocked=False,
+            decisions=[stamp == NOW for stamp in times],
+            full_decisions=[stamp == NOW for stamp in times],
         )
 
     monkeypatch.setattr(remote_client, "_private_batch", batch)
@@ -470,5 +476,235 @@ def test_junction_and_real_directory_share_the_rule_identity(installed):
             assert "not being remembered" in answer["hookSpecificOutput"]["additionalContext"]
             assert _rows(core, ctx) == []
             owner.private_off(target="project", project=str(real))
+    finally:
+        hook.close()
+
+
+def test_remote_clock_range_refuses_a_private_event_delayed_past_the_end(client_store, monkeypatch):
+    hook, core, ctx, clock, owner = _bound(client_store, "codex")
+    owner.private_on(target="session", session=ctx.session_id)
+    start = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+    clock.now = (start + timedelta(seconds=10)).isoformat()
+    owner.private_off(target="session", session=ctx.session_id)
+    sent = (start + timedelta(seconds=9.9)).isoformat()
+    received = (start + timedelta(seconds=10.1)).isoformat()
+    calibration = dict(client_at=sent, server_at=received, received_at=(start + timedelta(seconds=10.3)).isoformat())
+    original = MemoryCore.private_check
+    monkeypatch.setattr(
+        MemoryCore, "private_check", lambda self, context, times, **kwargs: original(core, context, times, **kwargs)
+    )
+    config = remote_server.RemoteServerConfig(hook.config.home, "codex", "127.0.0.1", 1, "0" * 64)
+    try:
+        result = remote_server.private_check(config, dict(session_id="TEST-session-1", times=[sent], clock=calibration))
+        assert result["capture_blocked"] is True
+    finally:
+        hook.close()
+
+
+def test_remote_historical_record_cannot_borrow_the_upload_clock(client_store, monkeypatch):
+    hook, core, ctx, clock, owner = _bound(client_store, "dsh")
+    owner.private_on(target="session", session=ctx.session_id)
+    clock.advance()
+    owner.private_off(target="session", session=ctx.session_id)
+    upload = clock.now
+    calibration = dict(client_at=upload, server_at=upload, received_at=upload)
+    original = MemoryCore.private_check
+    monkeypatch.setattr(
+        MemoryCore, "private_check", lambda self, context, times, **kwargs: original(core, context, times, **kwargs)
+    )
+    server = remote_server.RemoteServerConfig(hook.config.home, "dsh", "127.0.0.1", 1, "0" * 64)
+    old = (datetime.fromisoformat(NOW.replace("Z", "+00:00")) - timedelta(hours=2)).isoformat()
+    body = dict(
+        observed_at=upload,
+        clock=calibration,
+        payload=dict(
+            hook_event_name="Stop",
+            session_id="TEST-session-1",
+            cwd="C:/work/app",
+            record=[
+                dict(
+                    id="TEST-private",
+                    role="assistant",
+                    text="TEST private history",
+                    time=datetime.fromisoformat(old).timestamp() * 1000,
+                )
+            ],
+        ),
+    )
+    try:
+        metadata = remote_client.private_metadata(body)
+        state = remote_server.private_check(server, metadata)
+        assert state["capture_blocked"] is True
+        state["event_decisions"] = dict(zip(metadata["times"], state["decisions"], strict=True))
+        filtered, _state = remote_client.eligible_body(body, state)
+        assert "TEST private history" not in json.dumps(filtered)
+    finally:
+        hook.close()
+
+
+def test_private_dsh_reply_decision_removes_every_copy():
+    stamp = datetime.fromisoformat(NOW.replace("Z", "+00:00")).timestamp() * 1000
+    row = dict(id="TEST-private", role="assistant", text="TEST duplicate private reply", time=stamp)
+    body = dict(
+        observed_at="2026-09-26T14:00:00Z",
+        payload=dict(hook_event_name="Stop", record=[row], reply_id=row["id"], last_assistant_message=row["text"]),
+    )
+    moment = remote_client._private_times(body, None)[0]
+    filtered, _state = remote_client.eligible_body(
+        body, dict(mode="none", event_decisions={moment: True, body["observed_at"]: False})
+    )
+    assert "TEST duplicate private reply" not in json.dumps(filtered)
+
+
+def test_metadata_wire_has_only_the_protocol_fields(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = _client(tmp_path, "codex", 1)
+    requests = []
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def request(self, _method, _path, **kwargs):
+            requests.append(json.loads(kwargs["body"]))
+
+        def getresponse(self):
+            return SimpleNamespace(
+                status=200, read=lambda: b'{"mode":"none","capture_blocked":false,"recall_blocked":false}'
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(remote_client.http.client, "HTTPConnection", Connection)
+    remote_client._private_batch(config, dict(payload=dict(session_id="TEST-session-1")), [NOW], 1)
+    assert len(requests) == 1
+    assert set(requests[0]) == {
+        "session_id",
+        "project",
+        "project_unverified",
+        "sent_at",
+        "rule_marker",
+        "clock",
+        "times",
+        "clocks",
+    }
+
+
+def test_remote_content_connection_rechecks_privacy_after_connect(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = _client(tmp_path, "codex", 1)
+    sent = []
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            self.sock = SimpleNamespace(settimeout=lambda value: None)
+
+        def connect(self):
+            pass
+
+        def request(self, *args, **kwargs):
+            sent.append("TEST private body")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(remote_client.http.client, "HTTPConnection", Connection)
+    monkeypatch.setattr(
+        remote_client, "_private_check", lambda *args: dict(mode="full", capture_blocked=True, recall_blocked=True)
+    )
+    assert (
+        remote_client._post(
+            config,
+            dict(
+                observed_at=NOW,
+                payload=dict(
+                    session_id="TEST-session-1", hook_event_name="Stop", last_assistant_message="TEST private body"
+                ),
+            ),
+            2,
+        )
+        is None
+    )
+    assert sent == []
+
+
+@pytest.mark.parametrize("mode", ["none", "read-only"])
+def test_server_never_recalls_an_uncalibrated_private_prompt_after_off(client_store, monkeypatch, mode):
+    hook, core, ctx, clock, owner = _bound(client_store, "codex")
+    owner.private_on(target="session", session=ctx.session_id)
+    clock.advance()
+    owner.private_off(target="session", session=ctx.session_id)
+    if mode == "read-only":
+        owner.private_on(target="session", session=ctx.session_id, mode=mode)
+    original = MemoryCore.private_check
+    monkeypatch.setattr(
+        MemoryCore, "private_check", lambda self, context, times, **kwargs: original(core, context, times, **kwargs)
+    )
+    reached = []
+
+    def recall(*args, **kwargs):
+        reached.append("TEST query")
+        raise AssertionError("TEST private prompt reached recall")
+
+    monkeypatch.setattr(CodexHookHandler, "from_home", recall)
+    server = remote_server.RemoteServerConfig(hook.config.home, "codex", "127.0.0.1", 1, "0" * 64)
+    try:
+        result = remote_server.handle_request(
+            server,
+            dict(
+                observed_at=NOW,
+                payload=dict(
+                    hook_event_name="UserPromptSubmit",
+                    session_id="TEST-session-1",
+                    cwd="C:/work/app",
+                    prompt="TEST private prompt",
+                ),
+            ),
+        )
+        assert result["reason"] == "private_mode"
+        assert reached == []
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("private", [True, False])
+def test_read_only_sends_only_questions_that_were_never_full_private(client_store, tmp_path, monkeypatch, private):
+    hook, core, ctx, clock, owner = _bound(client_store, "codex")
+    owner.private_on(target="session", session=ctx.session_id)
+    clock.advance()
+    owner.private_off(target="session", session=ctx.session_id)
+    owner.private_on(target="session", session=ctx.session_id, mode="read-only")
+    original = MemoryCore.private_check
+    monkeypatch.setattr(
+        MemoryCore, "private_check", lambda self, context, times, **kwargs: original(core, context, times, **kwargs)
+    )
+    server = remote_server.RemoteServerConfig(hook.config.home, "codex", "127.0.0.1", 1, "0" * 64)
+    monkeypatch.setattr(
+        remote_client,
+        "_private_batch",
+        lambda config, body, times, seconds: remote_server.private_check(
+            server, remote_client.private_metadata(body, times)
+        ),
+    )
+    sent = []
+    monkeypatch.setattr(remote_client, "_post", lambda config, body, seconds: sent.append(body) or dict(result={}))
+    at = NOW if private else clock.now
+    body = dict(
+        observed_at=at,
+        payload=dict(
+            hook_event_name="UserPromptSubmit", session_id="TEST-session-1", cwd="C:/work/app", prompt="TEST question"
+        ),
+    )
+    if not private:
+        body["clock"] = dict(client_at=at, server_at=at, received_at=at)
+    try:
+        remote_client._send_checked(_client(tmp_path, "codex", 1), body, remote_client.time.monotonic() + 10)
+        assert len(sent) == (0 if private else 1)
     finally:
         hook.close()
