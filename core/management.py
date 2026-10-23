@@ -12,7 +12,7 @@ from typing import Any
 
 from ..contracts import ContractError
 from .delete_storage import OBJECT_TABLES, canonical
-from .management_query import MemoryFilter, browse, partition, source_metadata, witnesses
+from .management_query import MemoryFilter, browse, partition, session_refs, source_metadata, witnesses
 from .management_revision import correct
 from .restore import InstallationMaintenance, _maintenance_context
 from .suppression import release
@@ -117,7 +117,7 @@ class MemoryManagement:
             raise ContractError("INPUT_INVALID", "selection_size")
         result: dict[str, Any] = dict(
             mode=mode,
-            memory_epoch=tx.status().memory_epoch,
+            memory_epoch=tx.memory_epoch(),
             targets=sorted(selected, key=lambda t: t["ref"]),
             affected=sorted(affected, key=lambda t: t["ref"]),
             sources=sorted(sources.values(), key=lambda s: s["ref"]),
@@ -136,17 +136,8 @@ class MemoryManagement:
         """Preview a session or time interval, refusing an unbounded whole-store selection."""
         if not (filters.session or filters.since or filters.until):
             raise ContractError("INPUT_INVALID", "session_or_time_required")
-        refs, cursor = [], None
-        source_filter = replace(filters, kind="event")
-        while True:
-            page = self.list(source_filter, limit=100, cursor=cursor)
-            refs.extend(item["ref"] for item in page["items"])
-            if len(refs) > 2000:
-                raise ContractError("INPUT_INVALID", "selection_size")
-            cursor = page["next_cursor"]
-            if cursor is None:
-                break
-        return self.preview(refs)
+        with self.core.storage.read(self._context()) as tx:
+            return self._plan(tx, session_refs(self.core, tx, filters), "delete")
 
     def apply(self, preview):
         """Commit precisely the reviewed closure, or refuse if the inventory changed."""

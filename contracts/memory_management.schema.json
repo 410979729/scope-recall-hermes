@@ -65,7 +65,8 @@
         "scope_id": {"type": "string"}, "project_id": {"type": ["string", "null"]}, "branch_id": {"type": ["string", "null"]},
         "suppressed": {"type": "integer", "enum": [0, 1]}, "content": {"type": "string"}, "state": {"type": "string"},
         "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
-        "value": {"type": "object"}, "memory_epoch": {"type": "integer", "minimum": 0}
+        "value": {"type": "object"}, "memory_epoch": {"type": "integer", "minimum": 0},
+        "sort_time": {"type": "string", "format": "date-time"}
       }
     },
     "data": {
@@ -74,6 +75,9 @@
         "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
         "next_cursor": {"type": ["string", "null"]}, "next_before": {"type": ["integer", "null"]},
         "memory_epoch": {"type": "integer", "minimum": 0},
+        "examined": {"type": "integer", "minimum": 0},
+        "scan_complete": {"type": "boolean"},
+        "stop_reason": {"type": "string", "enum": ["complete", "limit", "time_budget"]},
         "preview": {"type": "object", "$ref": "#/$defs/preview"}, "applied": {"type": "boolean"},
         "result": {"type": "object"}, "kind": {"type": "string"}, "ref": {"type": "string"},
         "revision": {"type": "integer", "minimum": 1}, "value": {"type": "object"},
