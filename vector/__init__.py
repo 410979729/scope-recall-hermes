@@ -54,8 +54,9 @@ class VectorStoreCompatibilityError(RuntimeError):
 class VectorStore(ABC):
     """One vector companion table.
 
-    ``open`` may create the companion; ``open_existing`` never creates
-    anything.  Rows are plain dicts shaped like :class:`VectorRecord`, and
+    ``open`` may create the companion; ``open_existing`` never creates its
+    data, tables or metadata. SQLite may create coordination sidecars for
+    read-only access. Rows are plain dicts shaped like :class:`VectorRecord`, and
     ``search`` returns them with a ``_distance`` for the requested metric.
     """
 

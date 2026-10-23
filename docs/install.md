@@ -526,7 +526,9 @@ the install-time `--target-plugin-dir`, `--project-root` or `--agent-id`. With
 and any mismatch it finds there; without it, it measures itself, which cannot tell
 you whether the host's environment has the new wheel.
 
-`doctor` writes nothing. It prints one JSON object with about fifty fields, sorted
+`doctor` changes no stored data and no configuration; its read of a
+`sqlite-bruteforce` vector companion can leave SQLite's `-wal` and `-shm` files
+beside it (section 10). It prints one JSON object with about fifty fields, sorted
 by key, and exits `0` only when `status` is `"ok"`.
 
 ### Reading the result
@@ -647,6 +649,12 @@ Things that look wrong in a healthy report and are not:
   section 7). `embedding_health` always counts the embedding queue; its
   `last_day` and `held_until` appear only with an external embedding route,
   and only while the provider holds it.
+- `vector_store` with `result: "missing"` means the worker has not yet created
+  the entry's `sqlite-bruteforce` companion; its first pass does. The check opens
+  the companion as recall does, within five seconds, and reads only its tables
+  and identity: `readable` is the healthy result, and `unreadable` raises
+  `vector_store_unreadable` (below). A LanceDB store has no `vector_store` check;
+  the doctor reads its files without opening it.
 
 ### Common gaps and what they mean
 
@@ -666,6 +674,7 @@ Things that look wrong in a healthy report and are not:
 | `hermes_runtime_package_missing` / `hermes_runtime_package_mismatch` | A Hermes that builds its own environment runs plugins from it (`hermes_runtime.environment`), and the core there is missing or another version than this one. Installing into the venv `--python` names does not reach it. | Install with `--target-plugin-dir <home>\plugins\scope-recall`, let Hermes sync, restart (section 4). |
 | `vector_dependencies_missing` | The runtime config names a LanceDB vector store, and the interpreter the doctor checked (`--python`, or its own) has no `lancedb` or `pyarrow`: the package was installed without its `lancedb` extra, and every recall finds memories by their words alone. Its recall gaps say `vector_error:RuntimeError:lance_not_installed`. | `pip install "hermes-scope-recall[lancedb]"` into that interpreter (section 2), or configure the `sqlite-bruteforce` backend. |
 | `hermes_runtime_vector_dependencies_missing` | That environment has no `lancedb` or `pyarrow` while the runtime config has a LanceDB vector store: every recall runs without vectors. | The same: the wrapper's `pyproject.toml` declares them. Look for a `pyproject.toml` there written by hand. |
+| `vector_store_unreadable` | The configured `sqlite-bruteforce` companion cannot be opened for recall. The `vector_store` check's detail names the same cause as recall's `vector_error:<label>`; `VectorStoreCompatibilityError` includes a stored identity that differs from the config. | For an identity mismatch, follow “Changing the embedding model rebuilds the vector store” in [configuration.md](configuration.md#changing-the-embedding-model-rebuilds-the-vector-store). |
 | `version_mismatch` | Receipt, distribution, imported and running versions disagree. | Stop the old processes, then reinstall. |
 | `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |
 | `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails; on a store above 100 MB, a caller with a minute of budget does (section 9). A step is one way: take a `backup` first if you may want to go back. |
@@ -1117,6 +1126,16 @@ earlier, is refused (`snapshot_schema`): no release that reads it carries
   [deletion-contract.md](deletion-contract.md) says what a purge removes and
   what it does not.
 
+- **The `sqlite-bruteforce` vector companion** is a rebuildable WAL-mode
+  `vector.sqlite3` file. Recall reads every committed embedding through the WAL
+  while the worker writes, and each read's lock wait is capped by the recall's
+  remaining time. A read needs `vector.sqlite3-wal` and the
+  `vector.sqlite3-shm` WAL index beside the file, or permission to create them
+  there, as the worker has; SQLite creates them for a read when they are
+  absent. A reader that closes last leaves them behind; a writer removes them
+  when it is the last connection and closes cleanly. On POSIX SQLite gives
+  them the database file's owner-only mode; on Windows they inherit the
+  directory's ACL.
 - **LanceDB** needs the `lancedb` extra. Keep the data directory short, for
   example `C:\ScopeRecall\my-agent`: LanceDB appends index, table and temporary
   file names below it, and the worker reports `native_vector_path_too_long`

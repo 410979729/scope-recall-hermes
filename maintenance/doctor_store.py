@@ -19,16 +19,20 @@ from scope_recall.adapters.clients.boundary import (
     is_codex_suggestions_prompt,
     is_codex_suggestions_reply,
 )
-from scope_recall.contracts import TrustedContext
+from scope_recall.adapters.runtime_wiring import bindings_match
+from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.core.inbox_rules import given_up, replayable
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from scope_recall.core.restore import restore_pending
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.vector_failure import vector_failure_label
 from scope_recall.runtime.model_budget import embedding_calls, provider_holds
 from scope_recall.vector.compaction import instance_vector_footprints
+from scope_recall.vector.store import build_vector_store
 
 from .doctor_report import DoctorReport, record_check
 
@@ -113,6 +117,39 @@ def check_index(report: DoctorReport, data_directory: Path, *, store_readable: b
     except Exception:  # noqa: BLE001 - reporting must not fail the report.
         metadata["vector_stores"] = []
     report.index_metadata = metadata
+
+
+def check_vector_store(report: DoctorReport, config: Any, binding: InstanceBinding) -> None:
+    """Validate the entry's SQLite companion through recall's read-only open.
+
+    Only schema and identity are read, within the doctor's SQLite budget.
+    LanceDB remains unopened so diagnostics need no native imports or helper.
+    """
+    if config is None or not bindings_match(binding, config.binding):
+        return
+    vector = getattr(config, "vector", None)
+    if vector is None or vector.backend != "sqlite-bruteforce":
+        return
+    store = None
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5.0)):
+            store = build_vector_store(
+                vector.backend,
+                storage_dir=vector.storage_dir,
+                table_name=vector.table_name,
+                dimensions=vector.dimensions,
+                metric=vector.metric,
+            )
+            store.open_existing()
+        record_check(report, "vector_store", "readable")
+    except FileNotFoundError:
+        record_check(report, "vector_store", "missing", "the worker creates the store on its first pass")
+    except Exception as exc:  # noqa: BLE001 - an unreadable companion is a finding, not a crash.
+        report.capability_gaps.append("vector_store_unreadable")
+        record_check(report, "vector_store", "unreadable", vector_failure_label(exc))
+    finally:
+        if store is not None:
+            store.close()
 
 
 #: Fraction of any auxiliary ledger cap above which the instance is warned.
