@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from contextlib import contextmanager
+from functools import wraps
 
 import pytest
 
@@ -12,6 +13,9 @@ _REAL_MONOTONIC = time.monotonic
 
 # Thread dispatch, timed waits, JSON, diagnostics and shutdown spool I/O retain their real cost.
 HOOK_MARGIN_SECONDS = 0.1
+
+# This real-time limit only bounds a hang while transactions pause the semantic clock.
+_HANG_TIMEOUT_SECONDS = 60.0
 
 
 def assert_hook_budget(elapsed: float, budget: float) -> None:
@@ -44,6 +48,16 @@ class StoreMeteredClock:
         """Charge explicit time spent by a fake operation without sleeping."""
         with self._lock:
             self._shift += seconds
+
+    def wait(self, event: threading.Event, deadline: float) -> bool:
+        """Wait within a semantic deadline and a physical cap, even if a transaction stalls."""
+        physical_deadline = time.perf_counter() + _HANG_TIMEOUT_SECONDS
+        while not event.is_set():
+            remaining = min(deadline - self(), physical_deadline - time.perf_counter())
+            if remaining <= 0:
+                return False
+            event.wait(remaining)
+        return True
 
     @contextmanager
     def operation(self):
@@ -114,6 +128,35 @@ def metered_store(monkeypatch):
         return clock
 
     return install
+
+
+@pytest.fixture
+def metered_ledger(monkeypatch, metered_store):
+    """Exclude ledger transaction time from the shared clock while executing every read and write.
+
+    Reservations, settlements and provider-hold reads include SQLite connection and pager waits. Transport locks,
+    thread dispatch and provider waits remain outside these operations and keep their real cost.
+    """
+    from scope_recall.runtime import model_budget
+
+    clock = metered_store(0.0)
+
+    def meter(operation):
+        @wraps(operation)
+        def measured(*args, **kwargs):
+            with clock.operation() as entered:
+                entered[0] = True
+                return operation(*args, **kwargs)
+
+        return measured
+
+    for owner, name in (
+        (model_budget.AuxiliaryBudgetLedger, "reserve"),
+        (model_budget.AuxiliaryBudgetLedger, "_settle"),
+        (model_budget, "provider_hold_until"),
+    ):
+        monkeypatch.setattr(owner, name, meter(getattr(owner, name)))
+    return clock
 
 
 @pytest.fixture(autouse=True)

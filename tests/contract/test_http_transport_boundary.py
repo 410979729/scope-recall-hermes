@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from http.client import HTTPResponse
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,9 @@ from types import SimpleNamespace
 
 import pytest
 from scope_recall.runtime import models
+
+from tests.store_clock import metered_ledger as metered_ledger
+from tests.store_clock import metered_store as metered_store
 
 
 class _Socket:
@@ -251,7 +255,7 @@ def held_pool(monkeypatch):
         budgets[body] = timeout_seconds
         if body == b"held":
             entered.set()
-            assert release.wait(5)
+            assert release.wait(timeout_seconds)
         return 200, b"ok"
 
     monkeypatch.setattr(models.HttpsTransport, "post", post)
@@ -271,13 +275,14 @@ def test_returned_connection_reaches_a_live_waiter_after_an_expired_waiter(held_
     clock = [100.0]
     monkeypatch.setattr(models, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     with ThreadPoolExecutor(max_workers=3) as executor:
+        deadline = time.monotonic() + 30
         active = executor.submit(_persistent_post, pool, b"held", timeout=30)
         try:
-            assert entered.wait(2)
+            assert entered.wait(max(0.0, deadline - time.monotonic()))
             expired = executor.submit(_persistent_post, pool, b"expired", timeout=10)
-            assert condition.waiting[0].wait(2)
+            assert condition.waiting[0].wait(max(0.0, deadline - time.monotonic()))
             live = executor.submit(_persistent_post, pool, b"live", timeout=30)
-            assert condition.waiting[1].wait(2)
+            assert condition.waiting[1].wait(max(0.0, deadline - time.monotonic()))
             with condition:
                 clock[0] += 11
                 release.set()
@@ -298,11 +303,12 @@ def test_queued_request_passes_only_its_remaining_budget_to_the_transport(held_p
     clock = [100.0]
     monkeypatch.setattr(models, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     with ThreadPoolExecutor(max_workers=2) as executor:
+        deadline = time.monotonic() + 20
         active = executor.submit(_persistent_post, pool, b"held", timeout=20)
         try:
-            assert entered.wait(2)
+            assert entered.wait(max(0.0, deadline - time.monotonic()))
             queued = executor.submit(_persistent_post, pool, b"queued", timeout=10)
-            assert condition.waiting[0].wait(2)
+            assert condition.waiting[0].wait(max(0.0, deadline - time.monotonic()))
             with condition:
                 clock[0] += 4
                 release.set()
@@ -347,7 +353,7 @@ def test_session_close_during_io_thread_start_never_joins_an_unstarted_thread(pe
     def start(thread):
         if thread.daemon:
             starting.set()
-            assert release.wait(5)
+            assert release.wait(max(0.0, deadline - time.monotonic()))
         original_start(thread)
 
     def discard(session):
@@ -359,14 +365,15 @@ def test_session_close_during_io_thread_start_never_joins_an_unstarted_thread(pe
         assert executor.submit(lambda: None).result(timeout=2) is None
         monkeypatch.setattr(Thread, "start", start)
         monkeypatch.setattr(http_session.HttpWorkerSession, "discard", discard)
+        deadline = time.monotonic() + 5
         request = executor.submit(_persistent_post, transport, timeout=5)
         try:
-            assert starting.wait(2)
+            assert starting.wait(max(0.0, deadline - time.monotonic()))
             assert transport._session._io_thread is None, "only started threads may be published for cleanup"
             process = transport._session._process
             closing.clear()
             shutdown = executor.submit(transport.close)
-            assert closing.wait(2)
+            assert closing.wait(max(0.0, deadline - time.monotonic()))
         finally:
             release.set()
         shutdown.result(timeout=2)
@@ -452,22 +459,23 @@ def test_query_pool_close_wakes_waiters_and_closes_every_transport(persistent_tr
             active += 1
             if active == 3:
                 entered.set()
-        assert release.wait(5)
+        assert release.wait(max(0.0, deadline - time.monotonic()))
         return b"ok"
 
     persistent_responses[b"held"] = respond
     try:
         with ThreadPoolExecutor(max_workers=4) as executor:
+            deadline = time.monotonic() + 5
             borrowed = [executor.submit(_persistent_post, pool, b"held", timeout=5) for _ in range(3)]
             try:
-                assert entered.wait(3), "three requests must reach the server before any response is released"
+                assert entered.wait(max(0.0, deadline - time.monotonic())), "three requests must reach the server"
                 processes = [port._session._process for port in pool._transports]
                 assert len({process.pid for process in processes}) == 3
                 with pytest.raises(models.AuxiliaryModelError, match="timeout"):
                     _persistent_post(pool, timeout=0.05)
                 assert len(connections) == 3
                 waiter = executor.submit(_persistent_post, pool, timeout=5)
-                assert condition.waiting[1].wait(1)
+                assert condition.waiting[1].wait(max(0.0, deadline - time.monotonic()))
                 # Acquiring the condition proves wait() released it after the event.
                 with condition:
                     assert not pool._available
@@ -704,7 +712,7 @@ def test_the_helper_does_not_reuse_a_connection_idle_past_its_limit(tmp_path, mo
 
 
 @pytest.mark.parametrize("batch", [False, True])
-def test_concurrent_query_embeddings_use_bounded_independent_connections(tmp_path, monkeypatch, batch):
+def test_concurrent_query_embeddings_use_bounded_independent_connections(tmp_path, monkeypatch, batch, metered_ledger):
     """Only the provider is simulated; each persistent transport keeps its real serialization lock."""
     from scope_recall.runtime.auxiliary import build_auxiliary_runtime
     from test_runtime_auxiliary import _runtime_config
@@ -712,13 +720,14 @@ def test_concurrent_query_embeddings_use_bounded_independent_connections(tmp_pat
     entered = set()
     lock = Lock()
     ready, release = Event(), Event()
+    clock = metered_ledger
 
     def respond(transport, url, *, body, headers, timeout_seconds, max_response_bytes):
         with lock:
             entered.add(transport)
             if len(entered) == 3:
                 ready.set()
-        assert release.wait(5), "the synthetic provider must be released"
+        assert clock.wait(release, deadline), "the synthetic provider must be released"
         count = len(json.loads(body)["requests"])
         return 200, json.dumps(
             {"embeddings": [{"values": [0.01] * 3072}] * count, "usageMetadata": {"promptTokenCount": 10}}
@@ -731,18 +740,61 @@ def test_concurrent_query_embeddings_use_bounded_independent_connections(tmp_pat
     adapter = runtime.query_embedding
     query = adapter.embed_queries if batch else adapter.embed_query
     text = ["TEST first", "TEST second"] if batch else "TEST query"
+    condition = _WaitingCondition()
+    adapter._query_transport._condition = condition
     try:
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            deadline = clock() + 5
             requests = [executor.submit(query, text, remaining_seconds=5) for _ in range(3)]
             try:
-                assert ready.wait(1), "concurrent recalls must reach independent connections"
-                with pytest.raises(models.AuxiliaryModelError, match="timeout"):
-                    query(text, remaining_seconds=0.05)
-                assert len(entered) == 3, "a saturated pool must not open an extra connection"
+                assert clock.wait(ready, deadline), "concurrent recalls must reach independent connections"
+                requests.append(executor.submit(query, text, remaining_seconds=max(0.0, deadline - clock())))
+                assert clock.wait(condition.waiting[0], deadline), "a fourth request must wait for a connection"
+                with condition:
+                    assert not adapter._query_transport._available and not requests[-1].done()
+                    assert len(entered) == 3, "a saturated pool must not open an extra connection"
             finally:
                 release.set()
-            assert all(len(request.result(timeout=2)) == (2 if batch else 3072) for request in requests)
+            for request in requests:
+                completed = Event()
+                request.add_done_callback(lambda _request, completed=completed: completed.set())
+                # Settlement uses the ledger clock, so completion shares the request's semantic deadline.
+                assert clock.wait(completed, deadline), "the released query must finish within its request budget"
+                assert len(request.result(timeout=0)) == (2 if batch else 3072)
         assert len(query(text, remaining_seconds=2)) == (2 if batch else 3072)
         assert len(entered) == 3, "later requests reuse a returned warm connection"
     finally:
         runtime.close()
+
+
+def test_ledger_clock_excludes_physical_transactions_but_preserves_their_rows(tmp_path, monkeypatch, metered_ledger):
+    """Slow ledger connections consume no semantic budget; reservations and settlements remain durable."""
+    import sqlite3
+
+    from scope_recall.runtime import model_budget
+    from test_runtime_auxiliary import _runtime_config
+
+    from tests import store_clock
+
+    config, path, policy = _runtime_config(tmp_path)
+    ledger = model_budget.AuxiliaryBudgetLedger(path, policy)
+    clock = metered_ledger
+    physical = [100.0]
+    monkeypatch.setattr(store_clock, "_REAL_MONOTONIC", lambda: physical[0])
+    connect = sqlite3.connect
+
+    def slow_connect(*args, **kwargs):
+        physical[0] += 10
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", slow_connect)
+    model = config.embedding.space()["model"]
+    started = clock()
+    assert ledger.provider_hold_until(model) is None
+    request = ledger.reserve(model, b"TEST", reserved_input=10, reserved_output=0, timeout_seconds=1)
+    assert ledger.finish_embedding(request, "http_200", {"promptTokenCount": 1}, timeout_seconds=1) == "http_200"
+    assert clock() == started and physical[0] == 130
+    physical[0] += 0.25
+    assert clock() - started == 0.25, "non-ledger work retains its real cost"
+    with closing(connect(path)) as db:
+        assert db.execute("SELECT status,actual_input FROM requests").fetchall() == [("http_200", 1)]

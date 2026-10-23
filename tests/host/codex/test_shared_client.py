@@ -17,6 +17,7 @@ import time
 from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scope_recall.adapters.clients import CodexHookHandler
@@ -682,8 +683,8 @@ def test_a_deleted_message_in_the_session_record_does_not_stop_its_read(store, t
 
 
 def test_a_stop_s_capture_time_is_all_of_its_captures(store, tmp_path, monkeypatch):
-    """A Stop hook's capture time includes every capture it performs."""
-    import time
+    """Capture diagnostics sum precise durations even when the budget clock ticks coarsely."""
+    from scope_recall.adapters.clients import handler
 
     _root, _homes, client, _capture = store
     at = _moments()
@@ -694,18 +695,27 @@ def test_a_stop_s_capture_time_is_all_of_its_captures(store, tmp_path, monkeypat
     )
     hook = _hook(client)
     original = hook.core.record_event
+    elapsed = [100.0]
+    durations = iter((0.06, 0.09))
+    # Budget clocks can have coarse ticks; diagnostic durations need their own precise clock.
+    monkeypatch.setattr(
+        handler,
+        "time",
+        SimpleNamespace(monotonic=lambda: int(elapsed[0] * 64) / 64, perf_counter=lambda: elapsed[0]),
+    )
 
-    def slow(context, event, **kwargs):
-        time.sleep(0.06)
-        return original(context, event, **kwargs)
+    def capture(context, event, **kwargs):
+        receipt = original(context, event, **kwargs)
+        elapsed[0] += next(durations)
+        return receipt
 
-    monkeypatch.setattr(hook.core, "record_event", slow)
+    monkeypatch.setattr(hook.core, "record_event", capture)
     try:
         hook.handle_payload(_stop(record))
     finally:
         hook.close()
     total, last = hook.diagnostics.capture_total_ms, hook.diagnostics.capture_elapsed_ms
-    assert total >= 120 and total > last, (total, last)
+    assert (total, last) == (150, 90)
 
 
 def test_two_record_messages_repeating_hook_text_are_not_both_suppressed(store, tmp_path):
