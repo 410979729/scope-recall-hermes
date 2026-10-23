@@ -7,7 +7,7 @@ store as an entry, what the owner tells one of them another can recall, and each
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that is not
 attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
 are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
-[GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later is
+[GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later to `3.13.0` is
 `pip install -U`, `apply-install` and a host restart; the first store open adds the local management audit and private-interval tables. Back up
 before upgrading and follow the [management migration and rollback guide](docs/manage.md#migration-and-rollback).
 On a shared store in
@@ -39,7 +39,7 @@ package with original sources, facts, history, episodes, readable Markdown and o
 
 Use `scope-recall private on --session <id> | --project <path> | --all` to stop keeping a session,
 directory or the whole store. `--mode full` refuses capture, recall and background model work;
-`--mode read-only` refuses capture while recall continues; `--for 2h` sets a duration and `off`
+`--mode read-only` refuses capture while recall continues; `--all --for 2h` sets a duration and `off`
 closes a rule. Rules are stored as metadata only, overlap takes the stricter mode, and an event is
 refused by its own occurrence time even when a later retry or transcript read arrives after the
 rule ends. [The private-mode guide](docs/private-mode.md) lists every host path, injection notice,

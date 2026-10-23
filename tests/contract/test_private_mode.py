@@ -4,21 +4,22 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-from scope_recall.contracts import validate_payload
+from scope_recall.contracts import ContractError, validate_payload
 from scope_recall.core import CoreConfig, MemoryCore, private
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
 from scope_recall.core.schema import SCHEMA_VERSION
-from scope_recall.maintenance import cli, private as private_cli
+from scope_recall.maintenance import cli
+from scope_recall.maintenance import private as private_cli
 from v11_support import context, downgrade_store, recall_request, source_event
 
 
-class TestClock:
+class PrivateClock:
     def __init__(self):
-        self.now = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+        self.now = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
 
     def utc_now(self):
         return self.now.isoformat()
@@ -35,7 +36,7 @@ class TestClock:
 
 @pytest.fixture
 def app(tmp_path):
-    clock = TestClock()
+    clock = PrivateClock()
     ctx = context(tmp_path / "TEST-private-store")
     core = MemoryCore(CoreConfig(ctx.binding), clock=clock)
     core.initialize()
@@ -219,8 +220,179 @@ def test_cli_contract_covers_on_status_list_off(app, monkeypatch, capsys):
 def test_previous_schema_migrates_to_private_intervals_without_losing_sources(app):
     core, ctx, _clock, _owner = app
     source = core.record_event(ctx, _event(), scope_id="TEST-scope")
+    for index in range(4):
+        core.record_event(ctx, _event(key=f"TEST-kept/{index}", content=f"TEST memory {index}"), scope_id="TEST-scope")
     downgrade_store(core.storage.path, 1111)
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        before = conn.execute("SELECT * FROM source_events ORDER BY event_id,source_revision").fetchall()
     assert core.initialize().schema_version == SCHEMA_VERSION
     assert core.source(ctx, source.event_refs[0].ref, 1).event["content"] == "TEST private colour is white."
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("SELECT count(*) FROM private_intervals").fetchone()[0] == 0
+        after = conn.execute("SELECT * FROM source_events ORDER BY event_id,source_revision").fetchall()
+        assert [row[:-1] for row in after] == before
+
+
+def test_timed_global_can_be_ended_early_and_preserves_its_history(app):
+    core, ctx, clock, owner = app
+    owner.private_on(target="global", duration_seconds=3600)
+    clock.advance(60)
+    assert owner.private_off(target="global")["closed"] == 1
+    assert owner.private_status()["mode"] == "none"
+    assert core.record_event(ctx, _event(occurred_at=clock.utc_now()), scope_id="TEST-scope").disposition == "inserted"
+    assert (
+        core.record_event(
+            ctx, _event(key="TEST-late/1", occurred_at="2026-09-05T12:00:30Z"), scope_id="TEST-scope"
+        ).error_code
+        == "PRIVATE_MODE"
+    )
+
+
+@pytest.mark.parametrize(
+    "target,extra", [("session", {"session": "TEST-session"}), ("project", {"project": "C:/work/app"})]
+)
+def test_only_global_intervals_accept_a_duration(app, target, extra):
+    _core, _ctx, _clock, owner = app
+    with pytest.raises(ContractError, match="INPUT_INVALID"):
+        owner.private_on(target=target, duration_seconds=60, **extra)
+
+
+@pytest.mark.parametrize("method", ["profile", "entity", "trace", "collection"])
+def test_full_gates_read_tools_before_their_request_is_read(app, method):
+    core, ctx, _clock, owner = app
+    owner.private_on(target="global")
+    with pytest.raises(ContractError) as refused:
+        getattr(core, method)(ctx, {})
+    assert (refused.value.code, refused.value.field) == ("ACCESS_DENIED", "private_mode")
+
+
+def test_read_only_alone_refuses_durable_ingress_and_makes_a_query_call(app):
+    core, ctx, _clock, owner = app
+    vectors = CountingVector()
+    reading = MemoryCore(CoreConfig(ctx.binding), storage=core.storage, clock=core.clock, vectors=vectors)
+    owner.private_on(target="global", mode="read-only")
+    refused = reading.record_host_event(ctx, _event(), scope_id="TEST-scope", host_scope=None)
+    assert refused.error_code == "PRIVATE_MODE"
+    assert _count(core, ctx, "capture_inbox") == _count(core, ctx, "source_events") == 0
+    reading.recall_packet(ctx, recall_request(query="TEST query", mode="current"))
+    assert vectors.calls == 1
+
+
+def test_failed_private_migration_rolls_back_every_schema_write(app, monkeypatch):
+    from scope_recall.core import storage
+
+    core, ctx, _clock, _owner = app
+    captured = core.record_event(ctx, _event(), scope_id="TEST-scope")
+    downgrade_store(core.storage.path, 1111)
+    migrate = storage.upgrade_1111
+
+    def interrupted(connection):
+        migrate(connection)
+        raise RuntimeError("TEST migration interrupted")
+
+    monkeypatch.setattr(storage, "upgrade_1111", interrupted)
+    with pytest.raises(RuntimeError, match="TEST migration interrupted"):
+        core.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1111
+        assert conn.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == 1111
+        assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name='private_intervals'").fetchone()[0] == 0
+        assert "project_root" not in {row[1] for row in conn.execute("PRAGMA table_info(source_events)")}
+        assert conn.execute("SELECT content FROM source_events").fetchone()[0] == _event()["content"]
+    monkeypatch.setattr(storage, "upgrade_1111", migrate)
+    core.initialize()
+    assert core.source(ctx, captured.event_refs[0].ref, 1).event["content"] == _event()["content"]
+
+
+@pytest.mark.parametrize("target", ["global", "project", "session"])
+def test_background_work_resumes_after_full_ends_without_holding_other_projects(app, target):
+    core, ctx, clock, owner = app
+    first = replace(ctx, session_id="TEST-session-1", project_root="C:/work/app")
+    second = replace(ctx, session_id="TEST-session-2", project_root="C:/work/app2")
+    core.record_event(first, _event(key="TEST-one/1", content="TEST one"), scope_id="TEST-scope")
+    core.record_event(second, _event(key="TEST-two/1", content="TEST two"), scope_id="TEST-scope")
+    args = (
+        {"session": first.session_id}
+        if target == "session"
+        else {"project": first.project_root}
+        if target == "project"
+        else {}
+    )
+    owner.private_on(target=target, **args)
+    embed = CountingEmbed()
+    core.drain_worker(ctx, max_items=8, embed=embed)
+    assert embed.sources == ([] if target == "global" else ["TEST two"])
+    owner.private_off(target=target, **args)
+    clock.advance(301)
+    core.drain_worker(ctx, max_items=8, embed=embed)
+    assert sorted(embed.sources) == ["TEST one", "TEST two"]
+
+
+def test_backfill_before_a_private_interval_keeps_its_original_eligibility(app):
+    core, ctx, _clock, owner = app
+    owner.private_on(target="global")
+    receipt = core.record_event(ctx, _event(occurred_at="2026-09-05T11:00:00Z"), scope_id="TEST-scope")
+    assert receipt.disposition == "inserted"
+
+
+def test_pre_upgrade_snapshot_is_accepted_by_the_documented_rollback_path(app, tmp_path):
+    from scope_recall.maintenance.backup import backup_sqlite
+    from scope_recall.maintenance.restore import apply_restore, plan_restore
+
+    core, ctx, clock, _owner = app
+    core.record_event(ctx, _event(occurred_at="2026-09-05T11:00:00Z"), scope_id="TEST-scope")
+    downgrade_store(core.storage.path, 1111)
+    snapshot = tmp_path / "TEST-before-private.sqlite3"
+    backup_sqlite(core.storage.path, snapshot)
+    core.initialize()
+    _owner.private_on(target="global")
+    clock.advance(60)
+    _owner.private_off(target="global")
+    assert plan_restore(ctx.binding, snapshot)["action"] == "prepare"
+    receipt = apply_restore(ctx.binding, snapshot, backup_dir=tmp_path / "TEST-rollback-backups", now=clock.now)
+    assert receipt["status"] == "prepared"
+    assert receipt["snapshot_schema"] == 1111
+    assert (ctx.binding.data_directory / "restore-required.json").is_file()
+    with closing(sqlite3.connect(receipt["backup"]["path"])) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        mode, ended = conn.execute("SELECT mode,ends_at FROM private_intervals").fetchone()
+        assert mode == "full" and ended is not None
+
+
+def test_worker_interval_times_compare_utc_instants_with_different_offsets(app):
+    core, ctx, _clock, owner = app
+    owner.private_on(target="global", duration_seconds=60)
+    with core.storage.read(ctx) as tx:
+        assert private.active_intervals(tx, "2026-09-05T08:00:30-04:00")
+        assert not private.active_intervals(tx, "2026-09-05T08:01:00-04:00")
+
+
+def test_retry_cannot_change_a_recorded_project_boundary(app):
+    from scope_recall.core.capture_inbox import enqueue
+
+    core, ctx, clock, _owner = app
+    first = replace(ctx, project_root="C:/work/app")
+    second = replace(ctx, project_root="C:/work/app2")
+    enqueue(core.storage, clock, first, _event(), scope_id="TEST-scope", host_scope=None, remaining_seconds=1)
+    with pytest.raises(ContractError) as refused:
+        enqueue(core.storage, clock, second, _event(), scope_id="TEST-scope", host_scope=None, remaining_seconds=1)
+    assert (refused.value.code, refused.value.field) == ("VERSION_CONFLICT", "ingress_identity")
+
+
+def test_inbox_without_project_metadata_keeps_its_legacy_retry_identity(app):
+    from scope_recall.core.capture_inbox import enqueue
+
+    core, ctx, clock, _owner = app
+    first = replace(ctx, project_root="C:/work/app")
+    token, _prepared = enqueue(
+        core.storage, clock, first, _event(), scope_id="TEST-scope", host_scope=None, remaining_seconds=1
+    )
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        body = json.loads(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0])
+        body["context"].pop("project_root")
+        conn.execute("UPDATE capture_inbox SET payload_json=? WHERE token=?", (json.dumps(body), token))
+    retried, _prepared = enqueue(
+        core.storage, clock, first, _event(), scope_id="TEST-scope", host_scope=None, remaining_seconds=1
+    )
+    assert retried == token

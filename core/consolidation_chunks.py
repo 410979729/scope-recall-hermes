@@ -41,8 +41,9 @@ def source_chunk(source, offset, *, formatter, episode_ref=None, resume_seed=())
 
     def view(end):
         chunk = ConsolidationChunk(offset, end, total)
+        values: dict = dict(source.__dict__, event=dict(source.event, content=content[offset:end]))
         return ChunkedSource(
-            **dict(source.__dict__, event=dict(source.event, content=content[offset:end])),
+            **values,
             consolidation_window=chunk,
             consolidation_seed=resume_seed,
         )

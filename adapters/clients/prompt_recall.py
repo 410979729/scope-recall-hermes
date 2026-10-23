@@ -165,7 +165,7 @@ class PromptRecall:
             return {}
         session_id = self._hook.session_of(payload)
         audience = self._hook.audience_of(payload) if session_id is not None else None
-        if audience is None:
+        if audience is None or session_id is None:
             return {}
         self._hook.bind_project_root(payload, audience)
         turn_id, _gaps = turn_id_from_payload(payload, required=True, field=TURN_FIELD[self._hook.host])

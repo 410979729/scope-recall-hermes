@@ -235,6 +235,8 @@ SUITES = {
         "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/codex/test_client_private_mode.py",
+        "tests/host/hermes/test_hermes_private_mode.py",
         "tests/host/test_endpoint_credentials.py",
         "tests/host/hermes/test_attachments_shutdown.py",
         "tests/host/hermes/test_audience_isolation.py",

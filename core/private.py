@@ -16,6 +16,7 @@ from __future__ import annotations
 import ntpath
 import posixpath
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -24,7 +25,6 @@ from ..contracts import ContractError, utc_timestamp
 if TYPE_CHECKING:
     from .storage import SQLiteStorage
 
-TABLE = "private_intervals"
 TARGETS = ("session", "project", "global")
 MODES = ("full", "read-only")
 MODE_NONE = "none"
@@ -112,6 +112,7 @@ def _covers(interval, at: str) -> bool:
 
 
 def _strictest(modes) -> str | None:
+    modes = set(modes)
     if "full" in modes:
         return "full"
     if "read-only" in modes:
@@ -159,8 +160,10 @@ def _target_matches(interval, context, project: str | None) -> bool:
         return True
     if kind == "session":
         return interval["session_id"] == context.session_id
-    return project is not None and interval["project_path"] is not None and project_contains(
-        interval["project_path"], project
+    return (
+        project is not None
+        and interval["project_path"] is not None
+        and project_contains(interval["project_path"], project)
     )
 
 
@@ -172,28 +175,55 @@ def matching_intervals(tx, context) -> list[dict]:
     explicit operator actions, never by captured content.
     """
     project = _project_for(context)
-    rows = tx._check().execute(
-        """SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at
+    rows = (
+        tx._check()
+        .execute(
+            """SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at
            FROM private_intervals
            WHERE target_kind='global' OR (target_kind='session' AND session_id=?) OR target_kind='project'
            ORDER BY interval_id""",
-        (context.session_id,),
-    ).fetchall()
-    return [
-        {key: row[key] for key in row.keys()}
-        for row in rows
-        if _target_matches(row, context, project)
-    ]
+            (context.session_id,),
+        )
+        .fetchall()
+    )
+    return [{key: row[key] for key in row.keys()} for row in rows if _target_matches(row, context, project)]
+
+
+@dataclass(frozen=True)
+class CaptureGuard:
+    """One hook's content-free interval snapshot for bounded capture deferral.
+
+    Durable capture always checks SQLite again in its own transaction. A batch of retry
+    or shutdown copies shares this snapshot instead of opening a connection per event.
+    """
+
+    intervals: tuple[dict, ...]
+
+    @classmethod
+    def read(cls, tx):
+        """Read the interval metadata for a batch whose events can span sessions."""
+        return cls(tuple(dict(row) for row in tx._check().execute("SELECT * FROM private_intervals")))
+
+    def blocked(self, context, events) -> bool:
+        """Judge the batch member at its event time with the Core target policy."""
+        project = _project_for(context)
+        intervals = [row for row in self.intervals if _target_matches(row, context, project)]
+        return capture_mode(intervals, events) is not None
 
 
 def active_intervals(tx, now: str) -> list[dict]:
     """Every interval active at ``now``, for background work that reads sources directly."""
-    rows = tx._check().execute(
-        """SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at
+    now = utc_timestamp(now)
+    rows = (
+        tx._check()
+        .execute(
+            """SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at
            FROM private_intervals WHERE starts_at<=? AND (ends_at IS NULL OR ends_at>?)
            ORDER BY interval_id""",
-        (now, now),
-    ).fetchall()
+            (now, now),
+        )
+        .fetchall()
+    )
     return [{key: row[key] for key in row.keys()} for row in rows]
 
 
@@ -210,16 +240,16 @@ def _source_matches(interval, source) -> bool:
     if kind == "session":
         return interval["session_id"] == _source_field(source, "session_id")
     project = _source_field(source, "project_root")
-    return project is not None and interval["project_path"] is not None and project_contains(
-        interval["project_path"], project
+    return (
+        project is not None
+        and interval["project_path"] is not None
+        and project_contains(interval["project_path"], project)
     )
 
 
 def source_blocked(intervals, source) -> bool:
-    """Whether a full interval covers this stored source's session or project now."""
-    return any(
-        interval["mode"] == "full" and _source_matches(interval, source) for interval in intervals
-    )
+    """Whether full mode covers a source; None asks only about a whole-store interval."""
+    return any(interval["mode"] == "full" and _source_matches(interval, source) for interval in intervals)
 
 
 def filter_sources(intervals, sources):
@@ -257,28 +287,30 @@ def work_blocked(storage, clock, context, item) -> bool:
 
 
 def claim_blocked(tx, intervals, claim) -> bool:
-    """Whether a full interval covers every source that a claim version rests on.
+    """Whether a full interval covers any source that a claim version rests on.
 
     A claim has no session of its own, so it is private when one of its evidence
     sources is: sending the derived statement would send what that source said.
     """
-    if any(interval["mode"] == "full" and interval["target_kind"] == "global" for interval in intervals):
+    if source_blocked(intervals, None):
         return True
-    rows = tx._check().execute(
-        """SELECT e.session_id,e.project_root FROM evidence_links l
+    rows = (
+        tx._check()
+        .execute(
+            """SELECT e.session_id,e.project_root FROM evidence_links l
            JOIN source_events e ON e.event_id=l.source_ref AND e.source_revision=l.source_revision
            WHERE l.object_kind='claim' AND l.object_ref=? AND l.object_revision=?""",
-        (claim.ref, claim.revision),
-    ).fetchall()
+            (claim.ref, claim.revision),
+        )
+        .fetchall()
+    )
     for row in rows:
-        if any(
-            interval["mode"] == "full" and _source_matches(interval, row) for interval in intervals
-        ):
+        if any(interval["mode"] == "full" and _source_matches(interval, row) for interval in intervals):
             return True
     return False
 
 
-def notice_for_mode(mode: str | None) -> str | None:
+def notice_for_mode(mode: object) -> str | None:
     """The one line a host injects so the model can say plainly that it is not remembering."""
     if mode == "full":
         return (
@@ -310,8 +342,12 @@ def _valid_target(target: str, session_id: str | None, project: str | None) -> t
     if target not in TARGETS:
         raise ContractError("INPUT_INVALID", "target")
     if target == "session":
+        if project is not None:
+            raise ContractError("INPUT_INVALID", "target")
         return _text(session_id, "session", MAX_SESSION_ID), None
     if target == "project":
+        if session_id is not None:
+            raise ContractError("INPUT_INVALID", "target")
         return None, normalize_project_path(project)
     if session_id is not None or project is not None:
         raise ContractError("INPUT_INVALID", "target")
@@ -342,11 +378,11 @@ def open_interval(
     """Open one interval and return it; an identical open rule is returned instead of duplicated."""
     if mode not in MODES:
         raise ContractError("INPUT_INVALID", "mode")
-    if duration_seconds is not None and (
-        type(duration_seconds) is not int or not 1 <= duration_seconds <= 365 * 86400
-    ):
+    if duration_seconds is not None and (type(duration_seconds) is not int or not 1 <= duration_seconds <= 365 * 86400):
         raise ContractError("INPUT_INVALID", "for")
     session_id, project_path = _valid_target(target, session, project)
+    if duration_seconds is not None and target != "global":
+        raise ContractError("INPUT_INVALID", "for")
     started = _now(clock)
     ends = None if duration_seconds is None else _after(started, duration_seconds)
     with storage.write(context, remaining_seconds=5) as tx:
@@ -359,9 +395,7 @@ def open_interval(
                VALUES (?,?,?,?,?,?,?)""",
             (target, session_id, project_path, mode, started, ends, started),
         )
-        row = conn.execute(
-            "SELECT * FROM private_intervals WHERE interval_id=?", (cursor.lastrowid,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM private_intervals WHERE interval_id=?", (cursor.lastrowid,)).fetchone()
         return _row_payload(row, started)
 
 
@@ -386,7 +420,7 @@ def close_interval(
         ]
         for row in rows:
             conn.execute(
-                "UPDATE private_intervals SET ends_at=? WHERE interval_id=? AND ends_at IS NULL",
+                "UPDATE private_intervals SET ends_at=? WHERE interval_id=?",
                 (now, row["interval_id"]),
             )
         closed = []

@@ -25,7 +25,6 @@
    "reportOptionalMemberAccess": 3
   },
   "adapters/clients/prompt_recall.py": {
-   "reportArgumentType": 3,
    "reportOptionalCall": 1
   },
   "adapters/clients/record_reader.py": {
@@ -87,7 +86,6 @@
    "reportGeneralTypeIssues": 2
   },
   "core/consolidation_chunks.py": {
-   "reportArgumentType": 12,
    "reportOptionalMemberAccess": 1
   },
   "core/consolidation_summary.py": {
@@ -666,7 +664,7 @@
    "E501": 2
   },
   "core/source_storage.py": {
-   "E501": 8
+   "E501": 7
   },
   "core/storage.py": {
    "B010": 1,

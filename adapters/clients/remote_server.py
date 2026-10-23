@@ -338,8 +338,21 @@ def private_check(config: RemoteServerConfig, body: dict[str, Any]) -> dict[str,
         actor_origin="host_generated",
         project_root=project,
     )
-    from ...core import CoreConfig, MemoryCore
+    from scope_recall.core import CoreConfig, MemoryCore
 
+    moments: list[datetime] = []
+    for value in times:
+        moment = _observed_at(value)
+        if moment is None:
+            raise RemoteServerError("private check times must be ISO instants")
+        moments.append(moment)
+    # A multi-batch preflight carries the whole request's latest instant, so every batch
+    # receives the same correction as its eventual content-bearing request.
+    latest = _observed_at(body.get("latest_at"))
+    witnessed = [*moments, *([latest] if latest is not None else [])]
+    lead = _SESSION_LEADS.lead(session.strip(), max(witnessed) - _now() if witnessed else timedelta(0))
+    if lead > timedelta(seconds=CLOCK_AHEAD_SECONDS):
+        times = [_stamp(moment - lead) for moment in moments]
     return MemoryCore(CoreConfig(client.to_binding())).private_check(context, times)
 
 

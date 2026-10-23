@@ -120,18 +120,6 @@ class CaptureWriter:
             self.record_failure(identity, "capability_gap")
             adapter._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return None
-        private_state = self._private_state(context, event, remaining_seconds)
-        if private_state is not None:
-            # A retry buffer or kept-captures file is still a durable copy of the
-            # person's words.  The check runs before either is written, and the
-            # authoritative store checks again in the same transaction.
-            code = "PRIVATE_MODE" if private_state == "blocked" else "PRIVATE_MODE_UNVERIFIED"
-            gap = "private_mode" if private_state == "blocked" else "private_mode_unverified"
-            self.record_failure(identity, gap)
-            adapter._merge_gaps(gaps, (f"capture_gap:{gap}",))
-            return CaptureReceipt(
-                "rejected", (), "not_persisted", "not_indexed", "not_scheduled", (*gaps, gap), code
-            )
         started = time.monotonic()
         snapshot = self._snapshot(context, event, identity, gaps, scope_id, bound)
         retry = adapter._retry.captures
@@ -147,17 +135,29 @@ class CaptureWriter:
             return self._refused(identity, receipt, snapshot, gaps, replay)
         return self._stored(context, identity, receipt, gaps, replay)
 
-    def _private_state(self, context, event: dict, remaining_seconds: float) -> str | None:
+    def capture_guard(self, context, remaining_seconds: float):
+        """Read a batch's Core policy snapshot; a failed read cannot authorize a local copy."""
+        reader = getattr(self._adapter._require_core(), "private_capture_guard", None)
+        if reader is None:
+            return None
+        try:
+            return reader(context, remaining_seconds=max(0.001, remaining_seconds))
+        except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
+            return exc
+
+    def private_state(self, context, event: dict, remaining_seconds: float, *, guard=None) -> str | None:
         """``blocked``, ``unknown`` when the rule table could not be read, or None when capture may go on.
 
-        A fake core used by adapter tests need not implement this optional read;
-        production ``MemoryCore`` always does.
+        Test doubles without persistent ingress may omit the optional read.
         """
+        if isinstance(guard, Exception):
+            return "unknown"
         check = getattr(self._adapter._require_core(), "private_capture_blocked", None)
         if check is None:
             return None
         try:
-            blocked = check(context, event, remaining_seconds=max(0.001, min(0.2, remaining_seconds)))
+            options = {"guard": guard} if guard is not None else {}
+            blocked = check(context, event, remaining_seconds=max(0.001, min(0.2, remaining_seconds)), **options)
         except (ContractError, OSError, RuntimeError, sqlite3.Error):
             return "unknown"
         return "blocked" if blocked else None
@@ -195,7 +195,9 @@ class CaptureWriter:
             return None
         return RetryCapture(context, copy.deepcopy(event), gaps, scope_id, bound.scope, time.monotonic())
 
-    def defer(self, context, event, *, identity, gaps: tuple[str, ...], scope_id: str | None, bound) -> None:
+    def defer(
+        self, context, event, *, identity, gaps: tuple[str, ...], scope_id: str | None, bound, guard=None
+    ) -> None:
         """Keep a capture its hook has no time left for, with no store call: in the retry buffer, as one the store
         could not take in time is kept (``_keep``), and said as that one is."""
         adapter = self._adapter
@@ -208,24 +210,18 @@ class CaptureWriter:
             adapter._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return
         event = self._with_source_context(event, bound, False)
-        private_state = self._private_state(context, event, 0.2)
-        if private_state is not None:
-            gap = "private_mode" if private_state == "blocked" else "private_mode_unverified"
-            self.record_failure(identity, gap)
-            adapter._merge_gaps(gaps, (f"capture_gap:{gap}",))
-            return
-        self._keep(identity, self._snapshot(context, event, identity, gaps, scope_id, bound))
+        self._keep(identity, self._snapshot(context, event, identity, gaps, scope_id, bound), guard=guard)
         self.record_failure(identity, "DEADLINE_EXCEEDED")
         adapter._merge_gaps(gaps, ("capture_gap:write_deferred",))
 
-    def _keep(self, identity, snapshot) -> None:
+    def _keep(self, identity, snapshot, *, guard=None) -> None:
         """Keep a capture whose write may pass later in the retry buffer, or on disk while the buffer has no room
         (``CaptureRetry.keep_on_disk``), from where the buffer takes it once it has; or say it could not be kept."""
         retry = self._adapter._retry
         if identity is None or identity in retry.captures:
             return
         if snapshot is not None:
-            state = self._private_state(snapshot.context, snapshot.event, 0.2)
+            state = self.private_state(snapshot.context, snapshot.event, 0.2, guard=guard)
             if state is not None:
                 gap = "private_mode" if state == "blocked" else "private_mode_unverified"
                 self._adapter._merge_gaps((f"capture_gap:{gap}",))
@@ -234,7 +230,7 @@ class CaptureWriter:
             retry.captures[identity] = snapshot
             retry.start()
             return
-        if snapshot is not None and retry.keep_on_disk(identity, snapshot):
+        if snapshot is not None and retry.keep_on_disk(identity, snapshot, guard=guard):
             retry.more_on_disk = True
         self._adapter._merge_gaps(("capture_gap:retry_buffer_full",))
 

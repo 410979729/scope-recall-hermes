@@ -298,7 +298,7 @@ def _private_allowed(storage, clock, context, allowed: frozenset[str], started: 
     with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         now = clock.utc_now()
         rules = private.active_intervals(tx, now)
-    if any(rule["target_kind"] == "global" and rule["mode"] == "full" for rule in rules):
+    if private.source_blocked(rules, None):
         return allowed - _HOLDABLE_WORK_TYPES
     return allowed
 
@@ -576,9 +576,7 @@ def drain_worker(
                 if member.work_type == "embed"
                 else processors[member.work_type]
             )
-            outcome = _run_member(
-                storage, clock, context, member, run=run, started=started, budget=member_budget
-            )
+            outcome = _run_member(storage, clock, context, member, run=run, started=started, budget=member_budget)
             disposition, error_code, state = outcome
             dispositions[disposition] += 1
             receipts.append(

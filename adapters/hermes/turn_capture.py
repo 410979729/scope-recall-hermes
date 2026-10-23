@@ -25,6 +25,7 @@ from .boundary import (
     pre_llm_source_event,
     steer_source_event,
     steer_source_key,
+    sync_assistant_key,
     sync_turn_source_events,
     tool_call_source_event,
     unanswered_messages,
@@ -289,11 +290,22 @@ class TurnCapture:
             return
         answer = kwargs.get("assistant_response")
         history = kwargs.get("conversation_history")
-        said = interim_messages(history, answer=answer if isinstance(answer, str) else "")
-        steered = _said_aside(identity, history)
+        observed_at = self._adapter._utc_now()
+        said = tuple(
+            (text, moment or observed_at)
+            for text, moment in interim_messages(history, answer=answer if isinstance(answer, str) else "")
+        )
+        steered = tuple(
+            steer._replace(occurred_at=steer.occurred_at or observed_at) for steer in _said_aside(identity, history)
+        )
         with self._adapter._said_lock:
             if turn_id != self._adapter._active_turn_id:
                 return
+            if isinstance(answer, str) and answer.strip():
+                session = self._adapter._effective_session_id(str(kwargs.get("session_id") or ""))
+                context = identity.trusted_context(session_id=session)
+                key = sync_assistant_key(context, session, turn_id)
+                self._adapter._ledger.witness((key, 1), observed_at, observed_at)
             if said:
                 self._adapter._interim_said[turn_id] = said
             if steered:
@@ -429,7 +441,11 @@ class TurnCapture:
                 )
             reads[key] = (steer, key)
         unread = list(reads.values())
-        took = 0.0
+        if not unread:
+            return
+        began = time.monotonic()
+        guard = adapter._writer.capture_guard(context, _budget(deadline))
+        took = time.monotonic() - began
         for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
             with adapter._lock, adapter._calls.holding(hook):
                 taken = held
@@ -452,6 +468,7 @@ class TurnCapture:
                             gaps=gaps,
                             scope_id=identity.local_scope_id,
                             bound=identity,
+                            guard=guard,
                         )
                     else:
                         began = time.monotonic()

@@ -313,7 +313,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             except Exception as exc:  # noqa: BLE001 - the shutdown goes on; what is left is said below
                 _log.warning("scope-recall: a retry of buffered captures failed at shutdown (%s)", type(exc).__name__)
             pending = self._retry.pending_identities()
-            kept_on_disk, _retained = self._retry.keep_all_on_disk()
+            kept_on_disk, _retained = self._retry.keep_all_on_disk(guard=self._retry.private_guard)
             # Read only while one more store call fits the pass's time (``fits``): a count is not worth running past it.
             durable_pending = (
                 self._retry.durable_pending_count(remaining_seconds=pass_deadline - time.monotonic())

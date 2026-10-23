@@ -104,9 +104,7 @@ def hold_for_private_mode(
         if not tx.work._verify_lease(*item.lease, now=now):
             return stale_result(tx, item)
         return work_result(
-            tx.work.defer_without_attempt(
-                *item.lease, now=now, error_code="private_mode", seconds=seconds
-            ),
+            tx.work.defer_without_attempt(*item.lease, now=now, error_code="private_mode", seconds=seconds),
             error_code="private_mode",
         )
 

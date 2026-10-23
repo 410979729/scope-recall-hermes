@@ -177,6 +177,7 @@ class MemoryCore:
     def inspect_object(self, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24):
         from .inspect_service import InspectedObject, inspect_object
 
+        self._private_read_refusal(context)
         if type(ref) is str and ref.startswith(RECALL_DIAGNOSTIC_PREFIX):
             # A recall packet's ``diagnostic_ref`` names a record this process keeps for its last recalls
             # (``recall_diagnostics``), never a stored object: looked up in the store it would always be
@@ -206,7 +207,12 @@ class MemoryCore:
             return private.mode_at(private.matching_intervals(tx, context), now)
 
     def private_capture_blocked(
-        self, context: TrustedContext, value: SourceEvent | dict | str | bytes, *, remaining_seconds: float = 1.0
+        self,
+        context: TrustedContext,
+        value: SourceEvent | dict | str | bytes,
+        *,
+        remaining_seconds: float = 1.0,
+        guard: private.CaptureGuard | None = None,
     ) -> bool:
         """Whether this event's own occurrence time falls in any private interval.
 
@@ -219,12 +225,15 @@ class MemoryCore:
         prepared = prepare_capture(value, context)
         if prepared.rejection:
             return False
-        now = utc_timestamp(self.clock.utc_now())
+        if guard is not None:
+            return guard.blocked(context, prepared.events)
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            intervals = private.matching_intervals(tx, context)
-            if private.capture_mode(intervals, prepared.events) is not None:
-                return True
-            return private.mode_at(intervals, now) == "full"
+            return private.capture_mode(private.matching_intervals(tx, context), prepared.events) is not None
+
+    def private_capture_guard(self, context: TrustedContext, *, remaining_seconds: float = 1.0):
+        """Read one metadata snapshot for a hook's bounded retry or deferral batch."""
+        with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
+            return private.CaptureGuard.read(tx)
 
     def private_check(self, context: TrustedContext, times) -> dict:
         """Metadata-only answer for a remote client: whether these moments or a recall are private.
@@ -332,7 +341,7 @@ class MemoryCore:
             )
 
     @staticmethod
-    def _private_recall_packet(search_context):
+    def _private_recall_packet(search_context) -> dict:
         """The empty packet a full interval returns before any embedding, network or model call."""
         packet = dict(
             protocol_version="1.1",

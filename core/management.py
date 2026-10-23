@@ -137,17 +137,13 @@ class MemoryManagement:
         """The current effective mode and active rules for a target or the store."""
         from . import private
 
-        return private.status(
-            self.core.storage, self.core.clock, self._context(), session=session, project=project
-        )
+        return private.status(self.core.storage, self.core.clock, self._context(), session=session, project=project)
 
     def private_list(self, *, active_only: bool = True) -> dict:
         """Every stored private interval, metadata only."""
         from . import private
 
-        return private.list_intervals(
-            self.core.storage, self.core.clock, self._context(), active_only=active_only
-        )
+        return private.list_intervals(self.core.storage, self.core.clock, self._context(), active_only=active_only)
 
     def _plan(self, tx, refs, mode, expected=None):
         groups = {}

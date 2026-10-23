@@ -282,7 +282,6 @@ class HermesIdentity:
         environment_revision: str | None = None,
         recent_messages: tuple[str, ...] = (),
         mutation: bool = False,
-        project_root: str | None = None,
     ) -> TrustedContext:
         """Bind read operations to readable scopes, mutations to writable scopes only."""
         active_session = session_id if session_id is not None else self.session_id
@@ -312,7 +311,7 @@ class HermesIdentity:
             self.scope.agent_workspace,
             stored_session,
         )
-        root = project_root or self._agent_workspace_path()
+        root = self._agent_workspace_path()
         return TrustedContext(
             self.binding,
             stored_session,

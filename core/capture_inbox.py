@@ -19,7 +19,6 @@ from ..contracts import (
     DisplaySnapshot,
     TrustedContext,
     TrustedSourcePrincipal,
-    utc_timestamp,
 )
 from . import private
 from .capture import CaptureReceipt, record_event
@@ -93,7 +92,9 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
         return None, prepared
     if host_scope is None and not context.binding.test_mode:
         raise ContractError("ACCESS_DENIED", "ingress_host_authority")
-    body = dict(events=prepared.events, gaps=prepared.gaps, context=context_payload(context), host_scope=host_scope)
+    body: dict = dict(
+        events=prepared.events, gaps=prepared.gaps, context=context_payload(context), host_scope=host_scope
+    )
     encoded = canonical(body)
     if len(encoded.encode("utf-8")) > 2097152:
         raise ContractError("INPUT_INVALID", "ingress_item_budget")
@@ -125,8 +126,7 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
         # Before the inbox row: a private capture must not leave its words in
         # durable ingress either, where a worker's later replay would meet them.
         intervals = private.matching_intervals(tx, context)
-        current = private.mode_at(intervals, utc_timestamp(clock.utc_now()))
-        if current == "full" or private.capture_mode(intervals, prepared.events) is not None:
+        if private.capture_mode(intervals, prepared.events) is not None:
             return None, prepared
         prior = conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()
         if prior:
@@ -148,8 +148,8 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
             # capture, not a changed envelope: retries must not conflict on a field
             # the old row could not carry.
             old_context, new_context = dict(previous["context"]), dict(body["context"])
-            old_context.pop("project_root", None)
-            new_context.pop("project_root", None)
+            if "project_root" not in old_context:
+                new_context.pop("project_root", None)
             if (
                 normalize(previous["events"]) != normalize(body["events"])
                 or old_context != new_context
@@ -186,7 +186,7 @@ def durable_record_event(
             "not_indexed",
             "not_scheduled",
             (*prepared.gaps, "private_mode") if refused else prepared.gaps,
-            "PRIVATE_MODE" if refused else None,
+            "PRIVATE_MODE" if refused else prepared.rejection,
         )
     # The commit is a second write.  Started with less time left than the inbox write took, on a store that slow it
     # would run past the capture's time: the capture is durable in the inbox already, and the worker's replay, or the

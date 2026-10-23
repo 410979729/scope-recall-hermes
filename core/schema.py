@@ -62,9 +62,7 @@ PRIVATE_INTERVALS_STATEMENT = """CREATE TABLE private_intervals (
     ),
     CHECK(ends_at IS NULL OR starts_at <= ends_at)
 ) STRICT"""
-PRIVATE_TARGET_INDEX = (
-    "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at)"
-)
+PRIVATE_TARGET_INDEX = "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at)"
 
 #: Management actions carry object identities and versions, never a copied
 #: conversation body. They are distinct from host-captured user messages.
@@ -620,7 +618,7 @@ def upgrade_1111(connection):
 
     ``project_root`` is the normalized working directory the host supplied with the
     capture, metadata beside the source row rather than part of its words.  Existing
-    rows keep NULL, so a project rule applies to captures from this release on.
+    rows keep NULL; project matching requires directory metadata supplied by the host.
     """
     connection.execute(PRIVATE_INTERVALS_STATEMENT)
     connection.execute(PRIVATE_TARGET_INDEX)

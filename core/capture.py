@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..contracts import ContractError, SourceEvent, TrustedContext, utc_timestamp
+from ..contracts import ContractError, SourceEvent, TrustedContext
 from . import private
 from .admission import AdmissionPolicy, decide, decision_marker, store_decision
 from .candidate_lifecycle import CandidateSourceTrigger
@@ -190,8 +190,7 @@ def record_event(
             # a replay, a retry or a transcript read after the interval ended still
             # refuses what was said while it was open.
             intervals = private.matching_intervals(tx, context)
-            current = private.mode_at(intervals, utc_timestamp(clock.utc_now()))
-            if current == "full" or private.capture_mode(intervals, prepared.events) is not None:
+            if private.capture_mode(intervals, prepared.events) is not None:
                 if _inbox_token is not None:
                     tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (_inbox_token,))
                 return _private_refusal(prepared)

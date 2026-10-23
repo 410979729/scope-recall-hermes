@@ -41,8 +41,6 @@ class Prefetch:
         try:
             identity = self._adapter._require_identity()
             effective_session = self._adapter._effective_session_id(session_id)
-            if is_trivial_prompt(query):
-                return ""
             if not identity.runtime_audience.allowed_scope_ids:
                 self._adapter._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
                 return ""
@@ -62,6 +60,8 @@ class Prefetch:
         mode = read_mode(context) if callable(read_mode) else None
         notice = notice_for_mode(mode) or ""
         if mode == "full":
+            return notice
+        if is_trivial_prompt(query):
             return notice
         packet = core.recall_packet(
             context,
