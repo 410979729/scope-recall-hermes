@@ -13,8 +13,10 @@ import json
 from scope_recall.core.capture_filters import redact_secret_like_text
 from scope_recall.core.secret_patterns import (
     contains_secret_like_text,
+    cut_between_runs,
     secret_like_text_starts_before,
     secret_scan_shadow,
+    structure_contains_secret_like_text,
 )
 from v11_support import slowdown
 
@@ -229,3 +231,53 @@ def test_a_run_counts_by_where_it_starts_and_is_judged_with_the_rest_of_its_line
     hidden = "\u200b" * 3 + "password: Xk9#mP2q"
     assert not secret_like_text_starts_before(hidden, 3), "the characters the scan drops still count as characters"
     assert secret_like_text_starts_before(hidden, 4)
+
+
+def test_a_structure_is_read_text_by_text_as_written():
+    """Through its JSON encoding a text's end is followed by the next field, and its quotes are escaped."""
+    admitted = {
+        "sources": [{"content": "TEST note" + chr(10) + "api_key: null"}, {"content": 'api_key: "<your-api-key>"'}],
+        "count": 2,
+    }
+    assert contains_secret_like_text(json.dumps(admitted, separators=(",", ":")))
+    assert not structure_contains_secret_like_text(admitted)
+    for carrying in (
+        {"content": "password: hunter2-not-a-placeholder"},
+        {"password": "hunter2-not-a-placeholder"},
+        ["TEST", ["token: abcdef123456"]],
+        # A credential under a key that names it, whatever the value holds it in.
+        {"password": 123456},
+        {"token": 3},
+        {"password": ["hunter2"]},
+        {"password": {"value": "hunter2"}},
+        # The whole quoted value is the value: an exempt word before a space or a quote does not end it.
+        {"password": "null hunter2"},
+        {"password": 'null" hunter2'},
+    ):
+        assert structure_contains_secret_like_text(carrying), carrying
+    assert not structure_contains_secret_like_text({"password": None, "secret": [], "api_key": "<your-api-key>"})
+    deep = [{"TEST": "password: hunter2-not-a-placeholder"}]
+    for _ in range(5000):
+        deep = [deep]
+    assert structure_contains_secret_like_text(deep), "nesting costs no recursion"
+
+
+def test_a_cut_falls_where_neither_side_reads_otherwise_than_its_line():
+    """For a caller that cuts a text it hands on, as a page or an evidence window is cut."""
+    line = "TEST credential_env: null tail" + chr(10)
+    assert contains_secret_like_text(line[: line.index("ll")]), "cut after nu, the start of null reads as a password"
+    assert line[: cut_between_runs(line, line.index("ll"), toward=0)] == "TEST credential_env: "
+    placeholder = "TEST api_key: <your api key> tail" + chr(10)
+    cut = cut_between_runs(placeholder, placeholder.index("key>"), toward=0)
+    assert placeholder[:cut] == "TEST api_key: ", "a space inside the placeholder is no place to cut"
+    token = "TEST mytoken: TESTvalue tail"
+    assert token[cut_between_runs(token, token.index("token:"), toward=len(token)) :] == "TESTvalue tail"
+    unbroken = "TEST " + "x" * 500
+    assert cut_between_runs(unbroken, 300, toward=0) == 300, "a run with no space in reach keeps its cut"
+    assert cut_between_runs(line, len(line), toward=0) == len(line), "the end of the text is no cut"
+    # The key stays in what is read, however far before the cut the line starts.
+    glued = "x" * 2981 + "api_key: <your api key> tail"
+    assert glued[: cut_between_runs(glued, 3000, toward=0)].endswith("api_key: ")
+    # A run the reading's own bound cuts into is on a side and in the uncut text alike: it does not excuse a cut.
+    twice = "api_key: <your api key> " + "x" * 776 + "api_key: <your api key> tail"
+    assert cut_between_runs(twice, twice.index("key>"), toward=0) == twice.index("<your")

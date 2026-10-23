@@ -9,9 +9,13 @@ further in, and went on refusing every such request.  These tests go through the
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
+from scope_recall.core.consolidate import candidate_evaluation_messages, consolidation_messages
+from scope_recall.core.secret_patterns import contains_secret_like_text
 from scope_recall.runtime.models import AuxiliaryModelError
+from test_candidate_evidence_window import _candidate, _source
 from test_responses_consolidation import CREDENTIAL_ENV, MODEL, FakeTransport, _answer, _payload, _runtime
 
 BACKSLASH = chr(92)
@@ -87,6 +91,90 @@ def test_a_secret_in_a_content_is_refused_before_anything_is_sent(tmp_path, monk
     with pytest.raises(AuxiliaryModelError, match="sensitive_request"):
         runtime.consolidation.propose([{"role": "user", "content": REAL_ASSIGNMENT}], remaining_seconds=2.0)
     assert transport.calls == []
+
+
+#: Sources capture admits whose JSON encoding in a request reads like a credential: a value the scan exempts only
+#: before a space or the end of the text, at the end of a source, where the encoding puts the next field; and a
+#: quoted placeholder, whose quotes the encoding escapes.
+ADMITTED = {
+    "value_at_the_end": "TEST note" + chr(10) + "api_key: null",
+    "prose_at_the_end": "TEST note" + chr(10) + "the password is required.",
+    "quoted_placeholder": "TEST config" + chr(10) + 'api_key: "<your-api-key>"' + chr(10) + "TEST more",
+}
+
+
+#: A request budget no slow runner runs out of: these tests check the guard, not the deadline.
+BUDGET = 30.0
+
+
+def _sent(tmp_path, monkeypatch, route, messages):
+    build, answer, _contents = ROUTES[route]
+    monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
+    transport = FakeTransport(lambda **kwargs: (200, answer()))
+    runtime = _runtime(build(tmp_path), transport)
+    assert runtime.consolidation.propose(messages, remaining_seconds=BUDGET) == "{}"
+    return transport
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+@pytest.mark.parametrize("name", sorted(ADMITTED))
+def test_a_source_capture_admits_is_sent_whatever_its_encoding_makes_of_it(tmp_path, monkeypatch, route, name):
+    content = ADMITTED[name]
+    assert not contains_secret_like_text(content), "capture admits the source as written"
+    transport = _sent(tmp_path, monkeypatch, route, consolidation_messages([_source(content)]))
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+def test_a_candidate_is_read_as_the_fields_it_carries(tmp_path, monkeypatch, route):
+    source = _source("TEST-build result ready")
+    candidate = _candidate(source, [])
+    candidate = replace(candidate, payload={**candidate.payload, "conditions": ["TEST deploy with api_key: null"]})
+    transport = _sent(tmp_path, monkeypatch, route, candidate_evaluation_messages(candidate, (source,)))
+    assert len(transport.calls) == 1
+
+
+def _candidate_with_a_secret_value():
+    source = _source("TEST-build result ready")
+    candidate = _candidate(source, [])
+    candidate = replace(candidate, payload={**candidate.payload, "value_text": "password: hunter2-not-a-placeholder"})
+    return candidate_evaluation_messages(candidate, (source,))
+
+
+def _user(content):
+    return lambda: [{"role": "user", "content": content}]
+
+
+REFUSED = {
+    "in_a_source": lambda: consolidation_messages([_source(REAL_ASSIGNMENT)]),
+    "in_a_candidate": _candidate_with_a_secret_value,
+    # A credential under a key that names it, whatever holds it, and a label as the key of what follows it.
+    "under_a_key_naming_it": _user(json.dumps({"sources": [{"password": "hunter2-not-a-placeholder"}]})),
+    "a_number_under_a_key_naming_it": _user(json.dumps({"password": 12345678})),
+    "a_list_under_a_key_naming_it": _user(json.dumps({"password": ["hunter2-not-a-placeholder"]})),
+    "after_a_label_naming_it": _user("password=" + json.dumps(["hunter2-not-a-placeholder"])),
+    # The whole quoted value is the value: an exempt word before a space does not end it.
+    "behind_an_exempt_word": _user(json.dumps({"password": "null hunter2-not-a-placeholder"})),
+}
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+@pytest.mark.parametrize("where", sorted(REFUSED))
+def test_a_secret_a_request_carries_is_refused_however_it_is_encoded(tmp_path, monkeypatch, route, where):
+    build, answer, _sent_contents = ROUTES[route]
+    monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
+    transport = FakeTransport(lambda **kwargs: (200, answer()))
+    runtime = _runtime(build(tmp_path), transport)
+    with pytest.raises(AuxiliaryModelError, match="sensitive_request"):
+        runtime.consolidation.propose(REFUSED[where](), remaining_seconds=BUDGET)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+def test_a_content_nested_too_deep_to_read_as_json_is_read_as_text(tmp_path, monkeypatch, route):
+    deep = "[" * 5000 + "0" + "]" * 5000
+    transport = _sent(tmp_path, monkeypatch, route, [{"role": "user", "content": deep}])
+    assert len(transport.calls) == 1
 
 
 def test_the_body_gate_still_guards_what_is_not_a_content(tmp_path, monkeypatch):
