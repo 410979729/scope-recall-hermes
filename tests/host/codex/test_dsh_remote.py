@@ -190,7 +190,7 @@ def _installed(client, tmp_path):
     return home, rows
 
 
-def test_dsh_remote_record_recall_identity_and_bounds(remote, still_clocks):
+def test_dsh_remote_record_recall_identity_and_bounds(remote):
     root, home, client, bodies, records = remote
     assert remote_client.HOOK_TIMEOUTS["dsh"] == {"UserPromptSubmit": 9, "Stop": 20}
     _hook(
@@ -248,9 +248,7 @@ def test_dsh_remote_record_recall_identity_and_bounds(remote, still_clocks):
     assert TOKEN not in json.dumps(bodies)
 
 
-def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one_stored(
-    remote, monkeypatch, still_clocks
-):
+def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one_stored(remote, monkeypatch):
     """A client whose clock runs ten minutes ahead has every time a request carries moved back by its session's lead
     (``remote_server.client_times``), the turn's messages dsh's plugin sends inside its Stop with the hook's own: the
     person's line is the prompt already stored, nothing is dated ahead of this machine's clock, and the reply sent again
@@ -289,7 +287,7 @@ def test_a_fast_client_s_turn_is_stored_once_and_its_reply_sent_again_is_the_one
     assert waiting == 0, "nothing left for the store's worker to store under a key of its own"
 
 
-def test_a_fast_client_s_turn_keeps_its_order_whatever_each_request_s_delay(remote, monkeypatch, still_clocks):
+def test_a_fast_client_s_turn_keeps_its_order_whatever_each_request_s_delay(remote, monkeypatch):
     """A client 90 s fast whose prompt reached this machine 5 s after it was sent, and whose Stop came at once: each
     moved back by its own lead, the reply said 2 s after the prompt would be dated 3 s before it.  Every request of a
     client's session moves back by the lead its first one was found ahead by."""
@@ -485,7 +483,7 @@ def _plugin(home, config, scenario="turn"):
 
 
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is not installed, or this tier may not start it")
-def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote, tmp_path, still_clocks):
+def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote, tmp_path):
     root, _home, client, bodies, records = remote
     home, rows = _installed(client, tmp_path)
     config = rows["scope-recall"]["config"]

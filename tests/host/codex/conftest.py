@@ -47,16 +47,6 @@ class FixedClock:
 
 
 @pytest.fixture
-def still_clocks(metered_store):
-    """Exclude physical store latency from a semantic test, on the clock every admission check reads.
-
-    The hook, core and durable inbox share this clock. Non-store waits still advance, so a failed operation can
-    time out; budget tests charge explicit store costs through the same fixture.
-    """
-    return metered_store(0.0)
-
-
-@pytest.fixture
 def storing_takes_no_hook_time(monkeypatch):
     """A hook's clock stands still while the hook stores what it was sent, and runs otherwise: for a test of what a
     hook does with the entry's server once it has stored, not of how long a host waits for it."""
@@ -82,13 +72,8 @@ def project_root(tmp_path) -> Path:
 
 
 @pytest.fixture
-def installed(project_root, tmp_path, still_clocks):
-    """Build a semantic install while preserving explicit hook-clock advances.
-
-    The inbox's clock excludes physical SQL time; ``FixedClock._mono`` controls the hook's
-    deadline. Lease and non-SQL waits retain their real cost, and budget tests can replace the
-    zero transaction charge through ``metered_store(cost)``.
-    """
+def installed(project_root, tmp_path):
+    """Build an install whose hook deadline accepts explicit FixedClock advances."""
     clock = FixedClock()
     config, core = install_codex_scope_recall(tmp_path / "install", project_root=project_root, clock=clock)
     return config, core, clock, project_root

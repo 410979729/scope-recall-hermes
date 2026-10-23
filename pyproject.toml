@@ -142,6 +142,7 @@ max-statements = 60
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = ["real_store_time: measure physical transaction latency instead of the semantic store clock"]
 
 [tool.pyright]
 include = [

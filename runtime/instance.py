@@ -59,7 +59,7 @@ class _QueryEmbedding:
     than only the time left after the exact, lexical, claim and recent channels.
 
     ``queries`` is the question and the other ways recall reads it (``core/owner_view.py``), embedded in one request:
-    one after the other, the second would wait for the first on the one persistent connection.
+    one round trip on one pooled query connection, which leaves the other connections to recalls running alongside.
     """
 
     def __init__(self, queries: tuple[str, ...], deadline: float) -> None:
@@ -275,6 +275,8 @@ def _helper_start_failure(deadline: float) -> str | None:
 
 @dataclass
 class RuntimeInstance:
+    """Own runtime ports and release their resources when the instance closes."""
+
     config: RuntimeInstanceConfig
     core: MemoryCore
     auxiliary: Any
@@ -285,7 +287,9 @@ class RuntimeInstance:
     _default_purge: Any = None
     _ingress_authorizer: Callable[[object], frozenset[str]] | None = None
     _owned_resources: list[Any] = field(default_factory=list)
+    _vector_openers: dict[int, int] = field(default_factory=dict, init=False, repr=False, compare=False)
     _closed: bool = False
+    _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
     background_gaps: tuple[str, ...] = ()
     #: Why this drain's vector helper could not start, one line, or ``None`` (``_open_vector_for_drain``).
     vector_helper_error: str | None = None
@@ -311,30 +315,81 @@ class RuntimeInstance:
     def _ensure_vector_port(
         self, *, allow_create: bool = False, deadline: float | None = None, during_open=None
     ) -> Any:
-        """Open the companion store once and compose the Core ports over it.
+        """Open the companion store and compose the Core ports over it.
 
         Query paths pass ``allow_create=False`` and may only open an existing
         index; explicit background maintenance is the sole path allowed to
         create one.  Injected VectorPort values stay untouched for
         deterministic tests and alternate backends.
         """
-        self._ensure_open()
-        if self._vector_store is not None:
-            if getattr(self._vector_store, "requires_reopen", False):
-                _open_store(self._vector_store, allow_create=allow_create, deadline=deadline, during_open=during_open)
-            return self._vector_port
-        if self.config.vector is None or self._vector_factory is None:
-            return None
-        resource = self._vector_factory(self.config.vector)
-        self._owned_resources.append(resource)
+        with self._state_lock:
+            self._ensure_open()
+            resource = self._vector_store
+            factory, config = self._vector_factory, self.config.vector
+        new_resource = resource is None
+        if new_resource:
+            if config is None or factory is None:
+                return None
+            resource = factory(config)
+        registered = False
         try:
-            _open_store(resource, allow_create=allow_create, deadline=deadline, during_open=during_open)
-        except Exception:
-            self._owned_resources.pop()
-            _close_quietly(resource)
+            if new_resource:
+                with self._state_lock:
+                    self._ensure_open()
+                    if not any(owned is resource for owned in self._owned_resources):
+                        self._owned_resources.append(resource)
+                    identity = id(resource)
+                    self._vector_openers[identity] = self._vector_openers.get(identity, 0) + 1
+                    registered = True
+            # Registration and publication share the shutdown lock; native I/O
+            # stays outside it so one slow open cannot serialize recalls.
+            if new_resource or getattr(resource, "requires_reopen", False):
+                _open_store(resource, allow_create=allow_create, deadline=deadline, during_open=during_open)
+            with self._state_lock:
+                self._ensure_open()
+                if registered:
+                    self._finish_vector_open(resource)
+                    registered = False
+                redundant = (
+                    new_resource
+                    and self._vector_store is not None
+                    and self._vector_store is not resource
+                    and id(resource) not in self._vector_openers
+                )
+                if redundant:
+                    # Only the first completed open owns the published ports.
+                    # Detach the redundant helper before closing it outside the lock.
+                    self._owned_resources[:] = [owned for owned in self._owned_resources if owned is not resource]
+                elif new_resource and self._vector_store is None:
+                    self._compose_ports(resource)
+                port = self._vector_port
+        except BaseException:
+            with self._state_lock:
+                if registered:
+                    self._finish_vector_open(resource)
+                # A factory may lend the same object to overlapping opens. A
+                # failed call must not close a published or still-opening peer.
+                shared = self._vector_store is resource or id(resource) in self._vector_openers
+                close_resource = self._closed or (new_resource and not shared)
+                if close_resource:
+                    self._owned_resources[:] = [owned for owned in self._owned_resources if owned is not resource]
+            # An open may finish after shutdown's first close, creating a late
+            # handle. Release it again before propagating the original error.
+            if close_resource:
+                _close_quietly(resource)
             raise
-        self._compose_ports(resource)
-        return self._vector_port
+        if redundant:
+            _close_quietly(resource)
+        return port
+
+    def _finish_vector_open(self, resource: Any) -> None:
+        """Release one open's identity claim while the caller holds the state lock."""
+        identity = id(resource)
+        remaining = self._vector_openers[identity] - 1
+        if remaining:
+            self._vector_openers[identity] = remaining
+        else:
+            del self._vector_openers[identity]
 
     def warm_vector_store(self, seconds: float) -> bool:
         """Open the existing companion store and search it once, off any prompt's time.
@@ -685,16 +740,21 @@ class RuntimeInstance:
             )
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        for resource in reversed(self._owned_resources):
-            _close_quietly(resource)
-        self._owned_resources.clear()
-        self._vector_store = None
-        self._vector_port = None
-        self._default_embed = None
-        self._default_purge = None
+        """Detach owned resources atomically, then close them without holding the state lock."""
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            resources, self._owned_resources = self._owned_resources, []
+            self._vector_store = None
+            self._vector_port = None
+            self._default_embed = None
+            self._default_purge = None
+        seen: set[int] = set()
+        for resource in reversed(resources):
+            if id(resource) not in seen:
+                seen.add(id(resource))
+                _close_quietly(resource)
 
 
 def default_vector_factory(config: VectorRuntimeConfig) -> Any:

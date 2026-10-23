@@ -6,8 +6,10 @@ import json
 import os
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Lock
 
 import pytest
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
@@ -364,6 +366,181 @@ def _vector_instance(tmp_path, store, embedding):
     instance.auxiliary = replace(instance.auxiliary, query_embedding=embedding)
     instance.core.initialize()
     return instance, binding
+
+
+class _OpeningStore:
+    """An owned store whose creation and reopening can overlap shutdown deterministically."""
+
+    def __init__(self, *, fail=False):
+        self.entered = Event()
+        self.release = Event()
+        self.fail = fail
+        self.close_calls = 0
+        self.requires_reopen = False
+
+    def open_existing(self):
+        self.entered.set()
+        assert self.release.wait(5), "the test must release the synthetic open"
+        if self.fail:
+            raise RuntimeError("TEST open failed")
+
+    def close(self):
+        self.close_calls += 1
+
+
+@pytest.mark.parametrize("first_completed", [0, 1])
+def test_successful_concurrent_vector_opens_publish_and_keep_only_one_resource(tmp_path, first_completed):
+    """Both callers share the first published port and release the redundant store before shutdown."""
+    stores = (_OpeningStore(), _OpeningStore())
+    instance, _ = _vector_instance(tmp_path, stores[0], lambda text, remaining_seconds: (0.1, 0.2))
+    resources = iter(stores)
+    instance._vector_factory = lambda _: next(resources)
+    winner, redundant = stores[first_completed], stores[1 - first_completed]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            one = executor.submit(instance._ensure_vector_port)
+            try:
+                assert stores[0].entered.wait(2)
+                two = executor.submit(instance._ensure_vector_port)
+                assert stores[1].entered.wait(2), "opening must not serialize concurrent recalls"
+                requests = (one, two)
+                winner.release.set()
+                port = requests[first_completed].result(timeout=2)
+                redundant.release.set()
+                assert requests[1 - first_completed].result(timeout=2) is port
+                assert port is not None and instance._vector_port is port
+                assert instance._vector_store is winner
+                assert sum(owned is winner for owned in instance._owned_resources) == 1
+                assert all(owned is not redundant for owned in instance._owned_resources)
+                assert winner.close_calls == 0 and redundant.close_calls == 1
+            finally:
+                for store in stores:
+                    store.release.set()
+    finally:
+        instance.close()
+    assert winner.close_calls == redundant.close_calls == 1
+
+
+def test_failed_concurrent_vector_open_releases_only_its_own_resource(tmp_path):
+    """A later successful open must remain owned when an earlier open fails."""
+    first, second = _OpeningStore(fail=True), _OpeningStore()
+    instance, _ = _vector_instance(tmp_path, first, None)
+    resources = iter((first, second))
+    instance._vector_factory = lambda _: next(resources)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            one = executor.submit(instance._ensure_vector_port)
+            try:
+                assert first.entered.wait(2)
+                two = executor.submit(instance._ensure_vector_port)
+                assert second.entered.wait(2), "opening must not serialize concurrent recalls"
+                first.release.set()
+                with pytest.raises(RuntimeError, match="TEST open failed"):
+                    one.result(timeout=2)
+                second.release.set()
+                two.result(timeout=2)
+                assert second in instance._owned_resources
+                assert first not in instance._owned_resources
+            finally:
+                first.release.set()
+                second.release.set()
+    finally:
+        instance.close()
+    assert first.close_calls == second.close_calls == 1
+
+
+@pytest.mark.parametrize("first_completed", [0, 1])
+@pytest.mark.parametrize("first_fails", [False, True])
+def test_concurrent_factory_results_share_ownership_by_identity(tmp_path, first_completed, first_fails):
+    """Shared factory results stay alive through overlapping successful or failed opens."""
+    entered = [Event(), Event()]
+    release = [Event(), Event()]
+    lock = Lock()
+    calls = 0
+    store = _OpeningStore()
+
+    def open_existing():
+        nonlocal calls
+        with lock:
+            index = calls
+            calls += 1
+        entered[index].set()
+        assert release[index].wait(5)
+        if index == 0 and first_fails:
+            raise RuntimeError("open1")
+
+    store.open_existing = open_existing
+    instance, _ = _vector_instance(tmp_path, store, lambda text, remaining_seconds: (0.1, 0.2))
+
+    def finish(requests, index):
+        release[index].set()
+        if index == 0 and first_fails:
+            with pytest.raises(RuntimeError, match="open1"):
+                requests[index].result(timeout=2)
+            return None
+        return requests[index].result(timeout=2)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(instance._ensure_vector_port)
+            try:
+                assert entered[0].wait(2)
+                second = executor.submit(instance._ensure_vector_port)
+                assert entered[1].wait(2)
+                assert sum(owned is store for owned in instance._owned_resources) == 1
+                requests = (first, second)
+                port1 = finish(requests, first_completed)
+                assert store.close_calls == 0
+                port2 = finish(requests, 1 - first_completed)
+                assert store.close_calls == 0
+                assert instance._vector_store is store
+                assert instance._vector_port is (port1 if port1 is not None else port2)
+                if not first_fails:
+                    assert port1 is port2
+                assert sum(owned is store for owned in instance._owned_resources) == 1
+            finally:
+                for event in release:
+                    event.set()
+    finally:
+        instance.close()
+    assert store.close_calls == 1
+
+
+@pytest.mark.parametrize("stage", ["factory", "open", "reopen"])
+def test_vector_open_finishing_after_shutdown_is_closed_without_republishing(tmp_path, stage):
+    """Shutdown can cancel an open before it creates a handle, so its late completion must release it again."""
+    store = _OpeningStore()
+    instance, _ = _vector_instance(tmp_path, store, None)
+    if stage == "factory":
+
+        def factory(_config):
+            store.entered.set()
+            assert store.release.wait(5)
+            return store
+
+        instance._vector_factory = factory
+    elif stage == "reopen":
+        store.release.set()
+        instance._ensure_vector_port()
+        store.entered.clear()
+        store.release.clear()
+        store.requires_reopen = True
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(instance._ensure_vector_port)
+            try:
+                assert store.entered.wait(2)
+                instance.close()
+                assert store.close_calls == (0 if stage == "factory" else 1), "shutdown must not wait for I/O"
+            finally:
+                store.release.set()
+            with pytest.raises(RuntimeError, match="runtime_instance_closed"):
+                pending.result(timeout=2)
+        assert store.close_calls == (1 if stage == "factory" else 2)
+        assert instance._vector_store is None and instance._vector_port is None
+        assert instance._owned_resources == []
+    finally:
+        instance.close()
 
 
 def _search_context(binding, seconds):

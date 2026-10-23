@@ -10,13 +10,18 @@ And a pass started by hand would reach every provider with no credentials -- the
 carries them in its environment and this entry point needs a way to be given them -- so it would
 refuse each item with ``credential_missing``, stand the work types down, and exit 0.  An
 operator watching that receipt would see a success that had done nothing.
+
+Queued work whose configured port stays unavailable across successful passes
+leaves an audience-specific record, even when other audiences keep running.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scope_recall.runtime.scheduling import MAX_CONSECUTIVE_WORKER_FAILURES, WakePlan, supervise
@@ -36,7 +41,7 @@ class Control:
         return str(self.writes[index].get("state") or "")
 
 
-def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
+def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16, payloads=None, initial=None, enabled=True):
     """Run a real supervisor whose passes return ``codes``, and capture its control writes."""
     from scope_recall.runtime import scheduling
 
@@ -46,7 +51,7 @@ def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
     class Recorder:
         def __init__(self, config) -> None:
             self.config = config
-            self.value: dict = {"wake_revision": 1}
+            self.value: dict = {"wake_revision": 1, **(initial or {})}
 
         def request(self) -> None:
             pass
@@ -69,6 +74,14 @@ def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
         worker_min_interval_seconds = 0
         drain_seconds = 5.0
         auto_retry_cooldown_seconds = 60.0
+        auxiliary = SimpleNamespace(
+            ledger_path=tmp_path / "ledger.sqlite3",
+            external_embedding=enabled,
+            embedding=object(),
+            external_consolidation=enabled,
+            consolidation=object(),
+        )
+        vector = object()
 
     config = Config()
     monkeypatch.setattr(scheduling, "load_config", lambda path: config)
@@ -87,7 +100,7 @@ def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
             # progress-followup drain does not extend the run.
             return 0, {"completed": 0}
         made.append(code)
-        return code, {"completed": 1 if code == 0 else 0}
+        return code, payloads[len(made) - 1] if payloads is not None else {"completed": 1 if code == 0 else 0}
 
     def planner(cfg, *, now, unavailable_until):
         # Due in the past, so the loop drains rather than waiting out its window.
@@ -100,7 +113,14 @@ def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
     def sleep(seconds):
         clock[0] += max(0.0, float(seconds))
 
-    exit_code = supervise(tmp_path / "config.json", drain_once, clock=lambda: clock[0], sleep=sleep, planner=planner)
+    exit_code = supervise(
+        tmp_path / "config.json",
+        drain_once,
+        clock=lambda: clock[0],
+        sleep=sleep,
+        planner=planner,
+        utc_now=lambda: datetime(2000, 1, 1, tzinfo=UTC) + timedelta(seconds=clock[0]),
+    )
     return exit_code, control, made
 
 
@@ -133,6 +153,181 @@ def test_a_success_forgets_the_earlier_failures(tmp_path, monkeypatch):
     _exit, control, made = _supervise(tmp_path, [1, 1, 0, 1, 1, 0], monkeypatch=monkeypatch)
     assert made == [1, 1, 0, 1, 1, 0], made
     assert control.last.get("state") != "failed"
+
+
+@pytest.mark.parametrize("cleared_payload", [{"completed": 1, "items": [{"work_type": "embed"}]}, {}])
+def test_unavailable_work_starts_extends_and_clears(tmp_path, monkeypatch, cleared_payload):
+    """Unclaimed queued work must leave reasons even when every pass exits successfully."""
+    payloads = [
+        {
+            "unavailable_work_types": ["embed"],
+            "capability_gaps": ["vector_unavailable:open"],
+            "worker_error": "helper failed",
+        },
+        {
+            "unavailable_work_types": ["embed"],
+            "capability_gaps": ["budget_paused"],
+            "items": [{"work_type": "embed", "error_code": "credential_missing", "error_detail": "excluded"}],
+        },
+        cleared_payload,
+    ]
+    _, control, made = _supervise(tmp_path, [0, 0, 0], monkeypatch=monkeypatch, payloads=payloads)
+    records = [w["unavailable_streaks"] for w in control.writes if "unavailable_streaks" in w]
+    assert made == [0, 0, 0]
+    first = next(r["embed"] for r in records if r.get("embed", {}).get("passes") == 1)
+    second = next(r["embed"] for r in records if r.get("embed", {}).get("passes") == 2)
+    assert first == {
+        "passes": 1,
+        "since": "2000-01-01T00:00:00Z",
+        "last_at": "2000-01-01T00:00:00Z",
+        "capability_gaps": ["vector_unavailable:open"],
+        "error_codes": [],
+        "worker_error": "helper failed",
+    }
+    assert second == {
+        "passes": 2,
+        "since": first["since"],
+        "last_at": "2000-01-01T00:00:01Z",
+        "capability_gaps": ["budget_paused"],
+        "error_codes": ["credential_missing"],
+    }
+    assert control.last["unavailable_streaks"] == {}
+
+
+@pytest.mark.parametrize("code", [75, 124, 1])
+@pytest.mark.parametrize("payload", [{}, {"unavailable_work_types": ["embed"]}])
+def test_unreported_pass_leaves_unavailable_record_unchanged(tmp_path, monkeypatch, code, payload):
+    initial = {
+        "embed": {
+            "passes": 5,
+            "since": "2000-01-01T00:00:00Z",
+            "last_at": "2000-01-01T00:00:05Z",
+            "capability_gaps": ["vector_unavailable:open"],
+            "error_codes": [],
+        }
+    }
+    _, control, _ = _supervise(
+        tmp_path,
+        [code],
+        monkeypatch=monkeypatch,
+        payloads=[payload],
+        initial={"unavailable_streaks": initial},
+        max_drains=1,
+    )
+    assert all(w["unavailable_streaks"] == initial for w in control.writes)
+
+
+def test_a_pass_that_only_purged_leaves_unavailable_record_unchanged(tmp_path, monkeypatch):
+    """A spent daily item cap makes a pass purge only: it tried no route, so it says nothing about one."""
+    initial = {
+        "embed": {
+            "passes": 5,
+            "since": "2000-01-01T00:00:00Z",
+            "last_at": "2000-01-01T00:00:05Z",
+            "capability_gaps": ["vector_unavailable:open"],
+            "error_codes": [],
+        }
+    }
+    _, control, _ = _supervise(
+        tmp_path,
+        [0],
+        monkeypatch=monkeypatch,
+        payloads=[{"capability_gaps": ["daily_queue_budget"], "unavailable_work_types": []}],
+        initial={"unavailable_streaks": initial},
+        max_drains=1,
+    )
+    assert all(w["unavailable_streaks"] == initial for w in control.writes)
+
+
+def test_unavailable_record_survives_supervisor_generation(tmp_path, monkeypatch):
+    initial = {
+        "embed": {
+            "passes": 5,
+            "since": "1999-12-31T00:00:00Z",
+            "last_at": "1999-12-31T00:00:05Z",
+            "capability_gaps": ["old"],
+            "error_codes": [],
+        }
+    }
+    _, control, _ = _supervise(
+        tmp_path,
+        [0],
+        monkeypatch=monkeypatch,
+        payloads=[{"unavailable_work_types": ["embed"]}],
+        initial={"unavailable_streaks": initial},
+    )
+    entry = control.last["unavailable_streaks"]["embed"]
+    assert entry["passes"] == 6
+    assert entry["since"] == initial["embed"]["since"]
+    assert entry["last_at"] == "2000-01-01T00:00:00Z"
+    assert entry["capability_gaps"] == []
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_only_configured_cooled_work_types_get_streaks(tmp_path, monkeypatch, enabled):
+    kinds = ["embed", "consolidate", "evaluate_candidate", "purge", "rebuild_projection"]
+    _, control, _ = _supervise(
+        tmp_path, [0], monkeypatch=monkeypatch, enabled=enabled, payloads=[{"unavailable_work_types": kinds}]
+    )
+    assert set(control.last["unavailable_streaks"]) == (set(kinds[:3]) if enabled else set())
+
+
+def test_unavailable_record_is_pure_bounded_and_type_specific():
+    from scope_recall.runtime.scheduling import _unavailable_streaks
+
+    payload = {
+        "unavailable_work_types": ["embed"],
+        "capability_gaps": ["x" * 121] * 17,
+        "worker_error": "\n" + "y" * 210 + "\nignored line",
+        "items": [
+            {"work_type": "consolidate", "error_code": "wrong_type"},
+            *[{"work_type": "embed", "error_code": f"code{i}", "error_detail": "excluded"} for i in [0, 0, 1, 2, 3, 4]],
+        ],
+    }
+    previous = {"embed": {"passes": 2, "since": "start", "worker_error": "old"}}
+    before = json.dumps([previous, payload], sort_keys=True)
+    result = _unavailable_streaks(previous, payload, {"embed"}, "later")
+    assert result == {
+        "embed": {
+            "passes": 3,
+            "since": "start",
+            "last_at": "later",
+            "capability_gaps": ["x" * 120] * 16,
+            "error_codes": ["code0", "code1", "code2", "code3"],
+            "worker_error": "y" * 200,
+        }
+    }
+    assert json.dumps([previous, payload], sort_keys=True) == before
+
+
+@pytest.mark.parametrize(
+    "previous",
+    [
+        None,
+        [],
+        {"embed": None},
+        {"embed": {"passes": "five", "since": "old"}},
+        {"embed": {"passes": 4, "since": None}},
+        {"embed": {"passes": 0, "since": "old"}},
+        {"embed": {"passes": -2, "since": "old"}},
+    ],
+)
+def test_a_record_of_another_shape_starts_over_instead_of_stopping_the_supervisor(previous):
+    from scope_recall.runtime.scheduling import _unavailable_streaks
+
+    result = _unavailable_streaks(previous, {"unavailable_work_types": ["embed"]}, {"embed"}, "now")
+    assert result["embed"]["passes"] == 1
+    assert result["embed"]["since"] == "now"
+
+
+@pytest.mark.parametrize("fields", [{"items": None}, {"items": [None]}, {"capability_gaps": None}, {"worker_error": 7}])
+def test_receipt_fields_of_another_shape_count_as_empty(fields):
+    from scope_recall.runtime.scheduling import _unavailable_streaks
+
+    result = _unavailable_streaks({}, {"unavailable_work_types": ["embed"], **fields}, {"embed"}, "now")
+    assert result == {
+        "embed": {"passes": 1, "since": "now", "last_at": "now", "capability_gaps": [], "error_codes": []}
+    }
 
 
 # -- the doctor says so --------------------------------------------------------
@@ -200,6 +395,129 @@ def test_an_operator_pause_is_not_a_failure(tmp_path):
     report = DoctorReport(host="hermes", status="ok")
     _check_supervisor(report, tmp_path)
     assert not report.capability_gaps, report.capability_gaps
+
+
+@pytest.mark.parametrize("state", ["running", "suspended", "failed", "paused"])
+def test_doctor_reports_unavailable_work_from_every_audience(tmp_path, state):
+    from scope_recall.maintenance.doctor import UNAVAILABLE_PASSES_REPORTED, _check_supervisor, _classify_status
+    from scope_recall.maintenance.doctor_report import DoctorReport
+
+    entry = {
+        "passes": UNAVAILABLE_PASSES_REPORTED,
+        "since": "2000-01-01T00:00:00Z",
+        "last_at": "2000-01-01T00:02:00Z",
+        "capability_gaps": ["vector_unavailable:open"],
+        "error_codes": ["credential_missing"],
+        "worker_error": "helper failed",
+    }
+    older = {
+        "state": state,
+        "started_at": "2000-01-01T00:00:00Z",
+        "finished_at": "2000-01-01T00:03:00Z",
+        "allowed_scope_ids": ["excluded-account-id"],
+        "unavailable_streaks": {"embed": entry},
+    }
+    newer = {
+        "state": "idle",
+        "started_at": "2000-01-02T00:00:00Z",
+        "unavailable_streaks": {"embed": entry, "consolidate": {**entry, "passes": UNAVAILABLE_PASSES_REPORTED - 1}},
+    }
+    for key, value in [("aaa", older), ("bbb", newer)]:
+        (tmp_path / f"runtime-supervisor-{key}.json").write_text(json.dumps(value), encoding="utf-8")
+    report = DoctorReport(host="hermes", status="ok")
+    _check_supervisor(report, tmp_path)
+    _classify_status(report)
+    assert report.capability_gaps == ["work_type_unavailable:embed"]
+    assert report.status == "degraded"
+    checks = [c for c in report.checks if c["name"] == "unavailable_work"]
+    assert [c["detail"] for c in checks] == [
+        f"supervisor {key}: embed could not run in {UNAVAILABLE_PASSES_REPORTED} passes in a row, from "
+        "2000-01-01T00:00:00Z to 2000-01-01T00:02:00Z; last pass: vector_unavailable:open, credential_missing, "
+        "helper failed"
+        for key in ["aaa", "bbb"]
+    ]
+    assert all(c["result"] == "stalled" for c in checks)
+    assert "excluded-account-id" not in json.dumps(report.to_dict())
+    assert next(c for c in report.checks if c["name"] == "supervisor")["result"] == "idle"
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,
+        [],
+        {"embed": None},
+        {"embed": {"passes": "three"}},
+        {"embed": {"passes": 3}},
+        {"embed": {"passes": 3, "since": {"scope_id": "excluded-account-id"}, "last_at": "t"}},
+        {"embed": {"passes": 3, "since": "s", "last_at": "t", "capability_gaps": "vector_unavailable:open"}},
+        {"embed": {"passes": 3, "since": "s", "last_at": "t", "error_codes": [7]}},
+        {"embed": {"passes": 3, "since": "s", "last_at": "t", "worker_error": 7}},
+    ],
+)
+def test_malformed_unavailable_record_is_a_finding(tmp_path, record):
+    from scope_recall.maintenance.doctor import _check_supervisor
+    from scope_recall.maintenance.doctor_report import DoctorReport
+
+    (tmp_path / "runtime-supervisor-aaa.json").write_text(
+        json.dumps({"state": "idle", "unavailable_streaks": record}), encoding="utf-8"
+    )
+    report = DoctorReport(host="hermes", status="ok")
+    _check_supervisor(report, tmp_path)
+    assert "supervisor_state_unreadable" in report.capability_gaps
+    assert "work_type_unavailable:embed" not in report.capability_gaps
+    assert "excluded-account-id" not in json.dumps(report.to_dict())
+
+
+def test_doctor_bounds_what_it_repeats_from_a_record(tmp_path):
+    from scope_recall.maintenance.doctor import _check_supervisor
+    from scope_recall.maintenance.doctor_report import DoctorReport
+
+    entry = {
+        "passes": 3,
+        "since": "2000-01-01T00:00:00Z" + "s" * 100,
+        "last_at": "2000-01-01T00:02:00Z",
+        "capability_gaps": ["g" * 300] * 20,
+        "error_codes": [],
+        "worker_error": "w" * 10_000,
+    }
+    (tmp_path / "runtime-supervisor-aaa.json").write_text(
+        json.dumps({"state": "idle", "unavailable_streaks": {"embed": entry}}), encoding="utf-8"
+    )
+    report = DoctorReport(host="hermes", status="ok")
+    _check_supervisor(report, tmp_path)
+    (detail,) = [c["detail"] for c in report.checks if c["name"] == "unavailable_work"]
+    assert "w" * 200 in detail and "w" * 201 not in detail
+    assert detail.count("g" * 200) == 16 and "g" * 201 not in detail
+    assert "s" * 21 not in detail
+
+
+def test_doctor_reads_healthy_control_files_after_an_unreadable_one(tmp_path):
+    from scope_recall.maintenance.doctor import _check_supervisor
+    from scope_recall.maintenance.doctor_report import DoctorReport
+
+    (tmp_path / "runtime-supervisor-aaa.json").write_text("{", encoding="utf-8")
+    (tmp_path / "runtime-supervisor-bbb.json").write_text(
+        json.dumps(
+            {
+                "state": "idle",
+                "unavailable_streaks": {
+                    "embed": {
+                        "passes": 3,
+                        "since": "2000-01-01T00:00:00Z",
+                        "last_at": "2000-01-01T00:02:00Z",
+                        "capability_gaps": [],
+                        "error_codes": [],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = DoctorReport(host="hermes", status="ok")
+    _check_supervisor(report, tmp_path)
+    assert "supervisor_state_unreadable" in report.capability_gaps
+    assert "work_type_unavailable:embed" in report.capability_gaps
 
 
 # -- a pass may be handed its credentials --------------------------------------
