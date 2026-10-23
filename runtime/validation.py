@@ -11,12 +11,29 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import datetime, timezone
+from collections.abc import Collection, Mapping
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Collection, Mapping, TypeVar
+from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+# A corruption bound shared by reservation, scheduling and backup validation.
+DAILY_COUNTER_MAX = 100_000_000
+
+
+def validate_worker_day(raw: object, installation_id: str) -> dict[str, Any]:
+    """Validate an installation-bound UTC day and its consumed queue-item count."""
+    if type(raw) is not dict or set(raw) != {"installation_id", "day", "used"}:
+        raise ValueError("worker_budget_invalid")
+    if raw["installation_id"] != installation_id:
+        raise ValueError("worker_budget_binding_mismatch")
+    day = raw["day"]
+    if type(day) is not str or date.fromisoformat(day).isoformat() != day:
+        raise ValueError("worker_budget_invalid")
+    strict_int("worker_budget_invalid", raw["used"], minimum=0, maximum=DAILY_COUNTER_MAX)
+    return raw
 
 
 def strict_bool(name: str, value: object) -> bool:
@@ -118,7 +135,7 @@ def only_keys(name: str, raw: Mapping[str, Any], allowed: Collection[str]) -> Ma
 
 def utc_now() -> str:
     """The ``Z``-suffixed UTC stamp every worker metadata file and receipt carries."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 __all__ = [

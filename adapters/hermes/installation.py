@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 
+from ..installation_identity import path_identity
 from .audiences import (
     EXACT_FIELDS,
     LOCAL_USER_ID,
@@ -105,6 +106,9 @@ class InstallationManifest:
     entry_name: str = ""
     #: The host the entry attached from (``ENTRY_HOSTS``); a local installation is Hermes'.
     entry_host: str = "hermes"
+    #: An explicit recovery reanchors the home while keeping the store's id,
+    #: because source identities and deletion tombstones depend on that id.
+    location_id: str | None = None
 
     def to_binding(self) -> InstanceBinding:
         return InstanceBinding(
@@ -118,8 +122,7 @@ class InstallationManifest:
 
 
 def _installation_id(hermes_home: Path) -> str:
-    digest = hashlib.sha256(str(hermes_home.resolve()).encode("utf-8")).hexdigest()
-    return f"hermes-install:{digest[:32]}"
+    return path_identity("hermes", hermes_home)
 
 
 def _archive_values(mapping: Mapping[str, str], *, label: str, reject_star: bool, seen: set[str]) -> None:
@@ -486,6 +489,8 @@ def manifest_payload(manifest: InstallationManifest) -> dict[str, Any]:
         payload["archive_snapshot_hash"] = manifest.archive_snapshot_hash
     if manifest.archive_catalog_hash:
         payload["archive_catalog_hash"] = manifest.archive_catalog_hash
+    if manifest.location_id is not None:
+        payload["location_id"] = manifest.location_id
     return payload
 
 
@@ -647,6 +652,7 @@ def _manifest_from_payload(payload: dict[str, Any], *, home: Path, data_director
         test_mode=bool(test_mode),
         hermes_home=home,
         retained_scope_ids=normalize_retained_scope_ids(payload.get("retained_scope_ids")),
+        location_id=payload.get("location_id"),
         **fields,
         **archive,
     )
@@ -655,7 +661,9 @@ def _manifest_from_payload(payload: dict[str, Any], *, home: Path, data_director
         present=any(name in payload for name, _check, _absent in _ARCHIVE_FIELDS),
         test_mode=test_mode,
     )
-    if manifest.installation_id != _installation_id(home):
+    if (manifest.location_id if manifest.location_id is not None else manifest.installation_id) != _installation_id(
+        home
+    ):
         raise HermesIdentityError("installation manifest installation_id mismatch")
     return manifest
 

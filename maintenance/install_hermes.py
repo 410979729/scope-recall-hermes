@@ -198,7 +198,7 @@ def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
     if not plan.local_platforms:
         return ()
     manifest = load_binding_for_home(plan.instance_root)
-    return _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest))
+    return _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=bound_workspace(manifest))
 
 
 def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
@@ -206,7 +206,7 @@ def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
     if not plan.owner_logins:
         return ()
     manifest = load_binding_for_home(plan.instance_root)
-    return _unapproved_owner_logins(manifest, plan.owner_logins, agent_workspace=_bound_workspace(manifest))
+    return _unapproved_owner_logins(manifest, plan.owner_logins, agent_workspace=bound_workspace(manifest))
 
 
 def approve_local_platforms(plan: InstallPlan) -> None:
@@ -214,7 +214,7 @@ def approve_local_platforms(plan: InstallPlan) -> None:
     manifest = load_installation_manifest(plan.instance_root)
     write_installation_manifest(
         _approve_local_platforms(
-            manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest), logins=plan.owner_logins
+            manifest, plan.local_platforms, agent_workspace=bound_workspace(manifest), logins=plan.owner_logins
         )
     )
 
@@ -223,7 +223,8 @@ def installation_id(instance_root: Path) -> str:
     return load_binding_for_home(instance_root).installation_id
 
 
-def _bound_workspace(manifest) -> str:
+def bound_workspace(manifest) -> str:
+    """The unique owner workspace that installation reuse must preserve."""
     # Bind installer reuse to the explicit owner workspace. Conversation rows
     # may preserve old, independently authorized workspaces during migration.
     values = {
@@ -241,7 +242,7 @@ def validate_reuse(plan: InstallPlan) -> None:
     manifest = load_binding_for_home(plan.instance_root)
     if manifest.agent_id != plan.agent_id:
         raise InstallError("existing Hermes installation agent_id mismatch")
-    if _bound_workspace(manifest) != plan.agent_workspace:
+    if bound_workspace(manifest) != plan.agent_workspace:
         raise InstallError("existing Hermes installation agent_workspace mismatch")
     if manifest.test_mode != plan.test_mode:
         raise InstallError(
@@ -250,8 +251,8 @@ def validate_reuse(plan: InstallPlan) -> None:
     if not (manifest.data_directory / "memory.sqlite3").is_file():
         raise InstallError("existing Hermes installation database is missing")
     if manifest.entry_id is not None and (
-        _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest))
-        or _unapproved_owner_logins(manifest, plan.owner_logins, agent_workspace=_bound_workspace(manifest))
+        _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=bound_workspace(manifest))
+        or _unapproved_owner_logins(manifest, plan.owner_logins, agent_workspace=bound_workspace(manifest))
     ):
         # Its grants live in the shared store's manifest, which this installer does not write.
         raise InstallError(

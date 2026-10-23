@@ -7,7 +7,6 @@ server speak the protocol Codex's were modelled on.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -28,6 +27,8 @@ from scope_recall.adapters.hermes.shared_entries import (
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.worker_launch import RUNTIME_CONFIG_FILENAME
+
+from ..installation_identity import path_identity
 
 
 class CodexConfigError(RuntimeError):
@@ -52,6 +53,7 @@ class CodexInstallationConfig:
     project_roots: Mapping[str, str]
     test_mode: bool
     config_path: Path
+    location_id: str | None = None
 
     def to_binding(self) -> InstanceBinding:
         return InstanceBinding(
@@ -74,8 +76,7 @@ def _norm_root(path: Path) -> str:
 
 
 def _installation_id(config_path: Path) -> str:
-    digest = hashlib.sha256(str(config_path.resolve()).encode("utf-8")).hexdigest()
-    return f"codex-install:{digest[:32]}"
+    return path_identity("codex", config_path)
 
 
 def _normalize_project_roots(raw: object, *, scope_ids: frozenset[str]) -> dict[str, str]:
@@ -142,8 +143,9 @@ def load_codex_config(config_path: Path | str) -> CodexInstallationConfig:
         project_roots=MappingProxyType(_normalize_project_roots(payload.get("project_roots"), scope_ids=scope_ids)),
         test_mode=_strict_bool(payload.get("test_mode"), field="test_mode"),
         config_path=path.resolve(),
+        location_id=payload.get("location_id"),
     )
-    if config.installation_id != _installation_id(path):
+    if (config.location_id if config.location_id is not None else config.installation_id) != _installation_id(path):
         raise CodexConfigError("installation_id mismatch")
     db_path = config.data_directory / "memory.sqlite3"
     if not db_path.is_file():
@@ -254,6 +256,8 @@ def write_codex_config(config: CodexInstallationConfig) -> None:
         "project_roots": {path: scope for path, scope in config.project_roots.items()},
         "test_mode": config.test_mode,
     }
+    if config.location_id is not None:
+        payload["location_id"] = config.location_id
     config.config_path.parent.mkdir(parents=True, exist_ok=True)
     config.config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

@@ -1,173 +1,32 @@
-"""Consistent SQLite backup, plus the path, digest, atomic-write and store-holding
-primitives the rest of the maintenance package builds on.
+"""Consistent SQLite backup and maintenance re-exports.
 
-The backup uses sqlite3.Connection.backup instead of copying a live main file,
-never overwrites a public backup, and emits only structural metadata (no row
-content or credentials).
+Delegates canonical implementation of backup primitives to runtime.backup_primitives.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
-import sqlite3
-import stat
-import uuid
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Any
+from scope_recall.runtime.backup_primitives import (
+    BackupError,
+    atomic_json,
+    atomic_write,
+    backup_sqlite,
+    create_output,
+    exclusive_store,
+    first_link,
+    safe_path,
+    sha256,
+    sqlite_busy,
+)
 
-from scope_recall.core.file_lock import advisory_file_lock
-from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
-
-
-class BackupError(RuntimeError):
-    pass
-
-
-def sqlite_busy(exc: sqlite3.OperationalError) -> bool:
-    text = str(exc).casefold()
-    return "busy" in text or "locked" in text
-
-
-@contextmanager
-def exclusive_store(data_directory: Path, *, busy: Callable[[str], Exception]) -> Iterator[None]:
-    """Hold the store's writer lease, its retained-files lock and its worker lock while the body runs.
-
-    Each is taken without waiting: another process writing, a worker pass or an attachment's I/O makes the caller
-    refuse with ``busy(what)``, ``what`` being ``truth_writer``, ``owned_lock`` or ``truth_database``.  The lease is
-    the one every Core writer takes, in its ``save_config`` role, so no other process writes the store meanwhile;
-    the Core's own writes in this process join it.
-    """
-    try:
-        snapshot = truth_writer_process_snapshot(data_directory)
-        if snapshot.get("same_process_holder_count", 0) or snapshot.get("connection_pin_count", 0):
-            raise busy("truth_writer")
-        with (
-            holding_truth_writer_lease(data_directory, role="save_config"),
-            advisory_file_lock(data_directory / "scope-recall-retained.lock", timeout_seconds=0),
-            advisory_file_lock(data_directory / "runtime-worker.lock", timeout_seconds=0),
-        ):
-            yield
-    except TimeoutError as exc:
-        raise busy("owned_lock") from exc
-    except sqlite3.OperationalError as exc:
-        if sqlite_busy(exc):
-            raise busy("truth_database") from exc
-        raise
-    except RuntimeError as exc:
-        if "truth_writer_busy" in str(exc):
-            raise busy("truth_writer") from exc
-        raise
-
-
-def first_link(path: Path) -> Path | None:
-    """The path itself or the nearest ancestor that is a symlink or reparse point."""
-    for part in (path, *path.parents):
-        try:
-            info = part.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            return part
-    return None
-
-
-def safe_path(value: str | Path, *, must_exist: bool = False, error_type=BackupError) -> Path:
-    """Check the original path chain before resolution can erase a link."""
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    if first_link(path) is not None:
-        raise error_type("symlink or reparse paths are not allowed")
-    return path.resolve(strict=must_exist)
-
-
-def create_output(path: Path, *, error_type=BackupError) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    safe_path(path, error_type=error_type)
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise error_type("refusing to overwrite existing output") from exc
-    os.close(descriptor)
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def atomic_write(path: Path, content: str | bytes) -> None:
-    """Write through a same-directory temporary file so a crash leaves the old file intact."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    if isinstance(content, bytes):
-        temporary.write_bytes(content)
-    else:
-        temporary.write_text(content, encoding="utf-8")
-    os.replace(temporary, path)
-
-
-def atomic_json(path: Path, value: object, *, sort_keys: bool = False) -> None:
-    atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=sort_keys, indent=2) + "\n")
-
-
-def _canonical(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def backup_sqlite(source: str | Path, destination: str | Path, *, manifest: str | Path | None = None) -> dict[str, Any]:
-    """Create a consistent, verified backup into a new isolated path."""
-    source_path = safe_path(source, must_exist=True)
-    destination_path = safe_path(destination)
-    if source_path == destination_path or source_path.is_symlink() or not source_path.is_file():
-        raise BackupError("invalid source database")
-    if destination_path.exists() or destination_path.is_symlink():
-        raise BackupError("refusing to overwrite existing backup")
-    manifest_path = safe_path(manifest) if manifest is not None else None
-    if manifest_path is not None and (manifest_path in {source_path, destination_path} or manifest_path.exists()):
-        raise BackupError("refusing to overwrite existing backup manifest")
-    create_output(destination_path)
-    reader = writer = None
-    try:
-        reader = sqlite3.connect(f"{source_path.as_uri()}?mode=ro", uri=True)
-        writer = sqlite3.connect(destination_path)
-        reader.backup(writer)
-        writer.commit()
-        # A WAL-mode source can copy its journal mode into the destination.
-        # Finalize the standalone snapshot before hashing it; closing a writer
-        # must not checkpoint bytes after the manifest digest was recorded.
-        writer.execute("PRAGMA journal_mode=DELETE")
-        quick = str(writer.execute("PRAGMA quick_check").fetchone()[0])
-        if quick.lower() != "ok":
-            raise BackupError(f"backup quick_check failed: {quick}")
-        structural = {
-            "format": "scope-recall-p15-sqlite-backup/1",
-            "source_sha256": sha256(source_path),
-            "backup_sha256": sha256(destination_path),
-            "size_bytes": destination_path.stat().st_size,
-            "user_version": int(writer.execute("PRAGMA user_version").fetchone()[0]),
-            "application_id": int(writer.execute("PRAGMA application_id").fetchone()[0]),
-            "quick_check": quick,
-        }
-    finally:
-        if reader is not None:
-            reader.close()
-        if writer is not None:
-            writer.close()
-    structural["manifest_sha256"] = hashlib.sha256(_canonical(structural)).hexdigest()
-    if manifest_path is not None:
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        safe_path(manifest_path)
-        with manifest_path.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(structural, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
-    return {"backup_path": str(destination_path), **structural}
-
-
-__all__ = ["BackupError", "backup_sqlite"]
+__all__ = [
+    "BackupError",
+    "atomic_json",
+    "atomic_write",
+    "backup_sqlite",
+    "create_output",
+    "exclusive_store",
+    "first_link",
+    "safe_path",
+    "sha256",
+    "sqlite_busy",
+]

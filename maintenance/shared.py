@@ -164,6 +164,7 @@ def _entry_config(
     host: str,
     entry_id: str,
     worker: dict[str, Any] | None,
+    preserve_ledger: bool = False,
 ) -> dict[str, Any]:
     """An entry's config: its model routes, bound to its scopes, searching the store's vector table.
 
@@ -179,7 +180,8 @@ def _entry_config(
     )
     if table and isinstance(out.get("vector"), dict):
         out["vector"]["table_name"] = table
-    _ledger_in(out, attachment_path(home).parent)
+    if not preserve_ledger:
+        _ledger_in(out, attachment_path(home).parent)
     if host in CLIENT_HOSTS:
         out.update(
             host_adapter=host,
@@ -352,6 +354,11 @@ def _runtime_configs(
     notes = []
     if routes_from is not None:
         routes = _read_json(routes_from)
+        recovering = any(
+            entry["entry_id"] == record["entry_id"] and entry.get("recovery_pending") is True
+            for entry in payload["entries"]
+        )
+        recovered_routes = root / "entries" / record["entry_id"] / RUNTIME_CONFIG_FILENAME
         entry_config = _entry_config(
             routes,
             store_binding(payload, root, scopes),
@@ -359,6 +366,7 @@ def _runtime_configs(
             host=record["host"],
             entry_id=record["entry_id"],
             worker=worker_now,
+            preserve_ledger=recovering and routes_from.resolve() == recovered_routes.resolve(),
         )
         if worker_now is None:
             worker_config = _worker_config(routes, store_binding(payload, root, union))

@@ -110,6 +110,10 @@ class FaultConnection:
     def executemany(self, sql, parameters):
         return self.conn.executemany(sql, parameters)
 
+    def set_authorizer(self, callback):
+        """Keep tombstone observation active on the real connection during fault injection."""
+        return self.conn.set_authorizer(callback)
+
     def commit(self):
         self.trace.append("COMMIT")
         if self.operation == "COMMIT":

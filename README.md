@@ -148,7 +148,8 @@ entry, every memory is marked with the agent it came in through, and a deletion 
 any of them applies to all. Moving the memory to another machine is copying one directory.
 Hermes homes attach as entries, and so do Codex and Claude Code
 (`attach --host codex|claude-code`). See [docs/shared-store.md](docs/shared-store.md).
-WorkBuddy and dsh attach the same way (`attach --host workbuddy|dsh`).
+WorkBuddy and dsh attach the same way (`attach --host workbuddy|dsh`). Full backup bundles
+and disaster recovery restore to fresh destinations are in [docs/backup-restore.md](docs/backup-restore.md).
 
 ## Agent-operated migration
 
