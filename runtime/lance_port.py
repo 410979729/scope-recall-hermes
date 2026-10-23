@@ -23,7 +23,7 @@ from typing import Any, Protocol, cast
 
 from ..contracts import ContractError, TrustedContext
 from ..core.deadline import RequestDeadline, using_request_deadline
-from ..core.recall_policy import SPACE_ID, claim_embedding_text, encode_embedding_text
+from ..core.recall_policy import SPACE_ID, claim_embedding_text
 from ..core.retrieval import CandidateRef, SearchContext
 from ..core.source_records import StoredSource
 
@@ -206,7 +206,7 @@ class LanceEmbedPort:
         batch = getattr(self._source_embedding, "embed_texts", None)
         if not callable(batch) or len(subjects) == 1:
             return tuple(self.prepare_claim(claim, remaining_seconds=remaining_seconds) for claim in subjects)
-        texts = [encode_embedding_text(claim_embedding_text(claim.payload), kind="document") for claim in subjects]
+        texts = [claim_embedding_text(claim.payload) for claim in subjects]
         vectors = batch(texts, remaining_seconds=remaining_seconds)
         if len(vectors) != len(subjects):
             raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")

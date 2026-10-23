@@ -17,8 +17,10 @@ from pathlib import Path
 from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
 from ..core.file_lock import advisory_file_lock
 from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, replayable
+from ..core.installation_copy import copy_task_name, installation_copy_id
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
+from .backup_upkeep import BACKUP_JOB_SECONDS, next_backup_wake
 from .model_budget import provider_holds
 from .worker_entry import (
     DAILY_COUNTER_MAX,
@@ -49,6 +51,7 @@ PAUSE_POLL_SECONDS = 5.0
 #: Seconds before a worker is woken for settled candidates again after a pass that did not sweep them: a provider
 #: hold, the evaluation queue full, or a pass kept out, cut short or failed.
 SETTLE_RETRY_SECONDS = 900
+BACKUP_JOB_REASONS = frozenset({"daily_backup", "backup_retention"})
 
 
 def _daily_budget_spent(config, used: int) -> bool:
@@ -307,6 +310,17 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                     continue
                 due = _utc(row["due"]) + timedelta(seconds=config.auto_retry_cooldown_seconds)
                 candidates.append(scheduled(row["work_type"], due, "failure_cooldown"))
+    return _wake_plan(config, now, candidates, pending, blocked, failed)
+
+
+def _wake_plan(config, now, candidates, pending, blocked, failed) -> WakePlan:
+    """Choose one wake from queue work and independent local maintenance."""
+    backup_wake = next_backup_wake(config.binding.data_directory, now)
+    if backup_wake is not None:
+        candidates.append(backup_wake)
+        # An old queue timestamp cannot starve the store's daily snapshot.
+        if backup_wake[1] in BACKUP_JOB_REASONS and backup_wake[0] <= now:
+            return WakePlan(_stamp(backup_wake[0]), backup_wake[1], pending, blocked, failed)
     if not candidates:
         reason = "capability_unavailable" if blocked else ("failed_terminal" if failed else "idle")
         return WakePlan(None, reason, pending, blocked, failed)
@@ -384,10 +398,22 @@ def read_control(config):
     control = json.loads(path.read_text(encoding="utf-8"))
     if control.get("installation_id") != config.binding.installation_id or type(control.get("enabled")) is not bool:
         raise ValueError("autostart_binding_invalid")
-    expected = "ScopeRecall-" + hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
-    if control.get("task_name") != expected:
+    legacy = "ScopeRecall-" + hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
+    permitted = {legacy}
+    if "copy_id" in control:
+        copy_id = installation_copy_id(config.binding.data_directory, config.binding.installation_id)
+        if control["copy_id"] != copy_id:
+            raise ValueError("autostart_copy_identity_invalid")
+        permitted.add(copy_task_name(copy_id))
+    if control.get("task_name") not in permitted:
         raise ValueError("autostart_task_identity_invalid")
     return control
+
+
+def operator_paused(config) -> bool:
+    """Whether this installation's validated autostart switch disables work."""
+    control = read_control(config)
+    return control is not None and not control["enabled"]
 
 
 def _acquire_ownership(control: SupervisorControl):
@@ -412,6 +438,42 @@ def _acquire_ownership(control: SupervisorControl):
         raise
 
 
+def _begin_supervisor(control, *, utc_now, clock, sleep, delay_seconds, deadline, wall_deadline, paused) -> bool:
+    """Record ownership and sleep its start delay while observing operator pause."""
+    control.update(
+        accepting=True,
+        state="running",
+        reason="initial_wake",
+        worker_pid=os.getpid(),
+        started_at=_stamp(utc_now()),
+        deadline_at=_stamp(wall_deadline),
+        drains=0,
+        next_wake_at=None,
+        finished_at=None,
+        exit_code=None,
+        last_exit_code=None,
+    )
+    # A detached wake can outlive the host that launched it; releasing a
+    # paused wake promptly also releases the package folder during upgrades.
+    delay_left = min(delay_seconds, max(0, deadline - clock())) if delay_seconds else 0.0
+    while delay_left > 0:
+        if paused():
+            return False
+        step = min(delay_left, PAUSE_POLL_SECONDS)
+        sleep(step)
+        delay_left -= step
+    return True
+
+
+def _first_wake(config, planner, now, *, backup_enabled):
+    """Keep the initial drain unless an independent backup is already due."""
+    if backup_enabled:
+        candidate = planner(config, now=now, unavailable_until={})
+        if candidate.reason in BACKUP_JOB_REASONS and candidate.due_at is not None and _utc(candidate.due_at) <= now:
+            return candidate
+    return WakePlan(_stamp(now), "initial_wake")
+
+
 def supervise(
     config_path: Path,
     drain_once,
@@ -421,11 +483,13 @@ def supervise(
     sleep=time.sleep,
     utc_now=lambda: datetime.now(timezone.utc),
     planner=next_wake,
+    backup_once=None,
 ) -> int:
-    """Run bounded drains sequentially; no recursive supervisor process spawn.
+    """Run bounded drains and independent backup jobs under one finite owner.
 
     An OS restart needs a separate startup integration. The finite window and
-    drain count are never extended by coalesced requests.
+    drain count are never extended by coalesced requests. A backup started
+    within the window finishes under its own bound; it grants no extra drain.
     """
     config = load_config(config_path)
     control = SupervisorControl(config)
@@ -441,10 +505,10 @@ def supervise(
     last_code = 0
     unavailable_until = {}
     busy_until = None
+    backup_ran = False
 
     def paused() -> bool:
-        background_control = read_control(config)
-        if background_control is None or background_control["enabled"]:
+        if not operator_paused(config):
             return False
         control.update(
             accepting=False, state="paused", reason="operator_pause", drains=count, finished_at=_stamp(utc_now())
@@ -452,31 +516,18 @@ def supervise(
         return True
 
     try:
-        control.update(
-            accepting=True,
-            state="running",
-            reason="initial_wake",
-            worker_pid=os.getpid(),
-            started_at=_stamp(utc_now()),
-            deadline_at=_stamp(wall_deadline),
-            drains=0,
-            next_wake_at=None,
-            finished_at=None,
-            exit_code=None,
-            last_exit_code=None,
-        )
-        # The start delay is slept in steps that read the operator pause.  This process runs from
-        # the package folder, and a host that is shutting down launches one last detached wake:
-        # slept in one piece, that wake held the folder for worker_min_interval_seconds after the
-        # operator had paused everything, and the package step of an upgrade refused.
-        delay_left = min(delay_seconds, max(0, deadline - clock())) if delay_seconds else 0.0
-        while delay_left > 0:
-            if paused():
-                return 0
-            step = min(delay_left, PAUSE_POLL_SECONDS)
-            sleep(step)
-            delay_left -= step
-        plan = WakePlan(_stamp(utc_now()), "initial_wake")
+        if not _begin_supervisor(
+            control,
+            utc_now=utc_now,
+            clock=clock,
+            sleep=sleep,
+            delay_seconds=delay_seconds,
+            deadline=deadline,
+            wall_deadline=wall_deadline,
+            paused=paused,
+        ):
+            return 0
+        plan = _first_wake(config, planner, utc_now(), backup_enabled=backup_once is not None)
         while True:
             if paused():
                 return 0
@@ -511,7 +562,7 @@ def supervise(
                 # drain count stay the ones it started with.
                 config = fresh
             revision = control.read().get("wake_revision", 0)
-            if count:
+            if count or backup_ran:
                 plan = planner(config, now=utc_now(), unavailable_until=unavailable_until)
                 # A successful batch may have freed admission capacity while
                 # no work is queued yet. One extra drain lets Core refill it.
@@ -550,6 +601,13 @@ def supervise(
                 continue  # Read fresh work, budget and wake generation after sleep.
             control.update(state="running", reason=plan.reason, next_wake_at=None, drains=count)
             began = _stamp(utc_now())
+            if backup_once is not None and plan.reason in BACKUP_JOB_REASONS:
+                code, _payload = backup_once(BACKUP_JOB_SECONDS)
+                backup_ran = True
+                # Contention has its own delay; backup failures never count as
+                # model-worker failures or reserve daily queue items.
+                busy_until = clock() + BUSY_BACKOFF_SECONDS if code == 75 else None
+                continue
             code, payload = drain_once(max(0.001, min(config.drain_seconds, deadline - clock())))
             last_code = code
             count += 1

@@ -32,6 +32,7 @@ from ..vector.lance_native import helper_start_failure
 from ..vector.process_store import NativeVectorPathError
 from ..vector.store import build_vector_store
 from .auxiliary import build_auxiliary_runtime
+from .backup_upkeep import mirror_if_due
 from .codex_cli import CodexCliConsolidationAdapter
 from .embedding_retry import embed_with_one_retry
 from .instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
@@ -316,6 +317,8 @@ class RuntimeInstance:
     embed_backfill: dict | None = None
     #: Receipt of the page of a re-embed run this drain reopened (``respace_if_due``), or ``None`` without a run.
     embed_respace: dict | None = None
+    #: Snapshot or mirror outcome from this drain, independent of model budgets.
+    backup_upkeep: dict | None = None
     #: Work types this drain left alone, each with the held model and when its
     #: hold ends (runtime/model_budget.py ``provider_holds``).
     provider_holds: dict = field(default_factory=dict)
@@ -537,6 +540,7 @@ class RuntimeInstance:
         budget = self.config.drain_seconds if remaining_seconds is None else remaining_seconds
         strict_float("remaining_seconds", budget, minimum=0.001, maximum=self.config.drain_seconds)
         deadline = time.monotonic() + budget
+        self.backup_upkeep = mirror_if_due(self.core.storage, self.config, available_seconds=budget)
         ingress_gaps = self._replay_ingress(budget)
         vector_gaps = self._open_vector_for_drain(deadline, budget)
         self.background_gaps = (*ingress_gaps, *vector_gaps)
@@ -568,6 +572,11 @@ class RuntimeInstance:
                 available_seconds=max(0.0, deadline - time.monotonic()),
             )
         )
+        if (self.backup_upkeep or {}).get("outcome") == "failed":
+            self.background_gaps = (
+                *self.background_gaps,
+                f"deletion_mirror_failed:{(self.backup_upkeep or {}).get('error', 'unknown')}",
+            )
         from ..core.worker import WorkerConfig, drain_worker  # only a process that drains loads the worker
 
         model, candidate = self._consolidation_ports(consolidation)

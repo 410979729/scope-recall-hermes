@@ -8,6 +8,7 @@ import sys
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from scope_recall._version import __version__
@@ -190,6 +191,167 @@ def _vector_block(ctx):
         "table_name": "TEST_vectors",
         "dimensions": 3072,
     }
+
+
+@pytest.mark.parametrize("state", ["readable", "unreadable", "missing", "directory"])
+def test_doctor_checks_the_configured_sqlite_companion(tmp_path, monkeypatch, state):
+    from scope_recall.core.vector_failure import vector_failure_label
+    from scope_recall.vector import VectorStoreCompatibilityError
+    from scope_recall.vector.store import build_vector_store
+
+    _app, ctx = _doctor_app(tmp_path, monkeypatch)
+    block = {**_vector_block(ctx), "backend": "sqlite-bruteforce"}
+    _write_runtime_config(ctx, vector=block)
+    config = doctor._runtime_config(ctx.binding.data_directory).vector
+    writer = build_vector_store(
+        config.backend,
+        storage_dir=config.storage_dir,
+        table_name=config.table_name,
+        dimensions=config.dimensions + (state == "unreadable"),
+    )
+    expected_label = None
+    try:
+        if state == "directory":
+            writer.db_path.parent.mkdir(parents=True)
+            writer.db_path.mkdir()
+            expected_label = vector_failure_label(
+                VectorStoreCompatibilityError("sqlite-bruteforce physical storage is not a regular file")
+            )
+        elif state != "missing":
+            writer.open()
+        if state == "unreadable":
+            reader = build_vector_store(
+                config.backend,
+                storage_dir=config.storage_dir,
+                table_name=config.table_name,
+                dimensions=config.dimensions,
+            )
+            with pytest.raises(VectorStoreCompatibilityError) as failure:
+                reader.open_existing()
+            expected_label = vector_failure_label(failure.value)
+        report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+        (check,) = [item for item in report.checks if item["name"] == "vector_store"]
+        unreadable = state in {"unreadable", "directory"}
+        assert check["result"] == ("unreadable" if unreadable else state)
+        assert str(ctx.binding.data_directory) not in check.get("detail", "")
+        assert ("vector_store_unreadable" in report.capability_gaps) is unreadable
+        if unreadable:
+            assert report.status == "degraded" and check["detail"] == expected_label
+        elif state == "missing":
+            assert "worker" in check["detail"] and "first pass" in check["detail"]
+            assert not writer.db_path.exists()
+    finally:
+        writer.close()
+
+
+def test_doctor_skips_a_sqlite_companion_bound_to_another_installation(tmp_path, monkeypatch):
+    from scope_recall.vector.store import build_vector_store
+
+    _app, ctx = _doctor_app(tmp_path, monkeypatch)
+    other_directory = tmp_path / "TEST-other-installation"
+    binding = {
+        "agent_id": ctx.binding.agent_id,
+        "installation_id": "TEST-other-installation",
+        "data_directory": str(other_directory),
+        "scope_ids": sorted(ctx.binding.scope_ids),
+        "test_mode": True,
+    }
+    block = {
+        **_vector_block(ctx),
+        "backend": "sqlite-bruteforce",
+        "storage_dir": str(other_directory / "vectors" / SPACE_ID),
+    }
+    _write_runtime_config(ctx, binding=binding, vector=block)
+    config = doctor._runtime_config(ctx.binding.data_directory)
+    assert config is not None and config.binding != ctx.binding
+    store = build_vector_store(
+        config.vector.backend,
+        storage_dir=config.vector.storage_dir,
+        table_name=config.vector.table_name,
+        dimensions=config.vector.dimensions,
+    )
+    try:
+        store.open()
+    finally:
+        store.close()
+    before = {path.name: path.read_bytes() for path in store.db_path.parent.iterdir()}
+    report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    after = {path.name: path.read_bytes() for path in store.db_path.parent.iterdir()}
+    assert not any(item["name"] == "vector_store" for item in report.checks)
+    assert "vector_store_unreadable" not in report.capability_gaps
+    assert after == before
+
+
+def test_doctor_checks_a_sqlite_companion_with_an_equivalent_binding_path(tmp_path, monkeypatch):
+    _app, ctx = _doctor_app(tmp_path, monkeypatch)
+    _write_runtime_config(ctx, vector={**_vector_block(ctx), "backend": "sqlite-bruteforce"})
+    path = ctx.binding.data_directory / "runtime-config.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["binding"]["data_directory"] = str(ctx.binding.data_directory / ".." / ctx.binding.data_directory.name)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    config = doctor._runtime_config(ctx.binding.data_directory)
+    assert config is not None and config.binding != ctx.binding
+    assert config.binding.data_directory.resolve() == ctx.binding.data_directory.resolve()
+
+    report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    (check,) = [item for item in report.checks if item["name"] == "vector_store"]
+    assert check["result"] == "missing"
+    assert "vector_store_unreadable" not in report.capability_gaps
+
+
+def test_doctor_labels_vector_path_permission_errors_as_unreadable(tmp_path, monkeypatch):
+    from scope_recall.vector.store import build_vector_store
+
+    _app, ctx = _doctor_app(tmp_path, monkeypatch)
+    _write_runtime_config(ctx, vector={**_vector_block(ctx), "backend": "sqlite-bruteforce"})
+    config = doctor._runtime_config(ctx.binding.data_directory).vector
+    store = build_vector_store(
+        config.backend,
+        storage_dir=config.storage_dir,
+        table_name=config.table_name,
+        dimensions=config.dimensions,
+    )
+    raw_stat, raw_lstat = os.stat, os.lstat
+    path_exists, path_is_symlink = Path.exists, Path.is_symlink
+
+    def deny_stat(path, *args, **kwargs):
+        if Path(path) == store.db_path:
+            raise PermissionError("TEST inaccessible vector store")
+        return raw_stat(path, *args, **kwargs)
+
+    def deny_lstat(path, *args, **kwargs):
+        if Path(path) == store.db_path:
+            raise PermissionError("TEST inaccessible vector store")
+        return raw_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", deny_stat)
+    monkeypatch.setattr(os, "lstat", deny_lstat)
+    # Python 3.14's path predicates suppress permission errors; emulate that on older interpreters.
+    monkeypatch.setattr(Path, "exists", lambda path: False if path == store.db_path else path_exists(path))
+    monkeypatch.setattr(Path, "is_symlink", lambda path: False if path == store.db_path else path_is_symlink(path))
+    report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    (check,) = [item for item in report.checks if item["name"] == "vector_store"]
+    assert check["result"] == "unreadable" and check["detail"] == "PermissionError"
+    assert "vector_store_unreadable" in report.capability_gaps
+
+
+@pytest.mark.parametrize("configured", ["lancedb", "no-vector", "no-config"])
+def test_doctor_skips_companion_open_without_a_sqlite_backend(tmp_path, monkeypatch, configured):
+    import builtins
+
+    _app, ctx = _doctor_app(tmp_path, monkeypatch)
+    if configured != "no-config":
+        _write_runtime_config(ctx, vector=_vector_block(ctx) if configured == "lancedb" else None)
+    original_import = builtins.__import__
+
+    def without_lance(name, *args, **kwargs):
+        assert name.split(".")[0] not in {"lancedb", "pyarrow"}
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_lance)
+    report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    assert not any(item["name"] == "vector_store" for item in report.checks)
+    assert "vector_store_unreadable" not in report.capability_gaps
 
 
 def _pm_environment(home, tmp_path, packages):

@@ -300,9 +300,9 @@ def test_a_claim_group_is_encoded_exactly_as_one_claim_is():
             self.texts.append(encode_embedding_text(text, kind="document"))
             return (0.5, 0.5)
 
-        def embed_texts(self, encoded, *, remaining_seconds=1.0):
-            self.texts.extend(encoded)
-            return tuple((0.5, 0.5) for _ in encoded)
+        def embed_texts(self, texts, *, remaining_seconds=1.0):
+            self.texts.extend(encode_embedding_text(text, kind="document") for text in texts)
+            return tuple((0.5, 0.5) for _ in texts)
 
     claims = [Claim(index) for index in range(3)]
     grouped, single = Embedding(), Embedding()

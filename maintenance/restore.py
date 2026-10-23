@@ -65,6 +65,7 @@ from scope_recall.maintenance.shared import store_binding
 from scope_recall.runtime.running_code import live_records
 
 from .backup import BackupError, backup_sqlite, exclusive_store, safe_path
+from .disaster_restore import DisasterRestoreError, apply_disaster_restore, plan_disaster_restore
 from .doctor import load_binding
 from .install_common import HostChoice
 from .shared_run import SharedStoreError, encoded, store_lock
@@ -361,6 +362,34 @@ def _absolute(parser: argparse.ArgumentParser, value: Path | None, flag: str) ->
 
 
 def main(argv: list[str]) -> int:
+    if any(arg == "--bundle" or arg.startswith("--bundle=") for arg in argv):
+        bundle_parser = argparse.ArgumentParser(
+            prog="scope-recall restore",
+            description="Restore a full backup bundle to a fresh destination directory. "
+            "Without --apply nothing is written.",
+        )
+        bundle_parser.add_argument("--bundle", type=Path, required=True, help="backup bundle zip file")
+        bundle_parser.add_argument("--to", type=Path, required=True, help="fresh destination directory")
+        bundle_parser.add_argument("--mirror", type=Path, help="optional deletion mirror jsonl path")
+        bundle_parser.add_argument(
+            "--apply", action="store_true", help="write to destination; without this only validates"
+        )
+        bargs = bundle_parser.parse_args(argv)
+        _absolute(bundle_parser, bargs.bundle, "--bundle")
+        _absolute(bundle_parser, bargs.to, "--to")
+        if bargs.mirror:
+            _absolute(bundle_parser, bargs.mirror, "--mirror")
+        try:
+            if bargs.apply:
+                bresult = apply_disaster_restore(bargs.bundle, bargs.to, mirror=bargs.mirror)
+            else:
+                bresult = plan_disaster_restore(bargs.bundle, bargs.to, mirror=bargs.mirror)
+            bcode = 0
+        except (DisasterRestoreError, BackupError, ValueError, OSError) as exc:
+            bresult, bcode = {"status": "error", "error": type(exc).__name__, "detail": str(exc)}, 2
+        sys.stdout.write(encoded(bresult))
+        return bcode
+
     parser = argparse.ArgumentParser(
         prog="scope-recall restore",
         description="Go back to a snapshot `scope-recall backup` took of a store, keeping every deletion made since. "

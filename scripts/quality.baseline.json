@@ -757,9 +757,6 @@
    "BLE001": 3,
    "UP035": 1
   },
-  "maintenance/autostart.py": {
-   "UP017": 1
-  },
   "maintenance/cli.py": {
    "E501": 1,
    "PLR0911": {
@@ -767,9 +764,7 @@
    },
    "PLR0915": {
     "_upgrade_store": 64
-   },
-   "UP017": 1,
-   "UP035": 1
+   }
   },
   "maintenance/doctor.py": {
    "E501": 1
@@ -945,26 +940,22 @@
   },
   "runtime/scheduling.py": {
    "C901": {
-    "next_wake": 26,
+    "next_wake": 25,
     "supervise": 23
    },
    "PLR0912": {
-    "next_wake": 22,
+    "next_wake": 21,
     "supervise": 23
    },
    "PLR0915": {
-    "next_wake": 77,
-    "supervise": 84
+    "next_wake": 74,
+    "supervise": 83
    },
    "UP017": 5
   },
   "runtime/subscription_budget.py": {
    "E501": 1,
    "UP017": 1
-  },
-  "runtime/validation.py": {
-   "UP017": 1,
-   "UP035": 1
   },
   "runtime/vector_retention.py": {
    "E501": 1,

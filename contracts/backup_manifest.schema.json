@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_format",
+    "product_version",
+    "schema_version",
+    "application_id",
+    "created_at_utc",
+    "source_machine",
+    "installation_id",
+    "installation_kind",
+    "deletion_mirror",
+    "resources",
+    "with_vectors",
+    "entries",
+    "secrets_redacted_count",
+    "files",
+    "manifest_sha256",
+    "copy_id",
+    "source_os",
+    "spool_entries_redacted",
+    "spool_entries_omitted"
+  ],
+  "properties": {
+    "bundle_format": {
+      "type": "string",
+      "const": "scope-recall-backup-bundle/1"
+    },
+    "product_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "application_id": {
+      "type": "integer"
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_machine": {
+      "type": "string"
+    },
+    "installation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "installation_kind": {
+      "type": "string",
+      "enum": [
+        "local",
+        "shared"
+      ]
+    },
+    "deletion_mirror": {
+      "type": "string",
+      "const": "deletion-mirror.jsonl"
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "archive_path",
+          "target_relative",
+          "config_file",
+          "field"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "kept_captures",
+              "budget_ledger",
+              "budget_installation_dir",
+              "remote_client",
+              "worker_day"
+            ]
+          },
+          "archive_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_relative": {
+            "type": "string",
+            "minLength": 1
+          },
+          "config_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "with_vectors": {
+      "type": "boolean"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entry_id",
+          "display_name",
+          "host"
+        ],
+        "properties": {
+          "entry_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "detached_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_seen": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "secrets_redacted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256",
+          "size_bytes"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "copy_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "source_os": {
+      "type": "string",
+      "minLength": 1
+    },
+    "spool_entries_redacted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "spool_entries_omitted": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

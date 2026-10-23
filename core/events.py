@@ -24,13 +24,14 @@ class PreparedCapture:
     private_revision: int | None = None
 
 
-def _secret(value: object) -> bool:
+def capture_contains_secret(value: object) -> bool:
+    """Whether an envelope contains text admission refuses, including nested keys."""
     if isinstance(value, str):
         return contains_secret_like_text(value)
     if isinstance(value, dict):
-        return any(_secret(k) or _secret(v) for k, v in value.items())
+        return any(capture_contains_secret(k) or capture_contains_secret(v) for k, v in value.items())
     if isinstance(value, list):
-        return any(_secret(v) for v in value)
+        return any(capture_contains_secret(v) for v in value)
     return False
 
 
@@ -44,7 +45,7 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
     validate_capture({**raw, "content": ""}, context)
     if not raw["source_event_key"].strip() or "\x00" in raw["source_event_key"]:
         raise ContractError("INPUT_INVALID", "source_event_key")
-    if _secret(raw):
+    if capture_contains_secret(raw):
         return PreparedCapture((), rejection="plaintext_secret_rejected")
     filtered = sanitize_source_capture_text(content)
     gaps = ("transport_payload_omitted",) if filtered != content else ()

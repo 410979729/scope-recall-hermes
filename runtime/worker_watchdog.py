@@ -15,9 +15,10 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from .scheduling import supervise
+from .backup_upkeep import BACKUP_JOB_SECONDS, record_backup_job_failure
+from .scheduling import operator_paused, supervise
 from .validation import utc_now
-from .worker_entry import load_config, persist_worker_status
+from .worker_entry import backup_pause_check, load_config, persist_worker_status
 from .worker_launch import (
     detached_creationflags,
     failure_reason,
@@ -205,7 +206,9 @@ def _wait_for_prior_worker(pid: int, deadline: float) -> bool:
     return False
 
 
-def _spawn_worker(config_path: Path, python_executable: Path, deadline: float) -> subprocess.Popen[str]:
+def _spawn_worker(
+    config_path: Path, python_executable: Path, deadline: float, *, job_kind: str = "drain"
+) -> subprocess.Popen[str]:
     # A monotonic reading means nothing in another process: hand the child
     # the same instant in epoch seconds, as an argument only it receives.
     deadline_epoch = time.time() + (deadline - time.monotonic())
@@ -216,6 +219,8 @@ def _spawn_worker(config_path: Path, python_executable: Path, deadline: float) -
         str(config_path),
         repr(deadline_epoch),
     ]
+    if job_kind == "backup":
+        command.append("backup")
     return subprocess.Popen(
         command,
         cwd=str(Path(__file__).resolve().parents[1]),
@@ -290,12 +295,41 @@ class _ChildOutput:
         return ("".join(self._buffers.get("stdout", ())), "".join(self._buffers.get("stderr", ())))
 
 
-def _wait_for_exit(child: subprocess.Popen[str], deadline: float) -> bool:
+def _wait_for_exit(child: subprocess.Popen[str], deadline: float, *, cancelled=None) -> bool:
     while child.poll() is None:
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= deadline or (cancelled is not None and cancelled()):
             return False
         time.sleep(0.02)
     return True
+
+
+def _owned_job_failure(child, deadline: float, *, cancelled=None) -> str | None:
+    """Allow cooperative backup cancellation, then leave hard cleanup to the owner."""
+    if cancelled is None:
+        return None if _wait_for_exit(child, deadline + KILL_GRACE_SECONDS) else "worker_watchdog_timeout"
+    if _wait_for_exit(child, deadline + KILL_GRACE_SECONDS, cancelled=cancelled):
+        return None
+    if cancelled():
+        _wait_for_exit(child, time.monotonic() + KILL_GRACE_SECONDS)
+        return "backup_cancelled"
+    return "backup_deadline_exceeded"
+
+
+def _persist_job_status(config, payload, *, job_kind, started_at, exit_code, worker_pid):
+    """Keep backup diagnostics separate from the last model-work receipt."""
+    if job_kind == "backup":
+        if exit_code not in (0, 75):
+            gaps = payload.get("capability_gaps", ())
+            error = (
+                "backup cancelled"
+                if "backup_cancelled" in gaps
+                else "backup deadline exceeded"
+                if exit_code == 124
+                else "backup job failed"
+            )
+            record_backup_job_failure(config.binding.data_directory, error)
+        return
+    persist_worker_status(config, payload, started_at=started_at, exit_code=exit_code, worker_pid=worker_pid)
 
 
 def _relay_output(stdout: str, stderr: str, result_sink: dict | None) -> None:
@@ -323,6 +357,7 @@ def _run_once(
     delay_seconds: float = 0.0,
     timeout_seconds: float | None = None,
     result_sink: dict | None = None,
+    job_kind: str = "drain",
 ) -> int:
     started_at = utc_now()
     config = None
@@ -335,9 +370,10 @@ def _run_once(
             result_sink.update(payload)
         if config is not None:
             try:
-                persist_worker_status(
+                _persist_job_status(
                     config,
                     payload,
+                    job_kind=job_kind,
                     started_at=started_at,
                     exit_code=exit_code,
                     worker_pid=child.pid if child is not None else None,
@@ -357,7 +393,7 @@ def _run_once(
         # another wake; its ordinary daily/model budgets remain unchanged.
         if delay_seconds:
             time.sleep(delay_seconds)
-        budget = float(config.drain_seconds)
+        budget = float(BACKUP_JOB_SECONDS if job_kind == "backup" else config.drain_seconds)
         if timeout_seconds is not None:
             budget = min(budget, timeout_seconds)
         # One deadline bounds the whole pass, a wait for the predecessor
@@ -368,7 +404,11 @@ def _run_once(
             return report(_degraded("worker_followup_wait_timeout"), 124)
         started_at = utc_now()
         job = _OwnedWindowsJob()
-        child = _spawn_worker(config_path, python_executable, deadline)
+        child = (
+            _spawn_worker(config_path, python_executable, deadline, job_kind=job_kind)
+            if job_kind == "backup"
+            else _spawn_worker(config_path, python_executable, deadline)
+        )
         if not job.assign(child):
             raise OSError("worker_job_assignment_failed")
         # Read while it runs: a receipt is larger than a pipe, and an owner that
@@ -376,18 +416,24 @@ def _run_once(
         # already done.
         output = _ChildOutput(child)
         _release_worker(child)
-        if not _wait_for_exit(child, deadline + KILL_GRACE_SECONDS):
+        if (
+            failure_gap := _owned_job_failure(
+                child,
+                deadline,
+                cancelled=backup_pause_check(config, operator_paused) if job_kind == "backup" else None,
+            )
+        ) is not None:
             _kill_tree(child, job)
             tree_stopped = True
             payload = {
-                **_degraded("worker_watchdog_timeout"),
+                **_degraded(failure_gap),
                 "owner_id": config.owner_id,
                 "installation_id": config.binding.installation_id,
             }
             reason = failure_reason(output.collect(timeout=1.0)[1])
             if reason:
                 payload["worker_error"] = reason
-            return report(payload, 124)
+            return report(payload, 130 if failure_gap == "backup_cancelled" else 124)
         # Descendants may have inherited the pipes and outlived their parent.
         # Stop the owned tree rather than waiting on them for EOF.
         _kill_tree(child, job)
@@ -427,9 +473,14 @@ def run(
     try:
         config = load_config(config_path)
         if not config.supervisor_enabled:
-            return _run_once(
+            code = _run_once(
                 config_path, python_executable, cleanup_config=False, after_pid=after_pid, delay_seconds=delay_seconds
             )
+            # A one-pass install still schedules daily local I/O independently
+            # of the ordinary worker's drain budget.
+            with redirect_stdout(StringIO()):
+                _run_once(config_path, python_executable, cleanup_config=False, job_kind="backup")
+            return code
         validate_wake_arguments(after_pid, delay_seconds)
 
         predecessor = after_pid
@@ -455,7 +506,23 @@ def run(
             latest.update(payload)
             return code, payload
 
-        code = supervise(config_path, drain_once, delay_seconds=delay_seconds)
+        def backup_once(remaining):
+            nonlocal predecessor
+            payload = {}
+            with redirect_stdout(StringIO()):
+                code = _run_once(
+                    config_path,
+                    python_executable,
+                    cleanup_config=False,
+                    after_pid=predecessor,
+                    timeout_seconds=remaining,
+                    result_sink=payload,
+                    job_kind="backup",
+                )
+            predecessor = None
+            return code, payload
+
+        code = supervise(config_path, drain_once, delay_seconds=delay_seconds, backup_once=backup_once)
         _emit(latest or {"status": "coalesced", "processed": 0, "items": [], "capability_gaps": []})
         return code
     except Exception as exc:

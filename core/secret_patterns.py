@@ -301,3 +301,24 @@ def contains_secret_like_text(value: Any) -> bool:
     """Return whether the canonical scan API found any secret-like material."""
 
     return bool(scan_secret_like_text(value))
+
+
+def secret_like_text_starts_before(value: Any, end: int) -> bool:
+    """Whether a secret-like run of ``value`` starts in its first ``end`` characters, each run judged as written.
+
+    For a caller that hands on only those characters: a run the cut falls in is judged with the rest of its line,
+    not as the cut leaves it.  Cut alone, the start of an exempt value reads as a password (``credential_env: nu`` of
+    ``null``), and the first characters of a key can be too few for its pattern.  No pattern's match, nor what
+    decides it, reaches past a line break, except the spacing after ``bearer`` or an AWS secret key's name, and a
+    value it carries onto a line after the cut's is not sent; so those lines are not scanned, which spares reading a
+    long text whole.  Positions compare in the scan shadow: the shadow of the first ``end`` characters is as long as the
+    part of the whole shadow they become when ``value`` is in NFKC form, since a prefix of NFKC text is NFKC;
+    embedding input is cut in that form.
+    """
+
+    text = str(value or "")
+    line_end = text.find("\n", end)
+    if line_end >= 0:
+        text = text[: line_end + 1]
+    boundary = len(secret_scan_shadow(text[:end]))
+    return any(match.start < boundary for match in scan_secret_like_text(text))

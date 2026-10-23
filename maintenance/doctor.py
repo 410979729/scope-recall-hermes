@@ -2,7 +2,8 @@
 
 ``run_doctor`` drives a sequence of named checks. Each check records its own
 ``checks`` row and capability gaps on the report; the driver only decides how
-far into the instance the checks can get. Nothing here writes to the instance.
+far into the instance the checks can get. Checks leave stored data and
+configuration untouched; SQLite may create coordination sidecars for reads.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from .doctor_report import DoctorReport, HostChoice, record_check
 from .doctor_store import (
     check_backlog,
     check_candidates,
+    check_deletion_mirror,
     check_embedding_health,
     check_embedding_respace,
     check_footprint,
@@ -44,6 +46,7 @@ from .doctor_store import (
     check_schema,
     check_storage,
     check_unreached,
+    check_vector_store,
 )
 from .install_common import RUNTIME_CONFIG_LIMIT
 
@@ -857,6 +860,7 @@ def run_doctor(
     entry_config = _entry_runtime_config(instance, data_directory)
     _check_hermes_runtime(report, instance, entry_config)
     _check_vector_dependencies(report, probe, entry_config)
+    check_vector_store(report, entry_config, binding)
     check_footprint(report, data_directory, config)
     if readable:
         _check_worker_status(report, binding, data_directory)
@@ -871,6 +875,7 @@ def run_doctor(
         check_model_output(report)
         check_ledger(report)
         check_owner_words(report, host, data_directory, report.shared_store.get("entry_id"))
+        check_deletion_mirror(report, data_directory)
         _classify_status(report)
     check_index(report, data_directory, store_readable=readable, config=config)
     return report
