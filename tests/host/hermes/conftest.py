@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 
-from tests.host.conftest import StoreMeteredClock
+from tests.store_clock import StoreMeteredClock
 
 
 @dataclass
@@ -44,13 +44,8 @@ def initialize_kwargs(hermes_home):
 
 
 @pytest.fixture
-def installed_core(hermes_home, initialize_kwargs, metered_store):
-    """Install a synthetic core with physical store latency excluded from semantic assertions.
-
-    Admission checks and the adapter read the same clock. Budget tests reconfigure its transaction charge;
-    non-store waits, including concurrent hook coordination, continue to count.
-    """
-    metered_store(0.0)
+def installed_core(hermes_home, initialize_kwargs):
+    """Install a synthetic core sharing the admission clock with its adapter."""
     clock = FixedClock()
     _binding, core = install_hermes_scope_recall(
         hermes_home,
@@ -62,19 +57,6 @@ def installed_core(hermes_home, initialize_kwargs, metered_store):
         clock=clock,
     )
     return core, clock
-
-
-@pytest.fixture
-def retry_passes_have_time(monkeypatch):
-    """A session's retry of what it kept gets a minute a pass, not a capture's second: the inbox replay
-    ``capture_retry.write_observed`` runs, and the pass over the buffer it runs after (``write_buffered``).  A pass
-    reads a page of the inbox before it writes, and on a store whose reads take seconds that read alone can end the
-    pass before it reaches a capture.  For a test of what a retry stores, not of how long it may take."""
-    from scope_recall.adapters.hermes import capture_retry
-
-    monkeypatch.setattr(capture_retry, "CAPTURE_TIMEOUT_S", 60.0)
-    # A buffer pass's length defaults to the module's value as it was when the class was defined.
-    monkeypatch.setitem(capture_retry.CaptureRetry.write_buffered.__kwdefaults__, "seconds", 60.0)
 
 
 @pytest.fixture

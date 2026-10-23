@@ -327,6 +327,72 @@ class HttpsTransport:
             _cleanup_http_worker(process)
 
 
+class HttpsTransportPool:
+    """A bounded set of owned persistent transports, borrowed until each reply is read.
+
+    Idle transports are reused most recently first so a quiet route keeps one
+    connection warm. Waiting for a free transport consumes the caller's deadline.
+    Closing wakes waiters and cancels all owned helpers, including active ones.
+    """
+
+    def __init__(self, *, size: int, allow_insecure_endpoint: bool = False) -> None:
+        if type(size) is not int or size <= 0:
+            raise ValueError("transport_pool_size")
+        self._transports = tuple(
+            HttpsTransport(persistent=True, allow_insecure_endpoint=allow_insecure_endpoint) for _ in range(size)
+        )
+        self._available = list(self._transports)
+        self._condition = threading.Condition()
+        self._closed = False
+
+    def post(
+        self, url: str, *, body: bytes, headers: Mapping[str, str], timeout_seconds: float, max_response_bytes: int
+    ) -> tuple[int, bytes]:
+        """Borrow one connection within the request's budget and return it on every exit path."""
+        deadline = time.monotonic() + validate_timeout_seconds(timeout_seconds)
+        with self._condition:
+            ready = self._condition.wait_for(
+                lambda: self._closed or bool(self._available), timeout=max(0, seconds_left(deadline))
+            )
+            if self._closed:
+                raise AuxiliaryModelError("transport_unavailable")
+            if not ready or seconds_left(deadline) <= 0:
+                raise AuxiliaryModelError("timeout")
+            transport = self._available.pop()
+        try:
+            return transport.post(
+                url,
+                body=body,
+                headers=headers,
+                timeout_seconds=seconds_left(deadline),
+                max_response_bytes=max_response_bytes,
+            )
+        finally:
+            with self._condition:
+                if not self._closed:
+                    self._available.append(transport)
+                    # A notified caller can expire before reacquiring the lock;
+                    # every live waiter must get a chance to borrow the slot.
+                    self._condition.notify_all()
+
+    def close(self) -> None:
+        """Permanently close the pool without waiting for borrowers to finish."""
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._condition.notify_all()
+        first_error = None
+        for transport in self._transports:
+            try:
+                transport.close()
+            except BaseException as exc:  # noqa: BLE001 - raised once every helper has had its close attempt
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+
 def json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
 

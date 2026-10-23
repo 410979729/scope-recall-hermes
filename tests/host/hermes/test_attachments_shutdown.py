@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import time
+from threading import Event
 
 from scope_recall.adapters.hermes.attachments import authorize_attachment_metadata
 from scope_recall.adapters.hermes.worker import AdapterWorker
+
+# This generous limit only bounds a hang; shutdown behavior uses its own short budget.
+_HANG_TIMEOUT_SECONDS = 60.0
 
 
 def test_authorized_svg_metadata_is_accepted():
@@ -59,15 +62,21 @@ def test_missing_authorization_records_attachment_gap(adapter):
 
 
 def test_bounded_shutdown_leaves_unfinished_work_pending():
+    """Shutdown reports unfinished callbacks whether they are queued or already running."""
     worker = AdapterWorker()
-    started = []
+    release = Event()
 
     def slow():
-        started.append(True)
-        time.sleep(0.2)
+        assert release.wait(_HANG_TIMEOUT_SECONDS), "the callback must be released"
 
-    assert worker.submit(slow)
-    state = worker.shutdown(timeout=0.05)
-    assert state["status"] == "timed_out"
-    assert state["active_tasks"] >= 0
-    assert started
+    try:
+        assert worker.submit(slow)
+        state = worker.shutdown(timeout=0.05)
+        assert state["status"] == "timed_out"
+        assert state["active_tasks"] + state["pending_wakeups"] == 1
+    finally:
+        release.set()
+        worker.shutdown(timeout=0)
+        if worker._thread is not None:
+            worker._thread.join(timeout=_HANG_TIMEOUT_SECONDS)
+            assert not worker._thread.is_alive(), "the released worker must exit"

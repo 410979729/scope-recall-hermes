@@ -1,14 +1,20 @@
 """Local owner management preserves the normal content and version boundaries."""
 
+import base64
+import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from scope_recall.contracts import ContractError
+from scope_recall.core import management_query
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.management_query import MemoryFilter
 from scope_recall.core.restore import InstallationMaintenance
+from scope_recall.core.retrieval import CandidateRef
+from scope_recall.core.storage import Transaction
 from test_candidate_lifecycle import Evaluator, _candidate, _candidate_rows, _finish_source_work
-from test_claims import app, capture, initial
+from test_claims import accept, app, capture, draft, initial
 from test_deletion import sqlite_backup
 
 
@@ -27,7 +33,7 @@ def test_owner_can_browse_source_and_fact_in_project(app):
     assert owner.history(item.ref)["items"][0]["revision"] == 1
 
 
-def test_filters_and_stale_cursor(app):
+def test_filters_and_cursor_survive_capture(app):
     core, context = app
     _item, source = initial(core, context)
     owner = management(core, context)
@@ -38,9 +44,350 @@ def test_filters_and_stale_cursor(app):
     page = owner.list(limit=1)
     assert page["next_cursor"]
     capture(core, context, "NameOne uses green.")
+    assert owner.list(limit=1, cursor=page["next_cursor"])["items"]
+    for filters in (MemoryFilter(kind="event"), MemoryFilter(scope="TEST-other")):
+        with pytest.raises(ContractError) as error:
+            owner.list(filters, cursor=page["next_cursor"])
+        assert error.value.code == "VERSION_CONFLICT"
+    foreign = (
+        replace(context, allowed_scope_ids=frozenset()),
+        replace(context, binding=replace(context.binding, installation_id="TEST-other-installation")),
+    )
+    for other in foreign:
+        with pytest.raises(ContractError) as error:
+            management_query.decode_cursor(page["next_cursor"], management_query.page_binding(other, MemoryFilter()))
+        assert error.value.code == "VERSION_CONFLICT"
+
+
+def test_capture_during_scan_uses_one_snapshot(app, monkeypatch):
+    core, context = app
+    _item, source = initial(core, context)
+    original = management_query.inventory
+    captured = []
+
+    def inventory(*args, **kwargs):
+        rows = original(*args, **kwargs)
+        if not captured:
+            captured.append(capture(core, context, "TEST concurrent matching needle"))
+        return rows
+
+    monkeypatch.setattr(management_query, "inventory", inventory)
+    filters = MemoryFilter(query="TEST concurrent matching needle")
+    owner = management(core, context)
+    page = owner.list(filters)
+    assert captured and page["items"] == []
+    assert captured[0].ref not in {item["ref"] for item in page["items"]}
+    assert [item["ref"] for item in owner.list(filters)["items"]] == [captured[0].ref]
+
+
+def test_search_reaches_oldest_match_across_inventory_batches(app, monkeypatch):
+    core, context = app
+    # Small batches cross the same inventory and hydration boundaries with a few captures.
+    monkeypatch.setattr(management_query, "_SCAN_BATCH", 8)
+    monkeypatch.setattr(management_query, "_HYDRATE_BATCH", 2)
+    sources = [capture(core, context, f"TEST haystack {i}") for i in range(20)]
+    last = max(sources, key=lambda source: source.ref)
+    target = capture(core, context, "TEST oldest needle", key=last.event["source_event_key"], revision=2)
+    page = management(core, context).list(MemoryFilter(kind="event", query="OLDEST needle"))
+    assert [item["ref"] for item in page["items"]] == [target.ref]
+    assert page["examined"] == 20
+    assert page["scan_complete"] and page["next_cursor"] is None
+
+
+def test_newest_first_across_kinds_and_unknown_occurrence(app, tmp_path):
+    from test_episodes import apply, artifact, ref
+
+    core, context = app
+    item, _source = initial(core, context)
+    core.clock.now = "2026-09-07T12:00:00Z"
+    owner = management(core, context)
+    owner.revise(item.ref, expected_revision=1, value="TEST revised")
+    attachment, _witness, _path = artifact(core, context, tmp_path)
+    core.clock.now = "2026-09-07T12:00:00.000001Z"
+    proposal = dict(
+        mention=attachment.label,
+        candidate_refs=[f"{attachment.ref}@1"],
+        resolved_ref=f"{attachment.ref}@1",
+        resolution="resolved",
+        evidence_refs=[ref(_witness)],
+    )
+    reference = apply(core, context, references=[proposal]).items[0]
+    unknown = capture(core, context, "TEST unknown time", when=None, recorded_at="2026-09-08T00:00:00Z")
+    page = owner.list()
+    refs = [row["ref"] for row in page["items"]]
+    assert refs[0] == unknown.ref
+    assert (
+        next(row["sort_time"] for row in page["items"] if row["ref"] == item.ref) == "2026-09-06T12:00:00.000000+00:00"
+    )
+    assert refs.index(attachment.ref) < refs.index(_source.ref)
+    keys = [(row["sort_time"], row["ref"]) for row in page["items"]]
+    assert keys == sorted(sorted(keys, key=lambda key: key[1]), key=lambda key: key[0], reverse=True)
+    assert refs.index(reference.ref) < refs.index(attachment.ref)
+    assert {"event", "claim", "episode", "artifact", "reference"} <= {row["kind"] for row in page["items"]}
+
+
+def test_deleted_and_blocked_stay_absent_and_muted_visible_across_pages(app):
+    core, context = app
+    sources = [capture(core, context, f"TEST item {i}") for i in range(4)]
+    owner = management(core, context)
+    filters = MemoryFilter(kind="event")
+    first = owner.list(filters, limit=1)
+    pending = sorted((s for s in sources if s.ref != first["items"][0]["ref"]), key=lambda s: s.ref)
+    deleted, blocked, muted = pending
+    owner.apply(owner.preview([deleted.ref]))
+    with core.storage.write(context) as tx:
+        tx._check(write=True).execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (blocked.ref,))
+    owner.apply(owner.preview([muted.ref], mode="suppress"))
+    page = owner.list(filters, cursor=first["next_cursor"])
+    assert [row["ref"] for row in page["items"]] == [muted.ref]
+    assert page["items"][0]["suppressed"] == 1
+
+
+@pytest.mark.parametrize("when", ["2026-09-03T12:00:00Z", None])
+def test_blocked_first_revision_time_stays_out_of_inventory_and_cursor(app, when):
+    core, context = app
+    blocked = capture(core, context, "TEST blocked first revision", when="2026-09-05T19:43:21Z")
+    readable = capture(
+        core,
+        context,
+        "TEST readable later revision",
+        key=blocked.event["source_event_key"],
+        revision=2,
+        when=when,
+        recorded_at="2026-09-03T12:00:00Z",
+    )
+    older = capture(core, context, "TEST older event", when="2026-09-01T12:00:00Z")
+    with core.storage.write(context) as tx:
+        tx._check(write=True).execute(
+            "UPDATE source_events SET read_blocked=1 WHERE event_id=? AND source_revision=1", (blocked.ref,)
+        )
+    assert core.source(context, blocked.ref, 1) is None
+    owner = management(core, context)
+    filters = MemoryFilter(kind="event")
+    page = owner.list(filters, limit=1)
+    cursor = json.loads(base64.urlsafe_b64decode(page["next_cursor"] + "=" * (-len(page["next_cursor"]) % 4)))
+    assert [row["ref"] for row in page["items"]] == [readable.ref]
+    assert page["items"][0]["revision"] == 2
+    assert "2026-09-05" not in json.dumps([page["items"], cursor])
+    assert page["items"][0]["sort_time"] == "2026-09-03T12:00:00.000000+00:00"
+    assert cursor["after"] == [page["items"][0]["sort_time"], readable.ref]
+    assert [row["ref"] for row in owner.list(filters, cursor=page["next_cursor"])["items"]] == [older.ref]
+
+
+@pytest.mark.parametrize(
+    ("writable", "as_of", "states", "queries"),
+    [
+        (False, None, ("historical", "current", "current"), 0),
+        (False, "2026-09-02T12:00:00Z", ("current", None, "current"), 2),
+        (False, "2026-09-04T12:00:00Z", ("historical", "current", "current"), 3),
+        (True, None, ("historical", "current", "current"), 3),
+    ],
+)
+def test_prefetched_event_supersession_queries_follow_snapshot_and_time(app, writable, as_of, states, queries):
+    core, context = app
+    first = capture(core, context, "TEST first value")
+    second = capture(
+        core, context, "TEST later value", key=first.event["source_event_key"], revision=2, when="2026-09-03T12:00:00Z"
+    )
+    single = capture(core, context, "TEST unrevised value")
+    candidates = tuple(
+        CandidateRef("event", source.ref, source.revision, "exact_ref") for source in (first, second, single)
+    )
+    search = replace(management_query._search_context(context, core), as_of=as_of)
+    reader = core.recall_pipeline.storage_reader
+    transaction = core.storage.write if writable else core.storage.read
+    with transaction(context) as tx:
+        statements = []
+        conn = tx._check()
+        conn.set_trace_callback(statements.append)
+        try:
+            reader.prefetch(tx, candidates, search)
+            objects = [reader.hydrate(tx, candidate, search) for candidate in candidates]
+        finally:
+            conn.set_trace_callback(None)
+    assert tuple(obj.temporal_status if obj else None for obj in objects) == states
+    newer_queries = [sql for sql in statements if sql.startswith("SELECT 1 FROM source_events newer WHERE")]
+    assert len(newer_queries) == queries
+
+
+@pytest.mark.parametrize("cursor", ["{}", "[]", "null", "bad", '{"after":"x","binding":"x","epoch":1}'])
+def test_malformed_and_epoch_bound_cursors_are_invalid(app, cursor):
+    core, context = app
     with pytest.raises(ContractError) as error:
-        owner.list(limit=1, cursor=page["next_cursor"])
-    assert error.value.code == "VERSION_CONFLICT"
+        management(core, context).list(cursor=cursor)
+    assert error.value.code == "INPUT_INVALID"
+
+
+def test_time_budget_cursor_resumes_without_skipping_a_batch(app, monkeypatch):
+    core, context = app
+    sources = [capture(core, context, f"TEST haystack [{i}]") for i in range(40)]
+    last = max(sources, key=lambda source: source.ref)
+    filters = MemoryFilter(kind="event", query=last.event["content"])
+    owner = management(core, context)
+    monkeypatch.setattr(management_query, "SCAN_SECONDS", 0)
+    page = owner.list(filters)
+    assert page["items"] == [] and 0 < page["examined"] < 40 and not page["scan_complete"]
+    assert page["stop_reason"] == "time_budget" and page["next_cursor"]
+    monkeypatch.setattr(management_query, "SCAN_SECONDS", 30)
+    resumed = owner.list(filters, cursor=page["next_cursor"])
+    assert [row["ref"] for row in resumed["items"]] == [last.ref]
+    assert resumed["examined"] + page["examined"] == 40 and resumed["scan_complete"]
+
+
+def test_budget_stop_in_second_inventory_batch_bounds_prefetch_and_resumes(app, monkeypatch):
+    core, context = app
+    # Small batches put the budget stop inside the second inventory page with a few captures.
+    monkeypatch.setattr(management_query, "_SCAN_BATCH", 8)
+    monkeypatch.setattr(management_query, "_HYDRATE_BATCH", 2)
+    target = capture(core, context, "TEST oldest needle", when="2026-01-01T00:00:00Z")
+    for i in range(19):
+        capture(core, context, f"TEST haystack {i}")
+    filters = MemoryFilter(kind="event", query=target.event["content"])
+    owner = management(core, context)
+    clock = [0.0]
+    monkeypatch.setattr(management_query, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    reader = core.recall_pipeline.storage_reader
+    original = reader.prefetch
+    batches = []
+
+    def prefetch(tx, candidates, search):
+        batches.append(len(candidates))
+        result = original(tx, candidates, search)
+        if sum(batches) > 8:
+            clock[0] = 31.0
+        return result
+
+    monkeypatch.setattr(reader, "prefetch", prefetch)
+    page = owner.list(filters)
+    assert page["items"] == [] and 8 < page["examined"] < 20
+    assert page["stop_reason"] == "time_budget" and page["next_cursor"]
+    assert max(batches) <= 2
+    monkeypatch.setattr(reader, "prefetch", original)
+    resumed = owner.list(filters, cursor=page["next_cursor"])
+    assert [row["ref"] for row in resumed["items"]] == [target.ref]
+    assert resumed["examined"] + page["examined"] == 20 and resumed["scan_complete"]
+
+
+def test_inventory_using_up_budget_still_advances_and_avoids_queue_counts(app, monkeypatch):
+    core, context = app
+    for i in range(40):
+        capture(core, context, f"TEST haystack {i}")
+    clock = [0.0]
+    monkeypatch.setattr(management_query, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    original = management_query.inventory
+
+    def inventory(*args, **kwargs):
+        result = original(*args, **kwargs)
+        clock[0] += 31.0
+        return result
+
+    def status(*args, **kwargs):
+        pytest.fail("inventory must read memory_epoch without queue diagnostics")
+
+    monkeypatch.setattr(management_query, "inventory", inventory)
+    monkeypatch.setattr(Transaction, "status", status)
+    page = management(core, context).list(MemoryFilter(query="TEST absent needle"))
+    assert page["examined"] > 0 and page["next_cursor"]
+
+
+@pytest.mark.parametrize("returned", [False, True])
+def test_event_revision_cannot_cross_cursor_in_either_direction(app, returned):
+    core, context = app
+    first = capture(core, context, "TEST first", when="2026-09-01T12:00:00Z")
+    second = capture(core, context, "TEST second", when="2026-09-01T11:00:00Z")
+    owner = management(core, context)
+    filters = MemoryFilter(kind="event")
+    page = owner.list(filters, limit=1)
+    assert page["items"][0]["ref"] == first.ref
+    target = first if returned else second
+    capture(
+        core,
+        context,
+        "TEST revised",
+        key=target.event["source_event_key"],
+        revision=2,
+        when="2026-09-01T10:00:00Z" if returned else "2026-09-01T13:00:00Z",
+    )
+    resumed = owner.list(filters, cursor=page["next_cursor"])
+    assert [row["ref"] for row in resumed["items"]] == [second.ref]
+    assert resumed["scan_complete"]
+
+
+def test_late_lower_source_revision_keeps_first_stored_order(app):
+    core, context = app
+    first = capture(core, context, "TEST first stored", revision=5, when="2026-09-01T12:00:00Z")
+    second = capture(core, context, "TEST second", when="2026-09-01T11:00:00Z")
+    capture(core, context, "TEST late lower revision", key=first.event["source_event_key"], when="2026-09-01T10:00:00Z")
+    page = management(core, context).list(MemoryFilter(kind="event"))
+    assert [row["ref"] for row in page["items"]] == [first.ref, second.ref]
+    assert page["items"][0]["sort_time"] == "2026-09-01T12:00:00.000000+00:00"
+
+
+def test_claim_revision_keeps_first_recording_time_between_pages(app):
+    core, context = app
+    item, _source = initial(core, context)
+    core.clock.now = "2026-09-07T12:00:00Z"
+    other = capture(core, context, "TEST-other-project 配色 蓝色。")
+    newer = accept(core, context, draft(other, subject="TEST-other-project")).items[0]
+    assert newer.state == "active"
+    owner = management(core, context)
+    filters = MemoryFilter(kind="claim")
+    page = owner.list(filters, limit=1)
+    assert page["items"][0]["ref"] == newer.ref
+    core.clock.now = "2026-09-08T12:00:00Z"
+    owner.revise(item.ref, expected_revision=1, value="TEST revised")
+    resumed = owner.list(filters, cursor=page["next_cursor"])
+    assert [row["ref"] for row in resumed["items"]] == [item.ref]
+    assert resumed["items"][0]["revision"] == 2
+
+
+def test_project_bound_owner_lists_all_installation_partitions(app):
+    core, context = app
+    source = capture(core, replace(context, project_id="TEST-other", branch_id="TEST-other"), "TEST other partition")
+    owner = management(core, context)
+    assert owner.show(source.ref)["ref"] == source.ref
+    assert [row["ref"] for row in owner.list(MemoryFilter(kind="event"))["items"]] == [source.ref]
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
+def test_overflowing_cursor_position_is_input_invalid(app, stamp):
+    core, context = app
+    value = dict(after=[stamp, "event-TEST"], binding=management_query.page_binding(context, MemoryFilter()), version=1)
+    token = base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+    for cursor in (json.dumps(value), token):
+        with pytest.raises(ContractError) as error:
+            management(core, context).list(cursor=cursor)
+        assert error.value.code == "INPUT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "decoded", [[], None, "TEST", 3, {"after": None}, {"after": None, "binding": [], "version": 1}]
+)
+def test_cursor_decoded_shape_is_input_invalid(app, decoded):
+    core, context = app
+    cursor = base64.urlsafe_b64encode(json.dumps(decoded).encode()).decode().rstrip("=")
+    with pytest.raises(ContractError) as error:
+        management(core, context).list(cursor=cursor)
+    assert error.value.code == "INPUT_INVALID"
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
+def test_inventory_orders_stored_timestamp_overflow_without_raising(app, stamp):
+    core, context = app
+    source = capture(core, context, "TEST extreme time")
+    with core.storage.write(context) as tx:
+        tx._check(write=True).execute("UPDATE source_events SET occurred_at=? WHERE event_id=?", (stamp, source.ref))
+    with core.storage.read(context) as tx:
+        rows = management_query.inventory(tx, MemoryFilter(kind="event")).fetchall()
+    assert [row["ref"] for row in rows] == [source.ref]
+
+
+@pytest.mark.parametrize("query", ["信用卡", "alpha beta", "fix alpha beta suff", "a+b.[x]", "ＳＥＴ"])
+def test_search_matches_literal_substrings_of_rendered_text(app, query):
+    core, context = app
+    source = capture(core, context, "TEST 信用卡 prefix alpha beta suffix a+b.[x] ＳＥＴ")
+    page = management(core, context).list(MemoryFilter(kind="event", query=query))
+    assert [row["ref"] for row in page["items"]] == [source.ref]
 
 
 def test_preview_then_delete_matches_closure_and_records_owner(app):
@@ -81,6 +428,31 @@ def test_session_preview_does_not_select_another_session(app):
     preview = owner.forget_session(MemoryFilter(session=context.session_id))
     assert source.ref in {t["ref"] for t in preview["targets"]}
     assert other.ref not in {t["ref"] for t in preview["affected"]}
+
+
+def test_session_selection_and_preview_share_snapshot_during_capture(app, monkeypatch):
+    core, context = app
+    sources = [capture(core, context, f"TEST session item {i}") for i in range(101)]
+    owner = management(core, context)
+    with core.storage.read(context) as tx:
+        epoch = tx.memory_epoch()
+    original = management_query._matching_item
+    visited, captured = [], []
+
+    def matching(*args):
+        result = original(*args)
+        visited.append(result)
+        if len(visited) == 100:
+            captured.append(capture(core, context, "TEST same session during selection", when="2026-09-02T12:00:00Z"))
+        return result
+
+    monkeypatch.setattr(management_query, "_matching_item", matching)
+    preview = owner.forget_session(MemoryFilter(session=context.session_id))
+    assert captured and {t["ref"] for t in preview["targets"]} == {s.ref for s in sources}
+    assert preview["memory_epoch"] == epoch
+    with pytest.raises(ContractError, match="VERSION_CONFLICT"):
+        owner.apply(preview)
+    assert len(owner.list(MemoryFilter(kind="event"), limit=100)["items"]) == 100
 
 
 def test_ordinary_context_is_not_management_authority(app):
