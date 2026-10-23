@@ -35,6 +35,14 @@ A rule targets exactly one of:
   `C:\Work\Project` does not cover `C:\Work\Project2`. Matching is by whole path
   components. On Windows, drive-letter case, path case and both separators are
   treated alike, so `C:\Work\Project` and `c:/work/project/src` match.
+  Windows extended path spellings (`\\?\C:\Work\Project` and
+  `\\?\UNC\server\share\Project`) have the same identity as their ordinary
+  forms. Rules resolve directory junctions and symbolic links on the machine
+  that owns the path; local hooks bind the actual working directory to that
+  same canonical directory. An installation's broader configured root still
+  controls authorization, but does not replace the hook's working directory.
+  A remote client resolves its own directory before sending its identity; the
+  server compares that identity without resolving it against server directories.
 - `--all`: the whole store.
 
 `--mode full` (the default) refuses capture, recall and background model work for
@@ -67,6 +75,13 @@ is refused. That refusal survives turning the rule off: a transcript backfill, a
 retry, a replay or a late spool entry still sees its old time. Events that
 occurred after a closed interval are ordinary capture again.
 
+If an event has no occurrence time, an adapter can retain the time it first
+observed it. The time an old event was uploaded or written is not its occurrence
+time. Without either an occurrence time or a retained first-observation time,
+Scope Recall refuses it if any rule for its targets started before it was
+recorded, even if that rule has ended. An event with no possible earlier private
+interval is captured as usual; stores that never use private mode are unaffected.
+
 This is why the interval table keeps closed intervals: they are the only record
 needed to refuse late copies. It stores no message, prompt, attachment body,
 question or model answer; its columns are the target, session or normalized
@@ -90,7 +105,20 @@ full rule also holds the worker's consolidation, candidate-evaluation and
 embedding work; local purge and projection rebuild may still finish. A session
 or project full rule holds work whose source belongs to that session or project
 while other sessions keep working. Work held this way spends no attempt and is
-looked at again later.
+looked at again later. Candidate evaluation checks both the candidate's own
+source evidence and the evidence selected for the question. A private source
+cannot be sent indirectly through a candidate's value or conditions. Startup
+embedding warm-up also obeys global full mode.
+
+A rule change invalidates an automatic or explicit recall already running;
+recall checks again before releasing its answer, including when full mode was
+opened and closed during the lookup. Background model and embedding work checks
+again immediately before its request. Remote clients recheck after queue
+preparation and immediately before sending content. There remains a small window
+between the last check and transmission: content already leaving a remote client
+can reach the owner's own entry server. That server still rejects captures whose
+event time falls inside the interval. A request already transmitted to a
+configured embedding or model service cannot be recalled.
 
 A read-only rule does not block recall. Its question may still be sent to the
 configured embedding service, exactly as an ordinary recall's question is. It
@@ -131,11 +159,20 @@ conversation history under the host's control.
   and are checked again before sending. Read-only recall sends the question and
   routing metadata to the configured entry server, without attachments or a new
   capture spool. The server checks the same event time on receipt, so a
-  spool entry that was already late is still discarded.
+  spool entry that was already late is still discarded. The protocol records
+  paired client and server timestamps to correct clocks that are ahead or behind;
+  queued records retain that calibration so replay uses the same correction.
+  Upload arrival alone never establishes a historical event's time. Without
+  calibration the server applies the undated-event rule. Each transcript line
+  receives its own decision: private lines are dropped locally, their cursor
+  positions advance, and eligible later lines are delivered.
 - Hermes writes turns, compressed context, steers, tool results, retries and
   kept captures through the capture writer, which checks before writing its retry
   buffer or `kept-captures/` file. A `full` or `read-only` interval therefore
-  refuses the event before those local copies exist. A Hermes project rule uses
+  refuses the event before those local copies exist. Deferred assistant replies
+  and user steers keep no private body in memory; only identity and observation
+  times are retained for delayed callbacks. A discarded retry is removed once
+  and is not counted as persisted at shutdown or expiry. A Hermes project rule uses
   the gateway's `agent_workspace` only when it is an absolute path; a workspace
   label is not treated as a filesystem path.
 - A shared-store client's local MCP server uses that MCP server process's
@@ -147,9 +184,17 @@ conversation history under the host's control.
   Use `--all` for remote tools that provide no trusted directory.
 - A client that provides no trusted conversation id on its tool boundary cannot
   apply a session rule to that tool call. Use `--all` for those tools.
-- dsh's native plugin keeps its own local spool of a turn before its Stop. A
-  full or read-only rule prevents Scope Recall from storing or sending those
-  lines, but the plugin's own spool is outside Scope Recall's store boundary.
+- dsh's native plugin obtains a content-free Core decision before writing a
+  message to its local spool. Full, read-only or an unverifiable decision drops
+  the record before plaintext reaches disk. Recovery checks each old spool record
+  before copying it, using its original time and directory in bounded metadata
+  batches. The host's own conversation log
+  remains under the host's control.
+
+Current-state checks query active rules; capture queries only the indexed
+session, global and ancestor-directory intervals that can cover the event.
+Closed history remains available for late events without being loaded for every
+ordinary hook or recall.
 
 ## Migration and rollback
 

@@ -482,8 +482,55 @@ def _plugin(home, config, scenario="turn"):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+@pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")
+@pytest.mark.parametrize("mode", ["private", "broken"])
+def test_plugin_never_writes_unverified_or_private_plaintext(remote, tmp_path, monkeypatch, mode):
+    _root, _server_home, client, _bodies, _records = remote
+    home, rows = _installed(client, tmp_path)
+    config = rows["scope-recall"]["config"]
+    config.update(spool=str(tmp_path / "TEST-spool"), prompt="TEST private disk body", expectBacklog=True, waitMs=1500)
+    monkeypatch.setenv("SR_FAKE_HOOK", str(HARNESS / "fake_hook.mjs"))
+    monkeypatch.setenv("SR_FAKE_HOOK_MODE", mode)
+    result = _plugin(home, config)
+    assert "TEST private disk body" not in "".join(result["diskSnapshots"])
+    assert result["spool"] == []
+
+
+@pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")
+@pytest.mark.parametrize("mode", ["private", "broken"])
+def test_plugin_checks_old_spool_before_copying_plaintext(remote, tmp_path, monkeypatch, mode):
+    _root, _server_home, client, _bodies, _records = remote
+    home, rows = _installed(client, tmp_path)
+    config = rows["scope-recall"]["config"]
+    spool = tmp_path / "TEST-spool"
+    spool.mkdir()
+    old = spool / "session-TEST-plugin.999999.jsonl"
+    old.write_text(
+        json.dumps(
+            dict(
+                k="TEST-line",
+                sessionId="session-TEST-plugin",
+                id="TEST-1",
+                role="user",
+                text="TEST private old body",
+                time=int(time.time() * 1000),
+                cwd="C:/TEST/work",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(old, (time.time() - 130, time.time() - 130))
+    config.update(spool=str(spool), expectBacklog=True, waitMs=8000)
+    monkeypatch.setenv("SR_FAKE_HOOK", str(HARNESS / "fake_hook.mjs"))
+    monkeypatch.setenv("SR_FAKE_HOOK_MODE", mode)
+    result = _plugin(home, config, "sweep")
+    assert result["spool"] == []
+    assert not any("TEST private old body" in path.read_text(encoding="utf-8") for path in spool.glob("*.jsonl"))
+
+
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is not installed, or this tier may not start it")
-def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote, tmp_path):
+def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote, tmp_path, monkeypatch):
     root, _home, client, bodies, records = remote
     home, rows = _installed(client, tmp_path)
     config = rows["scope-recall"]["config"]
@@ -496,12 +543,13 @@ def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote,
         turn_id="1",
         prompt="TEST 我的猫叫 Mochi，最爱吃金枪鱼。",
     )
-    client["token_file"].write_text("TEST-wrong-token", encoding="utf-8")
+    handle = remote_server.handle_request
+    monkeypatch.setattr(remote_server, "handle_request", lambda *args, **kwargs: dict(retry=True, result={}))
     failed = _plugin(home, {**config, "expectBacklog": True, "waitStatus": "lastStore", "waitMs": 15000})
     assert failed["spool"] == ["user", "assistant", "assistant", "turn_end"]
     assert failed["status"]["lastStore"]["error"] and failed["decisionKept"]
     assert not any("session-TEST-plugin" in row[1] for row in _rows(root))
-    client["token_file"].write_text(TOKEN, encoding="utf-8")
+    monkeypatch.setattr(remote_server, "handle_request", handle)
     for file in spool.glob("*.jsonl"):
         os.utime(file, (time.time() - 130, time.time() - 130))
     replayed = _plugin(home, config, "sweep")

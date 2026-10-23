@@ -135,13 +135,13 @@ class CaptureWriter:
             return self._refused(identity, receipt, snapshot, gaps, replay)
         return self._stored(context, identity, receipt, gaps, replay)
 
-    def capture_guard(self, context, remaining_seconds: float):
+    def capture_guard(self, context, remaining_seconds: float, *, observations=()):
         """Read a batch's Core policy snapshot; a failed read cannot authorize a local copy."""
         reader = getattr(self._adapter._require_core(), "private_capture_guard", None)
         if reader is None:
             return None
         try:
-            return reader(context, remaining_seconds=max(0.001, remaining_seconds))
+            return reader(context, observations=observations, remaining_seconds=max(0.001, remaining_seconds))
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             return exc
 
@@ -230,7 +230,7 @@ class CaptureWriter:
             retry.captures[identity] = snapshot
             retry.start()
             return
-        if snapshot is not None and retry.keep_on_disk(identity, snapshot, guard=guard):
+        if snapshot is not None and retry.keep_on_disk(identity, snapshot, guard=guard) == "kept":
             retry.more_on_disk = True
         self._adapter._merge_gaps(("capture_gap:retry_buffer_full",))
 
@@ -327,7 +327,7 @@ class CaptureWriter:
             adapter._retry.done(identity)
             return receipt
         retry = adapter._retry
-        if identity in retry.on_disk or (snapshot is not None and retry.keep_on_disk(identity, snapshot)):
+        if identity in retry.on_disk or (snapshot is not None and retry.keep_on_disk(identity, snapshot) == "kept"):
             _log.warning(
                 "scope-recall: not stored before the shutdown, kept on disk for the next start: %s", label(identity)
             )

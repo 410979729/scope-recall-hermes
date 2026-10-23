@@ -62,7 +62,10 @@ PRIVATE_INTERVALS_STATEMENT = """CREATE TABLE private_intervals (
     ),
     CHECK(ends_at IS NULL OR starts_at <= ends_at)
 ) STRICT"""
-PRIVATE_TARGET_INDEX = "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at)"
+PRIVATE_TARGET_INDEX = (
+    "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at,starts_at)"
+)
+PRIVATE_ACTIVE_INDEX = "CREATE INDEX private_active ON private_intervals(ends_at,starts_at)"
 
 #: Management actions carry object identities and versions, never a copied
 #: conversation body. They are distinct from host-captured user messages.
@@ -241,6 +244,7 @@ STATEMENTS = (
         MANAGEMENT_STATEMENT,
         PRIVATE_INTERVALS_STATEMENT,
         PRIVATE_TARGET_INDEX,
+        PRIVATE_ACTIVE_INDEX,
         """CREATE TABLE source_events (
         event_id TEXT NOT NULL, source_event_key TEXT NOT NULL,
         source_revision INTEGER NOT NULL CHECK(source_revision>=1),
@@ -622,6 +626,7 @@ def upgrade_1111(connection):
     """
     connection.execute(PRIVATE_INTERVALS_STATEMENT)
     connection.execute(PRIVATE_TARGET_INDEX)
+    connection.execute(PRIVATE_ACTIVE_INDEX)
     connection.execute("ALTER TABLE source_events ADD COLUMN project_root TEXT")
     connection.execute("UPDATE instance_meta SET schema_version=1112 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1112")

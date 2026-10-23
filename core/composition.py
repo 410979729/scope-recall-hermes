@@ -204,7 +204,13 @@ class MemoryCore:
         """
         now = utc_timestamp(self.clock.utc_now())
         with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
-            return private.mode_at(private.matching_intervals(tx, context), now)
+            return private.mode_at(private.matching_intervals(tx, context, now=now), now)
+
+    def _recall_private_state(self, context: TrustedContext, *, after: int | None = None):
+        """Read a fresh decision and rule marker at recall entry or release."""
+        now = utc_timestamp(self.clock.utc_now())
+        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+            return private.recall_state(tx, context, now, after=after)
 
     def private_capture_blocked(
         self,
@@ -228,14 +234,17 @@ class MemoryCore:
         if guard is not None:
             return guard.blocked(context, prepared.events)
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            return private.capture_mode(private.matching_intervals(tx, context), prepared.events) is not None
+            return (
+                private.capture_mode(private.matching_intervals(tx, context, events=prepared.events), prepared.events)
+                is not None
+            )
 
-    def private_capture_guard(self, context: TrustedContext, *, remaining_seconds: float = 1.0):
+    def private_capture_guard(self, context: TrustedContext, *, observations=(), remaining_seconds: float = 1.0):
         """Read one metadata snapshot for a hook's bounded retry or deferral batch."""
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            return private.CaptureGuard.read(tx)
+            return private.CaptureGuard.read(tx, observations)
 
-    def private_check(self, context: TrustedContext, times) -> dict:
+    def private_check(self, context: TrustedContext, times, *, rule_marker: int | None = None) -> dict:
         """Metadata-only answer for a remote client: whether these moments or a recall are private.
 
         ``times`` are event instants the client is about to send; an empty list
@@ -244,17 +253,23 @@ class MemoryCore:
         if times is None:
             moments = []
         elif isinstance(times, (list, tuple)) and len(times) <= 64:
-            moments = [utc_timestamp(value) for value in times]
+            moments = [utc_timestamp(value) if value is not None else None for value in times]
         else:
             raise ContractError("INPUT_INVALID", "times")
         now = utc_timestamp(self.clock.utc_now())
         with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
-            intervals = private.matching_intervals(tx, context)
+            events = [{"occurred_at": moment, "recorded_at": now} for moment in [now, *moments]]
+            intervals = private.matching_intervals(tx, context, events=events)
             mode = private.mode_at(intervals, now)
-            blocked = bool(moments) and any(private.mode_at(intervals, moment) is not None for moment in moments)
+            decisions = [private.capture_mode(intervals, [event]) is not None for event in events[1:]]
+            invalidated, marker = private.rules_changed(tx, context, after=rule_marker)
+            if invalidated:
+                mode = "full"
         return {
             "mode": mode or private.MODE_NONE,
-            "capture_blocked": blocked or mode is not None,
+            "capture_blocked": any(decisions) or mode is not None,
+            "decisions": decisions,
+            "rule_marker": marker,
             "recall_blocked": mode == "full",
             "notice": private.notice_for_mode(mode),
         }
@@ -413,11 +428,17 @@ class MemoryCore:
         search_context, _deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone
         )
-        if self.private_mode(context) == "full":
+        mode, private_marker = self._recall_private_state(context)
+        if mode == "full":
             return RetrievalResult(
                 (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
             )
-        return self.recall_pipeline.search(search_context)
+        result = self.recall_pipeline.search(search_context)
+        if self._recall_private_state(context, after=private_marker)[0] == "full":
+            return RetrievalResult(
+                (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
+            )
+        return result
 
     def recall_packet(
         self,
@@ -441,7 +462,8 @@ class MemoryCore:
         search_context, effective_deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone, in_context_since
         )
-        if self.private_mode(context) == "full":
+        mode, private_marker = self._recall_private_state(context)
+        if mode == "full":
             # Before the vector channel, so a full interval makes no query embedding
             # request and reaches no provider.
             return self._private_recall_packet(search_context)
@@ -471,6 +493,8 @@ class MemoryCore:
             self.storage,
         )
         validate_payload("recall_packet", dict(packet))
+        if self._recall_private_state(context, after=private_marker)[0] == "full":
+            return self._private_recall_packet(search_context)
         return packet
 
     def prepare_recall_render(self, context: TrustedContext, packet):

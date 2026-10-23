@@ -14,6 +14,7 @@ mode; closing one target never closes another.
 from __future__ import annotations
 
 import ntpath
+import os
 import posixpath
 import re
 from dataclasses import dataclass
@@ -42,7 +43,7 @@ def _text(value: object, field: str, limit: int) -> str:
     return value.strip()
 
 
-def normalize_project_path(value: object) -> str:
+def normalize_project_path(value: object, *, resolve_links: bool = True) -> str:
     """The comparable form of an absolute project path.
 
     Windows paths use forward slashes and case folding, so ``C:\\Work\\Project``,
@@ -59,17 +60,25 @@ def normalize_project_path(value: object) -> str:
         candidate = text.replace("/", "\\")
         if not ntpath.isabs(candidate):
             raise ContractError("INPUT_INVALID", "project")
+        # Resolve on the directory's owner only. A POSIX server cannot resolve a
+        # client's Windows junction; that client binds its canonical cwd before sending.
+        if resolve_links and os.name == "nt":
+            candidate = os.path.realpath(candidate)
+        if candidate.lower().startswith("\\\\?\\unc\\"):
+            candidate = "\\\\" + candidate[8:]
+        elif candidate.startswith("\\\\?\\"):
+            candidate = candidate[4:]
         return ntpath.normpath(candidate).replace("\\", "/").casefold()
     candidate = text.replace("\\", "/")
     if not posixpath.isabs(candidate):
         raise ContractError("INPUT_INVALID", "project")
-    return posixpath.normpath(candidate)
+    return posixpath.normpath(os.path.realpath(candidate) if resolve_links and os.name != "nt" else candidate)
 
 
 def project_contains(parent: str, child: str) -> bool:
     """Whether ``child`` is ``parent`` or a descendant of it, by whole path components."""
-    root = normalize_project_path(parent)
-    path = normalize_project_path(child)
+    root = normalize_project_path(parent, resolve_links=False)
+    path = normalize_project_path(child, resolve_links=False)
     if path == root:
         return True
     return path.startswith(root if root.endswith("/") else root + "/")
@@ -100,7 +109,7 @@ def _zulu(value: str | None) -> str | None:
 
 
 def _event_time(event) -> str | None:
-    raw = event.get("occurred_at") or event.get("recorded_at")
+    raw = event.get("occurred_at")
     try:
         return utc_timestamp(raw)
     except ContractError:
@@ -135,8 +144,15 @@ def capture_mode(intervals, events) -> str | None:
     for event in events:
         at = _event_time(event)
         if at is None:
-            if intervals:
-                return _strictest(interval["mode"] for interval in intervals) or "full"
+            try:
+                recorded = utc_timestamp(event.get("recorded_at"))
+            except ContractError:
+                recorded = None
+            # Receipt time is an upper bound, never evidence of when words were
+            # spoken. Any earlier interval could have covered an undated event.
+            possible = [row["mode"] for row in intervals if recorded is None or row["starts_at"] <= recorded]
+            if possible:
+                return _strictest(possible)
             continue
         mode = mode_at(intervals, at)
         if mode is not None:
@@ -149,7 +165,7 @@ def _project_for(context) -> str | None:
     if value is None:
         return None
     try:
-        return normalize_project_path(value)
+        return normalize_project_path(value, resolve_links=False)
     except ContractError:
         return None
 
@@ -167,26 +183,100 @@ def _target_matches(interval, context, project: str | None) -> bool:
     )
 
 
-def matching_intervals(tx, context) -> list[dict]:
-    """Every interval that could target this context, oldest first.
-
-    Project intervals are compared in Python so a rule for ``C:\\Work`` covers
-    ``C:\\Work\\Project`` without a string prefix test.  The table is bounded by
-    explicit operator actions, never by captured content.
-    """
+def _target_keys(context):
+    """Exact indexed keys, including ancestors of the already bound directory."""
     project = _project_for(context)
-    rows = (
-        tx._check()
-        .execute(
-            """SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at
-           FROM private_intervals
-           WHERE target_kind='global' OR (target_kind='session' AND session_id=?) OR target_kind='project'
-           ORDER BY interval_id""",
-            (context.session_id,),
+    targets = [("global", None, None), ("session", context.session_id, None)]
+    while project:
+        targets.append(("project", None, project))
+        parent = (
+            ntpath.dirname(project).replace("\\", "/")
+            if _WINDOWS_ABSOLUTE.match(project) or project.startswith("//")
+            else posixpath.dirname(project)
         )
-        .fetchall()
-    )
-    return [{key: row[key] for key in row.keys()} for row in rows if _target_matches(row, context, project)]
+        if parent == project:
+            break
+        project = parent
+    return targets
+
+
+def _event_bounds(events):
+    """Distinct occurrence instants or receipt bounds for undated events."""
+    bounds = set()
+    for event in events:
+        at = _event_time(event)
+        try:
+            recorded = utc_timestamp(event.get("recorded_at")) if at is None else None
+        except ContractError:
+            recorded = None
+        bounds.add((at, recorded))
+    return list(bounds) or [(None, None)]
+
+
+def _matching_query_keys(targets, events):
+    bounds = _event_bounds(events)
+    target_values = ",".join("(?,?,?)" for _target in targets)
+    time_values = ",".join("(?,?)" for _bound in bounds)
+    # Separate open and closed ranges let SQLite seek past closed history in
+    # the target index. CROSS JOIN keeps the small request keys outside that seek.
+    select = """SELECT p.* FROM moments m CROSS JOIN targets t
+        JOIN private_intervals p INDEXED BY private_target
+        ON p.target_kind=t.kind AND p.session_id IS t.session AND p.project_path IS t.project"""
+    query = f"""WITH targets(kind,session,project) AS (VALUES {target_values}),
+        moments(at,recorded) AS (VALUES {time_values})
+        {select} WHERE m.at IS NOT NULL AND p.ends_at IS NULL AND p.starts_at<=m.at
+        UNION {select} WHERE m.at IS NOT NULL AND p.ends_at>m.at AND p.starts_at<=m.at
+        UNION {select} WHERE m.at IS NULL AND (m.recorded IS NULL OR p.starts_at<=m.recorded)"""
+    return query, [value for target in targets for value in target] + [value for bound in bounds for value in bound]
+
+
+def _matching_query(context, events):
+    return _matching_query_keys(_target_keys(context), events)
+
+
+def matching_intervals(tx, context, *, now: str | None = None, events=()) -> list[dict]:
+    """Read only indexed targets and intervals covering the requested instants.
+
+    Receipt times of undated events bound possible history without inventing an
+    occurrence time. One read serves every part of a capture or metadata batch.
+    """
+    query, parameters = _matching_query(context, [{"occurred_at": now}] if now is not None else events)
+    return [dict(row) for row in tx._check().execute(query, parameters)]
+
+
+def recall_state(tx, context, now: str, *, after: int | None = None):
+    """Current mode and a rule marker; a new full rule invalidates an in-flight recall.
+
+    New rules are read by their primary key, so closing one before release cannot
+    revive a decision made before it, and closed history is never scanned.
+    """
+    mode = mode_at(matching_intervals(tx, context, now=now), now)
+    invalidated, marker = rules_changed(tx, context, after=after)
+    return ("full" if invalidated else mode), marker
+
+
+def rule_revision(tx) -> int:
+    """The latest opened rule; closing an existing rule cannot make capture stricter."""
+    return tx._check().execute("SELECT coalesce(max(interval_id),0) FROM private_intervals").fetchone()[0]
+
+
+def capture_blocked(tx, context, prepared) -> bool:
+    """Reuse an ingress decision only while no new rule could invalidate it."""
+    if prepared.private_revision is not None and prepared.private_revision == rule_revision(tx):
+        return False
+    return capture_mode(matching_intervals(tx, context, events=prepared.events), prepared.events) is not None
+
+
+def rules_changed(tx, context, *, after: int | None = None):
+    """Return whether a new full rule targets this decision and the latest rule marker."""
+    conn = tx._check()
+    marker = rule_revision(tx)
+    if after is not None and marker > after:
+        project = _project_for(context)
+        for row in conn.execute("SELECT * FROM private_intervals WHERE interval_id>? AND mode='full'", (after,)):
+            if _target_matches(row, context, project):
+                return True, marker
+    return False, marker
 
 
 @dataclass(frozen=True)
@@ -200,9 +290,16 @@ class CaptureGuard:
     intervals: tuple[dict, ...]
 
     @classmethod
-    def read(cls, tx):
-        """Read the interval metadata for a batch whose events can span sessions."""
-        return cls(tuple(dict(row) for row in tx._check().execute("SELECT * FROM private_intervals")))
+    def read(cls, tx, observations):
+        """Read relevant intervals once for a bounded batch spanning sessions."""
+        targets, events = set(), []
+        for context, observed in observations:
+            targets.update(_target_keys(context))
+            events.extend(observed)
+        if not targets:
+            return cls(())
+        query, parameters = _matching_query_keys(list(targets), events)
+        return cls(tuple(dict(row) for row in tx._check().execute(query, parameters)))
 
     def blocked(self, context, events) -> bool:
         """Judge the batch member at its event time with the Core target policy."""
@@ -218,9 +315,10 @@ def active_intervals(tx, now: str) -> list[dict]:
         tx._check()
         .execute(
             """SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at
-           FROM private_intervals WHERE starts_at<=? AND (ends_at IS NULL OR ends_at>?)
-           ORDER BY interval_id""",
-            (now, now),
+           FROM private_intervals WHERE ends_at IS NULL AND starts_at<=?
+           UNION ALL SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at
+           FROM private_intervals WHERE ends_at>? AND starts_at<=? ORDER BY interval_id""",
+            (now, now, now),
         )
         .fetchall()
     )
@@ -257,11 +355,27 @@ def filter_sources(intervals, sources):
     return tuple(source for source in sources if not source_blocked(intervals, source))
 
 
+def outbound_blocked(storage, clock, context, *, sources=(), claims=()) -> bool:
+    """Recheck full mode immediately before a provider request, sharing one rule read.
+
+    No subjects asks about global full mode, including content-free warm-up.
+    Derived statements are checked against their own evidence as well as the
+    sources explicitly selected for the request.
+    """
+    with storage.read(context, remaining_seconds=1.0) as tx:
+        intervals = active_intervals(tx, clock.utc_now())
+        return (
+            source_blocked(intervals, None)
+            or any(source_blocked(intervals, source) for source in sources)
+            or any(claim_blocked(tx, intervals, claim) for claim in claims)
+        )
+
+
 def work_blocked(storage, clock, context, item) -> bool:
     """Whether a full interval covers the subject of one worker item now.
 
-    Candidate evaluation has no source of its own, so its recorded evidence is
-    checked instead.  Purge and projection rebuild are local and never blocked.
+    Candidate evaluation checks the candidate's provenance and its selected
+    evidence. Purge and projection rebuild are local and never blocked.
     """
     if item.work_type in {"purge", "rebuild_projection"}:
         return False
@@ -274,6 +388,8 @@ def work_blocked(storage, clock, context, item) -> bool:
             evaluation = tx.candidates.evaluation(item.subject_revision)
             if evaluation is None:
                 return False
+            if claim_blocked(tx, intervals, evaluation.candidate):
+                return True
             for ref, revision in evaluation.evidence_refs:
                 source = tx.source(ref, revision)
                 if source is not None and source_blocked(intervals, source):

@@ -19,6 +19,7 @@ const config = JSON.parse(configJson)
 const listeners = {}
 const effects = []
 const warnings = []
+const diskSnapshots = []
 const ctx = {
   on: (name, listener, options) => { (listeners[name] ??= []).push({ listener, options }) },
   effect: (callback) => { effects.push(callback()) },
@@ -32,6 +33,11 @@ const session = { id: 'session-TEST-plugin', header: { id: 'session-TEST-plugin'
 let seq = 0
 const emit = (type, data) => {
   for (const { listener } of listeners['session/event'] ?? []) listener(session, { type, seq: seq++, time: Date.now(), data })
+  if (config.spool && existsSync(config.spool)) {
+    for (const name of readdirSync(config.spool).filter((name) => name.endsWith('.jsonl'))) {
+      diskSnapshots.push(readFileSync(`${config.spool}/${name}`, 'utf8'))
+    }
+  }
 }
 let ids = 0
 const userMessage = (text) => ({ id: `u-${ids++}`, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
@@ -39,7 +45,7 @@ const modelMessage = (turn, step, id, text) => ({ turn, step, message: { id, rol
                                                                         source: { kind: 'model', model: 'TEST' } } })
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-const result = { warnings, injected: null, decisionKept: null, pid: process.pid }
+const result = { warnings, diskSnapshots, injected: null, decisionKept: null, pid: process.pid }
 const controller = new AbortController()
 const preStep = async (messages, signal = controller.signal) => {
   const [{ listener }] = listeners['agent/pre-step']

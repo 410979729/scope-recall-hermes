@@ -20,6 +20,8 @@ class PreparedCapture:
     events: tuple[SourceEvent, ...]
     gaps: tuple[str, ...] = ()
     rejection: str | None = None
+    # Ephemeral ingress decision; never serialized into an event or inbox payload.
+    private_revision: int | None = None
 
 
 def _secret(value: object) -> bool:

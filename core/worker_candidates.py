@@ -11,6 +11,7 @@ from dataclasses import replace
 from functools import partial
 
 from ..contracts import ContractError
+from . import private
 from .candidate_lifecycle import CandidateEvaluator, candidate_identity_restored
 from .claim_normalization import normalize_frame
 from .claims import evidence_refs
@@ -275,15 +276,19 @@ def process_candidate_evaluation(
                     *item.lease,
                     now=clock.utc_now(),
                 )
-    if invalid_reason is not None:
-        return obsolete(reason=invalid_reason)
     # Commit the at-most-once fence before the optional model call. A crash
     # after this point fails closed and waits for genuinely new evidence; an
     # attempt already begun by an earlier lease is that crash observed.
-    if not began:
-        return fail(code="candidate_attempt_interrupted")
+    if invalid_reason is not None or not began:
+        return (
+            obsolete(reason=invalid_reason)
+            if invalid_reason is not None
+            else fail(code="candidate_attempt_interrupted")
+        )
     try:
         repair = {"validation_feedback": feedback} if feedback is not None else {}
+        if private.outbound_blocked(storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)):
+            return fail(code="private_mode", budget_pause=True)
         raw = evaluator.evaluate_candidate(
             evaluation.candidate,
             evidence_sources,

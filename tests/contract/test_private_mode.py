@@ -396,3 +396,168 @@ def test_inbox_without_project_metadata_keeps_its_legacy_retry_identity(app):
         core.storage, clock, first, _event(), scope_id="TEST-scope", host_scope=None, remaining_seconds=1
     )
     assert retried == token
+
+
+def test_missing_occurrence_time_cannot_escape_a_closed_interval(app):
+    core, ctx, clock, owner = app
+    owner.private_on(target="session", session=ctx.session_id)
+    clock.advance(3600)
+    owner.private_off(target="session", session=ctx.session_id)
+    event = _event(occurred_at=None)
+    event.update(recorded_at="2026-09-05T13:01:00Z", time_precision="unknown")
+    assert core.record_host_event(ctx, event, scope_id="TEST-scope", host_scope=None).error_code == "PRIVATE_MODE"
+    assert _count(core, ctx, "capture_inbox") == _count(core, ctx, "source_events") == 0
+
+
+def test_missing_time_without_prior_private_history_keeps_ordinary_capture(app):
+    core, ctx, _clock, owner = app
+    owner.private_on(target="session", session="TEST-other")
+    event = _event(occurred_at=None)
+    event.update(recorded_at="2026-09-05T11:00:00Z", time_precision="unknown")
+    assert core.record_event(ctx, event, scope_id="TEST-scope").disposition == "inserted"
+    owner.private_on(target="global")
+    event["source_event_key"] = "TEST-before/1"
+    assert core.record_event(ctx, event, scope_id="TEST-scope").disposition == "inserted"
+
+
+@pytest.mark.parametrize(
+    "ordinary,alias",
+    [(r"C:\Work\Private", r"\\?\C:\Work\Private"), (r"\\server\share\Private", r"\\?\UNC\server\share\Private")],
+)
+def test_extended_windows_paths_share_the_rule_identity(app, ordinary, alias):
+    core, ctx, _clock, owner = app
+    owner.private_on(target="project", project=ordinary)
+    assert core.private_mode(replace(ctx, project_root=alias)) == "full"
+    owner.private_off(target="project", project=alias)
+    assert core.private_mode(replace(ctx, project_root=ordinary)) is None
+
+
+def test_directory_bind_resolves_alias_on_owning_machine(monkeypatch, tmp_path):
+    alias, real = str(tmp_path / "TEST-alias"), str(tmp_path / "TEST-real")
+    resolve = private.os.path.realpath
+    monkeypatch.setattr(private.os.path, "realpath", lambda value: real if str(value) == alias else resolve(value))
+    assert private.normalize_project_path(alias) == private.normalize_project_path(real)
+    assert private.normalize_project_path(alias, resolve_links=False) != private.normalize_project_path(real)
+
+
+@pytest.mark.parametrize("method", ["recall", "recall_packet"])
+@pytest.mark.parametrize("close", [False, True])
+def test_enabling_full_during_recall_prevents_release(app, monkeypatch, method, close):
+    core, ctx, _clock, owner = app
+    search = core.recall_pipeline.search
+
+    def interrupted(context):
+        result = search(context)
+        owner.private_on(target="global")
+        if close:
+            owner.private_off(target="global")
+        return result
+
+    monkeypatch.setattr(core.recall_pipeline, "search", interrupted)
+    result = getattr(core, method)(ctx, recall_request())
+    gaps = result["gaps"] if isinstance(result, dict) else result.gaps
+    assert "private_mode:full" in gaps
+
+
+def test_current_policy_does_not_materialize_closed_history(app, monkeypatch):
+    core, ctx, _clock, _owner = app
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).executemany(
+            "INSERT INTO private_intervals(target_kind,mode,starts_at,ends_at,created_at) "
+            "VALUES ('global','full',?,?,?)",
+            [("2026-09-01T12:00:00+00:00", "2026-09-01T13:00:00+00:00", "2026-09-01T12:00:00+00:00")] * 10000,
+        )
+    matched = private.matching_intervals
+    sizes = []
+
+    def counted(*args, **kwargs):
+        rows = matched(*args, **kwargs)
+        sizes.append(len(rows))
+        return rows
+
+    monkeypatch.setattr(private, "matching_intervals", counted)
+    assert core.private_mode(ctx) is None
+    assert core.record_event(ctx, _event(), scope_id="TEST-scope").disposition == "inserted"
+    assert sizes and max(sizes) == 0
+
+
+def test_candidate_own_evidence_is_private_even_when_selected_evidence_is_public(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from scope_recall.core.candidate_storage import CandidateLifecycle
+    from test_candidate_lifecycle import _candidate
+
+    core, ctx, _clock, owner = app
+    candidate, _source, _proposal, _registration = _candidate(core, ctx, value="TEST value", key="TEST-candidate/1")
+    public = core.record_event(
+        replace(ctx, session_id="TEST-public"), _event(key="TEST-public/1"), scope_id="TEST-scope"
+    )
+    evaluation = SimpleNamespace(candidate=candidate, evidence_refs=((public.event_refs[0].ref, 1),))
+    monkeypatch.setattr(CandidateLifecycle, "evaluation", lambda self, _id: evaluation)
+    owner.private_on(target="session", session=ctx.session_id)
+    item = SimpleNamespace(work_type="evaluate_candidate", subject_revision=1)
+    assert private.work_blocked(core.storage, core.clock, ctx, item)
+
+
+def test_consolidation_rechecks_after_preparing_request(app, monkeypatch):
+    from scope_recall.core import worker_consolidation
+
+    core, ctx, _clock, owner = app
+    core.record_event(ctx, _event(), scope_id="TEST-scope")
+    needs_chunk = worker_consolidation._needs_chunk
+
+    def interrupted(*args):
+        owner.private_on(target="global")
+        return needs_chunk(*args)
+
+    monkeypatch.setattr(worker_consolidation, "_needs_chunk", interrupted)
+    model = CatchingModel()
+    core.drain_worker(ctx, max_items=4, consolidation=model)
+    assert model.calls == 0
+
+
+def test_embedding_rechecks_after_binding_its_port(app):
+    core, ctx, _clock, owner = app
+    core.record_event(ctx, _event(), scope_id="TEST-scope")
+    calls = []
+
+    class InterruptedEmbed:
+        @property
+        def prepare_source(self):
+            owner.private_on(target="global")
+            return lambda *args, **kwargs: calls.append("sent")
+
+        def publish_source(self, *args, **kwargs):
+            return None
+
+    core.drain_worker(ctx, max_items=4, embed=InterruptedEmbed())
+    assert calls == []
+
+
+def test_durable_capture_reads_intervals_once_unless_a_rule_changes(app, monkeypatch):
+    from scope_recall.core import capture_inbox
+
+    core, ctx, _clock, owner = app
+    matching = private.matching_intervals
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return matching(*args, **kwargs)
+
+    monkeypatch.setattr(private, "matching_intervals", counted)
+    assert core.record_host_event(ctx, _event(), scope_id="TEST-scope", host_scope=None).disposition == "inserted"
+    assert len(calls) == 1
+    commit = capture_inbox._commit
+
+    def interrupted(*args, **kwargs):
+        owner.private_on(target="session", session=ctx.session_id)
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(capture_inbox, "_commit", interrupted)
+    calls.clear()
+    assert (
+        core.record_host_event(ctx, _event(key="TEST-raced/1"), scope_id="TEST-scope", host_scope=None).error_code
+        == "PRIVATE_MODE"
+    )
+    assert len(calls) == 2

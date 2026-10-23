@@ -130,12 +130,12 @@ def stored_session_id(config: CodexInstallationConfig | SharedClientConfig, sess
     return f"{config.entry_id}:{session_id}" if isinstance(config, SharedClientConfig) else session_id
 
 
-def project_root_of(value: object) -> str | None:
+def project_root_of(value: object, *, resolve_links: bool = True) -> str | None:
     """A host-supplied working directory in its comparable form, or None when it is not one."""
     if type(value) is not str or not value.strip():
         return None
     try:
-        return normalize_project_path(value)
+        return normalize_project_path(value, resolve_links=resolve_links)
     except ContractError:
         return None
 
@@ -171,5 +171,6 @@ def trusted_context(
         task_anchor=anchor,
         source_principal=_source_principal(config, actor_origin),
         entry_id=config.entry_id if shared else None,
-        project_root=project_root_of(project_root) or project_root_of(audience.matched_project_root),
+        project_root=project_root_of(project_root, resolve_links=False)
+        or project_root_of(audience.matched_project_root),
     )

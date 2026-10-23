@@ -189,8 +189,7 @@ def record_event(
             # The event's own occurrence time decides, not the moment this write runs:
             # a replay, a retry or a transcript read after the interval ended still
             # refuses what was said while it was open.
-            intervals = private.matching_intervals(tx, context)
-            if private.capture_mode(intervals, prepared.events) is not None:
+            if private.capture_blocked(tx, context, prepared):
                 if _inbox_token is not None:
                     tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (_inbox_token,))
                 return _private_refusal(prepared)

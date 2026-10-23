@@ -11,6 +11,7 @@ import hashlib
 import json
 import sqlite3
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from ..contracts import (
@@ -125,9 +126,10 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
         conn = tx._check(write=True)
         # Before the inbox row: a private capture must not leave its words in
         # durable ingress either, where a worker's later replay would meet them.
-        intervals = private.matching_intervals(tx, context)
+        intervals = private.matching_intervals(tx, context, events=prepared.events)
         if private.capture_mode(intervals, prepared.events) is not None:
             return None, prepared
+        prepared = replace(prepared, private_revision=private.rule_revision(tx))
         prior = conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()
         if prior:
             previous = json.loads(prior[0])

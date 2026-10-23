@@ -907,12 +907,13 @@ def test_a_server_s_start_warms_its_query_embedding_once_and_its_keep_warm_does_
     assert sum(isinstance(item, tuple) for item in warmed) == 1, warmed
 
 
-def test_a_handler_s_embedding_warming_asks_its_runtime():
+def test_a_handler_s_embedding_warming_asks_its_runtime(installed):
     """The kept handler's warming looks the method up by name: a handler without it warmed no embedding at all."""
     from scope_recall.adapters.clients.handler import CodexHookHandler
 
     asked = []
-    handler = CodexHookHandler.__new__(CodexHookHandler)
+    config, core, clock, _root = installed
+    handler = CodexHookHandler(config, core=core, clock=clock)
     handler.ensure_runtime = lambda: None
     handler._host_runtime = type(
         "Host",

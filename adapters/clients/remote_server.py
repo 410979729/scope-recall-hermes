@@ -243,12 +243,21 @@ def client_times_and_lead(
         record = RecordLines.from_dsh(payload) if "record" in payload else None
     else:
         record = record_from_wire(body.get("record"))
-    times = [observed] if observed is not None else []
-    if record is not None:
-        times.extend(_moment(said.occurred_at) for _offset, said in record.lines if said is not None)
-    lead = _SESSION_LEADS.lead(payload.get("session_id"), max(times) - _now() if times else timedelta(0))
-    if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
-        return (_stamp(observed) if observed is not None else None), record, timedelta(0)
+    clock = body.get("clock")
+    if isinstance(clock, dict):
+        client_at, server_at = _observed_at(clock.get("client_at")), _observed_at(clock.get("server_at"))
+        if client_at is None or server_at is None:
+            raise RemoteServerError("clock needs client_at and server_at")
+        lead = client_at - server_at
+    else:
+        # Legacy clients have no retained calibration. This adjustment keeps
+        # ordinary stores compatible; ingress treats their privacy time as unknown.
+        times = [observed] if observed is not None else []
+        if record is not None:
+            times.extend(_moment(said.occurred_at) for _offset, said in record.lines if said is not None)
+        lead = _SESSION_LEADS.lead(payload.get("session_id"), max(times) - _now() if times else timedelta(0))
+        if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
+            return (_stamp(observed) if observed is not None else None), record, timedelta(0)
     if record is not None:
         record = replace(
             record,
@@ -268,7 +277,7 @@ def _context_since_kept(payload: dict[str, Any], lead: timedelta) -> dict[str, A
     Moved back with this request's lead, it would be compared with messages moved back by the leads of earlier
     requests, one lead for a session only while this server runs and keeps it (``_SessionLeads``), and a message from
     before the compaction could read as held; such a client's recall leaves nothing out."""
-    if lead <= timedelta(0) or IN_CONTEXT_FIELD not in payload:
+    if lead == timedelta(0) or IN_CONTEXT_FIELD not in payload:
         return payload
     return {key: value for key, value in payload.items() if key != IN_CONTEXT_FIELD}
 
@@ -340,20 +349,25 @@ def private_check(config: RemoteServerConfig, body: dict[str, Any]) -> dict[str,
     )
     from scope_recall.core import CoreConfig, MemoryCore
 
-    moments: list[datetime] = []
-    for value in times:
-        moment = _observed_at(value)
-        if moment is None:
-            raise RemoteServerError("private check times must be ISO instants")
-        moments.append(moment)
-    # A multi-batch preflight carries the whole request's latest instant, so every batch
-    # receives the same correction as its eventual content-bearing request.
-    latest = _observed_at(body.get("latest_at"))
-    witnessed = [*moments, *([latest] if latest is not None else [])]
-    lead = _SESSION_LEADS.lead(session.strip(), max(witnessed) - _now() if witnessed else timedelta(0))
-    if lead > timedelta(seconds=CLOCK_AHEAD_SECONDS):
-        times = [_stamp(moment - lead) for moment in moments]
-    return MemoryCore(CoreConfig(client.to_binding())).private_check(context, times)
+    clock = body.get("clock")
+    sent_at = _observed_at(body.get("sent_at"))
+    if not isinstance(clock, dict) and sent_at is not None:
+        clock = {"client_at": _stamp(sent_at), "server_at": _stamp(_now())}
+    if isinstance(clock, dict):
+        client_at, server_at = _observed_at(clock.get("client_at")), _observed_at(clock.get("server_at"))
+        if client_at is None or server_at is None:
+            raise RemoteServerError("clock needs client_at and server_at")
+        offset = server_at - client_at
+        corrected = [
+            _stamp(moment + offset) if (moment := _observed_at(value)) is not None else None for value in times
+        ]
+    else:
+        # A historical timestamp without calibration cannot establish the event
+        # instant. Receipt time only bounds which earlier intervals are possible.
+        corrected = [None for _value in times]
+    options = {"rule_marker": body["rule_marker"]} if type(body.get("rule_marker")) is int else {}
+    result = MemoryCore(CoreConfig(client.to_binding())).private_check(context, corrected, **options)
+    return {**result, "clock": clock}
 
 
 def handle_request(
@@ -382,11 +396,23 @@ def handle_request(
     # now are this machine's: a client clock a day fast would hold back a message's embedding by a day.
     observed_at, record, lead = client_times_and_lead({**body, "payload": payload}, config.host)
     payload = _context_since_kept(payload, lead)
+    if not isinstance(body.get("clock"), dict) or observed_at is None:
+        unknown = private_check(
+            config, {"session_id": payload.get("session_id"), "project": payload.get("cwd"), "times": [None]}
+        )
+        if unknown["capture_blocked"]:
+            return {
+                "result": {},
+                "through": record.lines[-1][0] if record is not None and record.lines else None,
+                "retry": False,
+                "reason": "private_mode",
+            }
     building = time.monotonic()
     handler = CodexHookHandler.from_home(
         str(config.home),
         config.host,
         event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
+        remote_paths=True,
         hook_started_at=started if started is not None else time.monotonic(),
     )
     built = round((time.monotonic() - building) * 1000)
@@ -441,7 +467,7 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
     host_name = f"[{config.listen}]" if ":" in config.listen else config.listen
     tools = build_server(client, workspace=None)
     kept = KeptRecaller(
-        lambda: CodexHookHandler.from_home(str(config.home), config.host),
+        lambda: CodexHookHandler.from_home(str(config.home), config.host, remote_paths=True),
         stamp=lambda: file_stamp(client.runtime_config_path, *entry_files(config.home)),
     )
     atexit.register(kept.close)

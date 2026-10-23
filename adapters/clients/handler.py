@@ -152,6 +152,7 @@ class CodexHookHandler:
         #: shared entry's configured audience has none, so the request's cwd is
         #: used for project-scoped private intervals only; it grants no scope.
         self._project_root: str | None = None
+        self.remote_paths = False
         #: An attach the last hook stopped waiting for (``ensure_runtime``), still this handler's.
         self._attaching: BoundedCall | None = None
         self._starting: BoundedCall | None = None
@@ -206,6 +207,7 @@ class CodexHookHandler:
         event_clock: HookClock | None = None,
         trusted_runtime_config_path: str | None = None,
         hook_started_at: float | None = None,
+        remote_paths: bool = False,
     ) -> "CodexHookHandler":
         """A client attached to a shared store; its runtime config is the entry's, beside its pointer.
 
@@ -217,6 +219,7 @@ class CodexHookHandler:
         handler = cls(
             config, core=core, clock=event_clock if event_clock is not None else clock, hook_started_at=hook_started_at
         )
+        handler.remote_paths = remote_paths
         handler._pending_runtime_config_path = trusted_runtime_config_path or str(config.runtime_config_path)
         if host in _CONFIGURED_PROMPT_BUDGET:
             handler._prompt_budget = _configured_budget(handler._pending_runtime_config_path)
@@ -256,14 +259,13 @@ class CodexHookHandler:
     def bind_project_root(self, payload: dict[str, Any], audience) -> str | None:
         """Bind the directory a hook names for project-scoped private intervals.
 
-        The local installation's matched root wins; a shared entry's fixed audience
-        has none, so the request's absolute cwd is used.  A tool argument never
-        supplies either value.
+        The hook's cwd supplies privacy identity. The configured project root
+        remains the audience authorization boundary, independently of this directory.
         """
         value = payload.get("cwd")
-        self._project_root = project_root_of(audience.matched_project_root) or (
-            None if not isinstance(value, str) else project_root_of(value)
-        )
+        self._project_root = project_root_of(
+            value, resolve_links=not getattr(self, "remote_paths", False)
+        ) or project_root_of(audience.matched_project_root)
         return self._project_root
 
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
@@ -402,6 +404,11 @@ class CodexHookHandler:
     def warm_embedding(self, seconds: float) -> None:
         """Ask the runtime's query embedding route for one vector now, for a server's start
         (``local_endpoint.KeptRecaller.warm``; its keep-warm searches do not).  It writes nothing."""
+        from ...core.private import outbound_blocked
+
+        context = TrustedContext(self.config.to_binding(), "warm-embedding", self.config.scope_ids, "host_generated")
+        if outbound_blocked(self.core.storage, self.core.clock, context):
+            return
         self.ensure_runtime()
         warm = getattr(getattr(self._host_runtime, "_runtime", None), "warm_query_embedding", None)
         if callable(warm):
@@ -455,6 +462,8 @@ class CodexHookHandler:
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
+        if event == "PrivateCheck":
+            return self._private_check(payload)
         admitted = self._admit(event, payload)
         if admitted is None:
             return {}
@@ -482,6 +491,15 @@ class CodexHookHandler:
         return self._turn_ended(
             event, session_id, audience, payload, deadline, record=record, local_record=local_record
         )
+
+    def _private_check(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Bind a host's content-free request to the same Core policy as capture."""
+        session_id = self.session_of(payload)
+        audience = self.audience_of(payload)
+        if session_id is None or audience is None:
+            return {}
+        self.bind_project_root(payload, audience)
+        return self.core.private_check(self.context(audience, session_id, "host_generated"), payload.get("times"))
 
     def _admit(self, event: object, payload: dict[str, Any]) -> tuple[str, Any] | None:
         """The session and audience of a hook this client sends and this handler takes, or None, said why."""

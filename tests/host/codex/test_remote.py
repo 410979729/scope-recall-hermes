@@ -287,7 +287,17 @@ def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(
         assert _hook(offline, prompt) == {}
     spooled = list((offline["state_dir"] / "spool").glob("*.json"))
     assert len(spooled) == 1
-    kept_at = json.loads(spooled[0].read_text(encoding="utf-8"))["observed_at"]
+    kept = json.loads(spooled[0].read_text(encoding="utf-8"))
+    clock = kept["clock"]
+
+    def moment(stamp):
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+    kept_at = (
+        (moment(kept["observed_at"]) + (moment(clock["server_at"]) - moment(clock["client_at"])))
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     online = dict(offline, url=f"http://127.0.0.1:{ports['codex']}")
     _hook(
         online,

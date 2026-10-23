@@ -564,6 +564,17 @@ def interim_messages(history: object, *, answer: str) -> tuple[tuple[str, str | 
     return tuple(said)
 
 
+def interim_source_key(context: TrustedContext, session_id: str, turn_id: str, ordinal: int) -> str:
+    """The stable identity of an intermediate reply, shared with content-free observation."""
+    return host_source_key(
+        installation_id=context.binding.installation_id,
+        entry_id=context.entry_id,
+        session_id=session_id,
+        event_kind="interim",
+        event_id=f"{turn_id or 'turn'}:{ordinal}",
+    )
+
+
 def interim_source_event(
     ledger: SourceObservationLedger,
     context: TrustedContext,
@@ -577,13 +588,7 @@ def interim_source_event(
 ) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
     """One thing the assistant showed on the way through a turn, named by its turn and place in it."""
     return ledger.observe(
-        source_event_key=host_source_key(
-            installation_id=context.binding.installation_id,
-            entry_id=context.entry_id,
-            session_id=session_id,
-            event_kind="interim",
-            event_id=f"{turn_id or 'turn'}:{ordinal}",
-        ),
+        source_event_key=interim_source_key(context, session_id, turn_id, ordinal),
         source_revision=1,
         role="assistant",
         content=content,

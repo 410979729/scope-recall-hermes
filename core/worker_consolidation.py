@@ -30,6 +30,7 @@ from .worker_outcomes import (
     derivation_changed,
     epoch_changed,
     finalize_work,
+    hold_for_private_mode,
     mark_obsolete,
     model_failure,
     read_derivation_fence,
@@ -374,6 +375,21 @@ def _accept_refused(finish, exc: ContractError):
     )
 
 
+def _without_model(storage, clock, context, item, read, model, *, started, budget):
+    """Settle unavailable or empty input before preparing a provider request."""
+    if read.source is None:
+        return finalize_work(
+            storage, clock, context, item, "obsolete", "authority_revoked", started=started, budget=budget
+        )
+    if not read.roots:
+        return _complete_without_model(storage, clock, context, item, read, started, budget)
+    if model is None:
+        return finalize_work(
+            storage, clock, context, item, "retry", "model_unavailable", started=started, budget=budget
+        )
+    return None
+
+
 def process_consolidate(
     storage,
     clock,
@@ -395,12 +411,10 @@ def process_consolidate(
     # still active.  SQLite's reader lock otherwise turns an obsolete source
     # into a spurious "database is locked" failure.
     source, episode_ref = read.source, read.episode_ref
-    if source is None:
-        return finish("obsolete", "authority_revoked")
-    if not read.roots:
-        return _complete_without_model(storage, clock, context, item, read, started, budget)
-    if model is None:
-        return finish("retry", "model_unavailable")
+    refused = _without_model(storage, clock, context, item, read, model, started=started, budget=budget)
+    if refused is not None:
+        return refused
+    assert model is not None
     roots, batch, pending_sources, chunk = read.roots, read.batch, read.pending_sources, None
     try:
         if _needs_chunk(roots, episode_ref, feedback, read.offset):
@@ -414,6 +428,8 @@ def process_consolidate(
             roots, batch, pending_sources = (page,), (source,), ()
         allowed_refs = frozenset(f"{stored.ref}@{stored.revision}" for stored in roots)
         repair = {"validation_feedback": feedback} if feedback is not None else {}
+        if private.outbound_blocked(storage, clock, context, sources=roots):
+            return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
         raw = model.propose(
             roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair
         )

@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from scope_recall.core.private import notice_for_mode
+from scope_recall.core.private import normalize_project_path, notice_for_mode
 
 from . import transcript
 from .boundary import EMPTY_ANSWER, IN_CONTEXT_FIELD, is_workbuddy_agent_run, without_lone_surrogates
@@ -218,6 +218,9 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
 
 def _private_times(body: dict[str, Any], observed_at: str | None) -> list[str]:
     """Every event instant the existing hook and record readers will accept."""
+    payload = body.get("payload")
+    if isinstance(payload, dict) and payload.get("hook_event_name") == "PrivateCheck":
+        return payload.get("times") or []
     times = [observed_at] if type(observed_at) is str else []
     payload = body.get("payload")
     record = body.get("record")
@@ -246,16 +249,20 @@ def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float)
     times = _private_times(body, body.get("observed_at"))
     try:
         latest = (
-            max(times, key=lambda stamp: datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp())
-            if times
+            max(
+                (stamp for stamp in times if isinstance(stamp, str)),
+                key=lambda stamp: datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp(),
+            )
+            if any(isinstance(stamp, str) for stamp in times)
             else None
         )
     except ValueError:
         return None
     # Every batch uses the complete request's clock lead, as the receive path does.
-    body = {**body, "private_latest_at": latest}
+    body["private_latest_at"] = latest
     until = time.monotonic() + timeout
     state = None
+    decisions = {}
     for start in range(0, max(1, len(times)), 64):
         left = until - time.monotonic()
         if left <= 0:
@@ -263,12 +270,47 @@ def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float)
         answer = _private_batch(config, body, times[start : start + 64], left)
         if answer is None:
             return None
+        if isinstance(answer.get("clock"), dict) and not isinstance(body.get("clock"), dict):
+            body["clock"] = answer["clock"]
+        if type(answer.get("rule_marker")) is int and "rule_marker" not in body:
+            body["rule_marker"] = answer["rule_marker"]
+        verdicts = answer.get("decisions")
+        if isinstance(verdicts, list) and len(verdicts) == len(times[start : start + 64]):
+            decisions.update(zip(times[start : start + 64], verdicts, strict=True))
         if state is None:
-            state = answer
+            state = dict(answer)
         else:
             state["capture_blocked"] |= answer["capture_blocked"]
             state["recall_blocked"] |= answer["recall_blocked"]
+    if state is not None:
+        state["event_decisions"] = decisions
     return state
+
+
+def _eligible_body(body: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Translate per-event Core decisions to content-free record lines, preserving cursor progress."""
+    decisions = state.get("event_decisions") or {}
+    body, state = dict(body), dict(state)
+    record = body.get("record")
+    if isinstance(record, dict):
+        body["record"] = {
+            **record,
+            "lines": [
+                [end, None if isinstance(said, dict) and decisions.get(said.get("occurred_at"), True) else said]
+                for end, said in record.get("lines", [])
+            ],
+        }
+    payload = dict(body["payload"])
+    if isinstance(payload.get("record"), list):
+        lines = dict(transcript.dsh_lines(payload["record"]))
+        payload["record"] = [
+            None if (said := lines.get(index)) is not None and decisions.get(said.occurred_at, True) else row
+            for index, row in enumerate(payload["record"], start=1)
+        ]
+    body["payload"] = payload
+    if decisions:
+        state["capture_blocked"] = state.get("mode") != "none" or decisions.get(body.get("observed_at"), True)
+    return body, state
 
 
 def _private_batch(
@@ -289,6 +331,9 @@ def _private_batch(
     request = {
         "session_id": session.strip(),
         "project": payload.get("cwd"),
+        "sent_at": _now(),
+        "rule_marker": body.get("rule_marker"),
+        "clock": body.get("clock"),
         "times": times,
         "latest_at": body.get("private_latest_at"),
     }
@@ -342,7 +387,7 @@ def _spool_dir(config: dict[str, Any]) -> Path:
 _SPOOL_SEQUENCE = itertools.count()
 
 
-def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) -> Path | None:
+def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str, *, clock=None) -> Path | None:
     folder = _spool_dir(config)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -356,7 +401,8 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
         name = f"{time.time_ns():020d}-{os.getpid()}-{next(_SPOOL_SEQUENCE):06d}.json"
         pending = folder / f"{name}.tmp"
         pending.write_text(
-            json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False), encoding="utf-8"
+            json.dumps({"payload": payload, "observed_at": observed_at, "clock": clock}, ensure_ascii=False),
+            encoding="utf-8",
         )
         os.replace(pending, folder / name)
         return folder / name
@@ -516,7 +562,12 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     # and the turn have no recall.  It is sent, kept and stored as U+FFFD, as a hook here stores it.
     payload = cast(dict[str, Any], without_lone_surrogates(payload))
     event = payload.get("hook_event_name")
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str):
+        payload["cwd"] = normalize_project_path(cwd)
     host = config["host"]
+    if event == "PrivateCheck":
+        return _private_check(config, {"payload": payload}, 2.0) or {}
     wait = HOOK_TIMEOUTS[host].get(event)
     if wait is None:
         return {}
@@ -567,6 +618,8 @@ def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) ->
     if state is None:
         _log(config, f"{event}: private state unverified, not sent")
         return None
+    body, state = _eligible_body(body, state)
+    payload = body["payload"]
     if _private_drop(state, event):
         _log(config, f"{event}: private mode {state.get('mode')}, not sent")
         if event == "UserPromptSubmit" and state.get("mode") == "full":
@@ -578,15 +631,29 @@ def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) ->
     if state["capture_blocked"]:
         # Read-only prompts travel only as recall questions, without attachments or a durable spool copy.
         fields = {"hook_event_name", "session_id", "turn_id", "prompt_id", "cwd", "prompt", IN_CONTEXT_FIELD}
-        body = {
-            "payload": {key: value for key, value in payload.items() if key in fields},
-            "observed_at": body["observed_at"],
-        }
+        body = {**body, "payload": {key: value for key, value in payload.items() if key in fields}}
         spooled = None
     else:
         spooled = (
-            _spool(config, payload, body["observed_at"]) if config["host"] == "codex" and event in _SPOOLED else None
+            _spool(config, payload, body["observed_at"], clock=body.get("clock"))
+            if config["host"] == "codex" and event in _SPOOLED
+            else None
         )
+    # Disk I/O and queue preparation can outlive the first decision. Recheck at
+    # the last boundary before content is transmitted, using the original clock.
+    fresh = _private_check(config, body, until - time.monotonic())
+    if fresh is not None:
+        body, fresh = _eligible_body(body, fresh)
+    if fresh is None or _private_drop(fresh, event):
+        if spooled is not None:
+            spooled.unlink(missing_ok=True)
+        return None
+    if fresh["capture_blocked"]:
+        fields = {"hook_event_name", "session_id", "turn_id", "prompt_id", "cwd", "prompt", IN_CONTEXT_FIELD}
+        body["payload"] = {key: value for key, value in body["payload"].items() if key in fields}
+        if spooled is not None:
+            spooled.unlink(missing_ok=True)
+            spooled = None
     answer = _post(config, body, until - time.monotonic())
     if answer is None:
         return None

@@ -60,6 +60,7 @@ export function apply(ctx, raw) {
   const recalled = new Set()
   const turns = new Map()
   const draining = new Map()
+  const pendingKeeps = new Map()
   const status = { version: cfg.version, pid: process.pid, profile, loadedAt: new Date().toISOString(), lastRecall: null,
                    lastStore: null, backlog: 0, dropped: 0, retryAfter: null, privacyAlarm: null }
   let statusWritten = 0
@@ -78,11 +79,46 @@ export function apply(ctx, raw) {
 
   const ownFile = (sessionId) => join(cfg.spool, `${String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_')}.${process.pid}.jsonl`)
 
+  // Group by the directory that owns each event; adopting an older file must
+  // obtain the same decision as a new message before copying any plaintext.
+  const eligible = async (sessionId, entries) => {
+    const groups = new Map()
+    for (const entry of entries) {
+      const cwd = entry.cwd ?? process.cwd()
+      if (!groups.has(cwd)) groups.set(cwd, [])
+      groups.get(cwd).push(entry)
+    }
+    const allowed = new Set()
+    for (const [cwd, group] of groups) {
+      for (let start = 0; start < group.length; start += 64) {
+        const batch = group.slice(start, start + 64)
+        const times = batch.map((entry) => Number.isFinite(entry.time) ? new Date(entry.time).toISOString() : null)
+        const result = await runHook({ hook_event_name: 'PrivateCheck', session_id: sessionId, cwd, times }, cfg.storeTimeoutMs)
+        if (!result.ok) continue
+        const answer = result.answer
+        if (answer?.capture_blocked === false) {
+          for (const entry of batch) allowed.add(entry)
+        } else if (answer?.mode === 'none' && Array.isArray(answer.decisions) && answer.decisions.length === batch.length) {
+          batch.forEach((entry, index) => { if (answer.decisions[index] === false) allowed.add(entry) })
+        }
+      }
+    }
+    return entries.filter((entry) => allowed.has(entry))
+  }
+
   // A line is written with a line break before it as well as after, so that one a crash cut short ends there.
   const keep = (sessionId, entry) => {
-    try {
-      appendFileSync(ownFile(sessionId), `\n${JSON.stringify({ k: `${process.pid}-${Date.now()}-${counter++}`, sessionId, ...entry })}\n`)
-    } catch (error) { warn(`a message of session ${sessionId} was not kept on disk: ${error}`) }
+    // Serialize the decision and append so a turn end cannot drain ahead of its
+    // messages. Only metadata travels before Core permits a plaintext disk copy.
+    const pending = (pendingKeeps.get(sessionId) ?? Promise.resolve()).then(async () => {
+      if (!(await eligible(sessionId, [entry])).length) return
+      try {
+        appendFileSync(ownFile(sessionId), `\n${JSON.stringify({ k: `${process.pid}-${Date.now()}-${counter++}`, sessionId, ...entry })}\n`)
+      } catch (error) { warn(`a message of session ${sessionId} was not kept on disk: ${error}`) }
+    }).catch((error) => warn(`capture decision: ${error}`))
+    pendingKeeps.set(sessionId, pending)
+    pending.finally(() => { if (pendingKeeps.get(sessionId) === pending) pendingKeeps.delete(sessionId) })
+    return pending
   }
 
   // `early`: resolve as soon as the answer is whole.  A prompt hook writes its answer first and then starts the resident
@@ -189,9 +225,9 @@ export function apply(ctx, raw) {
           return
         }
         case 'turn/end':
-          keep(sessionId, { role: 'turn_end', turn: data.turn ?? null, reason: data.reason?.kind ?? null, time: event.time, cwd })
+          const kept = keep(sessionId, { role: 'turn_end', turn: data.turn ?? null, reason: data.reason?.kind ?? null, time: event.time, cwd })
           recalled.delete(`${sessionId}:${data.turn}`)
-          drain(sessionId).catch((error) => warn(`store of session ${sessionId}: ${error}`))
+          kept.then(() => drain(sessionId)).catch((error) => warn(`store of session ${sessionId}: ${error}`))
           return
         case 'session-log-deepseek/delivery-accepted':
           // dsh uploaded its session log, recalled memories with it: the upload is meant to be off.
@@ -305,7 +341,7 @@ export function apply(ctx, raw) {
 
   // Another process's file, or a stray one of this process: taken whole by a rename (one process alone wins it, and a
   // line its owner writes after goes to a new file of that owner's) and added to this process's file of the session.
-  const adopt = (file) => {
+  const adopt = async (file) => {
     const taken = join(cfg.spool, `taken-${counter++}.${process.pid}.jsonl`)
     try { renameSync(file, taken) } catch { return null }
     const entries = readSpool(taken)
@@ -315,7 +351,8 @@ export function apply(ctx, raw) {
       warn(`spool: ${file} holds nothing readable; kept as ${taken}.unreadable`)
       return null
     }
-    appendFileSync(ownFile(sessionId), `\n${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+    const permitted = await eligible(sessionId, entries)
+    if (permitted.length) appendFileSync(ownFile(sessionId), `\n${permitted.map((entry) => JSON.stringify(entry)).join('\n')}\n`)
     rmSync(taken, { force: true })
     return sessionId
   }
@@ -339,7 +376,7 @@ export function apply(ctx, raw) {
         const mine = pid === process.pid
         if (idle < IDLE_SPOOL_MS || (!mine && alive(pid) && idle < ORPHAN_MS)) continue
         let sessionId = mine ? readSpool(file).find((entry) => typeof entry.sessionId === 'string')?.sessionId : null
-        if (!sessionId || file !== ownFile(sessionId)) sessionId = adopt(file)
+        if (!sessionId || file !== ownFile(sessionId)) sessionId = await adopt(file)
         if (!sessionId || draining.has(sessionId)) continue
         if (!(await drain(sessionId))) {
           failures += 1
@@ -363,6 +400,7 @@ export function apply(ctx, raw) {
     return async () => {
       clearInterval(timer)
       clearTimeout(first)
+      await Promise.allSettled([...pendingKeeps.values()])
       await Promise.race([Promise.allSettled([...draining.values()].map((state) => state.promise)), sleep(3_000)])
       writeStatus(true)
     }

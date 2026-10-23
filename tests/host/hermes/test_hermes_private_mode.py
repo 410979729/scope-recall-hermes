@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 from scope_recall.adapters.hermes import kept_captures
+from scope_recall.adapters.hermes.boundary import STEER_KIND
 from scope_recall.adapters.hermes.capture import RetryCapture
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
@@ -164,3 +165,60 @@ def test_post_llm_without_host_timestamps_keeps_its_first_seen_time_after_off(ad
     provider.sync_turn("TEST private opener", reply, session_id="TEST-session-1")
     assert "TEST private interim" not in _contents(provider, ctx)
     assert _contents(provider, ctx) == []
+
+
+@pytest.mark.parametrize("mode", ["full", "read-only"])
+@pytest.mark.parametrize("cache", ["_interim_said", "_steer_said"])
+def test_post_llm_keeps_only_metadata_for_private_observations(adapter, mode, cache):
+    provider, clock = adapter
+    owner, ctx = _owner(provider)
+    owner.private_on(target="global", mode=mode)
+    provider.on_turn_start(1, "TEST opener", turn_id="TEST-turn")
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn", user_message="TEST opener")
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="TEST-turn",
+        assistant_response="TEST final",
+        conversation_history=[
+            dict(role="user", content="TEST opener"),
+            dict(role="assistant", content="TEST interim", tool_calls=[dict(id="TEST-tool")]),
+            dict(role="tool", content="TEST result", tool_call_id="TEST-tool"),
+            dict(role="user", content="TEST steer", display_kind=STEER_KIND),
+            dict(role="assistant", content="TEST final"),
+        ],
+    )
+    assert getattr(provider, cache) == {}
+    assert "TEST interim" not in repr(provider._ledger._moments)
+    assert "TEST steer" not in repr(provider._ledger._moments)
+    clock.now = "2026-09-06T13:00:00Z"
+    owner.private_off(target="global")
+    provider.sync_turn(
+        "TEST opener",
+        "TEST final",
+        session_id="TEST-session-1",
+        messages=[dict(role="user", content="TEST steer", display_kind=STEER_KIND)],
+    )
+    assert _contents(provider, ctx) == []
+
+
+@pytest.mark.parametrize("expire", [False, True])
+def test_discarding_private_retry_removes_it_once_and_does_not_count_as_persisted(adapter, expire):
+    provider, clock = adapter
+    owner, ctx = _owner(provider)
+    identity = provider._require_identity()
+    key = ("TEST-private-buffer", 1)
+    owner.private_on(target="global")
+    provider._retry.captures[key] = RetryCapture(
+        ctx,
+        source_event(source_event_key=key[0], occurred_at=clock.now, recorded_at=clock.now),
+        (),
+        identity.local_scope_id,
+        identity.scope,
+        0,
+    )
+    if expire:
+        assert provider._retry.give_up_expired(tuple(provider._retry.captures.items())) == [key]
+    else:
+        assert provider._retry.keep_all_on_disk() == (0, 0)
+    assert provider._retry.captures == {}
+    assert key not in provider._retry.on_disk

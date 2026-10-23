@@ -152,7 +152,7 @@
    "reportAttributeAccessIssue": 1
   },
   "core/worker_projection.py": {
-   "reportArgumentType": 2
+   "reportArgumentType": 1
   },
   "distribution/hermes/__init__.py": {
    "reportCallIssue": 1
@@ -723,7 +723,7 @@
   "core/worker_consolidation.py": {
    "BLE001": 1,
    "PLR0911": {
-    "process_consolidate": 10
+    "process_consolidate": 9
    }
   },
   "core/worker_outcomes.py": {
@@ -736,8 +736,7 @@
    "B905": 1,
    "BLE001": 6,
    "C901": {
-    "_purge_layers": 20,
-    "process_embed": 22
+    "_purge_layers": 20
    },
    "PLR0911": {
     "_purge_layers": 15,

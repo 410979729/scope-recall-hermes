@@ -42,7 +42,9 @@ directory or the whole store. `--mode full` refuses capture, recall and backgrou
 `--mode read-only` refuses capture while recall continues; `--all --for 2h` sets a duration and `off`
 closes a rule. Rules are stored as metadata only, overlap takes the stricter mode, and an event is
 refused by its own occurrence time even when a later retry or transcript read arrives after the
-rule ends. [The private-mode guide](docs/private-mode.md) lists every host path, injection notice,
+rule ends. Undated events are refused when earlier private history could cover them. Directory
+identity follows junctions and symbolic links on the owning machine; recalls and outbound
+requests check again before release. [The private-mode guide](docs/private-mode.md) lists every host path, injection notice,
 migration and what is stored or sent in each mode.
 
 ## For agents: install or upgrade on the user's behalf

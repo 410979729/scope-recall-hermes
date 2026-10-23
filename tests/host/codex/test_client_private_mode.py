@@ -301,11 +301,174 @@ def test_preflight_batches_share_the_receive_protocol_clock_correction(client_st
     raw = (at + timedelta(seconds=90)).isoformat()
     latest = (at + timedelta(seconds=150)).isoformat()
     try:
-        remote_server.private_check(server, dict(session_id="TEST-clock-session", times=[raw], latest_at=latest))
-        remote_server.private_check(server, dict(session_id="TEST-clock-session", times=[latest], latest_at=latest))
+        first = remote_server.private_check(server, dict(session_id="TEST-clock-session", times=[raw], sent_at=latest))
+        remote_server.private_check(server, dict(session_id="TEST-clock-session", times=[latest], clock=first["clock"]))
         assert [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in seen] == [
             at - timedelta(seconds=60),
             at,
         ]
+    finally:
+        hook.close()
+
+
+def test_local_hook_uses_child_cwd_for_private_rules(installed):
+    from scope_recall.contracts import TrustedContext
+
+    config, core, clock, root = installed
+    child = root / "TEST-private"
+    child.mkdir()
+    ctx = TrustedContext(config.to_binding(), "TEST-session-1", config.scope_ids, "human_direct")
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.private_on(target="project", project=str(child))
+    hook = CodexHookHandler(config, core=core, clock=clock)
+    try:
+        answer = hook.handle_payload(
+            dict(
+                hook_event_name="UserPromptSubmit",
+                session_id=ctx.session_id,
+                turn_id="TEST-turn",
+                prompt="TEST private body",
+                cwd=str(child),
+            )
+        )
+        assert "not being remembered" in answer["hookSpecificOutput"]["additionalContext"]
+        assert _rows(core, ctx) == []
+    finally:
+        hook.close()
+
+
+def test_remote_rechecks_after_spooling_before_content_send(tmp_path, monkeypatch):
+    config = _client(tmp_path, "codex", 1)
+    states = iter(
+        [
+            dict(mode="none", capture_blocked=False, recall_blocked=False),
+            dict(mode="full", capture_blocked=True, recall_blocked=True),
+        ]
+    )
+    monkeypatch.setattr(remote_client, "_private_check", lambda *args: next(states))
+    post = Mock(return_value={})
+    monkeypatch.setattr(remote_client, "_post", post)
+    remote_client.run_hook(
+        config,
+        json.dumps(
+            dict(hook_event_name="Stop", session_id="TEST-session-1", last_assistant_message="TEST body")
+        ).encode(),
+    )
+    assert post.call_count == 0
+    assert list(remote_client._spool_dir(config).glob("*.json")) == []
+
+
+def test_resident_warm_embedding_obeys_global_full(client_store, monkeypatch):
+    from types import SimpleNamespace
+
+    hook, core, ctx, _clock, owner = _bound(client_store, "codex")
+    warm = Mock()
+    hook._host_runtime = SimpleNamespace(_runtime=SimpleNamespace(warm_query_embedding=warm))
+    owner.private_on(target="global")
+    hook.warm_embedding(1)
+    assert warm.call_count == 0
+    from scope_recall.runtime.instance import RuntimeInstance, _LazyVectorPort
+
+    embed = Mock(return_value=[1.0])
+    monkeypatch.setattr(_LazyVectorPort, "_query_embedder", lambda self: embed)
+    runtime = SimpleNamespace(
+        core=core, _ensure_open=lambda: None, config=SimpleNamespace(vector=object(), context=lambda: ctx)
+    )
+    assert RuntimeInstance.warm_query_embedding(runtime, 1) is False
+    assert embed.call_count == 0
+
+
+@pytest.mark.parametrize("hours", [-2, 2])
+def test_remote_calibrates_both_directions_and_replays_the_same_time(client_store, monkeypatch, hours):
+    hook, core, ctx, clock, owner = _bound(client_store, "codex")
+    owner.private_on(target="session", session=ctx.session_id)
+    server_at = datetime.fromisoformat(clock.now.replace("Z", "+00:00")) + timedelta(minutes=30)
+    client_at = server_at + timedelta(hours=hours)
+    monkeypatch.setattr(remote_server, "_now", lambda: server_at)
+    original = MemoryCore.private_check
+    monkeypatch.setattr(MemoryCore, "private_check", lambda self, context, times: original(core, context, times))
+    config = remote_server.RemoteServerConfig(hook.config.home, "codex", "127.0.0.1", 1, "0" * 64)
+    clock.advance()
+    owner.private_off(target="session", session=ctx.session_id)
+    first = remote_server.private_check(
+        config, dict(session_id="TEST-session-1", times=[client_at.isoformat()], sent_at=client_at.isoformat())
+    )
+    assert first["capture_blocked"] is True
+    calibration = first.get("clock")
+    assert isinstance(calibration, dict)
+    monkeypatch.setattr(remote_server, "_now", lambda: server_at + timedelta(days=1))
+    replay = remote_server.private_check(
+        config, dict(session_id="TEST-session-1", times=[client_at.isoformat()], clock=calibration)
+    )
+    assert replay["capture_blocked"] is True
+    observed, _record, _lead = remote_server.client_times_and_lead(
+        dict(observed_at=client_at.isoformat(), clock=calibration)
+    )
+    assert datetime.fromisoformat(observed.replace("Z", "+00:00")) == server_at
+    hook.close()
+
+
+def test_remote_mixed_record_drops_private_lines_and_advances_cursor(tmp_path, monkeypatch):
+    from scope_recall.adapters.clients import transcript
+
+    config = _client(tmp_path, "claude-code", 1)
+    public = "2026-09-26T14:00:00Z"
+    lines = [
+        [10, transcript.said_to_wire(transcript.Said("TEST-1", "user", "TEST private", NOW))],
+        [20, transcript.said_to_wire(transcript.Said("TEST-2", "user", "TEST public", public))],
+    ]
+    cursor = Mock()
+    monkeypatch.setattr(remote_client, "_record_part", lambda *args: (dict(start=0, lines=lines), cursor))
+    monkeypatch.setattr(remote_client, "_now", lambda: public)
+
+    def batch(_config, _body, times, _timeout):
+        return dict(
+            mode="none", capture_blocked=NOW in times, recall_blocked=False, decisions=[stamp == NOW for stamp in times]
+        )
+
+    monkeypatch.setattr(remote_client, "_private_batch", batch)
+    sent = []
+    monkeypatch.setattr(
+        remote_client, "_post", lambda _config, body, _timeout: sent.append(body) or dict(through=20, result={})
+    )
+    remote_client.run_hook(config, json.dumps(dict(hook_event_name="SessionEnd", session_id="TEST-session-1")).encode())
+    assert len(sent) == 1
+    assert "TEST private" not in json.dumps(sent)
+    assert sent[0]["record"]["lines"][0] == [10, None]
+    assert sent[0]["record"]["lines"][1][1]["text"] == "TEST public"
+    cursor.save.assert_called_once_with(20)
+
+
+def test_junction_and_real_directory_share_the_rule_identity(installed):
+    import os
+    import subprocess
+
+    from scope_recall.contracts import TrustedContext
+
+    config, core, clock, root = installed
+    real, alias = root / "TEST-real", root / "TEST-alias"
+    real.mkdir()
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(real)], check=True, capture_output=True)
+    else:
+        alias.symlink_to(real, target_is_directory=True)
+    ctx = TrustedContext(config.to_binding(), "TEST-session-1", config.scope_ids, "human_direct")
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    hook = CodexHookHandler(config, core=core, clock=clock)
+    try:
+        for rule, cwd in [(alias, real), (real, alias)]:
+            owner.private_on(target="project", project=str(rule))
+            answer = hook.handle_payload(
+                dict(
+                    hook_event_name="UserPromptSubmit",
+                    session_id=ctx.session_id,
+                    turn_id=str(cwd),
+                    prompt="TEST private body",
+                    cwd=str(cwd),
+                )
+            )
+            assert "not being remembered" in answer["hookSpecificOutput"]["additionalContext"]
+            assert _rows(core, ctx) == []
+            owner.private_off(target="project", project=str(real))
     finally:
         hook.close()
