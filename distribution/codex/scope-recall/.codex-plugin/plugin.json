@@ -1,6 +1,6 @@
 {
   "name": "scope-recall",
-  "version": "3.12.1",
+  "version": "3.12.2",
   "description": "Scope Recall long-term memory, local and source-backed, one store shared by your agents",
   "author": {
     "name": "Local developer"

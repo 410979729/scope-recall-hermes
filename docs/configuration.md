@@ -155,7 +155,7 @@ The block is a mapping:
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `backend` | `"lancedb"` or `"sqlite-bruteforce"` | `"lancedb"` | `lancedb` needs the `lancedb` extra installed. `sqlite-bruteforce` is dependency-free and scans; it is meant for hosts where LanceDB or PyArrow is unsafe, and for small to medium memory sets. Any other value, including `"pgvector"`, is refused. |
+| `backend` | `"lancedb"` or `"sqlite-bruteforce"` | `"lancedb"` | `lancedb` needs the `lancedb` extra installed. Both backends serve recall while the worker writes. `sqlite-bruteforce` is dependency-free and scans; it is meant for hosts where LanceDB or PyArrow is unsafe, and for small to medium memory sets. Recall reads through SQLite's write-ahead log and sees each embedding as soon as the worker commits it; a read needs `vector.sqlite3-wal` and `vector.sqlite3-shm` beside the file, or permission to create them there, as the worker has. A reader that closes last leaves them behind; a writer removes them when it is the last connection and closes cleanly. Any other value, including `"pgvector"`, is refused. |
 | `storage_dir` | absolute path | required | Must be exactly `<data_directory>/vectors/<embedding space id>`, or the file is refused with `VECTOR_STORAGE_OUTSIDE_BINDING`. The backend creates its own store below it: a `lancedb/` directory, or a `vector.sqlite3` file. |
 | `table_name` | string, non-blank, ≤ 240 chars | required | Table or collection name inside the store. |
 | `dimensions` | int | required, 1–8192 | Must equal the active embedding space's width, or the file is refused with `VECTOR_DIMENSIONS_MISMATCH`. The shipped space is 3072. |

@@ -147,7 +147,8 @@ def _resolve_runtime_config_path(config_path: object, binding: InstanceBinding) 
     return Path(str(config_path)).expanduser(), True
 
 
-def _bindings_match(expected: InstanceBinding, actual: InstanceBinding) -> bool:
+def bindings_match(expected: InstanceBinding, actual: InstanceBinding) -> bool:
+    """Compare trusted identities and their resolved storage directories without side effects."""
     return (
         expected.agent_id == actual.agent_id
         and expected.installation_id == actual.installation_id
@@ -269,7 +270,7 @@ def attach_trusted_host_runtime(
         runtime_config = load_config(path)
     except (OSError, ValueError):
         return basic(GAP_UNCONFIGURED, GAP_INVALID)
-    if not _bindings_match(expected_binding, runtime_config.binding):
+    if not bindings_match(expected_binding, runtime_config.binding):
         return basic(GAP_UNCONFIGURED, GAP_BINDING_MISMATCH)
     runtime_config = replace(
         runtime_config,
@@ -311,7 +312,7 @@ def write_ephemeral_worker_config(
     raw["project_id"] = project_id
     raw["branch_id"] = branch_id
     validated = RuntimeInstanceConfig.from_mapping(raw)
-    if expected_binding is not None and not _bindings_match(expected_binding, validated.binding):
+    if expected_binding is not None and not bindings_match(expected_binding, validated.binding):
         raise ValueError("runtime_binding_changed")
     if expected_partition is not None and (validated.project_id, validated.branch_id) != expected_partition:
         raise ValueError("runtime_partition_changed")
@@ -446,5 +447,6 @@ __all__ = [
     "GAP_WORKER_LAUNCH_FAILED",
     "TrustedHostRuntime",
     "attach_trusted_host_runtime",
+    "bindings_match",
     "write_ephemeral_worker_config",
 ]
