@@ -18,30 +18,28 @@ import stat
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
 from ..contracts import ContractError, TrustedContext
 from ..core.failure_retry import retry_class
 from ..core.file_lock import advisory_file_lock
+from ..core.storage import SQLiteStorage
 from ..core.writer_lease import TruthWriterBusyError
 from ..vector.process_store import NativeVectorPathError, ProcessLanceVectorStore
+from .backup_primitives import BackupError, backup_deadline
+from .backup_upkeep import BACKUP_JOB_SECONDS, backup_if_due, record_backup_job_failure
 from .instance import build_runtime_instance
 from .instance_config import RuntimeInstanceConfig
 from .model_budget import pre_request_refusals, provider_refusals
-from .validation import strict_float, utc_now
+from .validation import DAILY_COUNTER_MAX, strict_float, utc_now
 
 #: Worker metadata files are small JSON documents; anything larger is not one.
 METADATA_LIMIT_BYTES = 65536
 #: Seconds a watchdog-owned pass stops short of the deadline it was handed, so
 #: its refund, status file and receipt land before the owner kills the tree.
 FINALIZE_MARGIN_SECONDS = 2.0
-#: The largest ``used`` a valid day counter holds, for the worker that reserves
-#: against it and the supervisor that plans from it.  It rejects a corrupt file;
-#: it is not a daily cap: ``daily_work_limit`` goes to 1,000,000 and the uncapped
-#: default still counts what every pass keeps.  A smaller planner-only bound
-#: would stop supervision and autostart for the rest of a busy UTC day.
-DAILY_COUNTER_MAX = 100_000_000
 
 
 def load_config(path: str | Path) -> RuntimeInstanceConfig:
@@ -539,6 +537,73 @@ def _owner_timeout(sink: TextIO, config: RuntimeInstanceConfig | None, *, starte
     the same exit code and gap, which a supervisor survives, with nothing killed."""
     payload = _minimal_payload(config, "degraded", "worker_watchdog_timeout")
     return _report(sink, config, payload, started_at=started_at, exit_code=124, best_effort=True)
+
+
+def backup_pause_check(config: RuntimeInstanceConfig, paused: Callable[[Any], bool] | None) -> Callable[[], bool]:
+    """Check the operator switch at most once a second between backup chunks."""
+    next_poll = 0.0
+    stopped = False
+
+    def check() -> bool:
+        nonlocal next_poll, stopped
+        now = time.monotonic()
+        if paused is not None and now >= next_poll:
+            next_poll = now + 1.0
+            stopped = paused(config)
+        return stopped
+
+    return check
+
+
+def run_backup_worker(
+    config_path: str | Path,
+    *,
+    output: TextIO | None = None,
+    deadline_epoch: float | None = None,
+    paused: Callable[[Any], bool] | None = None,
+) -> int:
+    """Run only local backup I/O, with no model runtime or queue reservation.
+
+    The store-wide lock covers both its due-time check and publication state,
+    so supervisors of separate audiences cannot publish duplicate daily jobs.
+    The watchdog supplies the independent job's deadline and owns hard cleanup.
+    """
+    sink = sys.stdout if output is None else output
+    config = None
+    try:
+        config = load_config(config_path)
+        now = time.monotonic()
+        deadline = now + BACKUP_JOB_SECONDS
+        if deadline_epoch is not None:
+            handed = strict_float("backup_deadline_epoch", deadline_epoch, minimum=0.0, maximum=math.inf)
+            deadline = min(deadline, now + handed - time.time() - FINALIZE_MARGIN_SECONDS)
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise BackupError("backup deadline exceeded")
+        with (
+            advisory_file_lock(config.binding.data_directory / "runtime-backup.lock", timeout_seconds=0),
+            backup_deadline(deadline, cancelled=backup_pause_check(config, paused)),
+        ):
+            receipt = backup_if_due(SQLiteStorage(config.binding), config, available_seconds=budget)
+        outcome = (receipt or {}).get("outcome", "skipped_not_due")
+        payload = _minimal_payload(config, "degraded" if outcome == "failed" else "ok", "backup_failed")
+        payload.update(job_kind="backup", backup_outcome=outcome)
+        if outcome != "failed":
+            payload["capability_gaps"] = []
+        _write(sink, payload)
+        return 0
+    except TimeoutError:
+        payload = _minimal_payload(config, "busy", "backup_already_running")
+        code = 75
+    except (OSError, ValueError, TypeError, sqlite3.Error, RuntimeError) as exc:
+        error = str(exc) if isinstance(exc, BackupError) else f"backup job failed: {type(exc).__name__}"
+        if config is not None:
+            record_backup_job_failure(config.binding.data_directory, error)
+        payload = _minimal_payload(config, "degraded", "backup_job_failed")
+        code = 124 if error == "backup deadline exceeded" else 1
+    payload["job_kind"] = "backup"
+    _write(sink, payload)
+    return code
 
 
 def run_worker(config_path: str | Path, *, output: TextIO | None = None, deadline_epoch: float | None = None) -> int:

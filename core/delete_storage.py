@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from ..contracts import ContractError
@@ -15,6 +17,31 @@ from .schema import OBJECT_TABLES
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+@contextmanager
+def watch_mirrored_tombstones(conn):
+    """Notice writes through every view of this connection without scanning tombstone bodies.
+
+    Rolled-back statements can request harmless extra catch-up; only committed
+    SQLite truth is ever mirrored. The authorizer performs no database I/O.
+    """
+    touched = set()
+
+    def authorize(action, table, _column, _database, _trigger):
+        if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE) and table in {
+            "deletion_operations",
+            "source_group_blocks",
+            "restored_absence_blocks",
+        }:
+            touched.add(table)
+        return sqlite3.SQLITE_OK
+
+    conn.set_authorizer(authorize)
+    try:
+        yield touched
+    finally:
+        conn.set_authorizer(None)
 
 
 def retraction_after(conn, scope_ids, epoch: int) -> bool:

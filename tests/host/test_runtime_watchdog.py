@@ -109,6 +109,33 @@ def test_bootstrap_with_a_handed_deadline_still_waits_for_the_release_token(tmp_
         assert stdout == stderr == b""
 
 
+def test_backup_child_publishes_with_a_budget_independent_of_the_model_drain(tmp_path, capsys):
+    from scope_recall.runtime.backup_bundle import verify_backup_bundle
+
+    config_path, _ = _runtime_payload(tmp_path, drain_seconds=0.1)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    data = Path(config["binding"]["data_directory"])
+    (data / "backup-config.json").write_text(json.dumps({"backup_dir": str(tmp_path / "backups")}))
+    result = {}
+    assert (
+        worker_watchdog._run_once(
+            config_path,
+            Path(sys.executable),
+            cleanup_config=False,
+            timeout_seconds=30,
+            result_sink=result,
+            job_kind="backup",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert result["backup_outcome"] == "backed_up"
+    state = json.loads((data / "backup-state.json").read_text())
+    assert verify_backup_bundle(Path(state["last_bundle"]))["status"] == "verified"
+    assert not (data / "runtime-worker-day.json").exists()
+    assert not (data / "runtime-worker-status.json").exists()
+
+
 # The real bootstrap and worker entry, with only the Core drain replaced: "busy"
 # uses the whole window it is given, "hung" never returns.
 _OWNED_CHILD = """import json, runpy, sys, time

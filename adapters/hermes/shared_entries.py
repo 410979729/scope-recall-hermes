@@ -194,6 +194,8 @@ def shared_entry_manifest(root: Path | str, entry_id: str, *, hermes_home: Path 
     if record is None:
         raise HermesIdentityError("shared store has no such entry")
     if hermes_home is not None:
+        if record.get("recovery_pending"):
+            raise HermesIdentityError("restored entry needs an explicit attach")
         if record.get("detached_at"):
             raise HermesIdentityError("shared store entry is detached")
         if not _same_path(bounded_text(record.get("home"), field="home"), hermes_home):
@@ -495,9 +497,12 @@ def attached_again(
             entry["entry_id"] == entry_id
             and entry["host"] == host
             and not entry.get("detached_at")
-            and _same_path(entry["home"], home)
+            and (_same_path(entry["home"], home) or entry.get("recovery_pending") is True)
         ):
-            record = {name: value for name, value in entry.items() if name != "python_executable"}
+            record = {
+                name: value for name, value in entry.items() if name not in {"python_executable", "recovery_pending"}
+            }
+            record["home"] = str(home.resolve())
             record["display_name"] = _display_name(display_name)
             record["attached_at"] = bounded_text(attached_at, field="attached_at")
             if python_executable is not None:
