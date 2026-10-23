@@ -146,6 +146,44 @@ def test_a_model_switch_re_embeds_what_was_embedded_once_an_operator_starts_a_ru
         new.close()
 
 
+def test_sqlite_runtime_recall_reads_the_store_held_by_a_worker(app):
+    import time
+
+    from scope_recall.core.retrieval import SearchContext, SearchLimits
+    from scope_recall.runtime.instance import _LazyVectorPort
+
+    core, ctx = app
+    claim, source = edge(core, ctx, "TEST-A", "TEST-B")
+    writer = _space_instance(core, ctx, "TEST-model")
+    reader = _space_instance(core, ctx, "TEST-model")
+    try:
+        writer.drain()
+        assert writer._vector_store.count_rows() == 2
+        context = SearchContext(
+            query="TEST-A",
+            mode="auto",
+            as_of=None,
+            focus_refs=(),
+            limits=SearchLimits(),
+            deadline=time.monotonic() + 10.0,
+            now=core.clock.utc_now(),
+            trusted_context=ctx,
+        )
+        pipeline = core.recall_pipeline
+        pipeline.vector_port = _LazyVectorPort(reader)
+        pipeline.policy = replace(
+            pipeline.policy, embedding_space_id=reader.config.embedding_space_id(), vector_threshold=0.0
+        )
+        hits = pipeline.vector_port.search(context, limit=10, remaining_seconds=10.0)
+        assert {hit.ref for hit in hits} == {claim.ref, source.ref}
+        result = pipeline.search(context)
+        assert not any(gap.startswith("vector_") for gap in result.gaps), result.gaps
+        assert reader._vector_store.count_rows() == 2
+    finally:
+        reader.close()
+        writer.close()
+
+
 def test_a_reopened_row_waits_like_new_work_with_its_lease_fenced_and_attempts_afresh(app):
     core, ctx = app
     edge(core, ctx, "TEST-A", "TEST-B")

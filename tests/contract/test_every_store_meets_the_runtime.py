@@ -23,9 +23,18 @@ against the in-process LanceDB store in the native tier.
 from __future__ import annotations
 
 import inspect
+import os
+import sqlite3
+import stat
+import threading
+import time
+from contextlib import closing
+from pathlib import Path
 
 import pytest
+from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.runtime.lance_port import LanceIndexWriter, LancePurgePort, LanceVectorRecord
+from scope_recall.vector import VectorStoreCompatibilityError
 from scope_recall.vector.process_store import ProcessLanceVectorStore
 from scope_recall.vector.sqlite_store import SQLiteBruteForceVectorStore
 from scope_recall.vector.store import LanceVectorStore, build_vector_store
@@ -219,5 +228,391 @@ def test_the_sqlite_companion(check, tmp_path):
     store.open()
     try:
         check(store)
+    finally:
+        store.close()
+
+
+def _sqlite_store(tmp_path, *, dimensions=2):
+    return SQLiteBruteForceVectorStore(tmp_path / "vector.sqlite3", table_name="TEST_vectors", dimensions=dimensions)
+
+
+def _sqlite_rows(start, stop):
+    return [
+        dict(id=f"TEST:{index:04d}", scope_id=SCOPE, content="", summary="", vector=[0.25, 0.75])
+        for index in range(start, stop)
+    ]
+
+
+def test_sqlite_raw_file_descriptors_close_before_its_connection_opens(tmp_path, monkeypatch):
+    store = _sqlite_store(tmp_path)
+    raw_open = os.open
+    paths = {store.db_path, *store._sidecar_paths()}
+    calls = []
+
+    def track_open(path, *args, **kwargs):
+        if path in paths:
+            calls.append((path, store._conn is not None))
+        return raw_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", track_open)
+    try:
+        store.open()
+        store.upsert_records(_sqlite_rows(0, 1))
+        assert store.count_rows() == 1
+        store.delete_by_ids(["TEST:0000"])
+        assert store.list_ids() == []
+    finally:
+        store.close()
+    assert calls and all(not connected for _path, connected in calls), calls
+
+
+def test_sqlite_new_store_raw_opens_only_its_exclusive_creation(tmp_path, monkeypatch):
+    store = _sqlite_store(tmp_path)
+    raw_open, calls = os.open, []
+    paths = {store.db_path, *store._sidecar_paths()}
+
+    def track_open(path, flags, *args, **kwargs):
+        if path in paths:
+            calls.append((path, flags))
+        return raw_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", track_open)
+    try:
+        store.open()
+        assert len(calls) == 1 and calls[0][0] == store.db_path
+        assert calls[0][1] & os.O_CREAT and calls[0][1] & os.O_EXCL
+    finally:
+        store.close()
+
+
+def test_sqlite_writer_preserves_a_same_process_reader_without_raw_opens(tmp_path, monkeypatch):
+    writer, reader = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    writer.open()
+    writer.upsert_records(_sqlite_rows(0, 1))
+    writer.close()
+    reader.open_existing()
+    raw_open, calls = os.open, []
+    paths = {writer.db_path, *writer._sidecar_paths()}
+
+    def track_open(path, *args, **kwargs):
+        if path in paths:
+            calls.append(path)
+        return raw_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", track_open)
+    try:
+        assert all(path.is_file() for path in paths)
+        writer.open()
+        assert calls == []
+        writer.upsert_records(_sqlite_rows(1, 2))
+        assert reader.count_rows() == 2
+    finally:
+        writer.close()
+        reader.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_sqlite_existing_database_permissions_are_narrowed_once(tmp_path, monkeypatch):
+    store = _sqlite_store(tmp_path)
+    store.open()
+    store.close()
+    store.db_path.chmod(0o644)
+    raw_open, calls = os.open, []
+
+    def track_open(path, *args, **kwargs):
+        if path == store.db_path:
+            calls.append(path)
+        return raw_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", track_open)
+    try:
+        store.open()
+        assert stat.S_IMODE(store.db_path.stat().st_mode) == 0o600
+        store.close()
+        store.open()
+        assert calls == [store.db_path]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("sidecar", ["wal", "shm"])
+def test_sqlite_writer_skips_a_sidecar_missing_at_lstat(tmp_path, monkeypatch, sidecar):
+    writer, reader = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    writer.open()
+    writer.close()
+    reader.open_existing()
+    missing = writer.db_path.with_name(f"{writer.db_path.name}-{sidecar}")
+    raw_lstat, raw_open = os.lstat, os.open
+
+    def missing_lstat(path, *args, **kwargs):
+        if path == missing:
+            raise FileNotFoundError("TEST sidecar disappeared")
+        return raw_lstat(path, *args, **kwargs)
+
+    def missing_open(path, *args, **kwargs):
+        if path == missing:
+            raise FileNotFoundError("TEST sidecar disappeared")
+        return raw_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", missing_lstat)
+    monkeypatch.setattr(os, "open", missing_open)
+    try:
+        writer.open()
+        assert reader.count_rows() == 0
+    finally:
+        writer.close()
+        reader.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_sqlite_writer_skips_a_sidecar_gone_before_permission_narrowing(tmp_path, monkeypatch):
+    writer, reader = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    writer.open()
+    writer.close()
+    reader.open_existing()
+    missing = writer._sidecar_paths()[0]
+    missing.chmod(0o644)
+    raw_open = os.open
+
+    def missing_open(path, *args, **kwargs):
+        if path == missing:
+            raise FileNotFoundError("TEST sidecar disappeared")
+        return raw_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", missing_open)
+    try:
+        writer.open()
+        assert reader.count_rows() == 0
+    finally:
+        writer.close()
+        reader.close()
+
+
+def test_sqlite_existing_open_propagates_path_permission_errors(tmp_path, monkeypatch):
+    store = _sqlite_store(tmp_path)
+    raw_stat, raw_lstat = os.stat, os.lstat
+    path_exists, path_is_symlink = Path.exists, Path.is_symlink
+
+    def deny_stat(path, *args, **kwargs):
+        if path == store.db_path:
+            raise PermissionError("TEST inaccessible vector store")
+        return raw_stat(path, *args, **kwargs)
+
+    def deny_lstat(path, *args, **kwargs):
+        if path == store.db_path:
+            raise PermissionError("TEST inaccessible vector store")
+        return raw_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", deny_stat)
+    monkeypatch.setattr(os, "lstat", deny_lstat)
+    # Python 3.14's path predicates suppress permission errors; emulate that on older interpreters.
+    monkeypatch.setattr(Path, "exists", lambda path: False if path == store.db_path else path_exists(path))
+    monkeypatch.setattr(Path, "is_symlink", lambda path: False if path == store.db_path else path_is_symlink(path))
+    with pytest.raises(PermissionError, match="TEST inaccessible vector store"):
+        store.open_existing()
+    assert store._conn is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_sqlite_created_sidecars_have_owner_only_permissions(tmp_path):
+    store = _sqlite_store(tmp_path)
+    try:
+        store.open()
+        store.upsert_records(_sqlite_rows(0, 1))
+        assert [stat.S_IMODE(path.stat().st_mode) for path in store._sidecar_paths()] == [0o600, 0o600]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("deadline_bound", [True, False], ids=["request-deadline", "no-deadline"])
+def test_sqlite_thread_lock_wait_obeys_the_request_deadline(tmp_path, deadline_bound):
+    store = _sqlite_store(tmp_path)
+    store.open()
+    started, done = threading.Event(), threading.Event()
+    held, release = threading.Event(), threading.Event()
+    outcomes = []
+
+    def hold_lock():
+        with store._lock:
+            held.set()
+            release.wait()
+
+    def read():
+        started.set()
+        try:
+            if deadline_bound:
+                with using_request_deadline(RequestDeadline.from_budget(1.0)):
+                    outcomes.append(store.count_rows())
+            else:
+                outcomes.append(store.count_rows())
+        except TimeoutError as exc:
+            outcomes.append(exc)
+        finally:
+            done.set()
+
+    reader = threading.Thread(target=read)
+    holder = threading.Thread(target=hold_lock)
+    try:
+        holder.start()
+        assert held.wait(15.0)
+        reader.start()
+        assert started.wait(15.0)
+        before = time.perf_counter()
+        finished_while_held = done.wait(15.0 if deadline_bound else 0.1)
+        elapsed = time.perf_counter() - before
+        release.set()
+        reader.join(15.0)
+        assert not reader.is_alive()
+        if deadline_bound:
+            assert finished_while_held, "request waited for the store lock past its deadline"
+            assert elapsed < 15.0
+            assert len(outcomes) == 1 and isinstance(outcomes[0], TimeoutError)
+            assert "store lock" in str(outcomes[0])
+        else:
+            assert not finished_while_held
+            assert outcomes == [0]
+    finally:
+        release.set()
+        holder.join(15.0)
+        reader.join(15.0)
+        store.close()
+
+
+def test_sqlite_existing_open_refuses_a_directory_as_physical_storage(tmp_path):
+    store = _sqlite_store(tmp_path)
+    store.db_path.mkdir()
+    with pytest.raises(VectorStoreCompatibilityError, match="physical storage is not a regular file"):
+        store.open_existing()
+    assert store._conn is None
+
+
+def test_sqlite_reader_leaves_sidecars_until_the_last_writer_closes(tmp_path):
+    writer, reader = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    writer.open()
+    writer.upsert_records(_sqlite_rows(0, 1))
+    writer.close()
+    sidecars = writer._sidecar_paths()
+    assert not any(path.exists() for path in sidecars)
+    try:
+        reader.open_existing()
+        assert all(path.is_file() for path in sidecars)
+    finally:
+        reader.close()
+    assert all(path.is_file() for path in sidecars)
+    try:
+        writer.open()
+    finally:
+        writer.close()
+    assert not any(path.exists() for path in sidecars)
+
+
+@pytest.mark.parametrize("truncate", [False, True], ids=["wal-frames", "empty-wal"])
+def test_sqlite_reader_opens_beside_a_writer_and_reads_committed_rows(tmp_path, truncate):
+    writer, reader = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    writer.open()
+    try:
+        writer.upsert_records(_sqlite_rows(0, 10))
+        if truncate:
+            writer._require_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        wal, shm = writer._sidecar_paths()
+        assert shm.is_file() and (wal.stat().st_size == 0) is truncate
+        reader.open_existing()
+        assert reader.count_rows() == 10
+        writer.upsert_records(_sqlite_rows(10, 15))
+        assert reader.count_rows() == 15
+        assert len(reader.search_scopes([0.25, 0.75], scope_ids=[SCOPE], limit=20)) == 15
+    finally:
+        reader.close()
+        writer.close()
+
+
+def test_sqlite_kept_reader_sees_later_commits_deletions_and_checkpoints(tmp_path):
+    writer, reader = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    writer.open()
+    writer.upsert_records(_sqlite_rows(0, 10))
+    writer.close()
+    assert not any(path.exists() for path in writer._sidecar_paths())
+    reader.open_existing()
+    try:
+        assert reader.count_rows() == 10
+        writer.open()
+        writer.upsert_records(_sqlite_rows(10, 2010))
+        writer.delete_by_ids(["TEST:0000", "TEST:0001", "TEST:0002"])
+        expected = [row["id"] for row in _sqlite_rows(3, 2010)]
+        assert reader.count_rows() == len(expected)
+        assert reader.list_ids() == expected
+        assert len(reader.search_scopes([0.25, 0.75], scope_ids=[SCOPE], limit=3000)) == len(expected)
+        checkpoint = writer._require_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        assert tuple(checkpoint) == (0, 0, 0)
+        writer.close()
+        assert reader.count_rows() == len(expected)
+        assert reader.list_ids() == expected
+        assert (
+            sorted(row["id"] for row in reader.search_scopes([0.25, 0.75], scope_ids=[SCOPE], limit=3000)) == expected
+        )
+    finally:
+        reader.close()
+        writer.close()
+
+
+def test_sqlite_existing_open_preserves_storage_and_refuses_creation_and_writes(tmp_path):
+    reader, writer = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    with pytest.raises(FileNotFoundError, match="sqlite-bruteforce physical storage is missing"):
+        reader.open_existing()
+    assert not list(tmp_path.iterdir())
+    writer.open()
+    writer.upsert_records(_sqlite_rows(0, 1))
+    writer.close()
+    before = writer.db_path.read_bytes()
+    incompatible = _sqlite_store(tmp_path, dimensions=3)
+    with pytest.raises(VectorStoreCompatibilityError, match="identity mismatch"):
+        incompatible.open_existing()
+    assert incompatible._conn is None
+    reader.open_existing()
+    try:
+        assert reader.count_rows() == 1
+        assert reader.list_ids() == ["TEST:0000"]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            reader.upsert_records(_sqlite_rows(1, 2))
+    finally:
+        reader.close()
+    assert writer.db_path.read_bytes() == before
+
+
+def test_sqlite_kept_connection_caps_each_lock_wait_to_the_current_request(tmp_path):
+    writer, reader = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
+    writer.open()
+    writer.close()
+    # Rollback-journal mode lets the other connection acquire its exclusive lock
+    # after validation, without a WAL reader's shared-memory attachment.
+    with closing(sqlite3.connect(writer.db_path)) as blocker:
+        blocker.execute("PRAGMA journal_mode=DELETE")
+        reader.open_existing()
+        try:
+            assert reader._require_conn().execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+            blocker.execute("PRAGMA locking_mode=EXCLUSIVE")
+            blocker.execute("BEGIN EXCLUSIVE")
+            started = time.perf_counter()
+            with using_request_deadline(RequestDeadline.from_budget(1.0)):
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    reader.count_rows()
+            assert time.perf_counter() - started < 15.0
+            blocker.rollback()
+        finally:
+            reader.close()
+
+
+def test_sqlite_statement_timeout_tracks_expiry_and_resets_outside_requests(tmp_path):
+    store = _sqlite_store(tmp_path)
+    store.open()
+    try:
+        for budget in (1.0, 0.0):
+            with using_request_deadline(RequestDeadline.from_budget(budget)):
+                for read in (store.count_rows, store.list_ids, store.list_records, lambda: store.contains_id("TEST:0")):
+                    read()
+                    timeout = store._require_conn().execute("PRAGMA busy_timeout").fetchone()[0]
+                    assert 0 <= timeout <= budget * 1000
+        store.count_rows()
+        assert store._require_conn().execute("PRAGMA busy_timeout").fetchone()[0] == 30000
     finally:
         store.close()
