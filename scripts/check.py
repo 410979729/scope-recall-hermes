@@ -164,6 +164,7 @@ SUITES = {
         "tests/contract/test_full_backup.py",
         "tests/contract/test_memory_admin.py",
         "tests/contract/test_memory_cli.py",
+        "tests/contract/test_memory_ui_api.py",
         "tests/contract/test_memory_export.py",
         "tests/contract/test_private_mode.py",
         "tests/contract/test_fragment_quote_recovery.py",
@@ -237,6 +238,9 @@ SUITES = {
         "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/test_memory_ui.py",
+        "tests/host/test_memory_ui_http.py",
+        "tests/host/test_memory_ui_assets.py",
         "tests/host/codex/test_client_private_mode.py",
         "tests/host/hermes/test_hermes_private_mode.py",
         "tests/host/test_endpoint_credentials.py",

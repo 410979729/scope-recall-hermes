@@ -102,7 +102,14 @@ def _private(argv: list[str]) -> int:
     return main(argv[1:])
 
 
+def _ui(argv: list[str]) -> int:
+    from .ui import main
+
+    return main(argv[1:])
+
+
 _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
+    "ui": ("open the local owner's memory management page", _ui),
     "memory": ("browse, correct, mute or forget memories as the local store owner", _memory),
     "private": (
         "turn private full or read-only capture and recall on or off for a session, project or the whole store",

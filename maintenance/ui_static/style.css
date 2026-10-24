@@ -1,0 +1,25 @@
+:root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; --line: #8886; --accent: #306c98; }
+* { box-sizing: border-box; }
+body { max-width: 1120px; margin: auto; padding: 24px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+h1 { margin: 0; font-size: 1.8rem; }
+header p { margin-top: 4px; opacity: .75; }
+nav, .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+button, input, select, textarea { font: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
+button { cursor: pointer; }
+button:hover, button[aria-current="page"] { outline: 2px solid var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.danger { color: light-dark(#a42626, #ffaaaa); }
+label { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+label.check { flex-direction: row; align-items: center; }
+input, select, textarea { min-width: 0; max-width: 100%; }
+textarea { width: 100%; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); align-items: end; gap: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.card, article, #review, #receipt { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 16px 0; }
+.card strong { display: block; font-size: 1.5rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: light-dark(#f1f4f7, #20252a); border-radius: 6px; }
+#items button { display: block; width: 100%; text-align: start; margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#status { min-height: 1.6em; color: light-dark(#a42626, #ffaaaa); }
+[hidden] { display: none !important; }
+@media (max-width: 550px) { body { padding: 12px; } header { align-items: start; flex-direction: column; gap: 0; } }
