@@ -100,6 +100,9 @@ build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
 "scope_recall" = [
   "_lance_worker.py",
   "maintenance/migration_mapping.json",
+  "maintenance/ui_static/*.html",
+  "maintenance/ui_static/*.js",
+  "maintenance/ui_static/*.css",
   "adapters/hermes/plugin.yaml",
   "contracts/*.schema.json",
   "distribution/codex/scope-recall/.codex-plugin/plugin.json",

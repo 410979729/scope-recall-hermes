@@ -27,7 +27,8 @@ BACKUP_RETRY_SECONDS = 900
 BACKUP_JOB_SECONDS = 1800.0
 
 
-def _read_state(directory: Path) -> dict:
+def read_backup_state(directory: Path) -> dict:
+    """Read scheduler status without changing it; absent or unreadable state is empty."""
     try:
         value = json.loads((directory / BACKUP_STATE_FILE).read_text(encoding="utf-8"))
         return value if isinstance(value, dict) else {}
@@ -72,7 +73,7 @@ def next_backup_wake(directory: Path, now: datetime) -> tuple[datetime, str] | N
             return None
     except MIRROR_ERRORS:
         return None
-    state = _read_state(directory)
+    state = read_backup_state(directory)
     daily, mirror = _due_times(state, now)
     candidates = [(mirror, "deletion_mirror")]
     try:
@@ -93,14 +94,14 @@ def next_backup_wake(directory: Path, now: datetime) -> tuple[datetime, str] | N
 def _save_state(directory: Path, state: dict) -> None:
     """Merge metadata under a short lock so mirror upkeep cannot erase publication."""
     with advisory_file_lock(directory / "backup-state.lock", timeout_seconds=2):
-        current = _read_state(directory)
+        current = read_backup_state(directory)
         current.update(state)
         atomic_json(directory / BACKUP_STATE_FILE, current)
 
 
 def record_backup_job_failure(directory: Path, error: str) -> None:
     """Persist a stopped owned job without losing its publication checkpoint."""
-    state = _read_state(directory)
+    state = read_backup_state(directory)
     stamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     if state.get("job_phase") == "retention":
         changes = dict(last_retention_error=error, last_retention_error_utc=stamp)
@@ -111,7 +112,7 @@ def record_backup_job_failure(directory: Path, error: str) -> None:
 
 def backup_job_problem(directory: Path) -> str | None:
     """Explain a scheduled backup that requires operator action or retention repair."""
-    state = _read_state(directory)
+    state = read_backup_state(directory)
     if state.get("backup_blocked"):
         return f"scheduled backup exceeded its {BACKUP_JOB_SECONDS:g} second budget; automatic snapshots are paused"
     if state.get("last_retention_error"):
@@ -125,7 +126,7 @@ def mirror_if_due(storage, config, *, available_seconds: float, now: datetime | 
         return None
     directory = storage.binding.data_directory
     now = now or datetime.now(UTC)
-    state = _read_state(directory)
+    state = read_backup_state(directory)
     try:
         backup_dir = configured_backup_dir(directory)
     except MIRROR_ERRORS as exc:
@@ -186,7 +187,7 @@ def backup_if_due(storage, config, *, available_seconds: float, now: datetime | 
     directory = storage.binding.data_directory
     now = now or datetime.now(UTC)
     stamp = now.isoformat().replace("+00:00", "Z")
-    state = _read_state(directory)
+    state = read_backup_state(directory)
     daily, mirror_due = _due_times(state, now)
     mirror = None
     try:

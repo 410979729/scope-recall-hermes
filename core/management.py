@@ -14,7 +14,7 @@ from ..contracts import ContractError
 from .delete_storage import OBJECT_TABLES, canonical
 from .management_query import MemoryFilter, browse, partition, session_refs, source_metadata, witnesses
 from .management_revision import correct
-from .restore import InstallationMaintenance, _maintenance_context
+from .restore import InstallationMaintenance, maintenance_context
 from .suppression import release
 
 
@@ -27,7 +27,7 @@ class MemoryManagement:
         self._context()
 
     def _context(self):
-        return _maintenance_context(self.core.storage, self.authority)
+        return maintenance_context(self.core.storage, self.authority)
 
     def list(self, filters: MemoryFilter | None = None, *, limit=30, cursor=None):
         """Return one inventory page, with an opaque cursor for the next page."""
@@ -56,7 +56,7 @@ class MemoryManagement:
             scoped = replace(context, project_id=row["project_id"], branch_id=row["branch_id"])
             if revision is None:
                 revision = row["revision"]
-        return asdict(self.core.inspect_object(scoped, ref, revision))
+        return asdict(self.core.inspect_object(scoped, ref, revision, owner_authority=self.authority))
 
     def history(self, ref, *, before=None, limit=30):
         """Return a bounded newest-first history page, checked by normal inspection."""
@@ -120,8 +120,18 @@ class MemoryManagement:
             duration_seconds=duration_seconds,
         )
 
-    def private_off(self, *, target: str, session: str | None = None, project: str | None = None) -> dict:
-        """Close exactly this target's active intervals; other targets stay in force."""
+    def private_off_preview(self, *, target: str, session: str | None = None, project: str | None = None) -> dict:
+        """Read the exact target rules required by a later reviewed confirmation."""
+        from . import private
+
+        return private.preview_close_interval(
+            self.core.storage, self.core.clock, self._context(), target=target, session=session, project=project
+        )
+
+    def private_off(
+        self, *, target: str, session: str | None = None, project: str | None = None, expected_rules=None
+    ) -> dict:
+        """Close only this target, atomically checking an optional reviewed rule snapshot."""
         from . import private
 
         return private.close_interval(
@@ -131,6 +141,7 @@ class MemoryManagement:
             target=target,
             session=session,
             project=project,
+            expected_rules=expected_rules,
         )
 
     def private_status(self, *, session: str | None = None, project: str | None = None) -> dict:

@@ -1180,7 +1180,9 @@ def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes
     ], lines
 
 
-def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, hermes_home, monkeypatch, metered_store):
+def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(
+    adapter, hermes_home, monkeypatch, metered_store, kept_capture_seconds
+):
     """On a writer held past every budget a shutdown spends at most its short pass, not a whole 5 s pass for each
     adapter that kept anything, which would hold up a gateway's planned stop.  The writer's wait moves the clock on by
     what it was given, and each read of the store by 0.01 s, however long the runner's store takes."""
@@ -1199,7 +1201,7 @@ def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, herme
     monkeypatch.setattr(provider._core, "record_host_event", held)
     started = clock()
     provider.shutdown()
-    assert_hook_budget(clock() - started, capture_retry.SHUTDOWN_RETRY_SECONDS)
+    assert_hook_budget(clock() - started - kept_capture_seconds(), capture_retry.SHUTDOWN_RETRY_SECONDS)
     assert capture_retry.SHUTDOWN_RETRY_SECONDS == 2.0
 
 

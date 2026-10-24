@@ -25,6 +25,7 @@ from .delete_storage import retraction_after
 from .operations import Operations
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .records import Records
+from .restore import InstallationMaintenance, maintenance_context
 from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits
 from .source_records import StoredSource
 from .storage import SQLiteStorage, StoreStatus
@@ -174,10 +175,23 @@ class MemoryCore:
         with self.storage.read(context) as tx:
             return tx.source(ref, revision)
 
-    def inspect_object(self, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24):
+    def inspect_object(
+        self,
+        context: TrustedContext,
+        ref: str,
+        revision: int | None = None,
+        *,
+        limit: int = 24,
+        owner_authority: InstallationMaintenance | None = None,
+    ):
+        """Inspect within scope and deletion fences; only a local owner may read during privacy."""
         from .inspect_service import InspectedObject, inspect_object
 
-        marker = self._private_read_refusal(context)
+        if owner_authority is not None:
+            owner = maintenance_context(self.storage, owner_authority)
+            if replace(context, project_id=owner.project_id, branch_id=owner.branch_id) != owner:
+                raise ContractError("ACCESS_DENIED", "owner_authority")
+        marker = self._private_read_refusal(context) if owner_authority is None else None
         if type(ref) is str and ref.startswith(RECALL_DIAGNOSTIC_PREFIX):
             # A recall packet's ``diagnostic_ref`` names a record this process keeps for its last recalls
             # (``recall_diagnostics``), never a stored object: looked up in the store it would always be
@@ -196,7 +210,8 @@ class MemoryCore:
             result = InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
         else:
             result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
-        self._private_read_refusal(context, after=marker)
+        if owner_authority is None:
+            self._private_read_refusal(context, after=marker)
         return result
 
     def private_mode(self, context: TrustedContext) -> str | None:

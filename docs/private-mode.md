@@ -1,10 +1,10 @@
 # Private mode
 
 Private mode is the local store owner's control over what Scope Recall may keep,
-recall or send. It is a command-line capability. Agent tools do not expose it, and
-a model writing the same words is not the owner's command. Use the command line
-outside the conversation. There is no private-mode agent tool, slash command or
-host-menu control in this package.
+recall or send. Use either local owner interface: the command line outside the
+conversation or the [management page](ui.md). Agent tools do not expose this
+control, and a model writing the same words is not the owner's command. There is
+no private-mode agent tool, slash command or host-menu control in this package.
 
 ```sh
 scope-recall private on --session SESSION-ID --mode full
@@ -51,10 +51,19 @@ A rule targets exactly one of:
 - `--all`: the whole store.
 
 `--mode full` (the default) refuses capture, recall and background model work for
-the target. `--mode read-only` refuses capture while recall continues. `--for` is
+the target. `--mode read-only` refuses capture while agent recall and outbound
+work on existing memory continue. `--for` is
 accepted only with `--all` and takes a duration such as `30m`,
 `12h` or `7d`. Without it a rule stays until `off`. A timed rule ends on time
 without another command; `off --all` can end it early.
+
+The owner can still browse, inspect history, correct and manage stored memory
+with the local memory command or [management page](ui.md) while private mode
+applies under either mode. Owner inspection makes no model or embedding request
+and preserves scope and deletion checks. Agents cannot use owner inspection;
+full mode blocks their recall and outbound work, while read-only permits both
+for existing memory. An agent's explicit forget or correction request still
+applies under either mode, with its usual authorization and revision checks.
 
 Overlapping rules take the stricter mode: `full` beats `read-only`. Closing one
 rule never closes another, so `off --all` does not release a session or project

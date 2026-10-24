@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta id="session-token" name="scope-recall-session" content="__SESSION__">
+  <title>Scope Recall</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/strings.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <header><div><h1>Scope Recall</h1><p data-i18n="local"></p></div>
+    <label><span data-i18n="language"></span><select id="language"><option value="en">English</option><option value="zh">中文</option></select></label>
+  </header>
+  <nav aria-label="Pages"><button data-page="overview" data-i18n="overview"></button><button data-page="browse" data-i18n="browse"></button><button data-page="private" data-i18n="private"></button><button data-page="export" data-i18n="export"></button><button data-page="backup" data-i18n="backup"></button></nav>
+  <p id="status" role="status" aria-live="polite"></p>
+  <main>
+    <section id="overview" class="page"><h2 data-i18n="overview"></h2><button id="refresh-overview" data-i18n="refresh"></button><div id="overview-data" class="cards"></div></section>
+    <section id="browse" class="page" hidden><h2 data-i18n="browse"></h2>
+      <form id="filters" class="grid">
+        <label><span data-i18n="query"></span><input name="query" type="search" maxlength="512"></label>
+        <label><span data-i18n="kind"></span><select name="kind"><option value="" data-i18n="all"></option><option value="event" data-i18n="event"></option><option value="claim" data-i18n="claim"></option><option value="episode" data-i18n="episode"></option><option value="artifact" data-i18n="artifact"></option><option value="reference" data-i18n="reference"></option></select></label>
+        <label><span data-i18n="scope"></span><input name="scope"></label><label><span data-i18n="agent"></span><input name="agent"></label>
+        <label><span data-i18n="session"></span><input name="session"></label><label><span data-i18n="since"></span><input name="since" placeholder="YYYY-MM-DDTHH:mm:ssZ"></label>
+        <label><span data-i18n="until"></span><input name="until" placeholder="YYYY-MM-DDTHH:mm:ssZ"></label><label><span data-i18n="limit"></span><input name="limit" type="number" min="1" max="100" value="30"></label>
+        <button type="submit" data-i18n="search"></button><button id="forget-session" type="button" data-i18n="forgetSession"></button>
+      </form>
+      <p data-i18n="sessionHint"></p><p id="scan"></p><div id="items"></div><button id="next" data-i18n="next" disabled></button>
+      <article id="detail" hidden><h2 data-i18n="detail"></h2><div id="detail-data"></div><h3 data-i18n="sources"></h3><div id="sources"></div><h3 data-i18n="history"></h3><div id="history-data"></div><button id="history-next" data-i18n="next" disabled></button>
+        <form id="correction"><label><span data-i18n="newValue"></span><textarea name="value" rows="3"></textarea></label><label class="check"><input name="retract" type="checkbox"><span data-i18n="retract"></span></label><button type="submit" data-i18n="revise"></button></form>
+        <div id="item-actions" class="actions"><button data-action="mute" data-i18n="mute"></button><button data-action="unmute" data-i18n="unmute"></button><button data-action="forget" data-i18n="forget" class="danger"></button></div>
+      </article>
+    </section>
+    <section id="private" class="page" hidden><h2 data-i18n="private"></h2><p data-i18n="privateHint"></p><div id="private-data"></div>
+      <form id="private-form" class="grid"><label><span data-i18n="target"></span><select name="target"><option value="global" data-i18n="global"></option><option value="session" data-i18n="session"></option><option value="project" data-i18n="project"></option></select></label><label><span data-i18n="targetValue"></span><input name="targetValue"></label>
+        <label><span data-i18n="mode"></span><select name="mode"><option value="full" data-i18n="full"></option><option value="read-only" data-i18n="readOnly"></option></select></label><label><span data-i18n="duration"></span><input name="duration_seconds" type="number" min="1"></label>
+        <button type="submit" data-i18n="turnOn"></button><button id="private-off" type="button" data-i18n="turnOff"></button><button id="private-inspect" type="button" data-i18n="inspectTarget"></button>
+      </form>
+    </section>
+    <section id="export" class="page" hidden><h2 data-i18n="export"></h2><p data-i18n="exportHint"></p><form id="export-form"><label><span data-i18n="destination"></span><input name="out" required></label><label class="check"><input name="with_attachments" type="checkbox"><span data-i18n="attachments"></span></label><button type="submit" data-i18n="preview"></button></form></section>
+    <section id="backup" class="page" hidden><h2 data-i18n="backup"></h2><button id="refresh-backup" data-i18n="refresh"></button><div id="backup-data"></div></section>
+    <section id="review" hidden><h2 data-i18n="preview"></h2><p data-i18n="reviewHint"></p><div id="preview-data"></div><button id="confirm" data-i18n="confirm" class="danger"></button><button id="cancel" data-i18n="cancel"></button></section>
+    <section id="receipt" hidden><h2 data-i18n="receipt"></h2><div id="receipt-data"></div></section>
+  </main>
+</body>
+</html>

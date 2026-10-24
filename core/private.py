@@ -679,6 +679,22 @@ def open_interval(
         return _row_payload(row, started)
 
 
+def _closing_rules(conn, now, target, session, project):
+    return [
+        _row_payload(row, now)
+        for row in conn.execute("SELECT * FROM private_intervals ORDER BY interval_id")
+        if _same_target(row, target, session, project) and _covers(row, now)
+    ]
+
+
+def preview_close_interval(storage, clock, context, *, target, session=None, project=None) -> dict:
+    """Snapshot exactly the active rules an owner is about to close, without writing."""
+    session, project = _valid_target(target, session, project)
+    with storage.read(context) as tx:
+        rules = _closing_rules(tx._check(), _now(clock), target, session, project)
+    return dict(target=target, session=session, project=project, expected_rules=rules)
+
+
 def close_interval(
     storage: SQLiteStorage,
     clock,
@@ -687,27 +703,24 @@ def close_interval(
     target: str,
     session: str | None = None,
     project: str | None = None,
+    expected_rules: list[dict] | None = None,
 ) -> dict:
-    """Close every active interval of exactly this target; other targets stay in force."""
+    """Close this target atomically, refusing a reviewed selection that has changed."""
     session_id, project_path = _valid_target(target, session, project)
     now = _now(clock)
     with storage.write(context, remaining_seconds=5) as tx:
         conn = tx._check(write=True)
-        rows = [
-            row
-            for row in conn.execute("SELECT * FROM private_intervals ORDER BY interval_id")
-            if _same_target(row, target, session_id, project_path) and _covers(row, now)
-        ]
+        rows = _closing_rules(conn, now, target, session_id, project_path)
+        if expected_rules is not None and expected_rules != rows:
+            raise ContractError("VERSION_CONFLICT", "private_rules_preview")
         for row in rows:
             conn.execute(
                 "UPDATE private_intervals SET ends_at=? WHERE interval_id=?",
-                (now, row["interval_id"]),
+                (now, row["rule_id"]),
             )
         closed = []
         for row in rows:
-            payload = {key: row[key] for key in row.keys()}
-            payload["ends_at"] = now
-            closed.append(_row_payload(payload, now))
+            closed.append(dict(row, ends_at=_zulu(now), active=False))
         return {"closed": len(rows), "rules": closed}
 
 
