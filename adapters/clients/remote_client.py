@@ -8,8 +8,15 @@ what the record shows being said (``transcript.said``); the cursor moves only as
 When the server cannot be reached the hook answers with nothing, so the client is held up only briefly: a
 connection that has not opened in ``CONNECT_SECONDS`` is given up, and for ``AWAY_SECONDS`` after that no
 hook tries.  A Claude Code session's record carries what was said to that session's next Stop that gets
-through; what a session had not sent when it ended stays unsent.  A Codex hook is kept in a spool here and
-sent, with the moment it happened, by the next hook that reaches the server; a full spool drops its oldest.
+through; what a session had not sent when it ended stays unsent. Until the server reports any private-rule
+history, a Codex hook is kept before its content request without a metadata check, including during an outage;
+a later hook that reaches the server starts the spool's flush. A full spool drops its oldest. Each server answer
+updates a content-free boolean in the state folder; a missing answer history means ordinary offline queues.
+Once private history is known, hooks must pass metadata checks before being kept or sent, and again before
+transmission. An unverifiable new hook is neither kept nor sent; existing queued hooks wait for verification.
+After the first rule is created, a client that has not heard of it can still send content to the owner's own
+server, which drops private events by their original time. Content queued during that window stays on this
+client until its next successful check discards it unsent. Closed private intervals also keep checks enabled.
 Requests go straight to the server, never through a proxy this machine has for the internet, which cannot
 reach a private address.  What did not get through, and what the spool dropped, is logged in the state folder.
 A WorkBuddy client (``host: workbuddy``) is forwarded as the claude-code host's is, its record read with
@@ -45,6 +52,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from scope_recall.core.private import normalize_project_path, notice_for_mode
+
+from ...contracts import ContractError
+from ...runtime.remote_clock import event_times as _private_times
+from ...runtime.remote_clock import private_metadata
 from . import transcript
 from .boundary import EMPTY_ANSWER, IN_CONTEXT_FIELD, is_workbuddy_agent_run, without_lone_surrogates
 
@@ -149,6 +161,16 @@ def _server_away(config: dict[str, Any]) -> bool:
         return False
 
 
+def _connection_failed(config: dict[str, Any], event: object, exc: OSError) -> None:
+    """Record the transport cooldown without retaining any hook content."""
+    _log(config, f"{event}: no connection ({type(exc).__name__}); not trying for {AWAY_SECONDS:.0f} s")
+    try:
+        _away_marker(config).parent.mkdir(parents=True, exist_ok=True)
+        _away_marker(config).write_text(_now(), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[str, Any] | None:
     """The server's answer, or None when it could not be reached in time or refused.
 
@@ -170,14 +192,18 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
         try:
             connection.connect()
         except OSError as exc:
-            _log(config, f"{event}: no connection ({type(exc).__name__}); not trying for {AWAY_SECONDS:.0f} s")
-            try:
-                _away_marker(config).parent.mkdir(parents=True, exist_ok=True)
-                _away_marker(config).write_text(_now(), encoding="utf-8")
-            except OSError:
-                pass
+            _connection_failed(config, event, exc)
             return None
         connection.sock.settimeout(max(0.2, until - time.monotonic()))
+        if _private_rules(config):
+            state = _private_check(config, body, until - time.monotonic())
+            if state is None:
+                return None
+            body, state = eligible_body(body, state)
+            if _private_drop(state, event):
+                return None
+            if state["capture_blocked"]:
+                body = _recall_only(body)
         connection.request(
             "POST",
             f"{url.path}/hook",
@@ -202,7 +228,206 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
         _away_marker(config).unlink(missing_ok=True)
     except OSError:
         pass
+    if isinstance(answer, dict):
+        _remember_private_rules(config, answer)
     return answer if isinstance(answer, dict) else None
+
+
+# -- private state before anything is sent -----------------------------------
+
+
+def _private_rules(config: dict[str, Any]) -> bool:
+    """Use ordinary offline queues until the server reports private history."""
+    try:
+        answer = json.loads((config["state_dir"] / "private-rules.json").read_text(encoding="utf-8"))
+        return isinstance(answer, dict) and answer.get("private_rules") is True
+    except (OSError, ValueError):
+        return False
+
+
+def _remember_private_rules(config: dict[str, Any], answer: dict[str, Any]) -> None:
+    """Atomically retain only the latest boolean; readers must never see a partial file."""
+    value = answer.get("private_rules")
+    if type(value) is not bool:
+        return
+    folder = config["state_dir"]
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        pending = folder / f"private-rules.{os.getpid()}.tmp"
+        pending.write_text(json.dumps({"private_rules": value}), encoding="utf-8", newline="\n")
+        os.replace(pending, folder / "private-rules.json")
+    except OSError as exc:
+        _log(config, f"private rule metadata not kept ({type(exc).__name__})")
+
+
+def _private_drop(state: dict[str, Any], event: object) -> bool:
+    """Whether this hook must not be sent: full blocks everything; read-only keeps only the prompt's recall."""
+    if state.get("recall_blocked"):
+        return True
+    if not state.get("capture_blocked"):
+        return False
+    return not (state.get("mode") == "read-only" and event == "UserPromptSubmit")
+
+
+def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[str, Any] | None:
+    """Check all record instants in bounded metadata requests before sending any content."""
+    times = _private_times(body, body.get("observed_at"))
+    until = time.monotonic() + timeout
+    fresh = body.get("fresh_observation") is True or body["payload"].get("fresh_observation") is True
+    if fresh and not isinstance(body.get("clock"), dict):
+        calibration = _private_batch(config, body, [], timeout)
+        if calibration is None:
+            return None
+        body["clock"] = calibration.get("clock")
+        if type(calibration.get("rule_marker")) is int:
+            body.setdefault("rule_marker", calibration["rule_marker"])
+        if calibration.get("recall_blocked"):
+            return calibration
+    state = None
+    decisions = {}
+    full_decisions = {}
+    for start in range(0, max(1, len(times)), 64):
+        left = until - time.monotonic()
+        if left <= 0:
+            return None
+        answer = _private_batch(config, body, times[start : start + 64], left)
+        if answer is None:
+            return None
+        if type(answer.get("rule_marker")) is int and "rule_marker" not in body:
+            body["rule_marker"] = answer["rule_marker"]
+        verdicts = answer.get("decisions")
+        if isinstance(verdicts, list) and len(verdicts) == len(times[start : start + 64]):
+            decisions.update(zip(times[start : start + 64], verdicts, strict=True))
+        full = answer.get("full_decisions")
+        if not isinstance(full, list) or len(full) != len(times[start : start + 64]):
+            full = [answer["capture_blocked"]] * len(times[start : start + 64])
+        full_decisions.update(zip(times[start : start + 64], full, strict=True))
+        if state is None:
+            state = dict(answer)
+        else:
+            state["capture_blocked"] |= answer["capture_blocked"]
+            state["recall_blocked"] |= answer["recall_blocked"]
+        if type(answer.get("private_rules")) is bool:
+            state["private_rules"] = answer["private_rules"]
+    if state is not None:
+        state["event_decisions"] = decisions
+        state["full_event_decisions"] = full_decisions
+        state["clocks"] = private_metadata(body, times)["clocks"]
+    return state
+
+
+def eligible_body(body: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Translate per-event Core decisions to content-free record lines, preserving cursor progress."""
+    decisions = state.get("event_decisions") or {}
+    body, state = dict(body), dict(state)
+    record = body.get("record")
+    if isinstance(record, dict):
+        body["record"] = {
+            **record,
+            "lines": [
+                [end, None if isinstance(said, dict) and decisions.get(said.get("occurred_at"), True) else said]
+                for end, said in record.get("lines", [])
+            ],
+        }
+    payload = dict(body["payload"])
+    refused_replies = []
+    if isinstance(record, dict):
+        refused_replies.extend(
+            said
+            for _end, said in record.get("lines", [])
+            if isinstance(said, dict) and decisions.get(said.get("occurred_at"), True)
+        )
+    if isinstance(payload.get("record"), list):
+        lines = dict(transcript.dsh_lines(payload["record"]))
+        refused_replies.extend(
+            dict(id=said.entry_id, text=said.text, role=said.role)
+            for said in lines.values()
+            if said is not None and decisions.get(said.occurred_at, True)
+        )
+        payload["record"] = [
+            None if (said := lines.get(index)) is not None and decisions.get(said.occurred_at, True) else row
+            for index, row in enumerate(payload["record"], start=1)
+        ]
+    if any(
+        said.get("role") == "assistant"
+        and (
+            (payload.get("reply_id") is not None and said.get("id", said.get("entry_id")) == payload.get("reply_id"))
+            or said.get("text") == payload.get("last_assistant_message")
+        )
+        for said in refused_replies
+    ):
+        payload.pop("last_assistant_message", None)
+        payload.pop("reply_id", None)
+    body["payload"] = payload
+    if decisions:
+        state["capture_blocked"] = state.get("mode") != "none" or decisions.get(body.get("observed_at"), True)
+    if (state.get("full_event_decisions") or {}).get(body.get("observed_at"), False):
+        # Read-only permits ordinary questions, never the replay of words from
+        # a full interval or an undated question that could belong to one.
+        state["recall_blocked"] = True
+    return body, state
+
+
+def _private_batch(
+    config: dict[str, Any], body: dict[str, Any], times: list[str], timeout: float
+) -> dict[str, Any] | None:
+    """Ask the entry's server whether this request or a recall is private, before sending any content.
+
+    Only a session id, a project path and event instants travel here.  A missing
+    answer means the state could not be verified: the caller must not send the
+    hook's content.
+    """
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    session = payload.get("session_id")
+    if type(session) is not str or not session.strip():
+        return None
+    request = {
+        **private_metadata(body, times),
+        "sent_at": body.get("observed_at") or payload.get("calibration_started_at") or _now(),
+    }
+    try:
+        token = config["token_file"].read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        _log(config, f"{payload.get('hook_event_name')}: no token to send ({type(exc).__name__})")
+        return None
+    url = urllib.parse.urlsplit(config["url"])
+    kind = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+    timeout = max(0.2, min(1.0, timeout))
+    connection = kind(url.hostname, url.port, timeout=timeout)
+    try:
+        try:
+            connection.connect()
+        except OSError as exc:
+            _connection_failed(config, payload.get("hook_event_name"), exc)
+            return None
+        connection.request(
+            "POST",
+            f"{url.path}/private/check",
+            body=json.dumps(request, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        )
+        response = connection.getresponse()
+        raw = response.read()
+        if response.status != 200:
+            _log(config, f"{payload.get('hook_event_name')}: HTTP {response.status}; private state unverified")
+            return None
+        answer = json.loads(raw.decode("utf-8"))
+        if isinstance(answer, dict) and isinstance(answer.get("clock"), dict) and "received_at" not in answer["clock"]:
+            answer["clock"]["received_at"] = _now()
+    except (OSError, http.client.HTTPException, ValueError):
+        return None
+    finally:
+        connection.close()
+    if (
+        not isinstance(answer, dict)
+        or type(answer.get("capture_blocked")) is not bool
+        or type(answer.get("recall_blocked")) is not bool
+    ):
+        return None
+    _remember_private_rules(config, answer)
+    return answer
 
 
 # -- the spool (Codex) -------------------------------------------------------
@@ -215,7 +440,7 @@ def _spool_dir(config: dict[str, Any]) -> Path:
 _SPOOL_SEQUENCE = itertools.count()
 
 
-def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) -> Path | None:
+def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str, *, clock=None) -> Path | None:
     folder = _spool_dir(config)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -229,7 +454,8 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
         name = f"{time.time_ns():020d}-{os.getpid()}-{next(_SPOOL_SEQUENCE):06d}.json"
         pending = folder / f"{name}.tmp"
         pending.write_text(
-            json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False), encoding="utf-8"
+            json.dumps({"payload": payload, "observed_at": observed_at, "clock": clock}, ensure_ascii=False),
+            encoding="utf-8",
         )
         os.replace(pending, folder / name)
         return folder / name
@@ -265,6 +491,14 @@ def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
                 _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
                 item.unlink(missing_ok=True)
                 continue
+            if _private_rules(config):
+                state = _private_check(config, kept, min(left, 1.0))
+                if state is None:
+                    break
+                if state["capture_blocked"] or state["recall_blocked"]:
+                    item.unlink(missing_ok=True)
+                    _log(config, f"flush: dropped one kept hook under private mode {state.get('mode')}")
+                    continue
             answer = _post(config, kept, min(left, 30.0))
             if answer is None or answer.get("retry"):
                 break
@@ -382,7 +616,16 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     # and the turn have no recall.  It is sent, kept and stored as U+FFFD, as a hook here stores it.
     payload = cast(dict[str, Any], without_lone_surrogates(payload))
     event = payload.get("hook_event_name")
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str):
+        try:
+            payload["cwd"] = normalize_project_path(cwd, require_identity=True)
+        except ContractError:
+            payload["cwd"] = normalize_project_path(cwd, resolve_links=False)
+            payload["project_unverified"] = True
     host = config["host"]
+    if event == "PrivateCheck":
+        return _private_check(config, {"payload": payload}, 2.0) or {}
     wait = HOOK_TIMEOUTS[host].get(event)
     if wait is None:
         return {}
@@ -392,7 +635,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     observed_at = _now()
     if host == "claude-code" and event == "UserPromptSubmit":
         payload = _with_context_since(payload)
-    body: dict[str, Any] = {"payload": payload, "observed_at": observed_at}
+    body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
     cursor = None
     if (
         host in _RECORD_HOSTS
@@ -405,19 +648,10 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         if host == "workbuddy" and event == "Stop" and _error_reply(payload):
             # The record is here, not on the server: this side says whether the reply is an error WorkBuddy showed.
             body["error_reply"] = True
-    # Kept before it is sent: Codex ends Interrupt and SessionEnd at 3 s, and with the interpreter's start and
-    # a connection that does not open that is all of it, so a hook that waited for the server would be killed
-    # before it could keep anything.  An answer that stored it removes it again.
-    spooled = _spool(config, payload, observed_at) if host == "codex" and event in _SPOOLED else None
-    if _server_away(config):
-        _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
-        answer = None
-    else:
-        answer = _post(config, body, until - time.monotonic())
+
+    answer = _send_checked(config, body, until)
     if answer is None:
         return {}
-    if spooled is not None and not answer.get("retry"):
-        spooled.unlink(missing_ok=True)
     if answer.get("refused"):
         return {}
     through = answer.get("through")
@@ -427,6 +661,96 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         _start_flush(config)
     result = answer.get("result")
     return result if isinstance(result, dict) else {}
+
+
+def _send_ordinary(config: dict[str, Any], body: dict[str, Any], until: float) -> dict[str, Any] | None:
+    """Keep ordinary offline hooks before connecting, including during the server cooldown."""
+    payload = body["payload"]
+    event = payload.get("hook_event_name")
+    spooled = (
+        _spool(config, payload, body["observed_at"], clock=body.get("clock"))
+        if config["host"] == "codex" and event in _SPOOLED
+        else None
+    )
+    if _server_away(config):
+        _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
+        return None
+    answer = _post(config, body, until - time.monotonic())
+    if spooled is not None and answer is not None and not answer.get("retry"):
+        spooled.unlink(missing_ok=True)
+    return answer
+
+
+def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) -> dict[str, Any] | None:
+    """Send ordinary hooks directly; verify before keeping or sending once private history is known."""
+    if not _private_rules(config):
+        return _send_ordinary(config, body, until)
+    payload = body["payload"]
+    event = payload.get("hook_event_name")
+    if _server_away(config):
+        _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
+        return None
+    # The server answers whether these moments are private before any content
+    # leaves this machine. If it cannot answer, no content is kept or sent.
+    state = _private_check(config, body, until - time.monotonic())
+    if state is None:
+        _log(config, f"{event}: private state unverified, not sent")
+        return None
+    body, state = eligible_body(body, state)
+    payload = body["payload"]
+    if _private_drop(state, event):
+        _log(config, f"{event}: private mode {state.get('mode')}, not sent")
+        if event == "UserPromptSubmit" and state.get("mode") == "full":
+            notice = notice_for_mode("full") or ""
+            return {
+                "result": {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": notice}}
+            }
+        return None
+    if state["capture_blocked"]:
+        # Read-only prompts travel only as recall questions, without attachments or a durable spool copy.
+        body = _recall_only(body)
+        spooled = None
+    else:
+        spooled = (
+            _spool(config, payload, body["observed_at"], clock=body.get("clock"))
+            if config["host"] == "codex" and event in _SPOOLED
+            else None
+        )
+    # Disk I/O and queue preparation can outlive the first decision. Recheck at
+    # the last boundary before content is transmitted, using the original clock.
+    fresh = _private_check(config, body, until - time.monotonic())
+    if fresh is not None:
+        body, fresh = eligible_body(body, fresh)
+    if fresh is None or _private_drop(fresh, event):
+        if spooled is not None:
+            spooled.unlink(missing_ok=True)
+        return None
+    if fresh["capture_blocked"]:
+        body = _recall_only(body)
+        if spooled is not None:
+            spooled.unlink(missing_ok=True)
+            spooled = None
+    answer = _post(config, body, until - time.monotonic())
+    if answer is None:
+        return None
+    if spooled is not None and not answer.get("retry"):
+        spooled.unlink(missing_ok=True)
+    return answer
+
+
+def _recall_only(body):
+    """Read-only prompts carry only the question and its routing metadata."""
+    fields = {
+        "hook_event_name",
+        "session_id",
+        "turn_id",
+        "prompt_id",
+        "cwd",
+        "project_unverified",
+        "prompt",
+        IN_CONTEXT_FIELD,
+    }
+    return {**body, "payload": {key: value for key, value in body["payload"].items() if key in fields}}
 
 
 # -- setup on this machine ---------------------------------------------------

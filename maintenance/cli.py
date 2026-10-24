@@ -96,8 +96,18 @@ def _memory(argv: list[str]) -> int:
     return main(argv[1:])
 
 
+def _private(argv: list[str]) -> int:
+    from .private import main
+
+    return main(argv[1:])
+
+
 _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "memory": ("browse, correct, mute or forget memories as the local store owner", _memory),
+    "private": (
+        "turn private full or read-only capture and recall on or off for a session, project or the whole store",
+        _private,
+    ),
     "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
     "package-upgrade": ("offline wheel replacement after stopping all target writers", _package_upgrade),

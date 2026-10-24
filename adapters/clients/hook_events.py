@@ -144,12 +144,15 @@ class HookEvents:
         # The vector search comes with the runtime.  A prompt the store was too busy to take is recalled by meaning as
         # well: without it, six on one machine's two entries in one night were recalled by words alone.  One the
         # capture refused, or that holds a credential however the capture ended, goes without it, so that nothing of it
-        # reaches an embedding provider.
+        # reaches an embedding provider.  A read-only private interval is the exception the person asked for: it
+        # refuses capture but keeps the ordinary recall, including its query embedding.
+        read_mode = getattr(self._hook.core, "private_mode", None)
+        mode = read_mode(context) if callable(read_mode) else None
         vectors = (
             self._hook.call.captured
             or (
                 event is not None
-                and not self._hook.diagnostics.capture_refused
+                and (mode == "read-only" or not self._hook.diagnostics.capture_refused)
                 and not contains_secret_like_text(prompt)
             )
         ) and self._hook.remaining(deadline) >= RUNTIME_ATTACH_MIN_S

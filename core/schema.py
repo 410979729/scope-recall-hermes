@@ -1,9 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1111
+SCHEMA_VERSION = 1112
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111)
 APPLICATION_ID = 0x5352434C
 
 OBJECT_TABLES = {
@@ -40,6 +40,32 @@ SUPPRESSION_TRIGGERS = tuple(
     for kind, (table, key) in OBJECT_TABLES.items()
     for action in ("INSERT", "UPDATE")
 )
+
+#: Private intervals are operator metadata only: which session, project or whole
+#: store is private, its stricter mode and its UTC boundaries.  No message,
+#: prompt, attachment body or query is written here.  Capture is judged at an
+#: event's occurrence time against these intervals, including closed ones, so a
+#: later replay cannot store what was said while private.
+PRIVATE_INTERVALS_STATEMENT = """CREATE TABLE private_intervals (
+    interval_id INTEGER PRIMARY KEY,
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('session','project','global')),
+    session_id TEXT,
+    project_path TEXT,
+    mode TEXT NOT NULL CHECK(mode IN ('full','read-only')),
+    starts_at TEXT NOT NULL,
+    ends_at TEXT,
+    created_at TEXT NOT NULL,
+    CHECK(
+        (target_kind='session' AND session_id IS NOT NULL AND project_path IS NULL)
+        OR (target_kind='project' AND session_id IS NULL AND project_path IS NOT NULL)
+        OR (target_kind='global' AND session_id IS NULL AND project_path IS NULL)
+    ),
+    CHECK(ends_at IS NULL OR starts_at <= ends_at)
+) STRICT"""
+PRIVATE_TARGET_INDEX = (
+    "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at,starts_at)"
+)
+PRIVATE_ACTIVE_INDEX = "CREATE INDEX private_active ON private_intervals(ends_at,starts_at)"
 
 #: Management actions carry object identities and versions, never a copied
 #: conversation body. They are distinct from host-captured user messages.
@@ -216,6 +242,9 @@ STATEMENTS = (
     ) STRICT""",
         """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
         MANAGEMENT_STATEMENT,
+        PRIVATE_INTERVALS_STATEMENT,
+        PRIVATE_TARGET_INDEX,
+        PRIVATE_ACTIVE_INDEX,
         """CREATE TABLE source_events (
         event_id TEXT NOT NULL, source_event_key TEXT NOT NULL,
         source_revision INTEGER NOT NULL CHECK(source_revision>=1),
@@ -239,6 +268,7 @@ STATEMENTS = (
         suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)),
         source_id INTEGER,
         entry_id TEXT NOT NULL DEFAULT 'local',
+        project_root TEXT,
         PRIMARY KEY(event_id,source_revision),
         UNIQUE(source_event_key,source_revision),
         UNIQUE(source_group_key,source_revision,segment_index)
@@ -585,6 +615,21 @@ def upgrade_1110(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1111 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1111")
+
+
+def upgrade_1111(connection):
+    """Add content-free private intervals and the project identity a source was said in.
+
+    ``project_root`` is the normalized working directory the host supplied with the
+    capture, metadata beside the source row rather than part of its words.  Existing
+    rows keep NULL; project matching requires directory metadata supplied by the host.
+    """
+    connection.execute(PRIVATE_INTERVALS_STATEMENT)
+    connection.execute(PRIVATE_TARGET_INDEX)
+    connection.execute(PRIVATE_ACTIVE_INDEX)
+    connection.execute("ALTER TABLE source_events ADD COLUMN project_root TEXT")
+    connection.execute("UPDATE instance_meta SET schema_version=1112 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1112")
 
 
 def normalize_scope_authorizations(connection) -> int:

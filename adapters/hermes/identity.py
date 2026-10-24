@@ -22,6 +22,7 @@ from scope_recall.contracts import (
     bounded_source_context,
 )
 
+from ...core.private import normalize_project_path
 from ...runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID, approved_local_platforms
 from .installation import (
@@ -310,6 +311,7 @@ class HermesIdentity:
             self.scope.agent_workspace,
             stored_session,
         )
+        root = self._agent_workspace_path()
         return TrustedContext(
             self.binding,
             stored_session,
@@ -322,7 +324,19 @@ class HermesIdentity:
             recent_messages=recent_messages,
             source_principal=self.source_principal(cast(Origin, resolved_origin), named=not mutation),
             entry_id=self.entry_id,
+            project_root=root,
         )
+
+    def _agent_workspace_path(self) -> str | None:
+        """The agent workspace as a path when the gateway names an absolute one.
+
+        Hermes normally names a workspace label, not a directory.  A label is not
+        treated as a path, so it cannot accidentally match a project rule.
+        """
+        try:
+            return normalize_project_path(self.scope.agent_workspace)
+        except ContractError:
+            return None
 
     def source_principal(self, origin: Origin, *, named: bool = False) -> TrustedSourcePrincipal:
         """Map only host-attested metadata to a source actor.

@@ -89,6 +89,26 @@ def deadline_result(storage, context, item) -> tuple[str, str, str]:
         return "skipped", "DEADLINE_EXCEEDED", tx.work.read_state(item.work_id) or "stale"
 
 
+def hold_for_private_mode(
+    storage, clock, context, item, *, started: float, budget: float, seconds: float = 300
+) -> tuple[str, str | None, str]:
+    """Release a private item without spending an attempt or asking any provider.
+
+    The item stays pending and is looked at again after a short hold, when the
+    operator may have closed the interval.  Nothing about the source leaves SQLite.
+    """
+    if budget_left(started, clock, budget) <= 0:
+        return deadline_result(storage, context, item)
+    with storage.write(context, remaining_seconds=max(0.001, budget_left(started, clock, budget))) as tx:
+        now = clock.utc_now()
+        if not tx.work._verify_lease(*item.lease, now=now):
+            return stale_result(tx, item)
+        return work_result(
+            tx.work.defer_without_attempt(*item.lease, now=now, error_code="private_mode", seconds=seconds),
+            error_code="private_mode",
+        )
+
+
 def mark_obsolete(tx, item, now: str) -> tuple[str, str | None, str]:
     return work_result(tx.work.mark_obsolete(*item.lease, now=now), error_code="authority_revoked")
 

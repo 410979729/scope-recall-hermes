@@ -39,13 +39,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..._version import __version__
+from ...core.private import calibrated_event_time
+from ...runtime.remote_clock import private_metadata
 from ...runtime.worker_entry import host_process_credential_environment
 from . import transcript
 from .boundary import IN_CONTEXT_FIELD, without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, SystemHookClock
+from .identity import resolve_runtime_audience, trusted_context
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
 from .record_reader import RecordLines
+from .remote_client import eligible_body
 
 CONFIG_NAME = "remote-server.json"
 LOG_NAME = "remote-server.log"
@@ -242,19 +246,32 @@ def client_times_and_lead(
         record = RecordLines.from_dsh(payload) if "record" in payload else None
     else:
         record = record_from_wire(body.get("record"))
-    times = [observed] if observed is not None else []
+    clock = body.get("clock")
+    if isinstance(clock, dict):
+        client_at, server_at = _observed_at(clock.get("client_at")), _observed_at(clock.get("server_at"))
+        if client_at is None or server_at is None:
+            raise RemoteServerError("clock needs client_at and server_at")
+        lead = client_at - server_at
+    else:
+        # Legacy clients have no retained calibration. This adjustment keeps
+        # ordinary stores compatible; ingress treats their privacy time as unknown.
+        times = [observed] if observed is not None else []
+        if record is not None:
+            times.extend(_moment(said.occurred_at) for _offset, said in record.lines if said is not None)
+        lead = _SESSION_LEADS.lead(payload.get("session_id"), max(times) - _now() if times else timedelta(0))
+        if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
+            return (_stamp(observed) if observed is not None else None), record, timedelta(0)
     if record is not None:
-        times.extend(_moment(said.occurred_at) for _offset, said in record.lines if said is not None)
-    lead = _SESSION_LEADS.lead(payload.get("session_id"), max(times) - _now() if times else timedelta(0))
-    if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
-        return (_stamp(observed) if observed is not None else None), record, timedelta(0)
-    if record is not None:
+        metadata = private_metadata(body)
+        clocks = dict(zip(metadata["times"], metadata["clocks"], strict=True))
         record = replace(
             record,
             lines=[
                 (
                     offset,
-                    replace(said, occurred_at=_stamp(_moment(said.occurred_at) - lead)) if said is not None else None,
+                    replace(said, occurred_at=_record_instant(said.occurred_at, clocks.get(said.occurred_at), lead))
+                    if said is not None
+                    else None,
                 )
                 for offset, said in record.lines
             ],
@@ -262,12 +279,18 @@ def client_times_and_lead(
     return (_stamp(observed - lead) if observed is not None else None), record, lead
 
 
+def _record_instant(moment, calibration, legacy_lead):
+    """Keep each record's original clock rather than the later uploading hook's clock."""
+    span = calibrated_event_time(moment, calibration)
+    return span["latest"] if span is not None else _stamp(_moment(moment) - legacy_lead)
+
+
 def _context_since_kept(payload: dict[str, Any], lead: timedelta) -> dict[str, Any]:
     """A Claude Code prompt's in-context moment, kept only from a client whose times are stored as it sent them.
     Moved back with this request's lead, it would be compared with messages moved back by the leads of earlier
     requests, one lead for a session only while this server runs and keeps it (``_SessionLeads``), and a message from
     before the compaction could read as held; such a client's recall leaves nothing out."""
-    if lead <= timedelta(0) or IN_CONTEXT_FIELD not in payload:
+    if lead == timedelta(0) or IN_CONTEXT_FIELD not in payload:
         return payload
     return {key: value for key, value in payload.items() if key != IN_CONTEXT_FIELD}
 
@@ -310,6 +333,54 @@ class _Asked:
         return answer
 
 
+def private_check(config: RemoteServerConfig, body: dict[str, Any]) -> dict[str, Any]:
+    """Answer a client's metadata-only private-mode query before it sends a hook.
+
+    The request carries a session, a project path and event instants, never a
+    message, prompt or attachment.  The answer is computed by the same core
+    policy the hook ultimately uses, so a client never has to reimplement it.
+    """
+    if not isinstance(body, dict):
+        raise RemoteServerError("private check must be an object")
+    session = body.get("session_id")
+    project = body.get("project")
+    times = body.get("times", [])
+    if type(session) is not str or not session.strip() or len(session) > 240:
+        raise RemoteServerError("private check needs a session_id")
+    if project is not None and (type(project) is not str or not project.strip() or len(project) > 1024):
+        raise RemoteServerError("private check project must be an absolute path")
+    if not isinstance(times, list) or len(times) > 64:
+        raise RemoteServerError("private check times must be a bounded list")
+    client = load_shared_client(config.home, config.host)
+    audience = resolve_runtime_audience(client, project)
+    context = trusted_context(
+        client,
+        audience,
+        session_id=session.strip(),
+        actor_origin="host_generated",
+        project_root=project,
+    )
+    context = replace(context, project_identity="remote")
+    from scope_recall.core import CoreConfig, MemoryCore
+
+    clock = body.get("clock")
+    sent_at = _observed_at(body.get("sent_at"))
+    if not isinstance(clock, dict) and sent_at is not None:
+        clock = {"client_at": _stamp(sent_at), "server_at": _stamp(_now())}
+    clocks = body.get("clocks")
+    if clocks is not None and (not isinstance(clocks, list) or len(clocks) != len(times)):
+        raise RemoteServerError("clocks must accompany each event time")
+    corrected = [
+        calibrated_event_time(value, clocks[index] if clocks is not None else clock)
+        for index, value in enumerate(times)
+    ]
+    options = {"rule_marker": body["rule_marker"]} if type(body.get("rule_marker")) is int else {}
+    if body.get("project_unverified") is True:
+        options["project_unverified"] = True
+    result = MemoryCore(CoreConfig(client.to_binding())).private_check(context, corrected, **options)
+    return {**result, "clock": clock}
+
+
 def handle_request(
     config: RemoteServerConfig,
     body: dict[str, Any],
@@ -331,6 +402,17 @@ def handle_request(
         raise RemoteServerError("payload too large")
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
     payload = {key: value for key, value in payload.items() if key != "transcript_path"}
+    body, refused, private_rules = _checked_body(config, {**body, "payload": payload})
+    payload = body["payload"]
+    if refused:
+        record = RecordLines.from_dsh(payload) if config.host == "dsh" else record_from_wire(body.get("record"))
+        return dict(
+            result={"private_rules": private_rules} if config.host == "dsh" else {},
+            through=record.lines[-1][0] if record is not None and record.lines else None,
+            retry=False,
+            reason="private_mode",
+            private_rules=private_rules,
+        )
     # The hook's own times are the client's (moved back if more than a minute ahead, see CLOCK_AHEAD_SECONDS), so a
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
     # now are this machine's: a client clock a day fast would hold back a message's embedding by a day.
@@ -341,6 +423,7 @@ def handle_request(
         str(config.home),
         config.host,
         event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
+        remote_paths=True,
         hook_started_at=started if started is not None else time.monotonic(),
     )
     built = round((time.monotonic() - building) * 1000)
@@ -355,6 +438,8 @@ def handle_request(
         closing = time.monotonic()
         handler.close()
     closed = round((time.monotonic() - closing) * 1000)
+    if config.host == "dsh":
+        result = {**result, "private_rules": private_rules}
     # What the request's handler decided of the answer (slow, late, without_vectors, failed) comes first; an answer
     # still on its way when the handler was done is its slow or late.
     warm = None if asked is None else handler.resident_outcome or asked.outcome
@@ -366,6 +451,7 @@ def handle_request(
     # ``error``: the capture's code, or the class of what failed it when it was no contract error (a store that is
     # locked or broken), which the log would otherwise not name.
     return {
+        "private_rules": private_rules,
         "result": result,
         "through": record.through if record is not None else None,
         "reason": handler.diagnostics.last_reason,
@@ -379,6 +465,33 @@ def handle_request(
         "attach_ms": handler.diagnostics.runtime_attach_ms,
         "close_ms": closed,
     }
+
+
+def _checked_body(config, body):
+    """Recheck each retained calibration at ingress before a hook can reconstruct content."""
+    metadata = private_metadata(body)
+    moments = metadata["times"] or [None]
+    clocks = metadata["clocks"] or [None]
+    decisions, full_decisions, state = {}, {}, {}
+    for start in range(0, len(moments), 64):
+        answer = private_check(
+            config, {**metadata, "times": moments[start : start + 64], "clocks": clocks[start : start + 64]}
+        )
+        decisions.update(zip(moments[start : start + 64], answer["decisions"], strict=True))
+        full = answer.get("full_decisions", [answer["capture_blocked"]] * len(answer["decisions"]))
+        full_decisions.update(zip(moments[start : start + 64], full, strict=True))
+        if not state:
+            state = dict(answer)
+        else:
+            state["recall_blocked"] |= answer["recall_blocked"]
+        state["private_rules"] = answer.get("private_rules", False)
+    state["event_decisions"] = decisions
+    state["full_event_decisions"] = full_decisions
+    filtered, state = eligible_body(body, state)
+    refused = state["recall_blocked"] or (
+        state["capture_blocked"] and body["payload"].get("hook_event_name") != "UserPromptSubmit"
+    )
+    return filtered, refused, state["private_rules"]
 
 
 def build_app(config: RemoteServerConfig, *, warm: bool = False):
@@ -395,7 +508,7 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
     host_name = f"[{config.listen}]" if ":" in config.listen else config.listen
     tools = build_server(client, workspace=None)
     kept = KeptRecaller(
-        lambda: CodexHookHandler.from_home(str(config.home), config.host),
+        lambda: CodexHookHandler.from_home(str(config.home), config.host, remote_paths=True),
         stamp=lambda: file_stamp(client.runtime_config_path, *entry_files(config.home)),
     )
     atexit.register(kept.close)
@@ -465,10 +578,26 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
         )
         return JSONResponse(answer)
 
+    async def private_state(request: Request) -> JSONResponse:
+        raw = await request.body()
+        if len(raw) > 65536:
+            return JSONResponse({"error": "request_too_large"}, status_code=413)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+            answer = await run_in_threadpool(private_check, config, body)
+        except (UnicodeError, json.JSONDecodeError, RecursionError, RemoteServerError) as exc:
+            return JSONResponse({"error": "invalid_request", "detail": str(exc)[:200]}, status_code=400)
+        except ValueError as exc:
+            # A contract refusal, including an invalid timestamp or project path:
+            # the client must not send the hook when it cannot verify the state.
+            return JSONResponse({"error": "invalid_request", "detail": str(exc)[:200]}, status_code=400)
+        return JSONResponse(answer)
+
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({"entry_id": client.entry_id, "host": config.host, "version": __version__})
 
     app.router.routes.append(Route("/hook", hook, methods=["POST"]))
+    app.router.routes.append(Route("/private/check", private_state, methods=["POST"]))
     app.router.routes.append(Route("/health", health, methods=["GET"]))
     return _TokenGate(app, config.token_sha256)
 

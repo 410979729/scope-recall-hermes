@@ -19,9 +19,11 @@ import tempfile
 import threading
 import time
 from contextlib import closing
+from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..core.private import require_outbound
 from .consolidation_models import validate_chat_messages
 from .models import AuxiliaryModelError, validate_timeout_seconds
 from .subscription_budget import SubscriptionBudgetLedger, SubscriptionBudgetPolicy
@@ -374,10 +376,15 @@ class _StreamInspector:
 
 def _send_input(process: subprocess.Popen, prompt: bytes) -> None:
     try:
+        require_outbound()
         process.stdin.write(prompt)
-        process.stdin.close()
     except (OSError, ValueError):
         pass
+    finally:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
 
 
 def _close_pipes(process: subprocess.Popen, readers: list[threading.Thread], writer: threading.Thread) -> None:
@@ -419,6 +426,7 @@ def _run(
     )
     if seconds <= 0:
         raise AuxiliaryModelError("timeout")
+    require_outbound()
     process = subprocess.Popen(
         command,
         cwd=cwd,
@@ -435,7 +443,7 @@ def _run(
         threading.Thread(target=inspector.read, args=(pipe, stdout), daemon=True)
         for pipe, stdout in ((process.stdout, True), (process.stderr, False))
     ]
-    writer = threading.Thread(target=_send_input, args=(process, prompt), daemon=True)
+    writer = threading.Thread(target=copy_context().run, args=(_send_input, process, prompt), daemon=True)
     for thread in (*readers, writer):
         thread.start()
     deadline = started + seconds

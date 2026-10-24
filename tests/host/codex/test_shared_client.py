@@ -4684,30 +4684,33 @@ def test_a_stop_that_stores_part_of_its_lines_is_followed_by_the_next_without_wa
 
 
 @_NEEDS_NODE
-def test_a_hook_that_fails_says_why_in_the_status_and_keeps_the_turn(dsh, tmp_path):
-    """An interpreter that cannot import the package (a venv moved, say) exits 1: the recall's outcome and the store's
-    error say so with the end of its stderr, instead of reading as nothing recalled."""
+def test_a_hook_that_fails_says_why_and_retains_no_unverified_turn(dsh, tmp_path):
+    """An interpreter that cannot import the package reports the recall failure and keeps no unverified words."""
     _root, home = dsh
+    spool = tmp_path / "TEST-spool"
+    spool.mkdir()
+    (spool / "private-rules.json").write_text('{"private_rules":true}', encoding="utf-8")
     result = _run_plugin(
         {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "expectBacklog": True},
         env={"SR_FAKE_HOOK": str(DSH_HARNESS / "fake_hook.mjs"), "SR_FAKE_HOOK_MODE": "broken"},
     )
     assert result["status"]["lastRecall"]["outcome"].startswith("exit 1: ")
     assert "No module named 'scope_recall'" in result["status"]["lastRecall"]["outcome"]
-    assert "exit 1: " in result["status"]["lastStore"]["error"] and result["status"]["backlog"] == 3
+    assert result["status"]["backlog"] == 0 and result["spool"] == []
 
 
 @_NEEDS_NODE
-def test_a_hook_that_cannot_run_keeps_the_turn_on_disk_and_the_step_goes_on(dsh, tmp_path):
+def test_a_hook_that_cannot_run_discards_unverified_words_and_the_step_goes_on(dsh, tmp_path):
     _root, home = dsh
     spool = tmp_path / "TEST-spool"
+    spool.mkdir()
+    (spool / "private-rules.json").write_text('{"private_rules":true}', encoding="utf-8")
     result = _run_plugin(
         {"python": str(tmp_path / "TEST-no-python.exe"), "home": str(home), "spool": str(spool), "expectBacklog": True}
     )
     assert result["injected"] is None and result["decisionKept"], "no recall, and the turn is not failed"
-    assert sorted(result["spool"]) == ["assistant", "assistant", "turn_end", "user"], "kept to store later"
-    assert result["status"]["lastStore"]["error"] and result["status"]["backlog"] == 3
-    assert any("kept to store later" in warning for warning in result["warnings"])
+    assert result["spool"] == []
+    assert result["status"]["backlog"] == 0
 
 
 @_NEEDS_NODE
@@ -4795,9 +4798,11 @@ def test_the_plugin_stores_what_a_dsh_that_is_gone_left_and_leaves_a_running_one
 
 @_NEEDS_NODE
 def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp_path):
-    """Two dsh processes that are gone left a file each.  The store cannot be reached (here: no interpreter), so the
-    pass stops at the first session it tried, keeps that one's messages, leaves the other file as it was and says
-    when it tries again: a backlog after an outage is not sent to the store all at once, nor every minute."""
+    """Core permits the records but their content store fails: recovery stops at the first session and backs off.
+
+    Public messages verified before a content failure stay queued; an unavailable
+    privacy check is covered by the refusal cases rather than this store outage.
+    """
     _root, home = dsh
     spool = tmp_path / "TEST-spool"
     spool.mkdir()
@@ -4832,7 +4837,7 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
         names.append(name)
     result = _run_plugin(
         {
-            "python": str(tmp_path / "TEST-no-python.exe"),
+            "python": sys.executable,
             "home": str(home),
             "spool": str(spool),
             "expectBacklog": True,
@@ -4840,6 +4845,7 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
             "waitStatus": "retryAfter",
         },
         "sweep",
+        env={"SR_FAKE_HOOK": str(DSH_HARNESS / "fake_hook.mjs"), "SR_FAKE_HOOK_MODE": "store-broken"},
     )
     untouched = [name for name in names if name in result["files"]]
     taken = [name for name in result["files"] if name not in names]

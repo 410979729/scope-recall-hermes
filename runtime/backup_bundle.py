@@ -52,7 +52,7 @@ from .backup_primitives import (
     sha256,
     stream_digest,
 )
-from .backup_resources import real_files, stage_instance_resources
+from .backup_resources import BackupPrivacy, real_files, stage_instance_resources
 from .validation import validate_worker_day
 
 BUNDLE_FORMAT = "scope-recall-backup-bundle/1"
@@ -192,6 +192,8 @@ def _stage_database(data_directory: Path, stage_dir: Path, manifest_files: list[
         raise BackupBundleError("database file memory.sqlite3 not found in instance data directory")
     staged_db = stage_dir / "database.sqlite3"
     backup_sqlite(db_source, staged_db)
+    with closing(BackupPrivacy(staged_db)) as privacy:
+        privacy.filter_inbox()
     manifest_files.append(
         {"path": "database.sqlite3", "sha256": sha256(staged_db), "size_bytes": staged_db.stat().st_size}
     )
@@ -330,10 +332,12 @@ def _write_archive(stage_dir: Path, output_path: Path, manifest_content: dict[st
             temporary.unlink()
 
 
-def _stage_resources(data_directory: Path, stage_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _stage_resources(
+    data_directory: Path, stage_dir: Path, *, privacy: BackupPrivacy | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Stage kept captures and the budget snapshot. Link paths become bundle errors."""
     try:
-        return stage_instance_resources(data_directory, stage_dir)
+        return stage_instance_resources(data_directory, stage_dir, privacy=privacy)
     except BackupError as exc:
         raise BackupBundleError(str(exc)) from exc
 
@@ -359,14 +363,16 @@ def _assemble_bundle(
             staged = json.loads((stage_dir / "configs" / "installation.json").read_text(encoding="utf-8"))
             if staged.get("entries") != entries:
                 raise BackupBundleError("staged installation entries differ from bundle entries")
-        extra_files, resources = _stage_resources(data_directory, stage_dir)
-        manifest_files.extend(extra_files)
-        redacted += stage_entry_resources(
-            data_directory, entries, stage_dir, manifest_files, resources, _stage_one_config
-        )
-        client_redacted, spool_redacted, spool_omitted = stage_remote_clients(
-            client_configs, stage_dir, manifest_files, resources, _stage_one_config
-        )
+        entry_ids = tuple(entry["entry_id"] for entry in entries) if binding.installation_kind == "shared" else ()
+        with closing(BackupPrivacy(stage_dir / "database.sqlite3", entry_ids=entry_ids)) as privacy:
+            extra_files, resources = _stage_resources(data_directory, stage_dir, privacy=privacy)
+            manifest_files.extend(extra_files)
+            redacted += stage_entry_resources(
+                data_directory, entries, stage_dir, manifest_files, resources, _stage_one_config, privacy
+            )
+            client_redacted, spool_redacted, spool_omitted = stage_remote_clients(
+                client_configs, stage_dir, manifest_files, resources, _stage_one_config, privacy
+            )
         redacted += client_redacted
         _stage_tree(stage_dir, data_directory / "retained", "retained", manifest_files)
         if with_vectors:

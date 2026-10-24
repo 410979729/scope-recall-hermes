@@ -34,6 +34,7 @@ from .schema import (
     upgrade_1108,
     upgrade_1109,
     upgrade_1110,
+    upgrade_1111,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -667,7 +668,15 @@ class SQLiteStorage:
 
     def _upgrade_schema(self, conn: sqlite3.Connection) -> None:
         """Apply each supported migration in order after checking its input identity."""
-        migrations = (upgrade_1105, upgrade_1106, upgrade_1107, upgrade_1108, upgrade_1109, upgrade_1110)
+        migrations = (
+            upgrade_1105,
+            upgrade_1106,
+            upgrade_1107,
+            upgrade_1108,
+            upgrade_1109,
+            upgrade_1110,
+            upgrade_1111,
+        )
         for version, migrate in zip(UPGRADE_CHAIN, migrations, strict=True):
             if conn.execute("PRAGMA user_version").fetchone()[0] == version:
                 self.verify(conn, expected_schema=version)

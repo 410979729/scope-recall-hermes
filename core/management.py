@@ -91,6 +91,60 @@ class MemoryManagement:
 
         return MemoryExport(self.core, self._context(), filters)
 
+    # -- private intervals -------------------------------------------------
+    #
+    # These are local owner operations, like the inventory above.  Agent tools
+    # never expose them: a model writing the same words is not the operator's
+    # command.
+
+    def private_on(
+        self,
+        *,
+        target: str,
+        session: str | None = None,
+        project: str | None = None,
+        mode: str = "full",
+        duration_seconds: int | None = None,
+    ) -> dict:
+        """Open a private interval for one session, project path or the whole store."""
+        from . import private
+
+        return private.open_interval(
+            self.core.storage,
+            self.core.clock,
+            self._context(),
+            target=target,
+            session=session,
+            project=project,
+            mode=mode,
+            duration_seconds=duration_seconds,
+        )
+
+    def private_off(self, *, target: str, session: str | None = None, project: str | None = None) -> dict:
+        """Close exactly this target's active intervals; other targets stay in force."""
+        from . import private
+
+        return private.close_interval(
+            self.core.storage,
+            self.core.clock,
+            self._context(),
+            target=target,
+            session=session,
+            project=project,
+        )
+
+    def private_status(self, *, session: str | None = None, project: str | None = None) -> dict:
+        """The current effective mode and active rules for a target or the store."""
+        from . import private
+
+        return private.status(self.core.storage, self.core.clock, self._context(), session=session, project=project)
+
+    def private_list(self, *, active_only: bool = True) -> dict:
+        """Every stored private interval, metadata only."""
+        from . import private
+
+        return private.list_intervals(self.core.storage, self.core.clock, self._context(), active_only=active_only)
+
     def _plan(self, tx, refs, mode, expected=None):
         groups = {}
         context = self._context()

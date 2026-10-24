@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ..contracts import ContractError, SourceEvent, TrustedContext
+from . import private
 from .admission import AdmissionPolicy, decide, decision_marker, store_decision
 from .candidate_lifecycle import CandidateSourceTrigger
 from .events import prepare_capture
@@ -143,6 +144,19 @@ def _persisted_receipt(
     )
 
 
+def _private_refusal(prepared) -> CaptureReceipt:
+    """The receipt of a capture that a private interval refuses at its event time."""
+    return CaptureReceipt(
+        "rejected",
+        (),
+        "not_persisted",
+        "not_indexed",
+        "not_scheduled",
+        (*prepared.gaps, "private_mode"),
+        "PRIVATE_MODE",
+    )
+
+
 def record_event(
     storage: SQLiteStorage,
     clock: CaptureClock,
@@ -172,6 +186,13 @@ def record_event(
                 return CaptureReceipt(
                     "cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"
                 )
+            # The event's own occurrence time decides, not the moment this write runs:
+            # a replay, a retry or a transcript read after the interval ended still
+            # refuses what was said while it was open.
+            if private.capture_blocked(tx, context, prepared):
+                if _inbox_token is not None:
+                    tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (_inbox_token,))
+                return _private_refusal(prepared)
             # Decided on the whole message, before any part is written: the first part alone would let a copy of a
             # deleted message through.
             tx.sources.refuse_under_a_deleted_key(prepared.events, scope_id=scope_id)

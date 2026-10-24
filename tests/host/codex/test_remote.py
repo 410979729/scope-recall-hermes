@@ -264,18 +264,13 @@ def test_claude_code_prompt_and_record_reach_the_entry_once(served, tmp_path):
 def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(
     served, tmp_path, monkeypatch, slow_capture_store, slow_write
 ):
-    """A prompt kept while the server was away is stored with the Stop, at the moment it was kept.
-
-    The slow store delays the next real open after these fixtures. That open is the Stop reply:
-    the prompt was spooled on the client and is committed by the later flush. Both are source rows,
-    and the prompt keeps the moment it was spooled. The admission clock does not charge the delay.
-    """
+    """An ordinary hook is kept offline and its later flush preserves the original moment."""
     if slow_write:
         slow_capture_store()
     root, _homes, ports = served
     flushes = []
     monkeypatch.setattr(remote_client, "_start_flush", lambda config: flushes.append(config))
-    offline = _client(tmp_path, "codex", _free_port())
+    offline = _client(tmp_path, "codex", ports["codex"])
     prompt = {
         "hook_event_name": "UserPromptSubmit",
         "session_id": "TEST-codex-session",
@@ -283,11 +278,14 @@ def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(
         "prompt": "TEST 记住 KZ-42 的截止日期是周五。",
         "cwd": "C:/work",
     }
-    assert _hook(offline, prompt) == {}
+    with monkeypatch.context() as failed_send:
+        failed_send.setattr(remote_client, "_post", lambda *args: None)
+        assert _hook(offline, prompt) == {}
     spooled = list((offline["state_dir"] / "spool").glob("*.json"))
     assert len(spooled) == 1
-    kept_at = json.loads(spooled[0].read_text(encoding="utf-8"))["observed_at"]
-    (offline["state_dir"] / "server-away").unlink()  # a minute later, the server back
+    kept = json.loads(spooled[0].read_text(encoding="utf-8"))
+    assert kept["clock"] is None, "ordinary hooks need no metadata calibration"
+    kept_at = kept["observed_at"]
     online = dict(offline, url=f"http://127.0.0.1:{ports['codex']}")
     _hook(
         online,
@@ -348,10 +346,11 @@ def test_a_server_that_is_away_holds_hooks_up_once_a_minute(tmp_path, monkeypatc
     marker = config["state_dir"] / "server-away"
     assert marker.is_file()
     tried = []
-    monkeypatch.setattr(remote_client, "_post", lambda *args: tried.append(args) or None)
+    post = remote_client._post
+    monkeypatch.setattr(remote_client, "_post", lambda *args: tried.append(args) or post(*args))
     assert _hook(config, dict(prompt, turn_id="TEST-t2")) == {}
     assert tried == [], "a hook does not try while the server was away less than a minute ago"
-    assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 2, "both are kept to be sent later"
+    assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 2, "ordinary offline hooks stay queued"
     old = time.time() - remote_client.AWAY_SECONDS - 1
     os.utime(marker, (old, old))
     _hook(config, dict(prompt, turn_id="TEST-t3"))
@@ -1227,6 +1226,9 @@ def test_a_codex_hook_is_kept_before_it_is_sent(tmp_path, monkeypatch):
     """Codex ends SessionEnd and Interrupt at 3 s.  With the interpreter's start and a connection that does not
     open, a hook that waited for the server was ended before it could keep anything."""
     config = _client(tmp_path, "codex", _free_port())
+    monkeypatch.setattr(
+        remote_client, "_private_check", lambda *args: dict(mode="none", capture_blocked=False, recall_blocked=False)
+    )
     folder = config["state_dir"] / "spool"
     seen = []
     monkeypatch.setattr(
@@ -1273,6 +1275,9 @@ def test_a_hook_the_busy_store_did_not_store_is_kept_to_send_again(store, tmp_pa
     assert remote_server.handle_request(server, body)["retry"] is False
 
     config = _client(tmp_path, "codex", _free_port())
+    monkeypatch.setattr(
+        remote_client, "_private_check", lambda *args: dict(mode="none", capture_blocked=False, recall_blocked=False)
+    )
     recalled = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST 记忆"}}
     monkeypatch.setattr(
         remote_client, "_post", lambda config, body, timeout: {"result": recalled, "through": None, "retry": True}
@@ -1594,6 +1599,13 @@ def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_pa
         return remote_server.handle_request(server, json.loads(json.dumps(body)))
 
     monkeypatch.setattr(remote_client, "_post", post)
+    monkeypatch.setattr(
+        remote_client,
+        "_private_batch",
+        lambda config, body, times, timeout: remote_server.private_check(
+            server, dict(session_id=body["payload"]["session_id"], project=body["payload"].get("cwd"), times=times)
+        ),
+    )
     projects = tmp_path / "TEST-workpc-projects"
     monkeypatch.setattr(transcript, "workbuddy_projects", lambda: projects)
     start = int((datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000)
@@ -1671,6 +1683,13 @@ def _remote_workbuddy(store, tmp_path, monkeypatch, post):
     )
     client = _client(tmp_path, "workbuddy", _free_port())
     monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout: post(server, body))
+    monkeypatch.setattr(
+        remote_client,
+        "_private_batch",
+        lambda config, body, times, timeout: remote_server.private_check(
+            server, dict(session_id=body["payload"]["session_id"], project=body["payload"].get("cwd"), times=times)
+        ),
+    )
     projects = tmp_path / "TEST-workpc-projects"
     monkeypatch.setattr(transcript, "workbuddy_projects", lambda: projects)
     record = projects / "c--work" / "TEST-wb-session.jsonl"
@@ -1751,6 +1770,9 @@ def test_a_workbuddy_subagent_s_stop_sends_no_record(tmp_path, monkeypatch):
     client = _client(tmp_path, "workbuddy", _free_port())
     sent = []
     monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout: sent.append(body) or {})
+    monkeypatch.setattr(
+        remote_client, "_private_check", lambda *args: dict(mode="none", capture_blocked=False, recall_blocked=False)
+    )
     record = tmp_path / "TEST-projects" / "c--work" / "TEST-wb-session" / "subagents" / "agent-TEST1.jsonl"
     record.parent.mkdir(parents=True)
     record.write_text(

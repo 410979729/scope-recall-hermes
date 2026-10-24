@@ -282,6 +282,7 @@ _SCHEMAS = frozenset(
         "memory_export_fact_history",
         "memory_export_episode",
         "memory_export_manifest",
+        "private_mode",
     }
 )
 _MODEL_REQUESTS = frozenset(
@@ -724,6 +725,13 @@ class TrustedContext:
     #: The entry this context speaks for, filled by an adapter from its attachment
     #: pointer.  ``None`` outside a shared store, and for the shared worker.
     entry_id: str | None = None
+    #: The normalized working directory a host supplied for this context, when it
+    #: has one.  It lets a project-scoped private interval match without treating
+    #: a project id or a conversation title as a filesystem path.
+    project_root: str | None = None
+    #: Remote directories were resolved on their owner; an unverifiable identity
+    #: remains explicit across retries instead of being resolved on another machine.
+    project_identity: Literal["local", "remote", "unverified"] = "local"
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):
@@ -739,6 +747,12 @@ class TrustedContext:
         for key in (self.project_id, self.branch_id, self.task_anchor, self.environment_revision):
             if key is not None and (type(key) is not str or not key.strip() or len(key) > 240):
                 raise ContractError("IDENTITY_UNBOUND", "context_key")
+        if self.project_root is not None and (
+            type(self.project_root) is not str or not self.project_root.strip() or len(self.project_root) > 1024
+        ):
+            raise ContractError("IDENTITY_UNBOUND", "project_root")
+        if self.project_identity not in ("local", "remote", "unverified"):
+            raise ContractError("IDENTITY_UNBOUND", "project_identity")
         if (
             type(self.recent_messages) is not tuple
             or len(self.recent_messages) > 8

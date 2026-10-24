@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 from ..contracts import SourceEvent
 
+PROJECT_IDENTITY_KEY = "_scope_recall_project_identity"
+
 
 @dataclass(frozen=True)
 class StoredSource:
@@ -23,6 +25,9 @@ class StoredSource:
     capture_gaps: tuple[str, ...] = ()
     import_provenance_sha256: str | None = None
     entry_id: str = "local"
+    #: The normalized project directory the host supplied, when it supplied one.
+    project_root: str | None = None
+    project_identity: str = "local"
 
 
 #: The columns a loaded source is built from (``stored_source``).
@@ -51,6 +56,7 @@ SOURCE_COLUMNS = (
     "suppressed",
     "import_provenance_sha256",
     "entry_id",
+    "project_root",
 )
 
 
@@ -62,6 +68,7 @@ def source_size(loaded) -> int:
 def stored_source(row, segment_count: int | None) -> StoredSource:
     """A source built afresh from its row, so that no reader shares another's ``event``."""
     event = json.loads(row["extra_json"])
+    project_identity = event.pop(PROJECT_IDENTITY_KEY, "local")
     event.pop("_scope_recall_admission", None)  # Internal scheduling never enters source evidence or model input.
     event.update(
         protocol_version="1.1",
@@ -96,6 +103,8 @@ def stored_source(row, segment_count: int | None) -> StoredSource:
         tuple(dict.fromkeys(gaps)),
         row["import_provenance_sha256"],
         row["entry_id"],
+        row["project_root"] if "project_root" in row.keys() else None,
+        project_identity,
     )
 
 

@@ -63,6 +63,7 @@ def _core_with_clock(tmp_path: Path, *, auto_seconds: float = 4.0):
     binding = _binding(tmp_path)
     clock = FixedClock()
     core = MemoryCore(CoreConfig(binding, auto_recall_seconds=auto_seconds), clock=clock)
+    core.initialize()
     context = TrustedContext(binding, "TEST-budget-session", binding.scope_ids, "human_direct")
     return core, context, clock
 

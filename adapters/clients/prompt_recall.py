@@ -10,6 +10,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import ContractError, RecallRequest
+from scope_recall.core.private import notice_for_mode
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 from scope_recall.core.secret_patterns import contains_secret_like_text
 
@@ -81,6 +82,10 @@ class PromptRecall:
         own (``server_own_vector_fault``) and this hook has a vector search: the hook then recalls as well (a server
         that lost its key would recall every prompt by words alone).  The server writes nothing: the prompt was stored
         here, so an answer that comes after the hook is done costs the turn nothing but its warm vectors."""
+        read_mode = getattr(self._hook.core, "private_mode", None)
+        if (read_mode(context) if callable(read_mode) else None) == "full":
+            # No recall, no query embedding, no server round trip: the notice is the whole answer.
+            return self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since)
         remaining = self._hook.remaining(deadline)
         if remaining < _RESIDENT_MIN_S:
             return self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since)
@@ -160,8 +165,9 @@ class PromptRecall:
             return {}
         session_id = self._hook.session_of(payload)
         audience = self._hook.audience_of(payload) if session_id is not None else None
-        if audience is None:
+        if audience is None or session_id is None:
             return {}
+        self._hook.bind_project_root(payload, audience)
         turn_id, _gaps = turn_id_from_payload(payload, required=True, field=TURN_FIELD[self._hook.host])
         prompt = payload.get("prompt")
         if self._hook.host == "workbuddy":
@@ -195,6 +201,10 @@ class PromptRecall:
             context, prompt, f"{self._hook.host}-auto:{session_id}:{turn_id}", current_refs, deadline, gaps, since=since
         )
 
+    @staticmethod
+    def _notice(text: str) -> dict[str, Any]:
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+
     def own(
         self,
         context,
@@ -207,12 +217,21 @@ class PromptRecall:
         since: str | None = None,
     ) -> dict[str, Any]:
         """Render this turn's automatic recall context, or nothing once the budget is gone.  ``since``: since when the
-        asking model still holds this session's own turns, whose items the recall leaves out (``SearchContext``)."""
+        asking model still holds this session's own turns, whose items the recall leaves out (``SearchContext``).
+
+        A full private interval returns the one notice before any recall work; a
+        read-only one recalls as usual and appends the notice to the context.
+        """
+        read_mode = getattr(self._hook.core, "private_mode", None)
+        mode = read_mode(context) if callable(read_mode) else None
+        notice = notice_for_mode(mode) or ""
+        if mode == "full":
+            return self._notice(notice)
         remaining = self._hook.remaining(deadline)
         self._hook.diagnostics.recall_vectors = None
         if remaining <= 0:
             self._hook.note("deadline_exceeded")
-            return {}
+            return self._notice(notice) if notice else {}
         request: RecallRequest = {
             "protocol_version": "1.1",
             "request_id": request_id[:100],
@@ -242,7 +261,7 @@ class PromptRecall:
                 f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
             )
             self._hook.note("recall_exception", gaps=gaps)
-            return {}
+            return self._notice(notice) if notice else {}
         without = recall_without_vectors(packet.get("gaps") or ())
         self._hook.diagnostics.recall_vectors = without is None
         if without is not None:
@@ -267,6 +286,8 @@ class PromptRecall:
             else None
         )
         text = render_host_recall_context(preparation.canonical_text, context=preparation.context, entry=entry)
+        if notice:
+            text = f"{text}\n\n{notice}" if text else notice
         if not text:
             return {}
-        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+        return self._notice(text)

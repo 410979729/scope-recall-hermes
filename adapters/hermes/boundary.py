@@ -8,6 +8,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any, Literal, NamedTuple, cast
 
 from scope_recall.contracts import Origin, SourceEvent, TrustedContext
@@ -20,10 +21,12 @@ SourceIdentity = tuple[str, int]
 
 @dataclass
 class SourceObservationLedger:
-    """Per-session source identity dedupe confirmed only after Core persistence."""
+    """Per-session dedupe and first observed instants, without retaining message content."""
 
     _confirmed: dict[SourceIdentity, None] = field(default_factory=dict)
     _pending: set[SourceIdentity] = field(default_factory=set)
+    _moments: dict[SourceIdentity, tuple[str, str | None]] = field(default_factory=dict)
+    _time_lock: Any = field(default_factory=Lock, repr=False)
 
     def observe(
         self,
@@ -45,6 +48,7 @@ class SourceObservationLedger:
             return None, gaps, None
         if len(self._pending) >= 64:
             return None, (*gaps, "capture_gap:observation_pending_capacity"), None
+        recorded_at, occurred_at = self.witness(identity, recorded_at, occurred_at)
         self._pending.add(identity)
         event: SourceEvent = {
             "protocol_version": "1.1",
@@ -63,6 +67,18 @@ class SourceObservationLedger:
             event["artifact_refs"] = list(artifact_refs)
         return event, gaps, identity
 
+    def witness(self, identity: SourceIdentity, recorded_at: str, occurred_at: str | None) -> tuple[str, str | None]:
+        """Keep only the first seen instants across callbacks, including replies queued for sync.
+
+        Post-model callbacks use their own lock; the timestamp cache is independent of capture's
+        pending/confirmed sets and never holds words or waits for store I/O.
+        """
+        with self._time_lock:
+            first = self._moments.setdefault(identity, (recorded_at, occurred_at))
+            while len(self._moments) > 4096:
+                self._moments.pop(next(iter(self._moments)))
+            return first
+
     def confirm(self, identity: SourceIdentity) -> None:
         self._pending.discard(identity)
         self._confirmed.pop(identity, None)
@@ -79,6 +95,8 @@ class SourceObservationLedger:
     def reset(self) -> None:
         self._confirmed.clear()
         self._pending.clear()
+        with self._time_lock:
+            self._moments.clear()
 
 
 def host_source_key(
@@ -158,6 +176,17 @@ def pre_llm_source_event(
     )
 
 
+def sync_assistant_key(context: TrustedContext, session_id: str, turn_id: str) -> str:
+    """The same reply identity for the host's post-model observation and its delayed sync."""
+    return host_source_key(
+        installation_id=context.binding.installation_id,
+        entry_id=context.entry_id,
+        session_id=session_id,
+        event_kind="sync_assistant",
+        event_id=turn_id or "turn",
+    )
+
+
 def sync_turn_source_events(
     ledger: SourceObservationLedger,
     context: TrustedContext,
@@ -192,13 +221,7 @@ def sync_turn_source_events(
         gaps.extend(user_gaps)
     if outcome == "success" and assistant_content.strip():
         assistant_event, assistant_gaps, assistant_identity = ledger.observe(
-            source_event_key=host_source_key(
-                installation_id=context.binding.installation_id,
-                entry_id=context.entry_id,
-                session_id=session_id,
-                event_kind="sync_assistant",
-                event_id=turn_id or "turn",
-            ),
+            source_event_key=sync_assistant_key(context, session_id, turn_id),
             source_revision=1,
             role="assistant",
             content=assistant_content,
@@ -541,6 +564,17 @@ def interim_messages(history: object, *, answer: str) -> tuple[tuple[str, str | 
     return tuple(said)
 
 
+def interim_source_key(context: TrustedContext, session_id: str, turn_id: str, ordinal: int) -> str:
+    """The stable identity of an intermediate reply, shared with content-free observation."""
+    return host_source_key(
+        installation_id=context.binding.installation_id,
+        entry_id=context.entry_id,
+        session_id=session_id,
+        event_kind="interim",
+        event_id=f"{turn_id or 'turn'}:{ordinal}",
+    )
+
+
 def interim_source_event(
     ledger: SourceObservationLedger,
     context: TrustedContext,
@@ -554,13 +588,7 @@ def interim_source_event(
 ) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
     """One thing the assistant showed on the way through a turn, named by its turn and place in it."""
     return ledger.observe(
-        source_event_key=host_source_key(
-            installation_id=context.binding.installation_id,
-            entry_id=context.entry_id,
-            session_id=session_id,
-            event_kind="interim",
-            event_id=f"{turn_id or 'turn'}:{ordinal}",
-        ),
+        source_event_key=interim_source_key(context, session_id, turn_id, ordinal),
         source_revision=1,
         role="assistant",
         content=content,

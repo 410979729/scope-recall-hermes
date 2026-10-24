@@ -135,6 +135,33 @@ class CaptureWriter:
             return self._refused(identity, receipt, snapshot, gaps, replay)
         return self._stored(context, identity, receipt, gaps, replay)
 
+    def capture_guard(self, context, remaining_seconds: float, *, observations=()):
+        """Read a batch's Core policy snapshot; a failed read cannot authorize a local copy."""
+        reader = getattr(self._adapter._require_core(), "private_capture_guard", None)
+        if reader is None:
+            return None
+        try:
+            return reader(context, observations=observations, remaining_seconds=max(0.001, remaining_seconds))
+        except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
+            return exc
+
+    def private_state(self, context, event: dict, remaining_seconds: float, *, guard=None) -> str | None:
+        """``blocked``, ``unknown`` when the rule table could not be read, or None when capture may go on.
+
+        Test doubles without persistent ingress may omit the optional read.
+        """
+        if isinstance(guard, Exception):
+            return "unknown"
+        check = getattr(self._adapter._require_core(), "private_capture_blocked", None)
+        if check is None:
+            return None
+        try:
+            options = {"guard": guard} if guard is not None else {}
+            blocked = check(context, event, remaining_seconds=max(0.001, min(0.2, remaining_seconds)), **options)
+        except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            return "unknown"
+        return "blocked" if blocked else None
+
     @staticmethod
     def _with_source_context(event, bound: HermesIdentity, replay: bool) -> dict:
         event = dict(event)
@@ -168,7 +195,9 @@ class CaptureWriter:
             return None
         return RetryCapture(context, copy.deepcopy(event), gaps, scope_id, bound.scope, time.monotonic())
 
-    def defer(self, context, event, *, identity, gaps: tuple[str, ...], scope_id: str | None, bound) -> None:
+    def defer(
+        self, context, event, *, identity, gaps: tuple[str, ...], scope_id: str | None, bound, guard=None
+    ) -> None:
         """Keep a capture its hook has no time left for, with no store call: in the retry buffer, as one the store
         could not take in time is kept (``_keep``), and said as that one is."""
         adapter = self._adapter
@@ -181,21 +210,27 @@ class CaptureWriter:
             adapter._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return
         event = self._with_source_context(event, bound, False)
-        self._keep(identity, self._snapshot(context, event, identity, gaps, scope_id, bound))
+        self._keep(identity, self._snapshot(context, event, identity, gaps, scope_id, bound), guard=guard)
         self.record_failure(identity, "DEADLINE_EXCEEDED")
         adapter._merge_gaps(gaps, ("capture_gap:write_deferred",))
 
-    def _keep(self, identity, snapshot) -> None:
+    def _keep(self, identity, snapshot, *, guard=None) -> None:
         """Keep a capture whose write may pass later in the retry buffer, or on disk while the buffer has no room
         (``CaptureRetry.keep_on_disk``), from where the buffer takes it once it has; or say it could not be kept."""
         retry = self._adapter._retry
         if identity is None or identity in retry.captures:
             return
+        if snapshot is not None:
+            state = self.private_state(snapshot.context, snapshot.event, 0.2, guard=guard)
+            if state is not None:
+                gap = "private_mode" if state == "blocked" else "private_mode_unverified"
+                self._adapter._merge_gaps((f"capture_gap:{gap}",))
+                return
         if snapshot is not None and len(retry.captures) < RETRY_CAPACITY:
             retry.captures[identity] = snapshot
             retry.start()
             return
-        if snapshot is not None and retry.keep_on_disk(identity, snapshot):
+        if snapshot is not None and retry.keep_on_disk(identity, snapshot, guard=guard) == "kept":
             retry.more_on_disk = True
         self._adapter._merge_gaps(("capture_gap:retry_buffer_full",))
 
@@ -292,7 +327,10 @@ class CaptureWriter:
             adapter._retry.done(identity)
             return receipt
         retry = adapter._retry
-        if identity in retry.on_disk or (snapshot is not None and retry.keep_on_disk(identity, snapshot)):
+        disposition = retry.keep_on_disk(identity, snapshot) if snapshot is not None else "retained"
+        if disposition == "discarded":
+            return receipt
+        if disposition == "kept":
             _log.warning(
                 "scope-recall: not stored before the shutdown, kept on disk for the next start: %s", label(identity)
             )

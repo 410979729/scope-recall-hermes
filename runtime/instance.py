@@ -133,6 +133,13 @@ class _LazyVectorPort:
         adapter = self._embedding_adapter()
         return None if adapter is None else adapter._embed_query
 
+    def _checked_query(self, context, route, texts, seconds):
+        """Check the current conversation at each actual query embedding request."""
+        from ..core.private import using_outbound_check
+
+        with using_outbound_check(lambda: self._instance.core.private_mode(context.trusted_context) == "full"):
+            return route(texts, seconds)
+
     def prefetch_query(self, context: SearchContext, *, also: tuple[str, ...] = ()) -> _QueryEmbedding | None:
         """Ask for the query's embedding now, beside the SQLite channels; ``search`` takes it from there.  ``also``
         are other ways the recall reads the question, embedded in the same request where the route can send several;
@@ -152,8 +159,13 @@ class _LazyVectorPort:
             queries = queries[:1]
             one = adapter._embed_query
             many = lambda texts, seconds: (one(texts[0], seconds),)  # noqa: E731
+        route = many
+
+        def checked(texts, seconds):
+            return self._checked_query(context, route, texts, seconds)
+
         pending = _QueryEmbedding(queries, now + window * QUERY_EMBEDDING_SHARE)
-        threading.Thread(target=pending.run, args=(many,), name="scope-recall-query-embedding", daemon=True).start()
+        threading.Thread(target=pending.run, args=(checked,), name="scope-recall-query-embedding", daemon=True).start()
         return pending
 
     def search(
@@ -192,11 +204,12 @@ class _LazyVectorPort:
                 embedding_remaining = deadline.remaining()
                 if embedding_remaining <= 0:
                     raise TimeoutError("query embedding stage deadline exhausted")
+
                 prepared.append(
                     (
                         context.query,
                         embed_with_one_retry(
-                            lambda seconds: embed(context.query, seconds),
+                            lambda seconds: self._checked_query(context, embed, context.query, seconds),
                             budget_seconds=embedding_remaining,
                             remaining=deadline.remaining,
                         ),
@@ -443,8 +456,19 @@ class RuntimeInstance:
         now = time.monotonic()
         deadline = RequestDeadline.from_absolute(now + float(seconds), now=now)
         with using_request_deadline(deadline):
+            from ..core.private import outbound_blocked, using_outbound_check
+
+            if outbound_blocked(self.core.storage, self.core.clock, self.config.context()):
+                return False
+
+            def checked(budget):
+                with using_outbound_check(
+                    lambda: outbound_blocked(self.core.storage, self.core.clock, self.config.context())
+                ):
+                    return embed("scope recall warm-up", budget)
+
             embed_with_one_retry(
-                lambda budget: embed("scope recall warm-up", budget),
+                checked,
                 budget_seconds=deadline.remaining(),
                 remaining=deadline.remaining,
             )

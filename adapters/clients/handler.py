@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -34,7 +34,7 @@ from .hook_events import (
     WORKER_START_MIN_S,
     HookEvents,
 )
-from .identity import resolve_runtime_audience, trusted_context
+from .identity import project_root_of, resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
 from .record_reader import RecordLines, RecordReader
 from .runtime_wiring import (
@@ -148,6 +148,11 @@ class CodexHookHandler:
         self.call = HookCall()
         self._pending_runtime_config_path: str | None = None
         self._runtime_attach_attempted = host_runtime is not None
+        #: The normalized project directory this hook's payload names, if any.  A
+        #: shared entry's configured audience has none, so the request's cwd is
+        #: used for project-scoped private intervals only; it grants no scope.
+        self._project_root: str | None = None
+        self.remote_paths = False
         #: An attach the last hook stopped waiting for (``ensure_runtime``), still this handler's.
         self._attaching: BoundedCall | None = None
         self._starting: BoundedCall | None = None
@@ -202,6 +207,7 @@ class CodexHookHandler:
         event_clock: HookClock | None = None,
         trusted_runtime_config_path: str | None = None,
         hook_started_at: float | None = None,
+        remote_paths: bool = False,
     ) -> "CodexHookHandler":
         """A client attached to a shared store; its runtime config is the entry's, beside its pointer.
 
@@ -213,6 +219,7 @@ class CodexHookHandler:
         handler = cls(
             config, core=core, clock=event_clock if event_clock is not None else clock, hook_started_at=hook_started_at
         )
+        handler.remote_paths = remote_paths
         handler._pending_runtime_config_path = trusted_runtime_config_path or str(config.runtime_config_path)
         if host in _CONFIGURED_PROMPT_BUDGET:
             handler._prompt_budget = _configured_budget(handler._pending_runtime_config_path)
@@ -249,8 +256,32 @@ class CodexHookHandler:
 
     # -- trusted runtime -------------------------------------------------
 
+    def bind_project_root(self, payload: dict[str, Any], audience) -> str | None:
+        """Bind the directory a hook names for project-scoped private intervals.
+
+        The hook's cwd supplies privacy identity. The configured project root
+        remains the audience authorization boundary, independently of this directory.
+        """
+        value = payload.get("cwd")
+        self._project_identity = "unverified" if payload.get("project_unverified") is True else "remote"
+        self._project_root = project_root_of(
+            value, resolve_links=not getattr(self, "remote_paths", False)
+        ) or project_root_of(audience.matched_project_root)
+        return self._project_root
+
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
-        return trusted_context(self.config, audience, session_id=session_id, actor_origin=origin)
+        context = trusted_context(
+            self.config,
+            audience,
+            session_id=session_id,
+            actor_origin=origin,
+            project_root=self._project_root,
+        )
+        return (
+            replace(context, project_identity=getattr(self, "_project_identity", "remote"))
+            if self.remote_paths
+            else context
+        )
 
     def ensure_runtime(self, audience=None, *, deadline: float | None = None) -> None:
         """Attach Lance/worker runtime only after Source persist, or for wakeup.
@@ -379,6 +410,11 @@ class CodexHookHandler:
     def warm_embedding(self, seconds: float) -> None:
         """Ask the runtime's query embedding route for one vector now, for a server's start
         (``local_endpoint.KeptRecaller.warm``; its keep-warm searches do not).  It writes nothing."""
+        from ...core.private import outbound_blocked
+
+        context = TrustedContext(self.config.to_binding(), "warm-embedding", self.config.scope_ids, "host_generated")
+        if outbound_blocked(self.core.storage, self.core.clock, context):
+            return
         self.ensure_runtime()
         warm = getattr(getattr(self._host_runtime, "_runtime", None), "warm_query_embedding", None)
         if callable(warm):
@@ -432,6 +468,8 @@ class CodexHookHandler:
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
+        if event == "PrivateCheck":
+            return self._private_check(payload)
         admitted = self._admit(event, payload)
         if admitted is None:
             return {}
@@ -460,6 +498,15 @@ class CodexHookHandler:
             event, session_id, audience, payload, deadline, record=record, local_record=local_record
         )
 
+    def _private_check(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Bind a host's content-free request to the same Core policy as capture."""
+        session_id = self.session_of(payload)
+        audience = self.audience_of(payload)
+        if session_id is None or audience is None:
+            return {}
+        self.bind_project_root(payload, audience)
+        return self.core.private_check(self.context(audience, session_id, "host_generated"), payload.get("times"))
+
     def _admit(self, event: object, payload: dict[str, Any]) -> tuple[str, Any] | None:
         """The session and audience of a hook this client sends and this handler takes, or None, said why."""
         if event not in _HOST_EVENTS[self.host]:
@@ -477,6 +524,7 @@ class CodexHookHandler:
         audience = self.audience_of(payload)
         if audience is None:
             return None
+        self.bind_project_root(payload, audience)
         if self._host_runtime is not None:
             self._host_runtime.rebind_session(session_id, audience.allowed_scope_ids)
             self._merge_runtime_gaps()
@@ -547,7 +595,19 @@ class CodexHookHandler:
         if type(payload) is not dict:
             self.note("invalid_root")
             return {}
-        return self.handle_payload(payload)
+        result = self.handle_payload(payload)
+        if self.host == "dsh" and payload.get("hook_event_name") != "PrivateCheck":
+            session_id, audience = self.session_of(payload), self.audience_of(payload)
+            if session_id is not None and audience is not None:
+                # The native spool learns about rule history from its ordinary
+                # hooks, without starting a process for each message.
+                result = {
+                    **result,
+                    "private_rules": self.core.private_rules_exist(
+                        self.context(audience, session_id, "host_generated")
+                    ),
+                }
+        return result
 
     # -- capture ---------------------------------------------------------
 
@@ -620,6 +680,11 @@ class CodexHookHandler:
             self.diagnostics.capture_stage = "durable_inbox"
             gaps = (*gaps, "capture_gap:durable_ingress_pending")
             self.note("capture_queued", gaps=gaps)
+            return (), gaps
+        if receipt.error_code in {"PRIVATE_MODE", "PRIVATE_MODE_UNVERIFIED"}:
+            gap = "private_mode" if receipt.error_code == "PRIVATE_MODE" else "private_mode_unverified"
+            gaps = (*gaps, f"capture_gap:{gap}")
+            self.note("private_mode", gaps=gaps)
             return (), gaps
         if receipt.durability != "persisted":
             gaps = (*gaps, f"capture_gap:{receipt.disposition}")

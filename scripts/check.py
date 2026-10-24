@@ -49,10 +49,16 @@ WATCHDOG_SECONDS_PER_FILE = 20
 #: meets.  Its 600 s are that and half as much again.  The memory export file
 #: captures stores of a hundred and a thousand sources to show that export
 #: memory stays bounded, about 30 s on the same SSD; its 300 s follow the same
-#: rule.
+#: rule.  The shared-client and dsh-plugin host files start real hook
+#: interpreters, and the dsh file also the Node plugin, for nearly every case:
+#: about 170 s and 100 s on that SSD.  Together they make up most of the host
+#: tier, which passed its 600 s cap on a slow GitHub Windows runner; each adds
+#: 300 s.
 HEAVY_FILE_SECONDS = {
     "tests/recall_bench/test_recall_bench.py": 600,
     "tests/contract/test_memory_export.py": 300,
+    "tests/host/codex/test_shared_client.py": 300,
+    "tests/host/codex/test_dsh_remote.py": 300,
 }
 
 
@@ -165,6 +171,7 @@ SUITES = {
         "tests/contract/test_memory_admin.py",
         "tests/contract/test_memory_cli.py",
         "tests/contract/test_memory_export.py",
+        "tests/contract/test_private_mode.py",
         "tests/contract/test_fragment_quote_recovery.py",
         "tests/contract/test_protocol.py",
         "tests/contract/test_synthetic_inputs.py",
@@ -236,6 +243,8 @@ SUITES = {
         "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/codex/test_client_private_mode.py",
+        "tests/host/hermes/test_hermes_private_mode.py",
         "tests/host/test_endpoint_credentials.py",
         "tests/host/hermes/test_attachments_shutdown.py",
         "tests/host/hermes/test_audience_isolation.py",
@@ -477,6 +486,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_vector_failure.py",
     "tests/contract/test_audit_lifecycle.py",
     "tests/contract/test_audit_maintenance.py",
+    "tests/contract/test_private_mode.py",
     "tests/contract/test_autonomous_admission.py",
     "tests/contract/test_autonomous_context.py",
     "tests/contract/test_autonomous_corrections.py",

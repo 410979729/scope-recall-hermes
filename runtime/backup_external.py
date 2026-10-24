@@ -14,7 +14,7 @@ from typing import Any
 from ..core.capture_filters import sanitize_source_capture_text
 from ..core.events import capture_contains_secret
 from .backup_primitives import BackupError, check_backup_deadline, safe_path, sha256
-from .backup_resources import budget_ledger_source, real_files, stage_instance_resources
+from .backup_resources import BackupPrivacy, budget_ledger_source, real_files, stage_instance_resources
 
 ConfigStager = Callable[[Path, Path, str, list[dict[str, Any]]], int]
 
@@ -83,6 +83,7 @@ def stage_entry_resources(
     files: list[dict[str, Any]],
     resources: list[dict[str, Any]],
     stage_config: ConfigStager,
+    privacy: BackupPrivacy | None = None,
 ) -> int:
     """Pack each registered home's config and independent spend snapshot."""
     redacted = 0
@@ -97,7 +98,7 @@ def stage_entry_resources(
             config = source / name
             if config.is_file():
                 redacted += stage_config(config, stage, f"{prefix}/{name}", files)
-        extra_files, extra_resources = stage_instance_resources(source, target)
+        extra_files, extra_resources = stage_instance_resources(source, target, privacy=privacy)
         files.extend({**item, "path": f"{prefix}/{item['path']}"} for item in extra_files)
         resources.extend(
             {
@@ -117,6 +118,7 @@ def stage_remote_clients(
     files: list[dict[str, Any]],
     resources: list[dict[str, Any]],
     stage_config: ConfigStager,
+    privacy: BackupPrivacy | None = None,
 ) -> tuple[int, int, int]:
     """Pack a client's configured spool while retaining only its credential reference."""
     redacted = 0
@@ -136,7 +138,7 @@ def stage_remote_clients(
         config_path = f"{prefix}/client.json"
         redacted += stage_config(source, stage, config_path, files)
         spool = safe_path(Path(client["state_dir"]) / "spool")
-        cleaned, omitted = _stage_spool(spool, stage, f"{prefix}/spool", files)
+        cleaned, omitted = _stage_spool(spool, stage, f"{prefix}/spool", files, privacy=privacy)
         spool_redacted += cleaned
         spool_omitted += omitted
         resources.append(
@@ -162,7 +164,9 @@ def _capture_form(value: Any) -> Any:
     return value
 
 
-def _stage_spool(source: Path, stage: Path, prefix: str, files: list[dict[str, Any]]) -> tuple[int, int]:
+def _stage_spool(
+    source: Path, stage: Path, prefix: str, files: list[dict[str, Any]], *, privacy: BackupPrivacy | None = None
+) -> tuple[int, int]:
     """Omit unreadable or refused entries individually; never alter the client's originals."""
     redacted = omitted = 0
     if not source.is_dir():
@@ -173,6 +177,9 @@ def _stage_spool(source: Path, stage: Path, prefix: str, files: list[dict[str, A
             raw = item.read_bytes()
             value = json.loads(raw)
             if type(value) is not dict or capture_contains_secret(value) or capture_contains_secret(json.dumps(value)):
+                omitted += 1
+                continue
+            if privacy is not None and not privacy.permits_remote(value):
                 omitted += 1
                 continue
             cleaned = _capture_form(value)

@@ -21,10 +21,12 @@ from .boundary import (
     host_notice,
     interim_messages,
     interim_source_event,
+    interim_source_key,
     person_steers,
     pre_llm_source_event,
     steer_source_event,
     steer_source_key,
+    sync_assistant_key,
     sync_turn_source_events,
     tool_call_source_event,
     unanswered_messages,
@@ -289,8 +291,47 @@ class TurnCapture:
             return
         answer = kwargs.get("assistant_response")
         history = kwargs.get("conversation_history")
-        said = interim_messages(history, answer=answer if isinstance(answer, str) else "")
-        steered = _said_aside(identity, history)
+        observed_at = self._adapter._utc_now()
+        session = self._adapter._effective_session_id(str(kwargs.get("session_id") or ""))
+        context = identity.trusted_context(session_id=session)
+        # The ledger keeps only identity and first-observation times. Even a
+        # refused reply needs that witness so delayed sync cannot date it anew.
+        if isinstance(answer, str) and answer.strip():
+            key = sync_assistant_key(context, session, turn_id)
+            self._adapter._ledger.witness((key, 1), observed_at, observed_at)
+        # Conversation history is retrospective. Only a host timestamp or an
+        # earlier witness establishes when its message occurred.
+        said = tuple(
+            (
+                text,
+                self._adapter._ledger.witness(
+                    (interim_source_key(context, session, turn_id, ordinal), 1), observed_at, moment
+                )[1],
+            )
+            for ordinal, (text, moment) in enumerate(
+                interim_messages(history, answer=answer if isinstance(answer, str) else ""), start=1
+            )
+        )
+        steered = tuple(
+            steer._replace(
+                occurred_at=self._adapter._ledger.witness(
+                    (steer_source_key(context, steer), 1), observed_at, steer.occurred_at
+                )[1]
+            )
+            for steer in _said_aside(identity, history)
+        )
+        try:
+            check = self._adapter._require_core().private_check
+            moments = [moment for _text, moment in said] + [steer.occurred_at for steer in steered]
+            # Keep no body if any of this observation is private or unverified.
+            refused = any(
+                check(context, moments[start : start + 64])["capture_blocked"]
+                for start in range(0, max(1, len(moments)), 64)
+            )
+        except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            refused = True
+        if refused:
+            return
         with self._adapter._said_lock:
             if turn_id != self._adapter._active_turn_id:
                 return
@@ -334,7 +375,12 @@ class TurnCapture:
             interim, adapter._interim_said = adapter._interim_said, {}
             steers, adapter._steer_said = adapter._steer_said, {}
         limited = self._write_messages(
-            interim_source_event, interim, identity, shown, effective_session, limit=_INTERIM_PER_TURN
+            interim_source_event,
+            interim,
+            identity,
+            shown,
+            effective_session,
+            limit=_INTERIM_PER_TURN,
         )
         # The conversation sync_turn is handed, and what post_llm_call kept when it was not.
         steered = [steer for said in steers.values() for steer in said]
@@ -429,7 +475,20 @@ class TurnCapture:
                 )
             reads[key] = (steer, key)
         unread = list(reads.values())
-        took = 0.0
+        if not unread:
+            return
+        began = time.monotonic()
+        guard = adapter._writer.capture_guard(
+            context,
+            _budget(deadline),
+            observations=[
+                (
+                    context,
+                    [{"occurred_at": steer.occurred_at, "recorded_at": adapter._utc_now()} for steer, _key in unread],
+                )
+            ],
+        )
+        took = time.monotonic() - began
         for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
             with adapter._lock, adapter._calls.holding(hook):
                 taken = held
@@ -452,6 +511,7 @@ class TurnCapture:
                             gaps=gaps,
                             scope_id=identity.local_scope_id,
                             bound=identity,
+                            guard=guard,
                         )
                     else:
                         began = time.monotonic()

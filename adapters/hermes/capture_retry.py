@@ -85,6 +85,7 @@ class CaptureRetry:
         #: What the last capture a pass wrote took: the next is reckoned by it (``fits``), and so is a shutdown's read
         #: of what the inbox holds.
         self.last_took = 0.0
+        self.private_guard = None
 
     def write_observed(self, *, deadline: float | None = None) -> None:
         """Retry only previously observed DTOs with their original identities.
@@ -149,6 +150,13 @@ class CaptureRetry:
             pending_items = tuple(self.captures.items())
             self.retrying = True
         try:
+            began = time.monotonic()
+            self.private_guard = self._adapter._writer.capture_guard(
+                pending_items[0][1].context,
+                deadline - began,
+                observations=[(pending.context, [pending.event]) for _key, pending in pending_items],
+            )
+            self.last_took = time.monotonic() - began
             self._pass(identity, pending_items, deadline=deadline, release=release, force=force)
         finally:
             with self._adapter._lock:
@@ -170,7 +178,7 @@ class CaptureRetry:
                     len(pending_items) - len(expired),
                 )
             return
-        took = 0.0
+        took = self.last_took
         for key, pending in pending_items:
             # Each capture is reckoned by the one before it (``fits``): started with less time left than that one took,
             # on a store that slow it would run past the pass's time.  What is left waits for the next pass.
@@ -232,8 +240,11 @@ class CaptureRetry:
                     took = self.last_took = time.monotonic() - began
 
     def give_up_expired(self, items) -> list:
-        """Stop retrying the buffered captures kept longer than ``_RETRY_GIVE_UP_S``: each is kept on disk for the next
-        start (``keep_on_disk``), and said; the caller holds ``_lock``.  Returns their keys."""
+        """Discard expired private captures or preserve eligible ones on disk.
+
+        Return the keys removed from retry memory; the caller holds ``_lock``.
+        A capture that cannot be verified or persisted stays in memory.
+        """
         expired = [
             key
             for key, pending in items
@@ -241,15 +252,18 @@ class CaptureRetry:
             and key not in self.in_flight
             and time.monotonic() - pending.kept_at > _RETRY_GIVE_UP_S
         ]
-        kept = []
+        finished = []
         for key in expired:
             pending = self.captures[key]
             self._adapter._ledger.rollback(key)
             self._adapter._merge_gaps(("capture_gap:retry_gave_up",))
-            if self.keep_on_disk(key, pending):
+            disposition = self.keep_on_disk(key, pending, guard=self.private_guard)
+            if disposition == "discarded":
+                finished.append(key)
+            elif disposition == "kept":
                 self.captures.pop(key)
                 self.given_up.add(key)
-                kept.append(key)
+                finished.append(key)
                 _log.warning(
                     "scope-recall: not stored (still failing after %d minutes), kept on disk for the next start: %s",
                     int(_RETRY_GIVE_UP_S // 60),
@@ -261,26 +275,38 @@ class CaptureRetry:
                     int(_RETRY_GIVE_UP_S // 60),
                     label(key),
                 )
-        return kept
+        return finished
 
-    def keep_on_disk(self, key: SourceIdentity, capture: RetryCapture) -> bool:
-        """Keep a capture on disk for the next start (``kept_captures``); whether it is there.  The caller holds
-        ``_lock``."""
+    def keep_on_disk(self, key: SourceIdentity, capture: RetryCapture, *, guard=None) -> str:
+        """Return kept, discarded or retained; only kept counts as persistence.
+
+        The caller holds ``_lock``. A discarded entry is removed here, including
+        any earlier disk copy; a kept entry is removed from memory by its caller.
+        """
+        state = self._adapter._writer.private_state(capture.context, capture.event, 0.2, guard=guard)
+        if state == "blocked":
+            self.done(key)
+            return "discarded"
+        if state is not None:
+            return "retained"
         if key in self.on_disk:
-            return True
+            return "kept"
         binding = capture.context.binding
         if not kept_captures.keep(binding, key, capture):
-            return False
+            return "retained"
         self.on_disk[key] = binding
-        return True
+        return "kept"
 
-    def keep_all_on_disk(self) -> tuple[int, int]:
+    def keep_all_on_disk(self, *, guard=None) -> tuple[int, int]:
         """At shutdown: each capture the buffer still holds, one a pass is still writing included, kept on disk for the
         next start, and reported. Captures that could not reach disk remain in memory.
         Return the counts kept on disk and retained in memory. The caller holds ``_lock``."""
         kept = retained = 0
         for key, capture in tuple(self.captures.items()):
-            if self.keep_on_disk(key, capture):
+            disposition = self.keep_on_disk(key, capture, guard=guard)
+            if disposition == "discarded":
+                continue
+            if disposition == "kept":
                 kept += 1
                 self.captures.pop(key)
                 if key in self.in_flight:
