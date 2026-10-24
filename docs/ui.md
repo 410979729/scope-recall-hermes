@@ -32,6 +32,8 @@ and English otherwise. The language selector switches between both languages.
 - **Browse and search** accepts literal words and the memory command's kind,
   scope, agent, session and inclusive UTC time filters. Continue follows the
   same bounded scan, including pages with no match while more objects remain.
+  Starting a new search replaces earlier results; late replies from older
+  searches are ignored. Continue waits for the current request to finish.
   Open an item to read its content, source links and version history. Continue
   under history loads older versions. Open source links to read original words.
 - **Corrections and deletion** start from an item's detail view. A derived
@@ -47,13 +49,17 @@ and English otherwise. The language selector switches between both languages.
 - **Private mode** shows the current whole-store mode and active rules. Choose
   an exact session, absolute project directory, or the whole store to inspect,
   enable or close its rules. Full mode blocks capture, recall and outbound work;
-  read-only blocks capture but permits recall. A whole-store rule can have a
+  read-only blocks capture but permits agent recall and outbound work on existing
+  memory. A whole-store rule can have a
   duration in seconds. Closing one target leaves overlapping rules in force.
   Review and confirm each switch. See [private mode](private-mode.md) for its
   time and project boundaries.
-  You can still browse, read history, correct and manage your memory while full
-  mode applies, through this page or the memory command. Agents cannot recall
-  it. If the rules change after a close preview, confirmation is refused;
+  You can still browse, read history, correct and manage your memory under either
+  mode, through this page or the memory command, without model or embedding
+  requests for inspection. Full mode prevents agents from recalling it;
+  read-only permits recall. An agent's explicit forget or correction request
+  still applies under either mode, with its usual authorization and revision
+  checks. If the rules change after a close preview, confirmation is refused;
   create a new preview before closing the current rules.
 - **Export** writes visible memory to a new directory or a new path ending in
   `.zip`, with optional retained attachments. Type the destination on this

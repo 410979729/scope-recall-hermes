@@ -8,6 +8,7 @@ from scope_recall.maintenance import ui_api
 from scope_recall.maintenance.ui_api import UIApi
 from scope_recall.maintenance.ui_http import ThreadingHTTPServer, UIServer
 from test_claims import app, capture, initial
+from v11_support import recall_request
 
 
 @pytest.fixture
@@ -94,16 +95,27 @@ def test_owner_inspection_during_full_private_mode_keeps_agent_and_deletion_guar
 
     core, context = app
     api, item = web_api
-    api.management.private_on(target="global")
 
     class NoModels:
+        calls = 0
+
         def __getattr__(self, name):
+            self.calls += 1
             raise AssertionError("owner inspection must not call models or embeddings")
 
     core.vectors = core.consolidation = NoModels()
+    core.recall_pipeline.vector_port = core.vectors
+    with pytest.raises(AssertionError, match="must not call models or embeddings"):
+        core.recall(context, recall_request())
+    calls = core.vectors.calls
+    assert calls > 0
+    api.management.private_on(target="global")
+    assert api.read("list", {})["items"]
+    assert api.read("search", {"query": "TEST"})["items"]
     assert api.management.show(item.ref)["ref"] == item.ref
     assert api.management.history(item.ref)["items"][0]["ref"] == item.ref
     assert api.preview({"action": "revise", "ref": item.ref, "value": "green", "expected_revision": 1})
+    assert core.vectors.calls == calls
     with pytest.raises(ContractError, match="private_mode"):
         core.inspect_object(context, item.ref)
     with pytest.raises(ContractError):

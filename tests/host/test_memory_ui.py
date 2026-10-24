@@ -1,6 +1,8 @@
 """The local page translates real HTTP requests to the existing owner APIs."""
 
 import json
+import sqlite3
+from dataclasses import replace
 from threading import Thread
 from types import SimpleNamespace
 from urllib.parse import urlencode
@@ -9,7 +11,7 @@ import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
-from scope_recall.maintenance import cli, ui, ui_api
+from scope_recall.maintenance import cli, doctor_store, ui, ui_api
 from scope_recall.maintenance.ui_api import UIApi
 from scope_recall.maintenance.ui_http import UIServer
 from test_claims import app, capture, initial
@@ -170,6 +172,26 @@ def test_overview_and_backup_reuse_owners_and_errors(page, monkeypatch):
 
     monkeypatch.setattr(ui_api, "configured_backup_dir", unavailable)
     assert call("backup")[0] == 503
+
+
+def test_overview_doctor_read_failure_is_retryable(page, monkeypatch):
+    call, _api, _item, _source = page
+    reads = []
+
+    def unavailable(storage, context, **kwargs):
+        reads.append(kwargs)
+        raise sqlite3.OperationalError("synthetic unavailable store")
+
+    monkeypatch.setattr(doctor_store.SQLiteStorage, "_transaction", unavailable)
+    status, payload = call("overview")
+    assert reads and reads[0]["writable"] is False
+    assert (status, payload) == (503, {"status": "error", "code": "STORE_UNAVAILABLE"})
+
+
+def test_overview_missing_database_keeps_missing_response(page, tmp_path):
+    call, api, _item, _source = page
+    api.binding = replace(api.binding, data_directory=tmp_path / "missing-store")
+    assert call("overview") == (400, {"status": "error", "code": "SOURCE_MISSING", "field": "store_status"})
 
 
 def test_backup_displays_owned_bundle_mirror_and_scheduler_problem(page, monkeypatch, tmp_path):

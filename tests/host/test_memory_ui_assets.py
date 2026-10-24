@@ -9,7 +9,7 @@ import pytest
 
 ASSETS = Path(__file__).resolve().parents[2] / "maintenance" / "ui_static"
 GUIDE = ASSETS.parents[1] / "docs" / "ui.md"
-HARNESS = r"""
+DOM_HARNESS = r"""
 const fs = require('fs');
 const vm = require('vm');
 const root = process.argv[1];
@@ -44,6 +44,10 @@ global.history = window.history = {replaceState: () => { location.search = ''; }
 global.fetch = async () => ({ok: true, json: async () => ({data: {rules: []}})});
 vm.runInThisContext(fs.readFileSync(root + '/strings.js', 'utf8'));
 vm.runInThisContext(fs.readFileSync(root + '/app.js', 'utf8'));
+"""
+HARNESS = (
+    DOM_HARNESS
+    + r"""
 const payload = '<img src=x onerror="global.executed=true"><script>global.executed=true</script>';
 display('detail-data', {content: payload});
 if (JSON.parse(document.getElementById('detail-data').textContent).content !== payload)
@@ -78,6 +82,79 @@ if (location.search) throw new Error('Launch token remains in browser history');
 console.log(JSON.stringify({literal: true, bilingual: en.length}));
 });
 """
+)
+BROWSE_HARNESS = (
+    DOM_HARNESS
+    + r"""
+const assert = require('assert/strict');
+global.FormData = class {
+  *[Symbol.iterator]() { yield ['query', document.getElementById('filters').value]; }
+};
+(async () => {
+  // Let the initial overview finish before controlling the search responses.
+  await new Promise(resolve => setImmediate(resolve));
+  const pending = [];
+  global.fetch = url => new Promise((resolve, reject) => pending.push({
+    url, reject, resolve: data => resolve({ok: true, json: async () => ({data})})
+  }));
+  function start(query) {
+    document.getElementById('filters').value = query;
+    return browse(false);
+  }
+  function page(query, cursor) {
+    return {items: [{kind: 'claim', ref: query, content: query}],
+      examined: 1, scan_complete: !cursor, next_cursor: cursor};
+  }
+  const alpha = start('alpha');
+  const beta = start('beta');
+  const during = browse(true);
+  assert.equal(pending.length, 2, 'Pending search started a continuation');
+  assert.equal(document.getElementById('next').disabled, true);
+  await during;
+  pending[1].resolve(page('beta', 'beta-next'));
+  await beta;
+  pending[0].resolve(page('alpha', 'alpha-next'));
+  await alpha;
+  assert.deepEqual(browseItems.map(item => item.ref), ['beta'], 'Superseded search mixed its results');
+  assert.equal(continuation, 'beta-next', 'Superseded search replaced the cursor');
+  assert.equal(searchFilters.query, 'beta');
+  assert.equal(document.getElementById('next').disabled, false);
+
+  const more = browse(true);
+  const duplicate = browse(true);
+  assert.equal(pending.length, 3, 'Overlapping continuation sent a duplicate request');
+  await duplicate;
+  assert.equal(new URL(pending[2].url, 'http://localhost').searchParams.get('cursor'), 'beta-next');
+  translate();
+  assert.equal(document.getElementById('next').disabled, true, 'Language switch enabled a pending continuation');
+
+  const gamma = start('gamma');
+  pending[2].resolve(page('beta-later', 'beta-last'));
+  await more;
+  const blocked = browse(true);
+  assert.equal(pending.length, 4, 'Stale continuation released the current search');
+  await blocked;
+  assert.equal(document.getElementById('next').disabled, true);
+  pending[3].resolve(page('gamma', 'gamma-next'));
+  await gamma;
+  assert.deepEqual(browseItems.map(item => item.ref), ['gamma']);
+  assert.equal(continuation, 'gamma-next');
+
+  const stale = start('alpha');
+  const current = start('beta');
+  pending[4].reject(new Error('superseded failure'));
+  await stale;
+  pending[5].resolve(page('beta', null));
+  await current;
+  assert.deepEqual(browseItems.map(item => item.ref), ['beta']);
+  assert.equal(document.getElementById('next').disabled, true);
+  const exhausted = browse(true);
+  assert.equal(pending.length, 6, 'Exhausted search started another request');
+  await exhausted;
+  console.log(JSON.stringify({reversed: true, continuation: true}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+)
 
 
 def test_stored_markup_is_literal_and_interface_is_bilingual():
@@ -88,6 +165,17 @@ def test_stored_markup_is_literal_and_interface_is_bilingual():
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
     assert result["literal"] and result["bilingual"] >= 60
+
+
+def test_superseded_searches_and_overlapping_continuations_are_discarded():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    completed = subprocess.run(
+        [executable, "-e", BROWSE_HARNESS, str(ASSETS)], capture_output=True, text=True, timeout=15
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"reversed": True, "continuation": True}
 
 
 def test_html_has_external_scripts_and_styles_and_no_event_handlers():

@@ -8,6 +8,8 @@ let selected = null;
 let continuation = null;
 let historyBefore = null;
 let searchFilters = {};
+let searchIdentity = 0;
+let browsePending = false;
 let reviewId = null;
 let lastOverview = null;
 let lastBackup = null;
@@ -95,14 +97,37 @@ async function loadPage(page) {
   if (page === "backup") backup(await request("backup"));
 }
 async function browse(more) {
-  if (!more) { searchFilters = formValues("filters"); browseItems = []; }
+  if (more && (browsePending || !continuation)) return;
+  if (!more) {
+    searchIdentity += 1;
+    searchFilters = formValues("filters");
+    browseItems = [];
+    continuation = null;
+    lastScan = null;
+    $("items").replaceChildren();
+    $("scan").textContent = "";
+  }
+  const identity = searchIdentity;
+  browsePending = true;
+  $("next").disabled = true;
   const values = {...searchFilters};
   if (more && continuation) values.cursor = continuation;
-  const data = await request(values.query ? "search" : "list", values);
-  browseItems.push(...data.items);
-  continuation = data.next_cursor;
-  lastScan = data;
-  renderBrowse();
+  try {
+    const data = await request(values.query ? "search" : "list", values);
+    // A new search owns the list and cursor, including while an older page is pending.
+    if (identity !== searchIdentity) return;
+    browseItems.push(...data.items);
+    continuation = data.next_cursor;
+    lastScan = data;
+    renderBrowse();
+  } catch (error) {
+    if (identity === searchIdentity) throw error;
+  } finally {
+    if (identity === searchIdentity) {
+      browsePending = false;
+      $("next").disabled = !continuation;
+    }
+  }
 }
 function renderBrowse() {
   $("items").replaceChildren();
@@ -110,7 +135,7 @@ function renderBrowse() {
     const button = node("button", (t(item.kind) || item.kind) + " · " + item.ref + "\n" + (item.content ?? ""), $("items"));
     button.addEventListener("click", () => run(() => detail(item.ref)));
   }
-  $("next").disabled = !continuation;
+  $("next").disabled = browsePending || !continuation;
   $("scan").textContent = t("examined") + ": " + lastScan.examined + " · " + t(lastScan.scan_complete ? "complete" : "more");
   if (!browseItems.length) node("p", t("empty"), $("items"));
 }

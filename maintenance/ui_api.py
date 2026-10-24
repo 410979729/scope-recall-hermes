@@ -76,6 +76,10 @@ class UIApi:
         """Use the doctor's store and footprint measurements without duplicating SQL."""
         report = DoctorReport(host="hermes", status="ok")
         if not check_storage(report, self.binding, self.binding.data_directory):
+            if report.database_present:
+                # The database exists but could not be read: ui_http answers every OSError as the retryable
+                # store-unavailable error, never as a missing store.
+                raise OSError("store status unavailable")
             raise ContractError("SOURCE_MISSING", "store_status")
         check_footprint(report, self.binding.data_directory, None)
         return report.to_dict()
