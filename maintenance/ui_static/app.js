@@ -1,5 +1,6 @@
 "use strict";
-const token = new URLSearchParams(location.search).get("token") || "";
+const token = document.getElementById("session-token").content;
+window.history.replaceState(null, "", location.pathname);
 const $ = (id) => document.getElementById(id);
 let language = navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 let currentPage = "overview";
@@ -11,6 +12,8 @@ let reviewId = null;
 let lastOverview = null;
 let lastBackup = null;
 let lastPrivate = null;
+let browseItems = [];
+let lastScan = null;
 const t = (key) => window.UI_STRINGS[language][key] || key;
 
 // Stored values enter only text nodes. No memory field is interpreted as markup.
@@ -39,7 +42,7 @@ async function request(route, data = {}, post = false) {
   }
   const response = await fetch(url, options);
   const result = await response.json();
-  if (!response.ok) throw new Error(result.code + (result.field ? ": " + result.field : ""));
+  if (!response.ok) throw new Error(t(result.code) + (result.field ? ": " + t(result.field) : ""));
   return result.data;
 }
 function run(action) {
@@ -92,18 +95,24 @@ async function loadPage(page) {
   if (page === "backup") backup(await request("backup"));
 }
 async function browse(more) {
-  if (!more) { searchFilters = formValues("filters"); $("items").replaceChildren(); }
+  if (!more) { searchFilters = formValues("filters"); browseItems = []; }
   const values = {...searchFilters};
   if (more && continuation) values.cursor = continuation;
   const data = await request(values.query ? "search" : "list", values);
-  for (const item of data.items) {
+  browseItems.push(...data.items);
+  continuation = data.next_cursor;
+  lastScan = data;
+  renderBrowse();
+}
+function renderBrowse() {
+  $("items").replaceChildren();
+  for (const item of browseItems) {
     const button = node("button", (t(item.kind) || item.kind) + " · " + item.ref + "\n" + (item.content ?? ""), $("items"));
     button.addEventListener("click", () => run(() => detail(item.ref)));
   }
-  continuation = data.next_cursor;
   $("next").disabled = !continuation;
-  $("scan").textContent = t("examined") + ": " + data.examined + " · " + t(data.scan_complete ? "complete" : "more");
-  if (!data.items.length && !more) node("p", t("empty"), $("items"));
+  $("scan").textContent = t("examined") + ": " + lastScan.examined + " · " + t(lastScan.scan_complete ? "complete" : "more");
+  if (!browseItems.length) node("p", t("empty"), $("items"));
 }
 function sourceLinks(value, parent) {
   const seen = new Set();
@@ -127,7 +136,7 @@ function sourceLinks(value, parent) {
   }
   visit(value);
 }
-async function history(more) {
+async function loadHistory(more) {
   const data = await request("history", {ref: selected.ref, ...(more ? {before: historyBefore} : {})});
   if (!more) $("history-data").replaceChildren();
   for (const item of data.items) node("pre", JSON.stringify(item, null, 2), $("history-data"));
@@ -145,7 +154,7 @@ async function detail(ref, revision) {
   }
   $("sources").replaceChildren();
   sourceLinks(selected, $("sources"));
-  await history(false);
+  await loadHistory(false);
   $("detail").scrollIntoView({block: "start"});
 }
 async function preview(values) {
@@ -175,6 +184,8 @@ function translate() {
   if (lastOverview) overview(lastOverview);
   if (lastBackup) backup(lastBackup);
   if (lastPrivate) privateState(lastPrivate);
+  if (lastScan) renderBrowse();
+  if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
 }
 $("language").addEventListener("change", () => { language = $("language").value; translate(); });
 for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => run(() => loadPage(button.dataset.page)));
@@ -182,7 +193,7 @@ $("refresh-overview").addEventListener("click", () => run(() => loadPage("overvi
 $("refresh-backup").addEventListener("click", () => run(() => loadPage("backup")));
 $("filters").addEventListener("submit", (event) => { event.preventDefault(); run(() => browse(false)); });
 $("next").addEventListener("click", () => run(() => browse(true)));
-$("history-next").addEventListener("click", () => run(() => history(true)));
+$("history-next").addEventListener("click", () => run(() => loadHistory(true)));
 $("forget-session").addEventListener("click", () => run(() => preview({...formValues("filters"), action: "forget-session"})));
 for (const button of document.querySelectorAll("[data-action]")) button.addEventListener("click", () => run(() => preview({action: button.dataset.action, ref: selected.ref, expected_revision: selected.revision})));
 $("correction").addEventListener("submit", (event) => {

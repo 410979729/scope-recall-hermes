@@ -89,7 +89,7 @@ class UIApi:
         bundles = (
             find_owned_backup_bundles(destination, self.binding.installation_id, self.copy_id) if destination else []
         )
-        state = backup_upkeep._read_state(directory)
+        state = backup_upkeep.read_backup_state(directory)
         return dict(
             latest_bundle=str(bundles[0].path) if bundles else None,
             checks=report.checks,
@@ -141,6 +141,8 @@ class UIApi:
         if action == "revise":
             item = api.show(text(data, "ref"))
             value = None if flag(data, "retract") else text(data, "value")
+            if value is None and not flag(data, "retract"):
+                raise ContractError("INPUT_INVALID", "value_required")
             return dict(action=action, item=item, value=value, expected_revision=number(data, "expected_revision"))
         if action in {"private-on", "private-off"}:
             target: dict[str, Any] = dict(
@@ -148,6 +150,8 @@ class UIApi:
             )
             if action == "private-on":
                 target.update(mode=text(data, "mode", "full"), duration_seconds=number(data, "duration_seconds"))
+            else:
+                target = api.private_off_preview(**target)
             return dict(action=action, arguments=target)
         if action == "export":
             return dict(

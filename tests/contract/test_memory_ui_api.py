@@ -68,3 +68,59 @@ def test_session_deletion_ignores_the_browse_query(web_api, app):
     preview = api.preview({"action": "forget-session", "session": "TEST-session", "query": "needle"})
     refs = {target["ref"] for target in preview["preview"]["plan"]["affected"]}
     assert {item.ref, source.ref} <= refs
+
+
+def test_old_private_off_preview_refuses_replacement_rule(web_api):
+    api, _item = web_api
+    api.management.private_on(target="global")
+    preview = api.preview({"action": "private-off", "target": "global"})
+    api.management.private_off(target="global")
+    replacement = api.management.private_on(target="global")
+    with pytest.raises(ContractError, match="VERSION_CONFLICT"):
+        api.confirm({"id": preview["id"], "confirmed": True})
+    assert api.management.private_status()["rules"] == [replacement]
+
+
+@pytest.mark.parametrize("data", [{}, {"value": None}, {"retract": False}])
+def test_correction_requires_value_or_explicit_withdrawal(web_api, data):
+    api, item = web_api
+    with pytest.raises(ContractError, match="INPUT_INVALID"):
+        api.preview(dict(action="revise", ref=item.ref, expected_revision=1, **data))
+    assert api.management.show(item.ref)["revision"] == 1
+
+
+def test_owner_inspection_during_full_private_mode_keeps_agent_and_deletion_guards(web_api, app):
+    from dataclasses import replace
+
+    core, context = app
+    api, item = web_api
+    api.management.private_on(target="global")
+
+    class NoModels:
+        def __getattr__(self, name):
+            raise AssertionError("owner inspection must not call models or embeddings")
+
+    core.vectors = core.consolidation = NoModels()
+    assert api.management.show(item.ref)["ref"] == item.ref
+    assert api.management.history(item.ref)["items"][0]["ref"] == item.ref
+    assert api.preview({"action": "revise", "ref": item.ref, "value": "green", "expected_revision": 1})
+    with pytest.raises(ContractError, match="private_mode"):
+        core.inspect_object(context, item.ref)
+    with pytest.raises(ContractError):
+        core.inspect_object(context, item.ref, owner_authority=object())
+    api.management.authority = InstallationMaintenance(replace(context, allowed_scope_ids=frozenset()))
+    with pytest.raises(ContractError):
+        api.management.show(item.ref)
+    api.management.authority = InstallationMaintenance(context)
+    api.management.apply(api.management.preview([item.ref]))
+    with pytest.raises(ContractError):
+        api.management.show(item.ref)
+
+
+def test_backup_status_uses_public_state_reader(web_api, monkeypatch):
+    api, _item = web_api
+    monkeypatch.setattr(
+        ui_api.backup_upkeep, "read_backup_state", lambda directory: {"last_error": "synthetic failure"}, raising=False
+    )
+    monkeypatch.setattr(ui_api.backup_upkeep, "backup_job_problem", lambda directory: None)
+    assert api.backup()["problem"] == "synthetic failure"

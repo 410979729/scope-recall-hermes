@@ -16,7 +16,8 @@ const root = process.argv[1];
 const elements = new Map();
 class Element {
   constructor(tag = 'div') {
-    this.tagName = tag; this.children = []; this.text = ''; this.value = ''; this.dataset = {}; this.elements = {};
+    this.content = 'synthetic-session'; this.tagName = tag; this.children = [];
+    this.text = ''; this.value = ''; this.dataset = {}; this.elements = {};
   }
   set textContent(value) { this.text = String(value); this.children = []; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
@@ -25,7 +26,7 @@ class Element {
   insertAdjacentHTML() { throw new Error('Markup sink used'); }
   appendChild(child) { this.children.push(child); return child; }
   replaceChildren() { this.children = []; this.text = ''; }
-  addEventListener() {}
+  addEventListener(name, callback) { this[name] = callback; }
   scrollIntoView() {}
   setAttribute() {}
   removeAttribute() {}
@@ -38,7 +39,8 @@ global.document = {
   querySelectorAll: () => []
 };
 Object.defineProperty(global, 'navigator', {value: {language: 'zh-CN'}, configurable: true});
-global.location = {search: '?token=synthetic-token'};
+global.location = {pathname: '/', search: '?token=synthetic-token'};
+global.history = window.history = {replaceState: () => { location.search = ''; }};
 global.fetch = async () => ({ok: true, json: async () => ({data: {rules: []}})});
 vm.runInThisContext(fs.readFileSync(root + '/strings.js', 'utf8'));
 vm.runInThisContext(fs.readFileSync(root + '/app.js', 'utf8'));
@@ -60,7 +62,21 @@ if (!en.every(key => typeof window.UI_STRINGS.en[key] === 'string' && window.UI_
 if (document.documentElement.lang !== 'zh') throw new Error('Browser language was not selected');
 vm.runInThisContext("language = 'en'; translate();");
 if (document.documentElement.lang !== 'en') throw new Error('Language switch did not apply');
+global.FormData = class { *[Symbol.iterator]() {} };
+global.fetch = async () => ({ok: true, json: async () => ({data: {
+  items: [{kind: 'claim', ref: 'claim-synthetic', content: 'NameOne'}],
+  examined: 1, scan_complete: true, next_cursor: null
+}})});
+vm.runInThisContext("language = 'zh'; browse(false);").then(() => {
+document.getElementById('language').value = 'en';
+document.getElementById('language').change();
+if (!document.getElementById('items').textContent.includes(window.UI_STRINGS.en.claim))
+  throw new Error('Browse kind did not switch language');
+if (!document.getElementById('scan').textContent.includes(window.UI_STRINGS.en.examined))
+  throw new Error('Browse scan did not switch language');
+if (location.search) throw new Error('Launch token remains in browser history');
 console.log(JSON.stringify({literal: true, bilingual: en.length}));
+});
 """
 
 
@@ -83,7 +99,7 @@ def test_html_has_external_scripts_and_styles_and_no_event_handlers():
             assert not any(key.startswith("on") for key in values)
             assert "style" not in values
             if tag == "script":
-                assert values.get("src", "").endswith("?token=__TOKEN__")
+                assert values.get("src", "") in {"/strings.js", "/app.js"}
 
     Page().feed((ASSETS / "index.html").read_text(encoding="utf-8"))
 

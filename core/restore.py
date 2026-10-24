@@ -49,7 +49,8 @@ class InstallationMaintenance:
     context: TrustedContext
 
 
-def _maintenance_context(storage, authority):
+def maintenance_context(storage, authority):
+    """Validate an installation owner capability and return its bound context without writing."""
     if not isinstance(authority, InstallationMaintenance) or not isinstance(authority.context, TrustedContext):
         raise ContractError("ACCESS_DENIED", "restore_authority")
     context = authority.context
@@ -123,7 +124,7 @@ def export_deletion_ledger(
     storage, authority: InstallationMaintenance, *, ledger_format=LEDGER_FORMAT, restoring=False
 ) -> dict:
     """Export the current ledger, or the monotone format for a pre-management rollback."""
-    context = _maintenance_context(storage, authority)
+    context = maintenance_context(storage, authority)
     with storage._transaction(context, writable=False, remaining_seconds=None, restoring=restoring) as tx:
         return _ledger_in_transaction(tx, context, ledger_format)
 
@@ -204,7 +205,7 @@ def fence_disaster_recovery(directory: Path) -> None:
 
 def reconcile_recovery_scopes(storage, authority: InstallationMaintenance, scopes: frozenset[str]) -> None:
     """Retain tombstone-only scope identities without granting them to an entry."""
-    context = _maintenance_context(storage, authority)
+    context = maintenance_context(storage, authority)
     with storage._transaction(context, writable=True, remaining_seconds=10, restoring=True) as tx:
         tx._check(write=True).executemany(
             "INSERT OR IGNORE INTO instance_scopes(scope_id) VALUES (?)", [(s,) for s in sorted(scopes)]
@@ -213,7 +214,7 @@ def reconcile_recovery_scopes(storage, authority: InstallationMaintenance, scope
 
 def finish_disaster_recovery(storage, authority: InstallationMaintenance, *, before_reopen=lambda: None) -> None:
     """Verify truth and persist the caller's receipt while fenced, then reopen admission."""
-    context = _maintenance_context(storage, authority)
+    context = maintenance_context(storage, authority)
     marker, _ = _pending_marker(storage, context)
     with storage._transaction(context, writable=False, remaining_seconds=10, restoring=True) as tx:
         if tx._check().execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -262,7 +263,7 @@ def begin_restore(
     store closed on this ledger already gets its ledger file written again; a marker cut short is written again when
     the store is still the one it was closing (``_closable``).
     """
-    context = _maintenance_context(storage, authority)
+    context = maintenance_context(storage, authority)
     if not _digest_shaped(expected_ledger_sha256):
         raise ContractError("RESTORE_UNVERIFIED", "checkpoint_required")
     data_directory = storage.binding.data_directory
@@ -290,7 +291,7 @@ def stage_recovery_ledger(storage, authority: InstallationMaintenance, ledger) -
     Only installation maintenance can mint this checkpoint. Replay verifies its
     identity, digest and complete shape before opening ordinary admission again.
     """
-    context = _maintenance_context(storage, authority)
+    context = maintenance_context(storage, authority)
     directory = storage.binding.data_directory
     payload = dict(
         installation_id=context.binding.installation_id,
@@ -381,7 +382,7 @@ def pending_restore_ledger(storage, authority: InstallationMaintenance) -> tuple
     store again, when ``_closable`` allows it.  Refused with ``RESTORE_UNVERIFIED`` when neither holds; nothing is
     written.
     """
-    context = _maintenance_context(storage, authority)
+    context = maintenance_context(storage, authority)
     kept = _kept_ledger(storage)
     try:
         _, pending = _pending_marker(storage, context)
@@ -634,7 +635,7 @@ def replay_deletion_ledger(
     preserve_capture_inbox: bool = False,
     reopen: bool = True,
 ) -> dict:
-    context = _maintenance_context(storage, authority)
+    context = maintenance_context(storage, authority)
     marker, checkpoint_epoch = _restore_checkpoint(storage, context, ledger)
     count = 0
     with storage._transaction(context, writable=True, remaining_seconds=remaining_seconds, restoring=True) as tx:

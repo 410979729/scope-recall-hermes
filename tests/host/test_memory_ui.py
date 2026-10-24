@@ -209,6 +209,23 @@ def test_read_requests_and_refused_transport_leave_truth_unchanged(page):
     assert api.management.show(item.ref)["revision"] == 1
 
 
+def test_form_confirmation_uses_real_management_and_json_stays_strict(page):
+    call, api, item, _source = page
+    plan = ok(call, "preview", {"action": "mute", "ref": item.ref}, True)
+    assert call("confirm", {"id": plan["id"], "confirmed": "true"}, True)[0] == 400
+    body = urlencode({"token": call.server.session_token, "id": plan["id"], "confirmed": "true"}).encode()
+    status, _, payload = send(
+        call.server,
+        "/api/confirm",
+        method="POST",
+        token=False,
+        raw=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert status == 200, payload
+    assert api.management.show(item.ref)["value"]["suppressed"]
+
+
 def test_cli_opens_capability_and_closes_on_interrupt(page, monkeypatch, capsys):
     call, api, item, source = page
     monkeypatch.setattr(ui, "open_management", lambda args: api.management)

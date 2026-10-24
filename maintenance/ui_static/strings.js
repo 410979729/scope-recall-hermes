@@ -1,5 +1,4 @@
 "use strict";
-// Both dictionaries share keys so switching language never drops an interface label.
 window.UI_STRINGS = {
   "en": {
     "local": "Your memory, managed on this computer",
@@ -76,7 +75,10 @@ window.UI_STRINGS = {
     "rules": "Active rules",
     "effective": "Effective mode",
     "show": "Open",
-    "ready": "Ready"
+    "ready": "Ready",
+    "STORE_UNAVAILABLE": "The store is busy or unavailable. Try again.",
+    "INTERNAL_ERROR": "The request could not be completed. Try again.",
+    "private_rules_preview": "Private rules changed. Create a new preview."
   },
   "zh": {
     "local": "在这台电脑上管理自己的记忆",
@@ -153,6 +155,9 @@ window.UI_STRINGS = {
     "rules": "生效规则",
     "effective": "当前模式",
     "show": "打开",
-    "ready": "就绪"
+    "ready": "就绪",
+    "STORE_UNAVAILABLE": "记忆库忙碌或暂时无法访问，请重试。",
+    "INTERNAL_ERROR": "请求未能完成，请重试。",
+    "private_rules_preview": "私人规则已变化，请重新预览。"
   }
 };

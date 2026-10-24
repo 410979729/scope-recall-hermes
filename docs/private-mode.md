@@ -56,6 +56,12 @@ accepted only with `--all` and takes a duration such as `30m`,
 `12h` or `7d`. Without it a rule stays until `off`. A timed rule ends on time
 without another command; `off --all` can end it early.
 
+The owner can still browse, inspect history, correct and manage stored memory
+with the local memory command or [management page](ui.md) while private mode
+applies. Owner inspection makes no model or embedding request and preserves
+scope and deletion checks. Agents cannot use owner inspection; full mode
+continues to block their recall and outbound work.
+
 Overlapping rules take the stricter mode: `full` beats `read-only`. Closing one
 rule never closes another, so `off --all` does not release a session or project
 rule, and `off --session` does not release the whole store.

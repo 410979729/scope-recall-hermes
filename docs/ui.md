@@ -16,8 +16,10 @@ scope-recall ui --host hermes --instance-root /path/to/host-home
 The command prints a link and opens it in your default browser. If the browser
 does not open, copy the printed link into a browser on this computer. Keep the
 terminal open while using the page. Press Ctrl+C in that terminal to stop it;
-the link then stops working. Starting again creates a fresh link. Treat the
-link as access to your memory and keep it private.
+the server stops accepting requests and waits for an active action or export to
+finish before returning. The link works once: opening it starts a page session
+and removes the token from the address bar. Reloading needs a new launch; stop
+and restart the command for a fresh link. Keep the link private.
 
 The interface uses Chinese when the browser's preferred language is Chinese,
 and English otherwise. The language selector switches between both languages.
@@ -33,7 +35,7 @@ and English otherwise. The language selector switches between both languages.
   Open an item to read its content, source links and version history. Continue
   under history loads older versions. Open source links to read original words.
 - **Corrections and deletion** start from an item's detail view. A derived
-  fact can be corrected or withdrawn; original words cannot be edited. Mute,
+  fact needs a correction value or an explicit withdrawal; original words cannot be edited. Mute,
   unmute and delete display their affected items and sources before execution.
   To delete a session or time range, enter its scope, agent, session and time filters in Browse and search
   and choose Delete session or time range. Review the preview, then choose
@@ -49,8 +51,10 @@ and English otherwise. The language selector switches between both languages.
   duration in seconds. Closing one target leaves overlapping rules in force.
   Review and confirm each switch. See [private mode](private-mode.md) for its
   time and project boundaries.
-  A whole-store full rule also refuses detail and history reads through the
-  existing owner API; close the rule from this page before opening those views.
+  You can still browse, read history, correct and manage your memory while full
+  mode applies, through this page or the memory command. Agents cannot recall
+  it. If the rules change after a close preview, confirmation is refused;
+  create a new preview before closing the current rules.
 - **Export** writes visible memory to a new directory or a new path ending in
   `.zip`, with optional retained attachments. Type the destination on this
   computer, review it and confirm. An existing destination is refused. See
@@ -69,12 +73,18 @@ records remain managed by the store's existing interfaces.
 ## How it stays local
 
 The server listens only on `127.0.0.1`, using a free port chosen by the operating
-system. There is no option to expose it on a network address. Every page,
-script, stylesheet and API request needs the random token created at startup,
-and the Host header must name `127.0.0.1` or `localhost` with that exact port.
-Changing memory requires POST with a token in a request header or form field;
-cookies and a token in the URL alone cannot authorize a change. When the
-browser supplies an Origin, it must match the local page address.
+system. There is no option to expose it on a network address. The Host header
+must name `127.0.0.1` or `localhost` with that exact port. The single-use link
+exchanges its launch token for a separate credential held by the page. The page
+sends that credential in a header; it uses no authentication cookie. Scripts
+and styles have ordinary local URLs without tokens and contain no memory.
+Changing memory requires POST with the session credential in a header, or as
+the first field named `token` of a URL-encoded form. Form switches accept
+`true`, `1`, `on` or `false`, `0`, `off`; JSON switches require real booleans.
+Cookies and URL tokens cannot authorize a change. A supplied Origin must match
+the local page address. Each request has five seconds to deliver its headers
+and body, bodies are limited to 64 KiB, and at most sixteen handlers run at
+once. A slow or excess connection is closed without reaching the store.
 
 Memory is displayed as text, including any HTML or script someone wrote in a
 conversation. Scripts and styles ship inside the package; there are no external
@@ -82,3 +92,8 @@ page resources, inline scripts or external services used by this page. Browser
 policy prevents framing and referrer disclosure, and responses are not cached.
 These protections do not protect against another program or person who already
 has access to this computer and the printed link.
+
+A busy or unavailable store returns a clear error so you can retry. Other
+request failures use fixed messages without revealing stored content. Malformed
+requests receive the same browser protections as ordinary responses. Language
+changes also update labels on browse results already on the page.
