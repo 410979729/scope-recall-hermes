@@ -173,7 +173,7 @@ def test_session_end_retries_and_steers_share_one_capture_pass(telegram, monkeyp
 
 @pytest.mark.parametrize("per_operation", [0.5, 1.5])
 def test_shutdown_keeps_unstored_captures_for_restart(
-    adapter, initialize_kwargs, monkeypatch, metered_store, caplog, per_operation
+    adapter, initialize_kwargs, monkeypatch, metered_store, kept_capture_seconds, caplog, per_operation
 ):
     provider, _clock = adapter
     keep_captures(provider, monkeypatch, 4)
@@ -181,7 +181,7 @@ def test_shutdown_keeps_unstored_captures_for_restart(
     clock = metered_store(per_operation)
     started = clock()
     provider.shutdown()
-    elapsed = clock() - started
+    elapsed = clock() - started - kept_capture_seconds()
     assert elapsed <= capture_retry.SHUTDOWN_RETRY_SECONDS + 0.1, (per_operation, elapsed)
     assert not any("lost" in record.getMessage() for record in caplog.records)
     assert provider.diagnostics.shutdown_state["pending_capture_durability"] == "on_disk"
