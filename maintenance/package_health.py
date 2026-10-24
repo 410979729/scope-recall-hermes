@@ -64,6 +64,8 @@ def dependency_health(requirements, *, version_lookup=metadata.version) -> dict:
 
     Missing optional extras are not drift. If an optional package is installed,
     its declared extra requirement still applies. Dev extras are not runtime.
+    Each row names the extra that declares it (None for a base requirement), so
+    the doctor can leave out an extra its host never runs (``host_dependencies``).
     """
     try:
         from packaging.markers import default_environment
@@ -82,18 +84,28 @@ def dependency_health(requirements, *, version_lookup=metadata.version) -> dict:
             except metadata.PackageNotFoundError:
                 pass
             env = default_environment()
-            required = req.marker is None or req.marker.evaluate({**env, "extra": ""})
-            optional = any(
-                req.marker and req.marker.evaluate({**env, "extra": extra}) for extra in ("lancedb", "codex")
-            )
-            if not required and not (optional and installed is not None):
+            marker = req.marker
+            required = marker is None or marker.evaluate({**env, "extra": ""})
+            extra = None
+            if marker is not None and not required:
+                for name in ("lancedb", "codex"):
+                    if marker.evaluate({**env, "extra": name}):
+                        extra = name
+                        break
+            if not required and not (extra is not None and installed is not None):
                 continue
             try:
                 ok = installed is not None and req.specifier.contains(installed, prereleases=True)
             except InvalidVersion:
                 ok = False
             rows.append(
-                {"name": canonicalize_name(req.name), "spec": str(req.specifier), "installed": installed, "ok": ok}
+                {
+                    "name": canonicalize_name(req.name),
+                    "spec": str(req.specifier),
+                    "installed": installed,
+                    "ok": ok,
+                    "extra": extra,
+                }
             )
     except (ValueError, TypeError):
         return {"status": "unavailable", "reason": "requirement_invalid"}
@@ -151,6 +163,26 @@ def version_health(instance: Path, probe: dict, running: dict) -> dict:
     return {"status": "mismatch" if mismatch else ("ok" if complete else "incomplete"), "versions": versions}
 
 
+def host_dependencies(drift: dict, host: str) -> dict:
+    """``drift`` as it applies to ``host``: the ``codex`` extra's pins count only where its MCP server runs.
+
+    That extra serves the MCP server of the client hosts. A Hermes host never
+    imports it, and another package in a Hermes environment may pin ``mcp``
+    past the extra's cap, which no setting of this package could reconcile.
+    Rows the host does not run stay listed with ``applies`` false. A probe
+    without per-row extras keeps its own verdict.
+    """
+    rows = drift.get("requirements")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) and "extra" in row for row in rows):
+        return drift
+    from scope_recall.adapters.hermes.shared_entries import CLIENT_HOSTS
+
+    unused = () if host in CLIENT_HOSTS else ("codex",)
+    rows = [{**row, "applies": row["extra"] not in unused} for row in rows]
+    status = "mismatch" if any(row["applies"] and not row["ok"] for row in rows) else "ok"
+    return {**drift, "status": status, "requirements": rows}
+
+
 def apply_package_health(report, instance: Path, probe: dict) -> None:
     """Attach independent checks and named gaps to the public doctor report.
 
@@ -159,6 +191,7 @@ def apply_package_health(report, instance: Path, probe: dict) -> None:
     once the live breadcrumbs that ``version_mismatch`` compares have been read.
     """
     checks = {name: probe.get(name, {"status": "unavailable"}) for name in ("hot_patched", "dependency_drift")}
+    checks["dependency_drift"] = host_dependencies(checks["dependency_drift"], report.host)
     checks["version_mismatch"] = version_health(instance, probe, report.running_code)
     report.package_health = checks
     report.checks = [item for item in report.checks if item["name"] not in checks]

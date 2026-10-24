@@ -1777,6 +1777,42 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
     )
 
 
+def test_codex_extra_pins_count_only_on_hosts_that_run_its_mcp_server(tmp_path):
+    """Another package in a Hermes environment may pin ``mcp`` past the codex extra's cap; that host never loads the
+    MCP server the extra serves, so the cap is no drift there.  A base requirement still counts on every host."""
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.package_health import apply_package_health, dependency_health
+
+    requirements = ['mcp<=2.1.0,>=2.0.0; extra == "codex"', 'pyarrow<25,>=24; extra == "lancedb"', "packaging>=24"]
+    installed = {"mcp": "2.3.0", "pyarrow": "24.0.0", "packaging": "25.0"}
+    drift = dependency_health(requirements, version_lookup=installed.__getitem__)
+    assert drift["status"] == "mismatch"
+
+    def doctor(host, probe):
+        report = DoctorReport(host=host, status="degraded")
+        apply_package_health(report, tmp_path, {"dependency_drift": probe})
+        return report
+
+    hermes = doctor("hermes", drift)
+    assert "dependency_drift" not in hermes.capability_gaps
+    assert hermes.package_health["dependency_drift"]["status"] == "ok"
+    assert {row["name"]: row["extra"] for row in drift["requirements"]} == {
+        "mcp": "codex",
+        "pyarrow": "lancedb",
+        "packaging": None,
+    }
+    assert [row["name"] for row in hermes.package_health["dependency_drift"]["requirements"] if not row["applies"]] == [
+        "mcp"
+    ]
+    for host in ("codex", "claude-code", "workbuddy", "dsh"):
+        assert "dependency_drift" in doctor(host, drift).capability_gaps, host
+    installed.update(mcp="2.0.0", packaging="23.0")
+    base = dependency_health(requirements, version_lookup=installed.__getitem__)
+    assert "dependency_drift" in doctor("hermes", base).capability_gaps
+    # A probe without per-row extras keeps its own verdict.
+    assert "dependency_drift" in doctor("hermes", {"status": "mismatch"}).capability_gaps
+
+
 def test_package_health_doctor_three_way_versions(tmp_path, monkeypatch):
     from scope_recall.maintenance import package_health
     from scope_recall.runtime.running_code import record_running_code
