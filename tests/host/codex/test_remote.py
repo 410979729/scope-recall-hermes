@@ -264,11 +264,7 @@ def test_claude_code_prompt_and_record_reach_the_entry_once(served, tmp_path):
 def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(
     served, tmp_path, monkeypatch, slow_capture_store, slow_write
 ):
-    """A hook permitted by metadata is kept before a content request that fails.
-
-    The later flush preserves its original moment, including when the store is slow.
-    An unverified offline hook is covered by the private-mode transport tests.
-    """
+    """An ordinary hook is kept offline and its later flush preserves the original moment."""
     if slow_write:
         slow_capture_store()
     root, _homes, ports = served
@@ -288,16 +284,8 @@ def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(
     spooled = list((offline["state_dir"] / "spool").glob("*.json"))
     assert len(spooled) == 1
     kept = json.loads(spooled[0].read_text(encoding="utf-8"))
-    clock = kept["clock"]
-
-    def moment(stamp):
-        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-
-    kept_at = (
-        (moment(kept["observed_at"]) + (moment(clock["server_at"]) - moment(clock["client_at"])))
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    assert kept["clock"] is None, "ordinary hooks need no metadata calibration"
+    kept_at = kept["observed_at"]
     online = dict(offline, url=f"http://127.0.0.1:{ports['codex']}")
     _hook(
         online,
@@ -358,10 +346,11 @@ def test_a_server_that_is_away_holds_hooks_up_once_a_minute(tmp_path, monkeypatc
     marker = config["state_dir"] / "server-away"
     assert marker.is_file()
     tried = []
-    monkeypatch.setattr(remote_client, "_private_batch", lambda *args: tried.append(args) or None)
+    post = remote_client._post
+    monkeypatch.setattr(remote_client, "_post", lambda *args: tried.append(args) or post(*args))
     assert _hook(config, dict(prompt, turn_id="TEST-t2")) == {}
     assert tried == [], "a hook does not try while the server was away less than a minute ago"
-    assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 0, "unverified hooks retain no content"
+    assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 2, "ordinary offline hooks stay queued"
     old = time.time() - remote_client.AWAY_SECONDS - 1
     os.utime(marker, (old, old))
     _hook(config, dict(prompt, turn_id="TEST-t3"))
@@ -403,7 +392,7 @@ def test_the_server_logs_each_hook_and_each_refused_request(served, tmp_path):
         handler.close()
     log = (homes["claude-code"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
     assert "hook UserPromptSubmit: " in log
-    assert "refused POST /private/check from 127.0.0.1: no valid token" in log
+    assert "refused POST /hook from 127.0.0.1: no valid token" in log
     assert "UserPromptSubmit: HTTP 401" in (wrong["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
 
 

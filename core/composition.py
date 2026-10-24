@@ -247,6 +247,11 @@ class MemoryCore:
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
             return private.CaptureGuard.read(tx, observations)
 
+    def private_rules_exist(self, context: TrustedContext) -> bool:
+        """Return only whether the entry's store has active or closed private intervals."""
+        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+            return private.has_rules(tx)
+
     def private_check(
         self, context: TrustedContext, times, *, rule_marker: int | None = None, project_unverified: bool = False
     ) -> dict:
@@ -271,6 +276,7 @@ class MemoryCore:
             raise ContractError("INPUT_INVALID", "times")
         now = utc_timestamp(self.clock.utc_now())
         with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+            private_rules = private.has_rules(tx)
             events = [dict(occurred_at=now, recorded_at=now), *[dict(moment, recorded_at=now) for moment in moments]]
             intervals = private.matching_intervals(tx, context, events=events)
             if project_unverified:
@@ -282,6 +288,7 @@ class MemoryCore:
             if invalidated:
                 mode = "full"
         return {
+            "private_rules": private_rules,
             "mode": mode or private.MODE_NONE,
             "capture_blocked": any(decisions) or mode is not None,
             "decisions": decisions,

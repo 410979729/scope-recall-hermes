@@ -70,6 +70,34 @@ def test_the_table_holds_interval_metadata_and_nothing_spoken(app):
     assert not columns.intersection({"content", "body", "text", "message", "prompt", "query"})
 
 
+@pytest.mark.parametrize("target", ["global", "session", "project"])
+def test_private_check_reports_any_rule_history_with_an_indexed_existence_query(app, target):
+    core, ctx, clock, owner = app
+    assert core.private_check(ctx, [])["private_rules"] is False
+    args = (
+        {"session": "TEST-other-session"}
+        if target == "session"
+        else {"project": "C:/TEST/other"}
+        if target == "project"
+        else {}
+    )
+    owner.private_on(target=target, **args)
+    assert core.private_check(ctx, [])["private_rules"] is True
+    clock.advance(60)
+    owner.private_off(target=target, **args)
+    assert core.private_check(ctx, [])["private_rules"] is True
+    with core.storage.read(ctx) as tx:
+        conn = tx._check()
+        statements = []
+        conn.set_trace_callback(statements.append)
+        assert private.has_rules(tx) is True
+        conn.set_trace_callback(None)
+        existence = next(sql for sql in statements if "private_intervals" in sql)
+        assert "LIMIT 1" in existence.upper()
+        plan = " ".join(str(tuple(row)) for row in conn.execute("EXPLAIN QUERY PLAN " + existence))
+        assert "COVERING INDEX private_target" in plan
+
+
 def test_capture_is_decided_at_event_time_and_survives_turning_the_rule_off(app):
     core, ctx, clock, owner = app
     owner.private_on(target="session", session=ctx.session_id, mode="full")

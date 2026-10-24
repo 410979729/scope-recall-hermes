@@ -402,15 +402,16 @@ def handle_request(
         raise RemoteServerError("payload too large")
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
     payload = {key: value for key, value in payload.items() if key != "transcript_path"}
-    body, refused = _checked_body(config, {**body, "payload": payload})
+    body, refused, private_rules = _checked_body(config, {**body, "payload": payload})
     payload = body["payload"]
     if refused:
         record = RecordLines.from_dsh(payload) if config.host == "dsh" else record_from_wire(body.get("record"))
         return dict(
-            result={},
+            result={"private_rules": private_rules} if config.host == "dsh" else {},
             through=record.lines[-1][0] if record is not None and record.lines else None,
             retry=False,
             reason="private_mode",
+            private_rules=private_rules,
         )
     # The hook's own times are the client's (moved back if more than a minute ahead, see CLOCK_AHEAD_SECONDS), so a
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
@@ -437,6 +438,8 @@ def handle_request(
         closing = time.monotonic()
         handler.close()
     closed = round((time.monotonic() - closing) * 1000)
+    if config.host == "dsh":
+        result = {**result, "private_rules": private_rules}
     # What the request's handler decided of the answer (slow, late, without_vectors, failed) comes first; an answer
     # still on its way when the handler was done is its slow or late.
     warm = None if asked is None else handler.resident_outcome or asked.outcome
@@ -448,6 +451,7 @@ def handle_request(
     # ``error``: the capture's code, or the class of what failed it when it was no contract error (a store that is
     # locked or broken), which the log would otherwise not name.
     return {
+        "private_rules": private_rules,
         "result": result,
         "through": record.through if record is not None else None,
         "reason": handler.diagnostics.last_reason,
@@ -480,13 +484,14 @@ def _checked_body(config, body):
             state = dict(answer)
         else:
             state["recall_blocked"] |= answer["recall_blocked"]
+        state["private_rules"] = answer.get("private_rules", False)
     state["event_decisions"] = decisions
     state["full_event_decisions"] = full_decisions
     filtered, state = eligible_body(body, state)
     refused = state["recall_blocked"] or (
         state["capture_blocked"] and body["payload"].get("hook_event_name") != "UserPromptSubmit"
     )
-    return filtered, refused
+    return filtered, refused, state["private_rules"]
 
 
 def build_app(config: RemoteServerConfig, *, warm: bool = False):

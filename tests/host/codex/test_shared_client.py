@@ -4687,6 +4687,9 @@ def test_a_stop_that_stores_part_of_its_lines_is_followed_by_the_next_without_wa
 def test_a_hook_that_fails_says_why_and_retains_no_unverified_turn(dsh, tmp_path):
     """An interpreter that cannot import the package reports the recall failure and keeps no unverified words."""
     _root, home = dsh
+    spool = tmp_path / "TEST-spool"
+    spool.mkdir()
+    (spool / "private-rules.json").write_text('{"private_rules":true}', encoding="utf-8")
     result = _run_plugin(
         {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "expectBacklog": True},
         env={"SR_FAKE_HOOK": str(DSH_HARNESS / "fake_hook.mjs"), "SR_FAKE_HOOK_MODE": "broken"},
@@ -4700,6 +4703,8 @@ def test_a_hook_that_fails_says_why_and_retains_no_unverified_turn(dsh, tmp_path
 def test_a_hook_that_cannot_run_discards_unverified_words_and_the_step_goes_on(dsh, tmp_path):
     _root, home = dsh
     spool = tmp_path / "TEST-spool"
+    spool.mkdir()
+    (spool / "private-rules.json").write_text('{"private_rules":true}', encoding="utf-8")
     result = _run_plugin(
         {"python": str(tmp_path / "TEST-no-python.exe"), "home": str(home), "spool": str(spool), "expectBacklog": True}
     )

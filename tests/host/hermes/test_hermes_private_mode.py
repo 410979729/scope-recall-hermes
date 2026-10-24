@@ -4,7 +4,7 @@ from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
-from scope_recall.adapters.hermes import kept_captures
+from scope_recall.adapters.hermes import capture_retry, kept_captures
 from scope_recall.adapters.hermes.boundary import STEER_KIND
 from scope_recall.adapters.hermes.capture import RetryCapture
 from scope_recall.core.management import MemoryManagement
@@ -203,7 +203,7 @@ def test_post_llm_keeps_only_metadata_for_private_observations(adapter, mode, ca
 
 
 @pytest.mark.parametrize("expire", [False, True])
-def test_discarding_private_retry_removes_it_once_and_does_not_count_as_persisted(adapter, expire):
+def test_discarding_private_retry_removes_it_once_and_does_not_count_as_persisted(adapter, expire, monkeypatch):
     provider, clock = adapter
     owner, ctx = _owner(provider)
     identity = provider._require_identity()
@@ -218,6 +218,8 @@ def test_discarding_private_retry_removes_it_once_and_does_not_count_as_persiste
         0,
     )
     if expire:
+        # Expiry reads the monotonic clock, which starts near zero on a freshly booted runner.
+        monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", -1.0)
         assert provider._retry.give_up_expired(tuple(provider._retry.captures.items())) == [key]
     else:
         assert provider._retry.keep_all_on_disk() == (0, 0)

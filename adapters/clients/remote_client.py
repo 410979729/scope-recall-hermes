@@ -8,9 +8,15 @@ what the record shows being said (``transcript.said``); the cursor moves only as
 When the server cannot be reached the hook answers with nothing, so the client is held up only briefly: a
 connection that has not opened in ``CONNECT_SECONDS`` is given up, and for ``AWAY_SECONDS`` after that no
 hook tries.  A Claude Code session's record carries what was said to that session's next Stop that gets
-through; what a session had not sent when it ended stays unsent. A Codex hook whose metadata check permitted
-capture is kept in a spool before its content request; a full spool drops its oldest. An unverifiable hook is
-neither kept nor sent, so an offline server cannot cause private content to be retained here.
+through; what a session had not sent when it ended stays unsent. Until the server reports any private-rule
+history, a Codex hook is kept before its content request without a metadata check, including during an outage;
+a later hook that reaches the server starts the spool's flush. A full spool drops its oldest. Each server answer
+updates a content-free boolean in the state folder; a missing answer history means ordinary offline queues.
+Once private history is known, hooks must pass metadata checks before being kept or sent, and again before
+transmission. An unverifiable new hook is neither kept nor sent; existing queued hooks wait for verification.
+After the first rule is created, a client that has not heard of it can still send content to the owner's own
+server, which drops private events by their original time. Content queued during that window stays on this
+client until its next successful check discards it unsent. Closed private intervals also keep checks enabled.
 Requests go straight to the server, never through a proxy this machine has for the internet, which cannot
 reach a private address.  What did not get through, and what the spool dropped, is logged in the state folder.
 A WorkBuddy client (``host: workbuddy``) is forwarded as the claude-code host's is, its record read with
@@ -189,14 +195,15 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
             _connection_failed(config, event, exc)
             return None
         connection.sock.settimeout(max(0.2, until - time.monotonic()))
-        state = _private_check(config, body, until - time.monotonic())
-        if state is None:
-            return None
-        body, state = eligible_body(body, state)
-        if _private_drop(state, event):
-            return None
-        if state["capture_blocked"]:
-            body = _recall_only(body)
+        if _private_rules(config):
+            state = _private_check(config, body, until - time.monotonic())
+            if state is None:
+                return None
+            body, state = eligible_body(body, state)
+            if _private_drop(state, event):
+                return None
+            if state["capture_blocked"]:
+                body = _recall_only(body)
         connection.request(
             "POST",
             f"{url.path}/hook",
@@ -221,10 +228,36 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
         _away_marker(config).unlink(missing_ok=True)
     except OSError:
         pass
+    if isinstance(answer, dict):
+        _remember_private_rules(config, answer)
     return answer if isinstance(answer, dict) else None
 
 
 # -- private state before anything is sent -----------------------------------
+
+
+def _private_rules(config: dict[str, Any]) -> bool:
+    """Use ordinary offline queues until the server reports private history."""
+    try:
+        answer = json.loads((config["state_dir"] / "private-rules.json").read_text(encoding="utf-8"))
+        return isinstance(answer, dict) and answer.get("private_rules") is True
+    except (OSError, ValueError):
+        return False
+
+
+def _remember_private_rules(config: dict[str, Any], answer: dict[str, Any]) -> None:
+    """Atomically retain only the latest boolean; readers must never see a partial file."""
+    value = answer.get("private_rules")
+    if type(value) is not bool:
+        return
+    folder = config["state_dir"]
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        pending = folder / f"private-rules.{os.getpid()}.tmp"
+        pending.write_text(json.dumps({"private_rules": value}), encoding="utf-8", newline="\n")
+        os.replace(pending, folder / "private-rules.json")
+    except OSError as exc:
+        _log(config, f"private rule metadata not kept ({type(exc).__name__})")
 
 
 def _private_drop(state: dict[str, Any], event: object) -> bool:
@@ -274,6 +307,8 @@ def _private_check(config: dict[str, Any], body: dict[str, Any], timeout: float)
         else:
             state["capture_blocked"] |= answer["capture_blocked"]
             state["recall_blocked"] |= answer["recall_blocked"]
+        if type(answer.get("private_rules")) is bool:
+            state["private_rules"] = answer["private_rules"]
     if state is not None:
         state["event_decisions"] = decisions
         state["full_event_decisions"] = full_decisions
@@ -391,6 +426,7 @@ def _private_batch(
         or type(answer.get("recall_blocked")) is not bool
     ):
         return None
+    _remember_private_rules(config, answer)
     return answer
 
 
@@ -455,13 +491,14 @@ def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
                 _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
                 item.unlink(missing_ok=True)
                 continue
-            state = _private_check(config, kept, min(left, 1.0))
-            if state is None:
-                break
-            if state["capture_blocked"] or state["recall_blocked"]:
-                item.unlink(missing_ok=True)
-                _log(config, f"flush: dropped one kept hook under private mode {state.get('mode')}")
-                continue
+            if _private_rules(config):
+                state = _private_check(config, kept, min(left, 1.0))
+                if state is None:
+                    break
+                if state["capture_blocked"] or state["recall_blocked"]:
+                    item.unlink(missing_ok=True)
+                    _log(config, f"flush: dropped one kept hook under private mode {state.get('mode')}")
+                    continue
             answer = _post(config, kept, min(left, 30.0))
             if answer is None or answer.get("retry"):
                 break
@@ -626,8 +663,28 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     return result if isinstance(result, dict) else {}
 
 
+def _send_ordinary(config: dict[str, Any], body: dict[str, Any], until: float) -> dict[str, Any] | None:
+    """Keep ordinary offline hooks before connecting, including during the server cooldown."""
+    payload = body["payload"]
+    event = payload.get("hook_event_name")
+    spooled = (
+        _spool(config, payload, body["observed_at"], clock=body.get("clock"))
+        if config["host"] == "codex" and event in _SPOOLED
+        else None
+    )
+    if _server_away(config):
+        _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
+        return None
+    answer = _post(config, body, until - time.monotonic())
+    if spooled is not None and answer is not None and not answer.get("retry"):
+        spooled.unlink(missing_ok=True)
+    return answer
+
+
 def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) -> dict[str, Any] | None:
-    """Verify metadata before spooling or sending content; return the server or private notice answer."""
+    """Send ordinary hooks directly; verify before keeping or sending once private history is known."""
+    if not _private_rules(config):
+        return _send_ordinary(config, body, until)
     payload = body["payload"]
     event = payload.get("hook_event_name")
     if _server_away(config):

@@ -595,7 +595,19 @@ class CodexHookHandler:
         if type(payload) is not dict:
             self.note("invalid_root")
             return {}
-        return self.handle_payload(payload)
+        result = self.handle_payload(payload)
+        if self.host == "dsh" and payload.get("hook_event_name") != "PrivateCheck":
+            session_id, audience = self.session_of(payload), self.audience_of(payload)
+            if session_id is not None and audience is not None:
+                # The native spool learns about rule history from its ordinary
+                # hooks, without starting a process for each message.
+                result = {
+                    **result,
+                    "private_rules": self.core.private_rules_exist(
+                        self.context(audience, session_id, "host_generated")
+                    ),
+                }
+        return result
 
     # -- capture ---------------------------------------------------------
 

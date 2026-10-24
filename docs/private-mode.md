@@ -99,9 +99,11 @@ is.
 
 Events from before the interval remain eligible for backfill. Hermes preserves
 the first observed time when a later callback repeats an event. A capture whose
-private state cannot be read is neither buffered nor kept on disk by Hermes. A
-remote client whose metadata check fails sends nothing and keeps no new spool
-entry; a previously kept entry waits for a successful check.
+private state cannot be read is neither buffered nor kept on disk by Hermes.
+Remote clients and dsh remember whether their store has ever had a private rule.
+Until they hear that it has, they keep ordinary offline queues without checking
+each message first. Once they know a rule exists, a failed check sends nothing
+and keeps no new queue entry; an older entry waits for a successful check.
 
 ## Recall and background outbound work
 
@@ -122,8 +124,8 @@ entity, trace, object inspection and collection. Each checks again before releas
 content, including when full mode opened and closed during the lookup. Provider
 requests carry that conversation's or source's privacy check through queues and
 transport locks. Each physical request checks after obtaining its connection or
-lock, including each part of a split embedding batch. Remote clients also recheck
-after opening the content connection. There remains a window
+lock, including each part of a split embedding batch. Remote clients that know
+private rules exist also recheck after opening the content connection. There remains a window
 between the last check and transmission: content already leaving a remote client
 can reach the owner's own entry server. That server still rejects captures whose
 event time falls inside the interval. A request already transmitted to a
@@ -145,7 +147,7 @@ gate: it is a user-facing explanation.
 |---|---|---|---|
 | ordinary | Stored in the local SQLite store. Source text may be sent to the configured consolidation model. Embedding sends the bounded source text to the configured embedding service. | The captured event keeps the attachment's metadata and ref; retained bytes stay in the local content-addressed directory and are not sent to a model or embedding service. | Recalled locally; a query may be embedded by the configured embedding service. |
 | `read-only` | Not stored or sent for capture. The prompt or explicit recall question may be sent to the configured embedding service for recall. | Not newly captured; the automatic recall still runs. | Recalled; the query may be sent to the configured embedding service. |
-| `full` | Not stored, not sent by Scope Recall. | Not newly captured. | Not recalled; no query embedding, consolidation or candidate evaluation. |
+| `full` | Not stored in the memory store or sent to an embedding or model service. Remote queue and delivery limits are explained below. | Not newly captured. | Not recalled; no query embedding, consolidation or candidate evaluation. |
 
 “Configured service” means the routes in the installation's runtime
 configuration: `auxiliary.embedding` and `auxiliary.consolidation`, each with its
@@ -158,14 +160,32 @@ conversation history under the host's control.
 
 ## Host behavior and limits
 
+Each remote hook answer and privacy-check answer tells the client whether its
+store holds any private rule, including a rule that has ended. The client saves
+only that yes-or-no answer. A client with no saved answer starts with ordinary
+queues. Stores that have never used private mode therefore keep their usual
+offline behavior and make no extra requests before sending a hook.
+
+After the first private rule is created, the next hook from a client that has
+not heard about it can still carry content to the owner's own server. The server
+drops private events by the time they happened, before capture or recall. Its
+answer makes the client's next hook use strict checks. A message queued on that
+client during this window stays there until its next successful check discards
+it without sending it. Creating a rule on the server cannot immediately reach
+a client that is offline.
+
 - Codex, Claude Code, WorkBuddy and dsh local hooks all capture through the same
   client handler and core write, so a full or read-only interval refuses their
   events at the same boundary.
-- A remote client asks its entry's server for a metadata-only private check
-  before it sends a hook. Only a session id, a project path and event instants
-  travel in that request. If the check cannot be answered, the client does not
-  send the content; no new hook is spooled. Existing spool entries wait for verification
-  and are checked again before sending. Read-only recall sends the question and
+- A remote client whose saved answer says no sends hooks directly. Codex hooks
+  are queued before sending, including while the server is unreachable; the next
+  hook that reaches it starts sending the queue. When the saved answer says yes,
+  the client asks its entry's server for a content-free check before keeping or
+  sending a hook, and checks again before transmission. Only a session id, a
+  project path and event times travel in that request. If the check cannot be
+  answered, the client sends no content and keeps no new queue entry. Existing
+  entries wait for verification; refused entries are discarded without sending.
+  Read-only recall sends the question and
   routing metadata to the configured entry server, without attachments or a new
   capture spool. The server checks the same event time on receipt, so a
   spool entry that was already late is still discarded. The protocol records
@@ -200,14 +220,17 @@ conversation history under the host's control.
   Use `--all` for remote tools that provide no trusted directory.
 - A client that provides no trusted conversation id on its tool boundary cannot
   apply a session rule to that tool call. Use `--all` for those tools.
-- dsh's native plugin obtains a content-free Core decision before writing a
-  message to its local spool. Full, read-only or an unverifiable decision drops
-  the record before plaintext reaches disk. Recovery checks each old spool record
-  before copying it, using its original time and directory in bounded metadata
-  batches. A refused record is discarded. When the check is unavailable, the old
-  file stays available for retry and its plaintext is not copied. The host's own conversation log
+- dsh's native plugin uses its saved answer for messages and recovery. When it
+  says no, messages are appended at once without starting a check process, and
+  recovery adopts old queues as usual. When it says yes, each message needs a
+  content-free Core decision before it reaches disk. Full, read-only or an
+  unverifiable decision drops the new record. Sending and recovery check old
+  records using their original time and directory in bounded batches. A refused
+  record is discarded without sending or copying it. When a check is unavailable,
+  the old file stays available for retry and its plaintext is not copied. The host's own conversation log
   remains under the host's control.
 
+The yes-or-no answer uses an indexed existence check without reading content.
 Current-state checks query active rules; capture queries only the indexed
 session, global and ancestor-directory intervals that can cover the event.
 Closed history remains available for late events without being loaded for every
