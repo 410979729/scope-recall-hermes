@@ -2,6 +2,10 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [3.14.2] - Unreleased
+
+Three Hermes steer tests no longer depend on the speed of the runner's disk. Each put back its own patch of the adapter's time with `monkeypatch.undo()`, which also removed the store clock that the test's fixtures install through the same `monkeypatch`; its later captures then ran on real storage time, and on a slow disk they were not stored yet when the test read the source rows. The tests patch inside `monkeypatch.context()`, a restart test no longer calls `undo()`, and `metered_store` fails a test at teardown when an attribute the clock replaced has its value from before the clock again. Runtime behavior is unchanged.
+
 ## [3.14.1] - 2026-10-24
 
 On a Hermes host, `doctor` no longer reports `dependency_drift` for the pins of the `codex` extra (`mcp`, `pydantic`). That extra serves the MCP server that only Codex, Claude Code, WorkBuddy and dsh run, so a Hermes environment where another package pins `mcp` past the extra's cap was reported degraded with no setting that could clear it. The doctor still lists those rows, with `applies: false`, and still checks them for the client hosts.

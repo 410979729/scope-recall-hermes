@@ -1827,7 +1827,6 @@ def test_a_busy_store_at_the_commit_or_at_a_deferral_is_said_as_pending(tmp_path
     assert RuntimeInstance._replay_ingress(fake, 8.0) == (capture_inbox.INGRESS_PENDING_GAP,)
     counts, _gaps = _ingress_report(fake.ingress_receipts)
     assert (counts["ingress_given_up"], counts["ingress_deferred"]) == (0, 0), "the store never took the give-up"
-    monkeypatch.undo()
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [(last,)]
 
