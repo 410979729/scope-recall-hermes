@@ -251,6 +251,11 @@ class RecallPolicy:
     """Admission thresholds are injected by the frozen space configuration."""
 
     vector_threshold: float | None
+    #: Automatic injection needs independent lexical coverage or vector evidence;
+    #: fusion ranks admitted evidence but cannot turn a weak hit into a strong one.
+    auto_lexical_min_coverage: float = 0.20
+    auto_lexical_min_terms: int = 2
+    auto_vector_threshold: float = 0.30
     lexical_min_terms: int = 1
     rrf_k: int = 60
     #: Digest of the space the query is embedded in; only vectors from that
@@ -265,6 +270,12 @@ class RecallPolicy:
         threshold = _finite_score(self.vector_threshold)
         if self.vector_threshold is not None and (threshold is None or not -1.0 <= threshold <= 1.0):
             raise ContractError("INPUT_INVALID", "vector_threshold")
+        for name, low in (("auto_lexical_min_coverage", 0.0), ("auto_vector_threshold", -1.0)):
+            value = _finite_score(getattr(self, name))
+            if value is None or not low <= value <= 1.0:
+                raise ContractError("INPUT_INVALID", name)
+        if type(self.auto_lexical_min_terms) is not int or self.auto_lexical_min_terms < 2:
+            raise ContractError("INPUT_INVALID", "auto_lexical_min_terms")
         if type(self.lexical_min_terms) is not int or self.lexical_min_terms < 1:
             raise ContractError("INPUT_INVALID", "lexical_min_terms")
         if type(self.rrf_k) is not int or self.rrf_k < 1:
@@ -283,6 +294,32 @@ class RecallPolicy:
             )
         ):
             raise ContractError("INPUT_INVALID", "owner_names")
+
+    def automatic_admission(self, candidate: CandidateRef, query: str) -> bool:
+        """Whether a channel's evidence is strong enough for automatic injection.
+
+        Named references and a named day's scoped conversation are already
+        narrowed by the request. Relations inherit admission from their seed.
+        One-term questions may match one term; longer ones need several.
+        """
+        if candidate.source in {"exact_ref", "scoped", "relation"}:
+            return True
+        if candidate.source == "vector":
+            score = _finite_score(candidate.vector_score)
+            return score is not None and score + VECTOR_SCORE_TOLERANCE >= self.auto_vector_threshold
+        terms = set(meaningful_query_terms(query))
+        matched = terms.intersection(candidate.matched_query_terms or ())
+        if not terms or len(matched) < min(len(terms), self.auto_lexical_min_terms):
+            return False
+        if len(matched) / len(terms) >= self.auto_lexical_min_coverage:
+            return True
+        # A substantive question can precede a long attachment. Its anchors
+        # must meet the same clause-specificity rule as lexical admission;
+        # unrelated attachment terms do not dilute that question's evidence.
+        return any(
+            hits >= min(count, self.auto_lexical_min_terms) and hits / count >= self.auto_lexical_min_coverage
+            for hits, count in _matched_substantive_clauses(query, matched)
+        )
 
     def vector_admission(self, candidate: CandidateRef) -> tuple[bool, str | None]:
         if candidate.source != "vector":
@@ -399,6 +436,16 @@ def _substantive_chinese_clauses(query: str) -> tuple[tuple[str, ...], ...]:
     return substantive if len(substantive) >= 2 else ()
 
 
+def _matched_substantive_clauses(query: str, matches: Iterable[str]) -> tuple[tuple[int, int], ...]:
+    """Matched and total term counts for clauses meeting the lexical specificity minimum."""
+    held = frozenset(matches)
+    return tuple(
+        (hits, len(terms))
+        for terms in _substantive_chinese_clauses(query)
+        if (hits := len(held.intersection(terms))) >= max(5, _specificity_required(len(terms)))
+    )
+
+
 def query_is_specific(
     query: str,
     *,
@@ -417,12 +464,7 @@ def query_is_specific(
     required = _specificity_required(len(terms))
     if matched_terms >= required and matched_terms / len(terms) >= 0.30:
         return True
-    matches = frozenset(matched_query_terms or ())
-    for clause_terms in _substantive_chinese_clauses(query):
-        clause_hits = len(matches.intersection(clause_terms))
-        if clause_hits >= max(5, _specificity_required(len(clause_terms))) and clause_hits / len(clause_terms) >= 0.30:
-            return True
-    return False
+    return any(hits / count >= 0.30 for hits, count in _matched_substantive_clauses(query, matched_query_terms or ()))
 
 
 #: Characters that only ask: 什么, 怎么, 哪个, 谁, 多少 and the sentence-final

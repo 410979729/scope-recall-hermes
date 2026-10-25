@@ -131,6 +131,9 @@ class RuntimeInstanceConfig:
     auxiliary: AuxiliaryRuntimeConfig | None = None
     vector: VectorRuntimeConfig | None = None
     vector_threshold: float | None = None
+    auto_lexical_min_coverage: float = RecallPolicy.auto_lexical_min_coverage
+    auto_lexical_min_terms: int = RecallPolicy.auto_lexical_min_terms
+    auto_vector_threshold: float = RecallPolicy.auto_vector_threshold
     #: Names the store's owner is called by, beside the name the host attests for the person asking: a question that
     #: names them is recalled as they would ask it themselves (``core/owner_view.py``).  None by default.
     owner_names: tuple[str, ...] = ()
@@ -231,6 +234,9 @@ class RuntimeInstanceConfig:
         """
         return RecallPolicy(
             vector_threshold=self.vector_threshold,
+            auto_lexical_min_coverage=self.auto_lexical_min_coverage,
+            auto_lexical_min_terms=self.auto_lexical_min_terms,
+            auto_vector_threshold=self.auto_vector_threshold,
             embedding_space_id=self.embedding_space_id(),
             owner_names=self.owner_names,
         )

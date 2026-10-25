@@ -414,7 +414,8 @@ def test_P08_release_suffix_query_reaches_full_version_sources(tmp_path):
     reader = replace(ctx, session_id="TEST-rc28-reader")
     for mode in ("auto", "current", "history"):
         refs = {_item_ref(item) for item in recall(core, reader, query="rc28 安装了吗", mode=mode).items}
-        assert {full.ref, dashed.ref} <= refs and other.ref not in refs, mode
+        assert full.ref in refs and other.ref not in refs, mode
+        assert (dashed.ref in refs) == (mode != "auto"), mode
 
     # A source indexed before suffix terms existed has no "rc28" row, so only
     # a vector hit can reach it until it is re-indexed; hydration admits it.

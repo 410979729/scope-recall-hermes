@@ -2,7 +2,7 @@
   "about": "The dev split at scale 1, measured by recall_bench.py; recall_bench.py --update rewrites it.",
   "split": "dev",
   "scale": 1,
-  "world": "3a01a39b3395294b22fca8ed879061c35ad6a6d621fed960e567f6a7ff9817e8",
+  "world": "4c73726a319a107b60dc302d43ab887d7a2b8572ba5291cee39be9611f9ef07a",
   "tolerance": 0.02,
   "facts": {
     "hypothetical": 0,
@@ -14,42 +14,42 @@
   "metrics": {
     "auto": {
       "all": {
-        "recall@1": 0.497,
-        "recall@3": 0.7339,
-        "recall@6": 0.7649,
-        "recall@10": 0.7649,
-        "mrr": 0.6743,
-        "ndcg@10": 0.6857,
+        "recall@1": 0.5258,
+        "recall@3": 0.7764,
+        "recall@6": 0.8286,
+        "recall@10": 0.8286,
+        "mrr": 0.7217,
+        "ndcg@10": 0.7378,
         "outdated_above_current": 0.1667,
-        "answered": 0.9286,
-        "abstained": 0.9792,
-        "abstention_balanced_accuracy": 0.9539
+        "answered": 0.9718,
+        "abstained": 0.9508,
+        "abstention_balanced_accuracy": 0.9613
       },
       "single_fact": {
-        "recall@1": 0.5833,
-        "recall@3": 0.9167,
+        "recall@1": 0.5556,
+        "recall@3": 0.8889,
         "recall@6": 0.9167,
         "recall@10": 0.9167,
-        "mrr": 0.7361,
-        "ndcg@10": 0.7827,
-        "answered": 0.9167
+        "mrr": 0.7153,
+        "ndcg@10": 0.7669,
+        "answered": 0.9444
       },
       "preference": {
-        "recall@1": 0.2917,
-        "recall@3": 0.5,
-        "recall@6": 0.5,
-        "recall@10": 0.5,
-        "mrr": 0.3819,
-        "ndcg@10": 0.4122,
+        "recall@1": 0.4167,
+        "recall@3": 0.625,
+        "recall@6": 0.625,
+        "recall@10": 0.625,
+        "mrr": 0.5069,
+        "ndcg@10": 0.5372,
         "answered": 1.0
       },
       "temporal": {
         "recall@1": 0.7333,
-        "recall@3": 0.9389,
-        "recall@6": 0.95,
-        "recall@10": 0.95,
+        "recall@3": 0.9556,
+        "recall@6": 0.9667,
+        "recall@10": 0.9667,
         "mrr": 0.95,
-        "ndcg@10": 0.9398,
+        "ndcg@10": 0.9527,
         "answered": 1.0
       },
       "knowledge_update": {
@@ -63,33 +63,47 @@
         "answered": 0.9333
       },
       "aggregation": {
-        "recall@1": 0.1292,
-        "recall@3": 0.3792,
-        "recall@6": 0.5292,
-        "recall@10": 0.5292,
-        "mrr": 0.5267,
-        "ndcg@10": 0.4596,
-        "answered": 0.75
+        "recall@1": 0.1833,
+        "recall@3": 0.5292,
+        "recall@6": 0.7833,
+        "recall@10": 0.7833,
+        "mrr": 0.7183,
+        "ndcg@10": 0.6574,
+        "answered": 1.0
       },
       "abstention": {
-        "abstained": 0.9667
+        "abstained": 0.9333
       },
       "cross_scope": {
+        "abstained": 1.0
+      },
+      "relevance_floor": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@6": 1.0,
+        "recall@10": 1.0,
+        "mrr": 1.0,
+        "ndcg@10": 1.0,
+        "answered": 1.0,
+        "abstained": 0.75,
+        "abstention_balanced_accuracy": 0.875
+      },
+      "no_memory": {
         "abstained": 1.0
       }
     },
     "explicit": {
       "all": {
-        "recall@1": 0.5077,
-        "recall@3": 0.7268,
-        "recall@6": 0.7577,
-        "recall@10": 0.7649,
-        "mrr": 0.6769,
-        "ndcg@10": 0.6885,
+        "recall@1": 0.5147,
+        "recall@3": 0.7306,
+        "recall@6": 0.7612,
+        "recall@10": 0.7682,
+        "mrr": 0.6814,
+        "ndcg@10": 0.6929,
         "outdated_above_current": 0.2,
-        "answered": 0.9286,
-        "abstained": 0.9792,
-        "abstention_balanced_accuracy": 0.9539
+        "answered": 0.9296,
+        "abstained": 0.9016,
+        "abstention_balanced_accuracy": 0.9156
       },
       "single_fact": {
         "recall@1": 0.6111,
@@ -142,6 +156,20 @@
       },
       "cross_scope": {
         "abstained": 1.0
+      },
+      "relevance_floor": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@6": 1.0,
+        "recall@10": 1.0,
+        "mrr": 1.0,
+        "ndcg@10": 1.0,
+        "answered": 1.0,
+        "abstained": 0.5,
+        "abstention_balanced_accuracy": 0.75
+      },
+      "no_memory": {
+        "abstained": 0.6667
       }
     }
   }

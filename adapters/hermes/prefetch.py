@@ -10,7 +10,7 @@ from scope_recall.core.private import notice_for_mode
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 
 from ..runtime_wiring import render_host_recall_context
-from .gating import is_trivial_prompt
+from .gating import automatic_recall_skip_reason
 from .tool_surface import display_zone
 
 if TYPE_CHECKING:
@@ -61,7 +61,11 @@ class Prefetch:
         notice = notice_for_mode(mode) or ""
         if mode == "full":
             return notice
-        if is_trivial_prompt(query):
+        reason = automatic_recall_skip_reason(query)
+        if reason is not None:
+            with self._adapter._lock:
+                if self._adapter._active_turn_id == turn:
+                    self._adapter._diagnostics.last_prefetch_skip_reason = reason
             return notice
         packet = core.recall_packet(
             context,
@@ -76,6 +80,9 @@ class Prefetch:
                 # A turn begun meanwhile, after Hermes gave up on this call, keeps its own state.
                 self._adapter._diagnostics.last_prefetch_request_id = packet["request_id"]
                 self._adapter._diagnostics.last_render_ref = preparation.render_ref
+                self._adapter._diagnostics.last_prefetch_skip_reason = next(
+                    (gap.split(":", 1)[1] for gap in packet["gaps"] if gap.startswith("auto_recall_skipped:")), None
+                )
                 self._adapter._pre_llm_pending = False
         rendered = render_host_recall_context(
             preparation.canonical_text,

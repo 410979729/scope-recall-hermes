@@ -132,7 +132,7 @@ def test_a_note_of_the_time_asked_about_is_found_by_what_else_the_question_asks(
     )
     lunch = _note(core, ctx, "Lunch with the Orchard team.", "2026-09-02T12:00:00Z", "TEST-time/lunch")
     signed = _note(core, ctx, "QA signed off on the Orchard release candidate.", "2026-09-05T10:00:00Z", "TEST-time/qa")
-    assert cut.ref not in _refs(core, ctx, "What did I say about the Orchard release?")
+    assert cut.ref not in _refs(core, ctx, "What did I say about the Orchard release?", mode="current")
     refs = _refs(core, ctx, "What did I say about the Orchard release on September 2?")
     assert refs[:1] == [cut.ref]
     assert lunch.ref not in refs and signed.ref not in refs

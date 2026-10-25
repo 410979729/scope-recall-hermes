@@ -35,7 +35,7 @@ def test_resume_has_no_cross_task_guess_or_extra_rounds(app):
     core.recall_pipeline = RetrievalPipeline(
         core.storage, vector_port=vectors, clock=core.clock, storage_reader=LexicalBlockedStorage(clock=core.clock)
     )
-    result = core.recall(ctx, recall_request(query="继续"))
+    result = core.recall(replace(ctx, session_id="TEST-fresh-resume"), recall_request(query="继续"))
     assert result.items == ()
     assert "resume_state" in result.unmet_needs
     assert len(vectors.calls) == 2

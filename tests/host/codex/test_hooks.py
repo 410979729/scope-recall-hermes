@@ -38,6 +38,18 @@ def _payload(handler_root: Path, event: str, session: str = "TEST-session-1", tu
     return payload
 
 
+def test_a_mid_session_status_with_a_trailing_newline_skips_recall(handler, monkeypatch):
+    hook, project_root, _config = handler
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *a, **k: None)
+    hook.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="Prepare a synthetic poster."))
+    monkeypatch.setattr(
+        hook.core.recall_pipeline.storage_reader, "lexical", lambda *a, **k: pytest.fail("status requested a search")
+    )
+    result = hook.handle_payload(_payload(project_root, "UserPromptSubmit", turn="TEST-turn-2", prompt="删除了吗\n"))
+    assert not result
+    assert hook.diagnostics.last_reason == "auto_recall_skipped:session_status"
+
+
 def test_production_mode_user_prompt_capture_and_recall(handler, installed):
     hook, project_root, config = handler
     _, core, clock, _ = installed

@@ -27,11 +27,17 @@ def test_background_condition_negated_in_query_is_not_applicable(app):
         deadline=core.clock.monotonic() + 5,
     )
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
+        selected = background_candidates(
+            tx, search, core.recall_pipeline.storage_reader, core.clock, query_evidence=True
+        )
     assert not any(candidate.ref == item.ref for candidate, _ in selected)
     with core.storage.read(ctx) as tx:
         selected = background_candidates(
-            tx, replace(search, query="现在写文案时做财务核对"), core.recall_pipeline.storage_reader, core.clock
+            tx,
+            replace(search, query="现在写文案时做财务核对"),
+            core.recall_pipeline.storage_reader,
+            core.clock,
+            query_evidence=True,
         )
     assert any(candidate.ref == item.ref for candidate, _ in selected)
 
@@ -134,7 +140,9 @@ def test_future_revision_does_not_hide_effective_preference_or_collection(app):
         recall_request(query="核对报价"), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5
     )
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
+        selected = background_candidates(
+            tx, search, core.recall_pipeline.storage_reader, core.clock, query_evidence=True
+        )
         assert [(candidate.ref, candidate.revision) for candidate, _ in selected] == [(original.ref, 1)]
         current = replace(search, mode="current")
         query = CollectionQuery("claim", memory_epoch=tx.status().memory_epoch, scope_digest=scope_digest(ctx))
@@ -143,7 +151,9 @@ def test_future_revision_does_not_hide_effective_preference_or_collection(app):
     core.clock.now = "2026-09-11T12:00:00Z"
     search = replace(search, now=core.clock.now)
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
+        selected = background_candidates(
+            tx, search, core.recall_pipeline.storage_reader, core.clock, query_evidence=True
+        )
     assert [(candidate.ref, candidate.revision) for candidate, _ in selected] == [(original.ref, 2)]
 
 

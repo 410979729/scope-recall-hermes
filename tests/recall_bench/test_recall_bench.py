@@ -58,6 +58,12 @@ def test_no_entry_recalls_another_scope(measured) -> None:
     )
 
 
+def test_session_followups_deliver_empty_automatic_packets(measured):
+    followups = [question for question in measured["questions"] if question["task"] == "no_memory"]
+    assert followups
+    assert all(not question["auto"]["items"] for question in followups)
+
+
 def test_no_metric_falls_below_its_baseline(bench, measured) -> None:
     baseline = json.loads(bench.BASELINE.read_text(encoding="utf-8"))
     problems = bench.regressions(measured, baseline)

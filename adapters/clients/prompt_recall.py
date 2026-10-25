@@ -147,6 +147,9 @@ class PromptRecall:
     def _used(self, answered: tuple[dict[str, Any], dict[str, Any]]) -> dict[str, Any]:
         """The server's answer as this hook's, its diagnostics taken with it."""
         result, fields = answered
+        reason = fields.get("last_reason")
+        if isinstance(reason, str) and reason.startswith("auto_recall_skipped:"):
+            self._hook.note(reason)
         for name in ("recall_vector_gap", "recall_error_detail"):
             value = fields.get(name)
             if value is None or type(value) is str:
@@ -261,6 +264,10 @@ class PromptRecall:
                 f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
             )
             self._hook.note("recall_exception", gaps=gaps)
+            return self._notice(notice) if notice else {}
+        skipped = next((gap for gap in packet.get("gaps", ()) if gap.startswith("auto_recall_skipped:")), None)
+        if skipped is not None:
+            self._hook.note(skipped, gaps=gaps)
             return self._notice(notice) if notice else {}
         without = recall_without_vectors(packet.get("gaps") or ())
         self._hook.diagnostics.recall_vectors = without is None

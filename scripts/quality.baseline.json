@@ -593,13 +593,7 @@
   "core/recall.py": {
    "BLE001": 5,
    "C901": {
-    "RetrievalPipeline._expand": 26
-   },
-   "PLR0911": {
-    "RetrievalPipeline._expand": 9
-   },
-   "PLR0912": {
-    "RetrievalPipeline._expand": 24
+    "RetrievalPipeline._expand": 17
    }
   },
   "core/recall_diagnostics.py": {

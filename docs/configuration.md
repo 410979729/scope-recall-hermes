@@ -179,7 +179,43 @@ resulting native path is too long the worker reports
 A top-level field: the lowest cosine similarity, from `-1.0` to `1.0`, at which a
 vector hit is admitted into recall. It is compared with a `1e-6` float tolerance.
 
-It has no default and no installer writes it. Without it, recall refuses every
+Automatic recall also applies three top-level policy fields. Explicit tool
+lookups, including those requesting `mode: auto`, and history and as-of reads
+keep their admission thresholds and do not skip conversational queries.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `auto_lexical_min_coverage` | `0.20` | Minimum share of the query's meaningful terms a lexical candidate matches, from `0.0` to `1.0`. |
+| `auto_lexical_min_terms` | `2` | Minimum matched terms for queries with at least this many terms; an integer of at least `2`. Shorter queries must match every term. |
+| `auto_vector_threshold` | `0.30` | Minimum cosine similarity for automatic vector hits, from `-1.0` to `1.0`; `vector_threshold` must also be met. |
+
+Calibrate lexical coverage and vector similarity independently on synthetic or
+copied data for the configured embedding space. Reciprocal rank fusion orders
+candidates that clear their channel's floor; it cannot admit a weak match.
+For a long Chinese prompt with multiple substantive clauses, a clause that
+meets the core lexical-specificity rule can clear the same coverage floor on
+its own. An attachment cannot dilute an independently matched question.
+The vector default preserves the synthetic word-hashing benchmark's admission
+floor. A store configured with `vector_threshold: 0.70` still requires at least
+`0.70`; set `auto_vector_threshold` higher to tighten automatic injection alone.
+Exact references pass directly. A relation-expanded item inherits a passing
+seed's admission. A named day's scoped conversation is selected by its day and
+entry. Packet gaps report rejected candidate counts per channel as
+`auto_relevance_below_floor:<channel>:<count>`, without their contents.
+
+Automatic packets contain zero to six items. Preferences, constraints and the
+current task accompany query evidence only when at least one item passed. A
+resume request can still receive its grounded current task without query hits.
+Every host uses the core's prompt decision: blank input and slash commands skip
+recall; acknowledgments, approvals, thanks, praise, bare continuation requests
+and questions about this session's execution state skip it after an earlier
+human prompt in the same entry's stored session. The captured current prompt does
+not count as an earlier message. First prompts retain resume behavior, and
+questions about the owner, a named topic or the past still search. A skipped
+prompt starts neither search nor query embedding; diagnostics record
+`auto_recall_skipped:<reason>`.
+
+`vector_threshold` has no default and no installer writes it. Without it, recall refuses every
 vector hit with `vector_threshold_unconfigured` and answers degrade to lexical,
 while sources and queries are still embedded and metered. `doctor` reports that
 state as the gap `vector_threshold_unconfigured` when a `vector` store and an

@@ -277,55 +277,53 @@ def test_what_the_model_holds_still_leads_to_what_is_related_to_it(app):
     assert sorted(candidate.ref for candidate, _obj in hydrated) == ["claim-old", "claim-other"]
 
 
-def test_hits_too_large_for_any_packet_leave_the_owner_s_background_room(tmp_path):
-    """An automatic recall whose every hit is larger than any packet would keep six of them, the compiler would refuse
-    each, and the packet would come back empty, cutting the owner's background with them.  One stays as the hint
-    that it can be expanded.  Leaving out what the model holds makes this likelier."""
+def test_hits_too_large_for_any_packet_cannot_leave_only_background(tmp_path):
+    """Background depends on query evidence surviving the compiler's whole-packet budget."""
     from tests.contract.test_autonomous_context import packet, preference
 
     ctx = replace(context(tmp_path / "TEST-p249-oversized"), project_id="TEST-project", branch_id="TEST-main")
     core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
     core.initialize()
     core.test_sequence = itertools.count(1)
-    item, _source = preference(core, ctx)
+    preference(core, ctx)
     for index in range(7):
         capture(core, ctx, f"火星咖啡采购报价 第{index}份：" + "价" * 9000, key=f"TEST-p249/huge/{index}")
-    result = packet(core, ctx, request_id="TEST-p249-oversized")
-    assert [entry["ref"] for entry in result["items"]] == [item.ref], result["gaps"]
+    result = packet(core, ctx, query="火星咖啡采购报价是什么", request_id="TEST-p249-oversized")
+    assert result["items"] == [], result["gaps"]
+    assert result["answerability"] == "unknown"
     assert any(need.startswith("expandable") for need in result["unmet_needs"]), "the hint that it can be expanded"
 
 
 def test_the_owner_s_background_the_model_holds_is_left_out_too(tmp_path):
     """A standing preference the owner stated in this session since its last compaction is in the model's context
-    already; background is not admitted like a hit, so it is left out too, not delivered again."""
-    from tests.contract.test_autonomous_context import packet, preference
+    already; background is not admitted like a hit, so it is left out too, not delivered again.  Background rides
+    only with passing query evidence, so the unrelated question has an answer of its own, said in another session
+    that this session's model does not hold."""
+    from scope_recall.core.background_context import BACKGROUND_PREFIX
+
+    from tests.contract.test_autonomous_context import preference
 
     ctx = replace(context(tmp_path / "TEST-p249-background"), project_id="TEST-project", branch_id="TEST-main")
     core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
     core.initialize()
     core.test_sequence = itertools.count(1)
-    item, source = preference(core, ctx)  # said at 2026-09-01T12:00:00Z, in this session
+    item, _source = preference(core, ctx)  # said at 2026-09-01T12:00:00Z, in this session
+    quoting = replace(ctx, session_id="TEST-quote-session")
+    capture(core, quoting, "火星咖啡采购报价是每箱 TEST-120 元。", key="TEST-p249/quote")
 
-    def refs(**changes):
-        return [entry["ref"] for entry in packet(core, ctx, **changes)["items"]]
+    def background(asking, request_id, since=None):
+        held = {} if since is None else {"in_context_since": since}
+        result = core.recall_packet(
+            asking, recall_request(query="火星咖啡采购报价是什么", request_id=request_id), **held
+        )
+        items = result["items"]
+        assert any(not entry["applicability"].startswith(BACKGROUND_PREFIX) for entry in items), result["gaps"]
+        return [entry["ref"] for entry in items if entry["applicability"].startswith(BACKGROUND_PREFIX)]
 
-    assert item.ref in refs(request_id="TEST-bg-0")
-    held = core.recall_packet(
-        ctx,
-        recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-1"),
-        in_context_since="2026-09-01T11:00:00Z",
-    )
-    assert item.ref not in [entry["ref"] for entry in held["items"]]
-    later = core.recall_packet(
-        ctx,
-        recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-2"),
-        in_context_since="2026-09-01T13:00:00Z",
-    )
-    assert item.ref in [entry["ref"] for entry in later["items"]], "said before the compaction"
+    assert item.ref in background(ctx, "TEST-bg-0")
+    assert item.ref not in background(ctx, "TEST-bg-1", since="2026-09-01T11:00:00Z")
+    assert item.ref in background(ctx, "TEST-bg-2", since="2026-09-01T13:00:00Z"), "said before the compaction"
     other = replace(ctx, session_id="TEST-other-session")
-    elsewhere = core.recall_packet(
-        other,
-        recall_request(query="火星咖啡采购报价是什么", request_id="TEST-bg-3"),
-        in_context_since="2026-09-01T11:00:00Z",
+    assert item.ref in background(other, "TEST-bg-3", since="2026-09-01T11:00:00Z"), (
+        "another session's model does not hold it"
     )
-    assert item.ref in [entry["ref"] for entry in elsewhere["items"]], "another session's model does not hold it"

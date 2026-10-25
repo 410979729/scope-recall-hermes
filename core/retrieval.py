@@ -102,9 +102,9 @@ class SearchContext:
     trusted_context: TrustedContext
     current_source_refs: tuple[str, ...] = ()
     request_id: str = ""
-    #: Whether automatic-mode background may stand in for missing query
-    #: evidence.  Ambient recall keeps it; an explicit lookup turns it off, so
-    #: finding nothing stays a refusal (core/background_context.py).
+    #: Trusted lookup intent: explicit tools turn this off, including in auto
+    #: mode. Ambient background still requires passing query evidence; a resume
+    #: request can receive its grounded current task alone.
     background_without_evidence: bool = True
     #: The zone the asking host shows its model, in which a day the question names is read (``recall_scope``);
     #: None is this machine's.
@@ -119,6 +119,15 @@ class SearchContext:
     #: or the session's start when it has had none.  An automatic recall leaves out what stands only on those turns
     #: (``RetrievalPipeline._in_context``).  A trusted caller's word, never a request field; None when unknown.
     in_context_since: str | None = None
+
+    @property
+    def automatic_injection(self) -> bool:
+        """Whether the trusted caller asks for ambient prompt context.
+
+        Explicit tools retain lookup admission even when their requested read
+        mode is auto. Their intent is attested outside the model request.
+        """
+        return self.mode == "auto" and self.background_without_evidence
 
     def __post_init__(self) -> None:
         if type(self.query) is not str or not self.query.strip() or len(self.query) > 8192:

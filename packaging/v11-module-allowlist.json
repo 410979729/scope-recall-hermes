@@ -78,6 +78,7 @@
     "core/admission.py",
     "core/aliases.py",
     "core/artifact_storage.py",
+    "core/auto_recall.py",
     "core/background_context.py",
     "core/candidate_debounce.py",
     "core/candidate_evaluations.py",

@@ -11,11 +11,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
 from scope_recall.adapters.clients.identity import resolve_runtime_audience, trusted_context
 from scope_recall.contracts import SourceEvent
+
+from tests.v11_support import source_event
 
 
 def test_mcp_stdio_exposes_public_tools_and_strict_boundary(tmp_path: Path) -> None:
@@ -464,8 +467,33 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
     assert result["result"]["items"] == []
 
 
-def test_mcp_recall_without_evidence_is_no_match_while_prompt_hook_keeps_background(installed) -> None:
-    """An explicit lookup that finds nothing says so; automatic prompt recall is unchanged."""
+@pytest.mark.parametrize("mode", ["auto", "current"])
+def test_explicit_recall_keeps_a_weak_lexical_match(installed, mode) -> None:
+    from scope_recall.adapters.clients.mcp_server import build_server
+
+    config, core, clock, project = installed
+    audience = resolve_runtime_audience(config, str(project))
+    human = trusted_context(config, audience, session_id=str(uuid4()), actor_origin="human_direct")
+    source = core.record_event(
+        human,
+        source_event(
+            content="2a invoice archive",
+            source_event_key="TEST-explicit-weak",
+            occurred_at=clock.utc_now(),
+            recorded_at=clock.utc_now(),
+        ),
+        scope_id=audience.capture_scope_id,
+    ).event_refs[0]
+    tool = build_server(config, workspace=project, core=core).server._tool_manager.get_tool("recall")
+    context = SimpleNamespace(request_context=SimpleNamespace(meta={}))
+    packet = tool.fn(
+        context, protocol_version="1.1", query="2a telescope lens", mode=mode, max_items=6, budget_tokens=1200
+    )["result"]
+    assert source.ref in {item["ref"] for item in packet["items"]}
+
+
+def test_prompt_and_explicit_recall_without_evidence_leave_background_out(installed) -> None:
+    """An unrelated prompt and an explicit lookup both return no memory."""
     from scope_recall.adapters.clients.mcp_server import build_server
 
     config, core, clock, project = installed
@@ -526,7 +554,7 @@ def test_mcp_recall_without_evidence_is_no_match_while_prompt_hook_keeps_backgro
             "prompt": query,
         }
     )
-    assert claim_ref in ambient["hookSpecificOutput"]["additionalContext"]
+    assert ambient == {}, claim_ref
 
     tool = build_server(config, workspace=project, core=core).server._tool_manager.get_tool("recall")
     fake_context = SimpleNamespace(request_context=SimpleNamespace(meta={}))

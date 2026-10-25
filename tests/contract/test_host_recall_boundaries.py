@@ -245,7 +245,8 @@ def test_automatic_background_uses_latest_trusted_task_context(tmp_path):
         ),
     ).items[0]
 
-    unrelated = recall_request(query="继续当前任务")
+    capture(core, base, "TEST 当前任务检查记录已经保存。")
+    unrelated = recall_request(query="TEST 当前任务检查记录")
     assert claim.ref not in {item["ref"] for item in core.recall_packet(base, unrelated)["items"]}
     current_task = replace(base, recent_messages=("当前正在写文案",))
     selected = core.recall_packet(current_task, unrelated)

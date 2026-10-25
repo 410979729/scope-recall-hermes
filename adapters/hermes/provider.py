@@ -58,6 +58,7 @@ _MemoryProviderBase = _memory_provider_base()
 @dataclass
 class AdapterDiagnostics:
     last_prefetch_request_id: str | None = None
+    last_prefetch_skip_reason: str | None = None
     last_render_ref: str | None = None
     unsupported_fields: dict[str, str] | None = None
     pending_outcome_gaps: tuple[str, ...] = ()
