@@ -100,17 +100,21 @@ def metered_store(monkeypatch):
 
     Repeated calls reconfigure the same clock without nesting transaction wrappers. Hooks, core deadlines and
     capture admission read it together; transactions still execute against the synthetic store.
+
+    A test and its fixtures share one ``monkeypatch``, whose ``undo()`` removes this clock as well: keep a test's
+    temporary patches in ``monkeypatch.context()``. At teardown the test fails if an attribute the clock replaced
+    has its pre-install value again. The check compares identities: it passes a patch layered over the clock, and it
+    cannot see a clock removed and installed again before teardown, or one replaced by objects that do not meter.
     """
     from scope_recall.core import storage
     from scope_recall.core.storage import SQLiteStorage
 
     clock = StoreMeteredClock(0.0)
-    installed = False
+    originals = []
 
     def install(per_operation: float) -> StoreMeteredClock:
-        nonlocal installed
         clock.per_operation = per_operation
-        if installed:
+        if originals:
             return clock
         transaction = SQLiteStorage._transaction
 
@@ -121,13 +125,23 @@ def metered_store(monkeypatch):
                     entered[0] = True
                     yield tx
 
-        monkeypatch.setattr(SQLiteStorage, "_transaction", metered)
-        monkeypatch.setattr(storage, "time", _LeasePolls(clock))
-        monkeypatch.setattr(time, "monotonic", clock)
-        installed = True
+        for owner, name, replacement in (
+            (SQLiteStorage, "_transaction", metered),
+            (storage, "time", _LeasePolls(clock)),
+            (time, "monotonic", clock),
+        ):
+            originals.append((owner, name, getattr(owner, name)))
+            monkeypatch.setattr(owner, name, replacement)
         return clock
 
-    return install
+    yield install
+    # Comparing pre-install values permits test patches layered on the clock.
+    if any(getattr(owner, name) is original for owner, name, original in originals):
+        pytest.fail(
+            "The store clock is no longer installed at test teardown: a patched attribute has its pre-install value. "
+            "A common cause is monkeypatch.undo() also removing the fixture's clock patches. "
+            "Keep temporary test patches in monkeypatch.context()."
+        )
 
 
 @pytest.fixture

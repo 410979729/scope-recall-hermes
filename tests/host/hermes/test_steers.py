@@ -737,12 +737,12 @@ def _iso(moment: float) -> str:
 def test_messages_said_alike_each_take_their_own_copy(telegram, hermes_home, monkeypatch):
     """Identical messages restored after restart reuse their own source events without duplication."""
     t0 = time.time() - 600
-    for offset, turn in ((0, 20), (30, 21), (60, 22)):
-        stamp = _iso(t0 + offset)
-        monkeypatch.setattr(telegram, "_utc_now", lambda moment=stamp: moment)
-        telegram.on_turn_start(turn, "TEST 继续", turn_id=f"turn-{turn}")
-        telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id=f"turn-{turn}", user_message="TEST 继续")
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:
+        for offset, turn in ((0, 20), (30, 21), (60, 22)):
+            stamp = _iso(t0 + offset)
+            patched.setattr(telegram, "_utc_now", lambda moment=stamp: moment)
+            telegram.on_turn_start(turn, "TEST 继续", turn_id=f"turn-{turn}")
+            telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id=f"turn-{turn}", user_message="TEST 继续")
     history = [
         {"role": "user", "content": "TEST 继续", "timestamp": t0},
         {"role": "assistant", "content": "TEST 好。"},
@@ -784,10 +784,10 @@ def test_a_message_put_back_does_not_take_the_copy_of_one_said_alike_after_it(te
     """An unstored restored message stays distinct from identical words captured in a later turn."""
     t0 = time.time() - 600
     stamp = _iso(t0 + 30)
-    monkeypatch.setattr(telegram, "_utc_now", lambda: stamp)
-    telegram.on_turn_start(40, "TEST 继续", turn_id="turn-40")
-    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-40", user_message="TEST 继续")
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:
+        patched.setattr(telegram, "_utc_now", lambda: stamp)
+        telegram.on_turn_start(40, "TEST 继续", turn_id="turn-40")
+        telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-40", user_message="TEST 继续")
     history = [
         {"role": "user", "content": "TEST 继续", "timestamp": t0},
         {"role": "user", "content": "TEST 继续", "timestamp": t0 + 30},
@@ -825,10 +825,10 @@ def test_two_hooks_reading_different_stretches_know_what_either_read_alike(teleg
     put back is in the second only.  Kept as the first read it, the message put back took that one's copy."""
     t0 = time.time() - 600
     stamp = _iso(t0)
-    monkeypatch.setattr(telegram, "_utc_now", lambda: stamp)
-    telegram.on_turn_start(60, "TEST 继续", turn_id="turn-60")
-    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-60", user_message="TEST 继续")
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:
+        patched.setattr(telegram, "_utc_now", lambda: stamp)
+        telegram.on_turn_start(60, "TEST 继续", turn_id="turn-60")
+        telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-60", user_message="TEST 继续")
     later = [
         {"role": "user", "content": "TEST 继续", "timestamp": t0 + 30},
         {"role": "user", "content": "TEST 好了吗"},
