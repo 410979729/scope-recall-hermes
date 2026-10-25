@@ -53,6 +53,7 @@
           },
           "conditions": {
             "type": "array",
+            "description": "Each limit on when the value holds (project, version, environment, scenario, time, speaker circumstance, if/when/unless), verbatim from its sentence; keep all. Reasons, other requirements and steps count only if they limit it.",
             "maxItems": 12,
             "items": {
               "type": "string",
@@ -101,6 +102,7 @@
             "properties": {
               "conditions": {
                 "type": "array",
+                "description": "The claim's conditions rule applies.",
                 "maxItems": 12,
                 "items": {
                   "type": "string",
