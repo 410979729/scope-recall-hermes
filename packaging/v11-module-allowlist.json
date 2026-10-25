@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.14.2",
+  "package_version": "3.15.0",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",
@@ -130,6 +130,8 @@
     "core/management_export.py",
     "core/management_query.py",
     "core/management_revision.py",
+    "core/management_secrets.py",
+    "core/model_content.py",
     "core/mutate.py",
     "core/operations.py",
     "core/owner_view.py",

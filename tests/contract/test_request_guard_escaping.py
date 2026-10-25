@@ -13,7 +13,7 @@ from dataclasses import replace
 
 import pytest
 from scope_recall.core.consolidate import candidate_evaluation_messages, consolidation_messages
-from scope_recall.core.secret_patterns import contains_secret_like_text
+from scope_recall.core.secret_patterns import contains_secret_like_text, structure_contains_secret_like_text
 from scope_recall.runtime.models import AuxiliaryModelError
 from test_candidate_evidence_window import _candidate, _source
 from test_responses_consolidation import CREDENTIAL_ENV, MODEL, FakeTransport, _answer, _payload, _runtime
@@ -134,10 +134,28 @@ def test_a_candidate_is_read_as_the_fields_it_carries(tmp_path, monkeypatch, rou
     assert len(transport.calls) == 1
 
 
+@pytest.mark.parametrize("route", sorted(ROUTES))
+@pytest.mark.parametrize("label", ["password", "密码", "accessToken", "**Password**"])
+def test_empty_credential_objects_keep_the_structured_policy_at_the_model_boundary(tmp_path, monkeypatch, route, label):
+    value = {label: {}}
+    assert not structure_contains_secret_like_text(value)
+    transport = _sent(
+        tmp_path, monkeypatch, route, [{"role": "user", "content": json.dumps(value, ensure_ascii=False)}]
+    )
+    assert len(transport.calls) == 1
+
+
 def _candidate_with_a_secret_value():
     source = _source("TEST-build result ready")
     candidate = _candidate(source, [])
     candidate = replace(candidate, payload={**candidate.payload, "value_text": "password: hunter2-not-a-placeholder"})
+    return candidate_evaluation_messages(candidate, (source,))
+
+
+def _candidate_with_a_credential_predicate():
+    source = _source("TEST-build result ready")
+    candidate = _candidate(source, [])
+    candidate = replace(candidate, payload={**candidate.payload, "predicate": "密码", "value_text": "Synthet1c"})
     return candidate_evaluation_messages(candidate, (source,))
 
 
@@ -146,6 +164,13 @@ def _user(content):
 
 
 REFUSED = {
+    "in_a_field_beside_claim_fields": _user(
+        '{"predicate":"state","value_text":"ready","claim_assignments":"password: Synthet1c"}'
+    ),
+    "in_related_candidate_fields": _candidate_with_a_credential_predicate,
+    "in_nested_claim_fields": _user(json.dumps({"sources": [{"predicate": "密码", "value_text": "Synthet1c"}]})),
+    "behind_duplicate_predicates": _user('{"predicate":"密码","predicate":"state","value_text":"Synthet1c"}'),
+    "behind_duplicate_values": _user('{"predicate":"密码","value_text":"null","value_text":"Synthet1c"}'),
     "in_a_source": lambda: consolidation_messages([_source(REAL_ASSIGNMENT)]),
     "in_a_candidate": _candidate_with_a_secret_value,
     # A credential under a key that names it, whatever holds it, and a label as the key of what follows it.

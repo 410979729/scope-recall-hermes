@@ -121,6 +121,7 @@ def packaging_helper_env(tier: str) -> dict[str, str]:
 
     A uv named by ``SCOPE_RECALL_UV`` goes into the run too: the tests take that one before they search ``PATH``, and
     a ``PATH`` with another uv first would hand them one outside the root authorized here.
+    Explicit cache and offline settings also reach build helpers, whose isolated homes have no dependency cache.
     """
 
     if "build" not in TIER_ALLOWS.get(tier, frozenset()):
@@ -132,6 +133,9 @@ def packaging_helper_env(tier: str) -> dict[str, str]:
     env = {"SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS": str(Path(packaging_uv).resolve().parent)}
     if declared:
         env["SCOPE_RECALL_UV"] = declared
+    for name in ("UV_CACHE_DIR", "UV_OFFLINE"):
+        if value := os.environ.get(name):
+            env[name] = value
     return env
 
 

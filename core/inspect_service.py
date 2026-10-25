@@ -16,6 +16,7 @@ class InspectedObject:
     revision: int
     value: object
     memory_epoch: int
+    gaps: tuple[str, ...] = ()
 
 
 def inspect_object(

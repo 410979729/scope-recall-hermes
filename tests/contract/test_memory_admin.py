@@ -18,6 +18,242 @@ from test_claims import accept, app, capture, draft, initial
 from test_deletion import sqlite_backup
 
 
+def legacy_secret(core, context, monkeypatch, text="NameOne 密码：Xk9mP2qa"):
+    """Capture synthetic legacy data with only ingress secret admission bypassed."""
+    from scope_recall.core import events
+
+    with monkeypatch.context() as patch:
+        patch.setattr(events, "capture_contains_secret", lambda value: False)
+        return capture(core, context, text)
+
+
+@pytest.mark.parametrize(
+    "predicate,value",
+    [
+        ("偏好", "密码：Xk9mP2qa"),
+        ("密码", "Xk9mP2qa"),
+        ("**Password**", "Xk9mP2qa"),
+        ("**refreshToken**", "Xk9mP2qa"),
+        ("**token**", "Xk9mP2qa"),
+    ],
+)
+def test_derived_secret_is_withheld_from_profile_entity_trace_and_background(app, monkeypatch, predicate, value):
+    from scope_recall.core import mutate
+
+    core, context = app
+    source = legacy_secret(core, context, monkeypatch, f"TEST-project {predicate} {value}。")
+    with monkeypatch.context() as patch:
+        patch.setattr(mutate, "structure_contains_secret_like_text", lambda value: False)
+        flagged = accept(
+            core, context, draft(source, value, kind="preference", predicate=predicate, statement_kind="assertion")
+        ).items[0]
+    initial(core, context)
+    profile = core.profile(
+        context, dict(protocol_version="1.1", request_id="TEST-secret-profile", subject="TEST-project")
+    )
+    entity = core.entity(
+        context,
+        dict(
+            protocol_version="1.1",
+            request_id="TEST-secret-entity",
+            subject="TEST-project",
+            action="related",
+            direction="both",
+        ),
+    )
+    trace = core.trace(context, dict(protocol_version="1.1", request_id="TEST-secret-trace", subject="TEST-project"))
+    packet = core.recall_packet(
+        context,
+        dict(
+            protocol_version="1.1",
+            request_id="TEST-secret-background",
+            query="配色",
+            mode="auto",
+            max_items=6,
+            budget_tokens=4096,
+        ),
+        deadline_seconds=10,
+    )
+    for result in (profile, entity, trace, packet):
+        assert "Xk9mP2qa" not in json.dumps(result, ensure_ascii=False)
+        assert any(gap.startswith("secrets_withheld:") for gap in result["gaps"])
+    assert flagged.ref in {item["ref"] for item in management(core, context).secrets()["items"]}
+    for view in (profile, entity):
+        assert view["status"] == "partial"
+        assert view["coverage"] == view["answerability"] == "partial"
+
+
+def test_secret_inventory_includes_historical_and_muted_versions(app, monkeypatch):
+    core, context = app
+    flagged = legacy_secret(core, context, monkeypatch)
+    capture(core, context, "NameOne uses green.", key=flagged.event["source_event_key"], revision=2)
+    owner = management(core, context)
+    owner.apply(owner.preview([flagged.ref], mode="suppress"))
+    findings = owner.secrets()["items"]
+    assert any(item["ref"] == flagged.ref and item["revision"] == 1 for item in findings)
+
+
+def test_stored_alias_subject_does_not_escape_through_view_metadata(app, monkeypatch):
+    from scope_recall.core import mutate
+    from test_aliases import _alias
+
+    core, context = app
+    subject = "密码：Xk9mP2qa"
+    source = legacy_secret(core, context, monkeypatch, f"{subject} 项目名称是 NameOne。")
+    rename = legacy_secret(core, context, monkeypatch, f"{subject} 项目以后改名为 天一，内容不变，保留旧称 NameOne。")
+    with monkeypatch.context() as patch:
+        patch.setattr(mutate, "structure_contains_secret_like_text", lambda value: False)
+        target = accept(
+            core, context, draft(source, "NameOne", kind="fact", predicate="项目名称", subject=subject)
+        ).items[0]
+        alias = accept(core, context, _alias(rename, target, "天一") | {"subject": subject}).items[0]
+    assert target.state == alias.state == "active"
+    request = dict(protocol_version="1.1", request_id="TEST-alias-secret", subject="天一")
+    for view in (core.profile(context, request), core.entity(context, dict(request, action="related"))):
+        assert view["alias_resolution"] == "resolved"
+        assert view["resolved_subject"] is None
+        assert "Xk9mP2qa" not in json.dumps(view, ensure_ascii=False)
+        assert any(gap.startswith("secrets_withheld:") for gap in view["gaps"])
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("max_items", [1, 6])
+def test_stored_secret_is_withheld_from_recall_and_inspect_but_owner_keeps_it(app, monkeypatch, automatic, max_items):
+    core, context = app
+    flagged = legacy_secret(core, context, monkeypatch)
+    clean = capture(core, context, "NameOne uses green.")
+    packet = core.recall_packet(
+        context,
+        dict(
+            protocol_version="1.1",
+            request_id="TEST-secret-recall",
+            query="NameOne",
+            mode="auto" if automatic else "current",
+            focus_refs=[f"{flagged.ref}@1", f"{clean.ref}@1"],
+            budget_tokens=4096,
+            max_items=max_items,
+        ),
+        deadline_seconds=10,
+        background_without_evidence=automatic,
+    )
+    assert clean.ref in {item["ref"] for item in packet["items"]}
+    assert flagged.ref not in {item["ref"] for item in packet["items"]}
+    assert "secrets_withheld:1" in packet["gaps"]
+    assert "Xk9mP2qa" not in json.dumps(packet, ensure_ascii=False)
+    inspected = core.inspect_object(context, flagged.ref)
+    assert inspected.value is None and inspected.gaps == ("secrets_withheld:1",)
+    assert management(core, context).show(flagged.ref)["value"]["event"]["content"] == flagged.event["content"]
+
+
+def test_owner_secret_scan_filters_sql_and_releases_each_read_before_scanning(app, monkeypatch):
+    from contextlib import contextmanager
+
+    from scope_recall.core import management_secrets
+
+    core, context = app
+    flagged = legacy_secret(core, context, monkeypatch)
+    capture(core, context, "NameOne uses green.")
+    capture(core, context, "密码错误，请重试。")
+    original_read = core.storage.read
+    original_scan = management_secrets.stored_item_pattern_names
+    reads, active = [], []
+
+    @contextmanager
+    def read(*args, **kwargs):
+        with original_read(*args, **kwargs) as tx:
+            active.append(tx)
+            reads.append(tx)
+            try:
+                yield tx
+            finally:
+                active.pop()
+
+    def scan(value):
+        assert not active, "the full scan must run outside a read transaction"
+        return original_scan(value)
+
+    monkeypatch.setattr(core.storage, "read", read)
+    monkeypatch.setattr(management_secrets, "stored_item_pattern_names", scan)
+    monkeypatch.setattr(management_secrets, "BATCH_SIZE", 1)
+    with original_read(context) as tx:
+        before = list(tx._check().iterdump())
+        expected_rows = sum(
+            tx._check().execute(f"SELECT count(*) FROM {spec[1]}").fetchone()[0] for spec in management_secrets._TABLES
+        )
+    result = management(core, context).secrets()
+    with original_read(context) as tx:
+        assert list(tx._check().iterdump()) == before
+    assert result["rows_read"] == expected_rows and result["candidates_scanned"] == 2
+    assert len(reads) >= 3 and len(result["items"]) == 1
+    finding = result["items"][0]
+    assert finding == dict(
+        ref=flagged.ref,
+        kind="event",
+        revision=1,
+        origin="human_direct",
+        entry="local",
+        session=flagged.session_id,
+        time=flagged.event["occurred_at"],
+        patterns=["chinese_credential_assignment"],
+    )
+    assert "Xk9mP2qa" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_secret_scan_windows_seek_the_primary_key_without_sorting_the_scope(app):
+    from contextlib import contextmanager
+
+    from scope_recall.core import management_secrets
+
+    core, context = app
+    statements = []
+
+    @contextmanager
+    def read(*args, **kwargs):
+        with core.storage.read(*args, **kwargs) as tx:
+            tx._check().set_trace_callback(statements.append)
+            try:
+                yield tx
+            finally:
+                tx._check().set_trace_callback(None)
+
+    for spec in management_secrets._TABLES:
+        statements.clear()
+        management_secrets._batch(SimpleNamespace(read=read), context, spec, ("", 0))
+        query = next(statement for statement in statements if statement.startswith("WITH key_window"))
+        with core.storage.read(context) as tx:
+            plan = [row[3].upper() for row in tx._check().execute("EXPLAIN QUERY PLAN " + query)]
+        assert any("SEARCH V USING" in detail for detail in plan), (spec[0], plan)
+        batch_scan = next(index for index, detail in enumerate(plan) if "SCAN BATCH" in detail)
+        assert not any("TEMP B-TREE" in detail for detail in plan[:batch_scan]), (spec[0], plan)
+
+
+def test_secret_scan_bounds_the_window_before_visibility_filters(app, monkeypatch):
+    from scope_recall.core import management_secrets
+
+    core, context = app
+    sources = [capture(core, context, f"TEST bounded row {i}") for i in range(8)]
+    sources.sort(key=lambda source: source.ref)
+    with core.storage.write(context) as tx:
+        connection = tx._check(write=True)
+        connection.executemany(
+            "UPDATE source_events SET read_blocked=1 WHERE event_id=?", [(s.ref,) for s in sources[:6]]
+        )
+        connection.execute(
+            "UPDATE source_events SET extra_json=? WHERE event_id=?",
+            (json.dumps(dict(predicate="密码", value_text="Synthet1c")), sources[-1].ref),
+        )
+        expected_rows = sum(
+            connection.execute(f"SELECT count(*) FROM {spec[1]}").fetchone()[0] for spec in management_secrets._TABLES
+        )
+    monkeypatch.setattr(management_secrets, "BATCH_SIZE", 2)
+    rows = management_secrets._batch(core.storage, context, management_secrets._TABLES[0], ("", 0))
+    assert [row["ref"] for row in rows] == [source.ref for source in sources[:2]]
+    assert all(row["scan_content"] is None for row in rows)
+    findings = management(core, context).secrets()
+    assert findings["rows_read"] == expected_rows and findings["candidates_scanned"] == 1
+    assert [item["ref"] for item in findings["items"]] == [sources[-1].ref]
+
+
 def management(core, context):
     return MemoryManagement(core, InstallationMaintenance(context))
 

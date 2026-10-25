@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ..contracts import ContractError, validate_model_request, validate_payload
+from .model_content import WITHHELD_PREFIX, merge_secret_gaps
 from .read_views import read_entity
 
 TRACE_GUIDANCE = (
@@ -100,9 +101,7 @@ def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dic
     gaps = set()
     if len(scopes) > body["max_nodes"]:
         gaps.add("node_limit")
-    cache = {}
-    candidates = []
-    path_keys = set()
+    cache, candidates, path_keys = {}, [], set()
     # Both unique reads and expanded paths are capped; cycles/diamonds cannot
     # evade the work bound merely by reusing an already read node.
     expansions = 0
@@ -134,13 +133,13 @@ def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dic
                     },
                 )
                 cache[cache_key] = view
+                _merge_withheld(gaps, view)
             if view.get("memory_epoch") != epoch or view["status"] == "unavailable":
                 return _unavailable(result, "memory_changed")
             if view.get("alias_resolution") == "ambiguous":
                 gaps.add("ambiguous_entity")
                 continue
-            if view.get("truncated") or view.get("scan_capped"):
-                gaps.add("edge_limit")
+            gaps.update({"edge_limit"} if view.get("truncated") or view.get("scan_capped") else ())
             canonical = view.get("resolved_subject") or subject
             if canonical in seen:
                 continue
@@ -193,6 +192,13 @@ def _next_subject(edge: dict, seen, gaps: set) -> str | None:
     if next_subject in seen:
         return None
     return next_subject
+
+
+def _merge_withheld(gaps: set[str], view: dict) -> None:
+    """Count each cached entity read once, even when several paths reuse it."""
+    merged = merge_secret_gaps(gaps, [gap for gap in view["gaps"] if gap.startswith(WITHHELD_PREFIX)])
+    gaps.clear()
+    gaps.update(merged)
 
 
 def _bounded_result(result: dict, candidates: list, gaps: set, body: dict) -> dict:

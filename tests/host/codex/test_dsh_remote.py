@@ -560,9 +560,13 @@ def test_plugin_hook_answer_updates_rule_cache_before_keeping(remote, tmp_path, 
     )
     assert result["spool"] == []
     assert json.loads((spool / "private-rules.json").read_text(encoding="utf-8")) == {"private_rules": True}
-    assert [json.loads(line)["hook_event_name"] for line in log.read_text(encoding="utf-8").splitlines()].count(
-        "PrivateCheck"
-    ) == 4
+    assert result["diskSnapshots"] == []
+    checks = [
+        call
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if (call := json.loads(line))["hook_event_name"] == "PrivateCheck"
+    ]
+    assert len(checks) == 1 and len(checks[0]["times"]) == 4
 
 
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")
@@ -620,6 +624,47 @@ def test_plugin_checks_old_spool_before_copying_plaintext(remote, tmp_path, monk
 
 
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is not installed, or this tier may not start it")
+def test_plugin_shutdown_waits_for_private_writes_and_their_store(tmp_path, monkeypatch):
+    """Shutdown sees handed-off writes before disk exists and awaits a store beyond three seconds."""
+    home = tmp_path / "TEST-plugin-home"
+    plugin = install_dsh.plugin_path(home)
+    plugin.parent.mkdir(parents=True)
+    plugin.write_bytes(install_dsh.plugin_source())
+    spool = home / "scope-recall" / "dsh-spool"
+    _plugin_rules(spool, True)
+    monkeypatch.setenv("SR_FAKE_HOOK", str(HARNESS / "fake_hook.mjs"))
+    monkeypatch.setenv("SR_FAKE_PRIVATE_RULES", "true")
+    monkeypatch.setenv("SR_FAKE_PRIVATECHECK_DELAY", "100")
+    monkeypatch.setenv("SR_FAKE_STOP_DELAY", "1100")
+    log = tmp_path / "TEST-hook-calls.jsonl"
+    monkeypatch.setenv("SR_FAKE_HOOK_LOG", str(log))
+    result = _plugin(home, dict(home=str(home), python=sys.executable, spool=str(spool), storeTimeoutMs=60_000))
+    assert result["spool"] == []
+    assert result["status"]["lastStore"]["stored"] == 3
+    assert result["status"]["lastStore"]["error"] is None
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert any(call.get("fresh_observation") and len(call["times"]) == 4 for call in calls)
+
+
+@pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is not installed, or this tier may not start it")
+def test_plugin_shutdown_deadline_includes_pending_private_writes(tmp_path, monkeypatch):
+    """A private decision that cannot finish shares the shutdown bound with every queued write."""
+    home = tmp_path / "TEST-plugin-home"
+    plugin = install_dsh.plugin_path(home)
+    plugin.parent.mkdir(parents=True)
+    plugin.write_bytes(install_dsh.plugin_source())
+    spool = home / "scope-recall" / "dsh-spool"
+    _plugin_rules(spool, True)
+    monkeypatch.setenv("SR_FAKE_HOOK", str(HARNESS / "fake_hook.mjs"))
+    monkeypatch.setenv("SR_FAKE_PRIVATE_RULES", "true")
+    monkeypatch.setenv("SR_FAKE_PRIVATECHECK_DELAY", "60000")
+    started = time.monotonic()
+    result = _plugin(home, dict(home=str(home), python=sys.executable, spool=str(spool), storeTimeoutMs=2_000))
+    assert time.monotonic() - started < 30
+    assert result["spool"] == []
+
+
+@pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is not installed, or this tier may not start it")
 def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote, tmp_path, monkeypatch):
     from scope_recall.adapters.clients.config import load_shared_client
     from scope_recall.contracts import TrustedContext
@@ -645,7 +690,11 @@ def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote,
     core = MemoryCore(CoreConfig(entry.to_binding()))
     MemoryManagement(core, InstallationMaintenance(context)).private_on(target="session", session=context.session_id)
     handle = remote_server.handle_request
-    monkeypatch.setattr(remote_server, "handle_request", lambda *args, **kwargs: dict(retry=True, result={}))
+    monkeypatch.setattr(
+        remote_server,
+        "handle_request",
+        lambda *args, **kwargs: dict(retry=True, result={}, reason="TEST retry", through=0),
+    )
     failed = _plugin(home, {**config, "expectBacklog": True, "waitStatus": "lastStore", "waitMs": 15000})
     assert failed["spool"] == ["user", "assistant", "assistant", "turn_end"]
     assert failed["status"]["lastStore"]["error"] and failed["decisionKept"]
@@ -667,7 +716,7 @@ def test_installed_remote_plugin_recalls_and_replays_unacknowledged_stop(remote,
     # what this test measures.
     successful = _plugin(home, {**config, "recallTimeoutMs": 30_000})
     assert successful["decisionKept"] and "Mochi" in successful["injected"]["text"]
-    assert successful["spool"] == [] and successful["status"]["lastStore"]["error"] is None
+    assert successful["spool"] == [] and successful["status"]["lastStore"]["error"] is None, successful
     assert any(body["payload"].get("record") for body in bodies)
     assert records and all(len(json.dumps(body).encode()) <= 65536 for body in bodies)
     assert not any("runtime context" in row[4] for row in _rows(root))

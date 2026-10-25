@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import re
+import string
 import unicodedata
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -106,12 +108,17 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
 #: - a call or subscript on a dotted name (``os.environ["KEY"]``, ``Yup.string()``), or a call on a lower-case
 #:   name with no argument or a quoted one (``getpass()``, ``input("Password: ")``);
 #: - punctuation alone up to a space or a line's end (``""``, ``")``, ``=`` in ``token == nil``);
-#: - a Chinese question or description (``token是什么意思``).
-#: ``$unshine2024``, ``[hunter2]``, ``letmein(2024)``, "correct horse battery staple" and a value in any script
-#: still count.  Known gaps, credentials that pass: what follows a value's first space (``password: str Xk9#mP2q``,
+#: - a Chinese question or description (``token是什么意思``, ``密码已重置``).
+#: Chinese, camelCase and Markdown labels share the ASCII value rule: at least four characters with a digit or inner
+#: symbol, or eight letters after a password label. Trailing punctuation, structural punctuation right after the
+#: label and identifier references do not count. Unquoted values end at whitespace or non-ASCII text; quoted values
+#: end at their escape-aware closing quote. Plain English keeps word values; after 是 or 为 no label takes Chinese text.
+#: Plain English labels count ``$unshine2024``, ``[hunter2]``, ``letmein(2024)``, "correct horse battery staple" and
+#: values in any script. Known gaps, credentials that pass: what follows a value's first space
+#: (``password: str Xk9#mP2q``,
 #: ``DB_PASSWORD: str = "..."``, ``settings.DB_PASSWORD or "..."``, ``password: { value: ... }``), what follows an
 #: exemption judged by how it begins (``password: Mr.Smith(1985)``, ``love()you``, a YAML ``|`` block), and a
-#: value of punctuation alone (``!@#$%^&*``).
+#: value of punctuation alone (``!@#$%^&*``), and passwords written in Chinese characters after Chinese labels.
 #: The quantifiers that meet another run of the same characters are possessive (``*+``, ``++``, ``{3,}+``): greedy,
 #: a run of dots after a key word would be given back one dot at a time and the end tried again at each, 2.9 s for
 #: 20 kB and 7.5 s with 64 key starts.  Taking a run whole never changes a verdict: a shorter run is followed by
@@ -135,15 +142,22 @@ _EXEMPT_IN_QUOTES = (
 )
 _NOT_A_VALUE = (
     r"(?!"
-    r"(?P<vq>[\"'`]?)(?:"
+    r"(?P<vq>[\"'`])(?:"
     + _EXEMPT_IN_QUOTES
     + r")(?P=vq)"
+    + r"|(?:"
+    + _EXEMPT_IN_QUOTES
+    + r")"
     + _END
+    + r"|[\"'`]?\[(?:redacted|hidden|masked|omitted|removed)[^\]\s]*\]"
+    + "(?:"
+    + _END
+    + r"|(?=[^ -~]))"
     + r"|(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*[(\[]"
     r"|(?-i:[a-z_][a-z0-9_]*)\((?:\)|[\"'])"
     r"|[^\s\w]++(?:\s|$)"
     r"|(?:什么|多少|哪个|哪些|啥|怎么|怎样|如何|不是|是否|必须|必需|必填|可选|过期|无效|有效)"
-    r")"
+    r"|(?:错误(?:的)?|已重置|为空|空)" + _END + r")"
 )
 #: Prose: after "is", one of the lower-case words that describe a value rather than give it ("the password is
 #: required", "the secret is out", "the token is sent in the header").  "my password is iloveyou", "the password
@@ -157,23 +171,66 @@ _IS_NOT_A_WORD = (
     + _END
     + r")"
 )
-_SEPARATOR = r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+" + _IS_NOT_A_WORD + r")"
+
+#: Bounded Markdown runs cannot rescan the rest of a long emphasis line at each credential word.
+#: Spacing is possessive and horizontal only: an empty slot never takes the following line as its value.
+_MARKS = r"[\"'`*_]{0,8}+"
+_VALUE = (
+    r"(?P<quote>[\"'`])?+"
+    r"(?P<value>(?(quote)(?:\\[^\r\n]|(?!(?P=quote))[^\\\r\n])*+|[^\s]++))"
+)
+_FORMATTED_SEPARATOR = (
+    r"(?P<separator>"
+    + _MARKS
+    + r"[ \t]*+"
+    + _MARKS
+    + r"(?:[:=是为]"
+    + r"[*_]{0,8}+"
+    + r"[ \t]*+|is[ \t]++"
+    + _IS_NOT_A_WORD
+    + r"))"
+)
+_CAMEL_CREDENTIAL = (
+    r"(?<![A-Za-z0-9_])(?:accessToken|refreshToken|idToken|authToken|sessionToken|apiToken|botToken|"
+    r"bearerToken|oauthToken|clientSecret|apiSecret|appSecret|secretKey|accessKey)(?![A-Za-z0-9_])"
+)
 
 #: ``credential``'s suffix is bounded: unbounded, a run of "credential" repeats would be tried at every length from
 #: every repeat, 1 s for 20 kB.
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?:api[_ \t-]?key|secret|password|passwd|"
-    r"credential(?:[_ \t-]?[a-z0-9_]{1,64})?|private[_ \t-]?key)[\"']?" + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
+    r"credential(?:[_ \t-]?[a-z0-9_]{1,64})?|private[_ \t-]?key)" + _FORMATTED_SEPARATOR + _NOT_A_VALUE + _VALUE,
+    re.IGNORECASE,
+)
+
+CHINESE_ASSIGNMENT_RE = re.compile(
+    r"(?:密码|口令|密钥|私钥|令牌|授权码)"
+    # A label closed by a bracket keeps its separator: "（开发者密钥）：9a8b7c6d5e".
+    + r"(?>[)\]]?"
+    + _MARKS
+    + r"[ \t]*+"
+    + _MARKS
+    + r"[:=是为]"
+    + r"[ \t]*+|"
+    + _MARKS
+    + r"[ \t]++|(?=[!-~]))[*_]{0,8}+[ \t]*+"
+    + _NOT_A_VALUE
+    + _VALUE.replace(r"[^\s]++", r"[!-~]++"),
+    re.IGNORECASE,
+)
+
+CAMEL_ASSIGNMENT_RE = re.compile(
+    _CAMEL_CREDENTIAL + _FORMATTED_SEPARATOR + _NOT_A_VALUE + _VALUE.replace(r"[^\s]++", r"[!-~]++"),
     re.IGNORECASE,
 )
 
 #: The name before ``token`` is at most 128 characters: unbounded, a long hyphenated line (a generated id, a
 #: kebab-case slug) would be tried from every hyphen to its end, 18 s for 60,000 characters.
 TOKEN_ASSIGNMENT_RE = re.compile(
-    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]{0,126}[_-])?token)[\"']?"
-    + _SEPARATOR
+    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]{0,126}[_-])?token)"
+    + _FORMATTED_SEPARATOR
     + _NOT_A_VALUE
-    + r"[^\s]+",
+    + _VALUE,
     re.IGNORECASE,
 )
 
@@ -202,6 +259,7 @@ class SecretTextMatch:
     start: int
     end: int
     text: str
+    value_start: int | None = None
 
 
 #: From the first backslash of a run only: from every one, a long run with no break after it would be tried to its
@@ -259,6 +317,8 @@ def is_sensitive_mapping_key(value: Any) -> bool:
     if is_safe_token_metric_key(value):
         return False
     shadow = secret_scan_shadow(value)
+    if re.fullmatch(_CAMEL_CREDENTIAL + r"|密码|口令|密钥|私钥|令牌|授权码", shadow, re.IGNORECASE):
+        return True
     normalized = normalize_secret_mapping_key(shadow)
     if SENSITIVE_MAPPING_KEY_RE.search(shadow) or SENSITIVE_MAPPING_KEY_RE.search(normalized):
         return True
@@ -276,10 +336,22 @@ def scan_secret_like_text(value: Any) -> tuple[SecretTextMatch, ...]:
 
     shadow = secret_scan_shadow(value)
     candidates: list[SecretTextMatch] = []
-    patterns = (("api_key_assignment", SECRET_ASSIGNMENT_RE), *COMMON_SECRET_PATTERNS.items())
+    patterns = (
+        ("api_key_assignment", SECRET_ASSIGNMENT_RE),
+        ("chinese_credential_assignment", CHINESE_ASSIGNMENT_RE),
+        ("camel_credential_assignment", CAMEL_ASSIGNMENT_RE),
+        *COMMON_SECRET_PATTERNS.items(),
+    )
     for name, pattern in patterns:
         candidates.extend(
-            SecretTextMatch(name, match.start(), match.end(), match.group(0)) for match in pattern.finditer(shadow)
+            SecretTextMatch(
+                name,
+                match.start(),
+                match.end(),
+                match.group(0),
+                match.start("value") if "value" in pattern.groupindex else None,
+            )
+            for match in _accepted_matches(pattern, shadow)
         )
     candidates.extend(
         SecretTextMatch(
@@ -287,9 +359,9 @@ def scan_secret_like_text(value: Any) -> tuple[SecretTextMatch, ...]:
             match.start(),
             match.end(),
             match.group(0),
+            match.start("value"),
         )
-        for match in TOKEN_ASSIGNMENT_RE.finditer(shadow)
-        if not is_safe_token_metric_key(match.group("key"))
+        for match in _accepted_matches(TOKEN_ASSIGNMENT_RE, shadow)
     )
     # Keep ordering deterministic and collapse exact duplicate classifier output.
     unique: dict[tuple[str, int, int], SecretTextMatch] = {}
@@ -298,10 +370,167 @@ def scan_secret_like_text(value: Any) -> tuple[SecretTextMatch, ...]:
     return tuple(sorted(unique.values(), key=lambda item: (item.start, item.end, item.name)))
 
 
+#: Symbols a password may begin with; any other punctuation right after a label is the surrounding text's.
+_LEADING_VALUE_SYMBOLS = frozenset("!@#$%^&*+=~?")
+#: Labels whose values may be words: an e-mail authorization code (授权码) is often sixteen lower-case letters.
+_PASSWORD_LABEL = re.compile(r"pass(?:word|wd)|密码|口令|授权码", re.IGNORECASE)
+_CJK_START = re.compile(r"[㐀-鿿豈-﫿]")
+#: What a non-empty container stands for after its credential key (``_after_key``): four digits meet the ASCII value
+#: length rule and cannot name a placeholder.
+_CONTAINER_WITNESSES = {"dict": "{0000}", "list": "[0000]"}
+
+
+def _assignment_value_allowed(match: re.Match[str]) -> bool:
+    """Judge ASCII values consistently across Chinese, camelCase and Markdown labels."""
+    if "value" not in match.re.groupindex:
+        return True
+    # Camel labels must never also inherit the less restrictive English suffix rule.
+    if (
+        match.re is SECRET_ASSIGNMENT_RE
+        and match.start()
+        and re.search(
+            _CAMEL_CREDENTIAL + "$", match.string[max(0, match.start() - 16) : match.start("separator")], re.IGNORECASE
+        )
+    ):
+        return False
+    separator = match.groupdict().get("separator") or ""
+    label = match.string[match.start() : match.start("value")]
+    password_label = _PASSWORD_LABEL.search(label) is not None
+    # After 是 or 为, Chinese text describes a key or token rather than giving it ("TOKEN 为保存凭据名的字段"); a
+    # password may still be a Chinese passphrase.
+    if ("是" in separator or "为" in separator) and not password_label and _CJK_START.match(match["value"]):
+        return False
+    strict = match.re in (CHINESE_ASSIGNMENT_RE, CAMEL_ASSIGNMENT_RE) or any(mark in separator for mark in "`*_")
+    return not strict or _ascii_value_allowed(match, password_label=password_label)
+
+
+def _ascii_value_allowed(match: re.Match[str], *, password_label: bool) -> bool:
+    """The value rule Chinese, camelCase and Markdown labels share: an ASCII run judged by its shape."""
+    prefix = re.match(r"[ -~]*" if match["quote"] else r"[!-~]*", match["value"])
+    assert prefix is not None  # Both ASCII prefix patterns accept an empty run.
+    if prefix[0] in _CONTAINER_WITNESSES.values():
+        return True
+    value = prefix[0].rstrip(string.punctuation)
+    # Punctuation that structures the text right after a label (",", ")", "]", "/", "|", a quote opening a link, a
+    # path or JSON) belongs to that text.  A password may still begin with one of the symbols people put in them.
+    if value[:1] and not value[0].isalnum() and value[0] not in _LEADING_VALUE_SYMBOLS:
+        return False
+    if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+", value, re.ASCII):
+        return False
+    if not any(character.isdigit() for character in value) and (
+        re.fullmatch(r"[A-Za-z_]*_[A-Za-z_]*", value)
+        or re.fullmatch(r"(?:[A-Za-z]*[a-z][A-Z]|[A-Z]{2,}[a-z])[A-Za-z]*", value)
+    ):
+        return False
+    if value.isascii() and value.isalpha():
+        # A word alone is a password only where a password is asked for: after "Credentials:" or "token is" a word
+        # describes something ("Encrypted", "obtained").
+        return len(value) >= 8 and password_label
+    return len(value) >= 4 and (
+        any(character.isdigit() for character in value) or any(not character.isalnum() for character in value[1:-1])
+    )
+
+
+def _accepted_matches(pattern: re.Pattern[str], shadow: str) -> Iterator[re.Match[str]]:
+    """Yield accepted runs while keeping a rejected assignment's value searchable."""
+    position = 0
+    while position <= len(shadow):
+        match = pattern.search(shadow, position)
+        if match is None:
+            return
+        accepted = _assignment_value_allowed(match)
+        if pattern is TOKEN_ASSIGNMENT_RE:
+            accepted = accepted and not is_safe_token_metric_key(match["key"])
+        if accepted:
+            yield match
+        # Skip rejected heads so a telemetry key's suffix stays part of that key, but inspect their values.
+        position = max(match.start() + 1, match.end() if accepted else match.start("value"))
+
+
 def contains_secret_like_text(value: Any) -> bool:
     """Return whether the canonical scan API found any secret-like material."""
 
     return bool(scan_secret_like_text(value))
+
+
+def secret_prefilter_sql(expression: str) -> tuple[str, tuple[str, ...]]:
+    """Build a cheap SQL candidate test; the canonical scan alone decides matches.
+
+    The expression is a caller-owned, lowercased SQL column, never user input.
+    Text outside ASCII, ordinary CJK and their punctuation is also admitted for
+    normalization; compatibility characters and invisible controls cannot hide
+    a credential from this prefilter. Ordinary Chinese prose uses the word test.
+    """
+    words = (
+        "password",
+        "passwd",
+        "secret",
+        "credential",
+        "key",
+        "token",
+        "bearer",
+        "cookie",
+        "://",
+        "：//",
+        "sk-",
+        "gh",
+        "glpat-",
+        "npm_",
+        "pypi-",
+        "akia",
+        "asia",
+        "mfa.",
+        "xox",
+        "eyj",
+        "aiza",
+        "_live_",
+        "密码",
+        "口令",
+        "密钥",
+        "私钥",
+        "令牌",
+        "授权码",
+        "\\u",
+    )
+    # A full-width colon can frame a URI or bot token without any credential word.
+    return (
+        "("
+        + " OR ".join(f"instr({expression},?)>0" for _ in words)
+        + f" OR {expression} GLOB '*[^ -~\t\n\r\u3400-\u4dbf\u4e00-\u9fff\u3000-\u303f，。！？：；、（）【】]*'"
+        + f" OR {expression} GLOB '*{'[0-9]' * 8}[:：]*' OR {expression} GLOB '*.*.*')",
+        words,
+    )
+
+
+def secret_redaction_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Map secret values back to original characters, retaining labels and formatting.
+
+    Per-character NFKC covers width changes, ligatures and invisible controls. If composition across characters
+    differs from the canonical shadow, the whole text is withheld rather than trusting approximate offsets.
+    Escaped breaks preserve length and therefore preserve this map.
+    """
+    matches = scan_secret_like_text(text)
+    if not matches:
+        return ()
+    # A normalized PEM marker can evade original-text block framing; its body must never remain readable.
+    if any(match.name == "pem_private_key_begin" for match in matches):
+        return ((0, len(text)),)
+    if secret_scan_shadow(text) == text:
+        return tuple((m.value_start if m.value_start is not None else m.start, m.end) for m in matches)
+    characters, positions = [], []
+    for index, character in enumerate(text):
+        for normalized in unicodedata.normalize("NFKC", character):
+            if unicodedata.category(normalized) != "Cf":
+                characters.append(normalized)
+                positions.append(index)
+    projected = _ESCAPED_BREAK_RE.sub(
+        lambda match: _ESCAPED_BREAKS[match.group(1)] * len(match.group(0)), "".join(characters)
+    )
+    if projected != secret_scan_shadow(text):
+        return ((0, len(text)),)
+    return tuple(
+        (positions[m.value_start if m.value_start is not None else m.start], positions[m.end - 1] + 1) for m in matches
+    )
 
 
 def secret_like_text_starts_before(value: Any, end: int) -> bool:
@@ -327,19 +556,19 @@ def secret_like_text_starts_before(value: Any, end: int) -> bool:
 
 def _after_key(item: Any) -> str:
     """``item`` as JSON writes it after its key, a container as one holding something whose texts are read on their
-    own.  The something is a digit, which no placeholder name starts with (``{0}``, not ``{S}``)."""
+    own (``_CONTAINER_WITNESSES``)."""
     if isinstance(item, dict):
-        return "{0}" if item else "{}"
+        return _CONTAINER_WITNESSES["dict"] if item else "{}"
     if isinstance(item, (list, tuple)):
-        return "[0]" if item else "[]"
+        return _CONTAINER_WITNESSES["list"] if item else "[]"
     if item is None or isinstance(item, (str, bool, int, float)):
         return json.dumps(item, ensure_ascii=False)
     return str(item)
 
 
 def _names_a_credential(key: Any) -> bool:
-    """Whether the scan reads a plain value after ``key`` as a credential (``password``, ``api_key``, ``x_token``)."""
-    return contains_secret_like_text(f"{key}: Q")
+    """Classify assignment keys with a witness of at least four ASCII characters including a digit."""
+    return contains_secret_like_text(f"{key}: TEST9")
 
 
 def structure_contains_secret_like_text(value: Any) -> bool:
@@ -354,22 +583,31 @@ def structure_contains_secret_like_text(value: Any) -> bool:
     stack, so nesting depth costs no recursion.
     """
 
+    return any(contains_secret_like_text(text) for text in _structure_texts(value))
+
+
+def secret_structure_pattern_names(value: Any) -> tuple[str, ...]:
+    """Return canonical rule names for structured content, never values or matched text."""
+    return tuple(sorted({match.name for text in _structure_texts(value) for match in scan_secret_like_text(text)}))
+
+
+def _structure_texts(value: Any):
+    """Yield each text as written and each credential member as its key assigns it."""
     pending = [value]
     while pending:
         item = pending.pop()
         if isinstance(item, str):
-            if contains_secret_like_text(item):
-                return True
+            yield item
         elif isinstance(item, dict):
+            if "predicate" in item and "value_text" in item:
+                pending.append({str(item["predicate"]): item["value_text"]})
             for key, member in item.items():
-                if contains_secret_like_text(key) or (
-                    _names_a_credential(key) and contains_secret_like_text(f"{key}: {_after_key(member)}")
-                ):
-                    return True
+                yield key
+                if _names_a_credential(key):
+                    yield f"{key}: {_after_key(member)}"
                 pending.append(member)
         elif isinstance(item, (list, tuple)):
             pending.extend(item)
-    return False
 
 
 #: How far ``cut_between_runs`` moves a cut, and a quarter of how much text it reads on each side of one.  A key, a

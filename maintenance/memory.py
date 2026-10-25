@@ -28,7 +28,8 @@ def open_management(args):
     if not (binding.data_directory / "memory.sqlite3").is_file():
         raise ContractError("SOURCE_MISSING", "database")
     core = MemoryCore(CoreConfig(binding))
-    core.initialize()
+    if args.action != "secrets":
+        core.initialize()
     context = TrustedContext(binding, "local-management", binding.scope_ids, "host_generated")
     return MemoryManagement(core, InstallationMaintenance(context))
 
@@ -60,6 +61,7 @@ def parser():
         "forget",
         "forget-session",
         "export",
+        "secrets",
     ):
         command = commands.add_parser(action)
         _common(command)
@@ -112,6 +114,8 @@ def _preview(api, args):
 
 def execute(api, args):
     """Translate one parsed command to the same methods used by the local UI."""
+    if args.action == "secrets":
+        return api.secrets()
     if args.action in {"list", "search"}:
         filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
         return api.list(filters, limit=args.limit, cursor=args.cursor)
@@ -132,10 +136,12 @@ def execute(api, args):
     return _preview(api, args)
 
 
-def table(rows, columns):
-    """Print one bounded plain-text table for the local management commands."""
+def table(rows, columns, *, max_width: int | None = 72):
+    """Print a plain-text table, optionally retaining every metadata character."""
     values = [[str(row.get(key, "")) for key in columns] for row in rows]
-    widths = [min(72, max([len(key), *(len(row[i]) for row in values)])) for i, key in enumerate(columns)]
+    widths = [max([len(key), *(len(row[i]) for row in values)]) for i, key in enumerate(columns)]
+    if max_width is not None:
+        widths = [min(max_width, width) for width in widths]
     print("  ".join(key.upper().ljust(widths[i]) for i, key in enumerate(columns)))
     for row in values:
         print("  ".join(value.replace("\n", " ")[: widths[i]].ljust(widths[i]) for i, value in enumerate(row)))
@@ -202,6 +208,14 @@ def render(payload, *, as_json):
             f"Exported {counts['sources']} sources, {counts['facts']} facts, "
             f"{counts['fact_history']} historical versions, {counts['episodes']} episodes and "
             f"{counts['attachments']} attachments to {data['out']}."
+        )
+    elif "rows_read" in data:
+        table(
+            data["items"], ("ref", "revision", "kind", "origin", "entry", "session", "time", "patterns"), max_width=None
+        )
+        print(
+            f"Read {data['rows_read']} rows; scanned {data['candidates_scanned']} candidates; "
+            f"found {len(data['items'])} secret-bearing versions."
         )
     elif "items" in data:
         _render_items(data)

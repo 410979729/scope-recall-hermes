@@ -30,6 +30,37 @@ def _payload(text: str, *, key: str) -> dict:
     }
 
 
+def test_inspect_tool_withholds_legacy_secret_and_preserves_clean_content(adapter, monkeypatch):
+    from scope_recall.core import events
+
+    provider, _clock = adapter
+    core, identity = provider._core, provider._identity
+    context = identity.trusted_context()
+    with monkeypatch.context() as patch:
+        patch.setattr(events, "capture_contains_secret", lambda value: False)
+        flagged = core.record_event(
+            context,
+            _payload("NameOne 密码：Xk9mP2qa", key="TEST-secret"),
+            scope_id=identity.local_scope_id,
+            remaining_seconds=5,
+        ).event_refs[0]
+    clean = core.record_event(
+        context,
+        _payload("NameOne uses green.", key="TEST-clean"),
+        scope_id=identity.local_scope_id,
+        remaining_seconds=5,
+    ).event_refs[0]
+    for item, secret in ((flagged, True), (clean, False)):
+        reply = json.loads(provider.handle_tool_call("inspect", {"protocol_version": "1.1", "ref": item.ref}))
+        assert "result" in reply, reply
+        result = reply["result"]
+        if secret:
+            assert result["value"] is None and result["gaps"] == ["secrets_withheld:1"]
+            assert "Xk9mP2qa" not in json.dumps(result, ensure_ascii=False)
+        else:
+            assert result["value"]["event"]["content"] == "NameOne uses green."
+
+
 def test_operator_tools_expose_frozen_names_and_strict_boundary(adapter):
     provider, _clock = adapter
     schemas = provider.get_tool_schemas()

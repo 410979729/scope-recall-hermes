@@ -52,6 +52,34 @@ Default listings are tables. `--json` emits `scope-recall-management/1`, defined
 [`memory_management.schema.json`](../contracts/memory_management.schema.json). Success has `status: "ok"` and `data`;
 a refused operation has `status: "error"`, `code` and `field`, and exits with code 2.
 
+## Find stored credentials
+
+```sh
+scope-recall memory secrets --root /path/to/store
+scope-recall memory secrets --root /path/to/store --json
+```
+
+This read-only command scans readable stored versions, including historical and muted objects, across the owner's
+scopes. It lists `ref`, `kind`, `revision`, `origin`, `entry`, `session`, `time` and the names of matched patterns.
+Chinese credential labels, camelCase names and Markdown English labels share one value rule: after trailing
+punctuation is removed, a printable ASCII value needs at least four characters with a digit or an inner symbol,
+or, after a password label (password, passwd, 密码, 口令, 授权码), at least eight letters. A value may begin with
+one of `!@#$%^&*+=~?`; other punctuation right after a label belongs to the surrounding text (a list, a link, a
+path, JSON). Dotted references, names with underscores and no digits, and camelCase or PascalCase names without
+digits are excluded. Chinese text after a Chinese label, or after 是 or 为 behind any label but a password label,
+is prose; Chinese-character passwords after Chinese labels pass this scan. Quoted values end at their closing
+quote, respecting escapes.
+Neither output format includes content or matched text. `rows_read` counts all versions read in SQL windows;
+`candidates_scanned` counts those selected by the SQL credential-word prefilter for the full scan. Each batch ends
+its read transaction before scanning content. The command uses no model or embedding provider and changes nothing.
+Captures and revisions committed behind a batch's cursor require another run.
+
+After upgrading, run this command, review the references and use `scope-recall memory forget <refs>` to remove the
+findings through the normal preview and confirmation. Change any credential found, because it was already stored
+and may have been sent to a model provider. Agent recall and tools withhold secret-bearing items with a
+`secrets_withheld:N` gap. Profile and entity views report partial coverage when they withhold content.
+The owner's local page and memory commands keep originals visible for review and deletion.
+
 ## Correct a derived fact
 
 ```sh

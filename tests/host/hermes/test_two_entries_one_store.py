@@ -172,7 +172,7 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries, slo
         if slow_write:
             slow_capture_store()
         told.observe_pre_llm(
-            session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 我的储物柜密码是 4471。"
+            session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 我的储物柜编号是 4471。"
         )
         ref, revision = told._current_source_refs[-1].rsplit("@", 1)
         deleting.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-2", user_message=f"忘记 {ref}。")
@@ -189,7 +189,7 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries, slo
         )
         assert receipt["result"]["mode"] == "delete", receipt
         told.on_session_switch("TEST-session-2")
-        injected = told.prefetch("储物柜密码 4471")
+        injected = told.prefetch("储物柜编号 4471")
         # A shared scope id contains colons; the queued purge must still resolve its whole operation subject.
         purged = []
 
@@ -431,7 +431,7 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
 
     agent3, _agent2 = entries
     scope = _scope(agent3)
-    core, context, (secret,), old = _old_store(agent3, scope, "TEST 旧库里的保险柜密码是 5520。")
+    core, context, (secret,), old = _old_store(agent3, scope, "TEST 旧库里的保险柜编号是 5520。")
     for index in range(1, 9):  # the old store ran for a while: its epoch is well past the new store's
         core.record_event(
             context,
@@ -469,7 +469,7 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
     }
     asked = _provider(agent3)
     try:
-        injected = asked.prefetch("保险柜密码 5520")
+        injected = asked.prefetch("保险柜编号 5520")
     finally:
         asked.shutdown()
     assert "5520" not in injected
