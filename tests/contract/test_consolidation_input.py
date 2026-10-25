@@ -5,8 +5,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 from scope_recall.contracts import ContractError, TrustedSourcePrincipal, validate_payload
-from scope_recall.core.consolidate import consolidation_messages
+from scope_recall.core.consolidate import CONSOLIDATION_INPUT_BUDGET, consolidation_messages
 from test_claims import app as app
 from test_claims import capture
 
@@ -95,6 +96,25 @@ def test_utf8_input_budget_is_enforced(app):
     source = capture(core, ctx, "测试" * 6000)
     with pytest.raises(ContractError, match="consolidation_input_budget"):
         consolidation_messages((source,))
+
+
+def test_condition_contract_describes_literal_applicability_in_the_prompt(app):
+    """The claim's condition slot carries the source-bound contract and the procedure's slot points to it."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project 验收前检查方法已认可，先检查温度，再验收。")
+    messages = consolidation_messages((source,))
+    system = messages[0]["content"]
+    schema = json.loads(system.split("Schema: ", 1)[1])
+    Draft202012Validator.check_schema(schema)
+    claim = schema["properties"]["claim_proposals"]["items"]["properties"]
+    rule = claim["conditions"]["description"]
+    for term in ("speaker circumstance", "verbatim from its sentence", "keep all", "count only if they limit it"):
+        assert term in rule
+    assert claim["procedure"]["properties"]["conditions"]["description"] == "The claim's conditions rule applies."
+    for phrase in ("说话者处境", "不跨句", "不丢任何一个条件", "不限定值是否成立的不是条件"):
+        assert phrase in system
+    assert sum(len(message["content"].encode("utf-8")) for message in messages) <= CONSOLIDATION_INPUT_BUDGET
+    validate_payload("consolidation_result", json.loads(messages[1]["content"])["empty_result"])
 
 
 def test_source_instructions_remain_user_data(app):
