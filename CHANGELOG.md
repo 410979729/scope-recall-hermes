@@ -2,7 +2,7 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [3.15.0] - Unreleased
+## [3.15.0] - 2026-10-25
 
 Credential scanning recognizes Chinese labels (密码, 口令, 密钥, 私钥, 令牌, 授权码), camelCase token and key names, and Markdown marks around labels and separators. After such a label a value is an ASCII run of at least four characters holding a digit or an inner symbol, or a word of at least eight letters after a password label; prose, punctuation that structures the surrounding text and identifier references (`response.token`, `vendor_key`) are not values, and quoted values keep their boundaries, escaped quotes included. Capture redaction removes the value and keeps the label. Automatic and explicit recall, background context, and the inspect, profile, entity and trace tools withhold a stored item the scan flags, report only a count in their gaps and mark the result partial; candidate evaluation requests apply the same policy to a claim's label and value. The local management page and the memory commands keep the owner's view. `scope-recall memory secrets` lists the stored versions the scan flags (identities, provenance, times, revisions and rule names, never content) in short read windows with a SQL prefilter, and changes nothing.
 
