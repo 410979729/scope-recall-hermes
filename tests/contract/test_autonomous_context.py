@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.background_context import BACKGROUND_PREFIX
+from scope_recall.core.background_context import BACKGROUND_PREFIX, background_candidates
 from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.retrieval import SearchContext
 
@@ -36,30 +36,26 @@ def preference(core, ctx, value="简洁", **changes):
     return item, source
 
 
-def packet(core, ctx, **changes):
-    return core.recall_packet(ctx, recall_request(query="火星咖啡采购报价是什么", **changes))
+def packet(core, ctx, *, query="TEST-project 表达偏好是什么", **changes):
+    return core.recall_packet(ctx, recall_request(query=query, **changes))
 
 
-def test_unrelated_question_keeps_preference_but_never_claims_answer(app):
+def test_unrelated_question_does_not_inject_background_without_evidence(app):
     core, ctx = app
-    item, _ = preference(core, ctx)
-    result = packet(core, ctx)
-    assert result["status"] == "partial"
+    preference(core, ctx)
+    result = packet(core, ctx, query="火星咖啡采购报价是什么")
+    assert result["status"] == "no_match"
     assert result["answerability"] == "unknown"
-    assert "query_evidence_missing" in result["unmet_needs"]
-    selected = next(entry for entry in result["items"] if entry["ref"] == item.ref)
-    assert selected["applicability"].startswith(BACKGROUND_PREFIX)
-    assert "TEST-project" in selected["content"]  # no inferred person identity
-    assert "not instructions" in selected["applicability"]
+    assert result["items"] == []
     assert len(canonical_render_json(result).encode("utf-8")) <= 4096
-    assert core.prepare_recall_render(ctx, result).canonical_text
+    assert not core.prepare_recall_render(ctx, result).canonical_text
 
 
 def test_absent_background_preserves_no_match_and_explicit_query_behavior(app):
     core, ctx = app
     assert packet(core, ctx)["status"] == "no_match"
     preference(core, ctx)
-    assert packet(core, ctx, mode="current")["status"] == "no_match"
+    assert packet(core, ctx, query="火星咖啡采购报价是什么", mode="current")["status"] == "no_match"
 
 
 def test_context_filters_precede_limit_and_expiration_is_immediate(app):
@@ -68,7 +64,7 @@ def test_context_filters_precede_limit_and_expiration_is_immediate(app):
     for i in range(25):
         preference(core, foreign, value=f"foreign-{i}", subject=f"TEST-subject-{i}")
     allowed, _ = preference(core, ctx)
-    assert [item["ref"] for item in packet(core, ctx)["items"]] == [allowed.ref]
+    assert [item["ref"] for item in packet(core, ctx)["items"] if item["kind"] == "claim"] == [allowed.ref]
     assert packet(core, replace(ctx, branch_id="TEST-other"))["status"] == "no_match"
     core.clock.now = "2027-09-06T12:00:00Z"
     # Existing indefinite facts do not expire merely because they are old.
@@ -77,8 +73,8 @@ def test_context_filters_precede_limit_and_expiration_is_immediate(app):
 
 def test_expired_preferences_stay_out(app):
     core, ctx = app
-    preference(core, ctx, valid_to="2026-09-02T12:00:00Z")
-    assert packet(core, ctx)["status"] == "no_match"
+    expired, _ = preference(core, ctx, valid_to="2026-09-02T12:00:00Z")
+    assert expired.ref not in {item["ref"] for item in packet(core, ctx)["items"]}
 
 
 def test_unmatched_conditional_preference_is_not_ambient_rule(app):
@@ -96,7 +92,9 @@ def test_unmatched_conditional_preference_is_not_ambient_rule(app):
             conditions=["写文案时"],
         ),
     ).items[0]
-    assert item.ref not in {entry["ref"] for entry in packet(core, ctx)["items"]}
+    assert item.ref not in {
+        entry["ref"] for entry in packet(core, ctx)["items"] if entry["applicability"].startswith(BACKGROUND_PREFIX)
+    }
 
 
 @pytest.mark.parametrize("mode", ["delete", "suppress"])
@@ -136,7 +134,10 @@ def test_background_is_rechecked_after_deletion_between_search_and_compile(app):
     core, ctx = app
     item, _ = preference(core, ctx)
     search = SearchContext.from_request(
-        recall_request(query="火星咖啡报价"), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5
+        recall_request(query="TEST-project 表达偏好是什么"),
+        ctx,
+        now=core.clock.utc_now(),
+        deadline=core.clock.monotonic() + 5,
     )
     result = core.recall_pipeline.search(search)
     assert item.ref in {entry.ref for entry in result.items}
@@ -157,12 +158,23 @@ def test_task_context_does_not_guess_among_two_open_tasks(app):
     core, ctx = app
     first_ctx = replace(ctx, task_anchor="TEST-task-a")
     first = task(core, first_ctx, "TEST 海报排版还未完成")
-    assert first.ref in {entry["ref"] for entry in packet(core, first_ctx)["items"]}
+    fresh = replace(first_ctx, session_id="TEST-first-resume")
+    assert first.ref in {entry["ref"] for entry in packet(core, fresh, query="继续")["items"]}
     second_ctx = replace(ctx, task_anchor="TEST-task-b")
     task(core, second_ctx, "TEST 报价核对还未完成")
-    assert not any(entry["kind"] == "episode" for entry in packet(core, ctx)["items"])
-    selected = packet(core, first_ctx)["items"]
-    assert [entry["ref"] for entry in selected if entry["kind"] == "episode"] == [first.ref]
+    fresh = replace(ctx, session_id="TEST-second-resume")
+    assert not any(
+        entry["kind"] == "episode" and entry["applicability"].startswith(BACKGROUND_PREFIX)
+        for entry in packet(core, fresh, query="继续")["items"]
+    )
+    selected = packet(core, replace(first_ctx, session_id="TEST-third-resume"), query="继续")["items"]
+    assert first.ref in {entry["ref"] for entry in selected}
+    search = SearchContext.from_request(
+        recall_request(query="继续"), first_ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5
+    )
+    with core.storage.read(first_ctx) as tx:
+        background = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
+    assert [candidate.ref for candidate, _obj in background] == [first.ref]
 
 
 def test_explicit_resume_without_evidence_keeps_only_its_grounded_task(app):
@@ -174,12 +186,17 @@ def test_explicit_resume_without_evidence_keeps_only_its_grounded_task(app):
 
     def items(**flag):
         search = SearchContext.from_request(
-            recall_request(query="继续"), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5, **flag
+            recall_request(query="继续"),
+            replace(ctx, session_id="TEST-resume-first-prompt"),
+            now=core.clock.utc_now(),
+            deadline=core.clock.monotonic() + 5,
+            **flag,
         )
         # Without the directed follow-up the task can only arrive as background.
         return core.recall_pipeline.search(replace(search, limits=replace(search.limits, followups=0))).items
 
-    assert {item.ref for item in items()} == {claim.ref, episode.ref}
+    assert {item.ref for item in items()} == {episode.ref}
+    assert claim.ref not in {item.ref for item in items()}
     explicit = items(background_without_evidence=False)
     assert [item.ref for item in explicit] == [episode.ref]
     assert explicit[0].applicability.startswith(BACKGROUND_PREFIX)
@@ -191,9 +208,11 @@ def test_changed_environment_does_not_auto_reuse_old_task_state(app):
     core, ctx = app
     original = replace(ctx, task_anchor="TEST-current", environment_revision="TEST-env-v1")
     episode = task(core, original, "TEST 发布步骤还未完成")
-    assert episode.ref in {entry["ref"] for entry in packet(core, original)["items"]}
+    fresh = replace(original, session_id="TEST-environment-resume")
+    assert episode.ref in {entry["ref"] for entry in packet(core, fresh, query="继续")["items"]}
     changed = replace(original, environment_revision="TEST-env-v2")
-    assert episode.ref not in {entry["ref"] for entry in packet(core, changed)["items"]}
+    fresh = replace(changed, session_id="TEST-changed-environment-resume")
+    assert episode.ref not in {entry["ref"] for entry in packet(core, fresh, query="继续")["items"]}
 
 
 def test_precompress_retries_only_observed_event_without_promoting_summary(tmp_path, monkeypatch):

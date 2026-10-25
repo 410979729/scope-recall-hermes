@@ -451,7 +451,11 @@ def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
     reader = replace(ctx, session_id="TEST-p08-common-identifier-reader")
     for mode in ("auto", "current", "history"):
         result = core.recall(reader, recall_request(query="rc28 升级结果", mode=mode), deadline_seconds=5)
-        assert result.items and result.items[0].ref == target.ref, mode
+        if mode == "auto":
+            assert not result.items
+            assert any(gap.startswith("auto_relevance_below_floor:lexical:") for gap in result.gaps)
+        else:
+            assert result.items and result.items[0].ref == target.ref, mode
 
 
 def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):

@@ -13,7 +13,7 @@ from scope_recall.adapters.clients.handler import CodexHookHandler
 from scope_recall.adapters.clients.mcp_server import build_server
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.runtime_wiring import TrustedHostRuntime
-from scope_recall.contracts import InstanceBinding, TrustedContext
+from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core.composition import CoreConfig, MemoryCore
 from scope_recall.runtime.instance import build_runtime_instance
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
@@ -66,6 +66,46 @@ def _core_with_clock(tmp_path: Path, *, auto_seconds: float = 4.0):
     core.initialize()
     context = TrustedContext(binding, "TEST-budget-session", binding.scope_ids, "human_direct")
     return core, context, clock
+
+
+def test_runtime_loads_independent_automatic_recall_floors(tmp_path):
+    binding = _binding(tmp_path)
+    configured = RuntimeInstanceConfig.from_mapping(
+        _runtime_raw(
+            binding,
+            vector_threshold=0.7,
+            auto_vector_threshold=0.85,
+            auto_lexical_min_coverage=0.6,
+            auto_lexical_min_terms=3,
+        )
+    )
+    policy = configured.recall_policy()
+    assert (policy.vector_threshold, policy.auto_vector_threshold) == (0.7, 0.85)
+    assert (policy.auto_lexical_min_coverage, policy.auto_lexical_min_terms) == (0.6, 3)
+    defaults = RuntimeInstanceConfig.from_mapping(_runtime_raw(binding)).recall_policy()
+    assert (defaults.auto_lexical_min_coverage, defaults.auto_lexical_min_terms, defaults.auto_vector_threshold) == (
+        0.20,
+        2,
+        0.3,
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("auto_vector_threshold", True),
+        ("auto_vector_threshold", float("nan")),
+        ("auto_vector_threshold", 1.1),
+        ("auto_lexical_min_coverage", -0.1),
+        ("auto_lexical_min_coverage", float("inf")),
+        ("auto_lexical_min_terms", 1),
+        ("auto_lexical_min_terms", 2.5),
+        ("auto_lexical_min_terms", True),
+    ],
+)
+def test_runtime_rejects_invalid_automatic_recall_floors(tmp_path, field, value):
+    with pytest.raises(ContractError, match=field):
+        RuntimeInstanceConfig.from_mapping(_runtime_raw(_binding(tmp_path), **{field: value}))
 
 
 def test_auto_budget_uses_trusted_core_config_and_shorter_caller_deadline_wins(tmp_path):

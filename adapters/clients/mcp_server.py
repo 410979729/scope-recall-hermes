@@ -361,7 +361,7 @@ class CodexMCPServer:
         validate_model_request("recall_request", body, context)
         # Explicit tool calls get the bounded deep-search ceiling.  Auto
         # mode is still clamped by the trusted CoreConfig budget.  A lookup
-        # that finds nothing says so; the prompt hook keeps background.
+        # that finds nothing says so; its lookup intent remains explicit in auto mode.
         packet = self.core.recall_packet(context, body, deadline_seconds=5.0, background_without_evidence=False)
         packet = fence_epoch(
             packet,

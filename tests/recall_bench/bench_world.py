@@ -29,7 +29,17 @@ HERE = Path(__file__).resolve().parent
 #: Each split's templates and seed.  The held-out templates were written apart from the dev ones, with their own
 #: cast, projects, values and phrasings, so a change tuned on dev is also measured on wording it never saw.
 SPLITS = {"dev": ("templates_dev.json", 20260917), "heldout": ("templates_heldout.json", 4111)}
-TASKS = ("single_fact", "preference", "temporal", "knowledge_update", "aggregation", "abstention", "cross_scope")
+TASKS = (
+    "single_fact",
+    "preference",
+    "temporal",
+    "knowledge_update",
+    "aggregation",
+    "abstention",
+    "cross_scope",
+    "relevance_floor",
+    "no_memory",
+)
 #: Questions of each task at scale 1, the size the CI test runs; a larger scale asks as many more.
 QUESTIONS = {
     "single_fact": 36,
@@ -125,6 +135,8 @@ class Question:
     gold: tuple[str, ...]
     negatives: tuple[tuple[str, str], ...] = ()
     revoked: frozenset[str] = frozenset()
+    #: An existing captured session for a conversational follow-up; other questions open their own session.
+    session: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,7 +173,76 @@ def build_world(split: str = "dev", *, scale: int = 1) -> World:
         raise ValueError("scale is a whole number from 1")
     name, seed = SPLITS[split]
     templates = json.loads((HERE / name).read_text(encoding="utf-8"))
-    return _Plan(templates, split, seed, scale).world()
+    return _automatic_cases(_Plan(templates, split, seed, scale).world(), templates["automatic_recall"])
+
+
+def _automatic_cases(world: World, templates: dict) -> World:
+    """Add independent gate cases after the original world's random draws.
+
+    Their messages occupy the morning of the query day, outside the historical
+    days existing questions enumerate. Both splits provide their own wording.
+    """
+    # A separate audience keeps added distractors from changing the existing
+    # tasks' vector ranks, especially in the small word-hashing space.
+    scope = f"{world.split}-gate-scope"
+    entry = Entry("gate-entry", "Recall lab", "hermes", world.entries[0].owner, frozenset({scope}))
+    session = f"{world.split}-gate-session"
+    at = _utc(datetime.fromisoformat(world.now.replace("Z", "+00:00")) - timedelta(minutes=1))
+    messages, questions, claims = list(world.messages), list(world.questions), dict(world.claims)
+    context_key = f"{world.split}/gate-context"
+    messages.append(
+        Message(f"{world.split}/gate-prompt", entry.id, scope, session, USER, templates["session_prompt"], at)
+    )
+    messages.append(Message(context_key, entry.id, scope, session, ASSISTANT, templates["session_context"], at))
+    for index, case in enumerate(templates["cases"]):
+        gold, negatives = [], []
+        for position, source in enumerate(case["sources"]):
+            key = f"{world.split}/gate-{index}-{position}"
+            messages.append(
+                Message(key, entry.id, scope, f"{session}-{index}", source.get("origin", USER), source["text"], at)
+            )
+            if source["kind"] == "answer":
+                gold.append(key)
+            else:
+                negatives.append((source["kind"], key))
+            if source.get("claims"):
+                claims[source["text"]] = tuple(Claim(**claim) for claim in source["claims"])
+        for query_index, query in enumerate(case.get("queries", [case["query"]])):
+            questions.append(
+                Question(
+                    f"{world.split}-gate-{index}-{query_index}",
+                    "relevance_floor",
+                    case["form"],
+                    case["language"],
+                    entry.id,
+                    entry.reads,
+                    query,
+                    tuple(gold),
+                    tuple(negatives),
+                )
+            )
+    for index, query in enumerate(templates["no_memory"]):
+        questions.append(
+            Question(
+                f"{world.split}-no-memory-{index}",
+                "no_memory",
+                "mid_session",
+                "mixed",
+                entry.id,
+                entry.reads,
+                query,
+                (),
+                (("agent_narration", context_key),),
+                session=session,
+            )
+        )
+    return replace(
+        world,
+        entries=(*world.entries, entry),
+        messages=tuple(sorted(messages, key=lambda message: (message.at, message.key))),
+        questions=tuple(questions),
+        claims=claims,
+    )
 
 
 @dataclass
@@ -630,7 +711,7 @@ class _Plan:
     # -- the world -------------------------------------------------------------------------------------------------
 
     def world(self) -> World:
-        counts = {task: QUESTIONS[task] * self.scale for task in TASKS}
+        counts = {task: number * self.scale for task, number in QUESTIONS.items()}
         summaries = counts["temporal"] // 5
         self.day_summaries(summaries)
         self.single_facts(counts["single_fact"])

@@ -1,5 +1,27 @@
 {
   "about": "Hand-written templates for the held-out split of the recall benchmark (bench_world.py), written apart from the dev templates: another cast, other projects, attributes, values and phrasings. Every name and value is invented. A denial template marks with [...] the span a careful extractor quotes for it: the negation with the value.",
+  "automatic_recall": {
+    "session_prompt": "请整理合成的花园图纸，并核对纸张大小。",
+    "session_context": "I check the rule documents before proceeding with each task and checking progress. 收到，接着查看进展，完成后汇报。 Well done, thank you.",
+    "no_memory": ["接着做吧", "收到", "按你建议的做", "完成了没", "任务运行了吗", "做得好", "Thank you", "Keep going", "Are you finished?"],
+    "cases": [
+      {"form": "one_common_term", "language": "en", "query": "Which 7b orchard sprinkler?", "sources": [
+        {"kind": "one_common_term", "text": "7b design meeting notes cabinet"}
+      ]},
+      {"form": "generic_narration", "language": "en", "query": "Check orchard sprinkler pressure", "queries": ["Check orchard sprinkler pressure", "Check balcony wind gauge", "Check pottery kiln temperature"], "sources": [
+        {"kind": "agent_narration", "origin": "assistant_visible", "text": "I check where the entry's rule documents are stored before proceeding."}
+      ]},
+      {"form": "short_question", "language": "zh", "query": "窗台上有什么", "sources": [
+        {"kind": "answer", "text": "窗台上有一盆薄荷"}
+      ]},
+      {"form": "near_duplicate_claims", "language": "en", "query": "What is the Sirocco signal hue?", "sources": [
+        {"kind": "answer", "text": "The Sirocco signal hue is teal; its signal tint is teal.", "claims": [
+          {"kind": "fact", "subject": "Sirocco", "predicate": "signal hue", "value": "teal"},
+          {"kind": "fact", "subject": "Sirocco", "predicate": "signal tint", "value": "teal"}
+        ]}
+      ]}
+    ]
+  },
   "now": "2026-08-10T08:30:00",
   "zone_hours": -4,
   "cast": {

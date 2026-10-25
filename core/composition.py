@@ -509,6 +509,8 @@ class MemoryCore:
         ambient preferences a caller could read as the answer.  A host whose
         model still holds this session's turns says since when
         (``in_context_since``, see :class:`SearchContext`).
+        Explicit lookup intent also preserves channel admission and bypasses
+        conversational prompt skipping when the requested mode is auto.
         """
         search_context, effective_deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone, in_context_since

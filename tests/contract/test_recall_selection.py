@@ -27,7 +27,9 @@ def test_old_relevant_preference_survives_busy_recent_window(app):
         accept(core, ctx, draft(source, "蓝色", kind="preference", predicate=f"配色{index}"))
     search = _search(core, ctx, "输出格式如何选择")
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
+        selected = background_candidates(
+            tx, search, core.recall_pipeline.storage_reader, core.clock, query_evidence=True
+        )
     assert older.ref in {candidate.ref for candidate, _ in selected}
     assert len(selected) <= 2
 
@@ -44,7 +46,11 @@ def test_the_profile_term_query_starts_from_the_claims(app):
         connection = tx._check()
         connection.set_trace_callback(statements.append)
         selected = background_candidates(
-            tx, _search(core, ctx, "输出格式如何选择"), core.recall_pipeline.storage_reader, core.clock
+            tx,
+            _search(core, ctx, "输出格式如何选择"),
+            core.recall_pipeline.storage_reader,
+            core.clock,
+            query_evidence=True,
         )
         connection.set_trace_callback(None)
     assert selected
@@ -65,9 +71,15 @@ def test_matching_condition_selects_exception_instead_of_general_value(app):
     ).items[0]
     search = _search(core, ctx, "现在帮我写文案")
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
+        selected = background_candidates(
+            tx, search, core.recall_pipeline.storage_reader, core.clock, query_evidence=True
+        )
         ordinary = background_candidates(
-            tx, replace(search, query="现在不是写文案，只核对报价"), core.recall_pipeline.storage_reader, core.clock
+            tx,
+            replace(search, query="现在不是写文案，只核对报价"),
+            core.recall_pipeline.storage_reader,
+            core.clock,
+            query_evidence=True,
         )
     assert [candidate.ref for candidate, _ in selected] == [exception.ref]
     assert [candidate.ref for candidate, _ in ordinary] == [general.ref]
@@ -93,7 +105,9 @@ def test_conflicting_matching_conditions_do_not_get_arbitrary_precedence(app):
         )
     search = _search(core, ctx, "现在用中文写文案")
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
+        selected = background_candidates(
+            tx, search, core.recall_pipeline.storage_reader, core.clock, query_evidence=True
+        )
     assert not {item.ref for item in items}.intersection(candidate.ref for candidate, _ in selected)
 
 

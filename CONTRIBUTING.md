@@ -100,10 +100,11 @@ tier in `scripts/check.py` selects.
 ## The recall benchmark
 
 `tests/recall_bench/` measures recall on a synthetic shared store: three owners,
-four entries and five scopes, four weeks of sessions in English and Chinese, and
-questions with known answers in seven tasks (single facts, preferences, time,
+five entries and six scopes, four weeks of sessions in English and Chinese, and
+questions with known answers in nine tasks (single facts, preferences, time,
 knowledge updates, lists said across sessions, abstention, cross-scope
-isolation), each beside hard negatives. Every question is asked as the
+isolation, automatic relevance floors and session prompts needing no memory),
+each beside hard negatives. Every question is asked as the
 automatic packet and as an explicit lookup. An item answers when it is the
 answer's message, or a claim from it that states the same value. The report
 gives recall@1/3/6/10, MRR, nDCG@10, how often a replaced value outranks the

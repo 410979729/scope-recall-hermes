@@ -1,10 +1,12 @@
-"""Public trivial-prompt gate: only blank or slash-command input is skipped."""
+"""Compatibility surface for callers checking input without a session."""
 
 from __future__ import annotations
 
 from typing import Optional
 
+from scope_recall.core.auto_recall import automatic_recall_skip_reason as automatic_recall_skip_reason
+
 
 def is_trivial_prompt(text: Optional[str]) -> bool:
-    stripped = (text or "").strip()
-    return not stripped or stripped.startswith("/")
+    """Delegate input-only eligibility to the shared core decision."""
+    return automatic_recall_skip_reason(text) is not None

@@ -11,7 +11,6 @@ from scope_recall.adapters.hermes import bind_hermes_identity
 from scope_recall.adapters.hermes.gating import is_trivial_prompt
 from scope_recall.contracts import validate_payload
 from scope_recall.core import MemoryCore
-from scope_recall.core.background_context import BACKGROUND_PREFIX
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.retrieval import RetrievalResult
 
@@ -86,18 +85,35 @@ def test_continue_go_ahead_and_chinese_are_not_filtered():
     assert not is_trivial_prompt("继续")
 
 
-def test_explicit_recall_without_evidence_is_no_match_while_prefetch_keeps_background(adapter):
+def test_prompt_and_explicit_recall_without_evidence_leave_background_out(adapter):
     provider, _clock = adapter
     claim_ref = _active_preference(provider)
     provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-unrelated", user_message=_UNRELATED_QUERY)
 
     rendered = provider.prefetch(_UNRELATED_QUERY)
-    assert claim_ref in rendered and BACKGROUND_PREFIX in rendered
+    assert rendered == "", claim_ref
 
     # The model asked about something memory does not hold: the preference
     # must not come back as the only item of its lookup.
     packet = _explicit_recall(provider, _UNRELATED_QUERY)
     assert (packet["status"], packet["items"], packet["answerability"]) == ("no_match", [], "unknown")
+
+
+def test_explicit_auto_lookup_keeps_a_weak_lexical_match(adapter):
+    provider, clock = adapter
+    core, identity = provider._core, provider._identity
+    source = core.record_event(
+        identity.trusted_context(session_id="TEST-memory-seed", mutation=True),
+        source_event(
+            content="2a invoice archive",
+            source_event_key="TEST-explicit-weak",
+            occurred_at=clock.utc_now(),
+            recorded_at=clock.utc_now(),
+        ),
+        scope_id=identity.runtime_audience.capture_scope_id,
+    ).event_refs[0]
+    packet = _explicit_recall(provider, "2a telescope lens")
+    assert source.ref in {item["ref"] for item in packet["items"]}
 
 
 def test_explicit_resume_recall_still_returns_the_grounded_task(adapter):

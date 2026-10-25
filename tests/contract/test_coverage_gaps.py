@@ -102,7 +102,12 @@ def test_a_store_that_fits_reports_no_truncation(app):
     gaps: list[str] = []
     with core.storage.read(ctx) as tx:
         background_candidates(
-            tx, _search(core, ctx, "配色0 怎么定"), core.recall_pipeline.storage_reader, core.clock, gaps
+            tx,
+            _search(core, ctx, "配色0 怎么定"),
+            core.recall_pipeline.storage_reader,
+            core.clock,
+            gaps,
+            query_evidence=True,
         )
     assert _coverage(gaps, "profile_stable") == []
     assert _coverage(gaps, "profile_recent") == []
@@ -114,7 +119,12 @@ def test_a_full_profile_window_reports_how_much_it_did_not_see(app):
     gaps: list[str] = []
     with core.storage.read(ctx) as tx:
         background_candidates(
-            tx, _search(core, ctx, "配色0 配色1 配色2 怎么定"), core.recall_pipeline.storage_reader, core.clock, gaps
+            tx,
+            _search(core, ctx, "配色0 配色1 配色2 怎么定"),
+            core.recall_pipeline.storage_reader,
+            core.clock,
+            gaps,
+            query_evidence=True,
         )
     # Which of the three reserved windows fills depends on the query and on
     # whether the preferences are project-scoped, so the property under test is
@@ -141,6 +151,7 @@ def test_more_applicable_preferences_than_slots_are_reported(app):
             core.recall_pipeline.storage_reader,
             core.clock,
             gaps,
+            query_evidence=True,
         )
     assert len(selected) <= 3  # two preferences plus at most one task
     slots = _coverage(gaps, "background_slots")
@@ -155,7 +166,9 @@ def test_an_exhausted_deadline_is_reported_rather_than_looking_like_an_empty_sto
     # A deadline already in the past: the loop stops before examining anything.
     search = _search(core, ctx, "配色0 怎么定", seconds=-1)
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock, gaps)
+        selected = background_candidates(
+            tx, search, core.recall_pipeline.storage_reader, core.clock, gaps, query_evidence=True
+        )
     assert selected == ()
     deadline = _coverage(gaps, "background_deadline")
     assert deadline, f"expected a background_deadline truncation, got {gaps}"
@@ -167,7 +180,9 @@ def test_background_selection_still_works_without_a_gap_list(app):
     core, ctx = app
     _fill_preferences(core, ctx, 2)
     with core.storage.read(ctx) as tx:
-        background_candidates(tx, _search(core, ctx, "配色0 怎么定"), core.recall_pipeline.storage_reader, core.clock)
+        background_candidates(
+            tx, _search(core, ctx, "配色0 怎么定"), core.recall_pipeline.storage_reader, core.clock, query_evidence=True
+        )
 
 
 # --------------------------------------------------------------------------

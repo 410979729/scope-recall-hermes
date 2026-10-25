@@ -21,6 +21,14 @@ sight; only the owner's explicit correction or confirmation changes a fact as it
 is captured. SQLite is the only fact authority; host adapters share the same
 contracts.
 
+Automatic recall injects zero to six items that clear a lexical coverage or
+vector similarity floor. Background preferences and tasks accompany passing
+query evidence; a session's first resume request can recover its current task.
+Acknowledgments, approvals, praise, bare continuation and session status prompts
+within an existing session start no search or query embedding. Explicit recall
+keeps its admission behavior. The thresholds and diagnostic counts are described
+in [the recall configuration](docs/configuration.md#vector_threshold).
+
 **Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)
 provides reproducible development and held-out splits for retrieval, answerability,
 scope isolation, packet size and latency. It uses proposed claims and a word-hashing

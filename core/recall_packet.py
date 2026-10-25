@@ -428,6 +428,16 @@ class RecallPacketCompiler:
         verified = self._fence(storage, draft, verified)
         self._admit(draft, self._ordered(context, verified, limits), limits)
         include_diagnostic_ref = self._fit(draft, limits)
+        if context.mode == "auto" and not any(not is_background(obj) for obj in draft.objects):
+            # Background depends on evidence that actually ships. A grounded
+            # resume task can stand alone because it answers the resume request.
+            keep = [
+                index
+                for index, obj in enumerate(draft.objects)
+                if obj.kind == "episode" and asks_to_resume(context.query)
+            ]
+            draft.items = [draft.items[index] for index in keep]
+            draft.objects = [draft.objects[index] for index in keep]
         if draft.items and self._remaining_ms(context) == 0:
             draft.gaps.append("deadline_exceeded_compile")
             draft.stale_drops += len(draft.items)

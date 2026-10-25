@@ -15,9 +15,10 @@ How it runs:
     runs at the end of every day with a stub consolidation that proposes the world's claims, the shipped SQLite
     vector companion (sqlite-bruteforce) and a deterministic hashed embedder.  No host, no network, no model.
     Candidate evaluation, the worker's other model call, has no stub: its work stays pending.
-  * Every question is asked twice, each time in a session of its own and on the same store: as the automatic packet
+  * Every question is asked twice on the same store: as the automatic packet
     a hook or a prefetch puts before a prompt, and as the explicit lookup a recall tool makes.  Questions are not
-    captured, so none answers another.  A day a question names is read in the world's zone.
+    captured, so none answers another. Conversational follow-ups use a captured session; other questions open one
+    of their own. A day a question names is read in the world's zone.
   * The store runs on a clock that ticks a microsecond each time it is read (``WorldClock``), so a recall's deadline
     counts the work it did and is never reached: every machine scores the same packets.  Latency is measured in a
     second pass on the real clock, and is reported, not gated.
@@ -434,7 +435,7 @@ class BenchStore:
 
     def ask(self, question: Question, path: str) -> Answer:
         request, call = PATHS[path]
-        session = f"ask:{path}:{question.id}"
+        session = question.session or f"ask:{path}:{question.id}"
         seen_before = None
         if question.revoked:
             # The same entry and session a moment earlier, while it still read the revoked scopes: unless they showed

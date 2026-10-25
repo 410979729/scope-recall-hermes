@@ -1,5 +1,27 @@
 {
   "about": "Hand-written templates for the dev split of the recall benchmark (bench_world.py). Every owner, entry, project and value is invented. {project}, {value}, {item}, {topic}, {date} and the like are filled in by the generator. A denial template marks with [...] the span a careful extractor quotes for it: the negation with the value.",
+  "automatic_recall": {
+    "session_prompt": "Prepare a synthetic poster layout and check its dimensions.",
+    "session_context": "First I check each entry's rule file, continue checking the task status, and report whether it is running. 好的，继续检查任务状态，删除后确认完成。 Great job, thanks.",
+    "no_memory": ["继续", "好的", "按你推荐的办", "删除了吗", "codex在开始跑了吗", "太棒了", "Thanks!", "Go ahead", "Is it done?"],
+    "cases": [
+      {"form": "one_common_term", "language": "en", "query": "What is the 2a telescope lens?", "sources": [
+        {"kind": "one_common_term", "text": "2a invoice archive receipts"}
+      ]},
+      {"form": "generic_narration", "language": "en", "query": "Check telescope lens calibration", "queries": ["Check telescope lens calibration", "Check binocular tripod stability", "Check greenhouse humidity sensor"], "sources": [
+        {"kind": "agent_narration", "origin": "assistant_visible", "text": "First I check where every entry keeps its rule file."}
+      ]},
+      {"form": "short_question", "language": "zh", "query": "我家窗外有什么", "sources": [
+        {"kind": "answer", "text": "我窗外有只鸽子"}
+      ]},
+      {"form": "near_duplicate_claims", "language": "en", "query": "What is the Zephyr beacon color?", "sources": [
+        {"kind": "answer", "text": "The Zephyr beacon color is amber; its beacon shade is amber.", "claims": [
+          {"kind": "fact", "subject": "Zephyr", "predicate": "beacon color", "value": "amber"},
+          {"kind": "fact", "subject": "Zephyr", "predicate": "beacon shade", "value": "amber"}
+        ]}
+      ]}
+    ]
+  },
   "now": "2026-09-28T09:00:00",
   "zone_hours": 8,
   "cast": {
