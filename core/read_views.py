@@ -15,6 +15,7 @@ from ..contracts import ContractError, SourceContext, TrustedContext, validate_m
 from .aliases import validate_alias_source, validate_alias_target
 from .claim_storage import parse_source_ref
 from .claims import ClaimVersion, effective_origin, evidence_refs, select_effective
+from .model_content import WITHHELD_PREFIX, withhold_secret_items
 from .recall_budget import canonical_render_json
 from .retrieval_hydration import evidence_source_contexts
 from .visibility import CLOSED_INTENTION_STATES, ObjectRef, allowed, epoch_retracted, release_objects
@@ -422,14 +423,15 @@ def _finalize_status(result: dict, *, item_count: int, alias_status: str, scan_c
         result["answerability"] = "ambiguous"
         return
     truncated = result["truncated"]
+    withheld = any(gap.startswith(WITHHELD_PREFIX) for gap in result["gaps"])
     budget_capped = "budget_token_cap" in result["gaps"]
     if item_count == 0:
-        capped = truncated or budget_capped or "max_items_cap" in result["gaps"]
+        capped = truncated or budget_capped or withheld or "max_items_cap" in result["gaps"]
         result["status"] = "partial" if capped else "no_match"
         result["coverage"] = "partial" if capped else "unknown"
         result["answerability"] = "partial" if capped else "unknown"
         return
-    partial = truncated or scan_capped
+    partial = truncated or scan_capped or withheld
     result["status"] = "partial" if partial else "ok"
     result["coverage"] = "partial" if partial or budget_capped else "complete_for_query"
     result["answerability"] = "partial" if partial or disputed else "supported"
@@ -520,6 +522,9 @@ def _view_result(payload: dict, loaded: _Loaded, lookup_subject: str, body: dict
         "scan_capped": loaded.selection.scan_capped,
         "unmet_needs": [],
     }
+    # Alias resolution can copy stored text into the envelope independently of its statements.
+    subjects = withhold_secret_items([result["resolved_subject"]], gaps)
+    result["resolved_subject"] = subjects[0] if subjects else None
     if loaded.selection.truncated:
         result["truncated"] = True
         result["gaps"].append("max_items_cap")
@@ -564,6 +569,9 @@ def read_profile(storage, clock, context: TrustedContext, request) -> dict:
     gaps: list[str] = ["alias_ambiguous"] if ambiguous else []
     if disputed:
         gaps.append("disputed_facts_separated")
+    for name, items in sections.items():
+        sections[name] = withhold_secret_items(items, gaps)
+    disputed = withhold_secret_items(disputed, gaps)
     if not ambiguous and not any(sections.values()) and not disputed:
         gaps.append("consolidation_required" if not loaded.versions else "no_current_qualified_facts")
     result = _view_result(payload, loaded, lookup_subject, {"sections": sections, "disputed": disputed}, gaps)
@@ -637,6 +645,7 @@ def read_entity(storage, clock, context: TrustedContext, request) -> dict:
                 _claim_item(v, loaded.contexts.get(v.ref), direction=side) for v in sorted(members, key=_sort_key)
             )
     gaps: list[str] = ["alias_ambiguous"] if ambiguous else []
+    statements = withhold_secret_items(statements, gaps)
     if not statements and not ambiguous:
         gaps.append("consolidation_required")
     body = {"action": payload["action"], "direction": direction, "statements": statements}

@@ -115,3 +115,39 @@ def test_large_middle_candidate_does_not_hide_a_small_later_candidate():
     last = _pair("claim-c", "short", "event-c@1")
     kept = RetrievalPipeline(None)._apply_budget([first, large, last], SearchLimits(budget_tokens=128))
     assert [candidate.ref for candidate, _ in kept] == ["claim-a", "claim-c"]
+
+
+def test_oversized_fallback_scans_only_until_enough_safe_items(app, monkeypatch):
+    from scope_recall.core import recall
+
+    core, ctx = app
+    pairs = [_pair(f"claim-{i}", "x" * 65_000, f"event-{i}@1") for i in range(200)]
+    original, scanned = recall.withhold_secret_items, []
+
+    def scan(items, gaps):
+        scanned.extend(items)
+        return original(items, gaps)
+
+    monkeypatch.setattr(recall, "withhold_secret_items", scan)
+    kept = core.recall_pipeline._apply_budget(pairs, SearchLimits(max_items=1, budget_tokens=128))
+    assert kept == pairs[:1] and len(scanned) == 1
+
+
+def test_oversized_fallback_checks_deadline_between_withheld_candidates(app, monkeypatch):
+    from scope_recall.core import recall
+
+    core, ctx = app
+    pairs = [_pair(f"claim-{i}", "x" * 65_000, f"event-{i}@1") for i in range(3)]
+    search, scanned, gaps = _search(core, ctx, "TEST"), [], []
+    expired = False
+
+    def scan(items, gaps):
+        nonlocal expired
+        scanned.extend(items)
+        expired = True
+        return []
+
+    monkeypatch.setattr(recall, "withhold_secret_items", scan)
+    monkeypatch.setattr(core.recall_pipeline, "_remaining", lambda context: 0 if expired else 1)
+    kept = core.recall_pipeline._apply_budget(pairs, SearchLimits(max_items=1, budget_tokens=128), gaps, context=search)
+    assert kept == [] and len(scanned) == 1 and "deadline_exceeded" in gaps

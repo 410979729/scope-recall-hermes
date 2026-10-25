@@ -33,6 +33,12 @@ class MemoryManagement:
         """Return one inventory page, with an opaque cursor for the next page."""
         return browse(self.core, self._context(), filters or MemoryFilter(), limit=limit, cursor=cursor)
 
+    def secrets(self):
+        """Find stored secret-bearing versions for the local owner, without content or writes."""
+        from .management_secrets import find_secrets
+
+        return find_secrets(self.core.storage, self._context())
+
     def _location(self, tx, ref):
         kind = str(ref).split("-", 1)[0]
         if kind not in OBJECT_TABLES:

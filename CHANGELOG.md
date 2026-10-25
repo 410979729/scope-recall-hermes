@@ -2,9 +2,15 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [3.14.2] - Unreleased
+## [3.15.0] - Unreleased
+
+Credential scanning recognizes Chinese labels (密码, 口令, 密钥, 私钥, 令牌, 授权码), camelCase token and key names, and Markdown marks around labels and separators. After such a label a value is an ASCII run of at least four characters holding a digit or an inner symbol, or a word of at least eight letters after a password label; prose, punctuation that structures the surrounding text and identifier references (`response.token`, `vendor_key`) are not values, and quoted values keep their boundaries, escaped quotes included. Capture redaction removes the value and keeps the label. Automatic and explicit recall, background context, and the inspect, profile, entity and trace tools withhold a stored item the scan flags, report only a count in their gaps and mark the result partial; candidate evaluation requests apply the same policy to a claim's label and value. The local management page and the memory commands keep the owner's view. `scope-recall memory secrets` lists the stored versions the scan flags (identities, provenance, times, revisions and rule names, never content) in short read windows with a SQL prefilter, and changes nothing.
+
+The dsh plugin waits for the capture writes it has handed off before it drains its queue, and shares one bounded shutdown deadline across pending writes and stores.
 
 Three Hermes steer tests no longer depend on the speed of the runner's disk. Each put back its own patch of the adapter's time with `monkeypatch.undo()`, which also removed the store clock that the test's fixtures install through the same `monkeypatch`; its later captures then ran on real storage time, and on a slow disk they were not stored yet when the test read the source rows. The tests patch inside `monkeypatch.context()`, a restart test no longer calls `undo()`, and `metered_store` fails a test at teardown when an attribute the clock replaced has its value from before the clock again. Runtime behavior is unchanged.
+
+After upgrading, run `scope-recall memory secrets`, review its findings and remove them with `scope-recall memory forget <refs>`. Change every credential found: it was already stored and may have been sent to a model provider. The command includes historical and muted versions; repeat it after concurrent captures to include them. No store format or configuration change is required.
 
 ## [3.14.1] - 2026-10-24
 

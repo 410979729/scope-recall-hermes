@@ -61,6 +61,8 @@ export function apply(ctx, raw) {
   const turns = new Map()
   const draining = new Map()
   const pendingKeeps = new Map()
+  const activeHooks = new Set()
+  let shutdownDeadline = null
   const status = { version: cfg.version, pid: process.pid, profile, loadedAt: new Date().toISOString(), lastRecall: null,
                    lastStore: null, backlog: 0, dropped: 0, retryAfter: null, privacyAlarm: null }
   let statusWritten = 0
@@ -130,28 +132,42 @@ export function apply(ctx, raw) {
 
   // A line is written with a line break before it as well as after, so that one a crash cut short ends there.
   const keep = (sessionId, entry) => {
-    const append = () => {
+    const append = (item) => {
       try {
-        appendFileSync(ownFile(sessionId), `\n${JSON.stringify({ k: `${process.pid}-${Date.now()}-${counter++}`, sessionId, ...entry })}\n`)
+        appendFileSync(ownFile(sessionId), `\n${JSON.stringify({ k: `${process.pid}-${Date.now()}-${counter++}`, sessionId, ...item })}\n`)
       } catch (error) { warn(`a message of session ${sessionId} was not kept on disk: ${error}`) }
     }
-    // Ordinary messages reach disk in the event callback. Once private history
-    // is known, serialize verification so a turn cannot drain ahead of it.
+    // Ordinary messages reach disk in the event callback. Private metadata checks
+    // batch handed-off writes, retaining order without one interpreter per event.
     if (!privateRules() && !pendingKeeps.has(sessionId)) {
-      append()
+      append(entry)
       return Promise.resolve()
     }
-    const pending = (pendingKeeps.get(sessionId) ?? Promise.resolve()).then(async () => {
-      if ((await eligible(sessionId, [entry], true)).permitted.length) append()
-    }).catch((error) => warn(`capture decision: ${error}`))
-    pendingKeeps.set(sessionId, pending)
-    pending.finally(() => { if (pendingKeeps.get(sessionId) === pending) pendingKeeps.delete(sessionId) })
-    return pending
+    let state = pendingKeeps.get(sessionId)
+    if (!state) {
+      state = { entries: [], promise: null }
+      const pending = state
+      pending.promise = Promise.resolve().then(async () => {
+        try {
+          while (pending.entries.length) {
+            const batch = pending.entries.splice(0)
+            for (const item of (await eligible(sessionId, batch, true)).permitted) append(item)
+          }
+        } finally { if (pendingKeeps.get(sessionId) === pending) pendingKeeps.delete(sessionId) }
+      }).catch((error) => warn(`capture decision: ${error}`))
+      pendingKeeps.set(sessionId, pending)
+    }
+    state.entries.push(entry)
+    return state.promise
   }
 
   // `early`: resolve as soon as the answer is whole.  A prompt hook writes its answer first and then starts the resident
   // recall server; the step need not wait for that.  The hook is still ended at the deadline if it has not exited.
   const runHook = (payload, timeoutMs, signal, early = false) => new Promise((resolve) => {
+    if (shutdownDeadline !== null) {
+      timeoutMs = Math.min(timeoutMs, shutdownDeadline - Date.now())
+      if (timeoutMs <= 0) { resolve({ ok: false, error: 'shutdown deadline' }); return }
+    }
     let child
     const args = cfg.remoteConfig
       ? ['-I', '-B', '-m', 'scope_recall.adapters.codex.remote_client', '--config', cfg.remoteConfig]
@@ -166,11 +182,13 @@ export function apply(ctx, raw) {
     const finish = (result) => {
       if (settled) return
       settled = true
+      activeHooks.delete(stop)
       signal?.removeEventListener?.('abort', onAbort)
       if (result.ok) rememberRules(result.answer)
       resolve(result)
     }
     const stop = (why) => { try { child.kill() } catch {} finish({ ok: false, error: why }) }
+    activeHooks.add(stop)
     const onAbort = () => stop('aborted')
     const timer = setTimeout(() => stop('timeout'), timeoutMs)
     timer.unref?.()
@@ -254,9 +272,9 @@ export function apply(ctx, raw) {
           return
         }
         case 'turn/end':
-          const kept = keep(sessionId, { role: 'turn_end', turn: data.turn ?? null, reason: data.reason?.kind ?? null, time: event.time, cwd })
+          keep(sessionId, { role: 'turn_end', turn: data.turn ?? null, reason: data.reason?.kind ?? null, time: event.time, cwd })
           recalled.delete(`${sessionId}:${data.turn}`)
-          kept.then(() => drain(sessionId)).catch((error) => warn(`store of session ${sessionId}: ${error}`))
+          drain(sessionId).catch((error) => warn(`store of session ${sessionId}: ${error}`))
           return
         case 'session-log-deepseek/delivery-accepted':
           // dsh uploaded its session log, recalled memories with it: the upload is meant to be off.
@@ -294,6 +312,8 @@ export function apply(ctx, raw) {
       try {
         do {
           state.again = false
+          // Writes handed off by event callbacks belong to this drain even before their private checks finish.
+          await pendingKeeps.get(sessionId)?.promise
           ok = await drainOnce(sessionId)
         } while (state.again && ok)
       } finally { draining.delete(sessionId) }
@@ -446,8 +466,24 @@ export function apply(ctx, raw) {
     return async () => {
       clearInterval(timer)
       clearTimeout(first)
-      await Promise.allSettled([...pendingKeeps.values()])
-      await Promise.race([Promise.allSettled([...draining.values()].map((state) => state.promise)), sleep(3_000)])
+      // One shared deadline covers private decisions and stores; each hook receives only the time left.
+      shutdownDeadline = Date.now() + cfg.storeTimeoutMs
+      let shutdownTimer
+      const expired = new Promise((resolve) => {
+        shutdownTimer = setTimeout(() => {
+          for (const stop of activeHooks) stop('shutdown deadline')
+          resolve()
+        }, cfg.storeTimeoutMs)
+      })
+      try {
+        while (pendingKeeps.size || draining.size) {
+          await Promise.race([
+            Promise.allSettled([...pendingKeeps.values(), ...draining.values()].map((state) => state.promise)),
+            expired,
+          ])
+          if (Date.now() >= shutdownDeadline) break
+        }
+      } finally { clearTimeout(shutdownTimer) }
       writeStatus(true)
     }
   })
@@ -526,5 +562,3 @@ function clip(text) {
 }
 
 function safe(read) { try { return read() } catch { return null } }
-
-function sleep(ms) { return new Promise((resolve) => { const timer = setTimeout(resolve, ms); timer.unref?.() }) }

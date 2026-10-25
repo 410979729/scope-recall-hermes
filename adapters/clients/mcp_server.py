@@ -393,6 +393,8 @@ class CodexMCPServer:
             "value": inspected.value,
             "memory_epoch": inspected.memory_epoch,
         }
+        if inspected.gaps:
+            result["gaps"] = list(inspected.gaps)
         return self._reply(ctx, call_id, result)
 
     def profile(

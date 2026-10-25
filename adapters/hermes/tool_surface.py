@@ -355,6 +355,8 @@ class HermesToolSurface:
             "value": inspected.value,
             "memory_epoch": inspected.memory_epoch,
         }
+        if inspected.gaps:
+            result["gaps"] = list(inspected.gaps)
         return self._reply(body["request_id"], result)
 
     def _handle_profile(self, args: object) -> str:

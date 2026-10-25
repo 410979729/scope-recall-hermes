@@ -221,11 +221,15 @@ def test_a_declared_uv_goes_into_the_runs_that_drive_it(monkeypatch, tmp_path: P
     uv.parent.mkdir()
     uv.write_bytes(b"")
     monkeypatch.setenv("SCOPE_RECALL_UV", str(uv))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "build-cache"))
+    monkeypatch.setenv("UV_OFFLINE", "1")
 
     for tier in ("packaging", "release"):
         env = check.packaging_helper_env(tier)
         assert env["SCOPE_RECALL_UV"] == str(uv)
         assert env["SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS"] == str(uv.parent.resolve())
+        assert env["UV_CACHE_DIR"] == str(tmp_path / "build-cache")
+        assert env["UV_OFFLINE"] == "1"
     for tier in ("unit", "native", "host"):
         assert check.packaging_helper_env(tier) == {}
     run = tmp_path / "run"

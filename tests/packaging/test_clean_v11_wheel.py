@@ -33,8 +33,19 @@ def _expected_wheel_members(allowlist: dict) -> set[str]:
 def _build_wheel(dist_dir: Path) -> Path:
     dist_dir.mkdir(parents=True, exist_ok=True)
     uv = os.environ.get("SCOPE_RECALL_UV") or shutil.which("uv")
+    # The gate interpreter supplies the declared build tools; isolated test homes have no package cache.
     completed = subprocess.run(
-        [uv, "build", "--wheel", "--out-dir", str(dist_dir)],
+        [
+            uv,
+            "build",
+            "--offline",
+            "--no-build-isolation",
+            "--python",
+            sys.executable,
+            "--wheel",
+            "--out-dir",
+            str(dist_dir),
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -97,21 +108,32 @@ def installed_venv(built_wheel: Path, tmp_path_factory: pytest.TempPathFactory) 
     python = _venv_python(venv_dir)
     install_env = dict(os.environ)
     # The wrapper exposes test helper directories on PYTHONPATH for
-    # --import-mode=importlib compatibility.  pip must not see the source
+    # --import-mode=importlib compatibility. The installer must not see the source
     # tree's generated egg-info, or it can mistake the wheel for an already
     # installed distribution and skip copying scope_recall into this clean
     # venv.  The child probes below stay -I and therefore remain source-free.
     install_env.pop("PYTHONPATH", None)
     install_env.pop("PYTHONHOME", None)
     install_env.pop("VIRTUAL_ENV", None)
-    subprocess.run(
-        [str(python), "-m", "pip", "install", str(built_wheel)],
-        check=True,
-        capture_output=True,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-        creationflags=_CREATE_FLAGS,
-        env=install_env,
+    install_env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
+    uv = os.environ.get("SCOPE_RECALL_UV") or shutil.which("uv")
+    # Use the lock for runtime dependencies; the tested project enters only through its built wheel.
+    commands = (
+        [uv, "sync", "--locked", "--no-install-project", "--no-dev", "--python", str(python)],
+        [uv, "pip", "install", "--no-deps", "--python", str(python), str(built_wheel)],
     )
+    for command in commands:
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+            creationflags=_CREATE_FLAGS,
+            env=install_env,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
     return {
         "python": python,
         "venv_dir": venv_dir,

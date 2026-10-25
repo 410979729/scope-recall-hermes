@@ -82,11 +82,27 @@ def _json_content(content: str) -> Any:
     for prefix, payload in forms:
         if payload[:1] in ("{", "["):
             try:
-                value = json.loads(payload, object_pairs_hook=lambda pairs: [{key: item} for key, item in pairs])
+                value = json.loads(payload, object_pairs_hook=_json_object)
             except (ValueError, RecursionError):
                 continue
             return {prefix: value} if prefix else value
     return None
+
+
+def _json_object(pairs):
+    """Keep related fields together and retain every value of repeated keys for scanning."""
+    # Empty credential slots are placeholders; bookkeeping wrappers must not populate them.
+    if not pairs:
+        return {}
+    grouped = {}
+    for key, value in pairs:
+        grouped.setdefault(key, []).append(value)
+    result = {key: values[0] for key, values in grouped.items()}
+    # Duplicate predicates and values form assignments too; none may hide behind the last occurrence.
+    assignments = []
+    if "predicate" in grouped and "value_text" in grouped:
+        assignments = [{str(label): value} for label in grouped["predicate"] for value in grouped["value_text"]]
+    return [result, *assignments, *({key: value} for key, values in grouped.items() for value in values[1:])]
 
 
 def _reject_secrets_in_content(content: str) -> None:

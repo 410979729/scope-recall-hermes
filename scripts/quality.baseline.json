@@ -673,13 +673,13 @@
   },
   "core/trace.py": {
    "C901": {
-    "read_trace": 20
-   },
-   "PLR0912": {
     "read_trace": 19
    },
+   "PLR0912": {
+    "read_trace": 18
+   },
    "PLR0915": {
-    "read_trace": 68
+    "read_trace": 66
    }
   },
   "core/truth_connection.py": {

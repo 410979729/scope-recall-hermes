@@ -16,6 +16,7 @@ from .claims import canonical_time
 from .coverage import note_truncation
 from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
+from .model_content import withhold_secret_items
 from .owner_view import OwnerView, owner_names, owner_view
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import (
@@ -777,8 +778,18 @@ class RetrievalPipeline:
         return selected
 
     def _apply_budget(
-        self, ranked: list[tuple[CandidateRef, RetrievedObject]], limits: SearchLimits
+        self,
+        ranked: list[tuple[CandidateRef, RetrievedObject]],
+        limits: SearchLimits,
+        gaps: list[str] | None = None,
+        *,
+        context: SearchContext | None = None,
     ) -> list[tuple[CandidateRef, RetrievedObject]]:
+        """Scan only candidates that can take a slot; withheld items consume no budget.
+
+        Admitted ordinary hits survive a collection deadline. The optional oversized fallback uses only time left.
+        """
+        gaps = [] if gaps is None else gaps
         kept: list[tuple[CandidateRef, RetrievedObject]] = []
         oversized: list[tuple[CandidateRef, RetrievedObject]] = []
         total_tokens = 0
@@ -794,12 +805,24 @@ class RetrievalPipeline:
                 # One large candidate must not starve smaller useful evidence
                 # later in the ranking. The compiler budgets the whole packet.
                 continue
+            if not withhold_secret_items([item], gaps):
+                continue
             total_tokens += tokens
             kept.append((candidate, item))
         # An item that alone exceeds the whole budget cannot fit in what is
         # left of it, so it is worth returning only when there is nothing else
         # to show: the expandable hint is a fallback, not a suffix.
-        return (kept or oversized)[: limits.max_items]
+        if kept:
+            return kept
+        for pair in oversized:
+            if len(kept) >= limits.max_items:
+                break
+            if context is not None and self._remaining(context) <= 0:
+                gaps.append("deadline_exceeded")
+                break
+            if withhold_secret_items([pair[1]], gaps):
+                kept.append(pair)
+        return kept
 
     # -- the search itself ----------------------------------------------------
 
@@ -1050,7 +1073,7 @@ class RetrievalPipeline:
         # background cannot repeat the evidence either.
         distinct = DistinctContent()
         ordered = self._behind_replacements(self._rank_hydrated(hydrated, working), working)
-        ranked = self._apply_budget(distinct.filtered(ordered), working.limits)
+        ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):
@@ -1062,6 +1085,7 @@ class RetrievalPipeline:
             background = background_candidates(
                 tx, working, self.storage_reader, self.clock, gaps, query_evidence=bool(query_items)
             )
+            background = withhold_secret_items(background, gaps, content=lambda pair: pair[1])
             present = {candidate.key for candidate, _obj in ranked}
             # Query evidence comes first; background shares the final byte
             # budget and can only consume remaining packet slots.  What the

@@ -17,6 +17,46 @@ from test_restore import backup, run, store
 from v11_support import downgrade_store
 
 
+def test_secret_command_has_metadata_only_in_json_and_plain_output(app, monkeypatch, capsys):
+    from test_memory_admin import legacy_secret
+
+    core, context = app
+    flagged = legacy_secret(core, context, monkeypatch)
+    api = MemoryManagement(core, InstallationMaintenance(context))
+    monkeypatch.setattr(memory, "open_management", lambda args: api)
+    for options in (["--json"], []):
+        assert cli.main(["memory", "secrets", *options]) == 0
+        output = capsys.readouterr().out
+        assert flagged.ref in output and "Xk9mP2qa" not in output
+        if options:
+            result = json.loads(output)
+            assert result["action"] == "secrets" and result["data"]["rows_read"] >= 1
+            validate(
+                result,
+                json.loads(
+                    (Path(__file__).resolve().parents[2] / "contracts" / "memory_management.schema.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+            )
+        else:
+            assert "Read " in output and "PATTERNS" in output and "REVISION" in output
+
+
+def test_secret_command_opens_an_existing_store_without_initialization(store, monkeypatch, capsys):
+    from scope_recall.core import MemoryCore
+
+    store.say("NameOne uses green.")
+
+    def forbidden(self):
+        raise AssertionError("a read-only inventory cannot initialize or migrate a store")
+
+    monkeypatch.setattr(MemoryCore, "initialize", forbidden)
+    assert cli.main(["memory", "secrets", *store.target(), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["data"]["items"] == [] and result["data"]["rows_read"] >= 1
+
+
 @pytest.fixture
 def command(app, monkeypatch, capsys):
     core, context = app
@@ -41,7 +81,7 @@ def command(app, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(
-    "action", ("list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session")
+    "action", ("list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session", "secrets")
 )
 def test_each_command_reaches_the_owner_api(command, action):
     call, item, _source = command
@@ -55,6 +95,7 @@ def test_each_command_reaches_the_owner_api(command, action):
         "unmute": [item.ref, "--yes"],
         "forget": [item.ref, "--yes"],
         "forget-session": ["--session", "TEST-session", "--yes"],
+        "secrets": [],
     }
     code, result = call(action, *arguments[action])
     assert code == 0 and result["status"] == "ok", result

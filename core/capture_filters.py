@@ -12,8 +12,7 @@ from .secret_patterns import (
     PEM_PRIVATE_KEY_BEGIN_RE,
     contains_secret_like_text,
     is_sensitive_mapping_key,
-    scan_secret_like_text,
-    secret_scan_shadow,
+    secret_redaction_spans,
 )
 
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -214,19 +213,13 @@ def redact_secret_like_text(text: Any) -> str:
     cleaned = clean_text(text)
     if not cleaned:
         return ""
-    shadow = secret_scan_shadow(cleaned)
-    if shadow != cleaned and contains_secret_like_text(shadow):
-        return "[REDACTED_SECRET]"
     redacted = _redact_private_key_blocks(cleaned)
-    if secret_scan_shadow(redacted) != redacted:
-        # Positions in the scan view are not positions in this text.
-        return "[REDACTED_SECRET]" if contains_secret_like_text(redacted) else redacted
     spans: list[list[int]] = []
-    for match in scan_secret_like_text(redacted):
-        if spans and match.start <= spans[-1][1]:
-            spans[-1][1] = max(spans[-1][1], match.end)
+    for start, end in sorted(secret_redaction_spans(redacted)):
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
         else:
-            spans.append([match.start, match.end])
+            spans.append([start, end])
     parts, cursor = [], 0
     for start, end in spans:
         parts.append(redacted[cursor:start])

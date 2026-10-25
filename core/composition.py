@@ -22,6 +22,7 @@ from . import private
 from .admission import AdmissionPolicy
 from .capture import CaptureReceipt, record_event
 from .delete_storage import retraction_after
+from .model_content import withhold_secret_items
 from .operations import Operations
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .records import Records
@@ -212,6 +213,9 @@ class MemoryCore:
             result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
         if owner_authority is None:
             self._private_read_refusal(context, after=marker)
+            gaps: list[str] = []
+            if not withhold_secret_items([result.value], gaps):
+                result = replace(result, value=None, gaps=tuple(gaps))
         return result
 
     def private_mode(self, context: TrustedContext) -> str | None:

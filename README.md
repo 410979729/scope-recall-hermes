@@ -2,12 +2,12 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, and for Codex, Claude Code, WorkBuddy and DeepSeek Harness (dsh), which share one adapter of hooks and an MCP server (the MCP tools need the optional `codex` extra; dsh runs the hooks through a plugin). The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.14.2`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
+This checkout is `3.15.0`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that is not
 attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
 are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
-[GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later to `3.14.2` is
+[GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later to `3.15.0` is
 `pip install -U`, `apply-install` and a host restart; the first store open adds the local management audit and private-interval tables. Back up
 before upgrading and follow the [management migration and rollback guide](docs/manage.md#migration-and-rollback).
 On a shared store in
@@ -37,6 +37,8 @@ Use `scope-recall memory` to browse, search, inspect history, correct a fact, mu
 It runs as the local store owner and makes no model request. Deletion shows the dependent sources and facts before
 `--yes` applies it. `scope-recall memory export --out <new directory or .zip>` writes the visible store as a portable
 package with original sources, facts, history, episodes, readable Markdown and optional retained attachments.
+`scope-recall memory secrets` lists stored credential matches by reference, provenance, time and pattern names.
+After upgrading, review its findings, remove them with `scope-recall memory forget <refs>` and change any credential found.
 [The management guide](docs/manage.md) covers store selection, filters, version checks and receipts; the
 [export guide](docs/export.md) covers package layout, hashes and filtering.
 

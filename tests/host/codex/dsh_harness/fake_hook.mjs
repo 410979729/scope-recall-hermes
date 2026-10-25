@@ -4,6 +4,8 @@
 import { appendFileSync, readFileSync } from 'node:fs'
 
 const payload = JSON.parse(readFileSync(0, 'utf8') || '{}')
+const delay = Number(process.env[`SR_FAKE_${payload.hook_event_name?.toUpperCase()}_DELAY`] ?? 0)
+if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
 if (process.env.SR_FAKE_HOOK_LOG) appendFileSync(process.env.SR_FAKE_HOOK_LOG, `${JSON.stringify(payload)}\n`)
 if (process.env.SR_FAKE_HOOK_MODE === 'broken' || (process.env.SR_FAKE_HOOK_MODE === 'store-broken' && payload.hook_event_name === 'Stop')) {
   process.stderr.write("Traceback (most recent call last):\nModuleNotFoundError: No module named 'scope_recall'\n")
