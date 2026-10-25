@@ -347,10 +347,10 @@ def test_a_shared_recall_says_which_entry_each_item_came_in_through(tmp_path):
     with core.storage.write(shared_context(binding)) as tx:
         tx.registry.register_entry("agent3", "天三", "hermes", now=NOW)
         tx.registry.register_entry("agent4", "天四", "hermes", now=NOW)
-    _record(core, shared_context(binding, "agent4"), "天四记下的 TEST 部署口令是 H100-ZEBRA。", "TEST-recall/1")
+    _record(core, shared_context(binding, "agent4"), "天四记下的 TEST 部署代号是 H100-ZEBRA。", "TEST-recall/1")
     packet = core.recall_packet(
         shared_context(binding, "agent3"),
-        recall_request(query="H100-ZEBRA 部署口令", mode="current"),
+        recall_request(query="H100-ZEBRA 部署代号", mode="current"),
         deadline_seconds=5,
     )
     assert packet["items"], packet
@@ -363,8 +363,8 @@ def test_a_local_recall_packet_carries_no_entries(tmp_path):
 
     ctx = context(tmp_path / "TEST-local")
     core = _core(ctx.binding)
-    _record(core, ctx, "本地库的 TEST 部署口令是 H100-ZEBRA。", "TEST-recall/1")
-    packet = core.recall_packet(ctx, recall_request(query="H100-ZEBRA 部署口令", mode="current"), deadline_seconds=5)
+    _record(core, ctx, "本地库的 TEST 部署代号是 H100-ZEBRA。", "TEST-recall/1")
+    packet = core.recall_packet(ctx, recall_request(query="H100-ZEBRA 部署代号", mode="current"), deadline_seconds=5)
     assert packet["items"] and all("entries" not in item for item in packet["items"])
 
 

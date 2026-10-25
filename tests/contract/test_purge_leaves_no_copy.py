@@ -12,7 +12,7 @@ from test_deletion import authorize, request
 from v11_support import source_event
 
 #: A message only these tests send, the words a claim quotes from it, and that claim's subject, predicate and value.
-SECRET = "TEST 紫色仓库的钥匙藏在第七块砖下，口令 violet-key-under-brick-seven。"
+SECRET = "TEST 紫色仓库的钥匙藏在第七块砖下，暗号 violet-key-under-brick-seven。"
 QUOTE = "钥匙藏在第七块砖下"
 CLAIM = dict(subject="entity-violet-brick", predicate="hides-the-violet-key", value="under-brick-seven-today")
 SPACE = "TEST-space"
