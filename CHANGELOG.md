@@ -2,7 +2,7 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [3.15.1] - Unreleased
+## [3.15.1] - 2026-10-26
 
 The `lancedb` extra excludes LanceDB and PyArrow on Android, where neither dependency supplies the required wheels and recall runs without vectors. Hermes wrappers keep requesting the extra; resolving the plugin no longer requires these packages on Android or prevents unrelated plugins from installing.
 
