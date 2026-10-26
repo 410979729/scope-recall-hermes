@@ -18,8 +18,12 @@ FORMAT = "scope-recall-management/1"
 _FILTERS = ("kind", "scope", "agent", "session", "since", "until")
 
 
-def open_management(args):
-    """Bind the explicit local installation without registering an agent entry."""
+def open_management(args, *, initialize: bool = True):
+    """Bind the explicit local installation without registering an agent entry.
+
+    ``args`` needs only the store selection (``root``, ``host``, ``instance_root``), which every caller's parser
+    defines. ``initialize`` is false for a read-only listing, which must neither migrate nor write the store.
+    """
     binding = store_to_restore(
         host=args.host,
         instance_root=Path(args.instance_root).resolve() if args.instance_root else None,
@@ -28,7 +32,7 @@ def open_management(args):
     if not (binding.data_directory / "memory.sqlite3").is_file():
         raise ContractError("SOURCE_MISSING", "database")
     core = MemoryCore(CoreConfig(binding))
-    if args.action != "secrets":
+    if initialize:
         core.initialize()
     context = TrustedContext(binding, "local-management", binding.scope_ids, "host_generated")
     return MemoryManagement(core, InstallationMaintenance(context))
@@ -227,7 +231,8 @@ def main(argv=None):
     """Run a local owner command; refused inputs or stale selections exit with code 2."""
     args = parser().parse_args(argv)
     try:
-        payload = dict(format=FORMAT, action=args.action, status="ok", data=execute(open_management(args), args))
+        api = open_management(args, initialize=args.action != "secrets")
+        payload = dict(format=FORMAT, action=args.action, status="ok", data=execute(api, args))
         code = 0
     except ContractError as exc:
         payload = dict(format=FORMAT, action=args.action, status="error", code=exc.code, field=exc.field)

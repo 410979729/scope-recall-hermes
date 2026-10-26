@@ -338,7 +338,7 @@ def test_cli_export_returns_the_management_envelope(app, tmp_path, monkeypatch, 
     core, context = app
     initial(core, context)
     api = owner(core, context)
-    monkeypatch.setattr(memory, "open_management", lambda args: api)
+    monkeypatch.setattr(memory, "open_management", lambda args, **_: api)
     out = tmp_path / "TEST-cli-export"
     code = memory.main(["export", "--out", str(out), "--json"])
     payload = json.loads(capsys.readouterr().out)
