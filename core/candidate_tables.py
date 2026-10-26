@@ -50,6 +50,9 @@ EFFECTIVE_ORIGIN_SQL = """(CASE WHEN s.origin<>'imported' THEN s.origin
 #: Fingerprint of a candidate that has not been asked anything yet.
 EMPTY_FINGERPRINT = hashlib.sha256(b"[]").hexdigest()
 
+#: Source-specific placeholders isolate an unknown speaker; evidence cannot turn that digest into an identity.
+UNRESOLVED_SUBJECT_REASON = "unresolved_subject"
+
 #: One lifecycle row joined to its claim head and current version.  Every
 #: reader that must decide whether a candidate is still judgeable selects these
 #: from ``candidate_lifecycle l`` through ``HEAD_JOINS``.
@@ -428,26 +431,74 @@ class CandidateTables:
         self._move(candidate.ref, candidate.revision, "pending_evaluation", "suppression_released", now=now)
         return row["evaluation_id"]
 
-    def _retire_evaluations(self, ref: str, revision: int, code: str, now: str, *, others: bool = False) -> None:
+    def _retire_evaluations(
+        self, ref: str, revision: int, code: str, now: str, *, others: bool = False, include_failed: bool = False
+    ) -> None:
         """Obsolete a candidate's queued evaluations and fence their unfinished work.
 
         ``others`` retires every revision *except* ``revision`` instead, for a
-        claim that has just moved to a new head.
+        claim that has just moved to a new head. ``include_failed`` also closes failures whose question cannot be asked.
         """
         match = "candidate_revision<>?" if others else "candidate_revision=?"
+        work_states = "'pending','leased','failed'" if include_failed else "'pending','leased'"
+        evaluation_states = "'queued','failed'" if include_failed else "'queued'"
         conn = self._write()
         conn.execute(
             f"""UPDATE work_items SET state='obsolete',lease_token=lease_token+1,lease_owner=NULL,lease_until=NULL,
-                last_error_code=? WHERE state IN ('pending','leased') AND work_id IN (
+                last_error_code=? WHERE state IN ({work_states}) AND work_id IN (
                     SELECT work_id FROM candidate_evaluations
                     WHERE candidate_ref=? AND {match} AND work_id IS NOT NULL)""",
             (code, ref, revision),
         )
         conn.execute(
             f"""UPDATE candidate_evaluations SET state='obsolete',reason=?,completed_at=?,failure_code=?
-                WHERE candidate_ref=? AND {match} AND state='queued'""",
+                WHERE candidate_ref=? AND {match} AND state IN ({evaluation_states})""",
             (code, now, code, ref, revision),
         )
+
+    def _unresolved_subject_row(self, ref: str, revision: int):
+        """Read one visible unknown-speaker candidate by its lifecycle key, including its unfinished evaluations."""
+        context, params = self._context("l.")
+        return (
+            self._read()
+            .execute(
+                f"""SELECT l.processing_state,l.reason,EXISTS(
+                    SELECT 1 FROM candidate_evaluations e WHERE e.candidate_ref=l.candidate_ref
+                      AND e.candidate_revision=l.candidate_revision AND e.state IN ('queued','failed')) AS unfinished
+                FROM candidate_lifecycle l
+                JOIN claim_versions v ON v.claim_id=l.candidate_ref AND v.revision=l.candidate_revision
+                WHERE l.candidate_ref=? AND l.candidate_revision=? AND {context}
+                  AND json_extract(v.payload_json,'$.subject') GLOB 'unresolved-source:*'""",
+                (ref, revision, *params),
+            )
+            .fetchone()
+        )
+
+    def retire_unresolved_subjects(self, *, now: str, refs: tuple[tuple[str, int], ...]) -> int:
+        """Archive the named unknown-speaker candidates and fence their queued or failed evaluations.
+
+        Each key takes a point lookup; callers supply a bounded set rather than searching lifecycle history. Claims,
+        sources and completed verdicts stay intact, and repeating the same retirement makes no changes.
+        """
+        conn = self._write()
+        retired = 0
+        for ref, revision in refs:
+            row = self._unresolved_subject_row(ref, revision)
+            if row is None or row["processing_state"] in {"blocked", "resolved"}:
+                continue
+            if (
+                row["processing_state"] == "archived"
+                and row["reason"] == UNRESOLVED_SUBJECT_REASON
+                and not row["unfinished"]
+            ):
+                continue
+            self._move(ref, revision, "archived", UNRESOLVED_SUBJECT_REASON, now=now, dormant_at=now)
+            self._retire_evaluations(ref, revision, UNRESOLVED_SUBJECT_REASON, now, include_failed=True)
+            conn.execute(
+                "DELETE FROM candidate_trigger_terms WHERE candidate_ref=? AND candidate_revision=?", (ref, revision)
+            )
+            retired += 1
+        return retired
 
     def _evaluation_evidence(self, ref: str, revision: int) -> list:
         """The live, bounded evidence set an evaluation of this candidate would carry.

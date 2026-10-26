@@ -22,6 +22,7 @@ from .candidate_tables import (
     ECHO_ORIGINS,
     EMPTY_FINGERPRINT,
     JUDGEABLE_STATES,
+    UNRESOLVED_SUBJECT_REASON,
     CandidateTables,
     encode_refs,
     is_reachable,
@@ -98,6 +99,8 @@ class CandidateIntake(CandidateTables):
             state, reason, updated_at = "archived", PERSON_ABSENT_REASON, now
             self._retire_evaluations(candidate.ref, candidate.revision, PERSON_ABSENT_REASON, now)
         self._write_lifecycle(candidate, state, reason, rule_version, now, updated_at)
+        if self.retire_unresolved_subjects(now=now, refs=((candidate.ref, candidate.revision),)):
+            state, reason = "archived", UNRESOLVED_SUBJECT_REASON
         evaluation_id, queued = None, False
         if is_reachable(state, reason):
             self._index(candidate, now)
@@ -408,6 +411,7 @@ class CandidateIntake(CandidateTables):
         question was already asked under this rule version.
         """
         conn = self._write()
+        self.retire_unresolved_subjects(now=now, refs=((candidate.ref, candidate.revision),))
         row = self._lifecycle_row(candidate.ref, candidate.revision)
         if row is None or not is_reachable(row["processing_state"], row["reason"]):
             return None, False

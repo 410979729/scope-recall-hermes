@@ -13,6 +13,7 @@ from functools import partial
 from ..contracts import ContractError
 from . import private
 from .candidate_lifecycle import CandidateEvaluator, candidate_identity_restored
+from .candidate_tables import UNRESOLVED_SUBJECT_REASON
 from .claim_normalization import normalize_frame
 from .claims import evidence_refs
 from .evidence_question import evidence_text, rooted_verdict
@@ -252,9 +253,11 @@ def process_candidate_evaluation(
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             return stale_result(tx, item)
         feedback = tx.work.derivation_feedback(item.work_id)
+        if tx.candidates.retire_unresolved_evaluation(item.subject_revision, now=clock.utc_now()):
+            return "obsolete", UNRESOLVED_SUBJECT_REASON, "obsolete"
         evaluation = tx.candidates.evaluation(item.subject_revision)
         live = _live_evidence(tx, evaluation)
-        if live is None:
+        if evaluation is None or live is None:
             invalid_reason = "authority_revoked"
         else:
             evidence_sources = live
@@ -279,7 +282,7 @@ def process_candidate_evaluation(
     # Commit the at-most-once fence before the optional model call. A crash
     # after this point fails closed and waits for genuinely new evidence; an
     # attempt already begun by an earlier lease is that crash observed.
-    if invalid_reason is not None or not began:
+    if evaluation is None or invalid_reason is not None or not began:
         return (
             obsolete(reason=invalid_reason)
             if invalid_reason is not None
@@ -326,6 +329,8 @@ def process_candidate_evaluation(
             return _record_verdict(tx, item, evaluation, dependencies, value, result_digest, now)
     except ContractError as exc:
         code = exc.code or "DERIVATION_INVALID"
-        if code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
-            return obsolete(reason="memory_epoch_changed" if exc.field == "memory_epoch" else "authority_revoked")
-        return fail(code=code.lower(), field=exc.field)
+        return (
+            obsolete(reason="memory_epoch_changed" if exc.field == "memory_epoch" else "authority_revoked")
+            if code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}
+            else fail(code=code.lower(), field=exc.field)
+        )

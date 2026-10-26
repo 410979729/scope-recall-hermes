@@ -878,6 +878,9 @@ class WorkItems:
         already re-opened, it reads on to the rows it may re-open
         (``_failed_rows``), and each row it re-opens starts its attempts afresh
         (``_reopen_failed``).
+
+        Preview and apply share the candidate retry fence. Declined evaluations are counted with the first
+        ``MAX_RECOVERY_PAGE`` work ids and reasons; neither mode retires them or consumes a retry slot for them.
         """
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
@@ -892,6 +895,9 @@ class WorkItems:
             "applied": not dry_run,
             "already_retried": 0,
             "already_retried_work_ids": [],
+            "declined": 0,
+            "declined_work_items": [],
+            "retried_work_ids": [],
         }
         for row in self._failed_rows(conn):
             if report["retried"] >= limit:
@@ -906,11 +912,14 @@ class WorkItems:
                 if len(report["already_retried_work_ids"]) < MAX_OPERATOR_PAGE:
                     report["already_retried_work_ids"].append(int(row["work_id"]))
                 continue
+            if self._decline_candidate_retry(row, report):
+                continue
             if not dry_run and not self._reopen_failed(row["work_id"], row["work_type"], code, now=now):
                 continue
             kind = str(code or "").rsplit("|", 1)[-1]
             report["by_kind"][kind] = report["by_kind"].get(kind, 0) + 1
             report["retried"] += 1
+            report["retried_work_ids"].append(int(row["work_id"]))
         # The automatic recovery read every embed's subject as a source, so a claim embed a provider failed was made
         # obsolete instead of reopened (``_embed_retry_reason``).  A readable head it left without a vector is worked
         # on again, with the attempts of new work, and one an earlier conversion never queued is queued.
@@ -964,6 +973,18 @@ class WorkItems:
                 "UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(row[0],) for row in refused]
             )
         return report
+
+    def _decline_candidate_retry(self, row, report: dict) -> bool:
+        """Report a candidate's read-only retry refusal with bounded detail; other work stays eligible."""
+        if row["work_type"] != "evaluate_candidate":
+            return False
+        rejection = self._tx.candidates.evaluation_retry_rejection(row["work_id"])
+        if rejection is None:
+            return False
+        report["declined"] += 1
+        if len(report["declined_work_items"]) < MAX_RECOVERY_PAGE:
+            report["declined_work_items"].append({"work_id": int(row["work_id"]), "reason": rejection})
+        return True
 
     def _failed_rows(self, conn) -> Iterator:
         """Every failed row of this context, ``RETRY_SCAN_PAGE`` at a time, in the order ``work_ready`` keeps them (by

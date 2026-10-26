@@ -508,6 +508,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_recall_packet_compiler.py",
     "tests/contract/test_quality_audit.py",
     "tests/contract/test_candidate_lifecycle.py",
+    "tests/contract/test_unresolved_candidates.py",
     "tests/contract/test_host_recall_boundaries.py",
     "tests/contract/test_host_principal_injection.py",
     "tests/contract/test_runtime_cross_component.py",
