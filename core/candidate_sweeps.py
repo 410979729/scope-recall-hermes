@@ -8,6 +8,8 @@ for a month, and evaluations that died only on an older input bound.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import timedelta
 
 from ..contracts import ContractError
@@ -27,9 +29,51 @@ from .candidate_tables import (
 )
 from .schema import SCHEMA_VERSION
 
+#: Lifecycle keys one worker pass inspects for unknown-speaker candidates. A window of point lookups held the write
+#: transaction about 30 ms on a store with 39,000 lifecycle rows, so one walk over such a store takes about 150
+#: passes; the model-bound candidate page (8) would take some 4,900.
+UNRESOLVED_BACKLOG_WINDOW = 256
+
 
 class CandidateSweeps(CandidateIntake):
     """Page-bounded repairs and reports over the candidate tables."""
+
+    def retire_unresolved_backlog(self, *, now: str, limit: int = UNRESOLVED_BACKLOG_WINDOW) -> int:
+        """Walk existing lifecycle keys once, inspecting at most ``limit`` rows per transaction.
+
+        The cursor belongs to this scope/project/branch view, so another worker's audience cannot hide rows.
+        The key window precedes every subject or visibility filter: even a window with nothing to retire stays
+        bounded. The cursor and retirements commit together; reopening or restoring a snapshot resumes its position
+        and completion state. Registration and scheduling fence candidates inserted behind the cursor.
+        """
+        if type(limit) is not int or not 1 <= limit <= 4 * UNRESOLVED_BACKLOG_WINDOW:
+            raise ContractError("INPUT_INVALID", "unresolved_candidate_limit")
+        context, params = self._context()
+        name = "unresolved_subjects:" + hashlib.sha256(json.dumps([context, params]).encode()).hexdigest()
+        conn = self._write()
+        cursor = conn.execute("SELECT * FROM candidate_scan_cursors WHERE cursor_name=?", (name,)).fetchone()
+        if cursor is not None and cursor["completed"]:
+            return 0
+        position = (cursor["position_ref"], cursor["position_revision"]) if cursor else ("", 0)
+        rows = conn.execute(
+            """SELECT candidate_ref,candidate_revision FROM candidate_lifecycle
+                WHERE (candidate_ref,candidate_revision)>(?,?)
+                ORDER BY candidate_ref,candidate_revision LIMIT ?""",
+            (*position, limit),
+        ).fetchall()
+        retired = self.retire_unresolved_subjects(now=now, refs=tuple((row[0], row[1]) for row in rows))
+        if rows:
+            position = (rows[-1][0], rows[-1][1])
+        processed = (cursor["processed_count"] if cursor else 0) + len(rows)
+        conn.execute(
+            """INSERT INTO candidate_scan_cursors(
+                cursor_name,position_ref,position_revision,processed_count,completed,updated_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(cursor_name) DO UPDATE SET
+                    position_ref=excluded.position_ref,position_revision=excluded.position_revision,
+                    processed_count=excluded.processed_count,completed=excluded.completed,updated_at=excluded.updated_at""",
+            (name, *position, processed, int(len(rows) < limit), now),
+        )
+        return retired
 
     def archive_dormant(self, *, now: str, days: int = DORMANCY_DAYS, limit: int = 8) -> int:
         if type(days) is not int or not 1 <= days <= 3650 or type(limit) is not int or not 1 <= limit <= 8:
@@ -551,6 +595,8 @@ class CandidateSweeps(CandidateIntake):
         )
         recovered = 0
         for row in rows:
+            if self.retire_unresolved_subjects(now=now, refs=((row["candidate_ref"], row["candidate_revision"]),)):
+                continue
             fits = self._fits_budget(row, formatter)
             moved = self._tx.work.reopen_oversized_candidate_evaluation(row["work_id"], now=now, fits=fits)
             if not (fits and moved):

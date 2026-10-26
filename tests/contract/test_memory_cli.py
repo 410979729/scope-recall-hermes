@@ -23,7 +23,7 @@ def test_secret_command_has_metadata_only_in_json_and_plain_output(app, monkeypa
     core, context = app
     flagged = legacy_secret(core, context, monkeypatch)
     api = MemoryManagement(core, InstallationMaintenance(context))
-    monkeypatch.setattr(memory, "open_management", lambda args: api)
+    monkeypatch.setattr(memory, "open_management", lambda args, **_: api)
     for options in (["--json"], []):
         assert cli.main(["memory", "secrets", *options]) == 0
         output = capsys.readouterr().out
@@ -57,12 +57,25 @@ def test_secret_command_opens_an_existing_store_without_initialization(store, mo
     assert result["data"]["items"] == [] and result["data"]["rows_read"] >= 1
 
 
+def test_the_page_parser_opens_and_initializes_a_store(store, monkeypatch):
+    """The management page's parser defines no memory action; the shared entry still binds and initializes."""
+    from scope_recall.core import MemoryCore
+    from scope_recall.maintenance import ui
+
+    store.say("NameOne uses green.")
+    initialized = []
+    initialize = MemoryCore.initialize
+    monkeypatch.setattr(MemoryCore, "initialize", lambda self: initialized.append(self) or initialize(self))
+    api = memory.open_management(ui.parser().parse_args(store.target()))
+    assert isinstance(api, MemoryManagement) and len(initialized) == 1
+
+
 @pytest.fixture
 def command(app, monkeypatch, capsys):
     core, context = app
     item, source = initial(core, context)
     api = MemoryManagement(core, InstallationMaintenance(context))
-    monkeypatch.setattr(memory, "open_management", lambda args: api)
+    monkeypatch.setattr(memory, "open_management", lambda args, **_: api)
 
     def call(action, *args):
         code = cli.main(["memory", action, *args, "--json"])

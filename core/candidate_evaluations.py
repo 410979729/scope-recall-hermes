@@ -10,7 +10,15 @@ from __future__ import annotations
 
 from ..contracts import ContractError
 from .candidate_lifecycle import CandidateEvaluationSnapshot
-from .candidate_tables import HEAD_COLUMNS, HEAD_JOINS, CandidateTables, is_live_head, parse_refs, snapshot
+from .candidate_tables import (
+    HEAD_COLUMNS,
+    HEAD_JOINS,
+    UNRESOLVED_SUBJECT_REASON,
+    CandidateTables,
+    is_live_head,
+    parse_refs,
+    snapshot,
+)
 from .evidence_question import (
     AUTOMATIC_VERDICTS,
     PERSON_ABSENT_REASON,
@@ -35,6 +43,11 @@ _FENCED_BY = {
 
 class CandidateEvaluations(CandidateTables):
     """Read, claim and settle one candidate evaluation at a time."""
+
+    def retire_unresolved_evaluation(self, evaluation_id: int, *, now: str) -> bool:
+        """Apply the stored-subject fence even when this evaluation has no judgeable snapshot."""
+        key = self._candidate_of(evaluation_id)
+        return key is not None and self.retire_unresolved_subjects(now=now, refs=(key,)) > 0
 
     def evaluation(self, evaluation_id: int) -> CandidateEvaluationSnapshot | None:
         """The queued evaluation as the worker may act on it, or ``None`` if it may not."""
@@ -198,12 +211,30 @@ class CandidateEvaluations(CandidateTables):
         self._move_for(evaluation_id, "waiting_evidence", reason, now=now)
         return mutation
 
+    def evaluation_retry_rejection(self, work_id: int) -> str | None:
+        """Read why a failed evaluation cannot reopen, without changing its lifecycle or work item."""
+        row = (
+            self._read()
+            .execute(
+                "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE work_id=? AND state='failed'",
+                (work_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return "candidate_evaluation_not_failed"
+        if self._unresolved_subject_row(row["candidate_ref"], row["candidate_revision"]) is not None:
+            return UNRESOLVED_SUBJECT_REASON
+        return None
+
     def reopen_evaluation(self, work_id: int, *, now: str, reason: str = "operator_retry") -> bool:
         """Put a failed evaluation and its lifecycle back where a retry can run.
 
         Returns False when there is nothing to move, so the caller leaves the
         work item alone rather than creating the mismatch it is avoiding.
         """
+        if self.evaluation_retry_rejection(work_id) is not None:
+            return False
         row = (
             self._read()
             .execute(
@@ -212,7 +243,9 @@ class CandidateEvaluations(CandidateTables):
             )
             .fetchone()
         )
-        if row is None or self._requeue_failed(row["evaluation_id"], reason) != 1:
+        if row is None:
+            return False
+        if self._requeue_failed(row["evaluation_id"], reason) != 1:
             return False
         self._move(row["candidate_ref"], row["candidate_revision"], "pending_evaluation", reason, now=now)
         return True

@@ -224,6 +224,7 @@ def _resume_admission(
     page = min(config.candidate_batch_limit, config.max_items)
     with storage.write(context, remaining_seconds=min(1.0, budget_left(started, clock, budget))) as tx:
         tx.candidates.backfill(now=clock.utc_now(), limit=page)
+        tx.candidates.retire_unresolved_backlog(now=clock.utc_now())
         tx.candidates.archive_dormant(now=clock.utc_now(), limit=page)
         if not candidate_available:
             tx.candidates.mark_capability_unavailable()

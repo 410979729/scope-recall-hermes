@@ -9,10 +9,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import zipfile
+from email.parser import Parser
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALLOWLIST_PATH = REPO_ROOT / "packaging" / "v11-module-allowlist.json"
@@ -161,6 +164,32 @@ def test_clean_v11_wheel_exact_allowlist(built_wheel: Path) -> None:
         metadata = archive.read(metadata_name).decode("utf-8")
     assert "Name: hermes-scope-recall" in metadata
     assert f"Version: {allowlist['package_version']}" in metadata
+
+
+def test_vector_extra_dependencies_exclude_android(built_wheel: Path) -> None:
+    """The wheel keeps its dependency bounds and excludes only the vector extra on Android."""
+    with zipfile.ZipFile(built_wheel) as archive:
+        name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata = Parser().parsestr(archive.read(name).decode("utf-8"))
+    requirements = {Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])}
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    expected = {Requirement(raw) for raw in project["dependencies"]}
+    for extra, dependencies in project["optional-dependencies"].items():
+        for raw in dependencies:
+            dependency, separator, marker = raw.partition(";")
+            conditions = f"({marker}) and " if separator else ""
+            expected.add(Requirement(f'{dependency}; {conditions}extra == "{extra}"'))
+    assert requirements == expected
+    vectors = {
+        requirement.name: requirement for requirement in requirements if requirement.name in {"lancedb", "pyarrow"}
+    }
+    assert set(vectors) == {"lancedb", "pyarrow"}
+    for requirement in vectors.values():
+        assert requirement.marker is not None
+        assert not requirement.marker.evaluate({"sys_platform": "android", "extra": "lancedb"})
+        for platform in ("win32", "linux", "darwin"):
+            assert requirement.marker.evaluate({"sys_platform": platform, "extra": "lancedb"})
+            assert not requirement.marker.evaluate({"sys_platform": platform, "extra": ""})
 
 
 def test_clean_v11_wheel_has_no_private_or_legacy_artifacts(built_wheel: Path) -> None:
