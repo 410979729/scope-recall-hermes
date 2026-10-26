@@ -1727,7 +1727,10 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
     ]
     specs = list(project["dependencies"])
     for extra in ("lancedb", "codex"):
-        specs.extend(f"{spec}; extra == '{extra}'" for spec in project["optional-dependencies"][extra])
+        for spec in project["optional-dependencies"][extra]:
+            requirement, separator, marker = spec.partition(";")
+            conditions = f"({marker}) and " if separator else ""
+            specs.append(f"{requirement}; {conditions}extra == '{extra}'")
     (dist_dir / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: hermes-scope-recall\nVersion: 3.1.0rc28\n"
         + "".join(f"Requires-Dist: {s}\n" for s in specs),

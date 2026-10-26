@@ -247,18 +247,18 @@ dev = [
     { name = "wheel" },
 ]
 lancedb = [
-    { name = "lancedb" },
-    { name = "pyarrow" },
+    { name = "lancedb", marker = "sys_platform != 'android'" },
+    { name = "pyarrow", marker = "sys_platform != 'android'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
     { name = "jsonschema", specifier = ">=4.22,<5" },
-    { name = "lancedb", marker = "extra == 'lancedb'", specifier = ">=0.30.2,<=0.37.1" },
+    { name = "lancedb", marker = "sys_platform != 'android' and extra == 'lancedb'", specifier = ">=0.30.2,<=0.37.1" },
     { name = "mcp", marker = "extra == 'codex'", specifier = ">=2.0.0,<=2.1.0" },
     { name = "packaging", specifier = ">=24,<27" },
-    { name = "pyarrow", marker = "extra == 'lancedb'", specifier = ">=24,<25" },
+    { name = "pyarrow", marker = "sys_platform != 'android' and extra == 'lancedb'", specifier = ">=24,<25" },
     { name = "pydantic", marker = "extra == 'codex'", specifier = ">=2,<3" },
     { name = "pyright", marker = "extra == 'dev'", specifier = "==1.1.414" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
