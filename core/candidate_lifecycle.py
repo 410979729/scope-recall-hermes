@@ -184,7 +184,9 @@ def _without_subject(name: str, subject: str) -> str:
     return name
 
 
-def candidate_name_matches(expected: object, proposed: object, *, subject: object = None) -> bool:
+def candidate_name_matches(
+    expected: object, proposed: object, *, subject: object = None, predicate: bool = False
+) -> bool:
     """Whether a proposed subject or predicate is the candidate's own, written differently.
 
     A model echoing a name writes it another way (quotes, escapes, case, width, ``a defect`` for ``defect``), keeps
@@ -193,14 +195,23 @@ def candidate_name_matches(expected: object, proposed: object, *, subject: objec
     the extractor's name for what its sources say, and the model shortens it toward the words of the evidence it
     quotes (``API`` for ``API KEY``, ``live store`` for ``live store queries``); the verdict is still about the
     candidate it was asked about.  A name the model writes longer than the candidate's is another: the words it
-    added may narrow it (``allow delete in staging``).  So is a shortening whose left-out words negate or narrow the
-    name (``吃辣不行``), or that cuts an identifier (``rc2`` of ``rc28``).
+    added may narrow it (``allow delete in staging``).  Only a ``predicate`` may add trailing Chinese aspect or
+    structural particles 了, 着 and 的 (``自己维护了`` for ``自己维护``); after a subject, 的 makes a possessive,
+    which names something else.  So is a shortening whose left-out words negate or narrow the name (``吃辣不行``),
+    or that cuts an identifier (``rc2`` of ``rc28``).
     """
     named = _words(subject)
     left, right = _without_subject(_words(expected), named), _without_subject(_words(proposed), named)
     if not left or not right:
         return False
     if left.replace(" ", "") == right.replace(" ", ""):
+        return True
+    if (
+        predicate
+        and _CJK.search(left) is not None
+        and right.startswith(left)
+        and re.fullmatch(r"[了着的]+", right[len(left) :])
+    ):
         return True
     rest = left[len(right) :]
     return (
@@ -232,7 +243,7 @@ def candidate_identity_restored(
         if proposal.get(field) == expected:
             continue
         if field == "kind" or not candidate_name_matches(
-            expected, proposal.get(field), subject=candidate.payload.get("subject")
+            expected, proposal.get(field), subject=candidate.payload.get("subject"), predicate=True
         ):
             raise ContractError("DERIVATION_INVALID", f"candidate_{field}")
         proposal = {**proposal, field: expected}
