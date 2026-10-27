@@ -20,6 +20,24 @@ def _run(capsys, arguments):
     return code, json.loads(capsys.readouterr().out)
 
 
+@pytest.mark.parametrize("wait", [30, 0])
+def test_upgrade_store_supplies_a_current_stores_missing_session_index(tmp_path, capsys, wait):
+    project = tmp_path / "TEST-project"
+    project.mkdir()
+    instance = tmp_path / "TEST-install"
+    _config, core = install_codex_scope_recall(instance, project_root=project)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("DROP INDEX source_session")
+    arguments = ["upgrade-store", "--host", "codex", "--instance-root", str(instance), "--wait-seconds", str(wait)]
+    for expected in ("added", "present"):
+        code, out = _run(capsys, arguments)
+        assert code == 0 and out["status"] == "current", out
+        assert out["session_index"] == expected and "backup" not in out
+        with sqlite3.connect(core.storage.path) as conn:
+            assert conn.execute("PRAGMA index_info(source_session)").fetchall()
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
 @pytest.mark.parametrize("wait", ["nan", "inf", "-inf"])
 def test_upgrade_store_refuses_nonfinite_wait_before_acquiring_a_lease(tmp_path, capsys, monkeypatch, wait):
     def unexpected_lease(*args):
@@ -243,7 +261,8 @@ def _stamp_header(path, version, *, application_id=None):
             conn.execute(f"PRAGMA application_id={application_id}")
 
 
-def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsys):
+@pytest.mark.parametrize("index_present", [False, True])
+def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsys, index_present):
     """Every table and row is 3.x and instance_meta records the schema, but the header says
     10815, so every open would fail closed and upgrade-store would call the store unsupported."""
     import pytest
@@ -254,6 +273,9 @@ def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsy
     project = tmp_path / "project"
     project.mkdir()
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    if not index_present:
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("DROP INDEX source_session")
     _stamp_header(core.storage.path, 10815)
     with pytest.raises(ContractError) as refused:
         SQLiteStorage(core.storage.binding).initialize()
@@ -266,6 +288,9 @@ def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsy
     code, out = _run(capsys, [*root, "--backup-dir", str(tmp_path / "backups")])
     assert code == 0, out
     assert (out["status"], out["schema_after"]) == ("restamped", SCHEMA_VERSION)
+    assert out["session_index"] == ("present" if index_present else "added")
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("PRAGMA index_info(source_session)").fetchall()
     assert (out["header_restamped"]["from"], out["header_restamped"]["to"]) == (10815, SCHEMA_VERSION)
     assert "tables_not_in_schema" not in out, "a store holding only its own tables names none"
     with sqlite3.connect(next((tmp_path / "backups").glob("memory-10815-*.sqlite3"))) as conn:

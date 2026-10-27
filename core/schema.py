@@ -6,6 +6,12 @@ SCHEMA_VERSION = 1112
 UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111)
 APPLICATION_ID = 0x5352434C
 
+# Session equality narrows capture's episode lookup before the source-version join.
+# This optional acceleration leaves the stored format readable without the index.
+SOURCE_SESSION_INDEX = (
+    "CREATE INDEX IF NOT EXISTS source_session ON source_events(session_id,scope_id,event_id,source_revision)"
+)
+
 OBJECT_TABLES = {
     "event": ("source_events", "event_id"),
     "claim": ("claims", "claim_id"),
@@ -274,6 +280,7 @@ STATEMENTS = (
         UNIQUE(source_group_key,source_revision,segment_index)
     ) STRICT""",
         "CREATE INDEX source_scope_time ON source_events(scope_id,occurred_at,event_id,source_revision)",
+        SOURCE_SESSION_INDEX,
         # A repeated tool output is looked up by its content hash at capture (core/admission.py)
         # and by the retention pass (runtime/vector_retention.py).
         "CREATE INDEX source_content ON source_events(scope_id,role,content_sha256)",
@@ -465,6 +472,19 @@ def stale_header_schema(connection) -> int | None:
     if recorded == header or recorded not in (*UPGRADE_CHAIN, SCHEMA_VERSION):
         return None
     return recorded
+
+
+def source_session_index_present(connection) -> bool:
+    """Check the optional index with one schema lookup, without reading source rows."""
+    return (
+        connection.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='source_session'").fetchone()
+        is not None
+    )
+
+
+def ensure_source_session_index(connection):
+    """Supply the optional lookup index inside a verified initialization transaction."""
+    connection.execute(SOURCE_SESSION_INDEX)
 
 
 def upgrade_1105(connection):

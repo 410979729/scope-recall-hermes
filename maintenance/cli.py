@@ -18,6 +18,7 @@ from scope_recall.core.schema import (
     SCHEMA_VERSION,
     STATEMENTS,
     UPGRADE_CHAIN,
+    source_session_index_present,
     stale_header_schema,
 )
 from scope_recall.core.storage import SQLiteStorage
@@ -529,6 +530,15 @@ def _snapshot_schemas(snapshot: Path) -> tuple[int | None, int | None]:
         return None, None
 
 
+def _supply_session_index(binding, database: Path, wait: float) -> str:
+    """Supply a missing lookup index under the caller's writer lease and report its state."""
+    with closing(connect_truth_database(database, mode="ro", timeout=wait)) as conn:
+        present = source_session_index_present(conn)
+    if not present:
+        SQLiteStorage(binding, timeout_seconds=wait).initialize()
+    return "present" if present else "added"
+
+
 def _upgrade_held_store(args, binding, database: Path, wait: float, result: dict[str, Any]) -> int:
     """Snapshot and migrate while the caller holds the canonical writer lease."""
     from datetime import datetime
@@ -539,6 +549,7 @@ def _upgrade_held_store(args, binding, database: Path, wait: float, result: dict
     if recorded is None and before == SCHEMA_VERSION:
         result.update(
             status="current",
+            session_index=_supply_session_index(binding, database, wait),
             journal_mode=read_journal_mode(database),
         )
         return 0
@@ -579,6 +590,7 @@ def _upgrade_held_store(args, binding, database: Path, wait: float, result: dict
             result.update(
                 status="restamped",
                 schema_after=SCHEMA_VERSION,
+                session_index=_supply_session_index(binding, database, wait),
                 journal_mode=read_journal_mode(database),
             )
             _report_other_tables(result, database)

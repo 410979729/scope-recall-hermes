@@ -10,6 +10,7 @@ from scope_recall.contracts import ArtifactVersion, ContractError, DisplaySnapsh
 from scope_recall.core.artifact_storage import artifact_identity
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.retained_artifacts import ArtifactGrant
+from scope_recall.core.schema import SOURCE_SESSION_INDEX
 from scope_recall.core.visibility import ObjectRef
 from test_claims import app, capture
 from test_deletion import authorize, request
@@ -92,6 +93,32 @@ def test_C37_plain_chat_has_provisional_episode_without_manufactured_goal(app):
     with pytest.raises(ContractError, match="work_goal_unconfirmed"):
         apply(core, ctx, resumes=[resume(source)])
     assert core.episodes(ctx)[0].resume is None
+
+
+def test_session_lookup_uses_its_index_and_preserves_the_latest_series(app):
+    core, ctx = app
+    capture(core, replace(ctx, task_anchor="TEST-first-task"), "TEST first topic")
+    latest = capture(core, replace(ctx, task_anchor="TEST-next-task"), "TEST second topic")
+    capture(core, replace(ctx, session_id="TEST-other-session"), "TEST unrelated session")
+    capture(core, replace(ctx, project_id="TEST-other-project"), "TEST unrelated project")
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        expected = conn.execute(
+            "SELECT e.series_key FROM episodes e JOIN episode_events ee ON e.episode_id=ee.episode_id "
+            "WHERE ee.source_ref=?",
+            (latest.ref,),
+        ).fetchone()[0]
+        conn.execute("DROP INDEX source_session")
+        before = tx.episodes._series_for(latest)
+        conn.execute(SOURCE_SESSION_INDEX)
+        statements = []
+        conn.set_trace_callback(statements.append)
+        after = tx.episodes._series_for(latest)
+        conn.set_trace_callback(None)
+        lookup = next(sql for sql in statements if "ORDER BY ee.sequence DESC LIMIT 1" in sql)
+        plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + lookup)]
+        assert any("USING INDEX source_session (session_id=? AND scope_id=?)" in line for line in plan), plan
+        assert before == after == (expected, "session")
 
 
 def test_C25_one_session_changes_topic_without_cancelling_previous(app):

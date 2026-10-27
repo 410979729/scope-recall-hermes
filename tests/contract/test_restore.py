@@ -110,10 +110,16 @@ def fenced(store):
     return False
 
 
-def test_going_back_to_a_backup_keeps_what_was_forgotten_since(store, capsys):
+@pytest.mark.parametrize("session_index", [False, True])
+def test_going_back_to_a_backup_keeps_what_was_forgotten_since(store, capsys, session_index):
     kept = store.say("TEST-kept the meeting moved to Thursday")
     secret = store.say(SECRET)
+    if not session_index:
+        with closing(sqlite3.connect(store.core.storage.path)) as conn:
+            conn.execute("DROP INDEX source_session")
     snapshot = backup(capsys, store, "TEST-before-forget")
+    with closing(sqlite3.connect(snapshot)) as conn:
+        assert bool(conn.execute("PRAGMA index_info(source_session)").fetchall()) is session_index
     store.forget(secret)
     later = store.say("TEST-later a message said after the backup")
     assert store.core.source(store.ctx, secret.ref, 1) is None
