@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from threading import Barrier
@@ -17,7 +18,12 @@ from scope_recall.core.recall_policy import EMBEDDING_SPACE, encode_embedding_te
 from scope_recall.core.secret_patterns import contains_secret_like_text
 from scope_recall.core.source_records import StoredSource
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, auxiliary_runtime_status, build_auxiliary_runtime
-from scope_recall.runtime.consolidation_models import ConsolidationRouteConfig, OpenAIConsolidationAdapter
+from scope_recall.runtime.consolidation_models import (
+    ConsolidationRouteConfig,
+    OpenAIConsolidationAdapter,
+    ResponsesConsolidationAdapter,
+    ResponsesRouteConfig,
+)
 from scope_recall.runtime.embedding_models import (
     EmbeddingRouteConfig,
     GeminiEmbeddingAdapter,
@@ -749,6 +755,93 @@ def test_consolidation_route_options_are_explicit(tmp_path, monkeypatch):
     assert captured["body"]["stream"] is False
     assert "response_format" not in captured["body"]
     assert "reasoning_effort" not in captured["body"]
+    assert "temperature" not in captured["body"]
+
+
+def _sampling_route(kind, **options):
+    """A synthetic route accepted by the runtime's existing test budget."""
+    route = {
+        "model": "deepseek-v4-flash",
+        "endpoint": "https://example.test/v1/" + ("responses" if kind == "openai_responses" else "chat/completions"),
+        "credential_env": "SCOPE_RECALL_TEST_CHAT_KEY",
+        "max_output_tokens": 512,
+    }
+    if kind == "openai_responses":
+        route["kind"] = kind
+    else:
+        route["output_limit_field"] = "max_tokens"
+    return dict(route, **options)
+
+
+def _sampling_payload(route):
+    """A parser-only configuration explicitly disables both external capabilities."""
+    return {"external_embedding": False, "external_consolidation": False, "consolidation": route}
+
+
+@pytest.mark.parametrize("kind", ["openai", "openai_responses"])
+@pytest.mark.parametrize("temperature", [None, 0, 0.0, 0.25, 1, 2])
+def test_temperature_loads_from_json_and_is_the_only_body_change(tmp_path, kind, temperature):
+    route = _sampling_route(kind, temperature=temperature)
+    path = tmp_path / "runtime-config.json"
+    path.write_text(json.dumps({"auxiliary": _sampling_payload(route)}), encoding="utf-8")
+    loaded = AuxiliaryRuntimeConfig.from_mapping(json.loads(path.read_text(encoding="utf-8"))["auxiliary"])
+    assert loaded.consolidation.temperature == temperature
+    config, _, _ = _runtime_config(tmp_path, consolidation=route)
+    adapter = build_auxiliary_runtime(config).consolidation
+    messages = [{"role": "user", "content": "TEST bounded input"}]
+    if isinstance(adapter, ResponsesConsolidationAdapter):
+        encoded = adapter._responses_body(messages)
+        body = json.loads(encoded)
+        expected = {
+            "model": route["model"],
+            "max_output_tokens": 512,
+            "stream": False,
+            "store": False,
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": messages[0]["content"]}]}
+            ],
+        }
+    else:
+        assert isinstance(adapter, OpenAIConsolidationAdapter)
+        encoded = adapter._chat_body(messages)
+        body = json.loads(encoded)
+        expected = {"model": route["model"], "max_tokens": 512, "stream": False, "n": 1, "messages": messages}
+    if temperature is not None:
+        expected["temperature"] = temperature
+    assert body == expected
+    route.pop("temperature")
+    unset_route = AuxiliaryRuntimeConfig.from_mapping(_sampling_payload(route)).consolidation
+    unset_config = replace(config, consolidation=unset_route)
+    unset_adapter = build_auxiliary_runtime(unset_config).consolidation
+    unset_body = (
+        unset_adapter._responses_body(messages)
+        if isinstance(unset_adapter, ResponsesConsolidationAdapter)
+        else unset_adapter._chat_body(messages)
+    )
+    body.pop("temperature", None)
+    assert json.loads(unset_body) == body
+    if temperature is None:
+        assert encoded == unset_body
+
+
+@pytest.mark.parametrize("kind", ["openai", "openai_responses"])
+@pytest.mark.parametrize(
+    "temperature", [True, False, "0", "1", float("nan"), float("inf"), -float("inf"), -0.01, 2.01, 10**400, [], {}]
+)
+def test_sampling_temperature_rejects_nonfinite_and_non_numeric_values(kind, temperature):
+    raw = _sampling_route(kind, temperature=temperature)
+    with pytest.raises(ValueError, match="^temperature$"):
+        AuxiliaryRuntimeConfig.from_mapping(_sampling_payload(raw))
+    raw.pop("kind", None)
+    route_class = ResponsesRouteConfig if kind == "openai_responses" else ConsolidationRouteConfig
+    with pytest.raises(ValueError, match="^temperature$"):
+        route_class(**raw)
+
+
+@pytest.mark.parametrize("temperature", [None, 0, 1])
+def test_cli_consolidation_refuses_sampling_temperature_on_load(temperature):
+    with pytest.raises(ValueError, match="codex_unknown_config"):
+        AuxiliaryRuntimeConfig.from_mapping(_sampling_payload({"kind": "codex_cli", "temperature": temperature}))
 
 
 def test_consolidation_route_includes_reasoning_effort_when_configured(tmp_path, monkeypatch):
