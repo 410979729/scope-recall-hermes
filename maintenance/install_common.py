@@ -17,14 +17,29 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from functools import cache
+from importlib.metadata import PackageNotFoundError, metadata
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from scope_recall._version import __version__
 
 from .backup import first_link
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CODEX_SHORT_DESCRIPTION = "Recall and manage shared, source-backed memory in Codex."
+CODEX_LONG_DESCRIPTION = (
+    "Scope Recall recalls relevant memories before a Codex turn and captures prompts and replies through turn "
+    "and session hooks. MCP tools search memories, inspect their sources and history, and correct or forget them."
+)
+# Claude Code cannot tie a tool call to its conversation, so its MCP server offers no tool that changes the store.
+CLAUDE_CODE_DESCRIPTION = (
+    "In Claude Code, recall runs before a turn and prompts and replies are captured through "
+    "turn and session hooks. MCP tools search memories and inspect their sources and history."
+)
+#: Appended by the plugins that reach a store on another machine.
+REMOTE_STORE_NOTE = " The store runs on another machine and is reached through its remote entry server."
 SETUP_SKILL = Path(__file__).with_name("skills") / "scope-recall-setup" / "SKILL.md"
 #: Every skill an install carries, under the folder name the host discovers it by.
 #: ``scope-recall-setup`` is for installing and upgrading.  ``scope-recall-memory``
@@ -52,6 +67,31 @@ _PLUGIN_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 class InstallError(RuntimeError):
     """Raised when install planning or apply cannot proceed safely."""
+
+
+@cache
+def plugin_metadata() -> tuple[str, str]:
+    """Read and cache the declared author and product description for manifest builders.
+
+    Other maintenance entry points can be imported without distribution metadata or a readable manifest. Only
+    successful reads are cached, so an installation can retry after its package inputs have been restored.
+    """
+    distribution = "hermes-scope-recall"
+    try:
+        author = metadata(distribution)["Author"]
+    except (PackageNotFoundError, KeyError, OSError, ValueError) as exc:
+        raise InstallError(f"could not read plugin author from installed distribution {distribution}") from exc
+    if not isinstance(author, str) or not author.strip():
+        raise InstallError(f"could not read plugin author from installed distribution {distribution}")
+    manifest_path = REPO_ROOT / "distribution" / "hermes" / "plugin.yaml"
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise InstallError(f"could not read plugin description from {manifest_path}") from exc
+    description = manifest.get("description") if isinstance(manifest, dict) else None
+    if not isinstance(description, str) or not description.strip():
+        raise InstallError(f"could not read plugin description from {manifest_path}")
+    return author, description
 
 
 @dataclass(frozen=True)

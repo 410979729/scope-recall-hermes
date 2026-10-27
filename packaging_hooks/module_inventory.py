@@ -63,11 +63,6 @@ _DATA_ONLY = ("_lance_worker.py",)
 #: Files whose version line is stamped from ``_version.py``.
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
-#: The Codex manifest carries the *semver* spelling instead (``X.Y.Z-rc.N`` for
-#: ``X.Y.ZrcN``), which a hand-kept copy would let drift from the package's
-#: version.  Stamping it from the same source is the whole point.
-CODEX_MANIFEST = "distribution/codex/scope-recall/.codex-plugin/plugin.json"
-
 
 def source_version(repo_root: Path | None = None) -> str:
     """The one true version, read as a literal so nothing has to be imported."""
@@ -180,22 +175,6 @@ def expected_allowlist(repo_root: Path | None = None) -> dict:
     }
 
 
-def semver_version(version: str) -> str:
-    """The semver spelling of a PEP 440 version, for manifests that demand one.
-
-    Deliberately a second, independent statement of the rule that
-    ``maintenance/install_common.py::manifest_version`` applies, so that this build
-    helper needs no runtime import.  ``tests/packaging/test_package_manifest.py``
-    asserts the two agree; if they ever diverge, that test says so rather than a
-    plugin manifest quietly carrying a version no host can parse.
-    """
-    if ".dev" in version:
-        return version.replace(".dev", "-dev.", 1)
-    import re
-
-    return re.sub(r"(\d+\.\d+\.\d+)rc(\d+)", r"\1-rc.\2", version)
-
-
 def stamped_manifest(text: str, version: str) -> str:
     """Return ``text`` with its ``version:`` line set to ``version``."""
     lines = text.splitlines(keepends=True)
@@ -223,9 +202,6 @@ def stale_version_files(repo_root: Path | None = None) -> dict[str, str]:
     listed = json.loads((root / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))
     if listed.get("package_version") != version:
         stale["packaging/v11-module-allowlist.json"] = str(listed.get("package_version"))
-    codex = json.loads((root / CODEX_MANIFEST).read_text(encoding="utf-8"))
-    if codex.get("version") != semver_version(version):
-        stale[CODEX_MANIFEST] = str(codex.get("version"))
     return stale
 
 
@@ -241,12 +217,6 @@ def write_all(repo_root: Path | None = None) -> list[str]:
         if stamped != text:
             path.write_text(stamped, encoding="utf-8", newline="\n")
             changed.append(relative)
-    codex_path = root / CODEX_MANIFEST
-    codex = json.loads(codex_path.read_text(encoding="utf-8"))
-    if codex.get("version") != semver_version(version):
-        codex["version"] = semver_version(version)
-        codex_path.write_text(json.dumps(codex, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
-        changed.append(CODEX_MANIFEST)
     allowlist_path = root / "packaging" / "v11-module-allowlist.json"
     expected = expected_allowlist(root)
     current = json.loads(allowlist_path.read_text(encoding="utf-8"))
@@ -260,14 +230,12 @@ def write_all(repo_root: Path | None = None) -> list[str]:
 
 __all__ = [
     "ALLOWLIST_PATH",
-    "CODEX_MANIFEST",
     "ENTRY_POINTS",
     "PLUGIN_MANIFESTS",
     "REPO_ROOT",
     "expected_allowlist",
     "reachable_modules",
     "reachable_packages",
-    "semver_version",
     "source_version",
     "stale_version_files",
     "stamped_manifest",

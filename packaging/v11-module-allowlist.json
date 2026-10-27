@@ -298,8 +298,6 @@
     "maintenance/ui_static/app.js",
     "maintenance/ui_static/strings.js",
     "maintenance/ui_static/style.css",
-    "distribution/codex/scope-recall/.codex-plugin/plugin.json",
-    "distribution/codex/scope-recall/.mcp.json",
     "distribution/hermes/__init__.py",
     "distribution/hermes/plugin.yaml",
     "distribution/dsh/scope-recall/index.mjs",

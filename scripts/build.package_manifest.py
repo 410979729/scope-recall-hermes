@@ -5,7 +5,7 @@
     python scripts/build.package_manifest.py --write   # bring it in line
 
 Change the version in ``_version.py`` and run ``--write``; the two plugin.yaml
-manifests, the Codex plugin.json and the packaging allowlist follow.  The
+manifests and the packaging allowlist follow.  The
 packaging tier fails when anything here is stale, so ``--check`` is what that
 failure is telling you to run.
 

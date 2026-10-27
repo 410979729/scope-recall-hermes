@@ -105,8 +105,6 @@ build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
   "maintenance/ui_static/*.css",
   "adapters/hermes/plugin.yaml",
   "contracts/*.schema.json",
-  "distribution/codex/scope-recall/.codex-plugin/plugin.json",
-  "distribution/codex/scope-recall/.mcp.json",
   "distribution/hermes/__init__.py",
   "distribution/hermes/plugin.yaml",
   "distribution/dsh/scope-recall/index.mjs",

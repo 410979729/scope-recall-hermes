@@ -12,10 +12,149 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
 import pytest
+import yaml
 from scope_recall._version import __version__
+
+
+@pytest.mark.parametrize("host", ["codex", "claude-code"])
+@pytest.mark.parametrize("remote", [False, True])
+def test_generated_plugin_metadata_uses_project_identity_and_describes_the_host(tmp_path, monkeypatch, host, remote):
+    from scope_recall.maintenance import install_claude_code, install_codex, install_remote
+    from scope_recall.maintenance.install_common import InstallPlan
+
+    root = Path(__file__).resolve().parents[2]
+    author = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["authors"][0]["name"]
+    description = yaml.safe_load((root / "distribution/hermes/plugin.yaml").read_text(encoding="utf-8"))["description"]
+    plugin = tmp_path / "TEST-plugin"
+    python = Path("C:/TEST/python.exe" if os.name == "nt" else "/TEST/python")
+    if remote:
+        monkeypatch.setattr(install_remote.sys, "executable", str(python))
+        token_file = tmp_path / "TEST-token"
+        token_file.write_text("TEST-placeholder-token", encoding="utf-8")
+        files = install_remote.plugin_files(
+            {"host": host, "token_file": token_file, "url": "https://example.test", "config": tmp_path / "client.json"},
+            plugin,
+        )
+    else:
+        plan = InstallPlan(
+            host=host,
+            target_plugin_dir=plugin,
+            instance_root=tmp_path / "TEST-home",
+            project_root=tmp_path / "TEST-project",
+            agent_id="TEST-agent",
+            python_executable=python,
+        )
+        module = install_codex if host == "codex" else install_claude_code
+        files = module.planned_files(plan)
+    manifest_path = plugin / (".codex-plugin" if host == "codex" else ".claude-plugin") / "plugin.json"
+    manifest = json.loads(files[manifest_path])
+    assert manifest["name"] == plugin.name
+    assert manifest["author"] == {"name": author}
+    assert manifest["version"] == __version__.replace("rc", "-rc.")
+    assert manifest["description"].startswith(description)
+    assert manifest["mcpServers"] == "./.mcp.json"
+    if host == "codex":
+        interface = manifest["interface"]
+        assert interface["developerName"] == author
+        assert "Codex" in interface["shortDescription"]
+        details = interface["longDescription"]
+    else:
+        assert manifest["hooks"] == "./hooks/hooks.json"
+        details = manifest["description"]
+    assert "before a" in details and "prompts and replies" in details
+    assert "MCP tools" in details and "sources and history" in details
+    # Only a client that names its conversation on every call is served the tools that change the store.
+    assert ("correct or forget" in details) == (host == "codex")
+    assert ("another machine" in details) == remote
+
+
+@pytest.fixture
+def uncached_plugin_metadata():
+    from scope_recall.maintenance import install_common
+
+    install_common.plugin_metadata.cache_clear()
+    yield install_common
+    install_common.plugin_metadata.cache_clear()
+
+
+def test_maintenance_import_does_not_read_plugin_metadata(tmp_path):
+    probe = """
+import importlib.metadata
+from pathlib import Path
+
+def unavailable(*args, **kwargs):
+    raise AssertionError("plugin metadata must be read only by manifest builders")
+
+importlib.metadata.metadata = unavailable
+original_read = Path.read_text
+def read(path, *args, **kwargs):
+    if path.name == "plugin.yaml":
+        unavailable()
+    return original_read(path, *args, **kwargs)
+Path.read_text = read
+from scope_recall.maintenance import run_doctor
+assert callable(run_doctor)
+"""
+    subprocess.run([sys.executable, "-I", "-B", "-c", probe], cwd=tmp_path, capture_output=True, check=True, timeout=30)
+
+
+@pytest.mark.parametrize("failure", ["distribution", "author", "missing", "yaml", "description", "shape"])
+def test_manifest_metadata_errors_are_install_errors(tmp_path, monkeypatch, uncached_plugin_metadata, failure):
+    from scope_recall.maintenance import install_codex
+
+    common = uncached_plugin_metadata
+    monkeypatch.setattr(common, "REPO_ROOT", tmp_path)
+    manifest = tmp_path / "distribution" / "hermes" / "plugin.yaml"
+    manifest.parent.mkdir(parents=True)
+    if failure != "missing":
+        manifest.write_text(
+            {"yaml": "description: [", "description": "name: TEST", "shape": "[]"}.get(
+                failure, "description: TEST product"
+            ),
+            encoding="utf-8",
+        )
+
+    def metadata(name):
+        assert name == "hermes-scope-recall"
+        if failure == "distribution":
+            raise PackageNotFoundError(name)
+        return {} if failure == "author" else {"Author": "TEST contributors"}
+
+    monkeypatch.setattr(common, "metadata", metadata)
+    source = "author.*installed distribution" if failure in ("distribution", "author") else "description.*plugin.yaml"
+    with pytest.raises(common.InstallError, match="could not read plugin " + source):
+        install_codex._plugin_json("TEST-plugin")
+
+
+def test_source_tree_manifest_metadata_is_explicit_and_cached(tmp_path, monkeypatch, uncached_plugin_metadata):
+    from scope_recall.maintenance import install_claude_code, install_codex
+
+    common = uncached_plugin_metadata
+    monkeypatch.setattr(common, "REPO_ROOT", tmp_path)
+    manifest = tmp_path / "distribution" / "hermes" / "plugin.yaml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("description: TEST product", encoding="utf-8")
+    calls = []
+
+    def metadata(name):
+        calls.append(name)
+        return {"Author": "TEST contributors"}
+
+    monkeypatch.setattr(common, "metadata", metadata)
+    assert install_codex._plugin_json("TEST-plugin")["author"] == {"name": "TEST contributors"}
+    manifest.write_text("description: [", encoding="utf-8")
+    assert install_claude_code._plugin_json("TEST-plugin")["description"].startswith("TEST product. In Claude Code")
+    assert calls == ["hermes-scope-recall"]
+    common.plugin_metadata.cache_clear()
+    with pytest.raises(common.InstallError, match="plugin description"):
+        common.plugin_metadata()
+    manifest.write_text("description: TEST restored", encoding="utf-8")
+    assert common.plugin_metadata() == ("TEST contributors", "TEST restored")
 
 
 def _assert_hook_uses_current_interpreter(command: str, executable: Path) -> None:
