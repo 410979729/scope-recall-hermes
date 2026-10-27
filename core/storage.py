@@ -588,7 +588,9 @@ class SQLiteStorage:
         while True:
             try:
                 left = timeout if deadline is None else max(0.0, deadline - self.monotonic())
-                if left <= 0:
+                # A zero lock wait still gets its first nonblocking attempt;
+                # request budgets have already been checked by _timeout.
+                if deadline is not None and left <= 0:
                     raise TruthWriterBusyError()
                 conn = connect_truth_database(self.path, mode=mode, timeout=left, isolation_level=None)
             except TruthWriterBusyError:

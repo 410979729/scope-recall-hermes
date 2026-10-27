@@ -22,7 +22,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
-from scope_recall.core.writer_lease import truth_writer_process_snapshot
+from scope_recall.core.writer_lease import TruthWriterBusyError, truth_writer_process_snapshot
 from v11_support import context, source_event
 
 NOW = "2026-09-06T06:00:00Z"
@@ -45,10 +45,12 @@ def snapshot(storage, ctx):
         return tx.status()
 
 
+@pytest.mark.parametrize("lock_wait", [0.0, 1.0])
 @pytest.mark.parametrize("operation", ["read", "write"])
 @pytest.mark.parametrize("remaining", [None, 0.001, 1.0])
-def test_expired_request_opens_no_store_connection(store, monkeypatch, operation, remaining):
+def test_expired_request_opens_no_store_connection(store, monkeypatch, operation, remaining, lock_wait):
     storage, ctx = store
+    storage.timeout_seconds = lock_wait
     _actual, opened = inject(monkeypatch)
     deadline = RequestDeadline.from_budget(0)
     with using_request_deadline(deadline), pytest.raises(ContractError, match="DEADLINE_EXCEEDED"):
@@ -459,6 +461,25 @@ def test_remaining_budget_bounds_busy_wait_and_zero_refuses_before_open(store, m
         with pytest.raises(ContractError, match="DEADLINE_EXCEEDED"), storage.write(ctx, remaining_seconds=remaining):
             pass
     assert len(opened) == count
+
+
+def test_zero_lock_wait_attempts_a_busy_connection_once(store, monkeypatch):
+    storage, ctx = store
+    storage.timeout_seconds = 0.0
+    attempts = []
+
+    def busy_connection(*args, **kwargs):
+        attempts.append(kwargs["timeout"])
+        raise TruthWriterBusyError()
+
+    def unexpected_sleep(seconds):
+        pytest.fail("a zero lock wait slept before refusing a busy store")
+
+    monkeypatch.setattr(storage_module, "connect_truth_database", busy_connection)
+    monkeypatch.setattr(time, "sleep", unexpected_sleep)
+    with pytest.raises(TruthWriterBusyError), storage.write(ctx):
+        pytest.fail("busy store entered a transaction")
+    assert attempts == [0.0]
 
 
 def test_every_store_connection_reads_through_the_memory_map_the_store_sets(store, monkeypatch):

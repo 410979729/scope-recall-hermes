@@ -1030,8 +1030,24 @@ To bring a store forward now, with a snapshot first and the worker stopped:
 python -I -X utf8 -m scope_recall.maintenance.cli upgrade-store --host hermes --instance-root <instance root> --backup-dir <a new directory>
 ```
 
-It reports the schema before and after, the seconds taken and the journal
-mode, and leaves a store a running worker holds untouched (`store_busy`).
+It waits for the store's writer lease before reading the schema, taking the
+snapshot and migrating. Captures and worker writes in other processes wait or
+report a busy store while the copy and migration run. Read-only connections
+do not take this lease. The lease identifies this operation as `upgrade_store`.
+A store already current when the lease is acquired reports `current` and takes
+no snapshot. If the lease
+cannot be acquired within `--wait-seconds`,
+the command leaves the store untouched (`store_busy`).
+The wait is capped at 30 seconds and must be finite. A zero wait makes one
+immediate attempt without waiting for a busy store.
+
+The migration receipt reports `schema_before`, `schema_after`, `backup_schema` from the
+snapshot's header, `backup_recorded_schema` from its metadata, the migration's
+seconds and the journal mode. Both snapshot markers must match the original
+schema before migration starts. A mismatch reports
+`not_upgraded / backup_schema_mismatch`, leaves the store untouched and keeps
+the snapshot for inspection. A header repair checks each marker against its
+original value because the two intentionally differ.
 
 If a 2.0 plugin opens a migrated store, it stamps the SQLite header with the
 2.0 layout's schema (10815) while every 3.x table and the store's own record

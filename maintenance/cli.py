@@ -4,18 +4,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from collections.abc import Callable
+from contextlib import closing
 from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 from scope_recall.core.failure_retry import TERMINAL_FAILURES
-from scope_recall.core.schema import SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema
+from scope_recall.core.schema import (
+    SCHEMA_VERSION,
+    STATEMENTS,
+    UPGRADE_CHAIN,
+    stale_header_schema,
+)
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.truth_connection import connect_truth_database
-from scope_recall.core.writer_lease import TruthWriterBusyError
+from scope_recall.core.writer_lease import TruthWriterBusyError, TruthWriterLease
 
 from .backup import BackupError, backup_sqlite
 from .doctor import run_doctor
@@ -484,38 +491,59 @@ def _add_upgrade_store_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _upgrade_store(args: argparse.Namespace) -> int:
-    """Bring one store forward to this release's schema now, with the budget no hook has.
+def _upgrade_wait_seconds(wait: float) -> float:
+    """Validate and cap lock waiting before any store or lease access."""
+    if not math.isfinite(wait):
+        raise InstallError("wait_seconds must be finite")
+    return min(max(wait, 0.0), 30.0)
 
-    A store at a known older schema is otherwise brought forward by its first
-    ordinary open, except that a store above 100 MB waits for a caller with a
-    minute of budget (the worker's pass or apply-install), because the 1109
-    step rebuilds the lexical index: 95 s on a 1.4 GB store.  This is that
-    caller, for an operator who installed the wheel and wants the upgrade
-    done now, with a snapshot first.  The worker must not be running: its
-    lease is waited for, never taken.
-    """
+
+def _wait_for_upgrade_lease(data_directory: Path, wait: float) -> TruthWriterLease:
+    """Acquire the store's writer lease, bounding both elapsed time and polls."""
+    wait = _upgrade_wait_seconds(wait)
+    lease = TruthWriterLease(data_directory, role="upgrade_store")
+    started = time.monotonic()
+    slept = 0.0
+    while True:
+        outcome = lease.acquire()
+        if outcome.get("status") == "acquired":
+            return lease
+        remaining = min(wait - slept, wait - (time.monotonic() - started))
+        if remaining <= 0:
+            raise TruthWriterBusyError(role="upgrade_store", scope=str(outcome.get("scope") or ""))
+        pause = min(0.1, remaining)
+        time.sleep(pause)
+        slept += pause
+
+
+def _snapshot_schemas(snapshot: Path) -> tuple[int | None, int | None]:
+    """Read both schema markers from the copy without initializing or changing it."""
     import sqlite3
-    import time
+
+    try:
+        with closing(sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)) as db:
+            header = int(db.execute("PRAGMA user_version").fetchone()[0])
+            row = db.execute("SELECT schema_version FROM instance_meta WHERE singleton=1").fetchone()
+            return header, int(row[0]) if row else None
+    except (sqlite3.Error, ValueError, TypeError):
+        return None, None
+
+
+def _upgrade_held_store(args, binding, database: Path, wait: float, result: dict[str, Any]) -> int:
+    """Snapshot and migrate while the caller holds the canonical writer lease."""
     from datetime import datetime
 
-    from scope_recall.contracts import ContractError
-
-    from .doctor import load_binding
-
-    instance = _path(args.instance_root, "instance_root")
-    binding, data_directory = load_binding(args.host, instance)
-    database = data_directory / "memory.sqlite3"
     before = schema_on_disk(database)
     recorded = recorded_schema_under_stale_header(database)
-    result: dict[str, Any] = {"schema_before": before, "schema_target": SCHEMA_VERSION}
+    result.update(schema_before=before, schema_target=SCHEMA_VERSION)
     if recorded is None and before == SCHEMA_VERSION:
-        result.update(status="current", journal_mode=read_journal_mode(database))
-        _emit(result)
+        result.update(
+            status="current",
+            journal_mode=read_journal_mode(database),
+        )
         return 0
     if recorded is None and before not in UPGRADE_CHAIN:
         result.update(status="unsupported", error="schema_not_in_upgrade_chain")
-        _emit(result)
         return 2
     if not args.backup_dir:
         result.update(
@@ -523,34 +551,24 @@ def _upgrade_store(args: argparse.Namespace) -> int:
             error="backup_required",
             hint="provide --backup-dir for the verified pre-upgrade snapshot",
         )
-        _emit(result)
         return 2
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     snapshot = _path(args.backup_dir, "backup_dir") / f"memory-{before}-{stamp}.sqlite3"
     backup_sqlite(database, snapshot, manifest=snapshot.with_suffix(".json"))
-    result["backup"] = str(snapshot)
-    wait = min(max(float(args.wait_seconds), 0.0), 30.0)
+    header, metadata = _snapshot_schemas(snapshot)
+    result.update(backup=str(snapshot), backup_schema=header, backup_recorded_schema=metadata)
+    # A header repair preserves the original unequal markers in its rollback copy.
+    # Ordinary migrations require both markers to name the pre-upgrade schema.
+    if (header, metadata) != (before, recorded if recorded is not None else before):
+        result.update(status="not_upgraded", error="backup_schema_mismatch")
+        return 2
     if recorded is not None:
-        # The store records its own schema and only the header was overwritten: put the
-        # header back, in a write transaction that checks it again, and carry on from there.
-        try:
-            restamped = _restamp_header(database, recorded, timeout=wait)
-        except (sqlite3.OperationalError, TruthWriterBusyError) as exc:
-            result.update(
-                status="not_upgraded",
-                error="store_busy",
-                detail=type(exc).__name__,
-                hint="stop every process holding the store, including any 2.0 one, and run again",
-            )
-            _emit(result)
-            return 2
-        if not restamped:
+        if not _restamp_header(database, recorded, timeout=wait):
             result.update(
                 status="not_upgraded",
                 error="store_changed",
                 hint="the header or the recorded schema changed while this ran; run again",
             )
-            _emit(result)
             return 2
         result["header_restamped"] = {
             "from": before,
@@ -558,45 +576,15 @@ def _upgrade_store(args: argparse.Namespace) -> int:
             "cause": "a 2.0 process opened this store after its migration; make sure none runs",
         }
         if recorded == SCHEMA_VERSION:
-            result.update(status="restamped", schema_after=SCHEMA_VERSION, journal_mode=read_journal_mode(database))
+            result.update(
+                status="restamped",
+                schema_after=SCHEMA_VERSION,
+                journal_mode=read_journal_mode(database),
+            )
             _report_other_tables(result, database)
-            _emit(result)
             return 0
     started = time.monotonic()
-    deadline = started + wait
-    while True:
-        # Never more than the wait itself: while the clock has not ticked since ``started``
-        # this is (started + wait) - started, which rounds to 30.000000000000014 for some
-        # clock values, and storage refuses a timeout above 30.
-        remaining = min(wait, max(0.0, deadline - time.monotonic()))
-        try:
-            status = SQLiteStorage(binding, timeout_seconds=remaining).initialize()
-            break
-        except TruthWriterBusyError as exc:
-            if remaining > 0:
-                time.sleep(min(0.1, remaining))
-                continue
-            result.update(
-                status="not_upgraded",
-                error="store_busy",
-                detail=type(exc).__name__,
-                hint="stop the worker (autostart pause) and run again",
-            )
-            _emit(result)
-            return 2
-        except sqlite3.OperationalError as exc:
-            result.update(
-                status="not_upgraded",
-                error="store_busy",
-                detail=type(exc).__name__,
-                hint="stop the worker (autostart pause) and run again",
-            )
-            _emit(result)
-            return 2
-        except ContractError as exc:
-            result.update(status="not_upgraded", error=exc.code, detail=exc.field)
-            _emit(result)
-            return 2
+    status = SQLiteStorage(binding, timeout_seconds=wait).initialize()
     result.update(
         status="upgraded",
         schema_after=status.schema_version,
@@ -605,8 +593,45 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     )
     if recorded is not None:
         _report_other_tables(result, database)
-    _emit(result)
     return 0
+
+
+def _upgrade_store(args: argparse.Namespace) -> int:
+    """Wait for write ownership, then read, snapshot and migrate under that lease.
+
+    Other processes' captures and worker writes wait or report a busy store for
+    the duration of the snapshot and migration. Read-only connections take no lease.
+    """
+    import sqlite3
+
+    from scope_recall.contracts import ContractError
+
+    from .doctor import load_binding
+
+    wait = _upgrade_wait_seconds(float(args.wait_seconds))
+    instance = _path(args.instance_root, "instance_root")
+    binding, data_directory = load_binding(args.host, instance)
+    database = data_directory / "memory.sqlite3"
+    result: dict[str, Any] = {}
+    try:
+        lease = _wait_for_upgrade_lease(data_directory, wait)
+        try:
+            code = _upgrade_held_store(args, binding, database, wait, result)
+        finally:
+            lease.release()
+    except (TruthWriterBusyError, sqlite3.OperationalError) as exc:
+        result.update(
+            status="not_upgraded",
+            error="store_busy",
+            detail=type(exc).__name__,
+            hint="stop the worker (autostart pause) and run again",
+        )
+        code = 2
+    except ContractError as exc:
+        result.update(status="not_upgraded", error=exc.code, detail=exc.field)
+        code = 2
+    _emit(result)
+    return code
 
 
 def _report_other_tables(result: dict[str, Any], database: Path) -> None:
