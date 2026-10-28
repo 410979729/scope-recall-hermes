@@ -132,6 +132,9 @@ jobs:
           PIP_CONSTRAINT: constraints/release.txt
         run: python -m pip install ".[lancedb,codex,dev]"
       - name: Run the probe's process tests (no implicit retries)
+        env:
+          # The test import roots scripts/check.py hands every tier.
+          PYTHONPATH: ${{ github.workspace }}/tests:${{ github.workspace }}/tests/contract:${{ github.workspace }}/tests/migration:${{ github.workspace }}
         run: python -m pytest tests/storage_native/test_probe_rehearses_with_the_roots_its_host_imports.py -q -p no:cacheprovider --import-mode=importlib
 
   windows-daily:
