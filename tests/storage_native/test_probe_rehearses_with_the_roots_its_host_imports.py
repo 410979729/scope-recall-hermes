@@ -347,16 +347,19 @@ _OBSERVES_CHILDREN = pytest.mark.skipif(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows routes vectors to the helper and has no SIGALRM")
-@pytest.mark.parametrize("host_masks_alarm", [False, True], ids=["default", "ignored-and-blocked"])
-def test_host_exit_ends_its_running_probe_child(tmp_path, host_masks_alarm):
+@pytest.mark.parametrize("host_case", ["default", "ignored-and-blocked", "hanging-sitecustomize"])
+def test_host_exit_ends_its_running_probe_child(tmp_path, host_case):
     assert _child_is_running(os.getpid())
     stubs = _make_stubs(tmp_path)
     marker = stubs / "child.pid"
-    (stubs / "lancedb" / "__init__.py").write_text(
-        "import os, time\nfrom pathlib import Path\n"
-        "Path(__file__).parents[1].joinpath('child.pid').write_text(str(os.getpid()))\n"
+    # The child records its pid and hangs, in the import or in a start-up hook found on the roots it is handed.
+    hang = (
+        f"import os, time\nfrom pathlib import Path\nPath({str(marker)!r}).write_text(str(os.getpid()))\n"
         "time.sleep(60)\n"
     )
+    hook = stubs / "sitecustomize.py" if host_case == "hanging-sitecustomize" else stubs / "lancedb" / "__init__.py"
+    hook.write_text(hang)
+    masks_alarm = "1" if host_case == "ignored-and-blocked" else "0"
     driver = (
         _DRIVER.split("lance_native._native_import_safe = None")[0]
         + """
@@ -385,7 +388,7 @@ os._exit(0)
     child_pid = None
     try:
         host = subprocess.run(
-            [sys.executable, "-c", driver, str(_CHECKOUT), str(stubs), "1" if host_masks_alarm else "0"],
+            [sys.executable, "-c", driver, str(_CHECKOUT), str(stubs), masks_alarm],
             capture_output=True,
             text=True,
             timeout=20,
@@ -681,16 +684,36 @@ def test_set_up_time_does_not_shorten_the_import_budget(probe, monkeypatch):
     assert lance_native.native_import_is_safe() is True
 
 
-def test_posix_child_restores_sigalrm_before_arming_it(monkeypatch):
-    """An ignored or blocked SIGALRM inherited from the host must not disarm the child's lifetime limit."""
-    commands = []
+def test_posix_child_arms_a_restored_alarm_before_its_start_up_hooks(monkeypatch):
+    """Inherited SIGALRM state must not disarm the child's limit, and site's start-up hooks must run under it."""
+    argvs = []
     monkeypatch.setattr(lance_native, "sys", SimpleNamespace(platform="linux", executable=sys.executable))
     monkeypatch.setattr(lance_native, "_probe_command_environment", lambda: None)
-    monkeypatch.setattr(lance_native.subprocess, "Popen", lambda argv, **options: commands.append(argv[-1]))
+    monkeypatch.setattr(lance_native.subprocess, "Popen", lambda argv, **options: argvs.append(argv))
     lance_native._start_native_probe()
-    command = commands[0]
+    argv = argvs[0]
+    assert argv[1:3] == ["-S", "-c"], "site would run its start-up hooks before the alarm"
+    command = argv[3]
     compile(command, "<probe>", "exec")
-    restore, unblock, arm, rehearse = (
-        command.index(part) for part in ("SIG_DFL", "SIG_UNBLOCK", "signal.alarm(", "import lancedb")
-    )
-    assert restore < unblock < arm < rehearse
+    order = [
+        command.index(part) for part in ("SIG_DFL", "SIG_UNBLOCK", "signal.alarm(", "site.main()", "import lancedb")
+    ]
+    assert order == sorted(order)
+
+
+def test_site_set_up_after_the_alarm_gives_the_import_path_of_a_normal_start(tmp_path):
+    """Setting up site inside the command must leave the rehearsal the module search path a normal start has."""
+    show = "import json, sys; print(json.dumps(sys.path))"
+    roots, cwd = tmp_path / "roots", tmp_path / "cwd"
+    roots.mkdir()
+    cwd.mkdir()
+    env = {key: value for key, value in os.environ.items() if key not in ("PYTHONPATH", "PYTHONHOME")}
+    env["PYTHONPATH"] = str(roots)
+    paths = []
+    for argv in ([sys.executable, "-c", show], [sys.executable, "-S", "-c", "import site; site.main(); " + show]):
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=60, env=env, cwd=cwd)
+        assert completed.returncode == 0, completed.stderr
+        found = json.loads(completed.stdout)
+        # site makes the empty current-directory entry absolute when it is already present; both name the child's cwd.
+        paths.append([os.path.normcase(os.path.abspath(os.path.join(cwd, path))) for path in found])
+    assert paths[0] == paths[1]

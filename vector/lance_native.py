@@ -202,20 +202,21 @@ def _start_native_probe() -> subprocess.Popen[Any]:
         options.setdefault("env", dict(os.environ))
         # Windows options also carry the resolved launcher identity.
         options["env"]["PYTHONPATH"] = environment["PYTHONPATH"]
-    command = "import lancedb, pyarrow"
+    argv = [sys.executable, "-c", "import lancedb, pyarrow"]
     if sys.platform != "win32":
-        # An ignored disposition and a blocked mask both survive exec: the child restores SIGALRM before arming it.
-        command = (
+        # The limit covers start-up hooks too: ``.pth`` files and ``sitecustomize`` run before ``-c``, so the child
+        # starts without site, restores SIGALRM (an ignored disposition and a blocked mask both survive exec), arms
+        # the alarm, and only then sets up site as a normal start would.
+        argv = [
+            sys.executable,
+            "-S",
+            "-c",
             "import signal; signal.signal(signal.SIGALRM, signal.SIG_DFL); "
             "signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM}); "
-            f"signal.alarm({int(_PROBE_TIMEOUT_SECONDS)}); " + command
-        )
-    return subprocess.Popen(
-        [sys.executable, "-c", command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        **options,
-    )
+            f"signal.alarm({int(_PROBE_TIMEOUT_SECONDS)}); "
+            "import site; site.main(); import lancedb, pyarrow",
+        ]
+    return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
 
 
 def _delay_native_probe() -> None:
