@@ -276,8 +276,7 @@
   },
   "vector/lance_native.py": {
    "reportArgumentType": 1,
-   "reportCallIssue": 1,
-   "reportReturnType": 1
+   "reportCallIssue": 1
   },
   "vector/process_store.py": {
    "reportArgumentType": 2,
