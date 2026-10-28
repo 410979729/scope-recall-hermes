@@ -395,6 +395,7 @@ The default kind is an OpenAI-compatible chat-completions route
 | `thinking` | mapping of string to string, or absent | absent | Provider-specific reasoning control, for example `{"type": "disabled"}`. |
 | `response_format` | mapping or absent | absent | Passed through after validation, for example `{"type": "json_object"}`. |
 | `reasoning_effort` | string or absent | absent | Passed through after validation. |
+| `temperature` | finite number, 0–2, or absent | unset | Sent only when set, on chat and Responses routes. Some providers refuse a temperature for reasoning models; the `codex_cli` route refuses this setting. |
 | `stream` | boolean | `false` | Must stay `false`; streaming is refused. |
 | `n` | int | `1` | Must stay `1`. |
 | `headers` | mapping or absent | absent | Extra request headers, validated before use. A second `Authorization` cannot be smuggled in this way. |
@@ -432,6 +433,7 @@ another provider, and streaming is not implemented:
 | `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | Name of the environment variable holding the API key. It is read per request and never written to the ledger; the key travels only in the `Authorization` header, as a `Bearer` token that extra `headers` cannot override. |
 | `max_output_tokens` | int, 1–131072 | required | Sent as `max_output_tokens`. On a thinking route this bounds the visible answer **and** the reasoning tokens. |
 | `reasoning_effort` | `"none"`/`"low"`/`"high"`/`"max"`, or absent | absent | Sent as `reasoning.effort`; absent leaves the provider's own default. |
+| `temperature` | finite number, 0–2, or absent | unset | Sent only when set. Some providers refuse a temperature for reasoning models. |
 | `text_format` | `{"type": "json_object"}` or absent | absent | Sent as `text.format`. Plain text is the default and is expressed by omitting the key; a JSON schema is refused rather than forwarded unvalidated. |
 | `stream` | boolean | `false` | Must stay `false`; streaming is refused. |
 | `kind` | `"openai_responses"` | required | Selects this route. |

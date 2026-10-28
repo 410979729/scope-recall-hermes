@@ -6,6 +6,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from pathlib import Path
 import pytest
 from legacy_fixture import build_official_578b_fixture
 from release_fixture import LATEST_RELEASE, LATEST_SCHEMA, PREVIOUS_SCHEMA, build_previous_release_store
+from scope_recall.adapters.clients.config import install_codex_scope_recall
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture import record_event
@@ -26,8 +28,12 @@ from scope_recall.core.restore import (
 )
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.writer_lease import TruthWriterBusyError, truth_writer_process_snapshot
+from scope_recall.maintenance import cli
 from scope_recall.maintenance.restore import apply_restore
+from scope_recall.runtime import backup_primitives
 from test_denial_values import NEGATED_STATES
+from v11_support import downgrade_store
 
 from maintenance.backup import backup_sqlite
 from maintenance.migrate_v2 import migrate_legacy
@@ -1359,3 +1365,119 @@ def test_conversion_preserves_every_tabulated_description_and_settles_only_denia
     assert migrate_legacy(legacy, target)["fact_authority"]["denials_settled"] == 0
     with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
         assert conn.execute(query).fetchall() == versions
+
+
+def test_upgrade_snapshot_holds_off_other_processes_migration(tmp_path, capsys, monkeypatch):
+    project = tmp_path / "TEST-project"
+    project.mkdir()
+    instance = tmp_path / "TEST-install"
+    _config, core = install_codex_scope_recall(instance, project_root=project)
+    downgrade_store(core.storage.path, 1111)
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        conn.execute("CREATE TABLE synthetic_padding(body BLOB)")
+        conn.executemany("INSERT INTO synthetic_padding VALUES (zeroblob(4096))", [()] * 350)
+        conn.commit()
+    probe = """
+import sys
+from pathlib import Path
+from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.writer_lease import TruthWriterBusyError
+from scope_recall.maintenance.doctor import load_binding
+binding, _ = load_binding("codex", Path(sys.argv[1]))
+try:
+    print(SQLiteStorage(binding, timeout_seconds=0.05).initialize().schema_version)
+except TruthWriterBusyError:
+    print("busy")
+"""
+
+    def attempt_migration():
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", probe, str(instance)], cwd=tmp_path, capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    attempts = []
+
+    def check_ownership():
+        if not attempts:
+            attempts.append(attempt_migration())
+
+    monkeypatch.setattr(backup_primitives, "check_backup_deadline", check_ownership)
+    code = cli.main(
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(instance),
+            "--backup-dir",
+            str(tmp_path / "TEST-backups"),
+        ]
+    )
+    receipt = json.loads(capsys.readouterr().out)
+    assert code == 0 and attempts == ["busy"], receipt
+    assert receipt["backup_schema"] == receipt["backup_recorded_schema"] == 1111
+    with closing(sqlite3.connect(receipt["backup"])) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1111
+        assert conn.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == 1111
+    assert attempt_migration() == str(SCHEMA_VERSION), "write ownership ends with the command"
+
+
+@pytest.mark.parametrize("close_number", [1, 3])
+def test_session_index_open_keeps_its_budget_when_another_process_takes_the_lease(tmp_path, monkeypatch, close_number):
+    project = tmp_path / "TEST-project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "TEST-install", project_root=project)
+    storage = core.storage
+    ctx = TrustedContext(storage.binding, "TEST-session", storage.binding.scope_ids, "host_generated")
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("DROP INDEX source_session")
+    probe = """
+import sys
+import time
+from pathlib import Path
+from scope_recall.core.writer_lease import TruthWriterLease
+lease = TruthWriterLease(Path(sys.argv[1]), role="provider")
+print("ready", flush=True)
+sys.stdin.readline()
+assert lease.acquire()
+print("held", flush=True)
+time.sleep(0.2)
+lease.release()
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-B", "-c", probe, str(storage.path.parent)],
+        cwd=tmp_path,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    actual_close, closed = storage._close, []
+
+    def close_and_contend(conn, original):
+        actual_close(conn, original)
+        closed.append(conn)
+        # The first close precedes initialization; the third precedes reopening.
+        if len(closed) == close_number:
+            child.stdin.write("acquire\n")
+            child.stdin.flush()
+            assert child.stdout.readline().strip() == "held"
+
+    monkeypatch.setattr(storage, "_close", close_and_contend)
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        started = time.monotonic()
+        with pytest.raises((TruthWriterBusyError, ContractError)) as refused:
+            with storage.write(ctx, remaining_seconds=0.05):
+                pytest.fail("the index open waited for the other writer's full lease")
+        elapsed = time.monotonic() - started
+        if isinstance(refused.value, ContractError):
+            assert refused.value.code == "DEADLINE_EXCEEDED"
+        # Allow scheduler overhead, while remaining below the holder's 200 ms.
+        assert elapsed < 0.1
+        assert truth_writer_process_snapshot(storage.path.parent)["connection_pin_count"] == 0
+    finally:
+        _out, err = child.communicate(timeout=5)
+        assert child.returncode == 0, err

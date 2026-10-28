@@ -22,8 +22,8 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
-from scope_recall.core.writer_lease import truth_writer_process_snapshot
-from v11_support import context, source_event
+from scope_recall.core.writer_lease import TruthWriterBusyError, truth_writer_process_snapshot
+from v11_support import context, downgrade_store, source_event
 
 NOW = "2026-09-06T06:00:00Z"
 
@@ -45,10 +45,139 @@ def snapshot(storage, ctx):
         return tx.status()
 
 
+@pytest.mark.parametrize("schema", [None, SCHEMA_VERSION, 1108, 1111])
+def test_initialize_supplies_the_session_index_without_changing_the_schema(tmp_path, schema):
+    ctx = context(tmp_path / "TEST-session-index")
+    storage = SQLiteStorage(ctx.binding)
+    if schema is not None:
+        storage.initialize()
+        with closing(sqlite3.connect(storage.path)) as conn:
+            conn.execute("DROP INDEX IF EXISTS source_session")
+        if schema != SCHEMA_VERSION:
+            downgrade_store(storage.path, schema)
+        with closing(sqlite3.connect(storage.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            storage.verify(conn, expected_schema=schema)
+    storage.initialize()
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.row_factory = sqlite3.Row
+        storage.verify(conn)
+        columns = [row[2] for row in conn.execute("PRAGMA index_info(source_session)")]
+        assert columns == ["session_id", "scope_id", "event_id", "source_revision"]
+
+
+@pytest.mark.parametrize(
+    "remaining,store_bytes,expected",
+    [(None, 100_000_000, True), (60.0, 100_000_000, True), (1.0, 100_000_000, False), (1.0, 99_999_999, True)],
+)
+def test_current_store_supplies_session_index_only_when_the_open_budget_fits(
+    store, monkeypatch, remaining, store_bytes, expected
+):
+    storage, ctx = store
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("DROP INDEX source_session")
+    monkeypatch.setattr(storage_module, "_store_bytes", lambda conn: store_bytes)
+    storage.monotonic = lambda: 10.0
+    with storage.write(ctx, remaining_seconds=remaining) as tx:
+        saved = put(tx)
+    with storage.read(ctx, remaining_seconds=1.0) as tx:
+        assert tx.source(saved.ref, saved.revision) is not None
+        assert tx.status().sources == 1
+        assert bool(tx._check().execute("PRAGMA index_info(source_session)").fetchall()) is expected
+
+
+@pytest.mark.parametrize("mode", ["read_only", "restoring", "upgrades_disabled"])
+def test_current_store_leaves_the_session_index_absent_when_initialization_is_disabled(store, mode):
+    storage, ctx = store
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("DROP INDEX source_session")
+    storage.upgrade_on_open = mode != "upgrades_disabled"
+    with storage._transaction(
+        ctx, writable=mode != "read_only", remaining_seconds=60.0, restoring=mode == "restoring"
+    ) as tx:
+        if mode != "read_only":
+            put(tx)
+        assert tx._check().execute("PRAGMA index_info(source_session)").fetchall() == []
+
+
+@pytest.mark.parametrize(
+    "request_budget,remaining,expected",
+    [(6.0, None, False), (6.0, 60.0, False), (60.0, 6.0, False), (60.0, None, True)],
+)
+def test_session_index_gate_uses_both_request_and_explicit_budgets(
+    store, monkeypatch, request_budget, remaining, expected
+):
+    storage, ctx = store
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("DROP INDEX source_session")
+    monkeypatch.setattr(storage_module, "_store_bytes", lambda conn: 100_000_000)
+    monkeypatch.setattr(time, "monotonic", lambda: 10.0)
+    with using_request_deadline(RequestDeadline.from_budget(request_budget)):
+        with storage.write(ctx, remaining_seconds=remaining) as tx:
+            saved = put(tx)
+            assert bool(tx._check().execute("PRAGMA index_info(source_session)").fetchall()) is expected
+    with storage.read(ctx) as tx:
+        assert tx.source(saved.ref, saved.revision) is not None
+
+
+def test_session_index_initialization_and_reopen_deduct_elapsed_budget(store, monkeypatch):
+    storage, ctx = store
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("DROP INDEX source_session")
+    now = [10.0]
+    storage.monotonic = lambda: now[0]
+    opened = []
+    actual_open, actual_close = storage._open, storage._close
+    actual_index = storage_module.ensure_source_session_index
+
+    def open_connection(mode, remaining_seconds=None, **kwargs):
+        opened.append((mode, remaining_seconds))
+        conn = actual_open(mode, remaining_seconds, **kwargs)
+        # Opening and reading status consume time independently of lock waits.
+        if len(opened) == 1:
+            now[0] += 0.01
+        elif mode == "ro":
+            now[0] += 0.005
+        return conn
+
+    def close_connection(conn, original):
+        actual_close(conn, original)
+        if len(opened) == 1:
+            now[0] += 0.005
+
+    def build_index(conn):
+        actual_index(conn)
+        now[0] += 0.015
+
+    monkeypatch.setattr(storage, "_open", open_connection)
+    monkeypatch.setattr(storage, "_close", close_connection)
+    monkeypatch.setattr(storage_module, "ensure_source_session_index", build_index)
+    with storage.write(ctx, remaining_seconds=0.05) as tx:
+        assert tx._check().execute("PRAGMA index_info(source_session)").fetchall()
+    assert [mode for mode, _ in opened] == ["rw", "rwc", "ro", "rw"]
+    assert [remaining for _, remaining in opened] == pytest.approx([0.05, 0.035, 0.02, 0.015])
+
+
+@pytest.mark.parametrize("remaining", [None, 60.0])
+def test_pending_schema_gate_respects_a_short_request_deadline(store, monkeypatch, remaining):
+    storage, ctx = store
+    downgrade_store(storage.path, 1111)
+    monkeypatch.setattr(storage_module, "_store_bytes", lambda conn: 100_000_000)
+    monkeypatch.setattr(time, "monotonic", lambda: 10.0)
+    with using_request_deadline(RequestDeadline.from_budget(6.0)):
+        with pytest.raises(ContractError) as refused, storage.write(ctx, remaining_seconds=remaining):
+            pytest.fail("a short request started a schema upgrade")
+    assert (refused.value.code, refused.value.field) == ("SCHEMA_UNSUPPORTED", "upgrade_pending")
+    with closing(sqlite3.connect(storage.path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1111
+
+
+@pytest.mark.parametrize("lock_wait", [0.0, 1.0])
 @pytest.mark.parametrize("operation", ["read", "write"])
 @pytest.mark.parametrize("remaining", [None, 0.001, 1.0])
-def test_expired_request_opens_no_store_connection(store, monkeypatch, operation, remaining):
+def test_expired_request_opens_no_store_connection(store, monkeypatch, operation, remaining, lock_wait):
     storage, ctx = store
+    storage.timeout_seconds = lock_wait
     _actual, opened = inject(monkeypatch)
     deadline = RequestDeadline.from_budget(0)
     with using_request_deadline(deadline), pytest.raises(ContractError, match="DEADLINE_EXCEEDED"):
@@ -459,6 +588,25 @@ def test_remaining_budget_bounds_busy_wait_and_zero_refuses_before_open(store, m
         with pytest.raises(ContractError, match="DEADLINE_EXCEEDED"), storage.write(ctx, remaining_seconds=remaining):
             pass
     assert len(opened) == count
+
+
+def test_zero_lock_wait_attempts_a_busy_connection_once(store, monkeypatch):
+    storage, ctx = store
+    storage.timeout_seconds = 0.0
+    attempts = []
+
+    def busy_connection(*args, **kwargs):
+        attempts.append(kwargs["timeout"])
+        raise TruthWriterBusyError()
+
+    def unexpected_sleep(seconds):
+        pytest.fail("a zero lock wait slept before refusing a busy store")
+
+    monkeypatch.setattr(storage_module, "connect_truth_database", busy_connection)
+    monkeypatch.setattr(time, "sleep", unexpected_sleep)
+    with pytest.raises(TruthWriterBusyError), storage.write(ctx):
+        pytest.fail("busy store entered a transaction")
+    assert attempts == [0.0]
 
 
 def test_every_store_connection_reads_through_the_memory_map_the_store_sets(store, monkeypatch):

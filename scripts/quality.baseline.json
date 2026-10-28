@@ -752,13 +752,7 @@
    "UP035": 1
   },
   "maintenance/cli.py": {
-   "E501": 1,
-   "PLR0911": {
-    "_upgrade_store": 10
-   },
-   "PLR0915": {
-    "_upgrade_store": 64
-   }
+   "E501": 1
   },
   "maintenance/doctor.py": {
    "E501": 1

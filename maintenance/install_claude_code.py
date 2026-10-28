@@ -30,7 +30,15 @@ from .install_client import (  # noqa: F401 -- install.py calls these on every h
     validate_local_platforms,
     validate_owner_logins,
 )
-from .install_common import SKILLS, InstallError, InstallPlan, json_dump, manifest_version
+from .install_common import (
+    CLAUDE_CODE_DESCRIPTION,
+    SKILLS,
+    InstallError,
+    InstallPlan,
+    json_dump,
+    manifest_version,
+    plugin_metadata,
+)
 
 HOST = "claude-code"
 #: The events recorded, and how long Claude Code waits for each.  A prompt waits for its
@@ -92,11 +100,13 @@ def _mcp_json(plan: InstallPlan) -> dict[str, Any]:
 
 
 def _plugin_json(plugin_name: str) -> dict[str, Any]:
+    """Render Claude Code's public metadata beside its hook and MCP references."""
+    author, description = plugin_metadata()
     return {
         "name": plugin_name,
         "version": manifest_version(),
-        "description": "Scope Recall: this machine's shared memory store, in Claude Code",
-        "author": {"name": "Local developer"},
+        "description": f"{description}. {CLAUDE_CODE_DESCRIPTION}",
+        "author": {"name": author},
         "hooks": "./hooks/hooks.json",
         "mcpServers": "./.mcp.json",
     }

@@ -4,6 +4,7 @@ text and usage, and the adapters that send them through the metered transport (`
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -265,6 +266,17 @@ def conservative_consolidation_input_reserve(body: bytes, configured: int) -> in
     return max(configured, len(body) + RESERVE_ENVELOPE_MARGIN)
 
 
+def _validate_temperature(value: object) -> None:
+    """Accept only finite JSON numbers in the supported sampling range, excluding booleans."""
+    if value is not None and (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not 0 <= value <= 2
+        or not math.isfinite(value)
+    ):
+        raise ValueError("temperature")
+
+
 def _validate_consolidation_response_format(value: object) -> Mapping[str, str] | None:
     if value is None:
         return None
@@ -370,6 +382,8 @@ def model_output_reserve(policy: BudgetPolicy, model: str, requested_output: int
 
 @dataclass(frozen=True)
 class ConsolidationRouteConfig:
+    """A validated chat-completions route; unset sampling fields are omitted from requests."""
+
     model: str
     endpoint: str
     credential_env: str
@@ -383,6 +397,7 @@ class ConsolidationRouteConfig:
     headers: Mapping[str, str] | None = None
     #: Permission for plaintext HTTP beyond this machine, as the embedding route has it.
     allow_insecure_endpoint: bool = False
+    temperature: float | None = None
 
     def __post_init__(self) -> None:
         _validate_route_target(self.model, self.endpoint, self.credential_env, self.allow_insecure_endpoint)
@@ -405,6 +420,7 @@ class ConsolidationRouteConfig:
             ),
         )
         object.__setattr__(self, "headers", _validate_consolidation_headers(self.headers))
+        _validate_temperature(self.temperature)
 
 
 def _validate_route_target(
@@ -462,6 +478,7 @@ class ResponsesRouteConfig:
     stream: bool = False
     kind: str = RESPONSES_KIND
     allow_insecure_endpoint: bool = False
+    temperature: float | None = None
 
     def __post_init__(self) -> None:
         _validate_route_target(self.model, self.endpoint, self.credential_env, self.allow_insecure_endpoint)
@@ -476,6 +493,7 @@ class ResponsesRouteConfig:
             raise ValueError("stream")
         if self.kind != RESPONSES_KIND:
             raise ValueError("kind")
+        _validate_temperature(self.temperature)
 
 
 class _ConsolidationAdapter:
@@ -543,6 +561,8 @@ class OpenAIConsolidationAdapter(_ConsolidationAdapter):
             body["response_format"] = dict(route.response_format)
         if route.reasoning_effort is not None:
             body["reasoning_effort"] = route.reasoning_effort
+        if route.temperature is not None:
+            body["temperature"] = route.temperature
         return json_bytes(body)
 
     def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:
@@ -702,6 +722,8 @@ class ResponsesConsolidationAdapter(_ConsolidationAdapter):
             body["reasoning"] = {"effort": route.reasoning_effort}
         if route.text_format is not None:
             body["text"] = {"format": dict(route.text_format)}
+        if route.temperature is not None:
+            body["temperature"] = route.temperature
         return json_bytes(body)
 
     def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:

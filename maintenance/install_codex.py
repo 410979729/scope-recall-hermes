@@ -33,12 +33,15 @@ from .install_client import (  # noqa: F401 -- install.py calls these on every h
 )
 from .install_common import (
     BACKUP_DIRNAME,
+    CODEX_LONG_DESCRIPTION,
+    CODEX_SHORT_DESCRIPTION,
     RECEIPT_FILENAME,
     SKILLS,
     InstallError,
     InstallPlan,
     json_dump,
     manifest_version,
+    plugin_metadata,
     reject_symlink_chain,
 )
 from .shared_run import HOME_LOCK_FILENAME
@@ -147,16 +150,18 @@ def _mcp_json(
 
 
 def _plugin_json(plugin_name: str) -> dict[str, Any]:
+    """Render Codex's manifest without changing its hook or MCP definitions."""
+    author, description = plugin_metadata()
     return {
         "name": plugin_name,
         "version": manifest_version(),
-        "description": "Scope Recall local Codex plugin",
-        "author": {"name": "Local developer"},
+        "description": description,
+        "author": {"name": author},
         "interface": {
             "displayName": "Scope Recall",
-            "shortDescription": "Use Scope Recall in Codex.",
-            "longDescription": "Scope Recall adds a local Codex plugin over the installed core.",
-            "developerName": "Local developer",
+            "shortDescription": CODEX_SHORT_DESCRIPTION,
+            "longDescription": CODEX_LONG_DESCRIPTION,
+            "developerName": author,
             "category": "Productivity",
             "capabilities": [],
             "defaultPrompt": "Help me use Scope Recall.",

@@ -19,7 +19,16 @@ from ..adapters.clients.remote_client import HOOK_TIMEOUTS, RemoteClientError, a
 from . import install_dsh as dsh
 from . import install_workbuddy as workbuddy
 from .install_claude_code import SHELL_WORD
-from .install_common import SKILLS, InstallError, manifest_version
+from .install_common import (
+    CLAUDE_CODE_DESCRIPTION,
+    CODEX_LONG_DESCRIPTION,
+    CODEX_SHORT_DESCRIPTION,
+    REMOTE_STORE_NOTE,
+    SKILLS,
+    InstallError,
+    manifest_version,
+    plugin_metadata,
+)
 
 
 def _hook_argv(config: dict[str, Any]) -> list[str]:
@@ -44,6 +53,7 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
             "a WorkBuddy client has no plugin: install merges its hooks and server into "
             "WorkBuddy's own settings (workbuddy_files)"
         )
+    author, description = plugin_metadata()
     token = config["token_file"].read_text(encoding="utf-8").strip()
     argv = _hook_argv(config)
     mcp_url = f"{config['url']}/mcp"
@@ -69,8 +79,8 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
                 {
                     "name": plugin_dir.name,
                     "version": manifest_version(),
-                    "author": {"name": "Local developer"},
-                    "description": "Scope Recall: a shared memory store on another machine, in Claude Code",
+                    "author": {"name": author},
+                    "description": f"{description}. {CLAUDE_CODE_DESCRIPTION}" + REMOTE_STORE_NOTE,
                     "hooks": "./hooks/hooks.json",
                     "mcpServers": "./.mcp.json",
                 }
@@ -102,15 +112,16 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
             {
                 "name": plugin_dir.name,
                 "version": manifest_version().replace("rc", "-rc."),
-                "author": {"name": "Local developer"},
+                "author": {"name": author},
                 "mcpServers": "./.mcp.json",
-                "description": "Scope Recall: a shared memory store on another machine, in Codex",
+                "description": description,
                 "interface": {
                     "displayName": "Scope Recall",
-                    "shortDescription": "Use Scope Recall in Codex.",
+                    "shortDescription": CODEX_SHORT_DESCRIPTION,
+                    "longDescription": CODEX_LONG_DESCRIPTION + REMOTE_STORE_NOTE,
                     "category": "Productivity",
                     "capabilities": [],
-                    "developerName": "Local developer",
+                    "developerName": author,
                 },
             }
         ),

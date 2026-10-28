@@ -50,6 +50,7 @@ ALLOWED_TRUTH_WRITER_ROLES = frozenset(
     {
         "provider",
         "save_config",
+        "upgrade_store",
         "journal_digest",
         "nightly_digest",
         "auto_adjudication",
@@ -193,7 +194,7 @@ def _register_fork_hook() -> None:
 class _ProcessLeaseState:
     """One process-wide OS lock shared by every in-process lease holder.
 
-    ``holders`` counts named owners (provider, digest, save_config).
+    ``holders`` counts named owners (provider, digest, save_config, upgrade_store).
     ``connection_pins`` is the connection-level refcount for live
     ``memory.sqlite3`` pagers so last-release of a named owner cannot drop
     OS authority while a helper-local connection still exists.

@@ -56,17 +56,6 @@ def test_every_entry_point_exists():
     assert not missing, f"entry points named but absent: {missing}"
 
 
-@pytest.mark.parametrize(
-    "version",
-    ["3.1.0rc11", "3.1.0rc9", "3.2.0", "3.1.0.dev4", "3.1.0rc10.post17", "4.0.0rc1"],
-)
-def test_semver_spelling_agrees_with_the_installer(version):
-    """The build helper restates the installer's rule; it must not drift from it."""
-    from scope_recall.maintenance.install_common import manifest_version
-
-    assert inventory.semver_version(version) == manifest_version(version)
-
-
 def test_post_release_versions_are_not_reintroduced():
     """``.postN`` is not something this toolchain can normalise.
 

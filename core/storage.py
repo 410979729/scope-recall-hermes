@@ -27,6 +27,8 @@ from .schema import (
     SCHEMA_VERSION,
     STATEMENTS,
     UPGRADE_CHAIN,
+    ensure_source_session_index,
+    source_session_index_present,
     stale_header_schema,
     upgrade_1105,
     upgrade_1106,
@@ -556,6 +558,14 @@ class SQLiteStorage:
             timeout = min(timeout, remaining)
         return timeout
 
+    def _remaining_budget(self, remaining_seconds: float | None, started: float) -> float | None:
+        """Share one caller budget across connection setup, initialization and reopen."""
+        explicit = None if remaining_seconds is None else remaining_seconds - (self.monotonic() - started)
+        return min(
+            (value for value in (explicit, request_remaining_seconds()) if value is not None),
+            default=None,
+        )
+
     def _open(
         self, mode: TruthDatabaseMode, remaining_seconds: float | None = None, *, restoring: bool = False
     ) -> sqlite3.Connection:
@@ -588,7 +598,9 @@ class SQLiteStorage:
         while True:
             try:
                 left = timeout if deadline is None else max(0.0, deadline - self.monotonic())
-                if left <= 0:
+                # A zero lock wait still gets its first nonblocking attempt;
+                # request budgets have already been checked by _timeout.
+                if deadline is not None and left <= 0:
                     raise TruthWriterBusyError()
                 conn = connect_truth_database(self.path, mode=mode, timeout=left, isolation_level=None)
             except TruthWriterBusyError:
@@ -682,8 +694,10 @@ class SQLiteStorage:
                 self.verify(conn, expected_schema=version)
                 migrate(conn)
 
-    def initialize(self) -> StoreStatus:
-        conn = self._open("rwc")
+    def initialize(self, *, remaining_seconds: float | None = None) -> StoreStatus:
+        """Create or upgrade this store and return its verified status within the caller's lock-wait budget."""
+        started = self.monotonic() if remaining_seconds is not None else 0.0
+        conn = self._open("rwc", remaining_seconds)
         original = None
         try:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -698,6 +712,7 @@ class SQLiteStorage:
             if exists:
                 self._upgrade_schema(conn)
                 self.verify(conn)
+                ensure_source_session_index(conn)
             else:
                 if (
                     conn.execute("PRAGMA user_version").fetchone()[0] != 0
@@ -735,7 +750,7 @@ class SQLiteStorage:
         finally:
             self._close(conn, original)
         context = TrustedContext(self.binding, "initialization", self.binding.scope_ids, "host_generated")
-        with self.read(context) as tx:
+        with self.read(context, remaining_seconds=self._remaining_budget(remaining_seconds, started)) as tx:
             return tx.status()
 
     def adopt(self) -> str:
@@ -796,14 +811,25 @@ class SQLiteStorage:
         self, context: TrustedContext, *, writable: bool, remaining_seconds: float | None, restoring: bool = False
     ) -> Iterator[Transaction]:
         self._context_check(context)
+        started = self.monotonic() if remaining_seconds is not None else 0.0
         conn = self._open("rw" if writable else "ro", remaining_seconds, restoring=restoring)
         try:
+            # Lock waits and upgrade work use the same request deadline, but
+            # the lock timeout does not limit a worker's upgrade budget.
+            upgrade_budget = self._remaining_budget(remaining_seconds, started)
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             upgrade = self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
             if upgrade:
-                fits = upgrade_fits(_store_bytes(conn), remaining_seconds)
+                fits = upgrade_fits(_store_bytes(conn), upgrade_budget)
             elif writable and version == SCHEMA_VERSION:
                 _ensure_wal(conn)
+                # An optional index shares the schema upgrade's budget gate, but
+                # a caller unable to build it can still use the current schema.
+                if self.upgrade_on_open and not restoring:
+                    upgrade = not source_session_index_present(conn) and upgrade_fits(
+                        _store_bytes(conn), upgrade_budget
+                    )
+                    fits = True
         except BaseException as exc:
             # Nothing below closes this connection yet.  Left open, a writable one kept the writer lease until the
             # process ended, and every other process's writes failed.  A busy store can answer
@@ -817,8 +843,10 @@ class SQLiteStorage:
                 # minute on a large store; the worker's pass or the installer
                 # brings it forward, and the doctor names the pending step.
                 raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_pending")
-            self.initialize()
-            conn = self._open("rw" if writable else "ro", remaining_seconds, restoring=restoring)
+            self.initialize(remaining_seconds=self._remaining_budget(remaining_seconds, started))
+            conn = self._open(
+                "rw" if writable else "ro", self._remaining_budget(remaining_seconds, started), restoring=restoring
+            )
         tx = Transaction(conn, context, writable=writable)
         original = None
         mirror = False
