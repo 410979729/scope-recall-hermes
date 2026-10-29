@@ -2,6 +2,10 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [3.16.1] - 2026-10-28
+
+Outside Windows, a native import probe that times out or cannot start no longer leaves the process without vectors until it restarts. The child that rehearses `import lancedb, pyarrow` ends itself after 10 seconds, even when its host has already exited. A later call retries an attempt that did not finish after a 30-second cooldown, which doubles for each further unfinished attempt up to 30 minutes; a completed result stays cached as before. Callers share one child, and a recall or prefetch waits for it only within its remaining request budget. A probe that does not pass logs one line with its outcome (the timeout, the exit status or signal, or the start error's type and errno) and nothing the child printed; a passing probe logs nothing. Windows, where vectors run in a separate helper process, is unchanged.
+
 ## [3.16.0] - 2026-10-27
 
 Capture finds a session's latest episode through a session-first index on sources instead of scanning every source in the session's scope for each captured event, which held the write transaction for about 0.2 s per event on a store of 350,000 sources; with the index the lookup takes under a millisecond. The index needs no schema step, and stores read the same with or without it. New stores create it; an existing store gains it on the first writable open whose budget can carry the build (a worker pass with a minute left, `apply-install`, `upgrade-store`, or any writable open of a store under 100 MB), and shorter calls on larger stores go on without it.

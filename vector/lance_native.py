@@ -3,23 +3,42 @@
 Some LanceDB/PyArrow wheels terminate Python with SIGILL on CPUs without
 AVX/AVX2.  A try/except around ``import lancedb`` cannot catch that, because
 the process is already gone, so the import is rehearsed in a child process
-first and the verdict cached for the life of this interpreter.  A failed
-rehearsal lets the runtime fall back to the SQLite store instead of crashing.
+first. A completed verdict is cached for the life of this interpreter;
+an incomplete rehearsal can be retried after a cooldown. Request deadlines
+bound the wait for the rehearsal. The child arms its own lifetime limit so
+even abrupt host exit cannot leave a hanging import running indefinitely.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import logging
 import os
+import signal
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from ..core.deadline import RequestDeadline
+
+_LOG = logging.getLogger(__name__)
 _PROBE_TIMEOUT_SECONDS = 10.0
+# A busy host gets time to settle without spawning an import child on every recall.
+_PROBE_RETRY_SECONDS = 30.0
+_PROBE_MAX_RETRY_SECONDS = 1800.0
+_PROBE_WAIT_MARGIN_SECONDS = 0.2
 _ENVIRONMENT_MARKERS = ("site-packages", "dist-packages")
 _native_import_safe: bool | None = None
+_probe_retry_at = 0.0
+_probe_retry_delay = _PROBE_RETRY_SECONDS
+_probe_lock = threading.Lock()
+_probe_child: subprocess.Popen[Any] | None = None
+_probe_started_at = 0.0
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _WORKER = _PACKAGE_ROOT / "_lance_worker.py"
 #: The helper's imports from outside the standard library, by top-level name: its start-up reaches ``jsonschema``
@@ -158,41 +177,158 @@ def _probe_command_environment() -> dict[str, str] | None:
     return env
 
 
-def native_import_is_safe() -> bool:
-    """Whether ``import lancedb, pyarrow`` survives in a child process."""
-    global _native_import_safe
-    if _native_import_safe is None:
+def _reset_native_probe_after_fork() -> None:
+    """Keep a completed verdict but discard handles and locks owned by the parent."""
+    global _probe_lock, _probe_child, _probe_started_at, _probe_retry_at, _probe_retry_delay
+    # Waiting on an inherited Popen handle can report a false success after ECHILD.
+    _probe_lock = threading.Lock()
+    if _probe_child is not None:
+        # Popen's finalizer also polls; this process cannot reap the parent's child.
+        vars(_probe_child)["_child_created"] = False
+    _probe_child = None
+    _probe_started_at = _probe_retry_at = 0.0
+    _probe_retry_delay = _PROBE_RETRY_SECONDS
+
+
+if _register_at_fork := getattr(os, "register_at_fork", None):
+    _register_at_fork(after_in_child=_reset_native_probe_after_fork)
+
+
+def _start_native_probe() -> subprocess.Popen[Any]:
+    """Create a quiet rehearsal with the host's import roots and a kernel lifetime limit."""
+    options = python_subprocess_options()
+    environment = _probe_command_environment()
+    if environment is not None:
+        options.setdefault("env", dict(os.environ))
+        # Windows options also carry the resolved launcher identity.
+        options["env"]["PYTHONPATH"] = environment["PYTHONPATH"]
+    argv = [sys.executable, "-c", "import lancedb, pyarrow"]
+    if sys.platform != "win32":
+        # The limit covers start-up hooks too: ``.pth`` files and ``sitecustomize`` run before ``-c``, so the child
+        # starts without site, restores SIGALRM (an ignored disposition and a blocked mask both survive exec), arms
+        # the alarm, and only then sets up site as a normal start would.
+        argv = [
+            sys.executable,
+            "-S",
+            "-c",
+            "import signal; signal.signal(signal.SIGALRM, signal.SIG_DFL); "
+            "signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM}); "
+            f"signal.alarm({int(_PROBE_TIMEOUT_SECONDS)}); "
+            "import site; site.main(); import lancedb, pyarrow",
+        ]
+    return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+
+
+def _delay_native_probe() -> None:
+    """Start the next cooldown under the state lock, doubling it up to its cap."""
+    global _probe_retry_at, _probe_retry_delay
+    _probe_retry_at = time.monotonic() + _probe_retry_delay
+    _probe_retry_delay = min(_probe_retry_delay * 2, _PROBE_MAX_RETRY_SECONDS)
+
+
+def _wait_native_probe(
+    child: subprocess.Popen[Any], started_at: float, deadline: RequestDeadline | None
+) -> tuple[bool | None, str | None]:
+    """Return a verdict and log outcome; neither means the caller stopped waiting early."""
+    expires_at = started_at + _PROBE_TIMEOUT_SECONDS + _PROBE_WAIT_MARGIN_SECONDS
+    remaining = max(0.0, expires_at - time.monotonic())
+    if deadline is not None:
+        remaining = min(remaining, max(0.0, deadline.remaining()))
+    timeout_outcome = f"timed out after {_PROBE_TIMEOUT_SECONDS:g} seconds"
+    try:
+        status = child.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        if time.monotonic() < expires_at:
+            return None, None
+        return None, timeout_outcome
+    if status < 0 and sys.platform != "win32":
+        if -status == getattr(signal, "SIGALRM", 14):
+            return None, timeout_outcome
         try:
-            options = python_subprocess_options()
-            environment = _probe_command_environment()
-            if environment is not None:
-                options.setdefault("env", dict(os.environ))
-                # Only the roots move over: on Windows the options' env already carries the resolved
-                # launcher identity, which a whole-``os.environ`` spread would clobber.
-                options["env"]["PYTHONPATH"] = environment["PYTHONPATH"]
-            completed = subprocess.run(
-                # The import this process is about to make, from where this process imports it: only the in-process
-                # store rehearses it (off Windows), and the child is handed this process's import roots (as the
-                # helper is), because a package-manager host injects its environment into ``sys.path`` at run time
-                # and a bare child of this interpreter would not see it.  The isolated helper's start-up sees only
-                # the directories handed to it, and failed layouts this import serves.
-                [sys.executable, "-c", "import lancedb, pyarrow"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=_PROBE_TIMEOUT_SECONDS,
-                check=False,
-                **options,
-            )
-            _native_import_safe = completed.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            _native_import_safe = False
-    return _native_import_safe
+            name = signal.Signals(-status).name
+        except ValueError:
+            name = str(-status)
+        return False, f"ended by signal {name}"
+    return (True, None) if status == 0 else (False, f"exited with status {status}")
+
+
+def _reap_native_probe(child: subprocess.Popen[Any], deadline: RequestDeadline | None) -> None:
+    """End a retired incomplete child, bounding cleanup even if an import replaced SIGALRM's handler."""
+    reap_wait = _PROBE_WAIT_MARGIN_SECONDS
+    if deadline is not None:
+        reap_wait = min(reap_wait, max(0.0, deadline.remaining()))
+    try:
+        child.kill()
+        child.wait(timeout=reap_wait)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def native_import_is_safe() -> bool:
+    """Share one self-limited child, waiting and acquiring state only within the request budget.
+
+    Calls that stop waiting leave the child for a later caller to observe. Completed verdicts stay cached;
+    incomplete attempts cool down with exponential backoff. Process creation itself cannot be interrupted.
+    """
+    # Launcher-only imports of this module need no Core or its optional runtime dependencies.
+    from ..core.deadline import current_request_deadline
+
+    global _native_import_safe, _probe_child, _probe_started_at
+    deadline = current_request_deadline()
+    lock_timeout = -1.0 if deadline is None else max(0.0, deadline.remaining())
+    if not _probe_lock.acquire(timeout=lock_timeout):
+        return False
+    outcome = None
+    try:
+        if _native_import_safe is not None:
+            return _native_import_safe
+        if _probe_child is None:
+            if time.monotonic() < _probe_retry_at or (deadline is not None and deadline.exhausted()):
+                return False
+            try:
+                _probe_child = _start_native_probe()
+            except (OSError, subprocess.SubprocessError) as exc:
+                _delay_native_probe()
+                outcome = f"could not start: {type(exc).__name__} (errno={getattr(exc, 'errno', None)})"
+            else:
+                # The import's budget starts with the child, as its alarm does; resolving roots and spawning do not
+                # count against it.
+                _probe_started_at = time.monotonic()
+        child, started_at = _probe_child, _probe_started_at
+    finally:
+        _probe_lock.release()
+    if outcome is not None:
+        _LOG.warning("Native import probe %s", outcome)
+        return False
+    assert child is not None
+    result, outcome = _wait_native_probe(child, started_at, deadline)
+    lock_timeout = -1.0 if deadline is None else max(0.0, deadline.remaining())
+    if not _probe_lock.acquire(timeout=lock_timeout):
+        return False
+    published = False
+    try:
+        if _native_import_safe is None and _probe_child is child and (result is not None or outcome is not None):
+            _native_import_safe = result
+            _probe_child = None
+            published = True
+            if result is None:
+                _delay_native_probe()
+        safe = _native_import_safe is True
+    finally:
+        _probe_lock.release()
+    # Update shared state before killing so another waiter cannot cache cleanup's SIGKILL as an import crash.
+    if result is None and outcome is not None:
+        _reap_native_probe(child, deadline)
+    if published and outcome is not None:
+        _LOG.warning("Native import probe %s", outcome)
+    return safe
 
 
 def skip_native_probe() -> None:
     """Trust the in-process import; for an interpreter that is already disposable."""
     global _native_import_safe
-    _native_import_safe = True
+    with _probe_lock:
+        _native_import_safe = True
 
 
 def native_modules() -> tuple[Any, Any] | None:

@@ -74,6 +74,16 @@ default LanceDB vector store cannot open and recall is lexical (the
 `sqlite-bruteforce` backend needs no extra); `doctor` names that as
 `vector_dependencies_missing` while a LanceDB store is configured.
 
+Outside Windows, the first LanceDB import is rehearsed in a child process with a
+10-second alarm that ends the child even if its host has already exited. Recall
+and prefetch wait only for their remaining request budget; creating a child
+process itself cannot be interrupted. If the probe times out or cannot start,
+a later call can retry after a 30-second cooldown. Consecutive incomplete probes
+double the cooldown up to 30 minutes; a completed failure remains cached until
+the host restarts. Each unsuccessful probe logs only its outcome: timeout
+duration, exit status (or signal name on POSIX), or child start exception type
+and errno. Successful probes are silent. Windows uses the isolated vector helper.
+
 Or build the wheel from a source tree and install that file, which is how a
 candidate between releases is installed. The file name carries the version of the
 tree you built; the ones below are examples.
