@@ -1,0 +1,219 @@
+"""Isolated public-data store using the shipped capture, worker and recall paths."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+import time
+from collections import Counter
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "recall_bench"))
+# The existing benchmark binds scope_recall to this checkout and refuses an
+# already imported package from somewhere else. Reuse that same boundary.
+from cache import digest
+from recall_bench import WorldClock
+from scope_recall.contracts import InstanceBinding, TrustedContext, TrustedSourcePrincipal
+from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.recall_policy import RecallPolicy
+from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort
+from scope_recall.vector.store import build_vector_store
+
+
+class Lab:
+    """One question's independent store; construction never opens a host config."""
+
+    def __init__(
+        self, root: Path, ports, *, now: str, backend="sqlite-bruteforce", scopes=None, existing=False
+    ) -> None:
+        if existing and not (root / "truth" / "memory.sqlite3").is_file():
+            raise ValueError("existing synthetic store is missing")
+        root.mkdir(parents=True, exist_ok=existing)
+        self.clock, self.ports = WorldClock(now), ports
+        self.clock.realtime = True
+        self.binding = InstanceBinding(
+            "public-bench", "public-bench-install", root / "truth", scopes or frozenset({"public"})
+        )
+        self.context = TrustedContext(
+            self.binding,
+            "ingest",
+            self.binding.scope_ids,
+            "human_direct",
+            source_principal=TrustedSourcePrincipal("human", "verified", "principal:human:bench"),
+        )
+        space = digest(ports.config["embedding"])
+        self.companion = build_vector_store(
+            backend, storage_dir=root / "vectors", table_name="public_bench", dimensions=3072, metric="cosine"
+        )
+        self.companion.open()
+        self.embed = LanceEmbedPort(
+            self.companion,
+            ports.embedder,
+            agent_id=self.binding.agent_id,
+            installation_id=self.binding.installation_id,
+            embedding_space=space,
+        )
+        self.purge = LancePurgePort(
+            self.companion,
+            embedding_spaces=(space,),
+            agent_id=self.binding.agent_id,
+            installation_id=self.binding.installation_id,
+        )
+        vectors = LanceVectorPort(
+            self.companion, ports.embedder, expected_embedding_space=space, clock=self.clock.monotonic
+        )
+        self.core = MemoryCore(
+            CoreConfig(self.binding),
+            clock=self.clock,
+            vectors=vectors,
+            retrieval_policy=RecallPolicy(vector_threshold=0.7, embedding_space_id=space),
+        )
+        self.core.initialize()
+        self.keys: dict[str, str] = {}
+        self.sessions: dict[str, str] = {}
+
+    def capture(self, turn):
+        """Persist a source at its corpus time; gold labels are never sent to core."""
+        self.clock.now = turn.at
+        origin = {"user": "human_direct", "assistant": "assistant_visible", "document": "external_document"}[turn.role]
+        principal = (
+            TrustedSourcePrincipal("human", "verified", "principal:human:bench")
+            if turn.role == "user"
+            else TrustedSourcePrincipal("assistant", "verified", "principal:assistant:bench")
+            if turn.role == "assistant"
+            else TrustedSourcePrincipal("tool", "unresolved")
+        )
+        context = replace(self.context, session_id=turn.session, actor_origin=origin, source_principal=principal)
+        value = {
+            "protocol_version": "1.1",
+            "source_event_key": turn.key,
+            "source_revision": 1,
+            "origin": origin,
+            "role": turn.role,
+            "content": turn.content,
+            "occurred_at": turn.at,
+            "recorded_at": turn.at,
+            "time_precision": "instant",
+            "capture_state": "complete",
+            "evidence_refs": [],
+        }
+        receipt = self.core.record_event(context, value, scope_id="public", remaining_seconds=20)
+        for ref in receipt.event_refs:
+            self.keys[ref.ref], self.sessions[ref.ref] = turn.key, turn.session
+        return receipt
+
+    def state(self) -> dict:
+        """Read synthetic queue states directly, including failures and future work."""
+        with sqlite3.connect(self.core.storage.path) as connection:
+            work = connection.execute(
+                "SELECT work_type,state,last_error_code,count(*) FROM work_items GROUP BY 1,2,3"
+            ).fetchall()
+            candidates = connection.execute(
+                "SELECT processing_state,reason,count(*) FROM candidate_lifecycle GROUP BY 1,2"
+            ).fetchall()
+            pending = connection.execute(
+                "SELECT min(available_at) FROM work_items WHERE state IN ('pending','leased')"
+            ).fetchone()[0]
+        phases = {}
+        capabilities = {
+            "consolidate": callable(getattr(self.ports.model, "propose", None)),
+            "embed": self.embed is not None,
+            "evaluate_candidate": callable(getattr(self.ports.model, "evaluate_candidate", None)),
+        }
+        for kind, capable in capabilities.items():
+            rows = [(state, count) for task, state, _, count in work if task == kind]
+            waiting = any(state in {"pending", "leased"} for state, _ in rows)
+            phases[kind] = (
+                "capability_unavailable"
+                if waiting and not capable
+                else "pending"
+                if waiting
+                else "failed"
+                if any(state == "failed" for state, _ in rows)
+                else "complete"
+                if rows
+                else "not_required"
+            )
+        return {"work": work, "candidates": candidates, "next_at": pending, "phases": phases}
+
+    def settle(self, *, max_rounds=256, wall_seconds=900) -> dict:
+        """Drain to verified terminal states, advancing only the injected business clock.
+
+        Work done/obsolete and candidate resolved/archived/waiting_evidence are
+        terminal for this evidence set. Failed work is reported as failed,
+        blocked candidates as unavailable. Pending/leased work or unsettled
+        candidates never becomes complete merely because a pass processed zero.
+        Wall and round caps fail explicitly, and real network deadlines remain
+        real-time deadlines inside the runtime adapters.
+        """
+        deadline, advances = time.monotonic() + wall_seconds, 0
+        for round_index in range(max_rounds):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"status": "wall_limit", "rounds": round_index, **self.state()}
+            receipt = self.core.drain_worker(
+                self.context,
+                owner_id="public-worker",
+                consolidation=self.ports.model,
+                embed=self.embed,
+                purge=self.purge,
+                max_items=256,
+                remaining_seconds=min(120, remaining),
+            )
+            self.ports.cache.raise_if_missing()
+            state = self.state()
+            if time.monotonic() >= deadline:
+                return {"status": "wall_limit", "rounds": round_index + 1, **state}
+            if "capability_unavailable" in state["phases"].values():
+                return {"status": "unavailable", "rounds": round_index + 1, **state}
+            pending = sum(count for _, status, _, count in state["work"] if status in {"pending", "leased"})
+            unsettled = sum(count for status, _, count in state["candidates"] if status == "pending_evaluation")
+            if not pending and not unsettled:
+                failed = sum(count for _, status, _, count in state["work"] if status == "failed")
+                blocked = sum(count for status, _, count in state["candidates"] if status == "blocked")
+                return {
+                    "status": "unavailable" if blocked else "failed" if failed else "complete",
+                    "rounds": round_index + 1,
+                    "business_advances": advances,
+                    **state,
+                }
+            if receipt.processed:
+                continue
+            current = datetime.fromisoformat(self.clock.now.replace("Z", "+00:00"))
+            next_at = datetime.fromisoformat(state["next_at"].replace("Z", "+00:00")) if state["next_at"] else current
+            self.clock.now = max(current + timedelta(seconds=901), next_at + timedelta(seconds=1)).isoformat()
+            advances += 1
+            if advances > 16:
+                return {"status": "business_time_limit", "rounds": round_index + 1, **state}
+        return {"status": "round_limit", "rounds": max_rounds, **self.state()}
+
+    def recall(self, case, *, mode="auto") -> tuple[dict, float]:
+        """Ask at the corpus question date through the real automatic packet entry."""
+        self.clock.now = case.at
+        context = replace(self.context, session_id=f"ask:{case.id}:{mode}")
+        body = {
+            "protocol_version": "1.1",
+            "request_id": digest([case.id, mode])[:24],
+            "query": case.question,
+            "mode": mode,
+            "max_items": 6 if mode == "auto" else 10,
+            "budget_tokens": 4096,
+        }
+        started = time.perf_counter()
+        packet = dict(self.core.recall_packet(context, body, zone=UTC, deadline_seconds=5))
+        self.ports.cache.raise_if_missing()
+        return packet, (time.perf_counter() - started) * 1000
+
+    def retrieved_sources(self, packet: dict) -> tuple[set[str], set[str]]:
+        """Resolve returned evidence refs back to corpus turns and sessions."""
+        refs = {ref.rsplit("@", 1)[0] for item in packet["items"] for ref in item["evidence_refs"]}
+        return {self.keys[ref] for ref in refs if ref in self.keys}, {
+            self.sessions[ref] for ref in refs if ref in self.sessions
+        }
+
+    def close(self) -> None:
+        """Release the synthetic vector companion; no host process was started."""
+        self.companion.close()
