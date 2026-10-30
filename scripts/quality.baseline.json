@@ -974,7 +974,7 @@
     "select_tests": 17
    },
    "PLR0915": {
-    "_execute": 76,
+      "_execute": 73,
     "select_tests": 62
    }
   },

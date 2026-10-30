@@ -16,6 +16,27 @@ if str(SCRIPTS) not in sys.path:
 import check  # noqa: E402
 
 
+def test_declared_boundary_parent_is_used_by_runner(monkeypatch, tmp_path: Path) -> None:
+    declared = tmp_path / "owned-scratch"
+    monkeypatch.setenv("SCOPE_RECALL_TEST_BOUNDARY_PARENT", str(declared))
+
+    assert check._test_parent() == declared.resolve()
+
+
+def test_pytest_temp_path_stays_short_inside_owned_run(tmp_path: Path) -> None:
+    command = check.pytest_command(["tests/unit/pass_test.py"], tmp_path / "junit.xml")
+
+    assert f"--basetemp={tmp_path / 't'}" in command
+
+
+def test_history_probes_trust_only_the_checkout_in_their_process(tmp_path: Path) -> None:
+    environment = check._test_environment("unit", tmp_path)
+
+    assert environment["GIT_CONFIG_COUNT"] == "1"
+    assert environment["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert environment["GIT_CONFIG_VALUE_0"] == str(check.ROOT)
+
+
 def _write_fixed_junit(command: list[str]) -> None:
     junit_arg = next(arg for arg in command if arg.startswith("--junitxml="))
     junit = Path(junit_arg.split("=", 1)[1])

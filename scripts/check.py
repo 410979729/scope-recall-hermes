@@ -220,6 +220,7 @@ SUITES = {
         "tests/contract/test_storage_growth.py",
     ],
     "retrieval": [
+        "tests/public_bench/test_public_bench.py",
         "tests/contract/test_retrieval_pipeline.py",
         "tests/contract/test_evidence_followup.py",
         "tests/contract/test_recall_admission.py",
@@ -959,6 +960,12 @@ def _test_environment(tier: str, isolated: Path) -> dict[str, str]:
         SCOPE_RECALL_TEST_TIER=tier,
         HF_HUB_OFFLINE="1",
         TRANSFORMERS_OFFLINE="1",
+        # Probes read this checkout's Git history. When the runner's OS account is not the
+        # checkout owner (a container or sandbox account), Git refuses the repository; the
+        # exception lives in this child environment only, never in a Git config file.
+        GIT_CONFIG_COUNT="1",
+        GIT_CONFIG_KEY_0="safe.directory",
+        GIT_CONFIG_VALUE_0=str(ROOT),
     )
     env.update(packaging_helper_env(tier))
     env.update(node_helper_env(tier))
@@ -1067,8 +1074,22 @@ def pytest_command(selected: list[str], junit: Path) -> list[str]:
         "-p",
         "no:cacheprovider",
         "--durations=10",
+        # Keep generated fixture paths short while retaining the same owned boundary.
+        f"--basetemp={junit.parent / 't'}",
         f"--junitxml={junit}",
     ]
+
+
+def _test_parent() -> Path:
+    """Honor the declared writable boundary before choosing the short Windows default."""
+    declared = str(os.environ.get("SCOPE_RECALL_TEST_BOUNDARY_PARENT") or "").strip()
+    if declared:
+        return Path(declared).resolve()
+    # Packaging probes need a short default to stay within Win32 path limits.
+    temp_root = Path(tempfile.gettempdir())
+    if os.name == "nt":
+        temp_root = Path(temp_root.anchor) / "Temp"
+    return temp_root / "sr"
 
 
 def _execute(args, selected: list[str], selection: dict) -> int:
@@ -1080,13 +1101,7 @@ def _execute(args, selected: list[str], selection: dict) -> int:
     """
     evidence = ROOT / "verification" / args.task
     evidence.mkdir(parents=True, exist_ok=True)
-    # Keep the owned TEST root short on Windows.  Packaging install probes use
-    # atomic files and otherwise cross the Win32 path-length boundary before
-    # v11_guard can make its normal allow/deny decision.
-    temp_root = Path(tempfile.gettempdir())
-    if os.name == "nt":
-        temp_root = Path(temp_root.anchor) / "Temp"
-    parent = temp_root / "sr"
+    parent = _test_parent()
     parent.mkdir(parents=True, exist_ok=True)
     manifest = _source_manifest()
     stem = f"{args.tier}-{time.time_ns()}"
