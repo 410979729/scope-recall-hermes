@@ -1,9 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1112
+SCHEMA_VERSION = 1113
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112)
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -72,6 +72,25 @@ PRIVATE_TARGET_INDEX = (
     "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at,starts_at)"
 )
 PRIVATE_ACTIVE_INDEX = "CREATE INDEX private_active ON private_intervals(ends_at,starts_at)"
+
+#: A committed mutation's outcome, keyed by request id.  A host retry re-sends the
+#: same id, so the receipt is what tells a replay apart from a second action.  The
+#: key binds the installation, the allowed scopes and project/branch; the payload
+#: digest separates a replay from an id reused for a different body.
+MUTATION_RECEIPTS_STATEMENT = """CREATE TABLE mutation_receipts (
+    request_key TEXT PRIMARY KEY NOT NULL,
+    request_id TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    scope_id TEXT,
+    project_id TEXT,
+    branch_id TEXT,
+    claim_ref TEXT NOT NULL,
+    claim_revision INTEGER NOT NULL CHECK(claim_revision>=1),
+    disposition TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL
+) STRICT"""
 
 #: Management actions carry object identities and versions, never a copied
 #: conversation body. They are distinct from host-captured user messages.
@@ -251,6 +270,7 @@ STATEMENTS = (
         PRIVATE_INTERVALS_STATEMENT,
         PRIVATE_TARGET_INDEX,
         PRIVATE_ACTIVE_INDEX,
+        MUTATION_RECEIPTS_STATEMENT,
         """CREATE TABLE source_events (
         event_id TEXT NOT NULL, source_event_key TEXT NOT NULL,
         source_revision INTEGER NOT NULL CHECK(source_revision>=1),
@@ -650,6 +670,19 @@ def upgrade_1111(connection):
     connection.execute("ALTER TABLE source_events ADD COLUMN project_root TEXT")
     connection.execute("UPDATE instance_meta SET schema_version=1112 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1112")
+
+
+def upgrade_1112(connection):
+    """Add the request-id keyed replay receipts a retried mutation consults.
+
+    ``revise`` dropped the caller's request id at both host adapters, so a retry
+    had nothing to consult and reported VERSION_CONFLICT against the revision the
+    first call had already consumed.  The table holds committed outcomes only.
+    """
+    connection.execute(MUTATION_RECEIPTS_STATEMENT)
+    connection.execute("UPDATE instance_meta SET schema_version=1113 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1113")
+
 
 
 def normalize_scope_authorizations(connection) -> int:

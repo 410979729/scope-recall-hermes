@@ -68,6 +68,9 @@ class MutationReceipt:
     items: tuple[Mutation, ...]
     memory_epoch: int
     durability: str = "persisted"
+    #: True when this answers a replayed request id: the outcome is the archived
+    #: one, nothing was written and the memory epoch did not move.
+    replayed: bool = False
 
 
 def validate_claims(tx, value, scope_id: str, *, ungrounded_values: list[int] | None = None):
@@ -624,10 +627,51 @@ def _revise_in_transaction(tx, clock, request) -> Mutation:
     return _record_revision(tx, clock, head, updated, qualification, request, authority)
 
 
-def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds: float = 1.0) -> MutationReceipt:
+def revise(
+    storage,
+    clock,
+    context: TrustedContext,
+    value,
+    *,
+    remaining_seconds: float = 1.0,
+    request_id: str | None = None,
+) -> MutationReceipt:
+    """Apply a correction, once per request id.
+
+    A host that cannot confirm a revise sends the same ``request_id`` again.  The
+    replay consults the receipt before the head compare-and-swap — a replay sees
+    ``current_revision > expected_revision`` and would otherwise report
+    ``VERSION_CONFLICT``, which is indistinguishable from a genuine concurrent
+    writer.  A replay returns the archived outcome, writes nothing and leaves the
+    memory epoch alone; the same id under a different body raises
+    ``REQUEST_ID_REUSED`` instead of replaying the wrong answer.
+    """
     request = validate_model_request("revise_request", value, context)
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        receipt_key = payload_sha256 = None
+        if request_id:
+            receipts = tx.receipts
+            receipt_key, _ = receipts.request_key(request_id)
+            payload_sha256 = receipts.payload_digest(request)
+            archived = receipts.find(receipt_key, payload_sha256)
+            if archived is not None:
+                return MutationReceipt(
+                    (Mutation(archived["claim_ref"], archived["claim_revision"], archived["disposition"], archived["state"]),),
+                    tx.status().memory_epoch,
+                    replayed=True,
+                )
         item = _revise_in_transaction(tx, clock, request)
+        if receipt_key is not None:
+            tx.receipts.record(
+                receipt_key,
+                request_id,
+                payload_sha256,
+                item.ref,
+                item.revision,
+                item.disposition,
+                item.state,
+                clock.utc_now(),
+            )
         epoch = tx.status().memory_epoch
     return MutationReceipt((item,), epoch)
 
