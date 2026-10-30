@@ -2,6 +2,10 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [Unreleased]
+
+`revise` answers a replayed `request_id` with the receipt its first call committed, so a client that could not confirm a write no longer duplicates the correction or reports `VERSION_CONFLICT` — the code a genuine concurrent writer produces — against the revision its own earlier call consumed. Both host surfaces forward a caller-supplied id and keep the envelope id they mint themselves echo-only, so an ordinary call writes no receipt. The same id under a different body is refused as `REQUEST_ID_REUSED` before any revision comparison. The replay is read-only: no second version, no new work, and the memory epoch does not move. Schema 1113 adds the `mutation_receipts` table; `upgrade_1112` creates it on an existing store, and the upgrade needs no manual step.
+
 ## [3.16.1] - 2026-10-28
 
 Outside Windows, a native import probe that times out or cannot start no longer leaves the process without vectors until it restarts. The child that rehearses `import lancedb, pyarrow` ends itself after 10 seconds, even when its host has already exited. A later call retries an attempt that did not finish after a 30-second cooldown, which doubles for each further unfinished attempt up to 30 minutes; a completed result stays cached as before. Callers share one child, and a recall or prefetch waits for it only within its remaining request budget. A probe that does not pass logs one line with its outcome (the timeout, the exit status or signal, or the start error's type and errno) and nothing the child printed; a passing probe logs nothing. Windows, where vectors run in a separate helper process, is unchanged.

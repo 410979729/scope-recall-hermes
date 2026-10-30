@@ -556,11 +556,17 @@ class CodexMCPServer:
         body["new_value"] = new_value
         body["valid_from"] = valid_from
         body.pop("request_id")
+        # Only a caller-supplied id is a replay identity; ``_request`` also mints
+        # its own echo-only call id when the caller sent none.
+        caller_request_id = request_id
         # The stdio server has no attested Codex user turn.  Core still
         # requires its own human evidence and expected revision before
         # changing state.
         receipt = self.core.revise(
-            self._request_context(ctx, mutation=True, origin="human_direct"), body, remaining_seconds=1.0
+            self._request_context(ctx, mutation=True, origin="human_direct"),
+            body,
+            remaining_seconds=1.0,
+            request_id=caller_request_id,
         )
         return self._reply(ctx, call_id, receipt)
 

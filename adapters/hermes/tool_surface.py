@@ -401,11 +401,15 @@ class HermesToolSurface:
 
     def _handle_revise(self, args: object) -> str:
         context = self._tool_context(mutation=True)
+        # Only a caller-supplied id is a replay identity.  The envelope id this
+        # surface generates is echo-only; forwarding it would write a receipt row
+        # on every ordinary call.
+        caller_request_id = args.get("request_id") if isinstance(args, dict) else None
         body = self._tool_body(args, "revise")
         request_id = body.pop("request_id")
         # Core remains the only authority for current human evidence,
         # expected revisions, scope, and transaction/receipt semantics.
-        receipt = self._require_core().revise(context, body, remaining_seconds=1.0)
+        receipt = self._require_core().revise(context, body, remaining_seconds=1.0, request_id=caller_request_id)
         return self._reply(request_id, receipt)
 
     def _handle_forget(self, args: object) -> str:

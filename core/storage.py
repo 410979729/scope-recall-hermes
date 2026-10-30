@@ -37,6 +37,7 @@ from .schema import (
     upgrade_1109,
     upgrade_1110,
     upgrade_1111,
+    upgrade_1112,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -151,6 +152,12 @@ class Transaction:
     @property
     def deletions(self):
         return Deletions(self)
+
+    @property
+    def receipts(self):
+        from .mutation_receipts import MutationReceipts  # on first use: read paths never need it
+
+        return MutationReceipts(self)
 
     @property
     def episodes(self):
@@ -688,6 +695,7 @@ class SQLiteStorage:
             upgrade_1109,
             upgrade_1110,
             upgrade_1111,
+            upgrade_1112,
         )
         for version, migrate in zip(UPGRADE_CHAIN, migrations, strict=True):
             if conn.execute("PRAGMA user_version").fetchone()[0] == version:
