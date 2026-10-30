@@ -258,6 +258,17 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
 #: before the next sweep.
 CANDIDATE_QUEUE_CEILING = PROCESS_BATCH_LIMIT * 12
 
+#: Work types the reserved candidate lane may claim: the lane exists so a deep
+#: embed/consolidate backlog cannot starve candidate evaluation, and ``purge``
+#: rides along because retention keeps its absolute priority inside any page.
+CANDIDATE_LANE_TYPES = frozenset({"purge", "evaluate_candidate"})
+
+#: Every fourth claim is reserved for that lane.  One claim in four is enough to
+#: keep a ``candidate_batch_limit`` batch reachable in a pass of ``max_items``,
+#: and it leaves three claims in four to the backlog, so the lane neither
+#: starves evaluation nor stops the oldest work from moving.
+CANDIDATE_LANE_EVERY = 4
+
 #: Stale pending candidates a pass returns to waiting for evidence, each checked again under the writer lease;
 #: 2,045 of them, as one store held, take about 64 passes.
 STALE_PENDING_PAGE = 32
@@ -502,6 +513,10 @@ def drain_worker(
     reserves = _request_reserves(config, ports)
     paused: list[str] = []
     candidate_ceiling = min(config.candidate_batch_limit, config.max_items)
+    #: Claim pages taken this pass.  The reserved lane counts pages, not
+    #: receipts: one embed claim fills a group of several, so a receipt count
+    #: skips over most of the every-fourth positions.
+    claims_this_pass = 0
     while len(receipts) < config.max_items and budget_left(started, clock, budget) > 0:
         left = budget_left(started, clock, budget)
         allowed = allowed - {work_type for work_type, reserve in reserves.items() if left < reserve}
@@ -510,15 +525,32 @@ def drain_worker(
         # any pass, a one-claim pass included, and the oldest work keeps moving
         # however busy the chat is.  A default runtime pass (120 s, 45 s
         # requests) fits two model requests, so each such pass reaches the lane.
-        with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
-            claimed = tx.work.claim_next(
-                config.owner_id,
-                clock.utc_now(),
-                lease_seconds=config.lease_seconds,
-                limit=1,
-                allowed_work_types=allowed,
-                fresh_lane=len(receipts) % 2 == 1,
-            )
+        # Every fourth claim is reserved for candidate evaluation.  FIFO alone
+        # never reaches it while any older embed or consolidate row is ready,
+        # so a backlog of one lane decides whether candidates are judged at all;
+        # ``candidate_batch_limit`` then bounds a batch that is never claimed.
+        # ``purge`` stays in the reserved set, so retention work is never starved
+        # by the reservation.  An empty reserve falls back to the FIFO page, so a
+        # pass with no candidate ready spends nothing on the lane.
+        reserved = (
+            allowed & CANDIDATE_LANE_TYPES
+            if claims_this_pass % CANDIDATE_LANE_EVERY == CANDIDATE_LANE_EVERY - 1
+            else None
+        )
+        claims_this_pass += 1
+        claimed = ()
+        for lane_allowed in ((reserved, allowed) if reserved else (allowed,)):
+            with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+                claimed = tx.work.claim_next(
+                    config.owner_id,
+                    clock.utc_now(),
+                    lease_seconds=config.lease_seconds,
+                    limit=1,
+                    allowed_work_types=lane_allowed,
+                    fresh_lane=len(receipts) % 2 == 1,
+                )
+            if claimed:
+                break
         if not claimed:
             break
         item = claimed[0]
