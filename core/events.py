@@ -79,6 +79,15 @@ def segment_key(group_key: str, index: int) -> str:
     return f"segmented-{hashlib.sha256(group_key.encode('utf-8')).hexdigest()}/{index}"
 
 
+def capture_content_digests(content: str) -> tuple[str, ...]:
+    """The ``content_sha256`` of each sanitized segment a capture of this text stores, in order."""
+    filtered = sanitize_source_capture_text(content)
+    return tuple(
+        hashlib.sha256(filtered[start : start + MAX_SEGMENT_CHARS].encode("utf-8")).hexdigest()
+        for start in range(0, max(1, len(filtered)), MAX_SEGMENT_CHARS)
+    )
+
+
 def stored_content_digest(content: str) -> str:
     """The ``content_sha256`` a capture of ``content`` is stored under: its first segment's, when it is split."""
     return hashlib.sha256(sanitize_source_capture_text(content)[:MAX_SEGMENT_CHARS].encode("utf-8")).hexdigest()

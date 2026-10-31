@@ -17,6 +17,7 @@ import json
 import math
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol, cast
@@ -26,6 +27,7 @@ from ..core.deadline import RequestDeadline, using_request_deadline
 from ..core.recall_policy import SPACE_ID, claim_embedding_text
 from ..core.retrieval import CandidateRef, SearchContext
 from ..core.source_records import StoredSource
+from ..core.vector_failure import vector_phase
 
 _OBJECT_KINDS = frozenset({"event", "claim", "episode", "artifact", "reference"})
 _MAX_DIMENSIONS = 32768
@@ -681,7 +683,7 @@ class LanceVectorPort:
                 # The embedding took the time the search needed.  An empty answer here would report no gap: the recall
                 # would look as if it had searched by meaning and found nothing.
                 raise TimeoutError("native vector helper request deadline exhausted before the search")
-            for row in search_scopes(query_vector, scope_ids=list(logical), limit=limit) or ():
+            for row in self._search_rows(search_scopes, query_vector, scope_ids=list(logical), limit=limit):
                 partition = row.get("scope_id") if isinstance(row, Mapping) else None
                 if partition in logical:
                     candidate = self._candidate_from_row(row, trusted, partition, logical[partition])
@@ -700,13 +702,19 @@ class LanceVectorPort:
                 return hits
             searched = True
             started = self._clock()
-            rows = self._store.search(query_vector, scope_id=partition, limit=limit)
+            rows = self._search_rows(self._store.search, query_vector, scope_id=partition, limit=limit)
             reserve = max(reserve, self._clock() - started)
             for row in rows or ():
                 candidate = self._candidate_from_row(row, trusted, partition, logical_scope_id)
                 if candidate is not None:
                     hits.append(candidate)
         return hits
+
+    def _search_rows(self, search, vector, **kwargs):
+        """Time stores without native RPC diagnostics at their actual search boundary."""
+        managed = getattr(self._store, "reports_vector_execution", False)
+        with nullcontext() if managed else vector_phase("vector", "search"):
+            return list(search(vector, **kwargs) or ())
 
     def _candidate_from_row(
         self,

@@ -57,6 +57,8 @@ class HookDiagnostics:
     recall_vector_gap: str | None = None
     #: Whether the recall ran its vector search: what a hook asks of its server's answer (``_resident_answer``).
     recall_vectors: bool | None = None
+    #: Fixed execution flags, phase codes and elapsed milliseconds for the chosen recall.
+    recall_trace: dict | None = None
     #: How long attaching the runtime (vector store, embedding worker) took, when this hook attached it.
     runtime_attach_ms: int | None = None
     #: How long all of this hook's captures took: a Stop writes each session-record line (``capture_elapsed_ms`` is

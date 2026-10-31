@@ -29,6 +29,11 @@ from .source_records import PROJECT_IDENTITY_KEY, SourceWrite, StoredSource
 from .visibility import allowed
 
 
+def source_reference(installation_id: str, key: str) -> str:
+    """The stable source reference of an event key within one installation."""
+    return "event-" + hashlib.sha256(canonical([installation_id, key]).encode("utf-8")).hexdigest()
+
+
 def _seconds_apart(first: object, second: object) -> float:
     """How far apart two stored ISO times are; unreadable times are never close."""
     try:
@@ -250,10 +255,7 @@ class Sources:
         return copy
 
     def _source_ref(self, key: str) -> str:
-        return (
-            "event-"
-            + hashlib.sha256(canonical([self._tx.context.binding.installation_id, key]).encode("utf-8")).hexdigest()
-        )
+        return source_reference(self._tx.context.binding.installation_id, key)
 
     def _hidden_refs(self, events) -> list[str]:
         """The refs a message's parts would take that a deletion hides."""

@@ -154,3 +154,28 @@ def test_a_huge_claim_payload_is_bounded_too():
     payload = {"subject": "TEST-subject", "predicate": "是", "value_text": "v" * 70000, "conditions": []}
     encoded = encode_embedding_text(claim_embedding_text(payload), kind="document")
     assert len(encoded) < 70000 and encoded.endswith(TRUNCATION_MARKER)
+
+
+def test_prefetch_wait_timeout_names_its_phase(monkeypatch):
+    import time
+
+    from scope_recall.runtime import instance
+    from scope_recall.runtime.instance import _QueryEmbedding
+    from scope_recall.runtime.models import AuxiliaryModelError
+
+    pending = _QueryEmbedding(("TEST query",), time.monotonic() + 1)
+    with pytest.raises(AuxiliaryModelError) as failure:
+        pending.result(time.monotonic())
+    assert getattr(failure.value, "phase", None) == "prefetch"
+    assert failure.value.elapsed_ms >= 0
+
+    pending = _QueryEmbedding(("TEST query",), 1.0)
+    moments = iter((2.0, 2.0, 2.017))
+    with monkeypatch.context() as patched:
+        patched.setattr(instance.time, "monotonic", lambda: next(moments))
+        pending.run(lambda *args: pytest.fail("an expired prefetch must not call the embedding route"))
+    with pytest.raises(TimeoutError, match="query embedding stage deadline exhausted") as expired:
+        pending.result(time.monotonic() + 1)
+    assert type(expired.value) is TimeoutError
+    assert getattr(expired.value, "phase", None) == "prefetch"
+    assert expired.value.elapsed_ms == 17

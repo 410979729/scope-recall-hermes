@@ -798,3 +798,58 @@ def test_ledger_clock_excludes_physical_transactions_but_preserves_their_rows(tm
     assert clock() - started == 0.25, "non-ledger work retains its real cost"
     with closing(connect(path)) as db:
         assert db.execute("SELECT status,actual_input FROM requests").fetchall() == [("http_200", 1)]
+
+
+@pytest.mark.parametrize("phase", ["connect", "read"])
+def test_worker_socket_failure_phase_survives_transport_decode(monkeypatch, phase):
+    from scope_recall.runtime import _http_worker as worker
+
+    class Connection:
+        sock = None
+        timeout = None
+
+        def connect(self):
+            if phase == "connect":
+                raise TimeoutError
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            raise TimeoutError
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(worker, "_open_https_connection", lambda *args, **kwargs: Connection())
+    request = models._worker_request(
+        "https://synthetic.invalid/", body=b"TEST", headers={}, budget=1, max_response_bytes=128
+    )
+    with pytest.raises(models.AuxiliaryModelError) as failure:
+        models._worker_reply(worker._request(request), 128)
+    assert failure.value.error_type == "timeout"
+    assert getattr(failure.value, "phase", None) == phase
+    assert failure.value.elapsed_ms >= 0
+
+
+def test_embedding_slot_wait_has_its_own_failure_phase(monkeypatch):
+    pool = models.HttpsTransportPool(size=1)
+    pool._available.clear()
+    try:
+        with pytest.raises(models.AuxiliaryModelError) as failure:
+            pool.post(
+                "https://synthetic.invalid/", body=b"TEST", headers={}, timeout_seconds=0.01, max_response_bytes=128
+            )
+        assert getattr(failure.value, "phase", None) == "connection_slot"
+        assert failure.value.elapsed_ms >= 0
+    finally:
+        pool.close()
+
+
+def test_parent_deadline_keeps_worker_read_phase(persistent_transport):
+    transport, _, _ = persistent_transport
+    assert _persistent_post(transport) == (200, b"ok")
+    with pytest.raises(models.AuxiliaryModelError) as failure:
+        _persistent_post(transport, b"slow", timeout=0.1)
+    assert getattr(failure.value, "phase", None) == "read"
+    assert failure.value.elapsed_ms >= 0

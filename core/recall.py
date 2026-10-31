@@ -46,12 +46,13 @@ from .retrieval import (
     RetrievedObject,
     SearchContext,
     SearchLimits,
+    current_prompt_refs,
     effective_limits,
     optional_json,
 )
 from .retrieval_hydration import replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
-from .vector_failure import vector_failure_label
+from .vector_failure import note_embedding_failure, vector_failure_label
 
 #: Ceiling on the candidates hydrated after the deadline is already gone.
 #:
@@ -378,6 +379,7 @@ class RetrievalPipeline:
                 )
             )
         except Exception as exc:
+            note_embedding_failure(exc)
             # The class alone does not say what went wrong; see core/vector_failure.py.
             gaps.append("vector_unavailable")
             gaps.append(f"vector_error:{vector_failure_label(exc)}")
@@ -916,6 +918,7 @@ class RetrievalPipeline:
             with self.storage.read(
                 working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)
             ) as tx:
+                working = replace(working, current_source_refs=current_prompt_refs(tx, working.current_source_refs))
                 epoch = self.storage_reader.epoch(tx)
                 if working.automatic_injection and not working.focus_refs:
                     reason = automatic_recall_skip_reason(

@@ -159,11 +159,14 @@ def test_unsupported_proxy_fails_without_direct_connection(monkeypatch: pytest.M
 
     result = _decode_result(worker._request(_payload()))
 
+    elapsed = result.pop("elapsed_ms")
+    assert type(elapsed) is int and elapsed >= 0
     assert result == {
         "ok": False,
         "status": None,
         "body_b64": "",
         "error": "http_protocol",
+        "phase": "connect",
     }
     assert _RecordingHTTPSConnection.created == []
     assert _RecordingHTTPSConnection.connect_calls == 0
@@ -245,13 +248,13 @@ def test_deadline_guard_before_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_connection(monkeypatch)
     monkeypatch.setattr(worker.urllib.request, "getproxies", dict)
     monkeypatch.setattr(worker.urllib.request, "proxy_bypass", lambda _host: True)
-    times = iter([0.0, 0.0, 0.6])
+    times = iter([0.0, 0.0, 0.6, 0.6])
 
     monkeypatch.setattr(worker.time, "monotonic", lambda: next(times))
 
     result = _decode_result(worker._request(_payload(timeout_seconds=0.5)))
 
-    assert result["error"] == "timeout"
+    assert (result["error"], result["phase"], result["elapsed_ms"]) == ("timeout", "connect", 600)
     assert _RecordingHTTPSConnection.connect_calls == 0
 
 

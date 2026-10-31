@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ from .inbox_rules import (
     deferred_path,
     replayable,
 )
+from .source_storage import source_reference
 from .truth_connection import TruthDatabaseConnectionError
 from .writer_lease import TruthWriterBusyError
 
@@ -175,8 +177,41 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     return token, prepared
 
 
+class PendingCapture:
+    """A durably enqueued capture's latest receipt, published by its immediate commit thread.
+
+    The thread owns no open transaction at handoff. Process exit can discard it;
+    the inbox row remains until record_event commits all effects atomically.
+    """
+
+    def __init__(self, prepared, installation_id):
+        self.receipt = _waiting(prepared, None)
+        self.done = threading.Event()
+        self.current_refs = tuple(
+            f"{source_reference(installation_id, e['source_event_key'])}@{e['source_revision']}"
+            for e in prepared.events
+        )
+
+    def run(self, commit):
+        """Publish the terminal receipt; an unexpected failure leaves durable replay responsible."""
+        try:
+            self.receipt = commit()
+        except Exception:  # noqa: BLE001 - durable ingress retains the capture for replay
+            pass
+        finally:
+            self.done.set()
+
+
 def durable_record_event(
-    storage, clock, context, value, *, scope_id, host_scope, admission_policy=None, remaining_seconds=1.0
+    storage,
+    clock,
+    context,
+    value,
+    *,
+    scope_id,
+    host_scope,
+    admission_policy=None,
+    remaining_seconds=1.0,
 ):
     started = time.monotonic()
     deadline = started + remaining_seconds
@@ -184,16 +219,7 @@ def durable_record_event(
         storage, clock, context, value, scope_id=scope_id, host_scope=host_scope, remaining_seconds=remaining_seconds
     )
     if token is None:
-        refused = prepared.rejection is None
-        return CaptureReceipt(
-            "rejected",
-            (),
-            "not_persisted",
-            "not_indexed",
-            "not_scheduled",
-            (*prepared.gaps, "private_mode") if refused else prepared.gaps,
-            "PRIVATE_MODE" if refused else prepared.rejection,
-        )
+        return _refused(prepared)
     # The commit is a second write.  Started with less time left than the inbox write took, on a store that slow it
     # would run past the capture's time: the capture is durable in the inbox already, and the worker's replay, or the
     # next one a host runs, commits it.
@@ -202,13 +228,60 @@ def durable_record_event(
     return _commit(storage, clock, context, token, prepared, scope_id, admission_policy, deadline)
 
 
-def _waiting(prepared, code: str) -> CaptureReceipt:
+def _refused(prepared):
+    refused = prepared.rejection is None
+    return CaptureReceipt(
+        "rejected",
+        (),
+        "not_persisted",
+        "not_indexed",
+        "not_scheduled",
+        (*prepared.gaps, "private_mode") if refused else prepared.gaps,
+        "PRIVATE_MODE" if refused else prepared.rejection,
+    )
+
+
+def start_record_event(
+    storage, clock, context, value, *, scope_id, host_scope, admission_policy=None, remaining_seconds=1.0
+):
+    """Durably enqueue a host capture and immediately commit it on a daemon thread.
+
+    Only a long-lived server uses this path; the commit keeps its own lease and
+    deadline, independent of the prompt's recall and the lifetime of its handler.
+    """
+    token, prepared = enqueue(
+        storage, clock, context, value, scope_id=scope_id, host_scope=host_scope, remaining_seconds=remaining_seconds
+    )
+    if token is None:
+        return _refused(prepared)
+    pending = PendingCapture(prepared, context.binding.installation_id)
+    threading.Thread(
+        target=pending.run,
+        args=(
+            lambda: _commit(
+                storage,
+                clock,
+                context,
+                token,
+                prepared,
+                scope_id,
+                admission_policy,
+                time.monotonic() + remaining_seconds,
+            ),
+        ),
+        name="scope-recall-prompt-commit",
+        daemon=True,
+    ).start()
+    return pending
+
+
+def _waiting(prepared, code: str | None) -> CaptureReceipt:
     """The receipt of a capture the inbox keeps for the next pass, which says so: without the gap a pass that met a
     busy writer, or ran out of time, would say nothing."""
     return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, INGRESS_PENDING_GAP), code)
 
 
-def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline, *, rekeyed=False):
+def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline, *, path="original"):
     try:
         receipt = record_event(
             storage,
@@ -221,11 +294,15 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
             _prepared=prepared,
             _inbox_token=token,
         )
+        if receipt.disposition == "conflict" and path != "normalized":
+            stored = _as_stored(storage, clock, context, prepared, (token, scope_id), policy, deadline)
+            if stored is not None:
+                return stored
         if receipt.disposition in {"conflict", "cancelled"}:
             # A capture that conflicts under the key it was given for its content stays final: written back as a
             # bare conflict, it would be given the same key and refused again on every pass.  With no time left for
             # that write the next pass meets the same refusal and writes it then.
-            code = _REKEYED_CONFLICT if rekeyed and receipt.disposition == "conflict" else receipt.error_code
+            code = _REKEYED_CONFLICT if path == "rekeyed" and receipt.disposition == "conflict" else receipt.error_code
             try:
                 with storage.write(context, remaining_seconds=deadline - time.monotonic()) as tx:
                     tx._check(write=True).execute(
@@ -233,7 +310,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
                     )
             except (*_TRANSIENT, ContractError):
                 pass
-            return receipt
+            return replace(receipt, durability="queued") if receipt.disposition == "conflict" else receipt
         if receipt.durability == "persisted":
             return receipt
         code = receipt.error_code or "STORAGE_UNAVAILABLE"
@@ -448,7 +525,9 @@ def _replay_row(storage, clock, context, row, authorize, admission_policy, deadl
         revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=False)
         stored = None
         if rekey and revalidated is not None:
-            stored = _as_stored(storage, clock, *revalidated, row, admission_policy, deadline)
+            stored = _as_stored(
+                storage, clock, *revalidated, (row["token"], row["scope_id"]), admission_policy, deadline
+            )
             if stored is None:
                 revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=True)
     except _TRANSIENT:
@@ -473,12 +552,20 @@ def _replay_row(storage, clock, context, row, authorize, admission_policy, deadl
         )
     original, prepared = revalidated
     receipt = _commit(
-        storage, clock, original, row["token"], prepared, row["scope_id"], admission_policy, deadline, rekeyed=rekey
+        storage,
+        clock,
+        original,
+        row["token"],
+        prepared,
+        row["scope_id"],
+        admission_policy,
+        deadline,
+        path="rekeyed" if rekey else "original",
     )
     return receipt, False
 
 
-def _as_stored(storage, clock, context, prepared, row, policy, deadline) -> CaptureReceipt | None:
+def _as_stored(storage, clock, context, prepared, ingress, policy, deadline) -> CaptureReceipt | None:
     """A conflicted capture committed as the message its key holds, when it is that message dated anew.
 
     A host can send a message again with a moment of its own (dsh's plugin sends a turn's reply with each later Stop
@@ -487,6 +574,7 @@ def _as_stored(storage, clock, context, prepared, row, policy, deadline) -> Capt
     stored and leaves the inbox; re-keyed, it would be stored a second time.  Its receipt, or None when a part's key
     holds nothing or other words, or the capture differs in more than its moment: a key collision, which is re-keyed.
     """
+    token, scope_id = ingress
     events = []
     with storage.read(context, remaining_seconds=deadline - time.monotonic()) as tx:
         for event in prepared.events:
@@ -505,11 +593,12 @@ def _as_stored(storage, clock, context, prepared, row, policy, deadline) -> Capt
         storage,
         clock,
         context,
-        row["token"],
+        token,
         PreparedCapture(tuple(events), prepared.gaps),
-        row["scope_id"],
+        scope_id,
         policy,
         deadline,
+        path="normalized",
     )
     return None if receipt.disposition == "conflict" else receipt
 
