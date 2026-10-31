@@ -24,6 +24,7 @@ from ..contracts import (
 )
 from . import private
 from .capture import CaptureReceipt, record_event
+from .capture_filters import redact_secret_text
 from .deadline import fits
 from .delete_storage import canonical
 from .events import PreparedCapture, prepare_capture, segment_key
@@ -58,9 +59,12 @@ def _terminal_code(exc: ContractError) -> str:
 
 
 def context_payload(context):
-    """Serialize capture authority without its binding; replay supplies and revalidates that binding."""
+    """Serialize exact authority and a masked display name; replay supplies and revalidates the binding."""
     if context.import_provenance is not None or context.actor_origin == "imported":
         raise ContractError("ACCESS_DENIED", "ingress_import_attestation")
+    principal = context.source_principal.to_payload() if context.source_principal is not None else None
+    if principal is not None and "display_name" in principal:
+        principal["display_name"] = redact_secret_text(principal["display_name"])[0]
     payload = dict(
         session_id=context.session_id,
         actor_origin=context.actor_origin,
@@ -69,7 +73,7 @@ def context_payload(context):
         branch_id=context.branch_id,
         task_anchor=context.task_anchor,
         environment_revision=context.environment_revision,
-        source_principal=(context.source_principal.to_payload() if context.source_principal is not None else None),
+        source_principal=principal,
         display_snapshot=context.display_snapshot.to_payload() if context.display_snapshot else None,
     )
     # A local store's old inbox rows have no project root.  Omitting it when absent
@@ -88,11 +92,25 @@ def context_payload(context):
     return payload
 
 
+def _prepared_ingress(value, context):
+    """Revalidate masked retry segments while retaining their original count and capture gaps."""
+    if not isinstance(value, PreparedCapture):
+        return prepare_capture(value, context)
+    if not value.rejection:
+        if not value.events:
+            raise ContractError("INPUT_INVALID", "unprepared_source")
+        for event in value.events:
+            checked = prepare_capture(event, context)
+            if checked.rejection or checked.events != (event,):
+                raise ContractError("INPUT_INVALID", "unprepared_source")
+    return value
+
+
 def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_seconds=1.0):
     storage._context_check(context)
     if scope_id not in context.allowed_scope_ids:
         raise ContractError("ACCESS_DENIED")
-    prepared = prepare_capture(value, context)
+    prepared = _prepared_ingress(value, context)
     if prepared.rejection:
         return None, prepared
     if host_scope is None and not context.binding.test_mode:
@@ -100,6 +118,8 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     body: dict = dict(
         events=prepared.events, gaps=prepared.gaps, context=context_payload(context), host_scope=host_scope
     )
+    if prepared.masked_secret_count:
+        body["masked_secret_count"] = prepared.masked_secret_count
     encoded = canonical(body)
     if len(encoded.encode("utf-8")) > 2097152:
         raise ContractError("INPUT_INVALID", "ingress_item_budget")
@@ -164,7 +184,15 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
                 or previous["host_scope"] != host_scope
             ):
                 raise ContractError("VERSION_CONFLICT", "ingress_identity")
-            return token, PreparedCapture(tuple(previous["events"]), tuple(previous["gaps"]))
+            # The queued copy keeps its own moment; the private check made above was for this retry's, so the commit
+            # checks the copy again.
+            return token, replace(
+                prepared,
+                events=tuple(previous["events"]),
+                gaps=tuple(previous["gaps"]),
+                masked_secret_count=previous.get("masked_secret_count", 0),
+                private_revision=None,
+            )
         count, size = conn.execute(
             "SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM capture_inbox"
         ).fetchone()
@@ -238,6 +266,7 @@ def _refused(prepared):
         "not_scheduled",
         (*prepared.gaps, "private_mode") if refused else prepared.gaps,
         "PRIVATE_MODE" if refused else prepared.rejection,
+        masked_secret_count=prepared.masked_secret_count,
     )
 
 
@@ -278,7 +307,16 @@ def start_record_event(
 def _waiting(prepared, code: str | None) -> CaptureReceipt:
     """The receipt of a capture the inbox keeps for the next pass, which says so: without the gap a pass that met a
     busy writer, or ran out of time, would say nothing."""
-    return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, INGRESS_PENDING_GAP), code)
+    return CaptureReceipt(
+        "queued",
+        (),
+        "queued",
+        "pending",
+        "pending",
+        (*prepared.gaps, INGRESS_PENDING_GAP),
+        code,
+        masked_secret_count=prepared.masked_secret_count,
+    )
 
 
 def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline, *, path="original"):
@@ -333,7 +371,16 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         code = "STORAGE_UNAVAILABLE"
     if code in _PASSING:
         return _waiting(prepared, code)
-    return CaptureReceipt("queued", (), "queued", "pending", "pending", prepared.gaps, code)
+    return CaptureReceipt(
+        "queued",
+        (),
+        "queued",
+        "pending",
+        "pending",
+        prepared.gaps,
+        code,
+        masked_secret_count=prepared.masked_secret_count,
+    )
 
 
 #: How storage refuses a copy of a deleted message under that message's key, or a later version or part of the deleted
@@ -362,6 +409,7 @@ def _refused_for_a_delete(storage, context, token, prepared, deadline) -> Captur
         "unchanged",
         (*prepared.gaps, SOURCE_DELETED_GAP),
         "ACCESS_DENIED",
+        masked_secret_count=prepared.masked_secret_count,
     )
 
 
@@ -594,7 +642,8 @@ def _as_stored(storage, clock, context, prepared, ingress, policy, deadline) -> 
         clock,
         context,
         token,
-        PreparedCapture(tuple(events), prepared.gaps),
+        # Dated with the stored moment, the parts are checked against private intervals at that moment.
+        replace(prepared, events=tuple(events), private_revision=None),
         scope_id,
         policy,
         deadline,
@@ -653,7 +702,10 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
         if checked.rejection:
             raise ContractError("ACCESS_DENIED", "ingress_payload")
         events.extend(checked.events)
-    return original, PreparedCapture(tuple(events), tuple(body["gaps"]))
+    count = body.get("masked_secret_count", 0)
+    if type(count) is not int or count < 0:
+        raise ContractError("INPUT_INVALID", "masked_secret_count")
+    return original, PreparedCapture(tuple(events), tuple(body["gaps"]), masked_secret_count=count)
 
 
 def _utc(clock) -> datetime:

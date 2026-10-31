@@ -411,6 +411,28 @@ def test_missing_public_fields_do_not_capture(handler, installed):
         assert db.execute("SELECT count(*) FROM source_events").fetchone()[0] == 0
 
 
+def test_hook_diagnostics_report_mask_count_without_values(handler, installed, capsys):
+    from scope_recall.adapters.clients.hook_answer import emit_result
+
+    hook, project_root, config = handler
+    hook.handle_payload(_payload(project_root, "UserPromptSubmit", prompt='TEST api_key: "a"'))
+    assert hook.diagnostics.capture_durability == "persisted"
+    assert hook.diagnostics.masked_secret_count == 1
+    with sqlite3.connect(config.data_directory / "memory.sqlite3") as db:
+        assert db.execute("SELECT content FROM source_events WHERE role='user'").fetchone()[0] == (
+            'TEST api_key: "[REDACTED_SECRET]"'
+        )
+    capsys.readouterr()
+    emit_result({}, diagnostics=hook.diagnostics)
+    diagnostic = capsys.readouterr().err
+    detail = json.loads(
+        next(
+            line.removeprefix("CODEX_CAPTURE:") for line in diagnostic.splitlines() if line.startswith("CODEX_CAPTURE:")
+        )
+    )
+    assert detail["masked_secret_count"] == 1 and "api_key" not in diagnostic
+
+
 def test_missing_turn_id_records_capability_gap_not_default_turn(handler, installed):
     hook, project_root, config = handler
     payload = _payload(project_root, "UserPromptSubmit", prompt="hello")

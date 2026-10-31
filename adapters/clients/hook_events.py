@@ -151,13 +151,13 @@ class HookEvents:
         read_mode = getattr(self._hook.core, "private_mode", None)
         mode = read_mode(context) if callable(read_mode) else None
         vectors = (
-            self._hook.call.captured
-            or (
-                event is not None
-                and (mode == "read-only" or not self._hook.diagnostics.capture_refused)
-                and not contains_secret_like_text(prompt)
+            (
+                self._hook.call.captured
+                or (event is not None and (mode == "read-only" or not self._hook.diagnostics.capture_refused))
             )
-        ) and self._hook.remaining(deadline) >= RUNTIME_ATTACH_MIN_S
+            and not contains_secret_like_text(prompt)
+            and self._hook.remaining(deadline) >= RUNTIME_ATTACH_MIN_S
+        )
         if vectors:
             self._hook.ensure_runtime(audience, deadline=deadline)
             if self._hook.call.queued and not self._hook.background_prompt_capture:
@@ -169,7 +169,7 @@ class HookEvents:
         # The turn is recalled whether or not its message was stored; skipping here would leave it without memory
         # whenever the store is busy, which is when a writer holds the lease.  A message that failed or still
         # waits in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
-        # out.  One refused (a credential) attached no runtime above, so its recall has no vector channel and
+        # out.  One holding a credential attached no runtime above, so its recall has no vector channel and
         # nothing of it goes to an embedding provider.
         request_id = f"{self._hook.host}-auto:{session_id}:{turn_id}"
         since = None

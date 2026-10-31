@@ -9,7 +9,7 @@ from typing import Any
 
 from .gating import clean_text
 from .secret_patterns import (
-    PEM_PRIVATE_KEY_BEGIN_RE,
+    REDACTED_SECRET,
     contains_secret_like_text,
     is_sensitive_mapping_key,
     secret_redaction_spans,
@@ -185,24 +185,6 @@ def sanitize_capture_text(text: Any) -> str:
     return re.sub(r"\n{3,}", "\n\n", sanitized)
 
 
-def _redact_private_key_blocks(text: str) -> str:
-    """Redact complete or truncated PEM private-key blocks fail closed."""
-
-    output: list[str] = []
-    cursor = 0
-    lowered = text.casefold()
-    while match := PEM_PRIVATE_KEY_BEGIN_RE.search(text, cursor):
-        output.append(text[cursor : match.start()])
-        output.append("[REDACTED_SECRET]")
-        end_marker = f"-----END {match.group('label')}-----".casefold()
-        end_start = lowered.find(end_marker, match.end())
-        if end_start < 0:
-            return "".join(output)
-        cursor = end_start + len(end_marker)
-    output.append(text[cursor:])
-    return "".join(output)
-
-
 def redact_secret_like_text(text: Any) -> str:
     """Replace every secret-like span with ``[REDACTED_SECRET]``.
 
@@ -210,27 +192,32 @@ def redact_secret_like_text(text: Any) -> str:
     touch.  One pattern at a time, an earlier match could swallow the key of a later secret and leave its
     value in the output: ``{"password":"x","api_token": "abc123def"}`` would keep ``abc123def``.
     """
-    cleaned = clean_text(text)
-    if not cleaned:
-        return ""
-    redacted = _redact_private_key_blocks(cleaned)
+    return redact_secret_text(clean_text(text))[0]
+
+
+def redact_secret_text(text: str) -> tuple[str, int]:
+    """Return exact source text with merged secret spans replaced, and the number replaced.
+
+    No whitespace or transport normalization occurs here. An inexact map, an ambiguous continuation, a PEM
+    private key or a result that still scans as a secret withholds the entire text as the shared marker.
+    """
     spans: list[list[int]] = []
-    for start, end in sorted(secret_redaction_spans(redacted)):
+    for start, end in sorted(secret_redaction_spans(text)):
         if spans and start <= spans[-1][1]:
             spans[-1][1] = max(spans[-1][1], end)
         else:
             spans.append([start, end])
     parts, cursor = [], 0
     for start, end in spans:
-        parts.append(redacted[cursor:start])
-        parts.append("[REDACTED_SECRET]")
+        parts.append(text[cursor:start])
+        parts.append(REDACTED_SECRET)
         cursor = end
-    parts.append(redacted[cursor:])
+    parts.append(text[cursor:])
     redacted = "".join(parts)
     # Joined around a replacement, text could read as a secret again; it is not handed on in part.
     if contains_secret_like_text(redacted):
-        return "[REDACTED_SECRET]"
-    return redacted
+        return REDACTED_SECRET, max(1, len(spans))
+    return redacted, len(spans)
 
 
 def redact_private_paths(text: Any) -> str:

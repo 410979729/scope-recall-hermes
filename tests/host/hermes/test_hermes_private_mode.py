@@ -1,5 +1,6 @@
 """Hermes private intervals cover live callbacks, delayed sync and kept capture replay."""
 
+import json
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -7,6 +8,8 @@ import pytest
 from scope_recall.adapters.hermes import capture_retry, kept_captures
 from scope_recall.adapters.hermes.boundary import STEER_KIND
 from scope_recall.adapters.hermes.capture import RetryCapture
+from scope_recall.contracts import ContractError, TrustedSourcePrincipal
+from scope_recall.core import capture_inbox
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
 
@@ -22,6 +25,99 @@ def _owner(provider):
 def _contents(provider, ctx):
     with provider._require_core().storage.read(ctx) as tx:
         return [row[0] for row in tx._check().execute("SELECT content FROM source_events")]
+
+
+def test_masked_retry_keeps_safe_context_count_and_gaps_through_disk_and_inbox(adapter, monkeypatch):
+    provider, clock = adapter
+    bound = provider._require_identity()
+    ctx = replace(
+        bound.trusted_context(),
+        source_principal=TrustedSourcePrincipal("human", "verified", "TEST-principal", 'TEST password: "Synthet1c"'),
+    )
+    key = ("TEST-masked-retry", 1)
+    event = source_event(source_event_key=key[0], origin=ctx.actor_origin, content='TEST api_key: "a"')
+    pending = provider._writer._snapshot(ctx, event, key, (), bound.local_scope_id, bound)
+    assert pending.masked_secret_count == 2 and pending.capture_gaps == ("secret_values_masked",)
+    assert kept_captures.keep(ctx.binding, key, pending)
+    saved = next(kept_captures.folder(ctx.binding).glob("*.json")).read_text(encoding="utf-8")
+    assert "Synthet1c" not in saved and json.loads(saved)["masked_secret_count"] == 2
+    loaded, more = kept_captures.load(ctx.binding, skip=(), room=1)
+    pending = loaded[0][1]
+    assert not more and pending.masked_secret_count == 2
+    provider._retry.captures[key] = pending
+    record = capture_inbox.record_event
+
+    def busy(*args, **kwargs):
+        raise ContractError("STORAGE_UNAVAILABLE")
+
+    monkeypatch.setattr(capture_inbox, "record_event", busy)
+    with provider._lock:
+        receipt = provider._writer.write(
+            ctx,
+            pending.event,
+            identity=key,
+            gaps=(),
+            scope_id=bound.local_scope_id,
+            replay=True,
+        )
+    assert receipt.durability == "queued" and receipt.masked_secret_count == 2
+    with provider._core.storage.read(ctx) as tx:
+        payload = tx._check().execute("SELECT payload_json FROM capture_inbox").fetchone()[0]
+    assert "Synthet1c" not in payload and json.loads(payload)["masked_secret_count"] == 2
+    monkeypatch.setattr(capture_inbox, "record_event", record)
+    receipts = capture_inbox.replay_inbox(provider._core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert len(receipts) == 1 and receipts[0].masked_secret_count == 2
+    source = provider._core.source(ctx, receipts[0].event_refs[0].ref, 1)
+    assert source.capture_gaps == ("secret_values_masked",)
+    assert source.event["content"] == 'TEST api_key: "[REDACTED_SECRET]"'
+
+
+def test_a_long_masked_retry_keeps_its_parts_marked_truncated(adapter):
+    """Split again from its masked text, a retried long message keeps the parts its first split made."""
+    from scope_recall.core.events import prepare_capture
+
+    provider, _clock = adapter
+    bound = provider._require_identity()
+    ctx = replace(
+        bound.trusted_context(),
+        source_principal=TrustedSourcePrincipal("human", "verified", "TEST-principal", 'TEST password: "Synthet1c"'),
+    )
+    key = ("TEST-long-masked-retry", 1)
+    event = source_event(
+        source_event_key=key[0], origin=ctx.actor_origin, content='TEST api_key: "a"\n' + "TEST words " * 7000
+    )
+    first = prepare_capture(event, ctx)
+    assert len(first.events) == 2 and all(part["segment"]["truncated"] for part in first.events)
+    pending = provider._writer._snapshot(ctx, event, key, (), bound.local_scope_id, bound)
+    provider._retry.captures[key] = pending
+    with provider._lock:
+        receipt = provider._writer.write(
+            ctx, pending.event, identity=key, gaps=(), scope_id=bound.local_scope_id, replay=True
+        )
+    assert receipt.durability == "persisted" and receipt.masked_secret_count == 2
+    stored = [provider._core.source(ctx, write.ref, write.revision).event for write in receipt.event_refs]
+    assert [part["segment"] for part in stored] == [part["segment"] for part in first.events]
+
+
+def test_new_capture_does_not_inherit_another_messages_mask_count_or_gaps(adapter):
+    provider, _clock = adapter
+    bound = provider._require_identity()
+    ctx = bound.trusted_context()
+    key = ("TEST-reused-mask-key", 1)
+    previous = source_event(
+        source_event_key=key[0],
+        origin=ctx.actor_origin,
+        content='TEST api_key: "a"\npassword: "Synthet1c"\ndata:image/png;base64,QUJDRA==',
+    )
+    pending = provider._writer._snapshot(ctx, previous, key, (), bound.local_scope_id, bound)
+    assert pending.masked_secret_count == 2 and "transport_payload_omitted" in pending.capture_gaps
+    provider._retry.captures[key] = pending
+    current = {**previous, "content": 'TEST api_key: "b"'}
+    with provider._lock:
+        receipt = provider._writer.write(ctx, current, identity=key, gaps=(), scope_id=bound.local_scope_id)
+    assert receipt.durability == "persisted" and receipt.masked_secret_count == 1
+    source = provider._core.source(ctx, receipt.event_refs[0].ref, 1)
+    assert source.capture_gaps == ("secret_values_masked",)
 
 
 @pytest.mark.parametrize("mode", ["full", "read-only"])

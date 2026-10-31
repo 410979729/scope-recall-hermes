@@ -374,20 +374,46 @@ class MemoryCore:
 
     @overload
     def record_host_event(
-        self, context, value, *, scope_id, host_scope, remaining_seconds=1.0, background: Literal[False] = False
+        self,
+        context,
+        value,
+        *,
+        scope_id,
+        host_scope,
+        remaining_seconds=1.0,
+        _prepared=None,
+        background: Literal[False] = False,
     ) -> CaptureReceipt: ...
 
     @overload
     def record_host_event(
-        self, context, value, *, scope_id, host_scope, remaining_seconds=1.0, background: Literal[True]
+        self,
+        context,
+        value,
+        *,
+        scope_id,
+        host_scope,
+        remaining_seconds=1.0,
+        _prepared=None,
+        background: Literal[True],
     ) -> CaptureReceipt | PendingCapture: ...
 
     @overload
     def record_host_event(
-        self, context, value, *, scope_id, host_scope, remaining_seconds=1.0, background: bool
+        self,
+        context,
+        value,
+        *,
+        scope_id,
+        host_scope,
+        remaining_seconds=1.0,
+        _prepared=None,
+        background: bool,
     ) -> CaptureReceipt | PendingCapture: ...
 
-    def record_host_event(self, context, value, *, scope_id, host_scope, remaining_seconds=1.0, background=False):
+    def record_host_event(
+        self, context, value, *, scope_id, host_scope, remaining_seconds=1.0, _prepared=None, background=False
+    ):
         """Authenticated host ingress with durable recovery before derivation."""
         from .capture_inbox import durable_record_event, start_record_event
 
@@ -396,7 +422,7 @@ class MemoryCore:
             self.storage,
             self.clock,
             context,
-            value,
+            value if _prepared is None else _prepared,
             scope_id=scope_id,
             host_scope=host_scope,
             admission_policy=self.config.admission_policy,

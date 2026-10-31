@@ -1950,6 +1950,34 @@ def test_remote_duplicate_is_logged_stored_and_content_conflict_pending(served, 
     assert "capture_failed" not in caplog.text
 
 
+def test_remote_masked_prompt_is_stored_once_and_logged_with_its_count(served, tmp_path, monkeypatch, caplog):
+    from scope_recall.adapters.clients.prompt_recall import PromptRecall
+
+    root, homes, ports = served
+
+    def recall(self, *args, **kwargs):
+        pending = getattr(self._hook, "pending_capture", None)
+        if pending is not None:
+            assert pending.done.wait(2)
+        return {}
+
+    monkeypatch.setattr(PromptRecall, "own", recall)
+    monkeypatch.setattr(remote_server._Asked, "__call__", lambda *args, **kwargs: None)
+    caplog.set_level(logging.INFO, logger="scope_recall.remote_server")
+    client = _client(tmp_path, "codex", ports["codex"])
+    payload = dict(
+        hook_event_name="UserPromptSubmit", session_id="TEST-masked", turn_id="TEST-turn", prompt='TEST api_key: "a"'
+    )
+    first = remote_client._post(client, {"payload": payload, "observed_at": NOW}, 5)
+    again = remote_client._post(client, {"payload": payload, "observed_at": "2026-09-27T06:00:01Z"}, 5)
+    assert first["masked_secret_count"] == again["masked_secret_count"] == 1
+    assert first["capture_durability"] == again["capture_durability"] == "persisted"
+    assert again["capture_disposition"] == "duplicate"
+    assert [row[2] for row in _rows(root, "workpc-codex")] == ['TEST api_key: "[REDACTED_SECRET]"']
+    assert "masked 1" in caplog.text
+    assert 'api_key: "a"' not in caplog.text
+
+
 @pytest.mark.parametrize("phase", ["prefetch", "connection_slot", "connect", "read"])
 def test_embedding_failure_phase_reaches_remote_hook_log(served, tmp_path, monkeypatch, caplog, phase):
     from scope_recall.core import MemoryCore

@@ -54,6 +54,31 @@ a refused operation has `status: "error"`, `code` and `field`, and exits with co
 
 ## Find stored credentials
 
+Capture masks detected credential values with `[REDACTED_SECRET]` before storage, indexing or splitting a long
+message. Text outside a masked span stays as it was. What counts as a credential is decided by the same scanner
+that withholds recall results and checks model requests. An unquoted labelled value is masked through the end of
+its line or its structure item (`,` `;` `)` `]` `}`), including any prose after it. A quoted value is masked up
+to its closing quote, which stays, when the rest of the line starts with a delimiter, or holds no other quote and
+starts with a word set off by a space or with a sentence's end (`。`, `、`, or `.`, `!` or `?` before a space and
+a word, or before the line's end). Otherwise (another literal, `+` or `.` concatenation, a markup mark, a word
+joined to the quote) the mask runs through the line's end, closing quote included. A literal opened with three
+quotes is masked across lines from its first quote to its last and reads as one quoted marker. Key-shaped tokens
+are masked over their matched spans. Original Unicode characters are covered by the normalized scan's exact map.
+
+`masked_secret_count` in the prepared capture and capture receipt counts merged replacement spans across all
+stored text fields of the original envelope, once before segmentation. An attempt prepared afresh reports its
+own count; one that reuses an inbox row, and inbox replay, report that row's count. Hook diagnostics report the
+count across the hook's captures, and a remote server's hook log shows `masked <n>`; serialized capture results
+also include the count.
+No diagnostic includes matched text. Masked captures carry `secret_values_masked` in their gaps and a complete
+capture becomes partial.
+
+Capture refuses with `plaintext_secret_rejected` when identity or reference fields contain a secret, including
+event keys and session or scope identifiers; those fields are never rewritten. It also refuses when a text field
+would become only the marker, the masked result scans as a secret, a private-key block is detected, a literal
+opened with three quotes has no closing three, or an inexact character map or a value that may continue on the
+next line requires withholding the whole text. Corrections refuse secret values so the caller can rephrase them.
+
 ```sh
 scope-recall memory secrets --root /path/to/store
 scope-recall memory secrets --root /path/to/store --json

@@ -112,7 +112,7 @@ def test_revocation_and_deletion_cancel_pending_ingress(worker_app):
         ).fetchall() == [("TEST-revoked",)]
 
 
-def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
+def test_ingress_masks_secrets_and_rejects_conflicts_and_other_partitions(worker_app):
     core, ctx, clock = worker_app
     event = source_event(source_event_key="TEST-collision", content="TEST original")
     capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
@@ -135,7 +135,44 @@ def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
         scope_id="TEST-scope",
         host_scope=None,
     )
-    assert token is None and prepared.rejection == "plaintext_secret_rejected"
+    assert token is not None and prepared.rejection is None and prepared.masked_secret_count == 1
+    assert prepared.events[0]["content"] == "api_key=[REDACTED_SECRET]"
+    again, retried = capture_inbox.enqueue(
+        core.storage,
+        clock,
+        ctx,
+        dict(event, source_event_key="TEST-secret", content="api_key=sk-" + "abcd" * 12),
+        scope_id="TEST-scope",
+        host_scope=None,
+    )
+    assert again == token and retried.masked_secret_count == 1
+    with core.storage.read(ctx) as tx:
+        payload = tx._check().execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0]
+    assert "sk-" not in payload and "masked_secret_count" in payload
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert {
+        core.source(ctx, receipt.event_refs[0].ref, 1).event["source_event_key"]: receipt.masked_secret_count
+        for receipt in receipts
+    } == {"TEST-collision": 0, "TEST-secret": 1}
+
+
+def test_ingress_masks_context_display_name_before_durable_queue(worker_app):
+    from scope_recall.contracts import TrustedSourcePrincipal
+
+    core, ctx, clock = worker_app
+    ctx = replace(
+        ctx,
+        source_principal=TrustedSourcePrincipal("human", "verified", "TEST-principal", 'TEST password: "Synthet1c"'),
+    )
+    event = source_event(content="TEST public note")
+    token, prepared = capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    assert token is not None and prepared.masked_secret_count == 1
+    with core.storage.read(ctx) as tx:
+        payload = tx._check().execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0]
+    assert "Synthet1c" not in payload
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert len(receipts) == 1 and receipts[0].masked_secret_count == 1
+    assert b"Synthet1c" not in core.storage.path.read_bytes()
 
 
 def test_a_row_an_older_release_left_as_source_missing_is_replayed_once(worker_app, monkeypatch):

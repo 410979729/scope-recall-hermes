@@ -39,6 +39,8 @@ class HookDiagnostics:
     capture_stage: str | None = None
     capture_disposition: str | None = None
     capture_durability: str | None = None
+    #: Replacement spans across this hook's captures; diagnostics contain no matched text.
+    masked_secret_count: int = 0
     capture_error_type: str | None = None
     capture_error_code: str | None = None
     #: The code before the frozen allowlist collapsed it to CAPTURE_ERROR.
@@ -171,6 +173,7 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
             "error_type": diagnostics.capture_error_type,
             "error_code": diagnostics.capture_error_code,
             "elapsed_ms": diagnostics.capture_elapsed_ms,
+            "masked_secret_count": diagnostics.masked_secret_count,
         }
         # Local operator channel only.  stdout carries the host contract; this
         # line is what a person reads when the contract code is not specific

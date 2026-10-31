@@ -23,7 +23,7 @@ def legacy_secret(core, context, monkeypatch, text="NameOne 密码：Xk9mP2qa"):
     from scope_recall.core import events
 
     with monkeypatch.context() as patch:
-        patch.setattr(events, "capture_contains_secret", lambda value: False)
+        patch.setattr(events, "redact_secret_text", lambda value: (value, 0))
         return capture(core, context, text)
 
 

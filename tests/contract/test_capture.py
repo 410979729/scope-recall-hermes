@@ -1,5 +1,6 @@
 """Source fidelity and raw retrieval only; M/C semantic assertions run later."""
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import replace
@@ -9,11 +10,15 @@ from scope_recall.contracts import (
     ArtifactVersion,
     ContractError,
     DisplaySnapshot,
+    ImportProvenance,
     SourceSnapshot,
+    TrustedSourcePrincipal,
+    import_source_fingerprint,
     validate_proposal_references,
 )
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.events import lexical_terms, prepare_capture
+from scope_recall.core.events import capture_content_digests, lexical_terms, prepare_capture, stored_content_digest
+from scope_recall.core.secret_patterns import contains_secret_like_text
 from scope_recall.core.storage import SQLiteStorage
 from v11_support import context, proposal, public_cases, source_event
 
@@ -97,21 +102,38 @@ def test_empty_message_reports_non_persistence_but_explicit_gap_is_retained(core
     "secret",
     [
         "api_key=TEST_VALUE_ONLY",
-        "-----BEGIN PRIVATE KEY-----\nTEST_TRUNCATED",
         "ＡＰＩ＿ＫＥＹ＝TEST_VALUE_ONLY",
         "api_\u200bkey=TEST_VALUE_ONLY",
-        "Bearer " + "TESTONLY" * 4,
-        "redis://test:TEST_PASSWORD_ONLY@test.invalid",
     ],
 )
-def test_credentials_rejected_before_any_source_hash_index_or_work(core, secret):
+def test_credentials_masked_before_any_source_hash_index_or_work(core, secret):
     app, ctx = core
     result = capture(app, ctx, content=secret)
-    assert result.error_code == "plaintext_secret_rejected"
-    assert result.durability == "not_persisted" and result.event_refs == ()
+    assert result.error_code is None and result.masked_secret_count == 1
+    assert result.durability == "persisted"
+    stored = app.source(ctx, result.event_refs[0].ref, 1)
+    assert "[REDACTED_SECRET]" in stored.event["content"]
+    assert stored.event["capture_state"] == "partial" and stored.capture_gaps == ("secret_values_masked",)
     assert secret not in repr(result)
-    assert rows(app) == {"source_events": 0, "lexical_postings": 0, "work_items": 0}
     assert secret.encode() not in app.storage.path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "-----BEGIN PRIVATE KEY-----\nTEST_TRUNCATED",
+        "TEST before\n-----BEGIN PRIVATE KEY-----\nTEST_ONLY_BODY\n-----END PRIVATE KEY-----\nTEST after",
+        "Bearer " + "TESTONLY" * 4,
+        "redis://test:TEST_PASSWORD_ONLY@test.invalid",
+        "ghp_" + "TESTONLY" * 4,
+    ],
+)
+def test_capture_refuses_when_whole_text_must_be_withheld(core, text):
+    app, ctx = core
+    result = capture(app, ctx, content=text)
+    assert result.error_code == "plaintext_secret_rejected" and result.masked_secret_count == 0
+    assert result.durability == "not_persisted" and not rows(app)["source_events"]
+    assert text.encode() not in app.storage.path.read_bytes()
 
 
 def test_credential_in_protocol_reference_is_also_rejected(core):
@@ -119,6 +141,220 @@ def test_credential_in_protocol_reference_is_also_rejected(core):
     result = capture(app, ctx, evidence_refs=["password=TEST_ONLY"])
     assert result.error_code == "plaintext_secret_rejected"
     assert not rows(app)["source_events"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('api_key: "a"', 'api_key: "[REDACTED_SECRET]"'),
+        (
+            'docs: set api_key: "antigravity" in the config, then restart',
+            'docs: set api_key: "[REDACTED_SECRET]" in the config, then restart',
+        ),
+        ('API_KEY: "codearts"', 'API_KEY: "[REDACTED_SECRET]"'),
+        ("password: correct horse battery staple", "password: [REDACTED_SECRET]"),
+    ],
+)
+def test_capture_masks_values_and_reports_spans(core, text, expected):
+    app, ctx = core
+    prepared = prepare_capture(source_event(content=text), ctx)
+    assert prepared.rejection is None
+    assert prepared.masked_secret_count == 1
+    assert prepared.events[0]["content"] == expected
+    result = capture(app, ctx, content=text)
+    assert result.durability == "persisted" and result.masked_secret_count == 1
+    assert app.source(ctx, result.event_refs[0].ref, 1).event["content"] == expected
+    assert text.encode() not in app.storage.path.read_bytes()
+    assert capture(app, ctx, content=text).masked_secret_count == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'docs: set api_key: "antigravity" in the config, then restart',
+        "TEST " + "long words " * 7000 + 'api_key: "antigravity" end',
+    ],
+    ids=["one segment", "two segments"],
+)
+def test_current_prompt_digests_are_the_segments_capture_stores(core, text):
+    """Recall fences the prompt being captured by its content: the digests it compares are the masked, split text."""
+    _app, ctx = core
+    prepared = prepare_capture(source_event(content=text), ctx)
+    assert prepared.masked_secret_count == 1
+    stored = tuple(hashlib.sha256(event["content"].encode("utf-8")).hexdigest() for event in prepared.events)
+    assert capture_content_digests(text) == stored
+    assert stored_content_digest(text) == hashlib.sha256(prepared.events[0]["content"].encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("label", ["password", "adminPassword", "accessToken", "密码"])
+@pytest.mark.parametrize(
+    "template",
+    [
+        "TEST note {label}: {value}",
+        "{label}: {value}\ncolor: blue",
+        '{{"{label}": "{value}", "color": "blue"}}',
+        "{label}={value}\nCOLOR=blue",
+        'TEST note {label}: "{value}" then restart',
+        "settings({label}: {value}); color=blue",
+    ],
+)
+def test_capture_masks_all_passphrase_words(core, label, template):
+    app, ctx = core
+    words = ("Synthet1c" if label == "accessToken" else "sunflower") + " meadow silver cabin"
+    text = template.format(label=label, value=words)
+    result = capture(app, ctx, content=text)
+    assert result.durability == "persisted" and result.masked_secret_count == 1
+    stored = app.source(ctx, result.event_refs[0].ref, 1).event["content"]
+    assert label in stored and "[REDACTED_SECRET]" in stored
+    assert all(word not in stored for word in words.split())
+    assert not contains_secret_like_text(stored)
+
+
+@pytest.mark.parametrize("delimiter", [",", ";", ")", "]", "}"])
+def test_capture_never_leaves_a_matched_value_tail_after_punctuation(core, delimiter):
+    app, ctx = core
+    result = capture(app, ctx, content=f"TEST password: Synthet1c{delimiter}meadow cabin")
+    assert result.durability == "persisted" and result.masked_secret_count == 1
+    assert app.source(ctx, result.event_refs[0].ref, 1).event["content"] == "TEST password: [REDACTED_SECRET]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'password: "Synthet1c" "meadow silver cabin"',
+        'password: "Synthet1c" + "meadow silver cabin"',
+        'password: "Synthet1c\n meadow silver cabin"',
+        "password: Synthet1c \\\n meadow silver cabin",
+        "password: Synthet1c\n  meadow silver cabin",
+        "password: Synthet1c\nmeadow silver cabin",
+        'password: "Synthet1c" +\n "meadow silver cabin"',
+    ],
+)
+def test_capture_masks_continued_values_or_refuses(core, text):
+    app, ctx = core
+    result = capture(app, ctx, content=text)
+    if "\n" not in text:
+        assert result.durability == "persisted"
+    if result.disposition == "rejected":
+        assert result.error_code == "plaintext_secret_rejected" and not rows(app)["source_events"]
+    else:
+        assert result.masked_secret_count == 1
+        stored = app.source(ctx, result.event_refs[0].ref, 1).event["content"]
+        assert all(word not in stored for word in ("Synthet1c", "meadow", "silver", "cabin"))
+
+
+@pytest.mark.parametrize("value", ["Ｓｙｎｔｈｅｔ１ｃ meadow", "Syn\u200bthet1c mea\u200bdow"])
+def test_capture_masks_original_unicode_value_characters(core, value):
+    app, ctx = core
+    text = f'  TEST 密码: "{value}" then restart\r\n'
+    result = capture(app, ctx, content=text)
+    assert result.durability == "persisted" and result.masked_secret_count == 1
+    assert app.source(ctx, result.event_refs[0].ref, 1).event["content"] == (
+        '  TEST 密码: "[REDACTED_SECRET]" then restart\r\n'
+    )
+
+
+def test_capture_masks_many_key_shaped_log_values(core):
+    app, ctx = core
+    keys = ["ghp_" + f"TEST{i:04d}" * 4 for i in range(24)]
+    text = "\n".join(f"TEST log {i}: {key} end" for i, key in enumerate(keys))
+    result = capture(app, ctx, content=text)
+    assert result.masked_secret_count == len(keys)
+    stored = app.source(ctx, result.event_refs[0].ref, 1).event["content"]
+    assert stored.count("[REDACTED_SECRET]") == len(keys)
+    assert all(key not in stored for key in keys)
+
+
+@pytest.mark.parametrize("field", ["source_event_key", "evidence_refs", "artifact_refs"])
+def test_capture_refuses_secrets_in_identity_fields(core, field):
+    app, ctx = core
+    secret = "password=TEST9ONLY"
+    result = capture(app, ctx, **({"key": secret} if field == "source_event_key" else {field: [secret]}))
+    assert result.error_code == "plaintext_secret_rejected" and not rows(app)["source_events"]
+
+
+def test_capture_masks_before_segmenting_a_value_across_the_boundary(core):
+    app, ctx = core
+    text = "TEST prefix\n" + "a" * (65536 - 32) + '\npassword: "Synthet1c meadow silver cabin"\n' + "z" * 60000
+    result = capture(app, ctx, content=text)
+    assert len(result.event_refs) == 2 and result.masked_secret_count == 1
+    parts = [app.source(ctx, ref.ref, 1).event["content"] for ref in result.event_refs]
+    stored = "".join(parts)
+    assert stored == text.replace("Synthet1c meadow silver cabin", "[REDACTED_SECRET]")
+    assert all(word not in stored for word in ("Synthet1c", "meadow", "silver", "cabin"))
+    assert not any(contains_secret_like_text(part) for part in parts)
+
+
+def test_capture_refuses_when_replacement_cannot_leave_clean_text(core, monkeypatch):
+    from scope_recall.core import capture_filters
+
+    app, ctx = core
+    monkeypatch.setattr(capture_filters, "secret_redaction_spans", lambda text: ())
+    result = capture(app, ctx, content="TEST password: Synthet1c meadow silver cabin")
+    assert result.error_code == "plaintext_secret_rejected" and not rows(app)["source_events"]
+
+
+@pytest.mark.parametrize("field", ["session_id", "project_id", "branch_id", "task_anchor", "environment_revision"])
+def test_capture_refuses_credential_in_context_identity(core, field):
+    app, ctx = core
+    ctx = replace(ctx, **{field: "password=TEST9ONLY"})
+    result = capture(app, ctx)
+    assert result.error_code == "plaintext_secret_rejected" and not rows(app)["source_events"]
+
+
+def test_capture_refuses_credential_in_scope_identifier(core):
+    app, ctx = core
+    scope = "password=TEST9ONLY"
+    binding = replace(ctx.binding, scope_ids=frozenset({scope}))
+    ctx = replace(ctx, binding=binding, allowed_scope_ids=binding.scope_ids)
+    prepared = prepare_capture(source_event(), ctx)
+    assert prepared.rejection == "plaintext_secret_rejected"
+    assert not rows(app)["source_events"]
+
+
+def test_capture_refuses_credential_in_context_attachment_reference(core):
+    app, ctx = core
+    ctx = replace(ctx, display_snapshot=DisplaySnapshot("observed", (ArtifactVersion("password=TEST9ONLY", 1),)))
+    prepared = prepare_capture(source_event(), ctx)
+    assert prepared.rejection == "plaintext_secret_rejected" and not rows(app)["source_events"]
+
+
+def test_capture_masks_stored_metadata_and_keeps_principal_authority(core):
+    app, ctx = core
+    principal = TrustedSourcePrincipal("human", "verified", "TEST-principal", 'TEST password: "Synthet1c"')
+    ctx = replace(ctx, source_principal=principal)
+    result = capture(app, ctx, source_context={"platform": "TEST password: Synthet1c", "chat_type": "private"})
+    assert result.durability == "persisted" and result.masked_secret_count == 2
+    stored = app.source(ctx, result.event_refs[0].ref, 1).event
+    assert stored["source_principal"] == {
+        "kind": "human",
+        "resolution": "verified",
+        "principal_ref": "TEST-principal",
+        "display_name": 'TEST password: "[REDACTED_SECRET]"',
+    }
+    assert stored["source_context"] == {"platform": "TEST password: [REDACTED_SECRET]", "chat_type": "private"}
+    assert b"Synthet1c" not in app.storage.path.read_bytes()
+
+
+def test_attested_import_masks_only_the_attested_original(core):
+    app, ctx = core
+    event = source_event(origin="imported", source_original_origin="human_direct", content='TEST docs api_key: "a"')
+    provenance = ImportProvenance("human_direct", "a" * 64, frozenset({import_source_fingerprint(event)}))
+    ctx = replace(ctx, actor_origin="imported", import_provenance=provenance)
+    result = app.record_event(ctx, event, scope_id="TEST-scope", remaining_seconds=10)
+    assert result.durability == "persisted" and result.masked_secret_count == 1
+    assert app.source(ctx, result.event_refs[0].ref, 1).event["content"] == 'TEST docs api_key: "[REDACTED_SECRET]"'
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        app.record_event(ctx, {**event, "content": 'TEST docs api_key: "b"'}, scope_id="TEST-scope")
+
+
+def test_capture_receipt_serialization_reports_only_mask_count(core):
+    from scope_recall.adapters.tool_common import json_value
+
+    app, ctx = core
+    result = json_value(capture(app, ctx, content='TEST api_key: "a"'))
+    assert result["masked_secret_count"] == 1
+    assert "api_key" not in json.dumps(result)
 
 
 def test_raw_repository_access_cannot_bypass_prepared_capture_filter(core):

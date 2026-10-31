@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, replace
+from typing import Protocol, cast
 
-from ..contracts import ContractError, SourceEvent, TrustedContext
+from ..contracts import ContractError, SourceEvent, TrustedContext, decode_payload, import_source_fingerprint
 from . import private
 from .admission import AdmissionPolicy, decide, decision_marker, store_decision
 from .candidate_lifecycle import CandidateSourceTrigger
@@ -25,6 +25,8 @@ class CaptureClock(Protocol):
 
 @dataclass(frozen=True)
 class CaptureReceipt:
+    """Capture outcome; masked_secret_count reports replacement spans, never their values."""
+
     disposition: str
     event_refs: tuple[SourceWrite, ...]
     durability: str
@@ -35,6 +37,7 @@ class CaptureReceipt:
     mutation: str = "none"
     admission: tuple[str, ...] = ()
     candidate_triggers: tuple[CandidateSourceTrigger, ...] = ()
+    masked_secret_count: int = 0
 
 
 def _inbox_entry_gone(tx, token: str, scope_id: str, context: TrustedContext) -> bool:
@@ -141,6 +144,7 @@ def _persisted_receipt(
         mutation="revised" if mutations else "none",
         admission=tuple(dict.fromkeys(admission_markers)),
         candidate_triggers=tuple(candidate_triggers),
+        masked_secret_count=prepared.masked_secret_count,
     )
 
 
@@ -154,6 +158,23 @@ def _private_refusal(prepared) -> CaptureReceipt:
         "not_scheduled",
         (*prepared.gaps, "private_mode"),
         "PRIVATE_MODE",
+        masked_secret_count=prepared.masked_secret_count,
+    )
+
+
+def _import_context(value, context, prepared):
+    """Bind admitted segments only after the original source passes its exact import attestation."""
+    provenance = context.import_provenance
+    if provenance is None:
+        return context
+    original = cast(SourceEvent, decode_payload(value))
+    if import_source_fingerprint(original) not in provenance.source_fingerprints:
+        raise ContractError("ACCESS_DENIED", "import_provenance")
+    return replace(
+        context,
+        import_provenance=replace(
+            provenance, source_fingerprints=frozenset(import_source_fingerprint(event) for event in prepared.events)
+        ),
     )
 
 
@@ -180,11 +201,19 @@ def record_event(
         return CaptureReceipt(
             "rejected", (), "not_persisted", "not_indexed", "not_scheduled", prepared.gaps, prepared.rejection
         )
+    if _prepared is None:
+        context = _import_context(value, context, prepared)
     try:
         with storage.write(context, remaining_seconds=remaining_seconds - (clock.monotonic() - started)) as tx:
             if _inbox_token is not None and _inbox_entry_gone(tx, _inbox_token, scope_id, context):
                 return CaptureReceipt(
-                    "cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"
+                    "cancelled",
+                    (),
+                    "not_persisted",
+                    "unchanged",
+                    "unchanged",
+                    error_code="ACCESS_DENIED",
+                    masked_secret_count=prepared.masked_secret_count,
                 )
             # The event's own occurrence time decides, not the moment this write runs:
             # a replay, a retry or a transcript read after the interval ended still
@@ -205,10 +234,26 @@ def record_event(
                 tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (_inbox_token,))
     except ContractError as exc:
         if exc.code == "VERSION_CONFLICT":
-            return CaptureReceipt("conflict", (), "not_persisted", "unchanged", "unchanged", error_code=exc.code)
+            return CaptureReceipt(
+                "conflict",
+                (),
+                "not_persisted",
+                "unchanged",
+                "unchanged",
+                error_code=exc.code,
+                masked_secret_count=prepared.masked_secret_count,
+            )
         raise
     except (sqlite3.Error, TruthDatabaseConnectionError, TruthWriterBusyError):
         # Commit may have succeeded before a close failure. Caller retries using
         # the stable source identity; no success is asserted on this path.
-        return CaptureReceipt("unavailable", (), "unknown", "unknown", "unknown", error_code="STORAGE_UNAVAILABLE")
+        return CaptureReceipt(
+            "unavailable",
+            (),
+            "unknown",
+            "unknown",
+            "unknown",
+            error_code="STORAGE_UNAVAILABLE",
+            masked_secret_count=prepared.masked_secret_count,
+        )
     return _persisted_receipt(prepared, receipts, projection_states, admission_markers, mutations, candidate_triggers)

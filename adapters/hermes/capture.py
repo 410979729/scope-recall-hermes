@@ -9,13 +9,13 @@ import json
 import logging
 import sqlite3
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, cast
 
-from scope_recall.contracts import ContractError, TrustedContext
+from scope_recall.contracts import ContractError, SourceEvent, TrustedContext
 from scope_recall.core import MemoryCore
 from scope_recall.core.capture import CaptureReceipt
-from scope_recall.core.capture_filters import sanitize_source_capture_text
+from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text
 from scope_recall.core.deadline import fits
 from scope_recall.core.events import prepare_capture
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
@@ -63,7 +63,7 @@ def _same_stored_content(stored_event: dict, content: object) -> bool:
     """
     if type(content) is not str:
         return False
-    admitted = sanitize_source_capture_text(content)
+    admitted = sanitize_source_capture_text(redact_secret_text(content)[0])
     stored = stored_event.get("content")
     if type(stored) is not str:
         return False
@@ -83,6 +83,8 @@ class RetryCapture:
     host_scope: HermesRuntimeScope
     #: When it was kept (the monotonic clock), for ``capture_retry._RETRY_GIVE_UP_S``.
     kept_at: float
+    masked_secret_count: int = 0
+    capture_gaps: tuple[str, ...] = ()
 
 
 class CaptureWriter:
@@ -124,7 +126,10 @@ class CaptureWriter:
         snapshot = self._snapshot(context, event, identity, gaps, scope_id, bound)
         retry = adapter._retry.captures
         host_scope = retry[identity].host_scope if replay and identity in retry else bound.scope
-        receipt = self._store(context, event, identity, scope_id, host_scope, remaining_seconds, started, release)
+        store_event = replace(retry[identity], event=event) if replay and identity in retry else event
+        receipt = self._store(context, store_event, identity, scope_id, host_scope, remaining_seconds, started, release)
+        if isinstance(receipt, CaptureReceipt):
+            adapter._diagnostics.masked_secret_count += receipt.masked_secret_count
         if release and not adapter._initialized:
             return self._closed_meanwhile(identity, receipt, replay, snapshot)
         if isinstance(receipt, Exception):
@@ -186,14 +191,27 @@ class CaptureWriter:
         if prepared.rejection:
             return None
         event = {
-            **event,
-            "content": sanitize_source_capture_text(event["content"]),
+            **prepared.events[0],
+            "source_event_key": event["source_event_key"],
+            "content": "".join(part["content"] for part in prepared.events),
             "capture_state": prepared.events[0]["capture_state"],
         }
+        # The retry retains the original occurrence as one envelope; capture splits it again after admission.
+        if len(prepared.events) > 1:
+            event.pop("segment", None)
         gaps = tuple(dict.fromkeys((*gaps, *prepared.gaps)))
         if len(json.dumps(event, ensure_ascii=False).encode("utf-8")) > RETRY_EVENT_BYTES:
             return None
-        return RetryCapture(context, copy.deepcopy(event), gaps, scope_id, bound.scope, time.monotonic())
+        return RetryCapture(
+            context,
+            copy.deepcopy(event),
+            gaps,
+            scope_id,
+            bound.scope,
+            time.monotonic(),
+            prepared.masked_secret_count,
+            prepared.gaps,
+        )
 
     def defer(
         self, context, event, *, identity, gaps: tuple[str, ...], scope_id: str | None, bound, guard=None
@@ -235,10 +253,20 @@ class CaptureWriter:
         self._adapter._merge_gaps(("capture_gap:retry_buffer_full",))
 
     def _store(
-        self, context, event: dict, identity, scope_id: str, host_scope, remaining_seconds, started, release
+        self,
+        context,
+        event: dict | RetryCapture,
+        identity,
+        scope_id: str,
+        host_scope,
+        remaining_seconds,
+        started,
+        release,
     ) -> CaptureReceipt | Exception:
         """The write itself: its receipt, or the exception it raised."""
         adapter = self._adapter
+        pending = event if isinstance(event, RetryCapture) else None
+        raw_event = event.event if isinstance(event, RetryCapture) else event
         holder = adapter._holder
         if release:
             # Release the session lock during store I/O so other turn hooks can acquire it between captures.
@@ -250,22 +278,41 @@ class CaptureWriter:
         try:
             if identity is not None:
                 looked = time.monotonic()
-                self._keep_first_seen(context, event, identity, scope_id, remaining_seconds, started)
+                self._keep_first_seen(context, raw_event, identity, scope_id, remaining_seconds, started)
                 # The lookup estimates the next store call's duration; a capture that cannot fit waits to retry.
                 if not fits(started + remaining_seconds, time.monotonic() - looked):
                     raise ContractError("DEADLINE_EXCEEDED", "capture_time")
             core = adapter._require_core()
             left = remaining_seconds - (time.monotonic() - started)
             if isinstance(core, MemoryCore):
+                prepared = None
+                if pending is not None and (pending.masked_secret_count or pending.capture_gaps):
+                    prepared = prepare_capture(raw_event, context)
+                    gaps = tuple(dict.fromkeys((*prepared.gaps, *pending.capture_gaps)))
+                    # The retry's text is already masked and filtered, so splitting it again finds nothing omitted;
+                    # its parts take the first split's truncation, and a copy sent again is the same capture. The
+                    # inbox checks every part again, with the principal's masked name, before it keeps them.
+                    prepared = replace(
+                        prepared,
+                        events=tuple(
+                            cast(SourceEvent, {**part, "segment": {**part["segment"], "truncated": bool(gaps)}})
+                            if "segment" in part
+                            else part
+                            for part in prepared.events
+                        ),
+                        gaps=gaps,
+                        masked_secret_count=max(prepared.masked_secret_count, pending.masked_secret_count),
+                    )
                 receipt = core.record_host_event(
                     context,
-                    event,
+                    raw_event,
                     scope_id=scope_id,
                     host_scope=host_scope_payload(host_scope),
                     remaining_seconds=left,
+                    _prepared=prepared,
                 )
             else:
-                receipt = core.record_event(context, event, scope_id=scope_id, remaining_seconds=left)
+                receipt = core.record_event(context, raw_event, scope_id=scope_id, remaining_seconds=left)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             return exc
         finally:

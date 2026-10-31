@@ -147,6 +147,8 @@ A finished search can find no matches. `helper_failure_phase` distinguishes `dra
 `open` and `search`; `helper_<phase>_ms` records each wait. `embedding_failure_phase` distinguishes `prefetch`,
 `connection_slot`, `connect` and `read`, with `embedding_ms` for that failed wait. `transport` identifies a
 failure before the HTTP helper published a socket phase. These fields do not change recall's stage budgets.
+A capture that masked credential values adds `masked <n>`, the number of merged replacement spans; the values
+themselves never reach the log.
 
 ## When the server cannot be reached
 

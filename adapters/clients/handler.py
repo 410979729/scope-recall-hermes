@@ -683,6 +683,7 @@ class CodexHookHandler:
             self.diagnostics.capture_total_ms = (self.diagnostics.capture_total_ms or 0) + elapsed
         self.diagnostics.capture_disposition = receipt.disposition
         self.diagnostics.capture_durability = receipt.durability
+        self.diagnostics.masked_secret_count += receipt.masked_secret_count
         if receipt.error_code:
             self.diagnostics.note_capture_error(receipt.error_code)
         if receipt.durability == "queued":

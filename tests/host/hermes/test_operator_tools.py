@@ -37,7 +37,7 @@ def test_inspect_tool_withholds_legacy_secret_and_preserves_clean_content(adapte
     core, identity = provider._core, provider._identity
     context = identity.trusted_context()
     with monkeypatch.context() as patch:
-        patch.setattr(events, "capture_contains_secret", lambda value: False)
+        patch.setattr(events, "redact_secret_text", lambda value: (value, 0))
         flagged = core.record_event(
             context,
             _payload("NameOne 密码：Xk9mP2qa", key="TEST-secret"),

@@ -467,6 +467,7 @@ def handle_request(
         "warm": warm,
         "build_ms": built,
         "capture_ms": handler.diagnostics.capture_total_ms,
+        "masked_secret_count": handler.diagnostics.masked_secret_count,
         "attach_ms": handler.diagnostics.runtime_attach_ms,
         "close_ms": closed,
     }
@@ -567,7 +568,7 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
             if answer.get(key) is not None
         )
         _log.info(
-            "hook %s: %s%s%s%s%s, record through %s, %d ms%s%s%s%s",
+            "hook %s: %s%s%s%s%s, record through %s, %d ms%s%s%s%s%s",
             event,
             answer["reason"],
             f" ({answer['error']})" if answer.get("error") else "",
@@ -583,6 +584,7 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
             f", capture {answer['capture_durability']}:{answer['capture_disposition']}"
             if answer.get("capture_durability")
             else "",
+            f", masked {answer['masked_secret_count']}" if answer.get("masked_secret_count") else "",
             ", vector trace " + json.dumps(answer["recall_trace"], separators=(",", ":"))
             if answer.get("recall_trace")
             else "",

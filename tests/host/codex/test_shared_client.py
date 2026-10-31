@@ -1406,7 +1406,8 @@ def test_a_prompt_the_store_could_not_take_is_still_recalled_by_meaning(store, m
     refused = _hook(client)
     try:
         refused.handle_payload(_prompt("TEST password: Xk9#mP2q-7Lw", prompt_id="TEST-prompt-secret"))
-        assert refused.diagnostics.capture_disposition == "rejected"
+        assert refused.diagnostics.capture_disposition == "inserted"
+        assert refused.diagnostics.masked_secret_count == 1
         assert not refused._runtime_attach_attempted, "a credential never reaches the embedding provider"
     finally:
         refused.close()

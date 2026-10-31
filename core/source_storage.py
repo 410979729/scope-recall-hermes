@@ -12,7 +12,6 @@ from ..contracts import (
     ContractError,
     SourceEvent,
     import_source_fingerprint,
-    validate_capture,
 )
 from . import lexical_index
 from .delete_storage import canonical, group_digest, purged_group_key
@@ -120,7 +119,9 @@ class Sources:
     def _admitted_source(self, event: SourceEvent) -> dict:
         """Validate a capture against the contract, the import provenance and the
         admission policy; the stored event must be exactly the admitted one."""
-        event = validate_capture(dict(event), self._tx.context)
+        admitted = prepare_capture(event, self._tx.context)
+        if admitted.rejection or len(admitted.events) != 1 or admitted.events[0] != event:
+            raise ContractError("INPUT_INVALID", "unprepared_source")
         provenance = self._tx.context.import_provenance
         if provenance is not None:
             if (
@@ -128,9 +129,6 @@ class Sources:
                 or import_source_fingerprint(event) not in provenance.source_fingerprints
             ):
                 raise ContractError("ACCESS_DENIED", "import_provenance")
-        admitted = prepare_capture(event, self._tx.context)
-        if admitted.rejection or len(admitted.events) != 1 or admitted.events[0] != event:
-            raise ContractError("INPUT_INVALID", "unprepared_source")
         return event
 
     def _same_identity(self, row, scope_id: str) -> bool:
