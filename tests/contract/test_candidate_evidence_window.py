@@ -53,7 +53,7 @@ def _span(source, quote):
 
 def _record(candidate, source, **kwargs):
     messages = candidate_evaluation_messages(candidate, (source,), **kwargs)
-    return json.loads(messages[2]["content"])["sources"][0]
+    return json.loads(messages[1]["content"])["sources"][0]
 
 
 def test_saved_exact_quote_wins_over_an_earlier_repeated_value():
@@ -116,7 +116,7 @@ def test_quote_matching_is_per_supplied_source_version():
     newer = _source(content, revision=2)
     candidate = _candidate(source, [_span(source, quote)])
     messages = candidate_evaluation_messages(candidate, (source, other, newer))
-    records = json.loads(messages[2]["content"])["sources"]
+    records = json.loads(messages[1]["content"])["sources"]
     assert [record["ref"] for record in records] == [f"{s.ref}@{s.revision}" for s in (source, other, newer)]
     assert quote in records[0]["content"]
     assert all(quote not in record["content"] for record in records[1:])
@@ -219,3 +219,14 @@ def test_window_selection_does_not_mutate_candidate_identity_or_source():
     messages = candidate_evaluation_messages(human, (identified,))
     assert principal not in "".join(message["content"] for message in messages)
     assert json.loads(messages[-1]["content"].removeprefix("candidate="))["subject"] == "current_user"
+
+
+def test_the_request_has_one_system_message_and_it_comes_first():
+    """Qwen's chat template refuses any system message after the first with HTTP 400."""
+    quote = "TEST-build result ready"
+    source = _source("ready" + "x" * 4000 + quote + "z" * 4000)
+    feedback = {"code": "DERIVATION_INVALID", "field": "claim_proposals"}
+    for kwargs in ({}, {"validation_feedback": feedback}):
+        messages = candidate_evaluation_messages(_candidate(source, [_span(source, quote)]), (source,), **kwargs)
+        assert [message["role"] for message in messages] == ["system", "user", "user"]
+        assert messages[0]["content"].startswith("Re-evaluate only the supplied candidate")
