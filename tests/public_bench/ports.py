@@ -195,6 +195,20 @@ class CachedEmbedder:
         )
 
 
+def route_pricing(config: dict, models: frozenset[str]) -> dict:
+    """Prices from the route file for every route model; a missing price is refused instead of counted as free."""
+    from scope_recall.runtime.model_budget import ModelPricing
+
+    table = config.get("pricing") or {}
+    missing = sorted(models - table.keys())
+    if missing:
+        raise ValueError("route_pricing_missing:" + ",".join(missing))
+    return {
+        model: ModelPricing(table[model]["input_usd_per_million"], table[model]["output_usd_per_million"])
+        for model in models
+    }
+
+
 class Ports:
     """One run's ports and recorded model settings; fake mode is entirely local."""
 
@@ -238,6 +252,7 @@ class Ports:
             total_output_cap=None,
             total_call_cap=None,
             approved_models=models,
+            pricing=route_pricing(config, models),
             max_request_bytes=16 * 1024 * 1024,
         )
         ledger = AuxiliaryBudgetLedger(root / "model-ledger.sqlite3", policy)

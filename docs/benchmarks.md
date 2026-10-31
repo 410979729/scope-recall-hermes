@@ -57,8 +57,11 @@ product's admission rules remain rejected and appear in the result.
 
 A live run requires `--config`, `--allow-model-calls` and an exact
 `--approved-endpoint` for each configured endpoint. The route file contains
-`weights`, `chat` and `embedding`. `chat` uses the shipped
+`weights`, `chat`, `embedding` and `pricing`. `chat` uses the shipped
 `ConsolidationRouteConfig` fields; `embedding` uses `EmbeddingRouteConfig`.
+`pricing` gives `input_usd_per_million` and `output_usd_per_million` for every
+route model, as the product's `budget.pricing` does; a missing price is refused
+instead of counted as free.
 Freeze the weight/deployment identity, temperature, thinking setting and
 embedding dimension. Credentials are environment-variable names in the routes,
 never values in that file. There is no CLI-model fallback.

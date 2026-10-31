@@ -23,7 +23,7 @@ from cache import RequestCache, digest  # noqa: E402
 from cases import LOCOMO_CATEGORIES, Case, Turn, fixed_splits, longmemeval  # noqa: E402
 from lab import Lab  # noqa: E402
 from paired_statistics import holm, paired_binary  # noqa: E402
-from ports import Ports, normalized_messages  # noqa: E402
+from ports import Ports, normalized_messages, route_pricing  # noqa: E402
 from run import alternative_context  # noqa: E402
 from translate import validate  # noqa: E402
 
@@ -757,3 +757,15 @@ def test_local_scoring_does_not_claim_a_model_judge_prompt(tmp_path, monkeypatch
     report = json.loads((output / "results.json").read_text(encoding="utf-8"))
     assert report["official_judge_prompts_sha256"] is None
     assert report["results"][0]["evaluation"]["metric"] == "substring_exact_match"
+
+
+def test_live_routes_price_every_model_and_refuse_a_missing_price():
+    free = {"input_usd_per_million": "0", "output_usd_per_million": "0"}
+    embedding = {"input_usd_per_million": "0.20", "output_usd_per_million": "0"}
+    with pytest.raises(ValueError, match="route_pricing_missing:TEST-embedding"):
+        route_pricing({"pricing": {"TEST-chat": free}}, frozenset({"TEST-chat", "TEST-embedding"}))
+    prices = route_pricing(
+        {"pricing": {"TEST-chat": free, "TEST-embedding": embedding}}, frozenset({"TEST-chat", "TEST-embedding"})
+    )
+    assert prices["TEST-chat"].charge_micro_usd(1_000_000, 1_000_000) == 0
+    assert prices["TEST-embedding"].charge_micro_usd(1_000_000, 0) == 200_000
