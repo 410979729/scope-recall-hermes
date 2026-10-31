@@ -23,7 +23,7 @@ from cache import RequestCache, digest  # noqa: E402
 from cases import LOCOMO_CATEGORIES, Case, Turn, fixed_splits, longmemeval  # noqa: E402
 from lab import Lab  # noqa: E402
 from paired_statistics import holm, paired_binary  # noqa: E402
-from ports import Ports, normalized_messages, route_pricing  # noqa: E402
+from ports import ANSWER_SECONDS, Ports, normalized_messages, route_pricing  # noqa: E402
 from run import alternative_context  # noqa: E402
 from translate import validate  # noqa: E402
 
@@ -798,3 +798,12 @@ def test_live_ports_create_their_budget_ledger(tmp_path):
     Ports(RequestCache(tmp_path / "cache.sqlite3"), config, approved=(chat, embed), ledger_root=tmp_path)
     with sqlite3.connect(tmp_path / "model-ledger.sqlite3") as connection:
         assert connection.execute("SELECT count(*) FROM requests").fetchone()[0] == 0
+
+
+def test_answer_requests_get_the_full_answer_budget(tmp_path):
+    seen = []
+    ports = Ports(RequestCache(tmp_path / "cache.sqlite3"))
+    ports.fake = False
+    ports.chat = SimpleNamespace(propose=lambda messages, remaining_seconds: seen.append(remaining_seconds) or "ok")
+    assert ports.complete([{"role": "user", "content": "TEST question"}], operation="answer") == "ok"
+    assert seen == [ANSWER_SECONDS] and ANSWER_SECONDS >= 600

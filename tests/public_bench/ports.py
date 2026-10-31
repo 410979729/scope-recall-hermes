@@ -195,6 +195,11 @@ class CachedEmbedder:
         )
 
 
+# A full-context prompt of about 115,000 tokens takes about a minute on one GPU, and two that share a GPU take
+# about twice as long, so answer and judge requests get ten minutes.
+ANSWER_SECONDS = 600
+
+
 def route_pricing(config: dict, models: frozenset[str]) -> dict:
     """Prices from the route file for every route model; a missing price is refused instead of counted as free."""
     from scope_recall.runtime.model_budget import ModelPricing
@@ -275,6 +280,6 @@ class Ports:
         def compute():
             if self.fake:
                 return "no" if operation == "judge" else "No information available."
-            return self.chat.propose(messages, remaining_seconds=120)
+            return self.chat.propose(messages, remaining_seconds=ANSWER_SECONDS)
 
         return str(self.cache.call(operation, {"messages": messages}, self.config, {}, compute))
