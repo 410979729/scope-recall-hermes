@@ -24,17 +24,20 @@ from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
-from scope_recall.core.inbox_rules import given_up, replayable
+from scope_recall.core.inbox_rules import deferred_until, given_up, replayable
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
-from scope_recall.core.restore import restore_pending
+from scope_recall.core.restore import restore_pending, snapshot_schema_supported
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.store_upgrade import read_upgrade_state, upgrade_in_progress
 from scope_recall.core.vector_failure import vector_failure_label
 from scope_recall.runtime.model_budget import embedding_calls, provider_holds
 from scope_recall.vector.compaction import instance_vector_footprints
 from scope_recall.vector.store import build_vector_store
 
 from .doctor_report import DoctorReport, record_check
+
+_RETRY_COMMAND = "scope-recall retry-failures --apply --config <runtime-config.json>"
 
 
 def _seconds_since(stamp: Any) -> float | None:
@@ -195,6 +198,22 @@ def _backlog_is_stalled(worker_status: dict[str, Any], *, wake_seconds: float | 
 def _unopened(report: DoctorReport, data_directory: Path) -> bool:
     """Whether the store is left unread for a reason that refuses every open of it but one step of the operator's
     lifts, reported with that step: a restore not yet finished, a schema step not yet applied, a stamped header."""
+    state = read_upgrade_state(data_directory)
+    if state.get("status") in {"running", "failed", "interrupted", "unreadable"}:
+        found = schema_on_disk(data_directory / "memory.sqlite3")
+        # A crash after commit can leave an old running record beside a current store.
+        if found != SCHEMA_VERSION or upgrade_in_progress(data_directory):
+            report.schema_version = found
+            report.capability_gaps.append("schema_upgrade_" + str(state["status"]))
+            record_check(
+                report,
+                "schema_upgrade",
+                str(state["status"]),
+                f"phase={state.get('phase', 'unknown')}; reason={state.get('reason', 'none')}; "
+                f"snapshot={state.get('backup', 'unavailable')}; "
+                f"verified={state.get('snapshot_verified', False)}; " + _upgrade_recovery(state),
+            )
+            return True
     if restore_pending(data_directory):
         report.capability_gaps.append("restore_pending")
         record_check(
@@ -206,6 +225,8 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
         )
         return True
     found = schema_on_disk(data_directory / "memory.sqlite3")
+    if state.get("status") == "complete" and found == state.get("schema_after") == SCHEMA_VERSION:
+        record_check(report, "schema_upgrade", "ok", _upgrade_recovery(state, found))
     if found in UPGRADE_CHAIN:
         # Reported, never applied here: the doctor is read-only.
         report.schema_version = found
@@ -215,8 +236,8 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
             "schema",
             "upgrade_pending",
             f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction "
-            "(on a store above 100 MB, a caller with a minute of budget: the worker pass, apply-install, "
-            "upgrade-store or a Hermes session start)",
+            "(above 100 MB, explicit worker schema maintenance or upgrade-store supplies the budget; "
+            "status calls leave it pending)",
         )
         return True
     recorded = recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
@@ -233,6 +254,117 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
         )
         return True
     return False
+
+
+def _upgrade_recovery(state: dict, found: int | None = None) -> str:
+    """Name a supported recovery action without reviving post-snapshot deletions."""
+    if state.get("status") == "running":
+        return "Schema maintenance is running; wait for it to finish."
+    if state.get("status") != "complete" or found != state.get("schema_after"):
+        hint = "Resolve the reported failure, then reopen the host to retry the rolled-back upgrade."
+        hint += (
+            " Run scope-recall upgrade-store with --host and --instance-root for foreground maintenance "
+            "without a total time limit if background maintenance cannot finish."
+        )
+        if state.get("reason") == "upgrade_blocked_by_reader":
+            hint += " Close the read transactions held by host sessions or other store readers before retrying."
+        return hint
+    schema = state.get("backup_schema")
+    if not isinstance(schema, int) or not snapshot_schema_supported(schema):
+        return (
+            f"The completed upgrade cannot safely restore this snapshot with the restore command (snapshot header "
+            f"{schema}, recorded schema {state.get('backup_recorded_schema')}); preserve it and do not copy it over "
+            "the store, because that could revive deleted content."
+        )
+    hint = (
+        f"To undo this completed upgrade, stop all store users. First use the release with current store schema "
+        f"{found} (this running release) and run scope-recall restore --snapshot <verified-snapshot> "
+        "--backup-dir <new-backup-directory> --apply with the installation's --host and --instance-root. "
+    )
+    if schema != found:
+        hint += (
+            f"After it reports prepared, switch to a release whose current format matches snapshot schema {schema}, "
+            "then run scope-recall restore --snapshot <verified-snapshot> --apply with the same installation "
+            "arguments to finish."
+        )
+    return hint
+
+
+def _capture_queue_checks(report: DoctorReport, binding, conn) -> None:
+    """Distinguish scheduled captures, command-recoverable failures and stopped input without reading payloads."""
+    codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
+    moment = datetime.now(timezone.utc)
+    report.capture_inbox = len(codes)
+    report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
+    report.capture_inbox_given_up = sum(given_up(code) for code in codes)
+    delayed = [until for code in codes if (until := deferred_until(code, moment)) is not None]
+    if delayed:
+        record_check(
+            report,
+            "capture_deferred",
+            "waiting",
+            f"{len(delayed)} captures wait until {min(delayed).isoformat()}; automatic replay remains scheduled",
+        )
+    recoverable = sorted({str(code)[:120] for code in codes if given_up(code) or code == "ACCESS_DENIED"})
+    if recoverable:
+        record_check(
+            report,
+            "capture_recovery",
+            "waiting",
+            f"{recoverable[:8]}; after repair with this store's configuration: {_RETRY_COMMAND}",
+        )
+    stopped = sorted(
+        {
+            str(code)[:120]
+            for code in codes
+            if not replayable(code, moment)
+            and deferred_until(code, moment) is None
+            and not given_up(code)
+            and code != "ACCESS_DENIED"
+        }
+    )
+    for code in stopped[:8]:
+        record_check(report, "capture_stopped", "stopped", f"{code}; {_capture_stop_action(code)}")
+    kept = sum(1 for _ in (binding.data_directory / "kept-captures").glob("*.json"))
+    if kept:
+        record_check(
+            report, "capture_replay", "waiting", f"{kept} disk captures; Hermes retries hourly or on next start"
+        )
+
+
+def _capture_stop_action(code: str) -> str:
+    """A stopped envelope is immutable; correcting the host's input creates a new authorized capture."""
+    if code == "INPUT_INVALID":
+        return "validate the original capture input and submit corrected input as a new host event"
+    if code.startswith("SOURCE_MISSING"):
+        return "inspect the missing source; deleted evidence stays deleted; capture fresh authorized evidence"
+    if code.startswith("VERSION_CONFLICT"):
+        return "inspect the conflicting host event identities and submit the corrected event with its own identity"
+    return "inspect the retained failure and correct the host capture source before submitting a new authorized event"
+
+
+def _candidate_queue_checks(report: DoctorReport, tx):
+    """Read candidate status and explain bounded grants or authority fences for unfinished stopped questions."""
+    rows = (
+        tx._check()
+        .execute(
+            "SELECT e.work_id,w.last_error_code FROM candidate_evaluations e JOIN work_items w ON w.work_id=e.work_id "
+            "WHERE e.state='queued' AND w.state='failed' ORDER BY e.work_id LIMIT 16"
+        )
+        .fetchall()
+    )
+    for work_id, code in rows:
+        reason = tx.candidates.evaluation_retry_rejection(work_id, include_unfinished=True)
+        record_check(
+            report,
+            "candidate_recovery",
+            "stopped",
+            f"work {work_id}: {str(code)[:80]}; unfinished question; reconcile with {_RETRY_COMMAND}; "
+            "retry only if a bounded grant is available; otherwise retain the request mark "
+            "and wait for new admissible evidence" + (f"; {reason}" if reason else ""),
+        )
+
+    return tx.candidates.summary(include_all_projects=True)
 
 
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
@@ -258,11 +390,7 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
-            moment = datetime.now(timezone.utc)
-            codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
-            report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
-            report.capture_inbox_given_up = sum(given_up(code) for code in codes)
+            _capture_queue_checks(report, binding, conn)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(
@@ -283,7 +411,7 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
                 conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall()
             )
             report.needs_review_work = conn.execute(NEEDS_REVIEW_COUNT).fetchone()[0]
-            candidates = transaction.candidates.summary(include_all_projects=True)
+            candidates = _candidate_queue_checks(report, transaction)
             # Debouncing raises pending_evaluation on purpose, so split that
             # number: waiting inside the quiet window is health, waiting past it
             # with no sweep having run is not.
@@ -583,7 +711,14 @@ def check_backlog(report: DoctorReport, wake_seconds: float | None) -> None:
             report.capability_gaps.append("work_failed")
         elif terminal:
             report.capability_gaps.append("work_failed_terminal_only")
-        record_check(report, "failed_work", "present", f"{report.failed_work} (terminal={terminal})")
+        record_check(
+            report,
+            "failed_work",
+            "present",
+            f"{report.failed_work} (terminal={terminal}); reasons={report.work_error_counts}; "
+            f"after repair with this store's configuration: {_RETRY_COMMAND}; "
+            "by-design refusals require --include-terminal",
+        )
     if report.deferred_sources:
         record_check(report, "source_processing", "deferred", str(report.deferred_sources))
         report.capability_gaps.append("source_processing_deferred")

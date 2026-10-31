@@ -19,8 +19,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import IO, Any
 
-from ..core.file_lock import advisory_file_lock
-from ..core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
+from .file_lock import advisory_file_lock
+from .writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
 
 
 class BackupError(RuntimeError):
@@ -74,6 +74,9 @@ def stream_digest(stream: IO[bytes]) -> str:
 
 
 def sqlite_busy(exc: sqlite3.OperationalError) -> bool:
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        return code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
     text = str(exc).casefold()
     return "busy" in text or "locked" in text
 
@@ -174,7 +177,19 @@ def _canonical(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def backup_sqlite(source: str | Path, destination: str | Path, *, manifest: str | Path | None = None) -> dict[str, Any]:
+def seal_backup_manifest(value: dict[str, Any]) -> dict[str, Any]:
+    """Seal backup metadata, including a changed retention role, with one digest format."""
+    structural = {key: item for key, item in value.items() if key != "manifest_sha256"}
+    return {**structural, "manifest_sha256": hashlib.sha256(_canonical(structural)).hexdigest()}
+
+
+def backup_sqlite(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    manifest: str | Path | None = None,
+    automatic_upgrade: bool = False,
+) -> dict[str, Any]:
     """Create a consistent, verified backup into a new isolated path."""
     source_path = safe_path(source, must_exist=True)
     destination_path = safe_path(destination)
@@ -193,24 +208,34 @@ def backup_sqlite(source: str | Path, destination: str | Path, *, manifest: str 
         reader.backup(writer, pages=256, progress=lambda _status, _remaining, _total: check_backup_deadline())
         writer.commit()
         writer.execute("PRAGMA journal_mode=DELETE")
-        quick = str(writer.execute("PRAGMA quick_check").fetchone()[0])
+        writer.set_progress_handler(lambda: check_backup_deadline() or 0, 1000)
+        try:
+            quick = str(writer.execute("PRAGMA quick_check").fetchone()[0])
+        except sqlite3.Error:
+            check_backup_deadline()
+            raise
+        finally:
+            writer.set_progress_handler(None, 0)
+        check_backup_deadline()
         if quick.lower() != "ok":
             raise BackupError(f"backup quick_check failed: {quick}")
         structural = {
             "format": "scope-recall-p15-sqlite-backup/1",
-            "source_sha256": sha256(source_path),
             "backup_sha256": sha256(destination_path),
             "size_bytes": destination_path.stat().st_size,
             "user_version": int(writer.execute("PRAGMA user_version").fetchone()[0]),
             "application_id": int(writer.execute("PRAGMA application_id").fetchone()[0]),
             "quick_check": quick,
         }
+        if automatic_upgrade:
+            structural["automatic_upgrade"] = True
+            structural["upgrade_role"] = "attempt"
     finally:
         if reader is not None:
             reader.close()
         if writer is not None:
             writer.close()
-    structural["manifest_sha256"] = hashlib.sha256(_canonical(structural)).hexdigest()
+    structural = seal_backup_manifest(structural)
     if manifest_path is not None:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         safe_path(manifest_path)

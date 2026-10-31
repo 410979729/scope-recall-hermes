@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from .._version import __version__
 from ..contracts import ContractError
+from .failure_policy import INGRESS_REPLAY_ERRORS, INGRESS_RETRY
 
 #: A bare ``SOURCE_MISSING``, a row's code for a missing source that does not say which.  Such a row is replayed once
 #: more: one of its causes, a task whose episode was deleted refusing every later capture of the task, cannot recur
@@ -21,9 +22,8 @@ LEGACY_SOURCE_MISSING = "SOURCE_MISSING"
 #: Inbox rows a replay still stores, besides those never tried: a passing failure (``replay_inbox``), a row from
 #: before the missing source was named, or a key another message already took (``resolve_conflicted_ingress``
 #: stores it under a new key).  Any other code is terminal; the row stays for inspection only.
-STILL_REPLAYED = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", LEGACY_SOURCE_MISSING, "VERSION_CONFLICT"})
 #: The codes ``replay_inbox`` itself retries; a ``VERSION_CONFLICT`` row is ``resolve_conflicted_ingress``'s.
-RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
+RETRIED = tuple(sorted(INGRESS_REPLAY_ERRORS - {"VERSION_CONFLICT"}))
 
 
 #: A row whose stored capture a replay could not check again is put off:
@@ -39,10 +39,10 @@ RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
 DEFERRED = "DEFERRED|"
 GAVE_UP = "GAVE_UP|"
 _PATHS = ("replay", "rekey")
-DEFER_FIRST_SECONDS = 60.0
-DEFER_MAX_SECONDS = 3600.0
+DEFER_FIRST_SECONDS = INGRESS_RETRY.first
+DEFER_MAX_SECONDS = INGRESS_RETRY.ceiling
 #: About nineteen hours of tries.
-DEFER_ATTEMPTS = 24
+DEFER_ATTEMPTS = INGRESS_RETRY.attempts or 0
 #: What a query takes for the rows ``replay_inbox`` may store: never tried, a code in ``RETRIED``, or put off.
 REPLAY_CANDIDATES = (
     f"(last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in RETRIED)})"
@@ -82,7 +82,7 @@ def deferral(previous: object, exc: BaseException, now: datetime, *, path: str) 
     attempt = (parsed[1] if parsed is not None else 0) + 1
     if attempt > DEFER_ATTEMPTS:
         return f"{GAVE_UP}{__version__}|{attempt}|{path}|{_kind(exc)}"
-    delay = min(DEFER_MAX_SECONDS, DEFER_FIRST_SECONDS * 2 ** (attempt - 1))
+    delay = INGRESS_RETRY.delay(attempt)
     until = (now + timedelta(seconds=delay)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"{DEFERRED}{__version__}|{until}|{attempt}|{path}|{_kind(exc)}"
 
@@ -132,7 +132,7 @@ def given_up(code: object) -> bool:
 def waiting(code: object) -> bool:
     """Whether some pass will still store a row with this code: what a hook's record read counts as already said.  A
     row given up is not."""
-    return code is None or code in STILL_REPLAYED or (type(code) is str and code.startswith(DEFERRED))
+    return code is None or code in INGRESS_REPLAY_ERRORS or (type(code) is str and code.startswith(DEFERRED))
 
 
 def taking_a_new_key(code: object) -> bool:

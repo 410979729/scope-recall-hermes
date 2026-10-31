@@ -13,7 +13,7 @@ from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_
 from scope_recall.adapters.clients.handler import _TOTAL_BUDGET_S
 from scope_recall.adapters.clients.mcp_server import build_server
 from scope_recall.adapters.clients.runtime_wiring import GAP_UNCONFIGURED, attach_trusted_host_runtime
-from scope_recall.contracts import ContractError
+from scope_recall.contracts import ContractError, TrustedContext
 
 
 def test_runtime_wiring_uses_this_source_checkout(record_property):
@@ -49,6 +49,127 @@ def _runtime_payload(binding, *, session_id: str, allowed_scope_ids) -> dict:
 def _write_runtime_config(path: Path, payload: dict) -> Path:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"])
+def test_pending_upgrade_wakes_from_real_client_hook(codex_install, monkeypatch, event):
+    from scope_recall.adapters.clients import runtime_wiring
+    from scope_recall.core import storage
+    from scope_recall.runtime import worker_launch
+    from v11_support import downgrade_store
+
+    config, core, project, runtime_path = codex_install
+    (core.storage.path.parent / "runtime-config.json").write_bytes(runtime_path.read_bytes())
+    downgrade_store(core.storage.path, 1111)
+    monkeypatch.setattr(storage, "_store_bytes", lambda conn: storage.HEAVY_UPGRADE_BYTES)
+    workers = []
+    launch = worker_launch.launch_worker
+
+    def observed(*args, **kwargs):
+        kwargs["detach_output"] = False
+        worker = launch(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(worker_launch, "launch_worker", observed)
+    monkeypatch.setattr(runtime_wiring, "launch_worker", observed)
+    handler = CodexHookHandler(config, core=core)
+    payload = dict(
+        hook_event_name=event,
+        session_id="TEST-pending",
+        turn_id="TEST-turn",
+        cwd=str(project),
+        prompt="TEST pending upgrade",
+        last_assistant_message="TEST reply",
+        reason="logout",
+    )
+    try:
+        handler.handle_payload(payload)
+        assert workers, "pending hook did not wake schema maintenance"
+        assert len(workers) == 1
+        out, err = workers[0].communicate(timeout=20)
+        assert workers[0].poll() == 0, (out, err)
+        assert core.storage.initialize().schema_version == storage.SCHEMA_VERSION
+        handler.handle_payload({**payload, "turn_id": "TEST-next"})
+        assert "SCHEMA_UNSUPPORTED" not in str(handler.diagnostics)
+    finally:
+        handler.close()
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.communicate(timeout=5)
+
+
+def test_mcp_startup_wakes_pending_upgrade_without_status(codex_install, monkeypatch):
+    from scope_recall.runtime import worker_launch
+    from v11_support import downgrade_store
+
+    config, core, project, runtime_path = codex_install
+    downgrade_store(core.storage.path, 1111)
+    launch = worker_launch.launch_worker
+    workers = []
+
+    def observed(*args, **kwargs):
+        kwargs["detach_output"] = False
+        worker = launch(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(worker_launch, "launch_worker", observed)
+    server = build_server(config, workspace=project, trusted_runtime_config_path=runtime_path)
+    try:
+        assert len(workers) == 1
+        out, err = workers[0].communicate(timeout=20)
+        assert workers[0].poll() == 0, (out, err)
+        assert server.core.storage.initialize().schema_version == 1112
+    finally:
+        server._host_runtime.close(detach_worker=False)
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.communicate(timeout=5)
+
+
+def test_actual_pending_wakes_even_when_startup_probe_misses_it(codex_install, monkeypatch):
+    from scope_recall.adapters import runtime_wiring
+    from scope_recall.core import storage
+    from scope_recall.runtime import worker_launch
+    from v11_support import downgrade_store
+
+    config, core, _project, runtime_path = codex_install
+    downgrade_store(core.storage.path, 1111)
+    monkeypatch.setattr(storage, "_store_bytes", lambda conn: storage.HEAVY_UPGRADE_BYTES)
+    monkeypatch.setattr(runtime_wiring, "store_upgrade_pending", lambda *args, **kwargs: False)
+    launch = worker_launch.launch_worker
+    workers = []
+
+    def observed(*args, **kwargs):
+        kwargs["detach_output"] = False
+        worker = launch(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(worker_launch, "launch_worker", observed)
+    host = attach_trusted_host_runtime(
+        config_path=runtime_path,
+        expected_binding=config.to_binding(),
+        session_id="TEST-pending",
+        allowed_scope_ids=config.scope_ids,
+    )
+    context = TrustedContext(config.to_binding(), "TEST-pending", config.scope_ids, "human_direct")
+    try:
+        with pytest.raises(ContractError, match="upgrade_pending"):
+            host.core.status(context)
+        assert len(workers) == 1
+        out, err = workers[0].communicate(timeout=20)
+        assert workers[0].poll() == 0, (out, err)
+        assert host.core.status(context).schema_version == 1112
+    finally:
+        host.close(detach_worker=False)
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.communicate(timeout=5)
 
 
 @pytest.fixture

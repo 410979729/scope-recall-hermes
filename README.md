@@ -195,3 +195,5 @@ The package root holds only the entry (`__init__.py`), the version and the proto
 ## Development checks
 
 The clean wheel must be tested outside the source checkout. At minimum, verify both CLI aliases, a read-only doctor result, Core capture and recall against a temporary installation, and the stdlib HTTP helper's bounded invalid-input response. Host registration, real gateway lifecycle, and production data are separate acceptance boundaries.
+
+Queue states, retry limits and recovery actions are described in [Background work](docs/background-work.md).

@@ -219,14 +219,21 @@ class MemoryCore:
         return result
 
     def private_mode(self, context: TrustedContext) -> str | None:
-        """The stricter private mode active for this context now, or None.
+        """The active private mode, None, or ``unavailable`` during a format upgrade.
 
         This is the adapter-facing read used for the injected notice; capture and
         recall gates use the same core helper and never a copy of this policy.
         """
         now = utc_timestamp(self.clock.utc_now())
-        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
-            return private.mode_at(private.matching_intervals(tx, context, now=now), now)
+        try:
+            with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+                return private.mode_at(private.matching_intervals(tx, context, now=now), now)
+        except ContractError as exc:
+            if exc.code == "SCHEMA_UNSUPPORTED" and exc.field in {"upgrade_in_progress", "upgrade_pending"}:
+                # Capture and recall retain their explicit schema gap. The hook's
+                # notice read must not turn that bounded refusal into a host error.
+                return "unavailable"
+            raise
 
     def _recall_private_state(self, context: TrustedContext, *, after: int | None = None):
         """Read a fresh decision and rule marker at recall entry or release."""

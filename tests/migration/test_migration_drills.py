@@ -17,7 +17,7 @@ from legacy_fixture import build_official_578b_fixture
 from release_fixture import LATEST_RELEASE, LATEST_SCHEMA, PREVIOUS_SCHEMA, build_previous_release_store
 from scope_recall.adapters.clients.config import install_codex_scope_recall
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
-from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core import CoreConfig, MemoryCore, backup_primitives
 from scope_recall.core.capture import record_event
 from scope_recall.core.restore import (
     InstallationMaintenance,
@@ -31,7 +31,6 @@ from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterBusyError, truth_writer_process_snapshot
 from scope_recall.maintenance import cli
 from scope_recall.maintenance.restore import apply_restore
-from scope_recall.runtime import backup_primitives
 from test_denial_values import NEGATED_STATES
 from v11_support import downgrade_store
 
@@ -1424,7 +1423,7 @@ except TruthWriterBusyError:
     assert attempt_migration() == str(SCHEMA_VERSION), "write ownership ends with the command"
 
 
-@pytest.mark.parametrize("close_number", [1, 3])
+@pytest.mark.parametrize("close_number", [1, 2])
 def test_session_index_open_keeps_its_budget_when_another_process_takes_the_lease(tmp_path, monkeypatch, close_number):
     project = tmp_path / "TEST-project"
     project.mkdir()
@@ -1459,7 +1458,7 @@ lease.release()
     def close_and_contend(conn, original):
         actual_close(conn, original)
         closed.append(conn)
-        # The first close precedes initialization; the third precedes reopening.
+        # The first close precedes initialization; the second precedes reopening.
         if len(closed) == close_number:
             child.stdin.write("acquire\n")
             child.stdin.flush()

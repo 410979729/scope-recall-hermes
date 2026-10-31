@@ -12,6 +12,22 @@ from pathlib import Path
 from packaging.version import Version
 
 
+def verification_env(scratch: Path) -> dict[str, str]:
+    """Give verification children only OS essentials and this task's temporary paths."""
+    env = {
+        name: os.environ[name] for name in ("SystemRoot", "WINDIR", "COMSPEC", "PATH", "PATHEXT") if name in os.environ
+    }
+    env.update(
+        TMP=str(scratch),
+        TEMP=str(scratch),
+        PYTHONUTF8="1",
+        PYTHONDONTWRITEBYTECODE="1",
+        UV_CACHE_DIR=str(scratch / "uv-cache"),
+        PIP_CACHE_DIR=str(scratch / "pip-cache"),
+    )
+    return env
+
+
 def main():
     """Generate release-written fixtures and verify them with the target interpreter."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -22,6 +38,7 @@ def main():
     parser.add_argument("--target-python", type=Path, required=True)
     parser.add_argument("--uv", type=Path)
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--exercise-next-schema", action="store_true")
     parser.add_argument(
         "--output", type=Path, required=True, help="verification copies and reports, separate from historical fixtures"
     )
@@ -37,19 +54,7 @@ def main():
         ),
         key=Version,
     )
-    # Whitelist only operating-system essentials. No installed plugin, model
-    # credential, host setting, or ambient real-store selector is inspected.
-    env = {
-        name: os.environ[name] for name in ("SystemRoot", "WINDIR", "COMSPEC", "PATH", "PATHEXT") if name in os.environ
-    }
-    env.update(
-        TMP=str(args.scratch),
-        TEMP=str(args.scratch),
-        PYTHONUTF8="1",
-        PYTHONDONTWRITEBYTECODE="1",
-        UV_CACHE_DIR=str(args.scratch / "uv-cache"),
-        PIP_CACHE_DIR=str(args.scratch / "pip-cache"),
-    )
+    env = verification_env(args.scratch)
     script = Path(__file__).with_name("sample_store.py")
     reports = []
     consecutive_failures = 0
@@ -62,7 +67,6 @@ def main():
         sample.mkdir(exist_ok=True)
         destination = args.output / version / f"run-{time.time_ns()}"
         destination.mkdir(parents=True)
-        log = destination / "verification.log"
         commands = []
         if not args.verify_only:
             if not python.exists():
@@ -93,9 +97,11 @@ def main():
             "verification_output": str(destination),
             "commands": commands,
         }
+        if args.exercise_next_schema:
+            commands[-1].append("--exercise-next-schema")
         if not args.verify_only:
             result["environment"] = str(environment)
-        with log.open("a", encoding="utf-8") as output:
+        with (destination / "verification.log").open("a", encoding="utf-8") as output:
             for command in commands:
                 done = subprocess.run(
                     command, env=env, stdout=output, stderr=subprocess.STDOUT, timeout=600, check=False

@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ..core.failure_policy import PROVIDER_HOLD
 from .validation import nonneg_decimal, nonneg_int, positive_int, text
 
 REQUESTS_TABLE = (
@@ -604,8 +605,8 @@ def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
 #: again at once: through a monthly spend cap a provider can refuse every
 #: embedding for hours while the installations keep asking thousands of times a day.
 #: Half an hour between asks is still quick to notice the cap was raised.
-PROVIDER_HOLD_FIRST_SECONDS = 60.0
-PROVIDER_HOLD_LONGEST_SECONDS = 1800.0
+PROVIDER_HOLD_FIRST_SECONDS = PROVIDER_HOLD.first
+PROVIDER_HOLD_LONGEST_SECONDS = PROVIDER_HOLD.ceiling
 #: Recent calls of one model read to count refusals in a row.
 _HOLD_LOOKBACK_ROWS = 32
 #: Rows that are no answer at all: still in flight, or lost on the way.
@@ -619,8 +620,7 @@ _SAME_WAVE_NS = 1_000_000_000
 
 def _held_refusal(status: object) -> bool:
     """Whether a settled row is the provider declining to serve: capacity or account."""
-    from ..core.failure_retry import ACCOUNT_REFUSALS
-    from ..core.work_storage import CAPACITY_REFUSALS
+    from ..core.failure_policy import ACCOUNT_REFUSALS, CAPACITY_REFUSALS
 
     code = str(status or "").split(":", 1)[0].split("_usage", 1)[0]
     return code in CAPACITY_REFUSALS or code in ACCOUNT_REFUSALS
@@ -661,7 +661,7 @@ def provider_hold_until(ledger_path, model: object, *, now: float | None = None)
             counted = started_ns
     if not streak or latest is None:
         return None
-    hold = min(PROVIDER_HOLD_LONGEST_SECONDS, PROVIDER_HOLD_FIRST_SECONDS * 2 ** min(streak - 1, 16))
+    hold = PROVIDER_HOLD.delay(streak)
     until = latest / 1_000_000_000 + hold
     return until if until > (time.time() if now is None else now) else None
 

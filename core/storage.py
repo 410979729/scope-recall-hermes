@@ -8,9 +8,10 @@ import os
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 from ..contracts import (
     ContractError,
@@ -19,7 +20,9 @@ from ..contracts import (
 )
 from .deadline import remaining_seconds as request_remaining_seconds
 from .delete_storage import Deletions, watch_mirrored_tombstones
-from .failure_retry import failure_kind, retry_class
+from .failure_policy import failure_kind
+from .failure_retry import retry_class
+from .file_lock import advisory_file_lock
 from .registry_storage import Registry
 from .restore import restore_pending
 from .schema import (
@@ -40,6 +43,7 @@ from .schema import (
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
+from .store_upgrade import UPGRADE_LOCK, recover_upgrade_snapshot, upgrade_in_progress, upgrade_store
 from .truth_connection import TruthDatabaseMode, connect_truth_database
 from .visibility import allowed, allowed_refs
 from .work_storage import WorkItems
@@ -47,6 +51,23 @@ from .writer_lease import TruthWriterBusyError
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
+
+# A migration consumes its key's format and advances it to the next format.
+SCHEMA_MIGRATIONS = dict(
+    zip(
+        UPGRADE_CHAIN,
+        (
+            upgrade_1105,
+            upgrade_1106,
+            upgrade_1107,
+            upgrade_1108,
+            upgrade_1109,
+            upgrade_1110,
+            upgrade_1111,
+        ),
+        strict=True,
+    )
+)
 
 
 def _directory(path: Path) -> str:
@@ -76,7 +97,7 @@ class StoreStatus:
     failed_work: int = 0
     leased_work: int = 0
     oldest_pending_at: str | None = None
-    #: Why the failed rows failed, one count per failure kind (``failure_retry.failure_kind``).
+    #: Why the failed rows failed, one count per failure kind (``failure_policy.failure_kind``).
     work_error_counts: tuple[tuple[str, int], ...] = ()
     source_only_sources: int | None = None
     deferred_sources: int | None = None
@@ -310,7 +331,7 @@ class Transaction:
             params,
         ).fetchall()
         # A code carries its retry history (``auto_retry:1|derivation_invalid``) and its writer's case; each kind is
-        # counted once, as ``failure_retry.failure_kind`` reads it, and a failure is terminal as ``retry_class`` and so
+        # counted once, as ``failure_policy.failure_kind`` reads it, and a failure is terminal as ``retry_class`` and so
         # ``retry-failures`` read it.
         kinds: dict[str, dict[str, int]] = {"failed": {}, "pending": {}}
         terminal = 0
@@ -463,11 +484,18 @@ HEAVY_UPGRADE_SECONDS = 60.0
 
 def upgrade_fits(store_bytes: int, remaining_seconds: float | None) -> bool:
     """Whether an open with this budget may bring a store of this size forward."""
-    return remaining_seconds is None or remaining_seconds >= HEAVY_UPGRADE_SECONDS or store_bytes < HEAVY_UPGRADE_BYTES
+    return store_bytes < HEAVY_UPGRADE_BYTES or (
+        remaining_seconds is not None and remaining_seconds >= HEAVY_UPGRADE_SECONDS
+    )
 
 
 def _store_bytes(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA page_count").fetchone()[0] * conn.execute("PRAGMA page_size").fetchone()[0]
+
+
+def _initialization_left(deadline: float | None) -> float | None:
+    """Return the unspent part of the single initialization deadline."""
+    return None if deadline is None else max(0.0, deadline - time.monotonic())
 
 
 #: Requested memory-map size.  Operations open separate connections, so they do not share SQLite's page cache.
@@ -524,6 +552,15 @@ class SQLiteStorage:
         #: the store and the recalls and worker passes over it keep one time.
         self.monotonic = clock if clock is not None else time.monotonic
         self.__pending_close: list[sqlite3.Connection] = []
+        #: Optional runtime-owned scheduling edge; core never imports a worker launcher.
+        self.on_upgrade_pending: Callable[[], object] | None = None
+
+    def _defer_upgrade(self) -> NoReturn:
+        """Notify the scheduling owner without replacing the authoritative schema gap."""
+        if self.on_upgrade_pending is not None:
+            with suppress(Exception):
+                self.on_upgrade_pending()
+        raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_pending")
 
     @property
     def binding(self) -> InstanceBinding:
@@ -567,7 +604,12 @@ class SQLiteStorage:
         )
 
     def _open(
-        self, mode: TruthDatabaseMode, remaining_seconds: float | None = None, *, restoring: bool = False
+        self,
+        mode: TruthDatabaseMode,
+        remaining_seconds: float | None = None,
+        *,
+        restoring: bool = False,
+        coordinating: bool = False,
     ) -> sqlite3.Connection:
         # Commit, rollback and connection/lease cleanup finish outside this entry check.
         timeout = self._timeout(remaining_seconds)
@@ -581,6 +623,8 @@ class SQLiteStorage:
                 raise ContractError("STORAGE_UNAVAILABLE", "connection_cleanup") from exc
             self.__pending_close.pop()
         self._path_check()
+        if not restoring and not coordinating and upgrade_in_progress(self.binding.data_directory):
+            raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_in_progress")
         if not restoring and restore_pending(self.binding.data_directory):
             raise ContractError("RESTORE_UNVERIFIED")
         # The writer lease is taken without blocking and held for one
@@ -618,10 +662,11 @@ class SQLiteStorage:
                 raise
             return conn
 
-    def verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
+    def verify(self, conn: sqlite3.Connection, *, expected_schema: int | None = None) -> None:
         """Refuse the database ``conn`` reads unless it is this binding's store at ``expected_schema``: its header,
         its recorded schema, its kind, its identity and its scopes.  Its file need not be the store's own: a
         snapshot of the store is checked the same way before it is copied over it (``maintenance/restore.py``)."""
+        expected_schema = SCHEMA_VERSION if expected_schema is None else expected_schema
         if (
             conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
             or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema
@@ -680,39 +725,90 @@ class SQLiteStorage:
 
     def _upgrade_schema(self, conn: sqlite3.Connection) -> None:
         """Apply each supported migration in order after checking its input identity."""
-        migrations = (
-            upgrade_1105,
-            upgrade_1106,
-            upgrade_1107,
-            upgrade_1108,
-            upgrade_1109,
-            upgrade_1110,
-            upgrade_1111,
-        )
-        for version, migrate in zip(UPGRADE_CHAIN, migrations, strict=True):
+        for version, migrate in SCHEMA_MIGRATIONS.items():
             if conn.execute("PRAGMA user_version").fetchone()[0] == version:
                 self.verify(conn, expected_schema=version)
                 migrate(conn)
 
-    def initialize(self, *, remaining_seconds: float | None = None) -> StoreStatus:
+    def initialize(
+        self,
+        *,
+        remaining_seconds: float | None = None,
+        backup_dir: Path | None = None,
+        repair_header: bool = False,
+        receipt: dict | None = None,
+        unbounded_upgrade: bool = False,
+    ) -> StoreStatus:
         """Create or upgrade this store and return its verified status within the caller's lock-wait budget."""
-        started = self.monotonic() if remaining_seconds is not None else 0.0
-        conn = self._open("rwc", remaining_seconds)
+        self._timeout(remaining_seconds)
+        budget = min((v for v in (remaining_seconds, request_remaining_seconds()) if v is not None), default=None)
+        deadline = None if budget is None else time.monotonic() + budget
+        conn = self._open("rwc", _initialization_left(deadline), coordinating=True)
         original = None
         try:
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version in UPGRADE_CHAIN:
-                # Verified as this store's own before anything is written, and
-                # switched to WAL first, so readers keep reading through a
-                # long upgrade instead of waiting on the rollback journal.
-                self.verify(conn, expected_schema=version)
-                _ensure_wal(conn)
+            with advisory_file_lock(
+                self.binding.data_directory / UPGRADE_LOCK,
+                timeout_seconds=self._timeout(_initialization_left(deadline)),
+            ):
+                return self._initialize(
+                    conn,
+                    deadline=deadline,
+                    backup_dir=backup_dir,
+                    repair_header=repair_header,
+                    receipt=receipt,
+                    unbounded_upgrade=unbounded_upgrade,
+                )
+        except BaseException as exc:
+            original = exc
+            raise
+        finally:
+            self._close(conn, original)
+
+    def _initialize(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        deadline: float | None,
+        backup_dir: Path | None,
+        repair_header: bool,
+        receipt: dict | None,
+        unbounded_upgrade: bool,
+    ) -> StoreStatus:
+        status: StoreStatus | None = None
+
+        def migrate(conn):
+            nonlocal status
+            self._migrate_store(conn)
+            status = self._initial_status(conn)
+
+        try:
+            conn.execute(f"PRAGMA busy_timeout={int(self._timeout(_initialization_left(deadline)) * 1000)}")
             conn.execute("BEGIN IMMEDIATE")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            recorded = stale_header_schema(conn) if repair_header else None
             exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone()
             if exists:
-                self._upgrade_schema(conn)
-                self.verify(conn)
-                ensure_source_session_index(conn)
+                if version in UPGRADE_CHAIN or recorded is not None:
+                    if not unbounded_upgrade and not upgrade_fits(_store_bytes(conn), _initialization_left(deadline)):
+                        self._defer_upgrade()
+                    outcome = upgrade_store(
+                        conn,
+                        self.path,
+                        target=SCHEMA_VERSION,
+                        verify=self.verify,
+                        migrate=migrate,
+                        backup_dir=backup_dir,
+                        recorded_schema=recorded,
+                        deadline=deadline,
+                    )
+                    if receipt is not None:
+                        receipt.update(outcome)
+                    if recorded is not None and receipt is not None:
+                        receipt["header_restamped"] = {"from": version, "to": recorded}
+                else:
+                    self.verify(conn)
+                    recover_upgrade_snapshot(self.binding.data_directory, current_schema=version)
+                    ensure_source_session_index(conn)
             else:
                 if (
                     conn.execute("PRAGMA user_version").fetchone()[0] != 0
@@ -737,21 +833,34 @@ class SQLiteStorage:
                 )
                 conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            if status is None:
+                status = self._initial_status(conn)
             conn.commit()
-            _ensure_wal(conn)
+            with suppress(sqlite3.Error):
+                conn.execute("PRAGMA busy_timeout=0")
+                _ensure_wal(conn)
         except BaseException as exc:
-            original = exc
             try:
                 if conn.in_transaction:
                     conn.rollback()
             except BaseException as cleanup:
                 _cleanup_error(exc, cleanup, "rollback")
             raise
-        finally:
-            self._close(conn, original)
+        return status
+
+    def _initial_status(self, conn: sqlite3.Connection) -> StoreStatus:
+        """Read the verified result inside its owning transaction before commit."""
         context = TrustedContext(self.binding, "initialization", self.binding.scope_ids, "host_generated")
-        with self.read(context, remaining_seconds=self._remaining_budget(remaining_seconds, started)) as tx:
+        tx = Transaction(conn, context, writable=False)
+        try:
             return tx.status()
+        finally:
+            tx._finish()
+
+    def _migrate_store(self, conn: sqlite3.Connection) -> None:
+        """Apply the ordered format changes and their required lookup index."""
+        self._upgrade_schema(conn)
+        ensure_source_session_index(conn)
 
     def adopt(self) -> str:
         """Record this binding's directory as where a copied shared store now lives.
@@ -842,7 +951,7 @@ class SQLiteStorage:
                 # A hook's few seconds cannot carry a rebuild that takes a
                 # minute on a large store; the worker's pass or the installer
                 # brings it forward, and the doctor names the pending step.
-                raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_pending")
+                self._defer_upgrade()
             self.initialize(remaining_seconds=self._remaining_budget(remaining_seconds, started))
             conn = self._open(
                 "rw" if writable else "ro", self._remaining_budget(remaining_seconds, started), restoring=restoring

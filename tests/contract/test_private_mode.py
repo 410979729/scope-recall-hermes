@@ -312,13 +312,13 @@ def test_failed_private_migration_rolls_back_every_schema_write(app, monkeypatch
     core, ctx, _clock, _owner = app
     captured = core.record_event(ctx, _event(), scope_id="TEST-scope")
     downgrade_store(core.storage.path, 1111)
-    migrate = storage.upgrade_1111
+    migrate = storage.SCHEMA_MIGRATIONS[1111]
 
     def interrupted(connection):
         migrate(connection)
         raise RuntimeError("TEST migration interrupted")
 
-    monkeypatch.setattr(storage, "upgrade_1111", interrupted)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1111, interrupted)
     with pytest.raises(RuntimeError, match="TEST migration interrupted"):
         core.initialize()
     with closing(sqlite3.connect(core.storage.path)) as conn:
@@ -327,7 +327,7 @@ def test_failed_private_migration_rolls_back_every_schema_write(app, monkeypatch
         assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name='private_intervals'").fetchone()[0] == 0
         assert "project_root" not in {row[1] for row in conn.execute("PRAGMA table_info(source_events)")}
         assert conn.execute("SELECT content FROM source_events").fetchone()[0] == _event()["content"]
-    monkeypatch.setattr(storage, "upgrade_1111", migrate)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1111, migrate)
     core.initialize()
     assert core.source(ctx, captured.event_refs[0].ref, 1).event["content"] == _event()["content"]
 

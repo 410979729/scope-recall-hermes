@@ -47,6 +47,55 @@ def _write_runtime_config(path: Path, payload: dict) -> Path:
     return path
 
 
+def test_pending_upgrade_wakes_from_real_provider_initialize(hermes_home, initialize_kwargs, monkeypatch):
+    from scope_recall.core import storage
+    from scope_recall.runtime import worker_launch
+    from v11_support import downgrade_store
+
+    binding, core = install_hermes_scope_recall(
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        platform=initialize_kwargs["platform"],
+        user_id=initialize_kwargs["user_id"],
+        agent_workspace=initialize_kwargs["agent_workspace"],
+        test_mode=False,
+    )
+    path = _write_runtime_config(
+        hermes_home / "TEST-runtime.json",
+        _runtime_payload(binding, session_id="TEST-upgrade", allowed_scope_ids=binding.scope_ids),
+    )
+    downgrade_store(core.storage.path, 1111)
+    monkeypatch.setattr(storage, "_store_bytes", lambda conn: storage.HEAVY_UPGRADE_BYTES)
+    workers = []
+    launch = worker_launch.launch_worker
+
+    def observed(*args, **kwargs):
+        kwargs["detach_output"] = False
+        worker = launch(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(worker_launch, "launch_worker", observed)
+    provider = ScopeRecallHermesAdapter()
+    try:
+        provider.initialize("TEST-upgrade", **{**initialize_kwargs, "trusted_runtime_config_path": str(path)})
+        assert workers, "pending provider did not wake schema maintenance"
+        assert len(workers) == 1
+        out, err = workers[0].communicate(timeout=20)
+        assert workers[0].poll() == 0, (out, err)
+        provider.initialize("TEST-next", **{**initialize_kwargs, "trusted_runtime_config_path": str(path)})
+        assert (
+            provider._require_core().status(provider._identity.trusted_context()).schema_version
+            == storage.SCHEMA_VERSION
+        )
+    finally:
+        provider.shutdown()
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.communicate(timeout=5)
+
+
 def test_missing_runtime_config_preserves_basic_behavior_and_reports_gap(adapter):
     provider, _clock = adapter
     assert GAP_UNCONFIGURED in provider.diagnostics.capability_gaps

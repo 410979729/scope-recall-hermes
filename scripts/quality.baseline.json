@@ -403,9 +403,6 @@
     "CaptureWriter.write": 9
    }
   },
-  "adapters/hermes/capture_retry.py": {
-   "E501": 2
-  },
   "adapters/hermes/gating.py": {
    "UP045": 1
   },
@@ -701,7 +698,7 @@
     "drain_worker": 9
    },
    "PLR0915": {
-    "drain_worker": 76
+    "drain_worker": 73
    }
   },
   "core/worker_candidates.py": {
@@ -726,7 +723,6 @@
    }
   },
   "core/worker_projection.py": {
-   "B905": 1,
    "BLE001": 6,
    "C901": {
     "_purge_layers": 20
@@ -759,7 +755,7 @@
   "maintenance/doctor_store.py": {
    "E501": 1,
    "PLR0915": {
-    "check_storage": 66
+    "check_storage": 62
    },
    "UP017": 7
   },
@@ -958,10 +954,7 @@
   "runtime/worker_watchdog.py": {
    "BLE001": 2,
    "C901": {
-    "_run_once": 18
-   },
-   "PLR0915": {
-    "_run_once": 61
+    "_run_once": 16
    }
   },
   "scripts/check.py": {
@@ -974,7 +967,7 @@
     "select_tests": 17
    },
    "PLR0915": {
-      "_execute": 73,
+    "_execute": 73,
     "select_tests": 62
    }
   },

@@ -18,6 +18,7 @@ from scope_recall.core.capture import CaptureReceipt
 from scope_recall.core.capture_filters import sanitize_source_capture_text
 from scope_recall.core.deadline import fits
 from scope_recall.core.events import prepare_capture
+from scope_recall.core.failure_policy import capture_retryable
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
 from .boundary import SourceIdentity
@@ -48,7 +49,7 @@ def _may_pass(outcome: CaptureReceipt | Exception | None) -> bool:
     """Whether a write that did not store its capture may store it later: one that met a busy store or ran out of
     time, never one the store refused for good (a rejection, a conflict, a cancellation, a terminal error)."""
     if isinstance(outcome, ContractError):
-        return outcome.code not in {"ACCESS_DENIED", "INPUT_INVALID", "VERSION_CONFLICT"}
+        return capture_retryable(outcome.code)
     if isinstance(outcome, Exception):
         return True
     return outcome is not None and outcome.disposition not in {"rejected", "conflict", "cancelled"}

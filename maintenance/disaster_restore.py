@@ -25,12 +25,12 @@ from scope_recall.core.storage import SQLiteStorage, _directory
 from scope_recall.maintenance.backup_replay import replay_deletion_mirror
 
 from ..adapters.hermes.shared_entries import read_shared_payload
+from ..core.backup_primitives import BackupError, atomic_json, first_link, safe_path
 from ..core.deletion_mirror import DELETION_MIRROR_FILENAME, installation_mirror
 from ..core.recall_policy import EMBEDDING_SPACE, embedding_space_id
 from ..runtime.auxiliary import AuxiliaryRuntimeConfig
 from ..runtime.backup_archive import write_verified_members
 from ..runtime.backup_bundle import inspect_backup_archive, verify_backup_bundle
-from ..runtime.backup_primitives import BackupError, atomic_json, first_link, safe_path
 from ..runtime.backup_resources import rewrite_budget_fields
 from .backup_relocation import (
     RestoreLayout,

@@ -12,47 +12,18 @@ from dataclasses import dataclass, replace
 
 from ..contracts import ContractError
 from .delete_storage import group_digest, retraction_after
-from .failure_retry import ACCOUNT_REFUSALS, validation_feedback
+from .failure_policy import BUDGET_PAUSE_ERRORS, PROVIDER_RECHECK, http_retryable, port_retryable, retryable
+from .failure_retry import validation_feedback
 
-_NON_RETRYABLE_MODEL_ERRORS = frozenset(
-    {
-        "budget_exhausted",
-        "meter_breach",
-        "input_invalid",
-        "request_too_large",
-        "budget_unavailable",
-        # The request guard refused secret-like text; the payload will not change.
-        "sensitive_request",
-        # The provider's policy refused or stopped the answer; asking again sends the same request to the same policy.
-        "model_refused",
-    }
-)
+#: Time retained for vector publication and fenced outcome writes after a bounded request.  Finalization refuses to
+#: write once the pass is spent, so an item claimed without this stays leased until its lease expires, and a candidate
+#: evaluation, whose attempt marker is already committed, is then failed as interrupted for good.
+FINALIZE_MARGIN_SECONDS = 5.0
 
-#: Refusals that say nothing about the item: raised before any network attempt,
-#: or the provider declining the account (``ACCOUNT_REFUSALS``).  The item is
-#: parked for an hour without spending an attempt, and its work type stands down
-#: for the pass.  ``provider_hold`` is the adapter declining to ask a provider
-#: that refused the calls just before (runtime/model_budget.py).  A model the
-#: configuration does not approve is the configuration's fault, named by the
-#: doctor (``pre_request_refusals``) and by this code; failed instead, one
-#: missing line in ``approved_models`` would fail the whole queue in a pass.
-BUDGET_PAUSE_ERRORS = (
-    frozenset(
-        {
-            "budget_exhausted",
-            "budget_unavailable",
-            "credential_missing",
-            "credential_shape_invalid",
-            "provider_hold",
-            "unsupported_model",
-        }
-    )
-    | ACCOUNT_REFUSALS
-)
 
-#: Port rejections that describe this payload rather than the provider;
-#: sending the same input again would fail the same way.
-_INVALID_INPUT_CODES = frozenset({"DERIVATION_INVALID", "INPUT_INVALID"})
+def embedding_prepare_budget(clock, started: float, budget: float) -> float:
+    """Reserve publication and bookkeeping time inside the same effective embedding deadline."""
+    return budget - min(FINALIZE_MARGIN_SECONDS, budget_left(started, clock, budget) / 2)
 
 
 class Outcome(tuple):
@@ -358,8 +329,8 @@ def model_exception_outcome(exc: BaseException) -> tuple[str, str] | None:
         status = getattr(exc, "detail", "")
         if type(status) is str and status.isdigit() and len(status) == 3:
             code = int(status)
-            return ("retry" if code == 429 or 500 <= code <= 599 else "failed", f"http_{code}")
-    disposition = "failed" if error_type in _NON_RETRYABLE_MODEL_ERRORS else "retry"
+            return ("retry" if http_retryable(code) else "failed", f"http_{code}")
+    disposition = "retry" if retryable(error_type) else "failed"
     return disposition, error_type
 
 
@@ -371,7 +342,7 @@ def model_failure(exc: BaseException) -> tuple[str, str]:
 def port_failure(exc: BaseException) -> tuple[str, str]:
     """Disposition and code for an exception out of an embedding port."""
     if isinstance(exc, ContractError):
-        disposition = "failed" if exc.code in _INVALID_INPUT_CODES else "retry"
+        disposition = "retry" if port_retryable(exc.code) else "failed"
         return disposition, exc.code or "model_unavailable"
     return model_failure(exc)
 
@@ -421,7 +392,9 @@ def finalize_work(
             )
         if error_code in BUDGET_PAUSE_ERRORS:
             return work_result(
-                tx.work.defer_without_attempt(*item.lease, now=now, error_code=error_code, seconds=3600),
+                tx.work.defer_without_attempt(
+                    *item.lease, now=now, error_code=error_code, seconds=PROVIDER_RECHECK.delay()
+                ),
                 error_code=error_code,
             )
         if disposition == "obsolete":

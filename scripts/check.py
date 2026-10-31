@@ -170,6 +170,11 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_embed_fallback_deadline.py",
+        "tests/contract/test_failure_policy_semantics.py",
+        "tests/contract/test_queue_recovery_actions.py",
+        "tests/contract/test_queue_state_properties.py",
+        "tests/contract/test_upkeep_state_properties.py",
         "tests/contract/test_backup_relocation.py",
         "tests/contract/test_full_backup.py",
         "tests/contract/test_memory_admin.py",
@@ -250,6 +255,7 @@ SUITES = {
         "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/hermes/test_capture_retry_properties.py",
         "tests/host/test_memory_ui.py",
         "tests/host/test_memory_ui_http.py",
         "tests/host/test_memory_ui_assets.py",
@@ -285,7 +291,11 @@ SUITES = {
         "tests/host/codex/test_dsh_remote.py",
         "tests/host/codex/test_resident_recall.py",
     ],
-    "migration": ["tests/migration/test_migration_drills.py"],
+    "migration": [
+        "tests/migration/test_migration_drills.py",
+        "tests/migration/test_upgrade_coordinator.py",
+        "tests/migration/test_upgrade_policy.py",
+    ],
     "packaging": [
         "tests/packaging/test_clean_v11_wheel.py",
         "tests/packaging/test_package_upgrade.py",

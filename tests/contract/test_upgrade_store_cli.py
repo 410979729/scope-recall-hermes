@@ -7,11 +7,11 @@ import time
 
 import pytest
 from scope_recall.adapters.clients.config import install_codex_scope_recall
+from scope_recall.core import backup_primitives, store_upgrade
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.writer_lease import TruthWriterLease, read_truth_writer_owner, truth_writer_process_snapshot
 from scope_recall.maintenance import cli
 from scope_recall.maintenance.install import InstallError
-from scope_recall.runtime import backup_primitives
 from v11_support import downgrade_store
 
 
@@ -74,19 +74,16 @@ def test_upgrade_store_refuses_a_snapshot_migrated_during_the_copy(tmp_path, cap
     project.mkdir()
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
     downgrade_store(core.storage.path, 1111)
-    # More than one backup step lets another connection commit between copied pages.
-    with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("CREATE TABLE synthetic_padding(body BLOB)")
-        conn.executemany("INSERT INTO synthetic_padding VALUES (zeroblob(4096))", [()] * 350)
-    migrated = False
+    original = store_upgrade.backup_sqlite
 
-    def migrate_between_steps():
-        nonlocal migrated
-        if not migrated:
-            migrated = True
-            core.storage.initialize()
+    def changed_copy(source, destination, **kwargs):
+        result = original(source, destination, **kwargs)
+        with sqlite3.connect(destination) as conn:
+            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            conn.execute("UPDATE instance_meta SET schema_version=?", (SCHEMA_VERSION,))
+        return result
 
-    monkeypatch.setattr(backup_primitives, "check_backup_deadline", migrate_between_steps)
+    monkeypatch.setattr(store_upgrade, "backup_sqlite", changed_copy)
     code, out = _run(
         capsys,
         [
@@ -99,7 +96,6 @@ def test_upgrade_store_refuses_a_snapshot_migrated_during_the_copy(tmp_path, cap
             str(tmp_path / "backups"),
         ],
     )
-    assert migrated
     assert code == 2 and (out["status"], out["error"]) == ("not_upgraded", "backup_schema_mismatch"), out
     assert out["schema_before"] == 1111 and out["backup_schema"] == SCHEMA_VERSION
     with sqlite3.connect(out["backup"]) as conn:
@@ -240,7 +236,7 @@ def test_upgrade_store_asks_storage_for_no_more_than_its_wait_when_the_clock_has
     assert (out["status"], out["schema_before"], out["schema_after"]) == ("upgraded", 1108, SCHEMA_VERSION)
 
 
-def test_upgrade_store_requires_the_promised_snapshot_before_mutation(tmp_path, capsys):
+def test_upgrade_store_defaults_to_a_snapshot_beside_the_store(tmp_path, capsys):
     project = tmp_path / "project"
     project.mkdir()
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
@@ -248,9 +244,10 @@ def test_upgrade_store_requires_the_promised_snapshot_before_mutation(tmp_path, 
 
     code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install")])
 
-    assert code == 2 and (out["status"], out["error"]) == ("not_upgraded", "backup_required")
+    assert code == 0 and out["status"] == "upgraded"
+    assert str(core.storage.path.parent / "upgrade-snapshots") in out["backup"]
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1108
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def _stamp_header(path, version, *, application_id=None):
@@ -283,8 +280,6 @@ def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsy
     report = run_doctor(host="codex", instance_root=tmp_path / "install")
     assert "schema_header_stale" in report.capability_gaps and report.schema_version == 10815
     root = ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install")]
-    code, out = _run(capsys, root)
-    assert code == 2 and out["error"] == "backup_required"
     code, out = _run(capsys, [*root, "--backup-dir", str(tmp_path / "backups")])
     assert code == 0, out
     assert (out["status"], out["schema_after"]) == ("restamped", SCHEMA_VERSION)
@@ -428,7 +423,7 @@ def test_upgrade_store_checks_both_snapshot_markers_before_writing(tmp_path, cap
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
     downgrade_store(core.storage.path, 1111)
     original = core.storage.path.read_bytes()
-    backup = cli.backup_sqlite
+    backup = store_upgrade.backup_sqlite
 
     def inconsistent_copy(source, snapshot, **kwargs):
         receipt = backup(source, snapshot, **kwargs)
@@ -439,7 +434,7 @@ def test_upgrade_store_checks_both_snapshot_markers_before_writing(tmp_path, cap
                 conn.execute("UPDATE instance_meta SET schema_version=?", (SCHEMA_VERSION,))
         return receipt
 
-    monkeypatch.setattr(cli, "backup_sqlite", inconsistent_copy)
+    monkeypatch.setattr(store_upgrade, "backup_sqlite", inconsistent_copy)
     code, out = _run(
         capsys,
         [

@@ -88,6 +88,7 @@ def reap_process(process: subprocess.Popen) -> None:
 class WorkerProcess:
     process: subprocess.Popen[str]
     config_path: Path
+    upgrade_only: bool = False
 
     @property
     def pid(self) -> int:
@@ -146,8 +147,10 @@ def launch_worker(
     delay_seconds: float = 0.0,
     detach_output: bool = False,
     environment: dict[str, str] | None = None,
+    upgrade_only: bool = False,
 ) -> WorkerProcess:
     strict_bool("worker_detach_output", detach_output)
+    strict_bool("worker_upgrade_only", upgrade_only)
     validate_wake_arguments(after_pid, delay_seconds)
     path = absolute_path("config", os.fspath(config_path))
     if not path.is_file():
@@ -167,6 +170,8 @@ def launch_worker(
     ]
     if cleanup_config:
         command.append("--cleanup-config")
+    if upgrade_only:
+        command.append("--upgrade-only")
     if after_pid is not None:
         command.extend(("--after-pid", str(after_pid)))
     if delay_seconds:
@@ -192,7 +197,7 @@ def launch_worker(
         creationflags=detached_creationflags(),
         start_new_session=(os.name != "nt"),
     )
-    return WorkerProcess(process=process, config_path=path)
+    return WorkerProcess(process=process, config_path=path, upgrade_only=upgrade_only)
 
 
 #: ``ExceptionClass: message`` -- the last line of a traceback, and nothing else.

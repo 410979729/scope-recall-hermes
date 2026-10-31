@@ -13,17 +13,31 @@ from . import private
 from .admission import resume_deferred
 from .candidate_lifecycle import PROCESS_BATCH_LIMIT, CandidateEvaluator
 from .consolidate import candidate_evaluation_messages, consolidation_messages
+from .failure_policy import (
+    BUDGET_PAUSE_ERRORS,
+    CAPACITY_REFUSALS,
+    PROVIDER_RECHECK,
+    RATE_LIMITED_ERRORS,
+    WORK_RETRY,
+    capacity_backoff_seconds,
+)
 from .storage import SQLiteStorage
-from .work_storage import CAPACITY_REFUSALS, MAX_RECOVERY_PAGE
+from .work_storage import MAX_RECOVERY_PAGE
 from .worker_candidates import process_candidate_evaluation
 from .worker_consolidation import (
     ConsolidationModel,
     build_consolidation_model,
     process_consolidate,
 )
-from .worker_outcomes import BUDGET_PAUSE_ERRORS, budget_left, hold_for_private_mode
+from .worker_outcomes import (
+    FINALIZE_MARGIN_SECONDS,
+    budget_left,
+    embedding_prepare_budget,
+    finalize_work,
+    hold_for_private_mode,
+)
 from .worker_projection import (
-    EmbedGroupRefused,
+    EmbedGroupFailure,
     EmbedPort,
     PurgePort,
     complete_embed_group,
@@ -46,23 +60,6 @@ __all__ = [
     "drain_worker",
 ]
 
-#: Provider answers that mean "send less traffic".  Distinct from the
-#: recoverable set: that one says whether an item may be retried, this one
-#: decides whether the rest of the pass should even ask.  Every capacity
-#: refusal is one, taken from ``CAPACITY_REFUSALS`` and not copied (two
-#: hand-kept copies of the set would drift apart).  So is a generation the
-#: provider interrupted, for lack of capacity or at its own end: the next item
-#: meets it too.  That one was a billed answer, so unlike a refusal it is not
-#: refunded; it costs its item an attempt.
-_RATE_LIMITED_ERRORS = CAPACITY_REFUSALS | {"model_output_interrupted"}
-
-#: Seconds a model-bound item keeps back, beyond its one bounded request, to
-#: record the verdict under its lease: a few fenced SQLite writes and, for
-#: embed, the vector publish.  Finalization refuses to write once the pass is
-#: spent, so an item claimed without this stays leased until its lease expires,
-#: and a candidate evaluation, whose attempt marker is already committed, is
-#: then failed as interrupted for good.
-FINALIZE_MARGIN_SECONDS = 5.0
 #: Work that waits on an auxiliary provider; purge and projection rebuilds never do.
 _HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
 #: Truncated source-trigger pages a pass continues before it claims work.  At
@@ -412,26 +409,19 @@ def _pass_work_types(
 def _embed_group(storage, clock, context, group: tuple, embed, started: float, budget: float):
     """One request for a claimed embedding group's texts, one commit for its vectors, one record for the members it
     wrote: the group as processed, its prepared and published vectors, and each recorded member's outcome."""
-    item = group[0]
+    failure = None
     try:
         prepared_group = prepare_embed_group(
-            storage, clock, context, group, embed=embed, started=started, budget=budget
-        )
-    except EmbedGroupRefused as refusal:
-        # The provider refused the group's request: no member was tried,
-        # so the whole group goes back unspent, parked as long as one
-        # refused member would be, and this pass asks for no more.
-        _release_group(
             storage,
             clock,
             context,
             group,
-            refusal.error_code,
-            started,
-            budget,
-            seconds=3600 if refusal.error_code in BUDGET_PAUSE_ERRORS else 0,
+            embed=embed,
+            started=started,
+            budget=embedding_prepare_budget(clock, started, budget),
         )
-        return (item,), {}, {}, {item.work_id: ("deferred", refusal.error_code, "pending")}
+    except EmbedGroupFailure as exc:
+        failure, prepared_group = exc, exc.prepared
     # One commit for the group's vectors, for the same reason as one
     # request for its texts: the per-item cost is the store's lock,
     # not the work.  Then one record for the members it wrote.
@@ -448,7 +438,33 @@ def _embed_group(storage, clock, context, group: tuple, embed, started: float, b
     recorded = complete_embed_group(
         storage, clock, context, group, published=published_group, started=started, budget=budget
     )
-    return group, prepared_group, published_group, recorded
+    if failure is not None:
+        recorded.update(_finish_embedding_failure(storage, clock, context, group, failure, started, budget))
+    return group, prepared_group, published_group, recorded, failure is not None
+
+
+def _finish_embedding_failure(storage, clock, context, group, failure, started, budget) -> dict:
+    """Record the attempted failure and defer unasked members without spending their attempts."""
+    tail = [member for member in group if (member.subject_ref, member.subject_revision) not in failure.prepared]
+    failed = next(
+        (member for member in tail if (member.subject_ref, member.subject_revision) == failure.failed_subject), None
+    )
+    unasked = [member for member in tail if member is not failed]
+    code = failure.error_code
+    delay = (
+        PROVIDER_RECHECK.delay()
+        if code in BUDGET_PAUSE_ERRORS
+        else capacity_backoff_seconds(1)
+        if code.lower() in CAPACITY_REFUSALS
+        else WORK_RETRY.delay()
+    )
+    _release_group(storage, clock, context, unasked, code, started, budget, seconds=delay)
+    recorded = {member.work_id: ("deferred", code, "pending") for member in unasked}
+    if failed is not None:
+        recorded[failed.work_id] = finalize_work(
+            storage, clock, context, failed, failure.disposition, code, started=started, budget=budget
+        )
+    return recorded
 
 
 def _port_refused(disposition: str, error_code) -> bool:
@@ -458,7 +474,32 @@ def _port_refused(disposition: str, error_code) -> bool:
 
 def _rate_limited(error_code) -> bool:
     """Whether the provider answered an item with a rate limit, a capacity refusal or an interrupted generation."""
-    return str(error_code or "").lower() in _RATE_LIMITED_ERRORS
+    return str(error_code or "").lower() in RATE_LIMITED_ERRORS
+
+
+def _claim_embed_members(
+    storage, clock, context, config, first, *, remaining_items: int, started: float, budget: float
+) -> tuple:
+    """Claim the rest of one embedding group under the pass's original budget."""
+    room = min(config.embed_batch_limit, remaining_items) - 1
+    if room <= 0:
+        return (first,)
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        return (
+            first,
+            *tx.work.claim_next(
+                config.owner_id,
+                clock.utc_now(),
+                lease_seconds=config.lease_seconds,
+                limit=room,
+                allowed_work_types=frozenset({"embed"}),
+            ),
+        )
+
+
+def _group_request_floor(budget: float, lease_seconds: float) -> float:
+    """Keep a request window inside both a short pass and a short positive lease."""
+    return min(GROUP_REQUEST_FLOOR_SECONDS, budget / 2, lease_seconds / 4)
 
 
 def drain_worker(
@@ -510,6 +551,7 @@ def drain_worker(
         # any pass, a one-claim pass included, and the oldest work keeps moving
         # however busy the chat is.  A default runtime pass (120 s, 45 s
         # requests) fits two model requests, so each such pass reaches the lane.
+        claimed_at = clock.monotonic()
         with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             claimed = tx.work.claim_next(
                 config.owner_id,
@@ -523,33 +565,38 @@ def drain_worker(
             break
         item = claimed[0]
         group: tuple = (item,)
-        prepared_group: dict = {}
-        published_group: dict = {}
-        recorded: dict = {}
-        claimed_at = clock.monotonic()
+        prepared_group, published_group, recorded = {}, {}, {}
+        # A valid positive lease keeps a request window even when shorter than the ordinary finalize margin.
+        lease_end = min(
+            budget,
+            claimed_at - started + config.lease_seconds,
+        )
         if item.work_type == "embed" and embed is not None:
             # Embedding is one request per source; asking for the pass's other
             # ready sources in the same one is the difference between a rebuild
             # measured in hours and one measured in days.  The extra items are
             # leased exactly as this one was and are processed right here, so
             # none is left leased on a pass that ends early.
-            room = min(config.embed_batch_limit, config.max_items - len(receipts)) - 1
-            if room > 0:
-                with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
-                    group = (
-                        item,
-                        *tx.work.claim_next(
-                            config.owner_id,
-                            clock.utc_now(),
-                            lease_seconds=config.lease_seconds,
-                            limit=room,
-                            allowed_work_types=frozenset({"embed"}),
-                        ),
-                    )
-                claimed_at = clock.monotonic()
-                group, prepared_group, published_group, recorded = _embed_group(
-                    storage, clock, context, group, embed, started, budget
-                )
+            group = _claim_embed_members(
+                storage,
+                clock,
+                context,
+                config,
+                item,
+                remaining_items=config.max_items - len(receipts),
+                started=started,
+                budget=budget,
+            )
+            group, prepared_group, published_group, recorded, stopped = _embed_group(
+                storage,
+                clock,
+                context,
+                group,
+                embed,
+                started,
+                lease_end,
+            )
+            allowed = allowed - ({"embed"} if stopped else set())
         disposition, error_code = "skipped", None
         for member in group:
             if member.work_id not in recorded:
@@ -562,18 +609,24 @@ def drain_worker(
         # A member that still has to ask for itself is bounded by the lease it was
         # claimed with, not only by the pass: asked after the lease ran out, its
         # vector would be paid for and dropped as stale.
-        lease_end = (claimed_at - started) + config.lease_seconds - FINALIZE_MARGIN_SECONDS
         rest = [member for member in group if member.work_id not in recorded]
         for index, member in enumerate(rest):
             member_budget = budget
-            if len(group) > 1:
-                if budget_left(started, clock, lease_end) < GROUP_REQUEST_FLOOR_SECONDS:
+            if member.work_type == "embed":
+                if budget_left(started, clock, lease_end) <= _group_request_floor(budget, config.lease_seconds):
                     _release_group(storage, clock, context, rest[index:], "lease_ending", started, budget)
+                    if budget_left(started, clock, budget) <= _group_request_floor(budget, config.lease_seconds):
+                        allowed = allowed - {"embed"}
                     break
-                member_budget = min(budget, lease_end)
+                member_budget = lease_end
             claimed_types[member.work_type] += 1
             run = (
-                partial(process_embed, embed=embed, prepared_group=prepared_group, published_group=published_group)
+                partial(
+                    process_embed,
+                    embed=embed,
+                    prepared_group=prepared_group,
+                    published_group=published_group,
+                )
                 if member.work_type == "embed"
                 else processors[member.work_type]
             )

@@ -13,15 +13,15 @@ from typing import Any, Callable, Protocol
 from ..contracts import ContractError
 from . import private
 from .delete_storage import purge_finished, purge_work_parts
+from .failure_policy import BUDGET_PAUSE_ERRORS, CAPACITY_REFUSALS
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
 from .source_records import StoredSource
-from .work_storage import CAPACITY_REFUSALS
 from .worker_outcomes import (
-    BUDGET_PAUSE_ERRORS,
     budget_left,
     deadline_result,
     derivation_changed,
+    embedding_prepare_budget,
     epoch_changed,
     finalize_work,
     hold_for_private_mode,
@@ -118,12 +118,24 @@ def _subject_kind(item) -> str:
     return "claim" if item.subject_ref.startswith("claim-") else "source"
 
 
-class EmbedGroupRefused(Exception):
-    """The provider refused a group's request for capacity or budget; no member was tried."""
+class PartialEmbeddingFailure(Exception):
+    """A single-request fallback stopped after preparing an identified prefix, before its failing member."""
 
-    def __init__(self, error_code: str) -> None:
+    def __init__(self, prepared: tuple, cause: Exception) -> None:
+        super().__init__(type(cause).__name__)
+        self.prepared = prepared
+        self.cause = cause
+
+
+class EmbedGroupFailure(Exception):
+    """A stopped preparation retains successful vectors and identifies an attempted failing subject, if any."""
+
+    def __init__(self, error_code: str, *, disposition="retry", prepared=None, failed_subject=None) -> None:
         super().__init__(error_code)
         self.error_code = error_code
+        self.disposition = disposition
+        self.prepared = {} if prepared is None else prepared
+        self.failed_subject = failed_subject
 
 
 def _provider_refusal(error_code: str) -> bool:
@@ -139,7 +151,7 @@ def prepare_embed_group(storage, clock, context, items, *, embed, started: float
     sake.  Sharing a request changes what the provider is asked, never what is read, fenced or
     published: every item still answers for itself.
 
-    A refusal that is the provider's -- capacity or budget -- raises ``EmbedGroupRefused``
+    A refusal that is the provider's -- capacity or budget -- raises ``EmbedGroupFailure``
     instead.  Asking again one member at a time is the same refusal times the group's size:
     a group of five hundred sent that way after one refused request would spend its whole pass
     on sixty-seven members and let the rest of the group's leases run out.
@@ -168,18 +180,22 @@ def prepare_embed_group(storage, clock, context, items, *, embed, started: float
     for kind, members in subjects.items():
         batch = getattr(embed, _GROUP_METHODS[kind][0], None)
         if callable(batch):
-            prepared_group.update(
-                _prepare_in_halves(
-                    batch,
-                    members,
-                    clock=clock,
-                    started=started,
-                    budget=budget,
-                    blocked=lambda subjects, kind=kind: private.outbound_blocked(
-                        storage, clock, context, **{("sources" if kind == "source" else "claims"): subjects}
-                    ),
+            try:
+                prepared_group.update(
+                    _prepare_in_halves(
+                        batch,
+                        members,
+                        clock=clock,
+                        started=started,
+                        budget=budget,
+                        blocked=lambda subjects, kind=kind: private.outbound_blocked(
+                            storage, clock, context, **{("sources" if kind == "source" else "claims"): subjects}
+                        ),
+                    )
                 )
-            )
+            except EmbedGroupFailure as failure:
+                failure.prepared = prepared_group | failure.prepared
+                raise
     return prepared_group
 
 
@@ -200,18 +216,50 @@ def _prepare_in_halves(batch, members: list, *, clock, started: float, budget: f
     try:
         with private.using_outbound_check(lambda: blocked(members)):
             prepared = batch(members, remaining_seconds=budget_left(started, clock, budget))
+    except PartialEmbeddingFailure as exc:
+        # Only an identified strict prefix proves which member's request failed.
+        if len(exc.prepared) >= len(members):
+            raise EmbedGroupFailure("DERIVATION_INVALID") from exc
+        prefix = _prepared_mapping(members, exc.prepared)
+        if len(prefix) != len(exc.prepared):
+            raise EmbedGroupFailure("DERIVATION_INVALID") from exc
+        disposition, code = port_failure(exc.cause)
+        failed = members[len(prefix)]
+        raise EmbedGroupFailure(
+            code, disposition=disposition, prepared=prefix, failed_subject=(failed.ref, failed.revision)
+        ) from exc
     except Exception as exc:
         _disposition, error_code = port_failure(exc)
         if _provider_refusal(error_code):
-            raise EmbedGroupRefused(error_code) from exc
+            raise EmbedGroupFailure(error_code) from exc
         middle = len(members) // 2
-        return {
-            **_prepare_in_halves(batch, members[:middle], clock=clock, started=started, budget=budget, blocked=blocked),
-            **_prepare_in_halves(batch, members[middle:], clock=clock, started=started, budget=budget, blocked=blocked),
-        }
-    if len(prepared) != len(members):
+        prepared = {}
+        for half in (members[:middle], members[middle:]):
+            try:
+                prepared.update(
+                    _prepare_in_halves(batch, half, clock=clock, started=started, budget=budget, blocked=blocked)
+                )
+            except EmbedGroupFailure as failure:
+                failure.prepared = prepared | failure.prepared
+                raise
+        return prepared
+    return _prepared_mapping(members, prepared)
+
+
+def _prepared_mapping(members, prepared) -> dict:
+    """Pair a full positional batch or an identity-checked prefix with its subjects."""
+    # A bounded single-request fallback may return an identified prefix. Unidentified or reordered partial
+    # results cannot be paired safely, whereas full batches keep the port's ordinary positional contract.
+    if len(prepared) != len(members) and (
+        len(prepared) > len(members)
+        or any(
+            (getattr(vector, "source_ref", None), getattr(vector, "source_revision", None))
+            != (subject.ref, subject.revision)
+            for subject, vector in zip(members, prepared, strict=False)
+        )
+    ):
         return {}
-    return {(subject.ref, subject.revision): vector for subject, vector in zip(members, prepared)}
+    return {(subject.ref, subject.revision): vector for subject, vector in zip(members, prepared, strict=False)}
 
 
 def publish_embed_group(
@@ -238,7 +286,7 @@ def publish_embed_group(
             if _subject_kind(item) == kind and (item.subject_ref, item.subject_revision) in prepared_group
         ]
         publish = getattr(embed, _GROUP_METHODS[kind][1], None)
-        if callable(publish) and len(members) >= 2 and budget_left(started, clock, budget) > 0:
+        if callable(publish) and members and budget_left(started, clock, budget) > 0:
             published.update(
                 _publish_kind(
                     storage,
@@ -277,7 +325,7 @@ def _publish_kind(
                 prepared.append(prepared_group[(item.subject_ref, item.subject_revision)])
     except ContractError:
         return {}
-    if len(members) < 2:
+    if not members:
         return {}
     owners = {item.lease_owner for item, _ in members}
     if len(owners) != 1:
@@ -446,7 +494,8 @@ def process_embed(
                     storage, clock, context, **{("sources" if kind.keyword == "source" else "claims"): (subject,)}
                 )
             ):
-                prepared = prepare(subject, remaining_seconds=budget_left(started, clock, budget))
+                request_end = embedding_prepare_budget(clock, started, budget)
+                prepared = prepare(subject, remaining_seconds=budget_left(started, clock, request_end))
         except Exception as exc:
             return finish(*port_failure(exc), error_detail=_refusal_field(exc))
     if budget_left(started, clock, budget) <= 0:

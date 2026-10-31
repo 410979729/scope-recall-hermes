@@ -68,7 +68,7 @@ def test_initialize_supplies_the_session_index_without_changing_the_schema(tmp_p
 
 @pytest.mark.parametrize(
     "remaining,store_bytes,expected",
-    [(None, 100_000_000, True), (60.0, 100_000_000, True), (1.0, 100_000_000, False), (1.0, 99_999_999, True)],
+    [(None, 100_000_000, False), (60.0, 100_000_000, True), (1.0, 100_000_000, False), (1.0, 99_999_999, True)],
 )
 def test_current_store_supplies_session_index_only_when_the_open_budget_fits(
     store, monkeypatch, remaining, store_bytes, expected
@@ -126,6 +126,7 @@ def test_session_index_initialization_and_reopen_deduct_elapsed_budget(store, mo
         conn.execute("DROP INDEX source_session")
     now = [10.0]
     storage.monotonic = lambda: now[0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
     opened = []
     actual_open, actual_close = storage._open, storage._close
     actual_index = storage_module.ensure_source_session_index
@@ -154,8 +155,8 @@ def test_session_index_initialization_and_reopen_deduct_elapsed_budget(store, mo
     monkeypatch.setattr(storage_module, "ensure_source_session_index", build_index)
     with storage.write(ctx, remaining_seconds=0.05) as tx:
         assert tx._check().execute("PRAGMA index_info(source_session)").fetchall()
-    assert [mode for mode, _ in opened] == ["rw", "rwc", "ro", "rw"]
-    assert [remaining for _, remaining in opened] == pytest.approx([0.05, 0.035, 0.02, 0.015])
+    assert [mode for mode, _ in opened] == ["rw", "rwc", "rw"]
+    assert [remaining for _, remaining in opened] == pytest.approx([0.05, 0.035, 0.02])
 
 
 @pytest.mark.parametrize("remaining", [None, 60.0])
@@ -764,7 +765,7 @@ def test_a_heavy_upgrade_waits_for_a_caller_with_the_budget():
     and the installer can, and a small store is brought forward by anyone."""
     from scope_recall.core.storage import HEAVY_UPGRADE_BYTES, HEAVY_UPGRADE_SECONDS, upgrade_fits
 
-    assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, None)
+    assert not upgrade_fits(HEAVY_UPGRADE_BYTES * 10, None)
     assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, HEAVY_UPGRADE_SECONDS)
     assert not upgrade_fits(HEAVY_UPGRADE_BYTES * 10, 6.0)
     assert upgrade_fits(HEAVY_UPGRADE_BYTES - 1, 1.0)
