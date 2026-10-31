@@ -55,7 +55,7 @@ def test_generated_plugin_metadata_uses_project_identity_and_describes_the_host(
     manifest = json.loads(files[manifest_path])
     assert manifest["name"] == plugin.name
     assert manifest["author"] == {"name": author}
-    assert manifest["version"] == __version__.replace("rc", "-rc.")
+    assert manifest["version"] == __version__.replace(".dev", "-dev.", 1).replace("rc", "-rc.", 1)
     assert manifest["description"].startswith(description)
     assert manifest["mcpServers"] == "./.mcp.json"
     if host == "codex":
@@ -237,7 +237,7 @@ def test_agent_setup_skill_discovery_ownership_and_uninstall(tmp_path, host):
     assert any(Path(item["path"]) == skill for item in receipt["files"])
     if host == "codex":
         manifest = json.loads((plugin / ".codex-plugin" / "plugin.json").read_text())
-        assert manifest["version"] == __version__.replace("rc", "-rc.")
+        assert manifest["version"] == __version__.replace(".dev", "-dev.", 1).replace("rc", "-rc.", 1)
     apply_install(plan_install(**options))
     apply_uninstall(plan_uninstall(instance_root=instance, target_plugin_dir=plugin))
     assert not skill.exists()

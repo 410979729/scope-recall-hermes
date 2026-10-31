@@ -6,4 +6,4 @@ and the packaging allowlist -- is stamped from here by
 them drifts.  Change it here and nowhere else.
 """
 
-__version__ = "3.17.0"
+__version__ = "4.0.0.dev0"

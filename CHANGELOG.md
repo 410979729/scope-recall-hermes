@@ -2,7 +2,7 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [Unreleased]
+## [4.0.0.dev0] - unreleased
 
 Background queues share failure classification and bounded retry schedules. Single-request embedding ports publish completed members within a shared pass and lease deadline instead of discarding an entire slow group. Hermes reloads disk-spooled captures after an hourly cooldown while the host remains running, as well as at startup. Doctor reports stopped queue recovery actions and disk capture backlog. [Background work](docs/background-work.md) documents each queue's states and recovery path.
 

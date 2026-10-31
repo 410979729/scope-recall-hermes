@@ -57,8 +57,11 @@ def test_it_fails_closed_rather_than_publishing_the_wrong_body():
 
 
 def test_a_release_version_has_a_section_to_publish():
-    """An rc has nothing to publish yet; a release without notes must not ship."""
+    """An rc or a development version has nothing to publish yet; a release without notes must not ship."""
     version = _version()
+    if ".dev" in version:
+        assert f"## [{version}]" in CHANGELOG.read_text(encoding="utf-8"), f"{version} has no changelog entry"
+        pytest.skip(f"{version} is a development version; the release section is written when the final is cut")
     if "rc" in version:
         assert f"### Scope Recall {version} " in CHANGELOG.read_text(encoding="utf-8"), (
             f"{version} has no changelog entry"
