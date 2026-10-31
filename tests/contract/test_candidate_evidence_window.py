@@ -53,7 +53,7 @@ def _span(source, quote):
 
 def _record(candidate, source, **kwargs):
     messages = candidate_evaluation_messages(candidate, (source,), **kwargs)
-    return json.loads(messages[2]["content"])["sources"][0]
+    return json.loads(messages[1]["content"])["sources"][0]
 
 
 def test_saved_exact_quote_wins_over_an_earlier_repeated_value():
@@ -68,6 +68,16 @@ def test_saved_exact_quote_wins_over_an_earlier_repeated_value():
     assert window["total"] == len(source.event["content"])
     assert len(record["content"]) <= 3000 + len(quote)
     assert candidate.fact_state == "proposed"
+
+
+def test_verified_position_selects_the_later_identical_quote():
+    quote = "TEST-build result ready"
+    source = _source(quote + "\n" + "x" * 4000 + "\n" + quote + "\n" + "z" * 4000)
+    at = source.event["content"].rindex(quote)
+    span = dict(_span(source, quote), start=at, end=at + len(quote))
+    record = _record(_candidate(source, [span]), source)
+    assert record["source_window"]["start"] <= at
+    assert record["source_window"]["end"] >= at + len(quote)
 
 
 @pytest.mark.parametrize(
@@ -116,7 +126,7 @@ def test_quote_matching_is_per_supplied_source_version():
     newer = _source(content, revision=2)
     candidate = _candidate(source, [_span(source, quote)])
     messages = candidate_evaluation_messages(candidate, (source, other, newer))
-    records = json.loads(messages[2]["content"])["sources"]
+    records = json.loads(messages[1]["content"])["sources"]
     assert [record["ref"] for record in records] == [f"{s.ref}@{s.revision}" for s in (source, other, newer)]
     assert quote in records[0]["content"]
     assert all(quote not in record["content"] for record in records[1:])
@@ -219,3 +229,11 @@ def test_window_selection_does_not_mutate_candidate_identity_or_source():
     messages = candidate_evaluation_messages(human, (identified,))
     assert principal not in "".join(message["content"] for message in messages)
     assert json.loads(messages[-1]["content"].removeprefix("candidate="))["subject"] == "current_user"
+
+
+@pytest.mark.parametrize("feedback", [None, {"code": "DERIVATION_INVALID", "field": "evidence_quote"}])
+def test_the_request_has_one_system_message_and_it_comes_first(feedback):
+    source = _source("TEST-build result ready")
+    candidate = _candidate(source, [_span(source, source.event["content"])])
+    messages = candidate_evaluation_messages(candidate, (source,), validation_feedback=feedback)
+    assert [message["role"] for message in messages] == ["system", "user", "user"]

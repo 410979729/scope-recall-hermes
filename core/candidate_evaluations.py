@@ -201,6 +201,42 @@ class CandidateEvaluations(CandidateTables):
         )
         return mutation
 
+    def inherit_answer(self, evaluation: CandidateEvaluationSnapshot, revision: int, *, now: str) -> None:
+        """Carry an answered question and collected evidence into the version its verdict produced.
+
+        Evidence arriving during the call is retained too. Its different question
+        fingerprint can schedule a later evaluation; the answered one cannot.
+        """
+        ref, old_revision = evaluation.candidate.ref, evaluation.candidate.revision
+        candidate = self._tx.claims.version(ref, revision)
+        if candidate is None or candidate.current_revision != revision:
+            raise ContractError("VERSION_CONFLICT", "candidate_revision")
+        self._tx.claims.require_target(candidate)
+        conn = self._write()
+        conn.execute(
+            """INSERT INTO candidate_evidence(candidate_ref,candidate_revision,source_ref,source_revision,observed_at)
+            SELECT candidate_ref,?,source_ref,source_revision,observed_at FROM candidate_evidence
+            WHERE candidate_ref=? AND candidate_revision=? ON CONFLICT DO NOTHING""",
+            (revision, ref, old_revision),
+        )
+        conn.execute(
+            """INSERT INTO candidate_evaluations(candidate_ref,candidate_revision,evidence_fingerprint,
+                evidence_refs_json,rule_version,memory_epoch,state,reason,created_at,completed_at,
+                model_attempted_at,result_digest)
+            SELECT candidate_ref,?,evidence_fingerprint,evidence_refs_json,rule_version,memory_epoch,
+                state,'inherited_evaluation',?,completed_at,model_attempted_at,result_digest
+            FROM candidate_evaluations WHERE evaluation_id=? AND state IN ('resolved','waiting_evidence','archived')
+            ON CONFLICT(candidate_ref,candidate_revision,evidence_fingerprint,rule_version) DO NOTHING""",
+            (revision, now, evaluation.evaluation_id),
+        )
+        conn.execute(
+            """UPDATE candidate_lifecycle SET evidence_fingerprint=?,last_evaluated_at=?,
+                last_evidence_at=(SELECT max(observed_at) FROM candidate_evidence
+                    WHERE candidate_ref=? AND candidate_revision=?)
+            WHERE candidate_ref=? AND candidate_revision=?""",
+            (evaluation.evidence_fingerprint, now, ref, revision, ref, revision),
+        )
+
     def obsolete(self, evaluation_id: int, work, *, now: str, reason: str):
         mutation = self._tx.work.mark_obsolete(work.work_id, work.lease_token, work.lease_owner, now=now)
         self._close_evaluation(evaluation_id, "obsolete", reason, now, failure_code=reason)

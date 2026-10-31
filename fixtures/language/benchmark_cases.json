@@ -1,0 +1,344 @@
+[
+  {
+    "id": "TEST-fact-en",
+    "category": "single_fact",
+    "question": "Which database does Alder use?",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "PostgreSQL",
+    "sessions": [
+      "TEST-fact-en-0"
+    ],
+    "turns": [
+      {
+        "key": "TEST-fact-en-0",
+        "session": "TEST-fact-en-0",
+        "role": "user",
+        "content": "Alder uses PostgreSQL as its database.",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-fact-zh",
+    "category": "single_fact",
+    "question": "青岚项目使用哪个数据库？",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "PostgreSQL",
+    "sessions": [
+      "TEST-fact-zh-0"
+    ],
+    "turns": [
+      {
+        "key": "TEST-fact-zh-0",
+        "session": "TEST-fact-zh-0",
+        "role": "user",
+        "content": "青岚项目使用 PostgreSQL 数据库。",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-assistant-en",
+    "category": "assistant_said",
+    "question": "What color did the assistant suggest for the Alder poster?",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "Blue",
+    "sessions": [
+      "TEST-assistant-en-1"
+    ],
+    "turns": [
+      {
+        "key": "TEST-assistant-en-0",
+        "session": "TEST-assistant-en-0",
+        "role": "user",
+        "content": "Suggest a color for the Alder poster.",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": false
+      },
+      {
+        "key": "TEST-assistant-en-1",
+        "session": "TEST-assistant-en-1",
+        "role": "assistant",
+        "content": "I suggest blue for the Alder poster; it is only a suggestion.",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-assistant-zh",
+    "category": "assistant_said",
+    "question": "助手曾建议青岚海报用什么颜色？",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "靛蓝",
+    "sessions": [
+      "TEST-assistant-zh-1"
+    ],
+    "turns": [
+      {
+        "key": "TEST-assistant-zh-0",
+        "session": "TEST-assistant-zh-0",
+        "role": "user",
+        "content": "请建议青岚海报的颜色。",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": false
+      },
+      {
+        "key": "TEST-assistant-zh-1",
+        "session": "TEST-assistant-zh-1",
+        "role": "assistant",
+        "content": "我建议青岚海报用靛蓝，目前还没有确认。",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-preference-en",
+    "category": "preference",
+    "question": "What drink do I prefer?",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "Green tea",
+    "sessions": [
+      "TEST-preference-en-0"
+    ],
+    "turns": [
+      {
+        "key": "TEST-preference-en-0",
+        "session": "TEST-preference-en-0",
+        "role": "user",
+        "content": "I prefer green tea.",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-preference-zh",
+    "category": "preference",
+    "question": "我喜欢喝什么？",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "绿茶",
+    "sessions": [
+      "TEST-preference-zh-0"
+    ],
+    "turns": [
+      {
+        "key": "TEST-preference-zh-0",
+        "session": "TEST-preference-zh-0",
+        "role": "user",
+        "content": "我喜欢喝绿茶。",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-multi-en",
+    "category": "multi_hop",
+    "question": "Where is Mira’s employer headquartered?",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "Bristol",
+    "sessions": [
+      "TEST-multi-en-0",
+      "TEST-multi-en-1"
+    ],
+    "turns": [
+      {
+        "key": "TEST-multi-en-0",
+        "session": "TEST-multi-en-0",
+        "role": "user",
+        "content": "Mira works for Cedarworks.",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      },
+      {
+        "key": "TEST-multi-en-1",
+        "session": "TEST-multi-en-1",
+        "role": "user",
+        "content": "Cedarworks is headquartered in Bristol.",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-multi-zh",
+    "category": "multi_hop",
+    "question": "林舟就职的公司总部在哪里？",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "成都",
+    "sessions": [
+      "TEST-multi-zh-0",
+      "TEST-multi-zh-1"
+    ],
+    "turns": [
+      {
+        "key": "TEST-multi-zh-0",
+        "session": "TEST-multi-zh-0",
+        "role": "user",
+        "content": "林舟就职于青岚公司。",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      },
+      {
+        "key": "TEST-multi-zh-1",
+        "session": "TEST-multi-zh-1",
+        "role": "user",
+        "content": "青岚公司的总部位于成都。",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-time-en",
+    "category": "temporal",
+    "question": "On which date did the Alder review take place?",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "September 2, 2026",
+    "sessions": [
+      "TEST-time-en-0"
+    ],
+    "turns": [
+      {
+        "key": "TEST-time-en-0",
+        "session": "TEST-time-en-0",
+        "role": "user",
+        "content": "The Alder review took place on September 2, 2026.",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-time-zh",
+    "category": "temporal",
+    "question": "青岚评审在哪一天举行？",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "2026年9月2日",
+    "sessions": [
+      "TEST-time-zh-0"
+    ],
+    "turns": [
+      {
+        "key": "TEST-time-zh-0",
+        "session": "TEST-time-zh-0",
+        "role": "user",
+        "content": "青岚评审于2026年9月2日举行。",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-update-en",
+    "category": "knowledge_update",
+    "question": "What is Alder’s current release day?",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "Friday",
+    "sessions": [
+      "TEST-update-en-1"
+    ],
+    "turns": [
+      {
+        "key": "TEST-update-en-0",
+        "session": "TEST-update-en-0",
+        "role": "user",
+        "content": "Alder releases on Tuesday.",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": false
+      },
+      {
+        "key": "TEST-update-en-1",
+        "session": "TEST-update-en-1",
+        "role": "user",
+        "content": "Correction: Alder now releases on Friday instead of Tuesday.",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-update-zh",
+    "category": "knowledge_update",
+    "question": "青岚现在星期几发布？",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "星期五",
+    "sessions": [
+      "TEST-update-zh-1"
+    ],
+    "turns": [
+      {
+        "key": "TEST-update-zh-0",
+        "session": "TEST-update-zh-0",
+        "role": "user",
+        "content": "青岚星期二发布。",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": false
+      },
+      {
+        "key": "TEST-update-zh-1",
+        "session": "TEST-update-zh-1",
+        "role": "user",
+        "content": "更正：青岚现在改为星期五发布，不再是星期二。",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": true
+      }
+    ]
+  },
+  {
+    "id": "TEST-refuse-en",
+    "category": "abstention",
+    "question": "Which database does Alder use?",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "The history does not establish a database for Alder.",
+    "sessions": [],
+    "turns": [
+      {
+        "key": "TEST-refuse-en-0",
+        "session": "TEST-refuse-en-0",
+        "role": "user",
+        "content": "Birch uses PostgreSQL as its database.",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": false
+      },
+      {
+        "key": "TEST-refuse-en-1",
+        "session": "TEST-refuse-en-1",
+        "role": "assistant",
+        "content": "Alder might use MySQL, but I do not have evidence.",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": false
+      }
+    ]
+  },
+  {
+    "id": "TEST-refuse-zh",
+    "category": "abstention",
+    "question": "青岚项目使用哪个数据库？",
+    "at": "2026-09-06T12:00:00Z",
+    "gold": "无法根据记录确定青岚的数据库。",
+    "sessions": [],
+    "turns": [
+      {
+        "key": "TEST-refuse-zh-0",
+        "session": "TEST-refuse-zh-0",
+        "role": "user",
+        "content": "白桦项目使用 PostgreSQL 数据库。",
+        "at": "2026-09-01T12:00:00Z",
+        "answer": false
+      },
+      {
+        "key": "TEST-refuse-zh-1",
+        "session": "TEST-refuse-zh-1",
+        "role": "assistant",
+        "content": "青岚可能使用 MySQL，但这只是猜测。",
+        "at": "2026-09-02T12:00:00Z",
+        "answer": false
+      }
+    ]
+  }
+]

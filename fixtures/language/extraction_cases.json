@@ -1,0 +1,362 @@
+[
+  {
+    "id": "owner-0-0",
+    "text": "我喜欢深蓝色。",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-0-1",
+    "text": "My preference is a deep blue shade.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-1-0",
+    "text": "I prefer deep blue.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-1-1",
+    "text": "I prefer a deep blue shade.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-2-0",
+    "text": "我决定使用 postgres。",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "decision",
+      "subject": "user",
+      "predicate": "database",
+      "value_text": "PostgreSQL",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-2-1",
+    "text": "My decision is postgres.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "decision",
+      "subject": "user",
+      "predicate": "database",
+      "value_text": "PostgreSQL",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-3-0",
+    "text": "I choose postgres.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "decision",
+      "subject": "user",
+      "predicate": "database",
+      "value_text": "PostgreSQL",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-3-1",
+    "text": "I choose postgres for my database.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "decision",
+      "subject": "user",
+      "predicate": "database",
+      "value_text": "PostgreSQL",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-4-0",
+    "text": "我住在纽约。",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-4-1",
+    "text": "I live in New York City.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-5-0",
+    "text": "I live in NYC.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "owner-5-1",
+    "text": "I live in NYC now.",
+    "origin": "human_direct",
+    "gold_active": true,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "supported"
+    }
+  },
+  {
+    "id": "guard-0-0",
+    "text": "我不喜欢深蓝色。",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-0-1",
+    "text": "I do not prefer deep blue.",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-1-0",
+    "text": "如果搬家，我住在纽约。",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-1-1",
+    "text": "If I move, I will live in NYC.",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-2-0",
+    "text": "同事说我喜欢深蓝色。",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-2-1",
+    "text": "According to my colleague, I prefer deep blue.",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-3-0",
+    "text": "My colleague prefers deep blue.",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-3-1",
+    "text": "My coworker prefers a deep blue shade.",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-4-0",
+    "text": "Suppose I live in NYC.",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-4-1",
+    "text": "Hypothetically, I live in NYC.",
+    "origin": "human_direct",
+    "gold_active": false,
+    "recording": {
+      "kind": "fact",
+      "subject": "user",
+      "predicate": "lives in",
+      "value_text": "New York",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-5-0",
+    "text": "I prefer deep blue.",
+    "origin": "assistant_visible",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  },
+  {
+    "id": "guard-5-1",
+    "text": "My preference is deep blue.",
+    "origin": "assistant_visible",
+    "gold_active": false,
+    "recording": {
+      "kind": "preference",
+      "subject": "user",
+      "predicate": "color",
+      "value_text": "navy",
+      "conditions": [],
+      "statement_kind": "assertion",
+      "support": "unsupported"
+    }
+  }
+]

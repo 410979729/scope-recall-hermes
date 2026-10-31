@@ -20,6 +20,7 @@ from .failure_policy import (
     RATE_LIMITED_ERRORS,
     WORK_RETRY,
     capacity_backoff_seconds,
+    failure_category,
 )
 from .storage import SQLiteStorage
 from .work_storage import MAX_RECOVERY_PAGE
@@ -469,7 +470,7 @@ def _finish_embedding_failure(storage, clock, context, group, failure, started, 
 
 def _port_refused(disposition: str, error_code) -> bool:
     """Whether the port refused an item before any attempt (budget, credentials)."""
-    return disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS
+    return disposition == "deferred" and failure_category(error_code) == "capability"
 
 
 def _rate_limited(error_code) -> bool:

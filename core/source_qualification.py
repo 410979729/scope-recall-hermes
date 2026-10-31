@@ -437,16 +437,17 @@ def _pasted_at(content: str, position: int) -> bool:
     return quoted_at(content, position) or _SPEAKER_LABEL.search(_outside_fences(content[:position])[1]) is not None
 
 
-def in_pasted_text(content: str, quote: str) -> bool:
+def in_pasted_text(content: str, quote: str, *, start: int | None = None, end: int | None = None) -> bool:
     """Whether a first person in the quoted words stands in text the owner pasted rather than said, judged in the
     whole message: after a line opening with a speaker's label (``_SPEAKER_LABEL``), inside a fenced block, inside a
     quotation still open across lines, or on a quoted line (``> ...``).  A claim's evidence is read in a context
     narrowed to the quote's sentence, which leaves all of these out (``NameOne:`` ... ``My preference is blue.``), and a
     quote may hold a fence's opening line itself."""
-    at = content.rfind(quote) if quote else -1
+    at = start if start is not None else content.rfind(quote) if quote else -1
+    stop = end if end is not None else at + len(quote)
     if at < 0:
         return False
-    persons = [match.start() for match in _FIRST_PERSON.finditer(content, at, at + len(quote))] or [at]
+    persons = [match.start() for match in _FIRST_PERSON.finditer(content, at, stop)] or [at]
     return any(_pasted_at(content, position) for position in persons)
 
 

@@ -36,6 +36,8 @@ embedder without a model or network, so it does not establish consolidation qual
 semantic embedding quality or performance on private conversations. The test tiers
 also check contracts, storage and host integration.
 
+Extraction can normalize fact wording while keeping exact source character intervals. A separate model judgement handles support that literal checks cannot establish; unavailable or uncertain support remains a labelled candidate. [Claim contracts](docs/claim-mutation-contract.md) describe promotion, merging and source authority.
+
 ## Manage your memories
 
 Use `scope-recall ui` with the same store selection to open the [local management page](docs/ui.md).

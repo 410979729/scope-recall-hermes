@@ -17,6 +17,7 @@ from .candidate_tables import UNRESOLVED_SUBJECT_REASON
 from .claim_normalization import normalize_frame
 from .claims import evidence_refs
 from .evidence_question import evidence_text, rooted_verdict
+from .evidence_support import SupportVerdict, positioned, support_fingerprint, using_support
 from .failure_policy import BUDGET_PAUSE_ERRORS
 from .failure_retry import validation_feedback
 from .mutate import apply_claim, validate_claims
@@ -123,7 +124,12 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     ]
     if not rooted_verdict(proposal, quoted):
         return None
-    applied = apply_claim(tx, proposal, item.scope_id, now)
+    verdicts = ()
+    if positioned(proposal):
+        contents = {(source.ref, source.revision): source.event["content"] for source in authorized_sources}
+        verdicts = (SupportVerdict(support_fingerprint(proposal, contents), "supported"),)
+    with using_support(verdicts):
+        applied = apply_claim(tx, proposal, item.scope_id, now)
     applied_version = tx.claims.version(applied.ref, applied.revision)
     if applied_version is None or applied_version.payload.get("subject") != expected_candidate.payload.get("subject"):
         raise ContractError("DERIVATION_INVALID", "candidate_subject_binding")
@@ -198,7 +204,11 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
         reason=reason,
         result_digest=result_digest,
     )
-    if (applied.ref, applied.revision) != (current.candidate.ref, current.candidate.revision):
+    applied_head = tx.claims.version(applied.ref, applied.revision)
+    if (applied.ref, applied.revision) != (
+        current.candidate.ref,
+        current.candidate.revision,
+    ) and applied_head.current_revision == applied.revision:
         tx.candidates.register(
             applied.ref,
             applied.revision,
@@ -206,6 +216,8 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
             rule_version=current.candidate.rule_version,
             schedule_initial=False,
         )
+        if applied.ref == current.candidate.ref:
+            tx.candidates.inherit_answer(current, applied.revision, now=now)
     return work_result(mutation)
 
 

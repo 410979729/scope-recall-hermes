@@ -1,0 +1,122 @@
+[
+  {
+    "input": {
+      "proposal": {
+        "kind": "preference",
+        "subject": "user",
+        "predicate": "color",
+        "value_text": "navy",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": "2026-09-06T12:00:00Z",
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-prompt-source",
+            "source_revision": 1,
+            "quote": "I prefer deep blue.",
+            "start": 0,
+            "end": 19
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-prompt-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "I prefer deep blue.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "candidates": []
+    },
+    "expected": {
+      "support": "supported",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "input": {
+      "proposal": {
+        "kind": "preference",
+        "subject": "user",
+        "predicate": "color",
+        "value_text": "orange",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": "2026-09-06T12:00:00Z",
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-prompt-source",
+            "source_revision": 1,
+            "quote": "I prefer deep blue.",
+            "start": 0,
+            "end": 19
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-prompt-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "I prefer deep blue.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "candidates": []
+    },
+    "expected": {
+      "support": "unsupported",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "input": {
+      "proposal": {
+        "kind": "preference",
+        "subject": "user",
+        "predicate": "color",
+        "value_text": "navy",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": "2026-09-06T12:00:00Z",
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-prompt-source",
+            "source_revision": 1,
+            "quote": "I prefer deep blue.",
+            "start": 0,
+            "end": 19
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-prompt-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "Maybe I prefer deep blue.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "candidates": []
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  }
+]
