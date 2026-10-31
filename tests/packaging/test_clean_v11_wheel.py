@@ -426,3 +426,38 @@ def test_clean_v11_wheel_hermes_plugin_yaml_semver(built_wheel: Path) -> None:
         plugin_yaml = archive.read("scope_recall/adapters/hermes/plugin.yaml").decode("utf-8")
 
     assert re.search(rf"^version:\s*{re.escape(expected)}\s*$", plugin_yaml, re.MULTILINE)
+
+
+def test_all_prompt_resources_and_extraction_format_from_installed_wheel(installed_venv):
+    script = r"""
+import json
+from importlib.resources import files
+from pathlib import Path
+from scope_recall.core.consolidate import consolidation_messages
+from scope_recall.core.language_resources import prompt_text
+from scope_recall.core.source_records import StoredSource
+import scope_recall
+
+root = files("scope_recall")
+names = ("consolidation", "candidate", "fragment", "repair", "support", "merge")
+for name in names:
+    assert prompt_text(name)
+    examples = json.loads(root.joinpath(f"prompts/{name}.examples.json").read_text(encoding="utf-8"))
+    assert examples and all("input" in item and "expected" in item for item in examples)
+for name in ("credentials", "query_time"):
+    assert json.loads(root.joinpath(f"prompts/{name}.json").read_text(encoding="utf-8"))
+source = StoredSource("TEST-source", 1, "TEST-scope", "TEST-session", None, None,
+    dict(origin="human_direct", content="I prefer deep blue.", occurred_at="2026-09-06T12:00:00Z"),
+    "0" * 64, False)
+messages = consolidation_messages((source,), budget=64000)
+assert json.loads(messages[-1]["content"])["sources"][0]["content"] == "I prefer deep blue."
+assert "Unicode" in messages[0]["content"]
+print(json.dumps({"prompts": len(names), "examples": len(names), "formatted": True,
+                  "package": str(Path(scope_recall.__file__).resolve())}))
+"""
+    result = _run_clean_child(installed_venv["python"], cwd=_outside_repo_cwd(), args=["-c", script])
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    report = json.loads(result.stdout)
+    assert report["prompts"] == report["examples"] == 6
+    assert report["formatted"]
+    assert not Path(report["package"]).is_relative_to(REPO_ROOT)

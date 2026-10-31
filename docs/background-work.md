@@ -47,6 +47,10 @@ cannot be paired positionally with another subject. A pass with no request budge
 | archived | archived, pending_evaluation, blocked | Dormant lack-of-evidence entries may wake on new evidence; other archives stay closed | Capture trigger only for dormant_no_evidence; doctor distinguishes dormant entries | No repeated unchanged question | dependency or yes |
 | blocked | blocked, pending_evaluation, waiting_evidence, resolved, archived | Reject outbound work; suppression release revalidates the current head: judgeable facts resume debounce, active facts resolve, other fact states archive | Explicit authority restoration, never a timer | No attempt while blocked | stopped |
 
+A verdict-produced revision inherits its answered evidence fingerprint and collected evidence. A version change alone cannot ask that question again; new admissible evidence or an explicit rule change can. Claim publication compares the final assertion, qualification and cited evidence after temporal and conflict ordering. Identical assertions do not conflict with themselves; replayed active assertions retain their head, and unchanged evidence alone cannot resolve an existing dispute.
+
+Source-verified owner statements with supported positioned evidence resolve at publication. Other statements retain their qualification reason beside the candidate state. A support capability failure preserves the candidate and stops later support requests in that batch. After thirty days without new evidence, waiting candidates become dormant archives: the claim remains proposed, remains labelled in recall, and new admissible evidence can reopen it. No timer deletes a claim or repeats an unchanged question.
+
 Evidence settles after fifteen quiet minutes or at most one hour of accumulated deferral. Five unanswered
 questions slow later questions to at most once a day. These evidence timers do not classify provider failures.
 

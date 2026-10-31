@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Mapping
 
+from .language_resources import language_rules
+
 #: Days, or spans of days, one question may name.  More is a list, which neither a scope of whole days nor a ranking
 #: by time serves.
 MAX_SCOPE_DAYS = 3
@@ -228,147 +230,38 @@ _ACK_WORDS = frozenset(
 )
 _CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿\U00020000-\U0003134f]")
 
-#: A day written as a date: "2026-09-29", "2026/09/29", "2026年9月29日", "9月29日", "9月29号".  A date inside an
-#: identifier is none: joined to it by "-", "_", "." or "/" ("release-2026-09-18", "build_2026-09-18",
-#: "2026-09-18.log") or run into by a Latin word ("id2026-09-18"), which only the scope reads, since an entry's name
-#: may run into its day ("Codex2026-09-29", ``_name_pattern``).
-_ISO_DATE = re.compile(
-    r"(?<![\d_\-./])(?P<year>\d{4})\s*[-/]\s*(?P<month>\d{1,2})\s*[-/]\s*(?P<day>\d{1,2})"
-    r"(?![A-Za-z\d_\-]|[./][A-Za-z\d_])"
-)
-_CN_DATE = re.compile(r"(?<!\d)(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*[日号]?(?!\d)")
-_MONTH_DAY = re.compile(r"(?<![\d.])(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*[日号]?(?![\d.])")
-#: A month written in English, by its name or the usual abbreviation ("Sep", "Sept", "Sep."); its first three
-#: letters say which (``_EN_MONTHS``).
-_EN_MONTH_NAMES = (
-    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?"
-    r"|nov(?:ember)?|dec(?:ember)?"
-)
-_EN_MONTH = rf"(?P<month>{_EN_MONTH_NAMES})\.?"
-_EN_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
-#: A day written in English: "September 29", "Sept 29th, 2026"; "the 29th of September", where the day comes first
-#: only with its ordinal ("the top 10 may change" names no day); "on the 29th" before the end, a mark or what was
-#: said ("on the 29th about the release"), since "on the 2nd floor" is no day.
-_EN_MONTH_DAY = re.compile(
-    rf"(?<![a-z]){_EN_MONTH}\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(?P<year>\d{{4}}))?(?![\d:a-z]|\.\d)",
-    re.IGNORECASE,
-)
-_EN_DAY_MONTH = re.compile(
-    rf"(?<![\d.])(?P<day>\d{{1,2}})(?:st|nd|rd|th)\s+(?:of\s+)?{_EN_MONTH}(?:,?\s+(?P<year>\d{{4}}))?"
-    r"(?![\d:a-z]|\.\d)",
-    re.IGNORECASE,
-)
-_EN_ORDINAL_DAY = re.compile(
-    r"(?<![a-z])on\s+the\s+(?P<day>\d{1,2})(?:st|nd|rd|th)(?=\s*(?:$|[^\w\s]|about\b|regarding\b))", re.IGNORECASE
-)
-#: The end of a range written after its first day: "9月28-30日", "9月28日到30日", "9月28日到10月3日", "Sep 28-30",
-#: "September 28 to 30".  A time of day ("9月28日 - 10:00") or a month ("9月28日到10月") ends none.
-_RANGE_TAIL = re.compile(
-    r"\s*(?:到|至|~|～|-|—|–)\s*(?:(?P<year>\d{4})\s*[-/年]\s*)?(?:(?P<month>\d{1,2})\s*[-/月]\s*)?(?P<day>\d{1,2})"
-    r"\s*[日号]?(?![\d.:月])"
-)
-_EN_RANGE_TAIL = re.compile(
-    r"\s*(?:-|–|—|to|through|thru|until|till)\s*(?P<day>\d{1,2})(?:st|nd|rd|th)?(?![\d:a-z]|\.\d)", re.IGNORECASE
-)
-#: Each way a day is written, in the order read (characters read once are not read again), and the end of a range
-#: that may follow it.
-_DATE_FORMS = (
-    (_ISO_DATE, _RANGE_TAIL),
-    (_CN_DATE, _RANGE_TAIL),
-    (_MONTH_DAY, _RANGE_TAIL),
-    (_EN_MONTH_DAY, _EN_RANGE_TAIL),
-    (_EN_DAY_MONTH, None),
-    (_EN_ORDINAL_DAY, None),
-)
-#: A month with no day: "9月", "9月份", "2026年9月", "in September", "September 2026".  An English month's name alone
-#: is none ("May I ask", "march on").
-_MONTH = re.compile(r"(?<![\d.])(?:(?P<year>\d{4})\s*年\s*)?(?P<month>\d{1,2})\s*月份?(?!\s*\d)")
-_EN_MONTH_ALONE = re.compile(
-    rf"(?<![a-z])(?:(?:in|during)\s+|(?=(?:{_EN_MONTH_NAMES})\.?\s+\d{{4}}(?!\d))){_EN_MONTH}"
-    r"(?:\s+(?P<year>\d{4}))?(?![\d:a-z]|\.\d)",
-    re.IGNORECASE,
-)
-#: What joins two named times into a range: "9月28日到9月30日", "2026-09-28 至 2026-09-30", "昨天到今天",
-#: "from Sep 28 to Oct 2".
-_RANGE = re.compile(r"\s*(?:到|至|~|～|-|—|–|to|through|thru|until|till)\s*", re.IGNORECASE)
-#: What lists two named days or entries: "9月28日和9月29日", "昨天、今天", "pc1和pc2", "today and yesterday".
-_JOINER = re.compile(r"\s*(?:和|跟|与|及|以及|还有|、|,|，|and|&)\s*", re.IGNORECASE)
-#: Words that go with a named time and name nothing of their own: "between", "from" or "从" before it, "之间", "那天"
-#: or "当天" after it ("9月24号那天").  Two times a list joins between them are a range ("between Sep 6 and Sep 8",
-#: "9月6日和9月8日之间").
-_LEADS = re.compile(r"(?:(?<![a-z])(?:between|from)\s+|从\s*)$", re.IGNORECASE)
-_TRAILS = re.compile(r"\s*(?:之间|那一?天|当天)")
-#: Words that make a named time one end of a span: the days before it, or those from it to today.  English writes
-#: them before the time ("before September 18", "since last week"), Chinese after it ("9月18日之前", "上周以来").
-#: "From" is none: "the notes from yesterday" are yesterday's.
-_BEFORE = re.compile(r"(?<![a-z])(?:before|prior\s+to)\s+$", re.IGNORECASE)
-_SINCE = re.compile(r"(?<![a-z])(?:after|since)\s+$", re.IGNORECASE)
-_BEFORE_ZH = re.compile(r"\s*(?:之前|以前)")
-_SINCE_ZH = re.compile(r"\s*(?:之后|以后|以来)")
-#: Words a question asks with for what held before, not for what holds now (``asks_what_held_before``): "used to",
-#: "previously", "formerly", "originally", "the old" or "the former" before a word, and "before" that ends the
-#: question ("What port did Granite use before?", "… before that?"), not "before" with what it is before ("before the
-#: release, what should I check?").  In Chinese 以前, 之前, 原来, 曾经 or 过去 before what was, was used, liked,
-#: loved, called, lived in, had or was at ("Granite 以前用的哪个端口？", "我原来喜欢喝什么？"), 原来的
-#: ("原来的端口"), or one of them opening the question ("以前 Granite 用哪个端口？").  Not one before a word of
-#: saying or sending ("之前说的那个方案", "曾经提过的"), a number of days ("过去一周") or 是不是 and 是否, which
-#: ask whether, nor one after what it comes before with what to do then ("发布之前要检查什么？").  A question about
-#: the past these words catch that asks for no replaced value only keeps the order it was ranked in.
-_HELD_BEFORE_EN = re.compile(
-    r"(?<![a-z])(?:used\s+to|previously|formerly|originally)(?![a-z])"
-    r"|(?<![a-z])the\s+(?:old|former)\s+(?=[a-z])"
-    r"|(?<![a-z])before(?:\s+(?:that|then|now))?\s*(?:[?？.!！。]|$)",
-    re.IGNORECASE,
-)
-_BEFORE_WORD_ZH = r"(?:以前|之前|原来|曾经|过去)"
-_HELD_BEFORE_ZH = re.compile(
-    rf"{_BEFORE_WORD_ZH}\s*(?:一直|都|还|总|常|经常|曾)?\s*(?:是(?!不是|否)|用|叫|喜欢|爱|住|有|在)"
-    r"|原来\s*的"
-    rf"|^\s*{_BEFORE_WORD_ZH}(?![\s,，]*(?:说|讲|提|聊|谈|发|问|写|告诉|[一二两三四五六七八九十几\d]))"
-)
-#: Days before today each relative word names, and whether it names part of that day only ("昨晚", "今早", "tonight"),
-#: which only the scope reads: the time a question names is the past days a message could have been said on, and a
-#: part of today is often still to come ("今晚做什么菜").
-_RELATIVE = (
-    ("大前天", 3, False),
-    ("前天", 2, False),
-    ("昨天", 1, False),
-    ("昨日", 1, False),
-    ("昨晚", 1, True),
-    ("昨夜", 1, True),
-    ("今天", 0, False),
-    ("今日", 0, False),
-    ("今早", 0, True),
-    ("今晨", 0, True),
-    ("今晚", 0, True),
-    ("今夜", 0, True),
-)
-#: A character before which a relative word is part of another word: 如今 ("如今天下"), 往前 ("往前天数"), 之前,
-#: 以前, 目前 ("目前天天都在做什么"), 至今.
-_NOT_A_DAY_AFTER = frozenset("如往向提之以目至")
-#: Places a message may name days in before it is a list or a log, not a question about a day.
-_MAX_DAY_MENTIONS = 16
-_RELATIVE_EN = re.compile(r"(?<![A-Za-z])(today|yesterday|last night|tonight|this morning)(?![A-Za-z])", re.IGNORECASE)
-_EN_PARTS_OF_DAY = frozenset({"last night", "tonight", "this morning"})
-#: Words naming whole days back from today (``_period``): last and this week, a week starting on Monday, and last and
-#: this month.  上 is no "last" in 早上, 晚上, 马上, 线上, 网上, 路上, 加上 or 以上 ("马上周末了"), nor 周 a week in
-#: 周期, 周边 or 周围 ("这周边").  The last few days ("最近", "recently") are no span: the recent channel reads the
-#: session's latest messages, and 最近 is as often "nearest" ("最近距离").
-_PERIODS = (
-    (
-        "last_week",
-        re.compile(
-            r"(?<![早晚马线网路加以])上[个一]?(?:周(?![期边围])|星期|礼拜)|(?<![a-z])last\s+week(?![a-z])",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "this_week",
-        re.compile(r"(?:本|这[个一]?)(?:周(?![期边围])|星期|礼拜)|(?<![a-z])this\s+week(?![a-z])", re.IGNORECASE),
-    ),
-    ("last_month", re.compile(r"上个月|(?<![a-z])last\s+month(?![a-z])", re.IGNORECASE)),
-    ("this_month", re.compile(r"(?:本|这个)月|(?<![a-z])this\s+month(?![a-z])", re.IGNORECASE)),
-)
+_TIME_RULES = language_rules("query_time")
+_ISO_DATE = _TIME_RULES["_ISO_DATE"]
+_CN_DATE = _TIME_RULES["_CN_DATE"]
+_MONTH_DAY = _TIME_RULES["_MONTH_DAY"]
+_EN_MONTH_NAMES = _TIME_RULES["_EN_MONTH_NAMES"]
+_EN_MONTH = _TIME_RULES["_EN_MONTH"]
+_EN_MONTHS = _TIME_RULES["_EN_MONTHS"]
+_EN_MONTH_DAY = _TIME_RULES["_EN_MONTH_DAY"]
+_EN_DAY_MONTH = _TIME_RULES["_EN_DAY_MONTH"]
+_EN_ORDINAL_DAY = _TIME_RULES["_EN_ORDINAL_DAY"]
+_RANGE_TAIL = _TIME_RULES["_RANGE_TAIL"]
+_EN_RANGE_TAIL = _TIME_RULES["_EN_RANGE_TAIL"]
+_DATE_FORMS = _TIME_RULES["_DATE_FORMS"]
+_MONTH = _TIME_RULES["_MONTH"]
+_EN_MONTH_ALONE = _TIME_RULES["_EN_MONTH_ALONE"]
+_RANGE = _TIME_RULES["_RANGE"]
+_JOINER = _TIME_RULES["_JOINER"]
+_LEADS = _TIME_RULES["_LEADS"]
+_TRAILS = _TIME_RULES["_TRAILS"]
+_BEFORE = _TIME_RULES["_BEFORE"]
+_SINCE = _TIME_RULES["_SINCE"]
+_BEFORE_ZH = _TIME_RULES["_BEFORE_ZH"]
+_SINCE_ZH = _TIME_RULES["_SINCE_ZH"]
+_HELD_BEFORE_EN = _TIME_RULES["_HELD_BEFORE_EN"]
+_BEFORE_WORD_ZH = _TIME_RULES["_BEFORE_WORD_ZH"]
+_HELD_BEFORE_ZH = _TIME_RULES["_HELD_BEFORE_ZH"]
+_RELATIVE = _TIME_RULES["_RELATIVE"]
+_NOT_A_DAY_AFTER = _TIME_RULES["_NOT_A_DAY_AFTER"]
+_MAX_DAY_MENTIONS = _TIME_RULES["_MAX_DAY_MENTIONS"]
+_RELATIVE_EN = _TIME_RULES["_RELATIVE_EN"]
+_EN_PARTS_OF_DAY = _TIME_RULES["_EN_PARTS_OF_DAY"]
+_PERIODS = _TIME_RULES["_PERIODS"]
 #: Characters an entry's name may be written with or without between its own: spaces, and "的" ("工作机的 Codex").
 _NAME_GAP = r"[\s的]*"
 

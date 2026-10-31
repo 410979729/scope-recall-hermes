@@ -121,6 +121,8 @@ def resolve_evidence_quotes(value: dict, contents: dict) -> int:
             content = contents.get((span.get("source_ref"), span.get("source_revision")))
             if content is None:
                 continue
+            if "start" in span or "end" in span:
+                continue
             stored = resolve_quote(span.get("quote"), content)
             if stored is not None and stored != span.get("quote"):
                 span["quote"] = stored

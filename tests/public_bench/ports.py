@@ -167,6 +167,22 @@ class CachedModel:
         """Replay or compute one candidate-specific request with local refs remapped."""
         return self._call("evaluate_candidate", sources, candidate, **kwargs)
 
+    def judge(self, messages, **kwargs):
+        """Cache source support and merge judgements through the configured product model."""
+        body = json.loads(messages[-1]["content"])
+        refs = {source["source_ref"]: "source:" + digest(source["content"]) for source in body["sources"]}
+        for candidate in body["candidates"]:
+            refs[candidate["ref"]] = "claim:" + digest(remap(candidate["payload"], refs))
+        request = {"messages": normalized_messages(messages, refs)}
+
+        def compute():
+            method = getattr(self.model, "judge", None)
+            if method is None:
+                return dict(support="uncertain", action="new", target_ref=None, target_revision=None)
+            return json.loads(method(messages, **kwargs))
+
+        return json.dumps(self.cache.call("support", request, self.config, refs, compute))
+
 
 class CachedEmbedder:
     """Cache individual encodings while preserving the wrapped batch capabilities."""

@@ -1,0 +1,683 @@
+[
+  {
+    "query": "2026-09-18 说了什么",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "9月18日的发布怎么样了",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "9月18号那天的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "What did I say about the release on September 18?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "Any news from Sept 18th, 2026?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "What was decided on the 18th of September?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "What did we decide on the 18th?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "昨天的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-29",
+        "2026-09-29"
+      ]
+    ]
+  },
+  {
+    "query": "What did we fix yesterday?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-29",
+        "2026-09-29"
+      ]
+    ]
+  },
+  {
+    "query": "9月6日到9月8日之间，发布有什么进展？",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-06",
+        "2026-09-08"
+      ]
+    ]
+  },
+  {
+    "query": "从2026-09-06到2026-09-08，发布有什么进展？",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-06",
+        "2026-09-08"
+      ]
+    ]
+  },
+  {
+    "query": "9月6日和9月8日之间的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-06",
+        "2026-09-08"
+      ]
+    ]
+  },
+  {
+    "query": "9月6-8日的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-06",
+        "2026-09-08"
+      ]
+    ]
+  },
+  {
+    "query": "What happened between September 6 and September 8?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-06",
+        "2026-09-08"
+      ]
+    ]
+  },
+  {
+    "query": "Catch me up from Sep 6 to Sep 8.",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-06",
+        "2026-09-08"
+      ]
+    ]
+  },
+  {
+    "query": "What happened Sep 6-8?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-06",
+        "2026-09-08"
+      ]
+    ]
+  },
+  {
+    "query": "9月28日到10月3日的安排",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-28",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "9月的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-01",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "2026年8月的账单",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-08-01",
+        "2026-08-31"
+      ]
+    ]
+  },
+  {
+    "query": "What shipped in August?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-08-01",
+        "2026-08-31"
+      ]
+    ]
+  },
+  {
+    "query": "The August 2026 invoices",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-08-01",
+        "2026-08-31"
+      ]
+    ]
+  },
+  {
+    "query": "上周发布有什么进展？",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-21",
+        "2026-09-27"
+      ]
+    ]
+  },
+  {
+    "query": "上个星期的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-21",
+        "2026-09-27"
+      ]
+    ]
+  },
+  {
+    "query": "What did I say about the release last week?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-21",
+        "2026-09-27"
+      ]
+    ]
+  },
+  {
+    "query": "这周做了什么",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-28",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "本周的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-28",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "What changed this week?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-28",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "上个月的账单",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-08-01",
+        "2026-08-31"
+      ]
+    ]
+  },
+  {
+    "query": "What did we spend last month?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-08-01",
+        "2026-08-31"
+      ]
+    ]
+  },
+  {
+    "query": "本月的账单",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-01",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "9月18日之前用的是哪个端口",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "1970-01-03",
+        "2026-09-17"
+      ]
+    ]
+  },
+  {
+    "query": "Which port did we use before September 18?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "1970-01-03",
+        "2026-09-17"
+      ]
+    ]
+  },
+  {
+    "query": "What changed after September 18?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "上周以来有什么变化",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-21",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "What changed since last week?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-21",
+        "2026-09-30"
+      ]
+    ]
+  },
+  {
+    "query": "What's the staging port for Orchard?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "May I ask what the port is?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "The top 10 may change.",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "Is it on the 2nd floor?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "Mar 3.4 release notes",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "What did we decide last time?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "When is the next release?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "Did we rotate the keys before or after we split the repo?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "3.4.2 修了什么",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "3个月的计划",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "上次说的方案",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "马上周末了",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "这周边有什么好吃的",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "本周期的指标",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "如今天下太平",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "最近发布怎么样",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "最近距离是多少",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "What changed recently?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "What did we do the past few days?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "What's in release-2026-09-18?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "build_2026-09-18 failed again",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "Open 2026-09-18.log for me",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "id2026-09-18 是哪个",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "v2.2026-09-18 是哪个版本",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "2026-09-18-hotfix 修了什么",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "2026-09-18T10:00:00Z 的告警是什么",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "What should we cook tonight?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "What did we discuss this morning?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "What did we decide last night?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "今晚做什么菜",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "今早聊了什么",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "今晨的会",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "今夜的部署",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "昨晚说的那个方案",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "昨夜的告警",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "What is planned for tomorrow?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "明天的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "后天的会",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "下周的计划",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "What is planned next week?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "下个月的预算",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": null
+  },
+  {
+    "query": "What is the budget for next month?",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": null
+  },
+  {
+    "query": "We shipped on 2026-09-18.",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "en",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "那次发布（2026-09-18）",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "2026-09-18聊了什么",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  },
+  {
+    "query": "2026/09/18 的发布",
+    "now": "2026-09-30T09:30:00Z",
+    "language": "zh",
+    "windows": [
+      [
+        "2026-09-18",
+        "2026-09-18"
+      ]
+    ]
+  }
+]

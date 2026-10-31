@@ -70,6 +70,16 @@ def test_saved_exact_quote_wins_over_an_earlier_repeated_value():
     assert candidate.fact_state == "proposed"
 
 
+def test_verified_position_selects_the_later_identical_quote():
+    quote = "TEST-build result ready"
+    source = _source(quote + "\n" + "x" * 4000 + "\n" + quote + "\n" + "z" * 4000)
+    at = source.event["content"].rindex(quote)
+    span = dict(_span(source, quote), start=at, end=at + len(quote))
+    record = _record(_candidate(source, [span]), source)
+    assert record["source_window"]["start"] <= at
+    assert record["source_window"]["end"] >= at + len(quote)
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -221,12 +231,11 @@ def test_window_selection_does_not_mutate_candidate_identity_or_source():
     assert json.loads(messages[-1]["content"].removeprefix("candidate="))["subject"] == "current_user"
 
 
-def test_the_request_has_one_system_message_and_it_comes_first():
+@pytest.mark.parametrize("feedback", [None, {"code": "DERIVATION_INVALID", "field": "evidence_quote"}])
+def test_the_request_has_one_system_message_and_it_comes_first(feedback):
     """Qwen's chat template refuses any system message after the first with HTTP 400."""
-    quote = "TEST-build result ready"
-    source = _source("ready" + "x" * 4000 + quote + "z" * 4000)
-    feedback = {"code": "DERIVATION_INVALID", "field": "claim_proposals"}
-    for kwargs in ({}, {"validation_feedback": feedback}):
-        messages = candidate_evaluation_messages(_candidate(source, [_span(source, quote)]), (source,), **kwargs)
-        assert [message["role"] for message in messages] == ["system", "user", "user"]
-        assert messages[0]["content"].startswith("Re-evaluate only the supplied candidate")
+    source = _source("TEST-build result ready")
+    candidate = _candidate(source, [_span(source, source.event["content"])])
+    messages = candidate_evaluation_messages(candidate, (source,), validation_feedback=feedback)
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+    assert messages[0]["content"].startswith("Re-evaluate only the supplied candidate")

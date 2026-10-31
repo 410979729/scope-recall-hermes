@@ -221,6 +221,69 @@ class Claims:
             raise ContractError("ACCESS_DENIED", "claim_unavailable")
         return self.versions(row["claim_id"])
 
+    def merge_lookup(
+        self, scope_id, *, subjects=(), predicate=None, kind=None, conditions=None, alias_name=None, instant=None
+    ) -> tuple[str, ...]:
+        """Find bounded normalized slot/alias matches after filtering the complete authorized scope.
+
+        Normalization is connection-local and creates no stored state. Filtering
+        precedes the result limit, so unrelated facts cannot hide an older slot.
+        """
+        from .fact_identity import normalize_fact_component
+
+        self._tx._scope(scope_id)
+        conn, ctx = self._tx._check(), self._tx.context
+
+        def normalize(value):
+            return normalize_fact_component(value, max_chars=2048, allow_empty=True)
+
+        conn.create_function("scope_recall_fact_component", 1, normalize, deterministic=True)
+        filters = [
+            "c.scope_id=?",
+            "c.project_id IS ?",
+            "c.branch_id IS ?",
+            "c.kind=?",
+            "c.read_blocked=0",
+            "c.suppressed=0",
+            "v.state='active'" if alias_name is not None else "v.state IN ('active','proposed','disputed')",
+            "NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' AND b.object_ref=c.claim_id "
+            "AND (b.read_blocked=1 OR b.suppressed=1))",
+        ]
+        params = [scope_id, ctx.project_id, ctx.branch_id, "alias" if alias_name is not None else kind]
+        if alias_name is not None:
+            instant = canonical_time(instant)
+            if instant is None:
+                raise ContractError("INPUT_INVALID", "alias_instant")
+            conn.create_function("scope_recall_instant", 1, canonical_time, deterministic=True)
+            filters += [
+                "scope_recall_fact_component(json_extract(v.payload_json,'$.alias.name'))=?",
+                "(v.valid_from IS NULL OR scope_recall_instant(v.valid_from)<=?)",
+                "(v.valid_to IS NULL OR ?<scope_recall_instant(v.valid_to))",
+            ]
+            params += [normalize(alias_name), instant, instant]
+        else:
+            filters += [
+                "scope_recall_fact_component(c.subject) IN (SELECT value FROM json_each(?))",
+                "scope_recall_fact_component(c.predicate)=?",
+                "(SELECT json_group_array(value) FROM (SELECT DISTINCT value FROM "
+                "json_each(v.payload_json,'$.conditions') ORDER BY value))=?",
+            ]
+            params += [
+                json.dumps(sorted(subjects)),
+                predicate,
+                json.dumps(sorted(set(conditions or ())), ensure_ascii=False, separators=(",", ":")),
+            ]
+        return tuple(
+            row[0]
+            for row in conn.execute(
+                "SELECT c.claim_id FROM claims c JOIN claim_versions v "
+                "ON v.claim_id=c.claim_id AND v.revision=c.current_revision WHERE "
+                + " AND ".join(filters)
+                + " ORDER BY c.claim_id LIMIT 16",
+                params,
+            )
+        )
+
     def list_refs(
         self,
         *,

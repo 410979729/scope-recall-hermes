@@ -140,9 +140,9 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
         head = next((v for v in versions if v.revision == v.current_revision), None)
         if head is None or head.state not in REQUALIFIABLE_STATES:
             continue
-        if head.reason == "local_user_management":
-            # A literal owner edit is an explicit choice, not a model's reading
-            # of a conversation. Re-running text inference must not undo it.
+        if head.reason in {"local_user_management", "normalized_evidence_supported"}:
+            # Persisted owner authority and semantic judgements are not replayed
+            # as literal inference during maintenance.
             report.skipped.append({"ref": ref, "why": "not_text_derived:local_user_management"})
             continue
         held, denial_reason = _denial_standing(tx, head, versions)
