@@ -82,7 +82,8 @@ The key comes from the route's `credential_env` variable and travels in the
 only missing texts and cache-only runs need no endpoint access. A run's
 question threads share one window of at most 2,000 texts a minute. An HTTP 429
 reply is asked again after the wait it names (at most 120 seconds, up to three
-times), or once after 60 seconds when it names none.
+times), or once after 60 seconds when it names none. A request that times out or
+loses its connection is asked once more after 10 seconds.
 
 Each question has an independent truth and vector store. Messages enter in
 session-time order using an injected business clock; the query uses its

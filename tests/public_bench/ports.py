@@ -283,6 +283,8 @@ EMBED_RETRY_WAIT_CAP_SECONDS = 120.0
 EMBED_RETRIES = 3
 #: Without a named wait, a refused request is asked once more after this many seconds.
 EMBED_UNHINTED_WAIT_SECONDS = 60.0
+#: A request that times out or loses its connection is asked once more after this many seconds.
+EMBED_TRANSPORT_WAIT_SECONDS = 10.0
 
 
 class TextWindow:
@@ -341,8 +343,8 @@ class EvaluatorEmbedding:
         self.sleep = sleep
 
     def _post(self, request: urllib.request.Request, count: int, timeout: float) -> dict:
-        """One chunk's response, waiting for the window and for each named retry wait."""
-        retries = 0
+        """One chunk's response, waiting for the window, for each named retry wait and once after a stall."""
+        retries = stalls = 0
         while True:
             self.window.admit(count)
             try:
@@ -356,6 +358,11 @@ class EvaluatorEmbedding:
                     raise
                 retries += 1
                 self.sleep(EMBED_UNHINTED_WAIT_SECONDS if hinted is None else hinted)
+            except (TimeoutError, urllib.error.URLError):
+                if stalls:
+                    raise
+                stalls += 1
+                self.sleep(EMBED_TRANSPORT_WAIT_SECONDS)
 
     def _embed(self, texts, *, kind, remaining_seconds):
         from scope_recall.core.recall_policy import encode_embedding_text

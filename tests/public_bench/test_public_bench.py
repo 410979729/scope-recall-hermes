@@ -368,6 +368,31 @@ def test_evaluator_embedding_asks_again_only_as_a_rate_limit_reply_allows(monkey
     assert waits == slept
 
 
+@pytest.mark.parametrize("stalls,succeeds", [(1, True), (2, False)])
+def test_evaluator_embedding_asks_once_more_after_a_stalled_request(monkeypatch, stalls, succeeds):
+    import ports as ports_module
+    from ports import EMBED_TRANSPORT_WAIT_SECONDS, TextWindow
+
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "TEST-synthetic-header-value")
+    replies = [TimeoutError("The read operation timed out")] * stalls + [{"embeddings": [{"values": [1.0] * 8}]}]
+
+    def send(request, *, timeout):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return _JsonResponse(reply)
+
+    monkeypatch.setattr(ports_module.urllib.request, "urlopen", send)
+    waits = []
+    embedder = EvaluatorEmbedding(_evaluator_route(), window=TextWindow(10_000, sleep=waits.append), sleep=waits.append)
+    if succeeds:
+        assert embedder.embed_texts(["TEST text"]) == ((1.0,) * 8,)
+    else:
+        with pytest.raises(TimeoutError):
+            embedder.embed_texts(["TEST text"])
+    assert waits == [EMBED_TRANSPORT_WAIT_SECONDS]
+
+
 def test_evaluator_embedding_reads_a_retry_after_header():
     from ports import retry_hint
 
