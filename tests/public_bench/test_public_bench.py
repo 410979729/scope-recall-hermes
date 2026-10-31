@@ -284,6 +284,7 @@ def test_runner_records_and_passes_concurrency_and_settle_limits(tmp_path, monke
     report = json.loads((output / "results.json").read_text(encoding="utf-8"))
     assert report["workers"] == workers and report["settle_seconds"] == seconds
     assert seen == [{"wall_seconds": seconds}]
+    assert report["pipeline_states"] == {"complete": 1}
 
 
 def test_runner_starts_the_first_wave_apart_and_records_the_interval(tmp_path, monkeypatch):
@@ -757,11 +758,10 @@ def test_cache_only_main_rejects_a_swallowed_miss(tmp_path, monkeypatch):
     assert not (output / "results.json").exists()
 
 
-@pytest.mark.parametrize("status", ["unavailable", "wall_limit", "round_limit", "business_time_limit"])
-def test_unfinished_questions_never_answer_or_judge(tmp_path, monkeypatch, status):
+def test_a_question_without_a_capability_is_never_answered_or_judged(tmp_path, monkeypatch):
     import run
 
-    _stub_lab(monkeypatch, status=status)
+    _stub_lab(monkeypatch, status="unavailable")
     ports = Ports(RequestCache(tmp_path / "requests.sqlite3"))
     row = run.run_case(
         _question(),
@@ -776,10 +776,11 @@ def test_unfinished_questions_never_answer_or_judge(tmp_path, monkeypatch, statu
     assert row["status"] == "incomplete"
 
 
-def test_a_pipeline_that_settled_with_failed_work_is_answered_and_scored(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status", ["failed", "wall_limit", "round_limit", "business_time_limit"])
+def test_a_question_is_answered_and_scored_however_its_queue_ended(tmp_path, monkeypatch, status):
     import run
 
-    _stub_lab(monkeypatch, status="failed")
+    _stub_lab(monkeypatch, status=status)
     ports = Ports(RequestCache(tmp_path / "requests.sqlite3"))
     row = run.run_case(
         _question(),
@@ -789,7 +790,7 @@ def test_a_pipeline_that_settled_with_failed_work_is_answered_and_scored(tmp_pat
         method="scope-recall",
         retrieval_only=False,
     )
-    assert row["status"] == "complete" and row["backend_state"]["status"] == "failed"
+    assert row["status"] == "complete" and row["backend_state"]["status"] == status
     assert row["evaluation"]["status"] == "scored"
     assert {"answer", "judge"} <= set(ports.cache.operations)
 
@@ -1091,7 +1092,7 @@ def test_incomplete_cli_report_excludes_answers_and_full_scores(tmp_path, monkey
 
     data, output = tmp_path / "data", tmp_path / "output"
     _data_manifest(data)
-    _stub_lab(monkeypatch, status="wall_limit")
+    _stub_lab(monkeypatch, status="unavailable")
     monkeypatch.setattr(run, "longmemeval", lambda _: [replace(_question(), id=str(i)) for i in range(500)])
     monkeypatch.setattr(run, "official_prompts", lambda _: {"default": "{}{}{}"})
     monkeypatch.setattr(sys, "argv", ["run.py", "--data", str(data), "--output", str(output), "--fake", "--limit", "1"])

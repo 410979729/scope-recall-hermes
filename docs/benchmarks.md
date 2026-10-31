@@ -141,15 +141,18 @@ A pass processing zero items is insufficient evidence of completion.
 Each worker batch receives the remaining wall-clock budget, and the runner
 checks the deadline again after the batch. A batch whose budget runs out inside
 the drain is followed by the next one, as the shipped worker supervisor does.
-A question whose queue settles with failed work and nothing pending is answered
-and scored from what its store holds, as the product answers its owner; its
-`backend_state` lists the failed work and `settled_with_failures` counts these
-questions. Pending or leased work, unsettled candidates, an unavailable
-capability or a reached limit leave a question incomplete: it appears under
-`incomplete_results`, never calls the answerer or judge, and makes the command
-exit unsuccessfully. Its score cannot become a complete baseline. A question
-that raises is recorded with its error and the code locations it passed
-through (`error_at`), and the split continues.
+The question is then answered and scored from what its store holds, as the
+product answers its owner whenever they ask, however the queue ended: complete,
+with failed work, or still busy when the round, business-time or wall-clock
+limit ran out. A candidate whose evaluation keeps producing a new revision
+never settles, so a limit is an outcome to report, not a reason to skip the
+question. Each result's `backend_state` records how its queue ended, and
+`pipeline_states` counts the endings across the split. Only an unavailable
+capability leaves a question incomplete, because the run then measured a broken
+configuration: it appears under `incomplete_results`, never calls the answerer
+or judge, and makes the command exit unsuccessfully. Its score cannot become a
+complete baseline. A question that raises is recorded with its error and the
+code locations it passed through (`error_at`), and the split continues.
 
 Results retain dataset provenance, model settings, prompt hashes, per-question
 packets, admission gaps, pipeline states, session/turn evidence recall, estimated
