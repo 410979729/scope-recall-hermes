@@ -67,6 +67,13 @@ def test_post_release_versions_are_not_reintroduced():
     assert ".post" not in inventory.source_version(REPO_ROOT)
 
 
+@pytest.mark.parametrize("version", ["4.0.0.dev0", "3.1.0rc39", "3.17.0", "3.1.0rc2.post1"])
+def test_plugin_manifests_spell_the_version_as_the_installers_do(version):
+    from scope_recall.maintenance.install_common import manifest_version
+
+    assert inventory.manifest_version(version) == manifest_version(version)
+
+
 def test_stamping_a_manifest_preserves_everything_else(tmp_path):
     original = "name: scope-recall\nversion: 1.2.3\ndescription: unchanged\n"
     stamped = inventory.stamped_manifest(original, "9.9.9rc1")

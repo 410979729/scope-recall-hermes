@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -60,7 +61,7 @@ ENTRY_POINTS = (
 #: defeat the isolation it exists to provide.
 _DATA_ONLY = ("_lance_worker.py",)
 
-#: Files whose version line is stamped from ``_version.py``.
+#: Files whose version line is stamped from ``_version.py``, in the spelling of ``manifest_version``.
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
 
@@ -76,6 +77,19 @@ def source_version(repo_root: Path | None = None) -> str:
         if any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets):
             return node.value.value
     raise RuntimeError("_version.py does not define a literal __version__")
+
+
+def manifest_version(version: str) -> str:
+    """The semver spelling a host plugin manifest carries for a PEP 440 package version.
+
+    ``X.Y.Z.devN`` becomes ``X.Y.Z-dev.N`` and ``X.Y.ZrcN`` becomes ``X.Y.Z-rc.N``; a release is unchanged.
+    The installers spell the Codex and Claude Code manifests with
+    ``maintenance.install_common.manifest_version``, which this build hook cannot import from the package it
+    builds; ``tests/packaging`` keeps the two spellings equal.
+    """
+    if ".dev" in version:
+        return version.replace(".dev", "-dev.", 1)
+    return re.sub(r"(\d+\.\d+\.\d+)rc(\d+)", r"\1-rc.\2", version)
 
 
 def _relative_paths(module: str, root: Path) -> list[str]:
@@ -196,7 +210,7 @@ def stale_version_files(repo_root: Path | None = None) -> dict[str, str]:
         for line in text.splitlines():
             if line.startswith("version:"):
                 found = line.split(":", 1)[1].strip()
-                if found != version:
+                if found != manifest_version(version):
                     stale[relative] = found
                 break
     listed = json.loads((root / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))
@@ -213,7 +227,7 @@ def write_all(repo_root: Path | None = None) -> list[str]:
     for relative in PLUGIN_MANIFESTS:
         path = root / relative
         text = path.read_text(encoding="utf-8")
-        stamped = stamped_manifest(text, version)
+        stamped = stamped_manifest(text, manifest_version(version))
         if stamped != text:
             path.write_text(stamped, encoding="utf-8", newline="\n")
             changed.append(relative)
@@ -234,6 +248,7 @@ __all__ = [
     "PLUGIN_MANIFESTS",
     "REPO_ROOT",
     "expected_allowlist",
+    "manifest_version",
     "reachable_modules",
     "reachable_packages",
     "source_version",

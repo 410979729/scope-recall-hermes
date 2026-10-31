@@ -1419,7 +1419,8 @@ def test_hermes_reuse_preserves_explicit_legacy_workspace_audience(tmp_path):
     assert manifest_path.read_bytes() == before
     import yaml
 
-    assert yaml.safe_load((plugin / "plugin.yaml").read_text())["version"] == __version__
+    manifest = yaml.safe_load((plugin / "plugin.yaml").read_text())
+    assert manifest["version"] == __version__.replace(".dev", "-dev.", 1).replace("rc", "-rc.", 1)
 
 
 def test_codex_rejects_agent_workspace_and_keeps_empty_binding(tmp_path):

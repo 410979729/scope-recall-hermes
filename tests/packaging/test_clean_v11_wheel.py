@@ -420,10 +420,9 @@ def test_clean_v11_wheel_installed_worker_bootstrap_gate(installed_venv: dict[st
 
 
 def test_clean_v11_wheel_hermes_plugin_yaml_semver(built_wheel: Path) -> None:
-    allowlist = _load_allowlist()
-    manifest_version = allowlist["package_version"].replace(".dev", "-dev.", 1)
+    expected = _load_allowlist()["package_version"].replace(".dev", "-dev.", 1).replace("rc", "-rc.", 1)
 
     with zipfile.ZipFile(built_wheel) as archive:
         plugin_yaml = archive.read("scope_recall/adapters/hermes/plugin.yaml").decode("utf-8")
 
-    assert re.search(rf"^version:\s*{re.escape(manifest_version)}\s*$", plugin_yaml, re.MULTILINE)
+    assert re.search(rf"^version:\s*{re.escape(expected)}\s*$", plugin_yaml, re.MULTILINE)
