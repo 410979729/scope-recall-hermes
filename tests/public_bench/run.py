@@ -14,6 +14,7 @@ import json
 import math
 import time
 import traceback
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -160,9 +161,11 @@ def run_case(
                     admissions.append({"turn": turn.key, "error": receipt.error_code, "gaps": list(receipt.gaps)})
             state = lab.settle(wall_seconds=settle_seconds)
             ports.cache.raise_if_missing()
-            # Work the product gave up on is its own outcome, and its owner is still answered from what the store
-            # holds. Pending work, a limit reached or an unavailable capability is not an outcome yet.
-            if state["status"] not in {"complete", "failed"}:
+            # The owner is answered from what the store holds when the question is asked, however the queue ended:
+            # complete, with work the product gave up on, or still busy when a settle limit ran out (a candidate
+            # whose evaluation keeps producing a new revision never settles). Only a missing capability leaves the
+            # question unanswered, because then the run measured a broken configuration, not the product.
+            if state["status"] == "unavailable":
                 return {
                     "id": case.id,
                     "category": case.category,
@@ -335,9 +338,7 @@ def main() -> None:
         "selected_categories": category_counts(selected),
         "questions": len(selected),
         "completed_questions": len(results),
-        "settled_with_failures": sum(
-            1 for row in results if (row.get("backend_state") or {}).get("status") == "failed"
-        ),
+        "pipeline_states": dict(Counter((row.get("backend_state") or {}).get("status") for row in results)),
         "results": results,
         "incomplete_results": incomplete,
         "workers": args.workers,
