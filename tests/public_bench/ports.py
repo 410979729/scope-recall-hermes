@@ -237,7 +237,11 @@ class Ports:
         from scope_recall.core.worker_consolidation import build_consolidation_model
         from scope_recall.runtime.consolidation_models import ConsolidationRouteConfig, OpenAIConsolidationAdapter
         from scope_recall.runtime.embedding_models import EmbeddingRouteConfig, GeminiEmbeddingAdapter
-        from scope_recall.runtime.model_budget import AuxiliaryBudgetLedger, default_budget_policy
+        from scope_recall.runtime.model_budget import (
+            AuxiliaryBudgetLedger,
+            default_budget_policy,
+            initialize_auxiliary_budget_ledger,
+        )
 
         routes = [config["chat"], config["embedding"]]
         if any(route["endpoint"] not in approved for route in routes):
@@ -255,7 +259,10 @@ class Ports:
             pricing=route_pricing(config, models),
             max_request_bytes=16 * 1024 * 1024,
         )
-        ledger = AuxiliaryBudgetLedger(root / "model-ledger.sqlite3", policy)
+        # The product only writes to a ledger an installer created; a run creates its own beside its results.
+        ledger_path = (root / "model-ledger.sqlite3").resolve()
+        initialize_auxiliary_budget_ledger(ledger_path, policy)
+        ledger = AuxiliaryBudgetLedger(ledger_path, policy)
         chat = OpenAIConsolidationAdapter(
             ConsolidationRouteConfig(**config["chat"]), ledger=ledger, reserve_input=1_000_000
         )

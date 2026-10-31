@@ -769,3 +769,32 @@ def test_live_routes_price_every_model_and_refuse_a_missing_price():
     )
     assert prices["TEST-chat"].charge_micro_usd(1_000_000, 1_000_000) == 0
     assert prices["TEST-embedding"].charge_micro_usd(1_000_000, 0) == 200_000
+
+
+def test_live_ports_create_their_budget_ledger(tmp_path):
+    price = {"input_usd_per_million": "0", "output_usd_per_million": "0"}
+    chat = "http://127.0.0.1:9/v1/chat/completions"
+    embed = "https://example.invalid/v1beta/models/TEST-embedding:batchEmbedContents"
+    config = {
+        "weights": "TEST-weights",
+        "chat": {
+            "model": "TEST-chat",
+            "endpoint": chat,
+            "credential_env": "TEST_UNUSED",
+            "output_limit_field": "max_tokens",
+            "max_output_tokens": 16,
+            "temperature": 0.0,
+            "thinking": None,
+        },
+        "embedding": {
+            "credential_env": "TEST_UNUSED",
+            "model": "TEST-embedding",
+            "endpoint": embed,
+            "dimensions": 8,
+            "dialect": "gemini",
+        },
+        "pricing": {"TEST-chat": price, "TEST-embedding": price},
+    }
+    Ports(RequestCache(tmp_path / "cache.sqlite3"), config, approved=(chat, embed), ledger_root=tmp_path)
+    with sqlite3.connect(tmp_path / "model-ledger.sqlite3") as connection:
+        assert connection.execute("SELECT count(*) FROM requests").fetchone()[0] == 0
