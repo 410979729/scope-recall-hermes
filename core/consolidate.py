@@ -299,23 +299,20 @@ def candidate_evaluation_messages(
     )
     if len(candidate_json.encode("utf-8")) > 32768:
         raise ContractError("INPUT_INVALID", "candidate_input_budget")
-    messages.insert(
-        0,
-        {
-            "role": "system",
-            "content": (
-                "Re-evaluate only the supplied candidate against the supplied authorized sources. "
-                "Return the existing consolidation_result JSON object. source_refs must list every supplied "
-                "source version exactly once. Return zero claim_proposals when evidence is insufficient; "
-                "otherwise return at most one proposal with the same kind, subject and predicate. "
-                "Use the model-safe candidate subject exactly; never output an internal principal_ref. "
-                "Do not choose a fact state: Core qualification owns that decision."
-            ),
-        },
+    preamble = (
+        "Re-evaluate only the supplied candidate against the supplied authorized sources. "
+        "Return the existing consolidation_result JSON object. source_refs must list every supplied "
+        "source version exactly once. Return zero claim_proposals when evidence is insufficient; "
+        "otherwise return at most one proposal with the same kind, subject and predicate. "
+        "Use the model-safe candidate subject exactly; never output an internal principal_ref. "
+        "Do not choose a fact state: Core qualification owns that decision."
     )
+    # One system message, and only at the start: chat templates such as Qwen's
+    # reject a request whose second message is also a system message.
+    messages[0] = {"role": "system", "content": preamble + "\n\n" + messages[0]["content"]}
     messages.append({"role": "user", "content": "candidate=" + candidate_json})
     # The consolidation formatter bounded only its own two messages. The system
-    # preamble and candidate block above are appended after that check, so
+    # preamble and candidate block above are added after that check, so
     # without this the request could reach roughly 49 KB while still claiming to
     # be bounded. Raise the same field the consolidation path raises: callers
     # and the oversize recovery already recognise it.
