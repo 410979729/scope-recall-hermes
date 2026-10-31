@@ -119,6 +119,7 @@
     "core/fact_evidence.py",
     "core/fact_identity.py",
     "core/fact_temporal_semantics.py",
+    "core/failure_policy.py",
     "core/failure_retry.py",
     "core/file_lock.py",
     "core/gating.py",

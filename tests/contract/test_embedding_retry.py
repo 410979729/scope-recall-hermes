@@ -9,13 +9,8 @@ channels alone.
 from __future__ import annotations
 
 import pytest
-from scope_recall.runtime.embedding_retry import (
-    MINIMUM_RETRY_FRACTION,
-    TRANSIENT_EMBEDDING_ERRORS,
-    embed_with_one_retry,
-    retry_budget,
-    transient,
-)
+from scope_recall.core.failure_policy import CONNECTION_FAILURES
+from scope_recall.runtime.embedding_retry import MINIMUM_RETRY_FRACTION, embed_with_one_retry, retry_budget, transient
 from scope_recall.runtime.models import AuxiliaryModelError
 
 # --------------------------------------------------------------------------
@@ -23,7 +18,7 @@ from scope_recall.runtime.models import AuxiliaryModelError
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", sorted(TRANSIENT_EMBEDDING_ERRORS))
+@pytest.mark.parametrize("kind", sorted(CONNECTION_FAILURES))
 def test_a_connection_failure_is_transient(kind):
     assert transient(AuxiliaryModelError(kind)) is True
 
@@ -48,7 +43,7 @@ def test_a_rejected_request_is_not_retried(kind):
 def test_a_timeout_is_not_retried():
     """A call that used its whole budget has none left to use again."""
     assert transient(AuxiliaryModelError("timeout")) is False
-    assert "timeout" not in TRANSIENT_EMBEDDING_ERRORS
+    assert "timeout" not in CONNECTION_FAILURES
 
 
 @pytest.mark.parametrize("error", [RuntimeError("boom"), ValueError("x"), TypeError("y")])

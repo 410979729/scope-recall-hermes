@@ -20,7 +20,8 @@ from ..contracts import (
 )
 from .deadline import remaining_seconds as request_remaining_seconds
 from .delete_storage import Deletions, watch_mirrored_tombstones
-from .failure_retry import failure_kind, retry_class
+from .failure_policy import failure_kind
+from .failure_retry import retry_class
 from .file_lock import advisory_file_lock
 from .registry_storage import Registry
 from .restore import restore_pending
@@ -96,7 +97,7 @@ class StoreStatus:
     failed_work: int = 0
     leased_work: int = 0
     oldest_pending_at: str | None = None
-    #: Why the failed rows failed, one count per failure kind (``failure_retry.failure_kind``).
+    #: Why the failed rows failed, one count per failure kind (``failure_policy.failure_kind``).
     work_error_counts: tuple[tuple[str, int], ...] = ()
     source_only_sources: int | None = None
     deferred_sources: int | None = None
@@ -330,7 +331,7 @@ class Transaction:
             params,
         ).fetchall()
         # A code carries its retry history (``auto_retry:1|derivation_invalid``) and its writer's case; each kind is
-        # counted once, as ``failure_retry.failure_kind`` reads it, and a failure is terminal as ``retry_class`` and so
+        # counted once, as ``failure_policy.failure_kind`` reads it, and a failure is terminal as ``retry_class`` and so
         # ``retry-failures`` read it.
         kinds: dict[str, dict[str, int]] = {"failed": {}, "pending": {}}
         terminal = 0

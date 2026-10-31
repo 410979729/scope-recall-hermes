@@ -1675,11 +1675,10 @@ def test_the_two_stop_loss_layers_stay_distinct():
     down decides how many of that type are tried in one pass. Neither is an
     instance-wide brake, and a backward-looking ledger window must not become
     one."""
-    from scope_recall.core.work_storage import CAPACITY_REFUSALS
-    from scope_recall.core.worker import _RATE_LIMITED_ERRORS
+    from scope_recall.core.failure_policy import CAPACITY_REFUSALS, RATE_LIMITED_ERRORS
 
-    assert CAPACITY_REFUSALS < _RATE_LIMITED_ERRORS
-    assert "http_429" in _RATE_LIMITED_ERRORS
+    assert CAPACITY_REFUSALS < RATE_LIMITED_ERRORS
+    assert "http_429" in RATE_LIMITED_ERRORS
 
 
 # --- the watcher and the operator must read the same instance ----------------

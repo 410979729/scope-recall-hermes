@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from scope_recall.contracts import ContractError
-from scope_recall.core.failure_retry import TERMINAL_FAILURES
+from scope_recall.core.failure_policy import TERMINAL_FAILURES
 from scope_recall.core.schema import (
     SCHEMA_VERSION,
     STATEMENTS,

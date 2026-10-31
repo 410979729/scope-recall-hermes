@@ -735,7 +735,7 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
         original(connection)
         raise RuntimeError("TEST migration rollback")
 
-    monkeypatch.setattr(storage_module, "upgrade_1107", fail_after_upgrade)
+    monkeypatch.setitem(storage_module.SCHEMA_MIGRATIONS, 1107, fail_after_upgrade)
     with pytest.raises(RuntimeError, match="migration rollback"):
         core.initialize()
     with sqlite3.connect(core.storage.path) as conn:
@@ -749,7 +749,7 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
             "TEST-owner",
             "held",
         )
-    monkeypatch.setattr(storage_module, "upgrade_1107", original)
+    monkeypatch.setitem(storage_module.SCHEMA_MIGRATIONS, 1107, original)
     status = core.initialize()
     with sqlite3.connect(core.storage.path) as conn:
         assert status.schema_version == SCHEMA_VERSION

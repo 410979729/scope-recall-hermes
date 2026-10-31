@@ -14,16 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Sequence
 
-#: ``AuxiliaryModelError.error_type`` values that mean "the call never reached
-#: a provider that could answer it". Everything else is the provider's answer.
-TRANSIENT_EMBEDDING_ERRORS = frozenset(
-    {
-        "transport_unavailable",
-        "transport_worker",
-        "transport_worker_protocol",
-        "network_error",
-    }
-)
+from ..core.failure_policy import CONNECTION_FAILURES
 
 #: A retry must be able to use at least this share of the original budget.
 MINIMUM_RETRY_FRACTION = 0.5
@@ -31,7 +22,7 @@ MINIMUM_RETRY_FRACTION = 0.5
 
 def transient(error: BaseException) -> bool:
     """Whether this failure was the connection rather than the request."""
-    return getattr(error, "error_type", None) in TRANSIENT_EMBEDDING_ERRORS
+    return getattr(error, "error_type", None) in CONNECTION_FAILURES
 
 
 def retry_budget(budget_seconds: float, remaining_seconds: float) -> float:
@@ -69,7 +60,6 @@ def embed_with_one_retry(
 
 __all__ = [
     "MINIMUM_RETRY_FRACTION",
-    "TRANSIENT_EMBEDDING_ERRORS",
     "embed_with_one_retry",
     "retry_budget",
     "transient",

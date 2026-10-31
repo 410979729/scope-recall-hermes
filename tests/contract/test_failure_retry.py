@@ -14,13 +14,11 @@ from datetime import datetime, timedelta
 import pytest
 from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
+from scope_recall.core.failure_policy import AUTO_RECOVERABLE_ERRORS, TERMINAL_FAILURES, failure_kind
 from scope_recall.core.failure_retry import (
-    AUTO_RECOVERABLE_ERRORS,
     RETRY_GENERATION,
     RETRY_MARKER,
-    TERMINAL_FAILURES,
     already_retried,
-    failure_kind,
     marked,
     retry_class,
     selects,
@@ -866,7 +864,8 @@ def test_a_capacity_refusal_does_not_consume_an_attempt(app):
     """Four hours of "monthly usage limit reached" pushed 195 live work items
     into failed at attempt=3 apiece, each needing an operator to grant it back.
     A 429 says nothing about this payload."""
-    from scope_recall.core.work_storage import CAPACITY_REFUSALS, MAX_RECOVERABLE_ATTEMPTS
+    from scope_recall.core.failure_policy import CAPACITY_REFUSALS
+    from scope_recall.core.work_storage import MAX_RECOVERABLE_ATTEMPTS
 
     core, ctx = app
     _fail_one(core, ctx, "timeout")  # build one leasable work item
@@ -951,11 +950,11 @@ def test_a_terminal_failure_is_unaffected_by_the_refund(app):
 def test_the_wait_grows_with_each_refusal_in_a_row():
     """Refunding the attempt alone left the ordinary 60s ceiling in place, and
     197 items retried without pause for an entire provider outage."""
-    from scope_recall.core.work_storage import CAPACITY_BACKOFF_FLOOR_SECONDS, _capacity_backoff_seconds
+    from scope_recall.core.failure_policy import CAPACITY_RETRY, capacity_backoff_seconds
 
-    waits = [_capacity_backoff_seconds(n) for n in range(1, 8)]
+    waits = [capacity_backoff_seconds(n) for n in range(1, 8)]
     assert waits == sorted(waits), waits
-    assert waits[0] == CAPACITY_BACKOFF_FLOOR_SECONDS
+    assert waits[0] == CAPACITY_RETRY.first
     assert waits[-1] > waits[0]
 
 
@@ -965,28 +964,21 @@ def test_the_first_wait_is_not_shorter_than_the_cycle_it_replaces():
     fell between one and two hours.  A backoff that started below that would
     make the instance ask *more* often than leaving it alone -- which a first
     draft of this, starting at 60 seconds, would have done."""
-    from scope_recall.core.work_storage import (
-        CAPACITY_BACKOFF_CEILING_SECONDS,
-        CAPACITY_BACKOFF_FLOOR_SECONDS,
-        _capacity_backoff_seconds,
-    )
+    from scope_recall.core.failure_policy import CAPACITY_RETRY, capacity_backoff_seconds
 
     observed_median_seconds = 115 * 60
-    assert _capacity_backoff_seconds(1) >= observed_median_seconds / 4
-    assert CAPACITY_BACKOFF_CEILING_SECONDS > observed_median_seconds
-    assert CAPACITY_BACKOFF_FLOOR_SECONDS < CAPACITY_BACKOFF_CEILING_SECONDS
+    assert capacity_backoff_seconds(1) >= observed_median_seconds / 4
+    assert CAPACITY_RETRY.ceiling > observed_median_seconds
+    assert CAPACITY_RETRY.first < CAPACITY_RETRY.ceiling
 
 
 def test_the_wait_has_a_ceiling_but_the_retries_do_not():
     """A cap on *how often* is a loop guard; a cap on *how many* would give up
     on the item, which is the thing this must never do."""
-    from scope_recall.core.work_storage import (
-        CAPACITY_BACKOFF_CEILING_SECONDS,
-        _capacity_backoff_seconds,
-    )
+    from scope_recall.core.failure_policy import CAPACITY_RETRY, capacity_backoff_seconds
 
-    assert _capacity_backoff_seconds(50) == CAPACITY_BACKOFF_CEILING_SECONDS
-    assert _capacity_backoff_seconds(10_000) == CAPACITY_BACKOFF_CEILING_SECONDS
+    assert capacity_backoff_seconds(50) == CAPACITY_RETRY.ceiling
+    assert capacity_backoff_seconds(10_000) == CAPACITY_RETRY.ceiling
 
 
 def test_the_refusal_count_is_read_back_from_the_error_code():
@@ -1045,11 +1037,10 @@ def test_the_two_rate_limit_sets_cannot_drift_apart():
     """Two hand-kept sets said the same thing about 429 and 503 while disagreeing about 502 and 504, which is how a
     pair always ends up.  The pass stands a work type down for every capacity refusal, taken from that set and not
     copied from it, and for an interrupted answer, which was billed and is no refusal."""
-    from scope_recall.core.work_storage import CAPACITY_REFUSALS
-    from scope_recall.core.worker import _RATE_LIMITED_ERRORS
+    from scope_recall.core.failure_policy import CAPACITY_REFUSALS, RATE_LIMITED_ERRORS
 
-    assert CAPACITY_REFUSALS <= _RATE_LIMITED_ERRORS
-    assert _RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted"}
+    assert CAPACITY_REFUSALS <= RATE_LIMITED_ERRORS
+    assert RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted"}
 
 
 @pytest.mark.parametrize("legacy", [False, True])

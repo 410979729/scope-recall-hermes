@@ -26,6 +26,7 @@ from ..core.deadline import RequestDeadline, using_request_deadline
 from ..core.recall_policy import SPACE_ID, claim_embedding_text
 from ..core.retrieval import CandidateRef, SearchContext
 from ..core.source_records import StoredSource
+from ..core.worker_projection import PartialEmbeddingFailure
 
 _OBJECT_KINDS = frozenset({"event", "claim", "episode", "artifact", "reference"})
 _MAX_DIMENSIONS = 32768
@@ -167,12 +168,12 @@ class LanceEmbedPort:
     def prepare_sources(
         self, sources: Sequence[StoredSource], *, remaining_seconds: float = 1.0
     ) -> tuple[PreparedSourceEmbedding, ...]:
-        """Prepare many sources with one embedding request, in order.
+        """Prepare an ordered batch, or a deadline-bounded prefix from a single-request port.
 
         Each prepared vector is published on its own fence exactly as a single
         one is; sharing the request changes what the provider is asked, not
         what the store is told.  A port whose embedding cannot batch falls back
-        to one request each, so nothing depends on the capability.
+        to one request each under a shared deadline. Its returned prefix carries each subject's identity.
         """
         subjects = list(sources)
         if not subjects:
@@ -181,7 +182,7 @@ class LanceEmbedPort:
             raise ContractError("DEADLINE_EXCEEDED")
         batch = getattr(self._source_embedding, "embed_sources", None)
         if not callable(batch) or len(subjects) == 1:
-            return tuple(self.prepare_source(source, remaining_seconds=remaining_seconds) for source in subjects)
+            return self._prepare_singles(subjects, self.prepare_source, remaining_seconds)
         vectors = batch(subjects, remaining_seconds=remaining_seconds)
         if len(vectors) != len(subjects):
             raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
@@ -196,7 +197,7 @@ class LanceEmbedPort:
         store's two thousand claims over an hour while the provider allows thousands of
         requests a minute.  The text and its encoding are exactly ``prepare_claim``'s, so a
         claim lands on the same vector either way.  A port that cannot batch falls back to one
-        request each.
+        request each and returns the identified prefix prepared before the shared deadline.
         """
         subjects = list(claims)
         if not subjects:
@@ -205,12 +206,32 @@ class LanceEmbedPort:
             raise ContractError("DEADLINE_EXCEEDED")
         batch = getattr(self._source_embedding, "embed_texts", None)
         if not callable(batch) or len(subjects) == 1:
-            return tuple(self.prepare_claim(claim, remaining_seconds=remaining_seconds) for claim in subjects)
+            return self._prepare_singles(subjects, self.prepare_claim, remaining_seconds)
         texts = [claim_embedding_text(claim.payload) for claim in subjects]
         vectors = batch(texts, remaining_seconds=remaining_seconds)
         if len(vectors) != len(subjects):
             raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
         return tuple(self._prepared(claim, vector) for claim, vector in zip(subjects, vectors))
+
+    def _prepare_singles(self, subjects, prepare, remaining_seconds: float) -> tuple[PreparedSourceEmbedding, ...]:
+        """Return a prepared prefix within one deadline; the caller reserves time to publish it.
+
+        A prefix carries each subject's identity so a caller can distinguish bounded progress from an invalid
+        batch shape. A later request never receives the original group's budget again.
+        """
+        deadline = time.monotonic() + remaining_seconds
+        prepared = []
+        for subject in subjects:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                prepared.append(prepare(subject, remaining_seconds=left))
+            except Exception as exc:
+                if not prepared:
+                    raise
+                raise PartialEmbeddingFailure(tuple(prepared), exc) from exc
+        return tuple(prepared)
 
     def prepare_claim(self, claim: Any, *, remaining_seconds: float = 1.0) -> PreparedSourceEmbedding:
         """Embed one claim version so search can reach the derived layer.

@@ -57,6 +57,7 @@ codex = [
 ]
 dev = [
   "build>=1.2,<2",
+  "hypothesis>=6,<7",
   "pytest>=8,<10",
   "PyYAML>=6,<7",
   "setuptools>=69,<82",

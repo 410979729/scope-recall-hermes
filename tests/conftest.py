@@ -43,6 +43,7 @@ _TEST_TARGETS = {
     "XDG_CONFIG_HOME": _TEST_ROOT / "xdg-config",
     "XDG_CACHE_HOME": _TEST_ROOT / "xdg-cache",
     "PIP_CACHE_DIR": _TEST_ROOT / "pip-cache",
+    "HYPOTHESIS_STORAGE_DIRECTORY": _TEST_ROOT / "hypothesis",
     "HERMES_HOME": _TEST_HERMES_HOME,
     "SCOPE_RECALL_DB": _TEST_ROOT / "truth" / "memory.sqlite3",
     "SCOPE_RECALL_LOG_DIR": _TEST_ROOT / "logs",

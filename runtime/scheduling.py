@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
+from ..core.failure_policy import AUTO_RECOVERABLE_ERRORS, CAPABILITY_RECHECK, SETTLE_RETRY, SUPERVISOR_RETRY
 from ..core.file_lock import advisory_file_lock
 from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, replayable
 from ..core.installation_copy import copy_task_name, installation_copy_id
@@ -34,7 +34,7 @@ from .worker_entry import (
 #: truth writer was held, before it tries again.  At the plain interval a long
 #: maintenance write was met with a pass every few seconds; failing instead
 #: stopped the supervisor until the next autostart wake.
-BUSY_BACKOFF_SECONDS = 30.0
+BUSY_BACKOFF_SECONDS = SUPERVISOR_RETRY.delay()
 #: Hard worker failures in a row before a supervisor stops accepting wakes.
 #: One is not a broken worker: a pass can raise on one item, lose a lease to a
 #: maintenance command, or meet a bound nobody had met before.  Standing down on
@@ -42,7 +42,7 @@ BUSY_BACKOFF_SECONDS = 30.0
 #: and say so nowhere, with the queue left waiting.  Three in a row, each after
 #: a backoff, is a worker that
 #: is not going to work, and then standing down is right.
-MAX_CONSECUTIVE_WORKER_FAILURES = 3
+MAX_CONSECUTIVE_WORKER_FAILURES = SUPERVISOR_RETRY.attempts or 0
 #: The work types a model or embedding route does.  A pass can find one unavailable (no port, or a port that
 #: refused before any attempt); the supervisor then cools it down and records how long it stays unavailable.
 ROUTED_WORK_TYPES = frozenset({"embed", "consolidate", "evaluate_candidate"})
@@ -50,7 +50,7 @@ ROUTED_WORK_TYPES = frozenset({"embed", "consolidate", "evaluate_candidate"})
 PAUSE_POLL_SECONDS = 5.0
 #: Seconds before a worker is woken for settled candidates again after a pass that did not sweep them: a provider
 #: hold, the evaluation queue full, or a pass kept out, cut short or failed.
-SETTLE_RETRY_SECONDS = 900
+SETTLE_RETRY_SECONDS = SETTLE_RETRY.delay()
 BACKUP_JOB_REASONS = frozenset({"daily_backup", "backup_retention"})
 
 
@@ -618,7 +618,7 @@ def supervise(
             }
             unavailable = set(payload.get("unavailable_work_types", ())) & ROUTED_WORK_TYPES
             unavailable_until = {
-                kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, 300))
+                kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, CAPABILITY_RECHECK.delay()))
                 for kind in unavailable
             }
             if code in (0, 75, 124):

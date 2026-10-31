@@ -17,11 +17,11 @@ from .candidate_tables import UNRESOLVED_SUBJECT_REASON
 from .claim_normalization import normalize_frame
 from .claims import evidence_refs
 from .evidence_question import evidence_text, rooted_verdict
+from .failure_policy import BUDGET_PAUSE_ERRORS
 from .failure_retry import validation_feedback
 from .mutate import apply_claim, validate_claims
 from .worker_consolidation import decode_consolidation_result
 from .worker_outcomes import (
-    BUDGET_PAUSE_ERRORS,
     budget_left,
     claim_versions_mark,
     claims_changed,

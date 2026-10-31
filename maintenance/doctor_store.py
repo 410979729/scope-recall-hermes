@@ -24,7 +24,7 @@ from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
-from scope_recall.core.inbox_rules import given_up, replayable
+from scope_recall.core.inbox_rules import deferred_until, given_up, replayable
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from scope_recall.core.restore import restore_pending, snapshot_schema_supported
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
@@ -36,6 +36,8 @@ from scope_recall.vector.compaction import instance_vector_footprints
 from scope_recall.vector.store import build_vector_store
 
 from .doctor_report import DoctorReport, record_check
+
+_RETRY_COMMAND = "scope-recall retry-failures --apply --config <runtime-config.json>"
 
 
 def _seconds_since(stamp: Any) -> float | None:
@@ -288,6 +290,83 @@ def _upgrade_recovery(state: dict, found: int | None = None) -> str:
     return hint
 
 
+def _capture_queue_checks(report: DoctorReport, binding, conn) -> None:
+    """Distinguish scheduled captures, command-recoverable failures and stopped input without reading payloads."""
+    codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
+    moment = datetime.now(timezone.utc)
+    report.capture_inbox = len(codes)
+    report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
+    report.capture_inbox_given_up = sum(given_up(code) for code in codes)
+    delayed = [until for code in codes if (until := deferred_until(code, moment)) is not None]
+    if delayed:
+        record_check(
+            report,
+            "capture_deferred",
+            "waiting",
+            f"{len(delayed)} captures wait until {min(delayed).isoformat()}; automatic replay remains scheduled",
+        )
+    recoverable = sorted({str(code)[:120] for code in codes if given_up(code) or code == "ACCESS_DENIED"})
+    if recoverable:
+        record_check(
+            report,
+            "capture_recovery",
+            "waiting",
+            f"{recoverable[:8]}; after repair with this store's configuration: {_RETRY_COMMAND}",
+        )
+    stopped = sorted(
+        {
+            str(code)[:120]
+            for code in codes
+            if not replayable(code, moment)
+            and deferred_until(code, moment) is None
+            and not given_up(code)
+            and code != "ACCESS_DENIED"
+        }
+    )
+    for code in stopped[:8]:
+        record_check(report, "capture_stopped", "stopped", f"{code}; {_capture_stop_action(code)}")
+    kept = sum(1 for _ in (binding.data_directory / "kept-captures").glob("*.json"))
+    if kept:
+        record_check(
+            report, "capture_replay", "waiting", f"{kept} disk captures; Hermes retries hourly or on next start"
+        )
+
+
+def _capture_stop_action(code: str) -> str:
+    """A stopped envelope is immutable; correcting the host's input creates a new authorized capture."""
+    if code == "INPUT_INVALID":
+        return "validate the original capture input and submit corrected input as a new host event"
+    if code.startswith("SOURCE_MISSING"):
+        return "inspect the missing source; deleted evidence stays deleted; capture fresh authorized evidence"
+    if code.startswith("VERSION_CONFLICT"):
+        return "inspect the conflicting host event identities and submit the corrected event with its own identity"
+    return "inspect the retained failure and correct the host capture source before submitting a new authorized event"
+
+
+def _candidate_queue_checks(report: DoctorReport, tx):
+    """Read candidate status and explain bounded grants or authority fences for unfinished stopped questions."""
+    rows = (
+        tx._check()
+        .execute(
+            "SELECT e.work_id,w.last_error_code FROM candidate_evaluations e JOIN work_items w ON w.work_id=e.work_id "
+            "WHERE e.state='queued' AND w.state='failed' ORDER BY e.work_id LIMIT 16"
+        )
+        .fetchall()
+    )
+    for work_id, code in rows:
+        reason = tx.candidates.evaluation_retry_rejection(work_id, include_unfinished=True)
+        record_check(
+            report,
+            "candidate_recovery",
+            "stopped",
+            f"work {work_id}: {str(code)[:80]}; unfinished question; reconcile with {_RETRY_COMMAND}; "
+            "retry only if a bounded grant is available; otherwise retain the request mark "
+            "and wait for new admissible evidence" + (f"; {reason}" if reason else ""),
+        )
+
+    return tx.candidates.summary(include_all_projects=True)
+
+
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
     """Copy the store's queue, source and candidate status onto the report.
 
@@ -311,11 +390,7 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
-            moment = datetime.now(timezone.utc)
-            codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
-            report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
-            report.capture_inbox_given_up = sum(given_up(code) for code in codes)
+            _capture_queue_checks(report, binding, conn)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(
@@ -336,7 +411,7 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
                 conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall()
             )
             report.needs_review_work = conn.execute(NEEDS_REVIEW_COUNT).fetchone()[0]
-            candidates = transaction.candidates.summary(include_all_projects=True)
+            candidates = _candidate_queue_checks(report, transaction)
             # Debouncing raises pending_evaluation on purpose, so split that
             # number: waiting inside the quiet window is health, waiting past it
             # with no sweep having run is not.
@@ -636,7 +711,14 @@ def check_backlog(report: DoctorReport, wake_seconds: float | None) -> None:
             report.capability_gaps.append("work_failed")
         elif terminal:
             report.capability_gaps.append("work_failed_terminal_only")
-        record_check(report, "failed_work", "present", f"{report.failed_work} (terminal={terminal})")
+        record_check(
+            report,
+            "failed_work",
+            "present",
+            f"{report.failed_work} (terminal={terminal}); reasons={report.work_error_counts}; "
+            f"after repair with this store's configuration: {_RETRY_COMMAND}; "
+            "by-design refusals require --include-terminal",
+        )
     if report.deferred_sources:
         record_check(report, "source_processing", "deferred", str(report.deferred_sources))
         report.capability_gaps.append("source_processing_deferred")

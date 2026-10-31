@@ -1085,9 +1085,7 @@ def test_a_retry_pass_writes_every_buffered_capture_it_has_time_for(adapter, her
 
 
 def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_home, monkeypatch, caplog):
-    """A capture of a full inbox, or of an installation whose scopes changed under a running gateway, is not kept for
-    good: retried every 30 s for the life of the process, its thread would hold an evicted agent's adapter.  Past its
-    time it is kept on disk for the next start, and the thread ends."""
+    """Persistent store failures move to disk cooldown instead of retrying at the in-memory pace."""
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.2)
@@ -1107,7 +1105,7 @@ def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_h
     assert not provider._retry.captures, "an authorization that could not be read kept it for good"
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
     provider._retry.wake.set()
-    assert _until(lambda: provider._retry.thread is None), "the thread outlived an empty buffer"
+    assert provider._retry.disk_retry_at is not None, "disk work has no next attempt"
 
 
 def test_a_retry_pass_that_raises_still_gives_up_what_is_past_its_time(adapter, hermes_home, monkeypatch, caplog):
@@ -1127,7 +1125,7 @@ def test_a_retry_pass_that_raises_still_gives_up_what_is_past_its_time(adapter, 
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
     provider._retry.wake.set()
     assert _until(lambda: not provider._retry.captures), "a pass that raised kept the capture for good"
-    assert _until(lambda: provider._retry.thread is None)
+    assert provider._retry.disk_retry_at is not None
     assert [record for record in caplog.records if "still failing after" in record.getMessage()]
 
 

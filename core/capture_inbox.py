@@ -26,6 +26,7 @@ from .capture import CaptureReceipt, record_event
 from .deadline import fits
 from .delete_storage import canonical
 from .events import PreparedCapture, prepare_capture, segment_key
+from .failure_policy import INGRESS_PASSING_ERRORS
 from .inbox_rules import (
     GAVE_UP,
     LEGACY_SOURCE_MISSING,
@@ -44,8 +45,6 @@ _TRANSIENT = (sqlite3.Error, TruthDatabaseConnectionError, TruthWriterBusyError)
 _REKEYED_CONFLICT = "VERSION_CONFLICT:rekeyed"
 #: What a replay's last receipt carries when a busy store stopped its page: the rest waits for the next pass.
 INGRESS_PENDING_GAP = "capture_gap:durable_ingress_pending"
-#: A commit's failures that leave its row for the next pass.
-_PASSING = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED"})
 
 
 def _terminal_code(exc: ContractError) -> str:
@@ -244,7 +243,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         # Terminal failures remain inspectable, but are not replayed forever.  A passing one (the store busy, the time
         # up) leaves the row's code as it was: written over, a collision would leave its path, and a row put off its
         # tries and its place across a delete.
-        if code not in _PASSING:
+        if code not in INGRESS_PASSING_ERRORS:
             try:
                 with storage.write(context, remaining_seconds=deadline - time.monotonic()) as tx:
                     tx._check(write=True).execute(
@@ -254,7 +253,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
                 pass
     except _TRANSIENT:
         code = "STORAGE_UNAVAILABLE"
-    if code in _PASSING:
+    if code in INGRESS_PASSING_ERRORS:
         return _waiting(prepared, code)
     return CaptureReceipt("queued", (), "queued", "pending", "pending", prepared.gaps, code)
 
