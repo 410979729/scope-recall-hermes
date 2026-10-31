@@ -56,26 +56,48 @@ class RequestCache:
 
     def call(self, operation: str, request: dict, config: dict, refs: dict[str, str], compute: Callable) -> object:
         """Return a cached response or invoke compute once, with no hidden retries."""
-        normalized = remap(request, refs)
-        envelope = {"operation": operation, "request": normalized, "model": config, "contract": CONTRACT}
-        key = digest(envelope)
+        return self.call_many(operation, [(request, refs)], config, lambda missing: [compute()])[0]
+
+    def call_many(self, operation: str, requests: list[tuple[dict, dict]], config: dict, compute: Callable) -> list:
+        """Cache each input separately and compute only missing positions in one call.
+
+        Keys match single calls. Cache-only misses fail before compute, and a
+        response count mismatch writes nothing from the batch.
+        """
+        envelopes = [
+            {"operation": operation, "request": remap(request, refs), "model": config, "contract": CONTRACT}
+            for request, refs in requests
+        ]
+        keys = [digest(envelope) for envelope in envelopes]
         with sqlite3.connect(self.path) as connection:
-            row = connection.execute("SELECT response FROM responses WHERE key=?", (key,)).fetchone()
-        if row is not None:
-            self.hits += 1
-            self.operations[operation]["hits"] += 1
-            return remap(json.loads(row[0]), {logical: local for local, logical in refs.items()})
-        self.misses += 1
-        self.operations[operation]["misses"] += 1
-        if self.only:
-            raise RuntimeError(f"cache_miss:{operation}:{key}")
-        response = compute()
+            rows = [connection.execute("SELECT response FROM responses WHERE key=?", (key,)).fetchone() for key in keys]
+        missing = [index for index, row in enumerate(rows) if row is None]
+        self.hits += len(rows) - len(missing)
+        self.misses += len(missing)
+        self.operations[operation]["hits"] += len(rows) - len(missing)
+        self.operations[operation]["misses"] += len(missing)
+        if missing and self.only:
+            raise RuntimeError(f"cache_miss:{operation}:{keys[missing[0]]}")
+        results = [
+            remap(json.loads(row[0]), {logical: local for local, logical in refs.items()}) if row else None
+            for row, (_, refs) in zip(rows, requests, strict=True)
+        ]
+        if not missing:
+            return results
+        computed = list(compute(missing))
+        if len(computed) != len(missing):
+            raise ValueError("embedding_batch_shape")
         with sqlite3.connect(self.path) as connection:
-            connection.execute(
+            connection.executemany(
                 "INSERT OR IGNORE INTO responses VALUES (?,?,?)",
-                (key, canonical(envelope), canonical(remap(response, refs))),
+                [
+                    (keys[index], canonical(envelopes[index]), canonical(remap(response, requests[index][1])))
+                    for index, response in zip(missing, computed, strict=True)
+                ],
             )
-        return response
+        for index, response in zip(missing, computed, strict=True):
+            results[index] = response
+        return results
 
     def raise_if_missing(self) -> None:
         """Fail the run even when a production port caught the original cache exception."""

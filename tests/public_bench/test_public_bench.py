@@ -8,7 +8,7 @@ import json
 import sqlite3
 import sys
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +23,14 @@ from cache import RequestCache, digest  # noqa: E402
 from cases import LOCOMO_CATEGORIES, Case, Turn, fixed_splits, longmemeval  # noqa: E402
 from lab import Lab  # noqa: E402
 from paired_statistics import holm, paired_binary  # noqa: E402
-from ports import Ports, normalized_messages, route_pricing  # noqa: E402
+from ports import (  # noqa: E402
+    CachedEmbedder,
+    EvaluatorEmbedding,
+    FakeEmbedder,
+    Ports,
+    normalized_messages,
+    route_pricing,
+)
 from run import alternative_context  # noqa: E402
 from translate import validate  # noqa: E402
 
@@ -37,6 +44,245 @@ def _question():
     )
 
 
+@dataclass(frozen=True)
+class EmbeddingSource:
+    """Minimal stored-source shape for testing cache identity and source ordering."""
+
+    ref: str
+    revision: int
+    event: dict
+
+
+@pytest.mark.parametrize(
+    "batch,single", [("embed_sources", "embed_source"), ("embed_texts", "embed_text"), ("embed_queries", "embed_query")]
+)
+def test_embedding_batches_reuse_single_keys_and_only_send_ordered_misses(tmp_path, monkeypatch, batch, single):
+    cache = RequestCache(tmp_path / "cache.sqlite3")
+    fake, calls = FakeEmbedder(), []
+    items = [f"TEST orchard {index}" for index in range(3)]
+    if single == "embed_source":
+        items = [EmbeddingSource(f"event-{index}", 1, {"content": item}) for index, item in enumerate(items)]
+        record = asdict(items[1])
+        refs = {items[1].ref: f"source:{digest({key: value for key, value in record.items() if key != 'ref'})}"}
+        request = {"source": record, "encoding": "document"}
+    else:
+        refs = {}
+        request = {"text": items[1], "encoding": "query" if single == "embed_query" else "document"}
+    operation = "query_embedding" if single == "embed_query" else "document_embedding"
+    expected = tuple(getattr(fake, single)(item) for item in items)
+    cache.call(operation, request, {"model": "TEST"}, refs, lambda: expected[1])
+    original = getattr(fake, batch)
+
+    def record_batch(selected, **kwargs):
+        calls.append((selected, kwargs))
+        return original(selected, **kwargs)
+
+    monkeypatch.setattr(fake, batch, record_batch)
+    cached = CachedEmbedder(fake, cache, {"model": "TEST"})
+    assert getattr(cached, batch)(items, remaining_seconds=17) == expected
+    assert calls == [([items[0], items[2]], {"remaining_seconds": 17})]
+    assert tuple(getattr(cached, single)(item) for item in items) == expected
+    assert getattr(cached, batch)(list(reversed(items))) == tuple(reversed(expected))
+    replay = CachedEmbedder(fake, RequestCache(cache.path, only=True), cached.config)
+    assert getattr(replay, batch)(items) == expected
+    if single == "embed_source":
+        assert getattr(replay, batch)([replace(item, ref=f"remapped-{i}") for i, item in enumerate(items)]) == expected
+    assert getattr(replay, batch)([]) == ()
+    assert len(calls) == 1
+    missing = EmbeddingSource("missing", 1, {"content": "TEST absent"}) if single == "embed_source" else "TEST absent"
+    with pytest.raises(RuntimeError, match="cache_miss"):
+        getattr(replay, batch)([items[0], missing])
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("available", [(), ("embed_texts",), ("embed_sources", "embed_queries")])
+def test_cached_embedding_advertises_exact_wrapped_batch_capabilities(tmp_path, available):
+    wrapped = SimpleNamespace(**{name: lambda items, **kwargs: () for name in available})
+    cached = CachedEmbedder(wrapped, RequestCache(tmp_path / "cache.sqlite3"), {})
+    for name in ("embed_sources", "embed_texts", "embed_queries"):
+        assert hasattr(cached, name) == (name in available)
+    with pytest.raises(AttributeError):
+        _ = cached.unsupported
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_embedding_batch_shape_mismatch_writes_no_partial_cache(tmp_path, count):
+    wrapped = SimpleNamespace(embed_texts=lambda items, **kwargs: [(1.0,)] * count)
+    cache = RequestCache(tmp_path / "cache.sqlite3")
+    with pytest.raises(ValueError, match="embedding_batch_shape"):
+        CachedEmbedder(wrapped, cache, {}).embed_texts(["TEST first", "TEST second"])
+    with sqlite3.connect(cache.path) as connection:
+        assert connection.execute("SELECT count(*) FROM responses").fetchone()[0] == 0
+
+
+def test_product_source_group_uses_one_cached_embedding_request(tmp_path, monkeypatch):
+    ports = Ports(RequestCache(tmp_path / "cache.sqlite3"))
+    calls, original = [], ports.embedder.embedder.embed_sources
+
+    def batch(sources, **kwargs):
+        calls.append(len(sources))
+        return original(sources, **kwargs)
+
+    monkeypatch.setattr(ports.embedder.embedder, "embed_sources", batch)
+    store = Lab(tmp_path / "store", ports, now=_question().at)
+    try:
+        for index in range(3):
+            store.capture(replace(_question().turns[0], key=f"TEST-{index}"))
+        receipt = store.core.drain_worker(
+            store.context, owner_id="TEST-worker", embed=store.embed, max_items=256, remaining_seconds=120
+        )
+        assert calls == [3]
+        assert sum(row[3] for row in store.state()["work"] if row[:2] == ("embed", "done")) == 3
+        assert receipt.processed >= 3
+    finally:
+        store.close()
+
+
+def _evaluator_route():
+    """A synthetic Gemini route that is intercepted before any network access."""
+    return {
+        "credential_env": "TEST_EMBEDDING_KEY",
+        "model": "TEST-embedding",
+        "endpoint": "https://example.invalid/v1beta/models/TEST-embedding:batchEmbedContents",
+        "dimensions": 8,
+        "dialect": "gemini",
+    }
+
+
+def test_evaluator_embedding_chunks_encodes_authenticates_and_replays(tmp_path, monkeypatch):
+    import ports as ports_module
+    from scope_recall.core.recall_policy import encode_embedding_text
+    from scope_recall.runtime.embedding_models import MAX_EMBED_BATCH, build_gemini_embed_body
+
+    route, calls = _evaluator_route(), []
+    monkeypatch.setenv(route["credential_env"], "TEST-synthetic-header-value")
+
+    def send(request, *, timeout):
+        body = json.loads(request.data)
+        calls.append((request, body, timeout))
+        vectors = [{"values": [float(index + 1), *([1.0] * 7)]} for index in range(len(body["requests"]))]
+        return _JsonResponse({"embeddings": vectors})
+
+    monkeypatch.setattr(ports_module.urllib.request, "urlopen", send)
+    cache = RequestCache(tmp_path / "cache.sqlite3")
+    embedder = CachedEmbedder(EvaluatorEmbedding(route), cache, route)
+    texts = [f'TEST public history {index} api_key: "TEST-not-a-real-key-0123456789"' for index in range(205)]
+    documents = embedder.embed_texts(texts, remaining_seconds=19)
+    assert len(documents) == len(texts)
+    assert [len(body["requests"]) for _, body, _ in calls] == [MAX_EMBED_BATCH, MAX_EMBED_BATCH, 5]
+    assert documents[0] == documents[100] == documents[200] == (1.0,) * 8
+    query = embedder.embed_query(texts[0])
+    for request, _, _timeout in calls:
+        assert request.full_url == route["endpoint"] and "TEST-synthetic-header-value" not in request.full_url
+        assert request.get_header("X-goog-api-key") == "TEST-synthetic-header-value"
+        assert request.get_header("Content-type") == "application/json" and request.method == "POST"
+    assert calls[0][2] == 19
+    assert calls[0][0].data == build_gemini_embed_body(
+        [encode_embedding_text(text, kind="document") for text in texts[:100]], model=route["model"], dimensions=8
+    )
+    assert calls[-1][0].data == build_gemini_embed_body(
+        [encode_embedding_text(texts[0], kind="query")], model=route["model"], dimensions=8
+    )
+    embedder.embed_texts([texts[1], "TEST additional first", "TEST additional second"])
+    assert len(calls[-1][1]["requests"]) == 2
+    before = len(calls)
+    monkeypatch.delenv(route["credential_env"])
+    replay = CachedEmbedder(EvaluatorEmbedding(route), RequestCache(cache.path, only=True), route)
+    assert replay.embed_texts(list(reversed(texts))) == tuple(reversed(documents))
+    assert replay.embed_query(texts[0]) == query
+    assert len(calls) == before
+    with sqlite3.connect(cache.path) as connection:
+        stored = str(connection.execute("SELECT request,response FROM responses").fetchall())
+    assert "TEST-synthetic-header-value" not in stored
+
+
+class _JsonResponse:
+    """Context-managed in-memory HTTP JSON response for offline request checks."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode()
+
+
+def test_evaluator_embedding_rejects_wrong_response_count(tmp_path, monkeypatch):
+    import ports as ports_module
+    from scope_recall.runtime.models import AuxiliaryModelError
+
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "TEST-synthetic-header-value")
+    monkeypatch.setattr(ports_module.urllib.request, "urlopen", lambda *a, **kw: _JsonResponse({"embeddings": []}))
+    cache = RequestCache(tmp_path / "cache.sqlite3")
+    with pytest.raises(AuxiliaryModelError, match="unsupported_response_shape"):
+        CachedEmbedder(EvaluatorEmbedding(_evaluator_route()), cache, {}).embed_texts(["TEST text"])
+    with sqlite3.connect(cache.path) as connection:
+        assert connection.execute("SELECT count(*) FROM responses").fetchone()[0] == 0
+
+
+def test_naive_rag_uses_evaluator_batch_embedding_without_product_calls():
+    calls = []
+    evaluator = SimpleNamespace(
+        embed_query=lambda query, **kw: (1.0, 0.0),
+        embed_texts=lambda texts, **kw: calls.append(texts) or [(1.0, 0.0)] * len(texts),
+    )
+    alternative_context(_question(), SimpleNamespace(evaluator_embedder=evaluator), "naive-rag")
+    assert calls == [[turn.content for turn in _question().turns]]
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--workers", "0"),
+        ("--workers", "65"),
+        ("--settle-seconds", "0"),
+        ("--settle-seconds", "-1"),
+        ("--settle-seconds", "nan"),
+        ("--settle-seconds", "inf"),
+    ],
+)
+def test_runner_rejects_invalid_concurrency_and_settle_limits(tmp_path, monkeypatch, option, value):
+    import run
+
+    monkeypatch.setattr(
+        sys, "argv", ["run.py", "--data", str(tmp_path), "--output", str(tmp_path), "--fake", option, value]
+    )
+    with pytest.raises(SystemExit) as error:
+        run.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "options,workers,seconds",
+    [
+        ([], 4, 900),
+        (["--workers", "64", "--settle-seconds", "123.5"], 64, 123.5),
+        (["--workers", "1", "--settle-seconds", "0.5"], 1, 0.5),
+    ],
+)
+def test_runner_records_and_passes_concurrency_and_settle_limits(tmp_path, monkeypatch, options, workers, seconds):
+    import run
+
+    data, output, seen = tmp_path / "data", tmp_path / "output", []
+    _data_manifest(data)
+    _stub_lab(monkeypatch)
+    monkeypatch.setattr(run.Lab, "settle", lambda self, **kwargs: seen.append(kwargs) or {"status": "complete"})
+    monkeypatch.setattr(run, "longmemeval", lambda _: [replace(_question(), id=str(i)) for i in range(500)])
+    monkeypatch.setattr(run, "official_prompts", lambda _: {"default": "{}{}{}"})
+    monkeypatch.setattr(
+        sys, "argv", ["run.py", "--data", str(data), "--output", str(output), "--fake", "--limit", "1", *options]
+    )
+    run.main()
+    report = json.loads((output / "results.json").read_text(encoding="utf-8"))
+    assert report["workers"] == workers and report["settle_seconds"] == seconds
+    assert seen == [{"wall_seconds": seconds}]
+
+
 def _stub_lab(monkeypatch, *, status="complete"):
     import run
 
@@ -47,7 +293,7 @@ def _stub_lab(monkeypatch, *, status="complete"):
         def capture(self, turn):
             return SimpleNamespace(durability="persisted")
 
-        def settle(self):
+        def settle(self, **kwargs):
             return {"status": status}
 
         def recall(self, case):

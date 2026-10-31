@@ -73,11 +73,24 @@ shipped product. A judge reply counts as correct when it contains "yes", as in
 LongMemEval's evaluator. A question that fails is recorded with its error and the
 split continues; a `--cache-only` run still stops on any error.
 
+The `naive-rag` baseline embeds documents and queries through the evaluator's
+own Gemini `batchEmbedContents` requests. Each request carries at most 100 texts,
+using the product's document/query encoding and configured model and dimensions.
+These public inputs bypass product request checks and budget accounting.
+The key comes from the route's `credential_env` variable and travels in the
+`x-goog-api-key` header. Each text is cached separately, so partial hits send
+only missing texts and cache-only runs need no endpoint access.
+
 Each question has an independent truth and vector store. Messages enter in
 session-time order using an injected business clock; the query uses its
 published question date. The answerer receives only the selected context,
 question and its date. Gold answers and evidence labels belong only to scoring. The same
 answer route serves the scope-recall, `full-context` and `naive-rag` methods.
+
+`--workers` accepts 1 through 64 concurrent questions and defaults to 4.
+`--settle-seconds` sets each scope-recall question's positive, finite wall-clock
+budget for settling and defaults to 900 seconds. Both settings are recorded
+as `workers` and `settle_seconds` in `results.json`.
 
 The request cache keys the normalized complete inputs, formatted prompt
 messages, source roles/times/versions/chunks, candidate state, model settings

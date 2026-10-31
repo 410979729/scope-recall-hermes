@@ -13,6 +13,7 @@ import os
 import re
 import urllib.request
 from dataclasses import asdict, replace
+from functools import partial
 from pathlib import Path
 
 from cache import RequestCache, canonical, digest, remap
@@ -102,6 +103,18 @@ class FakeEmbedder:
         """Hash the query locally using the same synthetic geometry."""
         return self.embed_text(query, remaining_seconds)
 
+    def embed_sources(self, sources, remaining_seconds=1.0):
+        """Hash an ordered group of sources without I/O."""
+        return tuple(self.embed_source(source, remaining_seconds) for source in sources)
+
+    def embed_texts(self, texts, remaining_seconds=1.0):
+        """Hash an ordered group of document texts without I/O."""
+        return tuple(self.embed_text(text, remaining_seconds) for text in texts)
+
+    def embed_queries(self, queries, remaining_seconds=1.0):
+        """Hash an ordered group of queries without I/O."""
+        return tuple(self.embed_query(query, remaining_seconds) for query in queries)
+
 
 class CachedModel:
     """Cache the complete consolidation/evaluation request and remap corpus refs."""
@@ -152,49 +165,59 @@ class CachedModel:
 
 
 class CachedEmbedder:
-    """Keep query/document encodings in distinct cache namespaces."""
+    """Cache individual encodings while preserving the wrapped batch capabilities."""
+
+    _BATCH_METHODS = {"embed_sources": "embed_source", "embed_texts": "embed_text", "embed_queries": "embed_query"}
 
     def __init__(self, embedder, cache: RequestCache, config: dict) -> None:
         self.embedder, self.cache, self.config = embedder, cache, config
 
-    def embed_source(self, source, remaining_seconds=1.0):
-        """Cache the complete document source input and return its vector."""
-        record = asdict(source)
-        refs = {source.ref: f"source:{digest({key: value for key, value in record.items() if key != 'ref'})}"}
-        request = {"source": record, "encoding": "document"}
+    def __getattr__(self, name):
+        """Advertise a batch method only when the wrapped adapter implements it."""
+        if name in self._BATCH_METHODS and callable(getattr(self.embedder, name, None)):
+            return partial(self._call, name)
+        raise AttributeError(name)
+
+    @staticmethod
+    def _request(method, item):
+        """Describe the single input identically for single and batch requests."""
+        if method == "embed_source":
+            record = asdict(item)
+            refs = {item.ref: f"source:{digest({key: value for key, value in record.items() if key != 'ref'})}"}
+            return {"source": record, "encoding": "document"}, refs
+        return {"text": item, "encoding": "query" if method == "embed_query" else "document"}, {}
+
+    def _call(self, method, items, remaining_seconds=1.0):
+        """Send only cache misses to the selected adapter method, preserving order."""
+        items = list(items)
+        single = self._BATCH_METHODS.get(method, method)
+        operation = "query_embedding" if single == "embed_query" else "document_embedding"
+
+        def compute(missing):
+            invoke = getattr(self.embedder, method)
+            selected = [items[index] for index in missing]
+            if method in self._BATCH_METHODS:
+                return invoke(selected, remaining_seconds=remaining_seconds)
+            return [invoke(selected[0], remaining_seconds=remaining_seconds)]
+
         return tuple(
-            self.cache.call(
-                "document_embedding",
-                request,
-                self.config,
-                refs,
-                lambda: self.embedder.embed_source(source, remaining_seconds=remaining_seconds),
+            tuple(vector)
+            for vector in self.cache.call_many(
+                operation, [self._request(single, item) for item in items], self.config, compute
             )
         )
+
+    def embed_source(self, source, remaining_seconds=1.0):
+        """Cache the complete document source input and return its vector."""
+        return self._call("embed_source", [source], remaining_seconds)[0]
 
     def embed_text(self, text, remaining_seconds=1.0):
         """Cache a document encoding under its own operation namespace."""
-        return tuple(
-            self.cache.call(
-                "document_embedding",
-                {"text": text, "encoding": "document"},
-                self.config,
-                {},
-                lambda: self.embedder.embed_text(text, remaining_seconds=remaining_seconds),
-            )
-        )
+        return self._call("embed_text", [text], remaining_seconds)[0]
 
     def embed_query(self, query, remaining_seconds=1.0):
         """Cache query encoding separately from identical document text."""
-        return tuple(
-            self.cache.call(
-                "query_embedding",
-                {"text": query, "encoding": "query"},
-                self.config,
-                {},
-                lambda: self.embedder.embed_query(query, remaining_seconds=remaining_seconds),
-            )
-        )
+        return self._call("embed_query", [query], remaining_seconds)[0]
 
 
 # A full-context prompt of about 115,000 tokens takes about a minute on one GPU, and two that share a GPU take
@@ -248,6 +271,59 @@ class EvaluatorChat:
         return payload["choices"][0]["message"]["content"] or ""
 
 
+class EvaluatorEmbedding:
+    """Embed baseline histories directly, using the product's Gemini wire encoding.
+
+    Public corpus text bypasses product request checks and budget accounting.
+    Credentials travel only in the request header and never enter cache inputs.
+    """
+
+    def __init__(self, route: dict):
+        from scope_recall.runtime.embedding_models import EmbeddingRouteConfig
+
+        self.route = EmbeddingRouteConfig(**route)
+
+    def _embed(self, texts, *, kind, remaining_seconds):
+        from scope_recall.core.recall_policy import encode_embedding_text
+        from scope_recall.runtime.embedding_models import MAX_EMBED_BATCH, _embedding_vectors, build_gemini_embed_body
+
+        if self.route.wire_dialect() != "gemini":
+            raise ValueError("evaluator_embedding_requires_gemini")
+        space = self.route.space()
+        encoded = [encode_embedding_text(text, kind=kind) for text in texts]
+        vectors = []
+        for start in range(0, len(encoded), MAX_EMBED_BATCH):
+            chunk = encoded[start : start + MAX_EMBED_BATCH]
+            request = urllib.request.Request(
+                space["endpoint"],
+                data=build_gemini_embed_body(chunk, model=space["model"], dimensions=space["dimensions"]),
+                headers={"Content-Type": "application/json", "x-goog-api-key": os.environ[self.route.credential_env]},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=remaining_seconds) as response:
+                payload = json.loads(response.read())
+            vectors.extend(
+                _embedding_vectors(payload, dialect="gemini", dimensions=space["dimensions"], count=len(chunk))
+            )
+        return tuple(vectors)
+
+    def embed_texts(self, texts, remaining_seconds=30):
+        """Encode documents in ordered provider-sized requests, without product screening."""
+        return self._embed(texts, kind="document", remaining_seconds=remaining_seconds)
+
+    def embed_queries(self, queries, remaining_seconds=30):
+        """Encode queries separately from documents using the same configured space."""
+        return self._embed(queries, kind="query", remaining_seconds=remaining_seconds)
+
+    def embed_text(self, text, remaining_seconds=30):
+        """Embed one document through the same wire path as a document group."""
+        return self.embed_texts([text], remaining_seconds)[0]
+
+    def embed_query(self, query, remaining_seconds=30):
+        """Embed one query through the same wire path as a query group."""
+        return self.embed_queries([query], remaining_seconds)[0]
+
+
 class Ports:
     """One run's ports and recorded model settings; fake mode is entirely local."""
 
@@ -270,6 +346,8 @@ class Ports:
             self.chat = EvaluatorChat(config["chat"])
         self.model = CachedModel(model, cache, self.config)
         self.embedder = CachedEmbedder(embedder, cache, self.config["embedding"])
+        evaluator = embedder if self.fake else EvaluatorEmbedding(config["embedding"])
+        self.evaluator_embedder = CachedEmbedder(evaluator, cache, self.config["embedding"])
 
     @staticmethod
     def _runtime(config: dict, approved, root: Path):

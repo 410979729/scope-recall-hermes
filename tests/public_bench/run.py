@@ -89,10 +89,10 @@ def alternative_context(case, ports: Ports, method: str) -> tuple[str, dict, flo
     started = time.perf_counter()
     selected = case.turns
     if method == "naive-rag":
-        query = ports.embedder.embed_query(case.question, remaining_seconds=30)
+        query = ports.evaluator_embedder.embed_query(case.question, remaining_seconds=30)
+        vectors = ports.evaluator_embedder.embed_texts([turn.content for turn in case.turns], remaining_seconds=30)
         ranked = []
-        for turn in case.turns:
-            vector = ports.embedder.embed_text(turn.content, remaining_seconds=30)
+        for turn, vector in zip(case.turns, vectors, strict=True):
             ranked.append((sum(a * b for a, b in zip(query, vector, strict=True)), turn))
         ranked.sort(key=lambda pair: pair[0], reverse=True)
         selected = tuple(turn for _, turn in ranked[:6])
@@ -131,7 +131,15 @@ def isolated(run, case, *, cache_only: bool) -> dict:
 
 
 def run_case(
-    case, *, root: Path, ports: Ports, prompts: dict, method: str, retrieval_only: bool, dataset="longmemeval"
+    case,
+    *,
+    root: Path,
+    ports: Ports,
+    prompts: dict,
+    method: str,
+    retrieval_only: bool,
+    dataset="longmemeval",
+    settle_seconds=900,
 ) -> dict:
     """Capture, settle, recall, answer and judge a question without leaking gold."""
     started = time.perf_counter()
@@ -144,7 +152,7 @@ def run_case(
                 receipt = lab.capture(turn)
                 if receipt.durability != "persisted":
                     admissions.append({"turn": turn.key, "error": receipt.error_code, "gaps": list(receipt.gaps)})
-            state = lab.settle()
+            state = lab.settle(wall_seconds=settle_seconds)
             ports.cache.raise_if_missing()
             if state["status"] != "complete":
                 return {
@@ -208,8 +216,8 @@ def run_case(
             lab.close()
 
 
-def main() -> None:
-    """Execute a fixed split, with four independent question stores by default."""
+def parse_args() -> argparse.Namespace:
+    """Read explicit routes, cache mode and bounded question-worker settings."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -218,6 +226,7 @@ def main() -> None:
     parser.add_argument("--split", choices=["dev", "regression", "sealed"], default="dev")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--settle-seconds", type=float, default=900)
     parser.add_argument("--fake", action="store_true")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--allow-model-calls", action="store_true")
@@ -230,8 +239,16 @@ def main() -> None:
         parser.error("choose --fake, or explicit --config with --allow-model-calls")
     if args.cache_only and not args.retrieval_only:
         parser.error("cache-only commit runs must be retrieval-only")
-    if not 1 <= args.workers <= 4:
-        parser.error("workers must be between one and four")
+    if not 1 <= args.workers <= 64:
+        parser.error("workers must be between 1 and 64")
+    if not math.isfinite(args.settle_seconds) or args.settle_seconds <= 0:
+        parser.error("settle-seconds must be finite and positive")
+    return args
+
+
+def main() -> None:
+    """Execute a fixed split, with four independent question stores by default."""
+    args = parse_args()
     loaders = {
         "longmemeval": (longmemeval, "longmemeval_s_cleaned.json"),
         "locomo": (locomo, "locomo10.json"),
@@ -274,6 +291,7 @@ def main() -> None:
                 method=args.method,
                 retrieval_only=args.retrieval_only,
                 dataset=args.dataset,
+                settle_seconds=args.settle_seconds,
             ),
             case,
             cache_only=cache.only,
@@ -304,6 +322,7 @@ def main() -> None:
         "results": results,
         "incomplete_results": incomplete,
         "workers": args.workers,
+        "settle_seconds": args.settle_seconds,
         "total_seconds": time.perf_counter() - started,
         "cache": {"hits": cache.hits, "misses": cache.misses, "operations": dict(cache.operations)},
         "scoring": scores,
