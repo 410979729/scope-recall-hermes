@@ -12,6 +12,92 @@ exception class.
 
 from __future__ import annotations
 
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+_TRACE: ContextVar[dict | None] = ContextVar("vector_trace", default=None)
+
+
+@contextmanager
+def using_vector_trace(fields: dict):
+    """Collect fixed codes and milliseconds for one recall, without changing its deadlines."""
+    fields.update(vector_started=0, vector_finished=0, vector_packet=0)
+    token = _TRACE.set(fields)
+    try:
+        yield
+    finally:
+        _TRACE.reset(token)
+
+
+@contextmanager
+def vector_phase(kind: str, phase: str):
+    """Time a known stage; retain the stage that raised rather than its enclosing call."""
+    fields = _TRACE.get()
+    began = time.monotonic()
+    if fields is not None and kind == "vector":
+        fields["vector_started"] = 1
+    try:
+        yield
+    except BaseException:
+        if fields is not None:
+            fields.setdefault(f"{kind}_failure_phase", phase)
+        raise
+    else:
+        if fields is not None and kind == "vector":
+            fields["vector_finished"] = 1
+    finally:
+        if fields is not None:
+            key = f"{kind}_{phase}_ms"
+            fields[key] = fields.get(key, 0) + round((time.monotonic() - began) * 1000)
+
+
+def note_helper_deadline(phase: str) -> None:
+    """Retain a helper deadline even when an overlapped open parks its answer."""
+    fields = _TRACE.get()
+    if fields is not None:
+        fields.setdefault("helper_failure_phase", phase)
+
+
+def vector_trace_fields(value: object) -> dict:
+    """Accept only known execution flags, timing fields and fixed phase codes."""
+    if not isinstance(value, dict):
+        return {}
+    numeric = {
+        "vector_started",
+        "vector_finished",
+        "vector_packet",
+        "vector_search_ms",
+        "embedding_ms",
+        "helper_drain_ms",
+        "helper_open_ms",
+        "helper_search_ms",
+        "helper_other_ms",
+    }
+    phases = {
+        "helper_failure_phase": {"drain", "open", "search", "other"},
+        "embedding_failure_phase": {"prefetch", "connection_slot", "connect", "read", "transport"},
+        "vector_failure_phase": {"search"},
+    }
+    return {
+        key: field
+        for key, field in value.items()
+        if (key in numeric and type(field) is int and field >= 0)
+        or (key in phases and type(field) is str and field in phases[key])
+    }
+
+
+def note_embedding_failure(exc: BaseException) -> None:
+    """Keep only the transport's closed phase vocabulary and numeric elapsed time."""
+    fields = _TRACE.get()
+    phase = getattr(exc, "phase", None)
+    if fields is not None and phase in {"prefetch", "connection_slot", "connect", "read", "transport"}:
+        fields["embedding_failure_phase"] = phase
+        elapsed = getattr(exc, "elapsed_ms", None)
+        if type(elapsed) is int and elapsed >= 0:
+            fields["embedding_ms"] = elapsed
+
+
 #: Marker -> token, most specific first.  Markers are fragments of the messages
 #: raised in ``vector.process_store`` and ``vector.store``; the token is what an
 #: operator reads.  ``test_vector_failure`` parses both modules and fails if any

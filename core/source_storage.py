@@ -12,7 +12,6 @@ from ..contracts import (
     ContractError,
     SourceEvent,
     import_source_fingerprint,
-    validate_capture,
 )
 from . import lexical_index
 from .delete_storage import canonical, group_digest, purged_group_key
@@ -27,6 +26,11 @@ from .events import (
 from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
 from .source_records import PROJECT_IDENTITY_KEY, SourceWrite, StoredSource
 from .visibility import allowed
+
+
+def source_reference(installation_id: str, key: str) -> str:
+    """The stable source reference of an event key within one installation."""
+    return "event-" + hashlib.sha256(canonical([installation_id, key]).encode("utf-8")).hexdigest()
 
 
 def _seconds_apart(first: object, second: object) -> float:
@@ -115,7 +119,9 @@ class Sources:
     def _admitted_source(self, event: SourceEvent) -> dict:
         """Validate a capture against the contract, the import provenance and the
         admission policy; the stored event must be exactly the admitted one."""
-        event = validate_capture(dict(event), self._tx.context)
+        admitted = prepare_capture(event, self._tx.context)
+        if admitted.rejection or len(admitted.events) != 1 or admitted.events[0] != event:
+            raise ContractError("INPUT_INVALID", "unprepared_source")
         provenance = self._tx.context.import_provenance
         if provenance is not None:
             if (
@@ -123,9 +129,6 @@ class Sources:
                 or import_source_fingerprint(event) not in provenance.source_fingerprints
             ):
                 raise ContractError("ACCESS_DENIED", "import_provenance")
-        admitted = prepare_capture(event, self._tx.context)
-        if admitted.rejection or len(admitted.events) != 1 or admitted.events[0] != event:
-            raise ContractError("INPUT_INVALID", "unprepared_source")
         return event
 
     def _same_identity(self, row, scope_id: str) -> bool:
@@ -250,10 +253,7 @@ class Sources:
         return copy
 
     def _source_ref(self, key: str) -> str:
-        return (
-            "event-"
-            + hashlib.sha256(canonical([self._tx.context.binding.installation_id, key]).encode("utf-8")).hexdigest()
-        )
+        return source_reference(self._tx.context.binding.installation_id, key)
 
     def _hidden_refs(self, events) -> list[str]:
         """The refs a message's parts would take that a deletion hides."""

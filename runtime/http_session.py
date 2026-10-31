@@ -8,6 +8,7 @@ Only the next caller may start a replacement. Stderr is never retained or logged
 from __future__ import annotations
 
 import atexit
+import json
 import queue
 import sqlite3
 import subprocess
@@ -30,7 +31,7 @@ def _close_sessions():
 atexit.register(_close_sessions)
 
 
-def _exchange_line(process, request, replies, max_stdout):
+def _exchange_line(process, request, replies, max_stdout, session):
     """Recheck on the I/O thread before passing plaintext to its owned helper."""
     try:
         require_outbound()
@@ -40,7 +41,14 @@ def _exchange_line(process, request, replies, max_stdout):
     try:
         process.stdin.write(request + b"\n")
         process.stdin.flush()
-        replies.put(process.stdout.readline(max_stdout + 1))
+        for _ in range(3):
+            line = process.stdout.readline(max_stdout + 1)
+            if line in (b'{"phase": "connect"}\n', b'{"phase": "read"}\n'):
+                session.phase = json.loads(line)["phase"]
+                continue
+            replies.put(line)
+            return
+        replies.put(None)
     except (OSError, ValueError):
         replies.put(None)
 
@@ -54,6 +62,7 @@ class HttpWorkerSession:
         self._process = None
         self._io_thread = None
         self._closed = False
+        self.phase = "transport"
         _SESSIONS.add(self)
 
     def discard(self):
@@ -86,6 +95,7 @@ class HttpWorkerSession:
             raise TimeoutError
         process = None
         io_thread = None
+        self.phase = "transport"
         try:
             require_outbound()
             if self._closed:
@@ -109,7 +119,9 @@ class HttpWorkerSession:
                 if self._closed or self._process is not process:
                     raise OSError("http_session_closed")
                 thread = threading.Thread(
-                    target=copy_context().run, args=(_exchange_line, process, request, replies, max_stdout), daemon=True
+                    target=copy_context().run,
+                    args=(_exchange_line, process, request, replies, max_stdout, self),
+                    daemon=True,
                 )
                 thread.start()
                 io_thread = self._io_thread = thread

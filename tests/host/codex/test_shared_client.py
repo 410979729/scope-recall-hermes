@@ -1406,7 +1406,8 @@ def test_a_prompt_the_store_could_not_take_is_still_recalled_by_meaning(store, m
     refused = _hook(client)
     try:
         refused.handle_payload(_prompt("TEST password: Xk9#mP2q-7Lw", prompt_id="TEST-prompt-secret"))
-        assert refused.diagnostics.capture_disposition == "rejected"
+        assert refused.diagnostics.capture_disposition == "inserted"
+        assert refused.diagnostics.masked_secret_count == 1
         assert not refused._runtime_attach_attempted, "a credential never reaches the embedding provider"
     finally:
         refused.close()
@@ -4346,15 +4347,14 @@ def _dsh_inbox_resolved(home):
         hook.close()
 
 
-def test_a_dsh_reply_sent_again_when_its_key_cannot_be_read_is_resolved_as_the_one_stored(dsh, monkeypatch):
-    """The Stop reads what its turn's key holds to keep a reply's stored moment.  When that read fails, the reply sent
-    again with a moment of its own is refused and waits in the inbox, and the store's worker resolves it as the reply
-    already stored: one copy, and nothing under a key of its own."""
+def test_a_dsh_retry_uses_core_time_normalization_without_an_adapter_lookup(dsh, monkeypatch):
+    """A timestamp-only retry is resolved in core; the adapter needs no preliminary source lookup."""
     from scope_recall.core import MemoryCore
 
     root, home = dsh
     stop = {"hook_event_name": "Stop", "turn_id": "6", "last_assistant_message": "TEST 读不到也只存一次。"}
     _dsh(home, stop)
+    before = _dsh_kept(root)
 
     def unreadable(self, *args, **kwargs):
         raise sqlite3.OperationalError("TEST disk I/O error")
@@ -4362,9 +4362,10 @@ def test_a_dsh_reply_sent_again_when_its_key_cannot_be_read_is_resolved_as_the_o
     with monkeypatch.context() as broken:
         broken.setattr(MemoryCore, "source_by_event_key", unreadable)
         _result, diagnostics = _dsh(home, stop)
-    assert diagnostics.capture_error_code == "VERSION_CONFLICT"
-    assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(1,)]
-    assert [receipt.disposition for receipt in _dsh_inbox_resolved(home)] == ["duplicate"]
+    assert diagnostics.capture_error_code is None
+    assert diagnostics.capture_disposition == "duplicate" and diagnostics.capture_durability == "persisted"
+    assert _dsh_inbox_resolved(home) == ()
+    assert _dsh_kept(root) == before
     assert _rows(root, "SELECT count(*) FROM capture_inbox") == [(0,)]
     assert [(key, words) for key, words, _at in _dsh_kept(root)] == [("assistant:6", "TEST 读不到也只存一次。")]
 

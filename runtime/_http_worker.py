@@ -35,7 +35,15 @@ class _Failure(Exception):
         self.error = error
 
 
-def _result(*, ok: bool, status: int | None = None, body: bytes = b"", error: str | None = None) -> bytes:
+def _result(
+    *,
+    ok: bool,
+    status: int | None = None,
+    body: bytes = b"",
+    error: str | None = None,
+    phase: str | None = None,
+    elapsed_ms: int | None = None,
+) -> bytes:
     payload: dict[str, object] = {
         "ok": ok,
         "status": status,
@@ -43,6 +51,8 @@ def _result(*, ok: bool, status: int | None = None, body: bytes = b"", error: st
     }
     if error is not None:
         payload["error"] = error
+        if phase is not None:
+            payload.update(phase=phase, elapsed_ms=elapsed_ms)
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
@@ -230,17 +240,20 @@ def _arm(connection: http.client.HTTPConnection, deadline: float) -> float:
     return remaining
 
 
-def _request(raw: bytes, connections: dict | None = None) -> bytes:
+def _request(raw: bytes, connections: dict | None = None, *, progress=None) -> bytes:
     try:
         parsed, body, headers, timeout_seconds, max_response_bytes, plaintext = _parse_request(raw)
     except _Failure as failure:
         return _result(ok=False, error=failure.error)
-    deadline = time.monotonic() + timeout_seconds
+    began = time.monotonic()
+    deadline = began + timeout_seconds
+    phase = "connect"
     connection: http.client.HTTPConnection | None = None
     chunks: list[bytes] = []
     status: int | None = None
     reusable = False
     try:
+        _notify(progress, phase)
         cache_key, connection = _take_connection(parsed, headers, deadline, connections, plaintext=plaintext)
         remaining = _arm(connection, deadline)
         if connection.sock is None:
@@ -249,6 +262,8 @@ def _request(raw: bytes, connections: dict | None = None) -> bytes:
         path = parsed.path or "/"
         if parsed.query:
             path = f"{path}?{parsed.query}"
+        phase = "read"
+        _notify(progress, phase)
         _arm(connection, deadline)
         connection.request("POST", path, body=body, headers=headers)
         _arm(connection, deadline)
@@ -271,13 +286,41 @@ def _request(raw: bytes, connections: dict | None = None) -> bytes:
         reusable = status < 400 and not response.will_close and connection.sock is not None
         return _result(ok=True, status=status, body=b"".join(chunks))
     except _Failure as failure:
-        return _result(ok=False, status=status, body=b"".join(chunks), error=failure.error)
+        return _result(
+            ok=False,
+            status=status,
+            body=b"".join(chunks),
+            error=failure.error,
+            phase=phase,
+            elapsed_ms=round((time.monotonic() - began) * 1000),
+        )
     except socket.timeout:
-        return _result(ok=False, status=status, body=b"".join(chunks), error="timeout")
+        return _result(
+            ok=False,
+            status=status,
+            body=b"".join(chunks),
+            error="timeout",
+            phase=phase,
+            elapsed_ms=round((time.monotonic() - began) * 1000),
+        )
     except http.client.HTTPException:
-        return _result(ok=False, status=status, body=b"".join(chunks), error="http_protocol")
+        return _result(
+            ok=False,
+            status=status,
+            body=b"".join(chunks),
+            error="http_protocol",
+            phase=phase,
+            elapsed_ms=round((time.monotonic() - began) * 1000),
+        )
     except OSError:
-        return _result(ok=False, status=status, body=b"".join(chunks), error="network_error")
+        return _result(
+            ok=False,
+            status=status,
+            body=b"".join(chunks),
+            error="network_error",
+            phase=phase,
+            elapsed_ms=round((time.monotonic() - began) * 1000),
+        )
     finally:
         if connection is not None:
             if reusable and connections is not None:
@@ -285,6 +328,18 @@ def _request(raw: bytes, connections: dict | None = None) -> bytes:
                 connections[cache_key] = connection
             else:
                 connection.close()
+
+
+def _notify(progress, phase: str) -> None:
+    """Publish a socket phase only when the parent requested progress frames."""
+    if progress is not None:
+        progress(phase)
+
+
+def _progress(phase: str) -> None:
+    """Tell a persistent parent which socket stage it is waiting for, without request data."""
+    sys.stdout.buffer.write(json.dumps({"phase": phase}).encode("ascii") + b"\n")
+    sys.stdout.buffer.flush()
 
 
 def main() -> int:
@@ -299,7 +354,7 @@ def main() -> int:
                     sys.stdout.buffer.write(_result(ok=False, error="request_limit") + b"\n")
                     sys.stdout.buffer.flush()
                     break
-                sys.stdout.buffer.write(_request(raw, connections) + b"\n")
+                sys.stdout.buffer.write(_request(raw, connections, progress=_progress) + b"\n")
                 sys.stdout.buffer.flush()
         finally:
             for connection in connections.values():

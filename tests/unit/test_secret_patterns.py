@@ -65,7 +65,7 @@ CHINESE_VALUE_BOUNDARIES = [
     (r'密码:"Synthet1c\"Tail99"', r"Synthet1c\"Tail99"),
     ('{"password":"Synthet1c","color":"blue"}', "Synthet1c"),
     ("密码：Xk9mP2qa", "Xk9mP2qa"),
-    ("密码是Xk9mP2qa然后登录", "Xk9mP2qa"),
+    ("密码是Xk9mP2qa然后登录", "Xk9mP2qa然后登录"),
     ("账号NameOne密码Xk9mP2qa", "Xk9mP2qa"),
     ("**密码**：Xk9mP2qa", "Xk9mP2qa"),
     ("初始密码：`Admin@2026`", "Admin@2026"),
@@ -75,7 +75,7 @@ CHINESE_VALUE_BOUNDARIES = [
     ("refreshToken: Xk9mP2qaXk9mP2qaXk9m", "Xk9mP2qaXk9mP2qaXk9m"),
     ("**Password**: Xk9mP2qa", "Xk9mP2qa"),
     ("vendor_key（开发者密钥）：9a8b7c6d5e4f", "9a8b7c6d5e4f"),
-    ("root密钥\t\tAbc-d-12345 新服务", "Abc-d-12345"),
+    ("root密钥\t\tAbc-d-12345 新服务", "Abc-d-12345 新服务"),
     ("这台密码是Abc123456", "Abc123456"),
 ]
 CHINESE_ORDINARY = [
@@ -206,6 +206,43 @@ def test_chinese_prose_and_token_counters_are_not_secrets(text):
 def test_credential_redaction_removes_exactly_the_value(text, value):
     assert contains_secret_like_text(text)
     assert redact_secret_like_text(text) == text.replace(value, "[REDACTED_SECRET]")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "count"),
+    [
+        ("password: correct horse battery staple", "password: [REDACTED_SECRET]", 1),
+        ('password: "Synthet1c" "meadow cabin"', 'password: "[REDACTED_SECRET]', 1),
+        ('password: "Synthet1c" + "meadow cabin"', 'password: "[REDACTED_SECRET]', 1),
+        (
+            '{"password": Synthet1c meadow, "token": TEST9VALUE}',
+            '{"password": [REDACTED_SECRET], "token": [REDACTED_SECRET]}',
+            2,
+        ),
+        ('TEST password: "' + "ghp_" + "TESTONLY" * 4 + '" end', 'TEST password: "[REDACTED_SECRET]" end', 1),
+        ("  TEST password: Synthet1c meadow\r\nCOLOR=blue\n", "  TEST password: [REDACTED_SECRET]\r\nCOLOR=blue\n", 1),
+        ('password = """sunflower\nmeadow cabin"""', 'password = "[REDACTED_SECRET]"', 1),
+        ("password = '''sunflower\nmeadow cabin'''\nTEST after", "password = '[REDACTED_SECRET]'\nTEST after", 1),
+        ('password = """sunflower\nmeadow cabin', "[REDACTED_SECRET]", 1),
+        ('password = """alpha""" + "omega"', 'password = "[REDACTED_SECRET]', 1),
+        ('password = """alpha\\"""omega"""', 'password = "[REDACTED_SECRET]"', 1),
+        ('password = "alpha" r"omega"', 'password = "[REDACTED_SECRET]', 1),
+        ('    password = ("alpha"\n \n"omega")', "[REDACTED_SECRET]", 1),
+        ('    password = ("alpha"\n r"omega")', "[REDACTED_SECRET]", 1),
+        ('password: "Synthet1c"\nI\'m not sure', 'password: "[REDACTED_SECRET]"\nI\'m not sure', 1),
+        ('password: "Synthet1c"** + "meadow cabin"', 'password: "[REDACTED_SECRET]', 1),
+        ('$password = "Synthet1c" . "meadow cabin";', '$password = "[REDACTED_SECRET]', 1),
+        ('$password = "Synthet1c". "meadow cabin";', '$password = "[REDACTED_SECRET]', 1),
+        ('PASSWORD="Synthet1c"meadow', 'PASSWORD="[REDACTED_SECRET]', 1),
+        ('password: "Synthet1c" # meadow cabin', 'password: "[REDACTED_SECRET]', 1),
+        ('api_key: "antigravity"。然后重启', 'api_key: "[REDACTED_SECRET]"。然后重启', 1),
+        ('set api_key: "antigravity". Then restart.', 'set api_key: "[REDACTED_SECRET]". Then restart.', 1),
+    ],
+)
+def test_redaction_counts_merged_whole_value_spans_without_reformatting(text, expected, count):
+    from scope_recall.core.capture_filters import redact_secret_text
+
+    assert redact_secret_text(text) == (expected, count)
 
 
 @pytest.mark.parametrize("label", ["密码", "口令", "密钥", "私钥", "令牌", "授权码"])
@@ -499,6 +536,21 @@ def test_a_telegram_token_is_still_caught_where_one_appears():
 def _scanned(text):
     contains_secret_like_text(text)
     redact_secret_like_text(text)
+
+
+def test_repeated_labelled_lines_redact_in_linear_time():
+    line = "password: Synthet1c\n"
+    assert slowdown(redact_secret_like_text, line * 500, line * 2000) < 8
+
+
+def test_repeated_labels_inside_one_structure_redact_in_linear_time():
+    item = "password: a "
+    assert slowdown(redact_secret_like_text, "(" + item * 500 + ")", "(" + item * 2000 + ")") < 8
+
+
+def test_repeated_quoted_values_ending_sentences_on_one_line_redact_in_linear_time():
+    item = 'password: "alpha". note '
+    assert slowdown(redact_secret_like_text, item * 500, item * 2000) < 8
 
 
 def test_a_long_hyphenated_line_scans_in_linear_time():

@@ -48,10 +48,12 @@ import subprocess
 import sys
 import time
 import urllib.parse
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from scope_recall.core.file_lock import advisory_file_lock
 from scope_recall.core.private import normalize_project_path, notice_for_mode
 
 from ...contracts import ContractError
@@ -440,7 +442,9 @@ def _spool_dir(config: dict[str, Any]) -> Path:
 _SPOOL_SEQUENCE = itertools.count()
 
 
-def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str, *, clock=None) -> Path | None:
+def _spool(
+    config: dict[str, Any], payload: dict[str, Any], observed_at: str, *, clock=None, claims=None
+) -> Path | None:
     folder = _spool_dir(config)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -448,6 +452,7 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str, *,
         dropped = kept[: max(0, len(kept) - SPOOL_LIMIT + 1)]
         for stale in dropped:
             stale.unlink(missing_ok=True)
+            _remove_settled_claim(stale)
         if dropped:
             _log(config, f"spool full: dropped the {len(dropped)} oldest")
         # The clock can read the same twice in a row, and a name taken twice would replace the hook kept under it.
@@ -457,6 +462,9 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str, *,
             json.dumps({"payload": payload, "observed_at": observed_at, "clock": clock}, ensure_ascii=False),
             encoding="utf-8",
         )
+        if claims is not None:
+            claims.callback(_remove_settled_claim, folder / name)
+            claims.enter_context(advisory_file_lock((folder / name).with_suffix(".claim"), timeout_seconds=0))
         os.replace(pending, folder / name)
         return folder / name
     except OSError:
@@ -486,30 +494,55 @@ def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
             if left < 1.0:
                 break
             try:
-                kept = json.loads(item.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
-                item.unlink(missing_ok=True)
+                with advisory_file_lock(item.with_suffix(".claim"), timeout_seconds=0):
+                    outcome = _flush_item(config, item, left)
+            except TimeoutError:
                 continue
-            if _private_rules(config):
-                state = _private_check(config, kept, min(left, 1.0))
-                if state is None:
-                    break
-                if state["capture_blocked"] or state["recall_blocked"]:
-                    item.unlink(missing_ok=True)
-                    _log(config, f"flush: dropped one kept hook under private mode {state.get('mode')}")
-                    continue
-            answer = _post(config, kept, min(left, 30.0))
-            if answer is None or answer.get("retry"):
+            _remove_settled_claim(item)
+            if outcome is None:
                 break
-            item.unlink(missing_ok=True)
-            if not answer.get("refused"):
-                sent += 1
+            sent += outcome
     finally:
         lock.unlink(missing_ok=True)
     left = sum(1 for _item in folder.glob("*.json"))
     _log(config, f"flush: sent {sent}, {left} still kept")
     return sent
+
+
+def _remove_settled_claim(item: Path) -> None:
+    """Remove an unlocked sidecar only after its uniquely named payload has gone."""
+    try:
+        if not item.exists():
+            item.with_suffix(".claim").unlink(missing_ok=True)
+    except OSError:
+        # Another sender may still have opened this settled sidecar on Windows.
+        # Its cleanup cannot turn a delivered hook into a failed request.
+        pass
+
+
+def _flush_item(config, item: Path, left: float) -> int | None:
+    """Send one claimed item; None stops this pass, zero skips it, one counts delivery."""
+    if not item.exists():
+        return 0
+    try:
+        kept = json.loads(item.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
+        item.unlink(missing_ok=True)
+        return 0
+    if _private_rules(config):
+        state = _private_check(config, kept, min(left, 1.0))
+        if state is None:
+            return None
+        if state["capture_blocked"] or state["recall_blocked"]:
+            item.unlink(missing_ok=True)
+            _log(config, f"flush: dropped one kept hook under private mode {state.get('mode')}")
+            return 0
+    answer = _post(config, kept, min(left, 30.0))
+    if answer is None or answer.get("retry"):
+        return None
+    item.unlink(missing_ok=True)
+    return int(not answer.get("refused"))
 
 
 def _start_flush(config: dict[str, Any]) -> None:
@@ -663,12 +696,12 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     return result if isinstance(result, dict) else {}
 
 
-def _send_ordinary(config: dict[str, Any], body: dict[str, Any], until: float) -> dict[str, Any] | None:
+def _send_ordinary(config: dict[str, Any], body: dict[str, Any], until: float, claims) -> dict[str, Any] | None:
     """Keep ordinary offline hooks before connecting, including during the server cooldown."""
     payload = body["payload"]
     event = payload.get("hook_event_name")
     spooled = (
-        _spool(config, payload, body["observed_at"], clock=body.get("clock"))
+        _spool(config, payload, body["observed_at"], clock=body.get("clock"), claims=claims)
         if config["host"] == "codex" and event in _SPOOLED
         else None
     )
@@ -683,8 +716,14 @@ def _send_ordinary(config: dict[str, Any], body: dict[str, Any], until: float) -
 
 def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) -> dict[str, Any] | None:
     """Send ordinary hooks directly; verify before keeping or sending once private history is known."""
-    if not _private_rules(config):
-        return _send_ordinary(config, body, until)
+    with ExitStack() as claims:
+        if not _private_rules(config):
+            return _send_ordinary(config, body, until, claims)
+        return _send_private(config, body, until, claims)
+
+
+def _send_private(config, body, until, claims):
+    """Verify and send a hook while retaining its foreground spool claim."""
     payload = body["payload"]
     event = payload.get("hook_event_name")
     if _server_away(config):
@@ -712,7 +751,7 @@ def _send_checked(config: dict[str, Any], body: dict[str, Any], until: float) ->
         spooled = None
     else:
         spooled = (
-            _spool(config, payload, body["observed_at"], clock=body.get("clock"))
+            _spool(config, payload, body["observed_at"], clock=body.get("clock"), claims=claims)
             if config["host"] == "codex" and event in _SPOOLED
             else None
         )

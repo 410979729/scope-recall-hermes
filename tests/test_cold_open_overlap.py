@@ -545,3 +545,58 @@ def test_a_server_s_factory_builds_views_of_one_store(tmp_path, monkeypatch):
         assert isinstance(one, native.SharedStore) and one._store is two._store
     finally:
         native._close_shared()
+
+
+def test_helper_deadline_trace_distinguishes_drain_open_and_search(tmp_path, monkeypatch):
+    from scope_recall.core.vector_failure import using_vector_trace
+
+    s = store(tmp_path, monkeypatch, delay=0.3)
+    opened, drained, searched = {}, {}, {}
+    try:
+        with using_vector_trace(opened), using_request_deadline(RequestDeadline.from_budget(0.04)):
+            s.open_existing_with_work(lambda: None)
+        assert opened["helper_failure_phase"] == "open"
+        with pytest.raises(TimeoutError):
+            with using_vector_trace(drained), using_request_deadline(RequestDeadline.from_budget(0.04)):
+                s._call("search", [], scope_id="PUBLIC", limit=1)
+        assert drained["helper_failure_phase"] == "drain"
+        assert drained["helper_drain_ms"] >= 0
+        assert drained["vector_started"] == drained["vector_finished"] == 0
+        with using_request_deadline(RequestDeadline.from_budget(2)):
+            s._drain_pending_response_locked()
+        with pytest.raises(TimeoutError):
+            with using_vector_trace(searched), using_request_deadline(RequestDeadline.from_budget(0.04)):
+                s._call("search", [], scope_id="PUBLIC", limit=1)
+        assert searched["helper_failure_phase"] == "search"
+        assert searched["vector_started"] == 1 and searched["vector_finished"] == 0
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_native_search_trace_counts_successful_replies_only(tmp_path, monkeypatch, failed):
+    from scope_recall.core.vector_failure import using_vector_trace
+
+    s = store(tmp_path, monkeypatch)
+    program = f"""import json,sys
+for line in sys.stdin:
+ r=json.loads(line)
+ ok=not ({failed!r} and r['method']=='search')
+ print(json.dumps(dict(id=r['id'],ok=ok,result=[],error='TEST search refused')),flush=True)
+"""
+    monkeypatch.setattr(native, "_worker_command", lambda: [sys.executable, "-I", "-B", "-c", program])
+    trace = {}
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(2)):
+            s.open_existing()
+            with using_vector_trace(trace):
+                if failed:
+                    with pytest.raises(RuntimeError):
+                        s._call("search", [], scope_id="PUBLIC", limit=1)
+                else:
+                    assert s._call("search", [], scope_id="PUBLIC", limit=1) == []
+        assert trace["vector_started"] == 1
+        assert trace["vector_finished"] == int(not failed)
+        assert not s.requires_reopen
+    finally:
+        s.close()

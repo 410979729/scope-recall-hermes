@@ -327,3 +327,29 @@ def test_the_owner_s_background_the_model_holds_is_left_out_too(tmp_path):
     assert item.ref in background(other, "TEST-bg-3", since="2026-09-01T11:00:00Z"), (
         "another session's model does not hold it"
     )
+
+
+def test_the_prompt_fence_keeps_an_earlier_message_that_shares_only_its_first_segment():
+    """A queued prompt's references stay fenced only while the sources they hold are this prompt, segment for
+    segment: an earlier message under the same key that shares only its first segment is recalled as usual."""
+    from types import SimpleNamespace
+
+    from scope_recall.core.events import MAX_SEGMENT_CHARS, capture_content_digests
+    from scope_recall.core.retrieval import current_prompt_refs, using_current_prompt
+
+    shared = "TEST " + "p" * (MAX_SEGMENT_CHARS - 5)
+    prompt, earlier = shared + "TEST new ending", shared + "TEST old ending"
+    refs = ("event-part0@1", "event-part1@1")
+
+    class Snapshot:
+        def __init__(self, digests):
+            self.held = dict(zip(refs, digests, strict=False))
+
+        def source(self, key, revision):
+            digest = self.held.get(f"{key}@{revision}")
+            return None if digest is None else SimpleNamespace(content_sha256=digest)
+
+    with using_current_prompt(prompt):
+        assert current_prompt_refs(Snapshot(capture_content_digests(prompt)), refs) == refs
+        assert current_prompt_refs(Snapshot(()), refs) == refs
+        assert current_prompt_refs(Snapshot(capture_content_digests(earlier)), refs) == ()

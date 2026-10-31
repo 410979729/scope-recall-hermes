@@ -1801,3 +1801,216 @@ def test_a_workbuddy_subagent_s_stop_sends_no_record(tmp_path, monkeypatch):
     )
     assert len(sent) == 1 and "record" not in sent[0]
     assert transcript.Cursor(client["state_dir"], "TEST-wb-session", record).load() == 0
+
+
+@pytest.mark.parametrize("private_history", [False, True])
+def test_foreground_spool_claim_excludes_flush_and_releases_after_failure(tmp_path, monkeypatch, private_history):
+    config = _client(tmp_path, "codex", _free_port())
+    monkeypatch.setattr(remote_client, "_private_rules", lambda config: private_history)
+    monkeypatch.setattr(
+        remote_client, "_private_check", lambda *args: dict(mode="none", capture_blocked=False, recall_blocked=False)
+    )
+    body = {
+        "payload": {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "TEST-session",
+            "turn_id": "TEST-turn",
+            "prompt": "TEST words",
+        },
+        "observed_at": NOW,
+    }
+    foreground = threading.get_ident()
+    sends = []
+
+    def post(config, body, seconds):
+        sends.append(threading.get_ident())
+        if threading.get_ident() == foreground:
+            results = []
+            flushing = threading.Thread(target=lambda: results.append(remote_client.flush_spool(config, 3)))
+            flushing.start()
+            flushing.join(4)
+            assert not flushing.is_alive()
+            assert results == [0]
+            return None
+        return {"result": {}, "retry": False}
+
+    monkeypatch.setattr(remote_client, "_post", post)
+    assert remote_client._send_checked(config, body, time.monotonic() + 5) is None
+    assert sends == [foreground]
+    monkeypatch.setattr(remote_client, "_post", lambda *args: {"result": {}, "retry": False})
+    assert remote_client.flush_spool(config, 3) == 1
+    folder = config["state_dir"] / "spool"
+    assert not list(folder.glob("*.claim"))
+    monkeypatch.setattr(remote_client, "_post", lambda *args: None)
+    monkeypatch.setattr(remote_client, "SPOOL_LIMIT", 1)
+    assert remote_client._send_checked(config, body, time.monotonic() + 5) is None
+    assert len(list(folder.glob("*.claim"))) == 1
+    remote_client._spool(config, {**body["payload"], "turn_id": "TEST-next"}, NOW)
+    assert not list(folder.glob("*.claim")), "capacity eviction removes the settled item's claim"
+
+
+def test_remote_prompt_recalls_while_commit_is_held(store, monkeypatch):
+    from scope_recall.adapters.clients.prompt_recall import PromptRecall
+    from scope_recall.core import capture, capture_inbox
+
+    root, homes = store
+    remote_server.write_server_config(
+        homes["codex"], "codex", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
+    )
+    server = remote_server.load_server_config(homes["codex"], "codex")
+    held, release, finished = threading.Event(), threading.Event(), threading.Event()
+    original = capture_inbox.record_event
+    original_mutations = capture._capture_mutations
+
+    def commit(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        finally:
+            finished.set()
+
+    def mutations(tx, *args):
+        assert tx._check(write=True).in_transaction
+        held.set()
+        assert release.wait(4)
+        return original_mutations(tx, *args)
+
+    monkeypatch.setattr(capture_inbox, "record_event", commit)
+    monkeypatch.setattr(capture, "_capture_mutations", mutations)
+    recalled = []
+
+    def recall(*args, **kwargs):
+        assert held.wait(1)
+        recalled.append(not release.is_set())
+        return {}
+
+    real_recall = PromptRecall.own
+    monkeypatch.setattr(PromptRecall, "own", recall)
+    body = {
+        "payload": {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "TEST-session",
+            "turn_id": "TEST-held",
+            "prompt": "TEST held prompt",
+        },
+        "observed_at": NOW,
+    }
+    began = time.monotonic()
+    try:
+        answer = remote_server.handle_request(server, body)
+        assert time.monotonic() - began < 2
+        assert recalled == [True]
+        assert answer["capture_durability"] == "queued"
+        assert answer["retry"] is False
+    finally:
+        release.set()
+        assert finished.wait(2)
+    assert [row[2] for row in _rows(root, "workpc-codex")] == ["TEST held prompt"]
+    from scope_recall.core.recall import RetrievalPipeline
+
+    prefetched = []
+    monkeypatch.setattr(PromptRecall, "own", real_recall)
+    monkeypatch.setattr(RetrievalPipeline, "_prefetch_query", lambda *args: prefetched.append(True))
+    second = remote_server.handle_request(server, {**body, "payload": {**body["payload"], "prompt": "??"}})
+    assert prefetched == [], "a different message under the same turn retains the prior human prompt"
+    assert second["retry"] is False
+
+
+def test_remote_duplicate_is_logged_stored_and_content_conflict_pending(served, tmp_path, monkeypatch, caplog):
+    from scope_recall.adapters.clients.prompt_recall import PromptRecall
+
+    root, homes, ports = served
+
+    def recall(self, *args, **kwargs):
+        pending = getattr(self._hook, "pending_capture", None)
+        if pending is not None:
+            assert pending.done.wait(2)
+        return {}
+
+    monkeypatch.setattr(PromptRecall, "own", recall)
+    monkeypatch.setattr(remote_server._Asked, "__call__", lambda *args, **kwargs: None)
+    caplog.set_level(logging.INFO, logger="scope_recall.remote_server")
+    client = _client(tmp_path, "codex", ports["codex"])
+    payload = dict(
+        hook_event_name="UserPromptSubmit", session_id="TEST-copy", turn_id="TEST-turn", prompt="TEST same prompt"
+    )
+
+    def send(prompt, stamp):
+        return remote_client._post(client, {"payload": {**payload, "prompt": prompt}, "observed_at": stamp}, 5)
+
+    first = send("TEST same prompt", NOW)
+    second = send("TEST same prompt", "2026-09-27T06:00:01Z")
+    conflict = send("TEST different prompt", "2026-09-27T06:00:02Z")
+    assert first["capture_durability"] == second["capture_durability"] == "persisted"
+    assert second["capture_disposition"] == "duplicate"
+    assert conflict["capture_durability"] == "queued"
+    assert conflict["reason"] == "capture_conflict_pending"
+    assert conflict["retry"] is False
+    assert "capture persisted:duplicate" in caplog.text
+    assert "capture queued:conflict" in caplog.text
+    assert "capture_failed" not in caplog.text
+
+
+def test_remote_masked_prompt_is_stored_once_and_logged_with_its_count(served, tmp_path, monkeypatch, caplog):
+    from scope_recall.adapters.clients.prompt_recall import PromptRecall
+
+    root, homes, ports = served
+
+    def recall(self, *args, **kwargs):
+        pending = getattr(self._hook, "pending_capture", None)
+        if pending is not None:
+            assert pending.done.wait(2)
+        return {}
+
+    monkeypatch.setattr(PromptRecall, "own", recall)
+    monkeypatch.setattr(remote_server._Asked, "__call__", lambda *args, **kwargs: None)
+    caplog.set_level(logging.INFO, logger="scope_recall.remote_server")
+    client = _client(tmp_path, "codex", ports["codex"])
+    payload = dict(
+        hook_event_name="UserPromptSubmit", session_id="TEST-masked", turn_id="TEST-turn", prompt='TEST api_key: "a"'
+    )
+    first = remote_client._post(client, {"payload": payload, "observed_at": NOW}, 5)
+    again = remote_client._post(client, {"payload": payload, "observed_at": "2026-09-27T06:00:01Z"}, 5)
+    assert first["masked_secret_count"] == again["masked_secret_count"] == 1
+    assert first["capture_durability"] == again["capture_durability"] == "persisted"
+    assert again["capture_disposition"] == "duplicate"
+    assert [row[2] for row in _rows(root, "workpc-codex")] == ['TEST api_key: "[REDACTED_SECRET]"']
+    assert "masked 1" in caplog.text
+    assert 'api_key: "a"' not in caplog.text
+
+
+@pytest.mark.parametrize("phase", ["prefetch", "connection_slot", "connect", "read"])
+def test_embedding_failure_phase_reaches_remote_hook_log(served, tmp_path, monkeypatch, caplog, phase):
+    from scope_recall.core import MemoryCore
+    from scope_recall.runtime.models import AuxiliaryModelError
+
+    class Vectors:
+        def search(self, *args, **kwargs):
+            raise AuxiliaryModelError("timeout", phase=phase, elapsed_ms=17)
+
+    original = MemoryCore.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.recall_pipeline.vector_port = Vectors()
+
+    monkeypatch.setattr(MemoryCore, "__init__", init)
+    caplog.set_level(logging.INFO, logger="scope_recall.remote_server")
+    root, homes, ports = served
+    answer = remote_client._post(
+        _client(tmp_path, "codex", ports["codex"]),
+        {
+            "payload": {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "TEST-phase",
+                "turn_id": "TEST-turn",
+                "prompt": "TEST how should the palette be configured?",
+            }
+        },
+        5,
+    )
+    trace = answer["recall_trace"]
+    assert trace["embedding_failure_phase"] == phase
+    assert trace["embedding_ms"] == 17
+    assert trace["vector_started"] == trace["vector_finished"] == trace["vector_packet"] == 0
+    assert f'"embedding_failure_phase":"{phase}"' in caplog.text
+    assert '"embedding_ms":17' in caplog.text

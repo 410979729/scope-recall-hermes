@@ -10,11 +10,14 @@ from __future__ import annotations
 import base64
 import json
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import tzinfo
 from typing import Literal
 
 from ..contracts import ContractError, RecallRequest, TrustedContext, utc_timestamp, validate_model_request
+from .events import capture_content_digests
 from .recall_scope import QueryScope, QueryTime
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
@@ -33,6 +36,40 @@ AUTOMATIC_PACKET_BUDGET_UNITS = 4096
 #: per stored segment (a long tool result is several), so the bound is sized
 #: for a tool-heavy turn rather than for one message.
 MAX_CURRENT_SOURCE_REFS = 256
+
+
+_CURRENT_PROMPT: ContextVar[tuple[str, ...] | None] = ContextVar("current_prompt_content", default=None)
+
+
+@contextmanager
+def using_current_prompt(content: str):
+    """Bind the digests of the prompt's stored segments, in order, to this recall's fence."""
+    token = _CURRENT_PROMPT.set(capture_content_digests(content))
+    try:
+        yield
+    finally:
+        _CURRENT_PROMPT.reset(token)
+
+
+def current_prompt_refs(tx, refs: tuple[str, ...]) -> tuple[str, ...]:
+    """Resolve the prompt's references, one per segment in order, against this read snapshot.
+
+    A queued prompt can share an event key with an earlier message. References absent in this snapshot stay
+    fenced. The sources present here stay fenced only when, segment for segment, they hold the current prompt;
+    an earlier message that shares only its first segment is a different message and stays recallable.
+    """
+    digests = _CURRENT_PROMPT.get()
+    if digests is None:
+        return refs
+    sources = []
+    for ref in refs:
+        key, revision = ref.rsplit("@", 1)
+        sources.append(tx.source(key, int(revision)))
+    if len(refs) == len(digests) and all(
+        source is None or source.content_sha256 == digest for source, digest in zip(sources, digests, strict=True)
+    ):
+        return refs
+    return tuple(ref for ref, source in zip(refs, sources, strict=True) if source is None)
 
 
 def optional_json(text: object) -> object:

@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import ContractError, RecallRequest
 from scope_recall.core.private import notice_for_mode
-from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
+from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, using_current_prompt
 from scope_recall.core.secret_patterns import contains_secret_like_text
+from scope_recall.core.vector_failure import using_vector_trace, vector_trace_fields
 
 from ..runtime_wiring import render_host_recall_context
 from .boundary import (
@@ -150,6 +151,7 @@ class PromptRecall:
         reason = fields.get("last_reason")
         if isinstance(reason, str) and reason.startswith("auto_recall_skipped:"):
             self._hook.note(reason)
+        self._hook.diagnostics.recall_trace = vector_trace_fields(fields.get("recall_trace"))
         for name in ("recall_vector_gap", "recall_error_detail"):
             value = fields.get(name)
             if value is None or type(value) is str:
@@ -243,21 +245,24 @@ class PromptRecall:
             "max_items": 6,
             "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
         }
+        trace: dict = {}
+        self._hook.diagnostics.recall_trace = trace
         try:
-            if since is None:
-                packet = self._hook.core.recall_packet(
-                    context, request, current_source_refs=current_refs, deadline_seconds=remaining
-                )
-            else:
-                # Named only for a Claude Code prompt: every other host's recall is asked without it.
-                packet = self._hook.core.recall_packet(
-                    context,
-                    request,
-                    current_source_refs=current_refs,
-                    deadline_seconds=remaining,
-                    in_context_since=since,
-                )
-            preparation = self._hook.core.prepare_recall_render(context, packet)
+            with using_vector_trace(trace), using_current_prompt(prompt):
+                if since is None:
+                    packet = self._hook.core.recall_packet(
+                        context, request, current_source_refs=current_refs, deadline_seconds=remaining
+                    )
+                else:
+                    # Named only for a Claude Code prompt: every other host's recall is asked without it.
+                    packet = self._hook.core.recall_packet(
+                        context,
+                        request,
+                        current_source_refs=current_refs,
+                        deadline_seconds=remaining,
+                        in_context_since=since,
+                    )
+                preparation = self._hook.core.prepare_recall_render(context, packet)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             code = getattr(exc, "code", None)
             self._hook.diagnostics.recall_error_detail = error_detail(
@@ -286,6 +291,7 @@ class PromptRecall:
             self._hook.diagnostics.recall_vectors = False
             self._hook.note("deadline_exceeded", gaps=gaps)
             return {}
+        trace["vector_packet"] = int(bool(trace.get("vector_finished")) and incomplete is None)
         # In a shared store the model is told which agent it is, so another entry's items read as theirs.
         entry = (
             (self._hook.config.entry_id, self._hook.config.entry_name)

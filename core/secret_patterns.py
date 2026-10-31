@@ -11,6 +11,7 @@ reporting and classification, not for slicing or redacting the original text.
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
 import string
@@ -18,6 +19,9 @@ import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+
+#: Shared replacement value; the scanner's bracketed-mask exemption accepts it.
+REDACTED_SECRET = "[REDACTED_SECRET]"
 
 #: The label's words are bounded: ``(?:[A-Z0-9-]+[ ]+)*`` backtracked through every way to split a run of
 #: ``-----BEGIN `` repeats, 14 s for 100 kB.  Real labels have a few short words ("OPENSSH", "ENCRYPTED").
@@ -27,9 +31,9 @@ PEM_PRIVATE_KEY_BEGIN_RE = re.compile(
 )
 
 COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
-    # The BEGIN marker alone decides, dangling or not: truncated key blocks must fail closed even when the END
-    # marker is missing.  A whole-block pattern added nothing to that and scanned from every BEGIN to the end of
-    # the text looking for its END (quadratic in repeated markers); ``capture_filters`` redacts the block itself.
+    # The BEGIN marker alone decides, with or without its END, so a truncated key block fails closed; a pattern
+    # for the whole block would scan from every BEGIN to the end of the text (quadratic in repeated markers).
+    # Redaction withholds the whole text.
     "pem_private_key_begin": PEM_PRIVATE_KEY_BEGIN_RE,
     "database_uri_with_password": re.compile(
         r"(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis(?:s)?|"
@@ -260,6 +264,7 @@ class SecretTextMatch:
     end: int
     text: str
     value_start: int | None = None
+    quote: str | None = None
 
 
 #: From the first backslash of a run only: from every one, a long run with no break after it would be tried to its
@@ -350,6 +355,7 @@ def scan_secret_like_text(value: Any) -> tuple[SecretTextMatch, ...]:
                 match.end(),
                 match.group(0),
                 match.start("value") if "value" in pattern.groupindex else None,
+                match.group("quote") if "quote" in pattern.groupindex else None,
             )
             for match in _accepted_matches(pattern, shadow)
         )
@@ -360,6 +366,7 @@ def scan_secret_like_text(value: Any) -> tuple[SecretTextMatch, ...]:
             match.end(),
             match.group(0),
             match.start("value"),
+            match.group("quote"),
         )
         for match in _accepted_matches(TOKEN_ASSIGNMENT_RE, shadow)
     )
@@ -502,6 +509,174 @@ def secret_prefilter_sql(expression: str) -> tuple[str, tuple[str, ...]]:
     )
 
 
+#: What ends an unquoted value inside a structure, or a quoted value's item.
+_ITEM_DELIMITERS = ",;)]}"
+_ITEM_DELIMITER_RE = re.compile(r"[,;)\]}]")
+_QUOTE_RE = re.compile(r"[\"'`]")
+_LINE_BREAK_RE = re.compile(r"[\r\n]+")
+#: A line that opens another literal, with a string prefix some languages put before the quote (``r``, ``b``,
+#: ``f``, ``u8``, ``L``, ``@``, ``$``), or that starts with ``+``.
+_CONTINUING_LINE_RE = re.compile(r"[ \t]*(?:(?:[rRbBfFuU]{1,2}|u8|[LR]|[@$]{1,2})?[\"'`]|\+)")
+
+
+class _ShadowIndex:
+    """Line breaks, quotes, structure delimiters and unescaped three-quote runs of the scan shadow, read once.
+
+    Every bound below is a lookup in these sorted positions, so many labelled values on one line or in one
+    structure cost their number times a logarithm, never a rescan of the rest of the text.
+    """
+
+    def __init__(self, shadow: str) -> None:
+        self.shadow = shadow
+        breaks = list(_LINE_BREAK_RE.finditer(shadow))
+        self._break_starts = [found.start() for found in breaks]
+        self._break_ends = [found.end() for found in breaks]
+        self.quotes = [found.start() for found in _QUOTE_RE.finditer(shadow)]
+        self.delimiters = [found.start() for found in _ITEM_DELIMITER_RE.finditer(shadow)]
+        self._runs: dict[str, list[int]] = {}
+        self._lines: dict[int, tuple[int, tuple[bool, bool]]] = {}
+
+    @staticmethod
+    def first(positions: list[int], start: int, end: int) -> int | None:
+        """The first of ``positions`` in ``[start, end)``."""
+        index = bisect.bisect_left(positions, start)
+        return positions[index] if index < len(positions) and positions[index] < end else None
+
+    def closing_run(self, quote: str, start: int) -> int | None:
+        """The first run of three ``quote`` at or after ``start`` that no backslash escapes."""
+        if quote not in self._runs:
+            run = re.compile(r"(?<!\\)" + re.escape(quote * 3))
+            self._runs[quote] = [found.start() for found in run.finditer(self.shadow)]
+        return self.first(self._runs[quote], start, len(self.shadow))
+
+    def line(self, position: int) -> tuple[int, tuple[bool, bool]]:
+        """The end of the line holding ``position``, and whether a quoted or an unquoted value at that end can go
+        on to the next line that is not blank (``_line_continuations``)."""
+        line = bisect.bisect_right(self._break_ends, position)
+        if line not in self._lines:
+            count = len(self._break_starts)
+            start = self._break_ends[line - 1] if line else 0
+            end = self._break_starts[line] if line < count else len(self.shadow)
+            following, next_line = line + 1, ""
+            # Whitespace-only lines are skipped: they cannot end a value that goes on after them.
+            while following <= count:
+                candidate = self.shadow[
+                    self._break_ends[following - 1] : self._break_starts[following] if following < count else None
+                ]
+                if candidate.strip():
+                    next_line = candidate
+                    break
+                following += 1
+            self._lines[line] = end, _line_continuations(self.shadow[start:end], next_line)
+        return self._lines[line]
+
+
+def _structure_flags(shadow: str, matches: tuple[SecretTextMatch, ...]) -> Iterator[bool]:
+    """Read container framing once in match order, avoiding a prefix scan for every labelled value."""
+    stack, quote, escaped = [], None, False
+    position = 0
+    for match in matches:
+        for index in range(position, match.start):
+            character = shadow[index]
+            if quote:
+                if character == quote and not escaped:
+                    quote = None
+                escaped = character == "\\" and not escaped
+            elif character in "\"'`":
+                quote = character
+            elif character in "([{":
+                stack.append(character)
+            elif character in ")]}" and stack:
+                stack.pop()
+        position = match.start
+        yield bool(stack)
+
+
+def _line_continuations(current_line: str, next_line: str) -> tuple[bool, bool]:
+    """Whether a quoted or an unquoted value at the end of ``current_line`` can go on in ``next_line``, the next
+    line that is not blank: after a ``\\`` or ``+`` that ends the line, into a line that opens another literal or
+    starts with ``+``, or into a deeper indent. An unquoted value also goes on into a line of words with no ``:``
+    or ``=``."""
+    indent = len(current_line) - len(current_line.lstrip(" \t"))
+    next_indent = len(next_line) - len(next_line.lstrip(" \t"))
+    continued = (
+        current_line.rstrip().endswith(("\\", "+"))
+        or _CONTINUING_LINE_RE.match(next_line) is not None
+        or next_indent > indent
+    )
+    return continued, continued or (bool(next_line.strip()) and ":" not in next_line and "=" not in next_line)
+
+
+def _ends_sentence(shadow: str, position: int, line_end: int) -> bool:
+    """Whether ``position`` holds a sentence's end: a Chinese full stop or enumeration comma, or ``.``, ``!`` or
+    ``?`` before a space and a word, or before the line's end."""
+    character = shadow[position]
+    if character in "\u3002\u3001":
+        return True
+    if character not in ".!?":
+        return False
+    following = position + 1
+    while following < line_end and shadow[following] in " \t":
+        following += 1
+    return following == line_end or (following > position + 1 and shadow[following].isalpha())
+
+
+def _quoted_value_end(index: _ShadowIndex, closing: int, after: int) -> int | None:
+    """Where a quoted value whose closing quote starts at ``closing`` ends; None when it can go on past its line.
+
+    It ends at ``closing`` when the rest of the line, from ``after``, starts with a structure delimiter, or holds
+    no other quote and starts with a word set off by a space or with a sentence's end. Anything else on the line
+    (another literal, an operator, a markup mark, a word joined to the quote) can add to the value, so the value
+    runs to the end of the line.
+    """
+    shadow = index.shadow
+    line_end, continued = index.line(closing)
+    following = after
+    while following < line_end and shadow[following] in " \t":
+        following += 1
+    end = closing
+    if following < line_end:
+        if shadow[following] in _ITEM_DELIMITERS:
+            return end
+        prose = (following > after and shadow[following].isalnum()) or _ends_sentence(shadow, following, line_end)
+        if not prose or index.first(index.quotes, following, line_end) is not None:
+            end = line_end
+    return None if continued[0] else end
+
+
+def _assignment_redaction_span(index: _ShadowIndex, match: SecretTextMatch, structured: bool) -> tuple[int, int] | None:
+    """The span of a detected assignment's whole value; None withholds the text when its end is ambiguous.
+
+    Detection deliberately reads only enough to classify a value. Redaction must consume its remaining words, or a
+    passphrase would retain everything after its first space. A literal opened with three quotes runs, across
+    lines, to the next three no backslash escapes; the span keeps its first and last quote, so the marker reads as
+    one quoted value, which the scanner exempts. A quoted value ends where ``_quoted_value_end`` says. An unquoted
+    value runs to the end of its line, or inside a structure to the next delimiter.
+    """
+    shadow = index.shadow
+    start = match.value_start
+    assert start is not None
+    quote = match.quote
+    if quote and shadow.startswith(quote * 3, start - 1):
+        closing = index.closing_run(quote, start + 2)
+        end = None if closing is None else _quoted_value_end(index, closing + 2, closing + 3)
+        return None if end is None else (start, end)
+    line_end, continued = index.line(match.start)
+    if quote:
+        if match.end >= len(shadow) or shadow[match.end] != quote:
+            return (start, line_end) if line_end == len(shadow) else None
+        end = _quoted_value_end(index, match.end, match.end + 1)
+        return None if end is None else (start, end)
+    end = line_end
+    if structured:
+        delimiter = index.first(index.delimiters, start, line_end)
+        end = line_end if delimiter is None else delimiter
+        # Delimiters within a matched token may be password characters, not framing. Never expose its tail.
+        if any(character not in _ITEM_DELIMITERS for character in shadow[end : match.end]):
+            return None
+    return None if end == line_end and continued[1] else (start, end)
+
+
 def secret_redaction_spans(text: str) -> tuple[tuple[int, int], ...]:
     """Map secret values back to original characters, retaining labels and formatting.
 
@@ -515,8 +690,20 @@ def secret_redaction_spans(text: str) -> tuple[tuple[int, int], ...]:
     # A normalized PEM marker can evade original-text block framing; its body must never remain readable.
     if any(match.name == "pem_private_key_begin" for match in matches):
         return ((0, len(text)),)
-    if secret_scan_shadow(text) == text:
-        return tuple((m.value_start if m.value_start is not None else m.start, m.end) for m in matches)
+    shadow = secret_scan_shadow(text)
+    index = _ShadowIndex(shadow)
+    spans = []
+    for match, structured in zip(matches, _structure_flags(shadow, matches), strict=True):
+        span = (
+            (match.start, match.end)
+            if match.value_start is None
+            else _assignment_redaction_span(index, match, structured)
+        )
+        if span is None:
+            return ((0, len(text)),)
+        spans.append(span)
+    if shadow == text:
+        return tuple(spans)
     characters, positions = [], []
     for index, character in enumerate(text):
         for normalized in unicodedata.normalize("NFKC", character):
@@ -526,11 +713,9 @@ def secret_redaction_spans(text: str) -> tuple[tuple[int, int], ...]:
     projected = _ESCAPED_BREAK_RE.sub(
         lambda match: _ESCAPED_BREAKS[match.group(1)] * len(match.group(0)), "".join(characters)
     )
-    if projected != secret_scan_shadow(text):
+    if projected != shadow:
         return ((0, len(text)),)
-    return tuple(
-        (positions[m.value_start if m.value_start is not None else m.start], positions[m.end - 1] + 1) for m in matches
-    )
+    return tuple((positions[start], positions[end - 1] + 1) for start, end in spans)
 
 
 def secret_like_text_starts_before(value: Any, end: int) -> bool:
