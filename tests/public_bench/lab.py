@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "recall_bench"))
 # already imported package from somewhere else. Reuse that same boundary.
 from cache import digest
 from recall_bench import WorldClock
-from scope_recall.contracts import InstanceBinding, TrustedContext, TrustedSourcePrincipal
+from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext, TrustedSourcePrincipal
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy
 from scope_recall.core.work_storage import CAPACITY_REFUSALS
@@ -160,22 +160,29 @@ class Lab:
         blocked candidates as unavailable. Pending/leased work or unsettled
         candidates never becomes complete merely because a pass processed zero.
         Wall and round caps fail explicitly, and real network deadlines remain
-        real-time deadlines inside the runtime adapters.
+        real-time deadlines inside the runtime adapters. A pass whose window
+        runs out inside the drain is followed by the next pass, as the shipped
+        worker supervisor does; the item it held is taken again after its lease.
         """
         deadline, advances = time.monotonic() + wall_seconds, 0
         for round_index in range(max_rounds):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return {"status": "wall_limit", "rounds": round_index, **self.state()}
-            receipt = self.core.drain_worker(
-                self.context,
-                owner_id="public-worker",
-                consolidation=self.ports.model,
-                embed=self.embed,
-                purge=self.purge,
-                max_items=256,
-                remaining_seconds=min(120, remaining),
-            )
+            try:
+                receipt = self.core.drain_worker(
+                    self.context,
+                    owner_id="public-worker",
+                    consolidation=self.ports.model,
+                    embed=self.embed,
+                    purge=self.purge,
+                    max_items=256,
+                    remaining_seconds=min(120, remaining),
+                )
+            except ContractError as exc:
+                if exc.code != "DEADLINE_EXCEEDED":
+                    raise
+                receipt = None
             self.ports.cache.raise_if_missing()
             state = self.state()
             if time.monotonic() >= deadline:
@@ -193,7 +200,7 @@ class Lab:
                     "business_advances": advances,
                     **state,
                 }
-            if receipt.processed:
+            if receipt is None or receipt.processed:
                 continue
             waiting = throttled(state)
             if waiting:

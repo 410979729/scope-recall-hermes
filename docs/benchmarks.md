@@ -139,9 +139,17 @@ remain unfinished. The runner advances the business clock when waiting for
 settling windows, and enforces round, business-time and real wall-clock limits.
 A pass processing zero items is insufficient evidence of completion.
 Each worker batch receives the remaining wall-clock budget, and the runner
-checks the deadline again after the batch. Incomplete questions appear under
-`incomplete_results`, never call the answerer or judge, and make the command
-exit unsuccessfully. Their scores cannot become a complete baseline.
+checks the deadline again after the batch. A batch whose budget runs out inside
+the drain is followed by the next one, as the shipped worker supervisor does.
+A question whose queue settles with failed work and nothing pending is answered
+and scored from what its store holds, as the product answers its owner; its
+`backend_state` lists the failed work and `settled_with_failures` counts these
+questions. Pending or leased work, unsettled candidates, an unavailable
+capability or a reached limit leave a question incomplete: it appears under
+`incomplete_results`, never calls the answerer or judge, and makes the command
+exit unsuccessfully. Its score cannot become a complete baseline. A question
+that raises is recorded with its error and the code locations it passed
+through (`error_at`), and the split continues.
 
 Results retain dataset provenance, model settings, prompt hashes, per-question
 packets, admission gaps, pipeline states, session/turn evidence recall, estimated

@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -123,6 +124,11 @@ def isolated(run, case, *, cache_only: bool) -> dict:
             "status": "failed",
             "turns": len(case.turns),
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            # Code locations only, innermost last: a ContractError message names a code, not where it was raised.
+            "error_at": [
+                f"{Path(frame.filename).name}:{frame.lineno} {frame.name}"
+                for frame in traceback.extract_tb(exc.__traceback__)[-4:]
+            ],
             "answer": None,
             "judge_correct": None,
             "evaluation": {"status": "not_run", "reason": "question_failed"},
@@ -154,7 +160,9 @@ def run_case(
                     admissions.append({"turn": turn.key, "error": receipt.error_code, "gaps": list(receipt.gaps)})
             state = lab.settle(wall_seconds=settle_seconds)
             ports.cache.raise_if_missing()
-            if state["status"] != "complete":
+            # Work the product gave up on is its own outcome, and its owner is still answered from what the store
+            # holds. Pending work, a limit reached or an unavailable capability is not an outcome yet.
+            if state["status"] not in {"complete", "failed"}:
                 return {
                     "id": case.id,
                     "category": case.category,
@@ -327,6 +335,9 @@ def main() -> None:
         "selected_categories": category_counts(selected),
         "questions": len(selected),
         "completed_questions": len(results),
+        "settled_with_failures": sum(
+            1 for row in results if (row.get("backend_state") or {}).get("status") == "failed"
+        ),
         "results": results,
         "incomplete_results": incomplete,
         "workers": args.workers,

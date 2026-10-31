@@ -757,7 +757,7 @@ def test_cache_only_main_rejects_a_swallowed_miss(tmp_path, monkeypatch):
     assert not (output / "results.json").exists()
 
 
-@pytest.mark.parametrize("status", ["failed", "unavailable", "wall_limit", "round_limit"])
+@pytest.mark.parametrize("status", ["unavailable", "wall_limit", "round_limit", "business_time_limit"])
 def test_unfinished_questions_never_answer_or_judge(tmp_path, monkeypatch, status):
     import run
 
@@ -774,6 +774,24 @@ def test_unfinished_questions_never_answer_or_judge(tmp_path, monkeypatch, statu
     assert row["answer"] is None and row["judge_correct"] is None
     assert "answer" not in ports.cache.operations and "judge" not in ports.cache.operations
     assert row["status"] == "incomplete"
+
+
+def test_a_pipeline_that_settled_with_failed_work_is_answered_and_scored(tmp_path, monkeypatch):
+    import run
+
+    _stub_lab(monkeypatch, status="failed")
+    ports = Ports(RequestCache(tmp_path / "requests.sqlite3"))
+    row = run.run_case(
+        _question(),
+        root=tmp_path,
+        ports=ports,
+        prompts={"default": "{}{}{}"},
+        method="scope-recall",
+        retrieval_only=False,
+    )
+    assert row["status"] == "complete" and row["backend_state"]["status"] == "failed"
+    assert row["evaluation"]["status"] == "scored"
+    assert {"answer", "judge"} <= set(ports.cache.operations)
 
 
 def test_longmemeval_sorts_sessions_stably_without_reordering_turns(tmp_path):
@@ -817,6 +835,38 @@ def test_settle_checks_the_deadline_after_a_batch_and_passes_remaining_budget(mo
     result = store.settle(wall_seconds=1)
     assert result["status"] == "wall_limit"
     assert 0 < budgets[0] <= 1
+
+
+def test_settle_starts_the_next_pass_after_a_pass_runs_out_of_time():
+    from scope_recall.contracts import ContractError
+
+    passes = []
+
+    def batch(*args, **kwargs):
+        passes.append(kwargs["remaining_seconds"])
+        if len(passes) == 1:
+            raise ContractError("DEADLINE_EXCEEDED")
+        return SimpleNamespace(processed=1)
+
+    store = object.__new__(Lab)
+    store.core, store.context = SimpleNamespace(drain_worker=batch), None
+    store.ports = SimpleNamespace(model=None, cache=SimpleNamespace(raise_if_missing=lambda: None))
+    store.embed = store.purge = None
+    store.state = lambda: {
+        "work": [("consolidate", "leased" if len(passes) < 2 else "done", None, 1)],
+        "candidates": [],
+        "phases": {},
+        "next_at": None,
+    }
+    assert store.settle(wall_seconds=60)["status"] == "complete"
+    assert len(passes) == 2
+
+    def refused(*args, **kwargs):
+        raise ContractError("STORAGE_UNAVAILABLE")
+
+    store.core = SimpleNamespace(drain_worker=refused)
+    with pytest.raises(ContractError, match="STORAGE_UNAVAILABLE"):
+        store.settle(wall_seconds=60)
 
 
 def test_lab_deadlines_use_real_time_while_business_dates_are_injected(tmp_path):
@@ -1041,7 +1091,7 @@ def test_incomplete_cli_report_excludes_answers_and_full_scores(tmp_path, monkey
 
     data, output = tmp_path / "data", tmp_path / "output"
     _data_manifest(data)
-    _stub_lab(monkeypatch, status="failed")
+    _stub_lab(monkeypatch, status="wall_limit")
     monkeypatch.setattr(run, "longmemeval", lambda _: [replace(_question(), id=str(i)) for i in range(500)])
     monkeypatch.setattr(run, "official_prompts", lambda _: {"default": "{}{}{}"})
     monkeypatch.setattr(sys, "argv", ["run.py", "--data", str(data), "--output", str(output), "--fake", "--limit", "1"])
@@ -1258,5 +1308,6 @@ def test_a_failed_question_is_recorded_and_the_split_continues():
 
     row = isolated(broken, _question(), cache_only=False)
     assert row["status"] == "failed" and "TEST transport closed" in row["error"]
+    assert row["error_at"][-1].startswith("test_public_bench.py:") and row["error_at"][-1].endswith(" broken")
     with pytest.raises(RuntimeError):
         isolated(broken, _question(), cache_only=True)
