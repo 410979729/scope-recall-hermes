@@ -133,6 +133,23 @@ Restart dsh and check `dsh --profile headless --dump-config` for both rows, with
 To remove it, quit dsh and remove only the `SCOPE_RECALL_DSH_START`/`END` block and installed plugin file;
 leave the separate privacy block in place. Do not discard pending messages unless you intend to lose them.
 
+A remote prompt that capture admits is durably queued before recall starts. The server then commits it at once
+on a thread with its own write deadline; recall does not wait for that commit. The answer reports the receipt
+the commit has reached by then: `queued` means the inbox still holds the capture (the commit is running, or met a
+busy store or a conflict), `persisted` that its source is stored. A server exit leaves an unfinished capture in
+the inbox for replay. A repeated message that differs only in its occurrence time returns the original source
+as a duplicate. Different content under the same key stays queued as `capture_conflict_pending` for re-keying.
+
+The server's hook log includes `capture <durability>:<disposition>` and a `vector trace` object containing only
+execution flags, fixed phase codes and milliseconds. `vector_started` and `vector_finished` describe actual
+index searches; `vector_packet` says a finished search reached a complete packet before the hook's deadline.
+A finished search can find no matches. `helper_failure_phase` distinguishes `drain` (an earlier late reply),
+`open` and `search`; `helper_<phase>_ms` records each wait. `embedding_failure_phase` distinguishes `prefetch`,
+`connection_slot`, `connect` and `read`, with `embedding_ms` for that failed wait. `transport` identifies a
+failure before the HTTP helper published a socket phase. These fields do not change recall's stage budgets.
+A capture that masked credential values adds `masked <n>`, the number of merged replacement spans; the values
+themselves never reach the log.
+
 ## When the server cannot be reached
 
 A hook whose connection has not opened in 3 s gives up and answers with nothing; for a minute after that no
@@ -147,7 +164,8 @@ not two. A hook whose message the busy store could not take stays in the spool (
 to be sent again`), and one the server refuses for good (HTTP 400 or 413: malformed, too large) is dropped
 rather than kept, since it would be refused again and would stop every later flush. The spool keeps 256 hooks
 and drops its oldest past that. What did not get through, what the spool sent and what it dropped is logged in
-the client's `state_dir\remote-client.log`.
+the client's `state_dir\remote-client.log`. While a hook's own request is sending a spooled item, the background
+sender skips that item; a failed send leaves it for the next flush.
 
 dsh does **not** use the Codex forwarder's spool. Its native plugin keeps unacknowledged messages in
 `state_dir/scope-recall/dsh-spool`; failed/empty responses do not advance its acknowledgement cursor. The next
@@ -162,10 +180,11 @@ hidden for a day. Every request of a client session moves back by the lead its f
 own is within a minute of that, so the session's times stay about this machine's now and its turns keep their order
 whatever each request's delay on the way; moved back each by its own lead, a reply that came with a quicker `Stop`
 could be dated before its prompt. A request whose lead is further off (a clock set anew, a hook sent long after it
-ran) moves back by its own, and a hook sent twice may then be stored twice. When it was stored, when its work falls
-due and a recall's now are this machine's clock, so a client clock that runs fast or slow does not hold back the work
-on its messages. That covers the hook's own time and every message a request carries: a record's lines, and the
-turn's messages dsh's plugin sends inside its Stop. Keep the two machines' clocks synchronized.
+ran) moves back by its own; a message sent again under its key keeps the time its first copy was stored with.
+When it was stored, when its work falls due and a recall's now are this machine's clock, so a client clock that
+runs fast or slow does not hold back the work on its messages. That covers the hook's own time and every message a
+request carries: a record's lines, and the turn's messages dsh's plugin sends inside its Stop. Keep the two
+machines' clocks synchronized.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP

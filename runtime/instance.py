@@ -72,12 +72,17 @@ class _QueryEmbedding:
         self._error: BaseException | None = None
 
     def run(self, embed: Callable[[tuple[str, ...], float], Sequence[Any]]) -> None:
+        began = time.monotonic()
         try:
-            deadline = RequestDeadline.from_absolute(self.deadline, now=time.monotonic())
+            deadline = RequestDeadline.from_absolute(self.deadline, now=began)
             with using_request_deadline(deadline):
                 budget = deadline.remaining()
                 if budget <= 0:
-                    raise TimeoutError("query embedding stage deadline exhausted")
+                    # A built-in TimeoutError keeps recall on its timeout fallback; the two attributes only feed the
+                    # vector trace.
+                    error = TimeoutError("query embedding stage deadline exhausted")
+                    error.__dict__.update(phase="prefetch", elapsed_ms=round((time.monotonic() - began) * 1000))
+                    raise error
                 # A connection that failed in milliseconds costs the whole
                 # semantic channel otherwise; a rejected request is not retried.
                 vectors = tuple(
@@ -98,8 +103,9 @@ class _QueryEmbedding:
     def result(self, deadline: float, query: str | None = None) -> Any:
         """The vector of ``query`` (the question's own by default); the embedding's own failure; a timeout if it is
         still out at ``deadline``."""
+        began = time.monotonic()
         if not self._done.wait(max(0.0, deadline - time.monotonic())):
-            raise AuxiliaryModelError("timeout")
+            raise AuxiliaryModelError("timeout", phase="prefetch", elapsed_ms=round((time.monotonic() - began) * 1000))
         if self._error is not None:
             raise self._error
         return self._vectors[self.queries.index(self.query if query is None else query)]

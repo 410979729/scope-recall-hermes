@@ -64,6 +64,8 @@ class AdapterDiagnostics:
     pending_outcome_gaps: tuple[str, ...] = ()
     capability_gaps: tuple[str, ...] = ()
     capture_failures: tuple[str, ...] = ()
+    #: Replacement spans observed by this adapter, without credential text.
+    masked_secret_count: int = 0
     pending_capture_identities: tuple[str, ...] = ()
     durable_pending_captures: int | None = None
     current_source_refs: tuple[str, ...] = ()

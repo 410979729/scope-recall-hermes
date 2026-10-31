@@ -112,7 +112,7 @@ def test_revocation_and_deletion_cancel_pending_ingress(worker_app):
         ).fetchall() == [("TEST-revoked",)]
 
 
-def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
+def test_ingress_masks_secrets_and_rejects_conflicts_and_other_partitions(worker_app):
     core, ctx, clock = worker_app
     event = source_event(source_event_key="TEST-collision", content="TEST original")
     capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
@@ -135,7 +135,44 @@ def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
         scope_id="TEST-scope",
         host_scope=None,
     )
-    assert token is None and prepared.rejection == "plaintext_secret_rejected"
+    assert token is not None and prepared.rejection is None and prepared.masked_secret_count == 1
+    assert prepared.events[0]["content"] == "api_key=[REDACTED_SECRET]"
+    again, retried = capture_inbox.enqueue(
+        core.storage,
+        clock,
+        ctx,
+        dict(event, source_event_key="TEST-secret", content="api_key=sk-" + "abcd" * 12),
+        scope_id="TEST-scope",
+        host_scope=None,
+    )
+    assert again == token and retried.masked_secret_count == 1
+    with core.storage.read(ctx) as tx:
+        payload = tx._check().execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0]
+    assert "sk-" not in payload and "masked_secret_count" in payload
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert {
+        core.source(ctx, receipt.event_refs[0].ref, 1).event["source_event_key"]: receipt.masked_secret_count
+        for receipt in receipts
+    } == {"TEST-collision": 0, "TEST-secret": 1}
+
+
+def test_ingress_masks_context_display_name_before_durable_queue(worker_app):
+    from scope_recall.contracts import TrustedSourcePrincipal
+
+    core, ctx, clock = worker_app
+    ctx = replace(
+        ctx,
+        source_principal=TrustedSourcePrincipal("human", "verified", "TEST-principal", 'TEST password: "Synthet1c"'),
+    )
+    event = source_event(content="TEST public note")
+    token, prepared = capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    assert token is not None and prepared.masked_secret_count == 1
+    with core.storage.read(ctx) as tx:
+        payload = tx._check().execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0]
+    assert "Synthet1c" not in payload
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert len(receipts) == 1 and receipts[0].masked_secret_count == 1
+    assert b"Synthet1c" not in core.storage.path.read_bytes()
 
 
 def test_a_row_an_older_release_left_as_source_missing_is_replayed_once(worker_app, monkeypatch):
@@ -468,11 +505,14 @@ def test_a_message_sent_again_with_a_moment_of_its_own_is_resolved_as_the_one_st
             dict(first, content="TEST 同一个键下的另一句", occurred_at="2026-09-05T12:00:42Z"),
         )
     ]
-    assert [(receipt.disposition, receipt.error_code) for receipt in receipts] == [("conflict", "VERSION_CONFLICT")] * 2
+    assert [(receipt.disposition, receipt.error_code) for receipt in receipts] == [
+        ("duplicate", None),
+        ("conflict", "VERSION_CONFLICT"),
+    ]
     resolved = capture_inbox.resolve_conflicted_ingress(
         core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5
     )
-    assert sorted(receipt.disposition for receipt in resolved) == ["duplicate", "inserted"]
+    assert [receipt.disposition for receipt in resolved] == ["inserted"]
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
         stored = sorted(conn.execute("SELECT source_event_key, content, occurred_at FROM source_events").fetchall())
@@ -2186,3 +2226,77 @@ def test_the_parts_of_a_delete_s_comparison_each_hold(worker_app):
             for (payload,) in conn.execute("SELECT payload_json FROM capture_inbox")
         )
     assert kept == sorted(content for content, keep in rows if keep)
+
+
+def test_time_only_host_retry_returns_first_reference_immediately(worker_app, monkeypatch):
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-time-retry", content="TEST blue preference")
+
+    def send(event):
+        return capture_inbox.durable_record_event(
+            core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None
+        )
+
+    stored = send(first)
+    duplicate = send(dict(first, occurred_at="2026-09-05T12:00:31Z", time_precision="approximate"))
+    assert duplicate.disposition == "duplicate"
+    assert duplicate.durability == "persisted"
+    assert duplicate.event_refs == tuple(replace(ref, disposition="duplicate") for ref in stored.event_refs)
+    real = capture_inbox.record_event
+
+    def unavailable_on_normalized(*args, **kwargs):
+        if kwargs["_prepared"].events[0]["occurred_at"] == first["occurred_at"]:
+            from scope_recall.core.capture import CaptureReceipt
+
+            return CaptureReceipt("unavailable", (), "unknown", "unknown", "unknown", error_code="STORAGE_UNAVAILABLE")
+        return real(*args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(capture_inbox, "record_event", unavailable_on_normalized)
+        waiting = send(dict(first, occurred_at="2026-09-05T12:00:32Z"))
+    assert waiting.durability == "queued" and waiting.error_code == "STORAGE_UNAVAILABLE"
+    assert send(dict(first, occurred_at="2026-09-05T12:00:32Z")).disposition == "duplicate"
+    conflict = send(dict(first, content="TEST green preference"))
+    assert conflict.disposition == "conflict"
+    assert conflict.durability == "queued"
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT last_error_code FROM capture_inbox").fetchall()[0][0] == "VERSION_CONFLICT"
+
+
+def test_background_commit_process_exit_keeps_durable_inbox_for_replay(worker_app):
+    core, ctx, clock = worker_app
+    metadata = dict(
+        agent_id=ctx.binding.agent_id,
+        installation_id=ctx.binding.installation_id,
+        data_directory=str(ctx.binding.data_directory),
+        scope_ids=sorted(ctx.binding.scope_ids),
+        session_id=ctx.session_id,
+        actor_origin=ctx.actor_origin,
+        project_id=ctx.project_id,
+        branch_id=ctx.branch_id,
+        event=source_event(source_event_key="TEST-exit", content="TEST durable after exit"),
+    )
+    code = """import json,os,sys,threading
+from pathlib import Path
+from scope_recall.contracts import InstanceBinding,TrustedContext
+from scope_recall.core import CoreConfig,MemoryCore,capture
+m=json.loads(sys.argv[1]);b=InstanceBinding(m['agent_id'],m['installation_id'],Path(m['data_directory']),frozenset(m['scope_ids']),True)
+c=TrustedContext(b,m['session_id'],b.scope_ids,m['actor_origin'],project_id=m['project_id'],branch_id=m['branch_id'])
+core=MemoryCore(CoreConfig(b))
+capture._capture_mutations=lambda *args: os._exit(0)
+core.record_host_event(c,m['event'],scope_id='TEST-scope',host_scope=None,background=True)
+threading.Event().wait(10)
+raise SystemExit(3)
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code, json.dumps(metadata)], capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr
+    with core.storage.read(ctx) as tx:
+        assert tx.status().sources == 0
+        assert tx._check().execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 1
+    replayed = capture_inbox.replay_inbox(
+        core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5
+    )
+    assert len(replayed) == 1 and replayed[0].durability == "persisted"
+    assert core.status(ctx).sources == 1

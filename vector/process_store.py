@@ -18,11 +18,12 @@ import subprocess
 import threading
 import time
 import weakref
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
 from ..core.deadline import RequestDeadline, current_request_deadline, remaining_seconds, using_request_deadline
+from ..core.vector_failure import note_helper_deadline, vector_phase
 from . import VectorStore, VectorStoreCompatibilityError
 from .lance_native import helper_command, python_subprocess_options
 
@@ -327,6 +328,8 @@ class ProcessLanceVectorStore(VectorStore):
 
     backend = "lancedb"
 
+    reports_vector_execution = True
+
     def __init__(self, db_path: Path, *, table_name: str, dimensions: int, metric: str = "cosine") -> None:
         super().__init__(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
         self._lock = threading.RLock()
@@ -535,7 +538,8 @@ class ProcessLanceVectorStore(VectorStore):
             raise RuntimeError("native vector worker is closed; reopen the vector runtime explicitly")
         # The frame a previous caller gave up on is discarded here rather than
         # raised into this unrelated request.
-        self._drain_pending_response_locked()
+        with vector_phase("helper", "drain"):
+            self._drain_pending_response_locked()
         if _budget_exhausted():
             raise _request_budget_expired()
         self._sequence += 1
@@ -559,6 +563,18 @@ class ProcessLanceVectorStore(VectorStore):
         encoded = (json.dumps(request, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
         if len(encoded) > MAX_LANCE_FRAME_BYTES:
             raise ValueError("native vector request exceeds the 64 MiB frame limit")
+        phase = (
+            "open"
+            if method in {"open", "open_existing"}
+            else "search"
+            if method in {"search", "search_scopes"}
+            else "other"
+        )
+        with vector_phase("helper", phase), vector_phase("vector", "search") if phase == "search" else nullcontext():
+            return self._exchange_locked(method, request_id, encoded, nonce, guard, during_wait)
+
+    def _exchange_locked(self, method, request_id, encoded, nonce, guard, during_wait):
+        """Exchange a prepared frame, preserving late replies for the next caller."""
         overlap_failed = False
         try:
             if self._process is None:
@@ -584,6 +600,7 @@ class ProcessLanceVectorStore(VectorStore):
                     only_if_ready=during_wait is not None and (work_failed or _budget_exhausted()),
                 )
         except _RequestBudgetExpired:
+            note_helper_deadline("open" if method in {"open", "open_existing"} else "search")
             self._park_pending_response(request_id, method)
             if during_wait is not None:
                 return None
@@ -935,6 +952,8 @@ class SharedStore:
     runtimes search it too, and a kept handler that is made anew finds its helper warm.  Everything else is the
     store's own.
     """
+
+    reports_vector_execution = True
 
     def __init__(self, shared: _Shared) -> None:
         self._shared = shared

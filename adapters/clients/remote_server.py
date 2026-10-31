@@ -426,6 +426,7 @@ def handle_request(
         remote_paths=True,
         hook_started_at=started if started is not None else time.monotonic(),
     )
+    handler.background_prompt_capture = True
     built = round((time.monotonic() - building) * 1000)
     asked = None
     if recaller is not None and payload.get("hook_event_name") == "UserPromptSubmit":
@@ -437,6 +438,7 @@ def handle_request(
     finally:
         closing = time.monotonic()
         handler.close()
+    handler.finish_prompt_capture()
     closed = round((time.monotonic() - closing) * 1000)
     if config.host == "dsh":
         result = {**result, "private_rules": private_rules}
@@ -458,10 +460,14 @@ def handle_request(
         "error": handler.diagnostics.capture_error_detail or handler.diagnostics.capture_error_type,
         "recall_error": handler.diagnostics.recall_error_detail,
         "recall_vector": handler.diagnostics.recall_vector_gap,
+        "recall_trace": handler.diagnostics.recall_trace,
         "retry": not handler.diagnostics.capture_settled,
+        "capture_disposition": handler.diagnostics.capture_disposition,
+        "capture_durability": handler.diagnostics.capture_durability,
         "warm": warm,
         "build_ms": built,
         "capture_ms": handler.diagnostics.capture_total_ms,
+        "masked_secret_count": handler.diagnostics.masked_secret_count,
         "attach_ms": handler.diagnostics.runtime_attach_ms,
         "close_ms": closed,
     }
@@ -562,7 +568,7 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
             if answer.get(key) is not None
         )
         _log.info(
-            "hook %s: %s%s%s%s%s, record through %s, %d ms%s%s",
+            "hook %s: %s%s%s%s%s, record through %s, %d ms%s%s%s%s%s",
             event,
             answer["reason"],
             f" ({answer['error']})" if answer.get("error") else "",
@@ -575,6 +581,13 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
             round((time.monotonic() - started) * 1000),
             f" ({shares})" if shares else "",
             f", warm recall {answer['warm']}" if answer.get("warm") else "",
+            f", capture {answer['capture_durability']}:{answer['capture_disposition']}"
+            if answer.get("capture_durability")
+            else "",
+            f", masked {answer['masked_secret_count']}" if answer.get("masked_secret_count") else "",
+            ", vector trace " + json.dumps(answer["recall_trace"], separators=(",", ":"))
+            if answer.get("recall_trace")
+            else "",
         )
         return JSONResponse(answer)
 

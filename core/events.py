@@ -6,22 +6,27 @@ import functools
 import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
 
 from ..contracts import ContractError, SourceEvent, TrustedContext, decode_payload, validate_capture
-from .capture_filters import sanitize_source_capture_text
-from .secret_patterns import contains_secret_like_text
+from .capture_filters import redact_secret_text, sanitize_source_capture_text
+from .secret_patterns import REDACTED_SECRET, contains_secret_like_text
 
 MAX_SEGMENT_CHARS = 65536
 
 
 @dataclass(frozen=True)
 class PreparedCapture:
+    """Validated, masked segments and ingress metadata for one original envelope."""
+
     events: tuple[SourceEvent, ...]
     gaps: tuple[str, ...] = ()
     rejection: str | None = None
     # Ephemeral ingress decision; never serialized into an event or inbox payload.
     private_revision: int | None = None
+    #: Merged replacement spans across the original envelope, counted once before segmentation.
+    masked_secret_count: int = 0
 
 
 def capture_contains_secret(value: object) -> bool:
@@ -35,42 +40,121 @@ def capture_contains_secret(value: object) -> bool:
     return False
 
 
+def _principal_context(raw: dict, context: TrustedContext) -> TrustedContext:
+    """Accept only the trusted principal or its canonically masked display name; authority stays exact."""
+    principal = context.source_principal
+    if principal is not None and principal.display_name is not None:
+        name, _count = redact_secret_text(principal.display_name)
+        masked = replace(principal, display_name=name)
+        if raw.get("source_principal") == masked.to_payload():
+            return replace(context, source_principal=masked)
+    return context
+
+
+def _capture_identity(raw: dict, context: TrustedContext) -> dict:
+    """All identity and reference texts, including authority that the event stores outside its payload."""
+    identity = {k: v for k, v in raw.items() if k not in {"content", "source_context"}}
+    if "source_principal" in identity:
+        identity["source_principal"] = {k: v for k, v in identity["source_principal"].items() if k != "display_name"}
+    identity["context"] = [
+        context.session_id,
+        *context.allowed_scope_ids,
+        context.project_id,
+        context.branch_id,
+        context.task_anchor,
+        context.environment_revision,
+        context.entry_id,
+        context.project_root,
+        context.binding.agent_id,
+        context.binding.installation_id,
+        context.display_snapshot.to_payload() if context.display_snapshot else None,
+    ]
+    return identity
+
+
+def _mask_capture_texts(value: Any) -> tuple[Any, int]:
+    """Copy an envelope through the shared redactor; a withheld whole field refuses the envelope."""
+    if isinstance(value, str):
+        masked, count = redact_secret_text(value)
+        if count and masked.strip() == REDACTED_SECRET:
+            raise ValueError("plaintext_secret_rejected")
+        return masked, count
+    if isinstance(value, dict):
+        result, count = {}, 0
+        for key, item in value.items():
+            result[key], added = _mask_capture_texts(item)
+            count += added
+        return result, count
+    if isinstance(value, list):
+        result, count = [], 0
+        for item in value:
+            masked, added = _mask_capture_texts(item)
+            result.append(masked)
+            count += added
+        return result, count
+    return value, 0
+
+
+def capture_text_segments(text: str) -> tuple[str, ...]:
+    """Bound source chunks without cutting the shared marker into a new apparent credential."""
+    parts, start = [], 0
+    while start < len(text):
+        end = min(start + MAX_SEGMENT_CHARS, len(text))
+        marker = text.rfind(REDACTED_SECRET, max(start, end - len(REDACTED_SECRET) + 1), end + len(REDACTED_SECRET))
+        if start < marker < end < marker + len(REDACTED_SECRET):
+            end = marker
+        parts.append(text[start:end])
+        start = end
+    return tuple(parts) or ("",)
+
+
 def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedContext) -> PreparedCapture:
+    """Validate identity, mask stored text once, then sanitize transport and split bounded source segments."""
     raw = decode_payload(dict(value) if isinstance(value, dict) else value)
     content = raw.get("content")
     if type(content) is not str:
         raise ContractError("INPUT_INVALID", "content")
     # Validate the envelope before splitting a bounded long host message. The
     # original content is never repaired or supplied to a model to pass schema.
-    validate_capture({**raw, "content": ""}, context)
+    checked = validate_capture({**raw, "content": ""}, _principal_context(raw, context))
+    raw = {**checked, "content": content}
     if not raw["source_event_key"].strip() or "\x00" in raw["source_event_key"]:
         raise ContractError("INPUT_INVALID", "source_event_key")
-    if capture_contains_secret(raw):
+    if capture_contains_secret(_capture_identity(raw, context)):
         return PreparedCapture((), rejection="plaintext_secret_rejected")
+    try:
+        raw, masked_secret_count = _mask_capture_texts(raw)
+    except ValueError:
+        return PreparedCapture((), rejection="plaintext_secret_rejected")
+    context = _principal_context(raw, context)
+    content = raw["content"]
     filtered = sanitize_source_capture_text(content)
     gaps = ("transport_payload_omitted",) if filtered != content else ()
+    if masked_secret_count:
+        gaps = (*gaps, "secret_values_masked")
     if not filtered.strip() and not raw.get("artifact_refs") and raw["capture_state"] == "complete":
         return PreparedCapture((), gaps, "empty_source")
     state = "partial" if gaps and raw["capture_state"] == "complete" else raw["capture_state"]
     if len(filtered) <= MAX_SEGMENT_CHARS:
         event = validate_capture({**raw, "content": filtered, "capture_state": state}, context)
-        return PreparedCapture((event,), gaps)
+        return PreparedCapture((event,), gaps, masked_secret_count=masked_secret_count)
     if "segment" in raw:
         raise ContractError("INPUT_INVALID", "nested_oversize_segment")
     # Stable ordinal chunks preserve every character. Hashing the occurrence
     # key keeps generated keys bounded; content never supplies identity.
-    total = (len(filtered) + MAX_SEGMENT_CHARS - 1) // MAX_SEGMENT_CHARS
+    segments = capture_text_segments(filtered)
+    total = len(segments)
     events = []
-    for index in range(total):
+    for index, segment in enumerate(segments):
         event = {
             **raw,
             "source_event_key": segment_key(raw["source_event_key"], index),
-            "content": filtered[index * MAX_SEGMENT_CHARS : (index + 1) * MAX_SEGMENT_CHARS],
+            "content": segment,
             "capture_state": state,
             "segment": {"group_key": raw["source_event_key"], "index": index, "total": total, "truncated": bool(gaps)},
         }
         events.append(validate_capture(event, context))
-    return PreparedCapture(tuple(events), gaps)
+    return PreparedCapture(tuple(events), gaps, masked_secret_count=masked_secret_count)
 
 
 def segment_key(group_key: str, index: int) -> str:
@@ -79,9 +163,20 @@ def segment_key(group_key: str, index: int) -> str:
     return f"segmented-{hashlib.sha256(group_key.encode('utf-8')).hexdigest()}/{index}"
 
 
+def _stored_segments(content: str) -> tuple[str, ...]:
+    """The texts a capture of ``content`` stores: masked, sanitized and split the way ``prepare_capture`` does."""
+    masked, _count = redact_secret_text(content)
+    return capture_text_segments(sanitize_source_capture_text(masked))
+
+
+def capture_content_digests(content: str) -> tuple[str, ...]:
+    """The ``content_sha256`` of each segment a capture of ``content`` stores, in order."""
+    return tuple(hashlib.sha256(segment.encode("utf-8")).hexdigest() for segment in _stored_segments(content))
+
+
 def stored_content_digest(content: str) -> str:
     """The ``content_sha256`` a capture of ``content`` is stored under: its first segment's, when it is split."""
-    return hashlib.sha256(sanitize_source_capture_text(content)[:MAX_SEGMENT_CHARS].encode("utf-8")).hexdigest()
+    return hashlib.sha256(_stored_segments(content)[0].encode("utf-8")).hexdigest()
 
 
 CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")

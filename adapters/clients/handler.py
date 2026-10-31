@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol, cast
 
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.capture_inbox import DELETED_KEY
+from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from ..runtime_wiring import strict_hook_budget
@@ -153,6 +153,8 @@ class CodexHookHandler:
         #: used for project-scoped private intervals only; it grants no scope.
         self._project_root: str | None = None
         self.remote_paths = False
+        self.background_prompt_capture = False
+        self.pending_capture: PendingCapture | None = None
         #: An attach the last hook stopped waiting for (``ensure_runtime``), still this handler's.
         self._attaching: BoundedCall | None = None
         self._starting: BoundedCall | None = None
@@ -646,7 +648,15 @@ class CodexHookHandler:
                     scope_id=audience.capture_scope_id,
                     host_scope=audience.host_scope,
                     remaining_seconds=min(wait, self.remaining(deadline)),
+                    **(
+                        {"background": True}
+                        if self.background_prompt_capture and self.diagnostics.last_event == "UserPromptSubmit"
+                        else {}
+                    ),
                 )
+                if isinstance(receipt, PendingCapture):
+                    self.pending_capture = receipt
+                    receipt = receipt.receipt
             else:
                 receipt = self.core.record_event(
                     context,
@@ -673,13 +683,14 @@ class CodexHookHandler:
             self.diagnostics.capture_total_ms = (self.diagnostics.capture_total_ms or 0) + elapsed
         self.diagnostics.capture_disposition = receipt.disposition
         self.diagnostics.capture_durability = receipt.durability
+        self.diagnostics.masked_secret_count += receipt.masked_secret_count
         if receipt.error_code:
             self.diagnostics.note_capture_error(receipt.error_code)
         if receipt.durability == "queued":
             self.call.queued = True
             self.diagnostics.capture_stage = "durable_inbox"
             gaps = (*gaps, "capture_gap:durable_ingress_pending")
-            self.note("capture_queued", gaps=gaps)
+            self.note("capture_conflict_pending" if receipt.disposition == "conflict" else "capture_queued", gaps=gaps)
             return (), gaps
         if receipt.error_code in {"PRIVATE_MODE", "PRIVATE_MODE_UNVERIFIED"}:
             gap = "private_mode" if receipt.error_code == "PRIVATE_MODE" else "private_mode_unverified"
@@ -694,6 +705,32 @@ class CodexHookHandler:
         self.diagnostics.capture_stage = "source_committed"
         refs = tuple(f"{write.ref}@{write.revision}" for write in receipt.event_refs)
         return refs, (*gaps, *receipt.gaps)
+
+    def finish_prompt_capture(self) -> None:
+        """Read the immediate commit's current receipt without waiting for it."""
+        if self.pending_capture is None:
+            return
+        receipt = self.pending_capture.receipt
+        self.diagnostics.capture_disposition = receipt.disposition
+        self.diagnostics.capture_durability = receipt.durability
+        if receipt.error_code:
+            self.diagnostics.note_capture_error(receipt.error_code)
+        if receipt.durability == "persisted":
+            self.call.persisted, self.call.queued = True, False
+            self.diagnostics.capture_stage = "source_committed"
+            if self.diagnostics.last_reason == "capture_queued":
+                self.diagnostics.last_reason = None
+        elif receipt.disposition == "conflict":
+            self.note("capture_conflict_pending")
+        elif receipt.durability != "queued":
+            self.call.queued = False
+            self.diagnostics.capture_stage = "ingress"
+            if self.diagnostics.last_reason == "capture_queued":
+                self.note(
+                    "private_mode"
+                    if receipt.error_code in {"PRIVATE_MODE", "PRIVATE_MODE_UNVERIFIED"}
+                    else "capture_unavailable"
+                )
 
     @property
     def has_vectors(self) -> bool:

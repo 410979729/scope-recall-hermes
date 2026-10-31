@@ -115,6 +115,30 @@ def test_capture_is_decided_at_event_time_and_survives_turning_the_rule_off(app)
     assert after.disposition == "inserted"
 
 
+def test_a_retry_given_back_its_queued_copy_is_checked_at_the_copy_s_moment(app):
+    """A retry dated before a private interval meets its queued copy, dated inside it: the copy's moment decides."""
+    from scope_recall.core import capture_inbox
+
+    core, ctx, clock, owner = app
+    clock.at("2026-09-05T12:10:00Z")
+    token, _prepared = capture_inbox.enqueue(
+        core.storage,
+        core.clock,
+        ctx,
+        _event(occurred_at="2026-09-05T12:20:00Z"),
+        scope_id="TEST-scope",
+        host_scope=None,
+    )
+    assert token is not None
+    owner.private_on(target="session", session=ctx.session_id, mode="full")
+    retry = core.record_host_event(
+        ctx, _event(occurred_at="2026-09-05T12:05:00Z"), scope_id="TEST-scope", host_scope=None
+    )
+    assert retry.error_code == "PRIVATE_MODE"
+    assert _count(core, ctx, "source_events") == 0
+    assert _count(core, ctx, "capture_inbox") == 0
+
+
 def test_durable_ingress_is_refused_before_its_payload_row_exists(app):
     core, ctx, _clock, owner = app
     owner.private_on(target="session", session=ctx.session_id, mode="full")

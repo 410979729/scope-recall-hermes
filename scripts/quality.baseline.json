@@ -228,7 +228,6 @@
   },
   "runtime/lance_port.py": {
    "reportArgumentType": 8,
-   "reportGeneralTypeIssues": 1,
    "reportReturnType": 2
   },
   "runtime/models.py": {
@@ -279,7 +278,7 @@
    "reportCallIssue": 1
   },
   "vector/process_store.py": {
-   "reportArgumentType": 2,
+   "reportArgumentType": 1,
    "reportAttributeAccessIssue": 1,
    "reportOperatorIssue": 1,
    "reportOptionalMemberAccess": 3
@@ -1214,13 +1213,7 @@
   },
   "vector/process_store.py": {
    "BLE001": 3,
-   "C901": {
-    "ProcessLanceVectorStore._invoke_locked": 18
-   },
    "E501": 1,
-   "PLR0912": {
-    "ProcessLanceVectorStore._invoke_locked": 19
-   },
    "UP035": 1
   },
   "vector/sqlite_store.py": {

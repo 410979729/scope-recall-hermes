@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
-from typing import Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, overload
 
 from ..contracts import (
     ContractError,
@@ -60,6 +60,10 @@ class VectorPort(Protocol):
 
 class ConsolidationPort(Protocol):
     def propose(self, messages: list[dict], *, remaining_seconds: float) -> str: ...
+
+
+if TYPE_CHECKING:
+    from .capture_inbox import PendingCapture
 
 
 @dataclass(frozen=True)
@@ -368,15 +372,57 @@ class MemoryCore:
             remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
         )
 
-    def record_host_event(self, context, value, *, scope_id, host_scope, remaining_seconds=1.0):
-        """Authenticated host ingress with durable recovery before derivation."""
-        from .capture_inbox import durable_record_event
+    @overload
+    def record_host_event(
+        self,
+        context,
+        value,
+        *,
+        scope_id,
+        host_scope,
+        remaining_seconds=1.0,
+        _prepared=None,
+        background: Literal[False] = False,
+    ) -> CaptureReceipt: ...
 
-        return durable_record_event(
+    @overload
+    def record_host_event(
+        self,
+        context,
+        value,
+        *,
+        scope_id,
+        host_scope,
+        remaining_seconds=1.0,
+        _prepared=None,
+        background: Literal[True],
+    ) -> CaptureReceipt | PendingCapture: ...
+
+    @overload
+    def record_host_event(
+        self,
+        context,
+        value,
+        *,
+        scope_id,
+        host_scope,
+        remaining_seconds=1.0,
+        _prepared=None,
+        background: bool,
+    ) -> CaptureReceipt | PendingCapture: ...
+
+    def record_host_event(
+        self, context, value, *, scope_id, host_scope, remaining_seconds=1.0, _prepared=None, background=False
+    ):
+        """Authenticated host ingress with durable recovery before derivation."""
+        from .capture_inbox import durable_record_event, start_record_event
+
+        record = start_record_event if background else durable_record_event
+        return record(
             self.storage,
             self.clock,
             context,
-            value,
+            value if _prepared is None else _prepared,
             scope_id=scope_id,
             host_scope=host_scope,
             admission_policy=self.config.admission_policy,

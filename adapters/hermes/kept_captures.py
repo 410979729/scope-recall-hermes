@@ -57,6 +57,8 @@ def keep(binding: InstanceBinding, identity: SourceIdentity, capture: RetryCaptu
             "context": context_payload(capture.context),
             "event": capture.event,
             "gaps": list(capture.gaps),
+            "masked_secret_count": capture.masked_secret_count,
+            "capture_gaps": capture.capture_gaps,
             "scope_id": capture.scope_id,
             "host_scope": host_scope_payload(capture.host_scope),
         }
@@ -127,6 +129,8 @@ def load(binding: InstanceBinding, *, skip, room: int) -> tuple[list[tuple[Sourc
                 str(payload["scope_id"]),
                 HermesRuntimeScope(**dict(payload["host_scope"])),
                 time.monotonic(),
+                int(payload.get("masked_secret_count", 0)),
+                tuple(payload.get("capture_gaps", ())),
             )
         except (OSError, KeyError, TypeError, ValueError, AttributeError, ContractError) as exc:
             _log.warning(

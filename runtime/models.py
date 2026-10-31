@@ -30,8 +30,12 @@ _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
 
 class AuxiliaryModelError(RuntimeError):
-    def __init__(self, error_type: str, *, detail: str | None = None) -> None:
+    def __init__(
+        self, error_type: str, *, detail: str | None = None, phase: str | None = None, elapsed_ms: int | None = None
+    ) -> None:
         self.error_type = error_type
+        self.phase = phase if phase in {"prefetch", "connection_slot", "connect", "read", "transport"} else None
+        self.elapsed_ms = elapsed_ms if type(elapsed_ms) is int and elapsed_ms >= 0 else None
         self.detail = detail if type(detail) is str and detail.isdigit() and len(detail) == 3 else None
         message = error_type if detail is None else f"{error_type}:{detail}"
         if contains_secret_like_text(message):
@@ -208,12 +212,17 @@ def _worker_reply(stdout: bytes, max_response_bytes: int) -> tuple[int, bytes]:
         return status, response_body
     error_type = result.get("error")
     if (
-        set(result) - {"ok", "error", "status", "body_b64"}
+        set(result) - {"ok", "error", "status", "body_b64", "phase", "elapsed_ms"}
         or type(error_type) is not str
         or error_type not in _HTTP_WORKER_ERRORS
     ):
         raise AuxiliaryModelError("transport_worker_protocol")
-    raise AuxiliaryModelError(error_type, detail=None if status is None else str(status))
+    raise AuxiliaryModelError(
+        error_type,
+        detail=None if status is None else str(status),
+        phase=result.get("phase"),
+        elapsed_ms=result.get("elapsed_ms"),
+    )
 
 
 class HttpsTransport:
@@ -249,7 +258,7 @@ class HttpsTransport:
             )
         deadline = time.monotonic() + validate_timeout_seconds(timeout_seconds)
         if not self._post_lock.acquire(timeout=max(0, seconds_left(deadline))):
-            raise AuxiliaryModelError("timeout")
+            raise AuxiliaryModelError("timeout", phase="connection_slot", elapsed_ms=round(timeout_seconds * 1000))
         try:
             require_outbound()
             return self._post(
@@ -320,14 +329,26 @@ class HttpsTransport:
             if len(stdout) > max_stdout or len(stderr) > _HTTP_WORKER_STDOUT_MARGIN:
                 raise AuxiliaryModelError("transport_worker_protocol")
             return _worker_reply(stdout, max_response_bytes)
-        except AuxiliaryModelError:
+        except AuxiliaryModelError as exc:
+            if exc.phase is None and exc.error_type == "timeout":
+                exc.phase = self._session.phase if self._session is not None else "transport"
+                exc.elapsed_ms = round((time.monotonic() - (deadline - budget)) * 1000)
             self._discard_session()
             raise
         except (subprocess.TimeoutExpired, TimeoutError) as exc:
             self._discard_session()
-            raise AuxiliaryModelError("timeout") from exc
+            raise AuxiliaryModelError(
+                "timeout",
+                phase=self._session.phase if self._session is not None else "transport",
+                elapsed_ms=round((time.monotonic() - (deadline - budget)) * 1000),
+            ) from exc
         except OSError as exc:
-            raise AuxiliaryModelError("network_error", detail=type(exc).__name__) from exc
+            raise AuxiliaryModelError(
+                "network_error",
+                detail=type(exc).__name__,
+                phase=self._session.phase if self._session is not None else "transport",
+                elapsed_ms=round((time.monotonic() - (deadline - budget)) * 1000),
+            ) from exc
         finally:
             _cleanup_http_worker(process)
 
@@ -362,7 +383,7 @@ class HttpsTransportPool:
             if self._closed:
                 raise AuxiliaryModelError("transport_unavailable")
             if not ready or seconds_left(deadline) <= 0:
-                raise AuxiliaryModelError("timeout")
+                raise AuxiliaryModelError("timeout", phase="connection_slot", elapsed_ms=round(timeout_seconds * 1000))
             transport = self._available.pop()
         try:
             require_outbound()
