@@ -11,7 +11,11 @@ import json
 import math
 import os
 import re
+import threading
+import time
+import urllib.error
 import urllib.request
+from collections import deque
 from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
@@ -271,17 +275,87 @@ class EvaluatorChat:
         return payload["choices"][0]["message"]["content"] or ""
 
 
+#: The embedding API refuses a burst of a few thousand texts within seconds with HTTP 429, so the evaluator keeps
+#: every sixty-second window of a run, across all its question threads, under this many texts.
+EMBED_TEXTS_PER_MINUTE = 2000
+#: A refused request is asked again after the wait the provider names, capped here, at most this many times.
+EMBED_RETRY_WAIT_CAP_SECONDS = 120.0
+EMBED_RETRIES = 3
+#: Without a named wait, a refused request is asked once more after this many seconds.
+EMBED_UNHINTED_WAIT_SECONDS = 60.0
+
+
+class TextWindow:
+    """Admit texts so that no sixty-second window holds more than ``limit`` of them; callers wait their turn."""
+
+    def __init__(self, limit: int, *, clock=time.monotonic, sleep=time.sleep) -> None:
+        self.limit, self.clock, self.sleep = limit, clock, sleep
+        self.sent: deque[tuple[float, int]] = deque()
+        self.lock = threading.Lock()
+
+    def admit(self, count: int) -> None:
+        with self.lock:
+            while True:
+                now = self.clock()
+                while self.sent and now - self.sent[0][0] >= 60:
+                    self.sent.popleft()
+                if not self.sent or sum(n for _, n in self.sent) + count <= self.limit:
+                    self.sent.append((now, count))
+                    return
+                self.sleep(60 - (now - self.sent[0][0]))
+
+
+_EVALUATOR_WINDOW = TextWindow(EMBED_TEXTS_PER_MINUTE)
+
+
+def retry_hint(error: urllib.error.HTTPError) -> float | None:
+    """The capped wait a rate-limit reply names, from its RetryInfo detail or Retry-After header, or None."""
+    hinted = error.headers.get("Retry-After") if error.headers else None
+    try:
+        details = json.loads(error.read() or b"{}").get("error", {}).get("details", [])
+    except ValueError:
+        details = []
+    for detail in details:
+        if str(detail.get("@type", "")).endswith("RetryInfo") and detail.get("retryDelay"):
+            hinted = str(detail["retryDelay"]).removesuffix("s")
+    try:
+        return None if hinted is None else min(max(float(hinted), 0.0), EMBED_RETRY_WAIT_CAP_SECONDS)
+    except ValueError:
+        return None
+
+
 class EvaluatorEmbedding:
     """Embed baseline histories directly, using the product's Gemini wire encoding.
 
     Public corpus text bypasses product request checks and budget accounting.
     Credentials travel only in the request header and never enter cache inputs.
+    Requests share one per-minute text window per process, and an HTTP 429 is
+    asked again only as the provider's reply allows.
     """
 
-    def __init__(self, route: dict):
+    def __init__(self, route: dict, *, window: TextWindow | None = None, sleep=time.sleep):
         from scope_recall.runtime.embedding_models import EmbeddingRouteConfig
 
         self.route = EmbeddingRouteConfig(**route)
+        self.window = window or _EVALUATOR_WINDOW
+        self.sleep = sleep
+
+    def _post(self, request: urllib.request.Request, count: int, timeout: float) -> dict:
+        """One chunk's response, waiting for the window and for each named retry wait."""
+        retries = 0
+        while True:
+            self.window.admit(count)
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as error:
+                if error.code != 429:
+                    raise
+                hinted = retry_hint(error)
+                if retries >= (EMBED_RETRIES if hinted is not None else 1):
+                    raise
+                retries += 1
+                self.sleep(EMBED_UNHINTED_WAIT_SECONDS if hinted is None else hinted)
 
     def _embed(self, texts, *, kind, remaining_seconds):
         from scope_recall.core.recall_policy import encode_embedding_text
@@ -300,8 +374,7 @@ class EvaluatorEmbedding:
                 headers={"Content-Type": "application/json", "x-goog-api-key": os.environ[self.route.credential_env]},
                 method="POST",
             )
-            with urllib.request.urlopen(request, timeout=remaining_seconds) as response:
-                payload = json.loads(response.read())
+            payload = self._post(request, len(chunk), remaining_seconds)
             vectors.extend(
                 _embedding_vectors(payload, dialect="gemini", dimensions=space["dimensions"], count=len(chunk))
             )

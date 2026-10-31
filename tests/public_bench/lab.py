@@ -19,8 +19,21 @@ from recall_bench import WorldClock
 from scope_recall.contracts import InstanceBinding, TrustedContext, TrustedSourcePrincipal
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy
+from scope_recall.core.work_storage import CAPACITY_REFUSALS
 from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort
 from scope_recall.vector.store import build_vector_store
+
+#: Real seconds an idle settle round waits when the remaining work was last refused for capacity.  A provider's
+#: rate limit counts real time, so moving only the business clock would ask again at once and be refused again.
+THROTTLE_WAIT_SECONDS = 30.0
+
+
+def throttled(state: dict) -> bool:
+    """Whether pending or leased work last ended in a provider's capacity refusal (rate limit or overload)."""
+    return any(
+        status in {"pending", "leased"} and not CAPACITY_REFUSALS.isdisjoint(str(error or "").split("|"))
+        for _, status, error, _ in state["work"]
+    )
 
 
 class Lab:
@@ -182,10 +195,14 @@ class Lab:
                 }
             if receipt.processed:
                 continue
+            waiting = throttled(state)
+            if waiting:
+                time.sleep(min(THROTTLE_WAIT_SECONDS, max(0.0, deadline - time.monotonic())))
             current = datetime.fromisoformat(self.clock.now.replace("Z", "+00:00"))
             next_at = datetime.fromisoformat(state["next_at"].replace("Z", "+00:00")) if state["next_at"] else current
             self.clock.now = max(current + timedelta(seconds=901), next_at + timedelta(seconds=1)).isoformat()
-            advances += 1
+            # Waiting out a provider's refusal is bounded by the wall clock, not by the business-clock advances.
+            advances += 0 if waiting else 1
             if advances > 16:
                 return {"status": "business_time_limit", "rounds": round_index + 1, **state}
         return {"status": "round_limit", "rounds": max_rounds, **self.state()}

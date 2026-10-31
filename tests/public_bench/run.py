@@ -227,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--settle-seconds", type=float, default=900)
+    parser.add_argument("--start-interval-seconds", type=float, default=0)
     parser.add_argument("--fake", action="store_true")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--allow-model-calls", action="store_true")
@@ -243,6 +244,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("workers must be between 1 and 64")
     if not math.isfinite(args.settle_seconds) or args.settle_seconds <= 0:
         parser.error("settle-seconds must be finite and positive")
+    if not math.isfinite(args.start_interval_seconds) or args.start_interval_seconds < 0:
+        parser.error("start-interval-seconds must be finite and not negative")
     return args
 
 
@@ -281,7 +284,12 @@ def main() -> None:
     stores = args.output / f"stores-{time.time_ns()}"
     stores.mkdir()
 
-    def execute(case):
+    def execute(indexed):
+        index, case = indexed
+        # The first wave starts one question at a time, so its captures and embeddings do not all reach the
+        # providers in the same few seconds; later questions start whenever a worker frees up.
+        if index < args.workers and index * args.start_interval_seconds > 0:
+            time.sleep(index * args.start_interval_seconds)
         return isolated(
             lambda one: run_case(
                 one,
@@ -298,7 +306,7 @@ def main() -> None:
         )
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        results = list(pool.map(execute, selected))
+        results = list(pool.map(execute, enumerate(selected)))
     cache.raise_if_missing()
     incomplete = [row for row in results if row["status"] != "complete"]
     results = [row for row in results if row["status"] == "complete"]
@@ -323,6 +331,7 @@ def main() -> None:
         "incomplete_results": incomplete,
         "workers": args.workers,
         "settle_seconds": args.settle_seconds,
+        "start_interval_seconds": args.start_interval_seconds,
         "total_seconds": time.perf_counter() - started,
         "cache": {"hits": cache.hits, "misses": cache.misses, "operations": dict(cache.operations)},
         "scoring": scores,

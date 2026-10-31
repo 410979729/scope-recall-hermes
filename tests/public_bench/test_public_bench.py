@@ -244,6 +244,9 @@ def test_naive_rag_uses_evaluator_batch_embedding_without_product_calls():
         ("--settle-seconds", "-1"),
         ("--settle-seconds", "nan"),
         ("--settle-seconds", "inf"),
+        ("--start-interval-seconds", "-1"),
+        ("--start-interval-seconds", "nan"),
+        ("--start-interval-seconds", "inf"),
     ],
 )
 def test_runner_rejects_invalid_concurrency_and_settle_limits(tmp_path, monkeypatch, option, value):
@@ -281,6 +284,139 @@ def test_runner_records_and_passes_concurrency_and_settle_limits(tmp_path, monke
     report = json.loads((output / "results.json").read_text(encoding="utf-8"))
     assert report["workers"] == workers and report["settle_seconds"] == seconds
     assert seen == [{"wall_seconds": seconds}]
+
+
+def test_runner_starts_the_first_wave_apart_and_records_the_interval(tmp_path, monkeypatch):
+    import run
+
+    data, output, slept = tmp_path / "data", tmp_path / "output", []
+    _data_manifest(data)
+    _stub_lab(monkeypatch)
+    monkeypatch.setattr(run, "longmemeval", lambda _: [replace(_question(), id=str(i)) for i in range(500)])
+    monkeypatch.setattr(run, "official_prompts", lambda _: {"default": "{}{}{}"})
+    monkeypatch.setattr(run.time, "sleep", slept.append)
+    options = ["--limit", "5", "--workers", "3", "--start-interval-seconds", "2.5"]
+    monkeypatch.setattr(sys, "argv", ["run.py", "--data", str(data), "--output", str(output), "--fake", *options])
+    run.main()
+    report = json.loads((output / "results.json").read_text(encoding="utf-8"))
+    assert report["start_interval_seconds"] == 2.5 and report["completed_questions"] == 5
+    assert sorted(slept) == [2.5, 5.0]
+
+
+def test_evaluator_text_window_keeps_each_minute_under_its_limit():
+    from ports import TextWindow
+
+    now, slept = [0.0], []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
+    window = TextWindow(150, clock=lambda: now[0], sleep=sleep)
+    window.admit(100)
+    now[0] += 10
+    window.admit(50)
+    assert slept == []
+    window.admit(100)
+    assert slept == [50.0] and now[0] == 60.0
+
+
+def _rate_limited(body: dict | None = None, headers: dict | None = None):
+    import io
+    import urllib.error
+
+    payload = io.BytesIO(json.dumps(body or {}).encode())
+    return urllib.error.HTTPError("https://example.invalid", 429, "Too Many Requests", headers or {}, payload)
+
+
+@pytest.mark.parametrize(
+    "refusals,slept,succeeds",
+    [
+        (
+            [{"error": {"details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}]}}],
+            [7.0],
+            True,
+        ),
+        ([{"error": {"details": [{"@type": "x.RetryInfo", "retryDelay": "900s"}]}}] * 4, [120.0] * 3, False),
+        ([{}], [60.0], True),
+        ([{}, {}], [60.0], False),
+    ],
+)
+def test_evaluator_embedding_asks_again_only_as_a_rate_limit_reply_allows(monkeypatch, refusals, slept, succeeds):
+    import urllib.error
+
+    import ports as ports_module
+    from ports import TextWindow
+
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "TEST-synthetic-header-value")
+    replies = [_rate_limited(body) for body in refusals] + [{"embeddings": [{"values": [1.0] * 8}]}]
+
+    def send(request, *, timeout):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return _JsonResponse(reply)
+
+    monkeypatch.setattr(ports_module.urllib.request, "urlopen", send)
+    waits = []
+    embedder = EvaluatorEmbedding(_evaluator_route(), window=TextWindow(10_000, sleep=waits.append), sleep=waits.append)
+    if succeeds:
+        assert embedder.embed_texts(["TEST text"]) == ((1.0,) * 8,)
+    else:
+        with pytest.raises(urllib.error.HTTPError):
+            embedder.embed_texts(["TEST text"])
+    assert waits == slept
+
+
+def test_evaluator_embedding_reads_a_retry_after_header():
+    from ports import retry_hint
+
+    assert retry_hint(_rate_limited(headers={"Retry-After": "12"})) == 12.0
+    assert retry_hint(_rate_limited()) is None
+
+
+def test_settle_waits_out_a_capacity_refusal_without_spending_business_advances(monkeypatch):
+    import lab
+
+    current, slept, rounds = [0.0], [], [0]
+    monkeypatch.setattr(lab.time, "monotonic", lambda: current[0])
+
+    def sleep(seconds):
+        slept.append(seconds)
+        current[0] += seconds
+
+    def batch(*args, **kwargs):
+        rounds[0] += 1
+        return SimpleNamespace(processed=0)
+
+    monkeypatch.setattr(lab.time, "sleep", sleep)
+    refused = [("embed", "pending", "http_429|capacity:2", 3)]
+    store = object.__new__(Lab)
+    store.core, store.context = SimpleNamespace(drain_worker=batch), None
+    store.ports = SimpleNamespace(model=None, cache=SimpleNamespace(raise_if_missing=lambda: None))
+    store.embed = store.purge = None
+    store.clock = SimpleNamespace(now="2023-05-20T00:00:00+00:00")
+    store.state = lambda: {"work": refused if rounds[0] <= 20 else [], "candidates": [], "phases": {}, "next_at": None}
+    result = store.settle(wall_seconds=3600)
+    assert result["status"] == "complete"
+    assert slept == [lab.THROTTLE_WAIT_SECONDS] * 20
+
+
+@pytest.mark.parametrize(
+    "rows,expected",
+    [
+        ([("embed", "pending", "http_429|capacity:1", 2)], True),
+        ([("consolidate", "leased", "rate_limited", 1)], True),
+        ([("embed", "pending", "auto_retry:1|http_503", 1)], True),
+        ([("embed", "done", "http_429", 1)], False),
+        ([("consolidate", "pending", "derivation_retry:1|derivation_invalid", 1)], False),
+        ([("consolidate", "pending", None, 4)], False),
+    ],
+)
+def test_throttled_reads_only_capacity_refusals_of_unfinished_work(rows, expected):
+    from lab import throttled
+
+    assert throttled({"work": rows}) is expected
 
 
 def _stub_lab(monkeypatch, *, status="complete"):

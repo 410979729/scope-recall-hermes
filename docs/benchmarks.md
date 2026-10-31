@@ -79,7 +79,10 @@ using the product's document/query encoding and configured model and dimensions.
 These public inputs bypass product request checks and budget accounting.
 The key comes from the route's `credential_env` variable and travels in the
 `x-goog-api-key` header. Each text is cached separately, so partial hits send
-only missing texts and cache-only runs need no endpoint access.
+only missing texts and cache-only runs need no endpoint access. A run's
+question threads share one window of at most 2,000 texts a minute. An HTTP 429
+reply is asked again after the wait it names (at most 120 seconds, up to three
+times), or once after 60 seconds when it names none.
 
 Each question has an independent truth and vector store. Messages enter in
 session-time order using an injected business clock; the query uses its
@@ -89,8 +92,17 @@ answer route serves the scope-recall, `full-context` and `naive-rag` methods.
 
 `--workers` accepts 1 through 64 concurrent questions and defaults to 4.
 `--settle-seconds` sets each scope-recall question's positive, finite wall-clock
-budget for settling and defaults to 900 seconds. Both settings are recorded
-as `workers` and `settle_seconds` in `results.json`.
+budget for settling and defaults to 900 seconds. `--start-interval-seconds`
+starts the first wave of questions that many seconds apart (default 0), so
+their captures and embeddings do not reach the providers at once. The settings
+are recorded as `workers`, `settle_seconds` and `start_interval_seconds` in
+`results.json`.
+
+When a settle round processes nothing and the remaining work was last refused
+for capacity (HTTP 429, 502, 503, 504 or 529), the round waits 30 real seconds
+before it moves the business clock, because a provider's rate limit counts real
+time. These waits are bounded by the settle budget and do not count toward the
+limit of 16 business-clock advances.
 
 The request cache keys the normalized complete inputs, formatted prompt
 messages, source roles/times/versions/chunks, candidate state, model settings
