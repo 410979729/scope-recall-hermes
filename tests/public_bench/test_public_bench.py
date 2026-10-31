@@ -23,7 +23,7 @@ from cache import RequestCache, digest  # noqa: E402
 from cases import LOCOMO_CATEGORIES, Case, Turn, fixed_splits, longmemeval  # noqa: E402
 from lab import Lab  # noqa: E402
 from paired_statistics import holm, paired_binary  # noqa: E402
-from ports import ANSWER_SECONDS, Ports, normalized_messages, route_pricing  # noqa: E402
+from ports import Ports, normalized_messages, route_pricing  # noqa: E402
 from run import alternative_context  # noqa: E402
 from translate import validate  # noqa: E402
 
@@ -800,10 +800,56 @@ def test_live_ports_create_their_budget_ledger(tmp_path):
         assert connection.execute("SELECT count(*) FROM requests").fetchone()[0] == 0
 
 
-def test_answer_requests_get_the_full_answer_budget(tmp_path):
-    seen = []
-    ports = Ports(RequestCache(tmp_path / "cache.sqlite3"))
-    ports.fake = False
-    ports.chat = SimpleNamespace(propose=lambda messages, remaining_seconds: seen.append(remaining_seconds) or "ok")
-    assert ports.complete([{"role": "user", "content": "TEST question"}], operation="answer") == "ok"
-    assert seen == [ANSWER_SECONDS] and ANSWER_SECONDS >= 600
+def test_evaluator_requests_send_the_history_unchanged_and_wait_the_answer_budget(monkeypatch):
+    import ports as ports_module
+
+    sent = {}
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "TEST answer"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        sent.update(body=json.loads(request.data), timeout=timeout, auth=request.get_header("Authorization"))
+        return Reply()
+
+    monkeypatch.setattr(ports_module.urllib.request, "urlopen", fake_urlopen)
+    route = {
+        "model": "TEST-chat",
+        "endpoint": "http://127.0.0.1:9/v1/chat/completions",
+        "credential_env": "TEST_UNUSED",
+        "output_limit_field": "max_tokens",
+        "max_output_tokens": 16,
+        "temperature": 0.0,
+        "thinking": None,
+    }
+    history = [{"role": "user", "content": 'TEST config line: api_key: "TEST-not-a-real-key-0123456789"'}]
+    assert ports_module.EvaluatorChat(route).complete(history) == "TEST answer"
+    assert sent["body"]["messages"] == history and sent["body"]["max_tokens"] == 16
+    assert sent["timeout"] == ports_module.ANSWER_SECONDS >= 600 and sent["auth"] is None
+
+
+def test_judge_label_follows_the_official_rule():
+    from run import judge_label
+
+    assert judge_label("Yes.") is True
+    assert judge_label("yes, the response is correct") is True
+    assert judge_label("No") is False
+
+
+def test_a_failed_question_is_recorded_and_the_split_continues():
+    from run import isolated
+
+    def broken(_case):
+        raise RuntimeError("TEST transport closed")
+
+    row = isolated(broken, _question(), cache_only=False)
+    assert row["status"] == "failed" and "TEST transport closed" in row["error"]
+    with pytest.raises(RuntimeError):
+        isolated(broken, _question(), cache_only=True)

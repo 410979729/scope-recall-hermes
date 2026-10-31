@@ -66,6 +66,13 @@ Freeze the weight/deployment identity, temperature, thinking setting and
 embedding dimension. Credentials are environment-variable names in the routes,
 never values in that file. There is no CLI-model fallback.
 
+Answer and judge requests are the evaluator's own: they go straight to the chat
+route's endpoint and are not subject to the product's request checks, so a
+history is sent as published. Capture, consolidation and recall run through the
+shipped product. A judge reply counts as correct when it contains "yes", as in
+LongMemEval's evaluator. A question that fails is recorded with its error and the
+split continues; a `--cache-only` run still stops on any error.
+
 Each question has an independent truth and vector store. Messages enter in
 session-time order using an injected business clock; the query uses its
 published question date. The answerer receives only the selected context,

@@ -104,6 +104,32 @@ def alternative_context(case, ports: Ports, method: str) -> tuple[str, dict, flo
     return context, metrics, (time.perf_counter() - started) * 1000
 
 
+def judge_label(text: str) -> bool:
+    """LongMemEval's own rule: a judge reply counts as correct when it contains "yes"."""
+    return "yes" in text.lower()
+
+
+def isolated(run, case, *, cache_only: bool) -> dict:
+    """One question's failure is recorded and the split continues; a cache-only run still stops on any error."""
+    started = time.perf_counter()
+    try:
+        return run(case)
+    except Exception as exc:
+        if cache_only:
+            raise
+        return {
+            "id": case.id,
+            "category": case.category,
+            "status": "failed",
+            "turns": len(case.turns),
+            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "answer": None,
+            "judge_correct": None,
+            "evaluation": {"status": "not_run", "reason": "question_failed"},
+            "total_seconds": time.perf_counter() - started,
+        }
+
+
 def run_case(
     case, *, root: Path, ports: Ports, prompts: dict, method: str, retrieval_only: bool, dataset="longmemeval"
 ) -> dict:
@@ -151,9 +177,7 @@ def run_case(
                 template = prompts.get(case.category, prompts["default"])
                 judge_prompt = template.format(case.question, case.gold, answer)
                 judge = ports.complete([{"role": "user", "content": judge_prompt}], operation="judge")
-                if judge.strip().lower() not in {"yes", "no"}:
-                    raise ValueError("judge must return exactly yes or no")
-                verdict = judge.strip().lower() == "yes"
+                verdict = judge_label(judge)
                 evaluation = {"status": "scored", "metric": "judge_accuracy", "score": float(verdict)}
             else:
                 evaluation = score_local(dataset, case.category, case.gold, answer)
@@ -241,14 +265,18 @@ def main() -> None:
     stores.mkdir()
 
     def execute(case):
-        return run_case(
+        return isolated(
+            lambda one: run_case(
+                one,
+                root=stores,
+                ports=ports,
+                prompts=prompts,
+                method=args.method,
+                retrieval_only=args.retrieval_only,
+                dataset=args.dataset,
+            ),
             case,
-            root=stores,
-            ports=ports,
-            prompts=prompts,
-            method=args.method,
-            retrieval_only=args.retrieval_only,
-            dataset=args.dataset,
+            cache_only=cache.only,
         )
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:

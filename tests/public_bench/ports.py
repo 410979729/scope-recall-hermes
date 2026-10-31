@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import urllib.request
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -214,6 +216,38 @@ def route_pricing(config: dict, models: frozenset[str]) -> dict:
     }
 
 
+class EvaluatorChat:
+    """Answer and judge requests the evaluator makes itself, straight to the configured route.
+
+    They are not product operations, so the product's request checks do not apply: a public question's history
+    is sent as published. Capture, consolidation and recall still run through the shipped product. As the
+    product does, the key travels only over HTTPS.
+    """
+
+    def __init__(self, route: dict):
+        self.route = route
+
+    def complete(self, messages: list[dict]) -> str:
+        body = {
+            "model": self.route["model"],
+            "messages": messages,
+            self.route["output_limit_field"]: self.route["max_output_tokens"],
+        }
+        if self.route.get("temperature") is not None:
+            body["temperature"] = self.route["temperature"]
+        if self.route.get("thinking") is not None:
+            body["thinking"] = self.route["thinking"]
+        request = urllib.request.Request(
+            self.route["endpoint"], data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST"
+        )
+        request.add_header("Content-Type", "application/json")
+        if self.route["endpoint"].startswith("https://"):
+            request.add_header("Authorization", "Bearer " + os.environ[self.route["credential_env"]])
+        with urllib.request.urlopen(request, timeout=ANSWER_SECONDS) as response:
+            payload = json.loads(response.read())
+        return payload["choices"][0]["message"]["content"] or ""
+
+
 class Ports:
     """One run's ports and recorded model settings; fake mode is entirely local."""
 
@@ -232,7 +266,8 @@ class Ports:
         if self.fake:
             model, embedder, self.chat = FakeModel(), FakeEmbedder(), None
         else:
-            model, embedder, self.chat = self._runtime(config, approved, ledger_root)
+            model, embedder = self._runtime(config, approved, ledger_root)
+            self.chat = EvaluatorChat(config["chat"])
         self.model = CachedModel(model, cache, self.config)
         self.embedder = CachedEmbedder(embedder, cache, self.config["embedding"])
 
@@ -272,7 +307,7 @@ class Ports:
             ConsolidationRouteConfig(**config["chat"]), ledger=ledger, reserve_input=1_000_000
         )
         embed = GeminiEmbeddingAdapter(EmbeddingRouteConfig(**config["embedding"]), ledger=ledger)
-        return build_consolidation_model(chat), embed, chat
+        return build_consolidation_model(chat), embed
 
     def complete(self, messages: list[dict], *, operation: str) -> str:
         """Answer or judge using the same configured chat model; no gold enters answers."""
@@ -280,6 +315,6 @@ class Ports:
         def compute():
             if self.fake:
                 return "no" if operation == "judge" else "No information available."
-            return self.chat.propose(messages, remaining_seconds=ANSWER_SECONDS)
+            return self.chat.complete(messages)
 
         return str(self.cache.call(operation, {"messages": messages}, self.config, {}, compute))
