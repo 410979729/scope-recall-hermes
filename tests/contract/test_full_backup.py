@@ -439,8 +439,8 @@ def test_absence_only_rollback_survives_store_loss_and_disaster_restore(tmp_path
 
 
 def test_retention_timeout_does_not_repeat_daily_publication(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import BackupError
     from scope_recall.runtime import backup_upkeep as upkeep
-    from scope_recall.runtime.backup_primitives import BackupError
 
     core, _, binding = _create_synthetic_store(tmp_path)
     (binding.data_directory / "backup-config.json").write_text(json.dumps({"backup_dir": str(tmp_path / "backups")}))
@@ -466,8 +466,8 @@ def test_retention_timeout_does_not_repeat_daily_publication(tmp_path, monkeypat
 
 
 def test_mirror_upkeep_preserves_a_concurrent_publication_checkpoint(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import atomic_json
     from scope_recall.runtime import backup_upkeep as upkeep
-    from scope_recall.runtime.backup_primitives import atomic_json
 
     core, _, binding = _create_synthetic_store(tmp_path)
     directory = binding.data_directory
@@ -489,8 +489,8 @@ def test_mirror_upkeep_preserves_a_concurrent_publication_checkpoint(tmp_path, m
 
 
 def test_retention_resumes_verified_archives_after_timeout(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import BackupError
     from scope_recall.runtime import backup_rotation as rotation
-    from scope_recall.runtime.backup_primitives import BackupError
 
     _, _, binding = _create_synthetic_store(tmp_path)
     for day in (1, 2):
@@ -530,8 +530,8 @@ def test_retention_resumes_verified_archives_after_timeout(tmp_path, monkeypatch
 
 
 def test_backup_job_timeout_is_visible_and_stops_blind_retries(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import BackupError
     from scope_recall.runtime import backup_upkeep as upkeep
-    from scope_recall.runtime.backup_primitives import BackupError
 
     core, _, binding = _create_synthetic_store(tmp_path)
     create_backup_bundle(binding=binding, output=tmp_path / "manual.zip")
@@ -756,9 +756,9 @@ def test_publication_does_not_follow_a_preexisting_temporary_link(tmp_path):
 def test_mirror_deadline_resumes_after_the_last_validated_line(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from scope_recall.core import backup_primitives as io
     from scope_recall.core import deletion_mirror
     from scope_recall.core import deletion_mirror_checkpoint as checkpoint
-    from scope_recall.runtime import backup_primitives as io
 
     core, ctx, binding = _create_synthetic_store(tmp_path)
     _forget(core, ctx, _say(core, ctx, "NameOne note"))

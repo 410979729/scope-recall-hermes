@@ -8,6 +8,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ..core.backup_primitives import BackupError, atomic_json, backup_deadline, check_backup_deadline
 from ..core.deletion_mirror import (
     MIRROR_ERRORS,
     catchup_deletion_mirror,
@@ -17,7 +18,6 @@ from ..core.deletion_mirror import (
 from ..core.file_lock import advisory_file_lock
 from ..core.installation_copy import installation_copy_id
 from .backup_bundle import create_backup_bundle
-from .backup_primitives import BackupError, atomic_json, backup_deadline, check_backup_deadline
 from .backup_rotation import rotate_backup_bundles
 
 RESERVE_SECONDS = 2.0

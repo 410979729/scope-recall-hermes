@@ -1019,13 +1019,35 @@ Upgrading between 3.x versions is different. Install the new wheel; the first
 ordinary open of the store afterwards (a capture, a recall, a worker pass)
 applies the schema upgrade in one transaction and rolls it back whole if it
 fails. `doctor` reports `schema_upgrade_pending` until then and never applies
-the upgrade itself. Take a `backup` first if you want one. On a store above
-100 MB any pending step is left to a caller with a minute of budget or none:
-the worker's next pass, `apply-install`, `upgrade-store`, or a Hermes session
-starting (its status read carries no deadline); a hook's bounded open reports
-`SCHEMA_UNSUPPORTED / upgrade_pending` until then. For scale, 3.1.1's lexical
-index took about a minute and a half for five million index rows, and 3.2.0's
-step reads every source row, about 3 s a gigabyte.
+the upgrade itself. While another process upgrades, hooks return a capability
+gap without waiting for the migration. For scale, 3.1.1's lexical index took
+about a minute and a half for five million index rows, and 3.2.0's step reads
+every source row, about 3 s a gigabyte.
+
+On a store above 100 MB, calls without an explicit maintenance budget leave the
+upgrade pending (a hook's bounded open reports `SCHEMA_UNSUPPORTED /
+upgrade_pending`), and status reads never perform it. A pending upgrade wakes
+schema maintenance through the existing worker launcher. Maintenance respects
+operator pause, runs before the worker constructs its model runtime and has a
+180-second window. If that window expires, run `upgrade-store` (below): a
+foreground upgrade has no total time limit, and `--wait-seconds` still bounds
+lock acquisition. In DELETE journal mode, close long-lived store read
+transactions before retrying an upgrade that readers blocked.
+
+Before every schema change the upgrade saves a verified SQLite snapshot in
+`upgrade-snapshots/` beside `memory.sqlite3`; `upgrade-store --backup-dir
+<directory>` saves it there instead. Automatic snapshots have two roles: the
+rollback copy from the last successful upgrade, and the latest verified copy
+taken before a failed attempt. A failed attempt rotates only other attempt
+copies; a successful upgrade replaces the rollback copy and removes older
+attempts. Each copy costs about one database file, free pages included, and a
+retry can temporarily need three copies plus the journal or WAL and any new
+indexes. Outputs in an explicit `--backup-dir` are never removed automatically.
+A failed migration rolls back: resolve its cause and reopen the host to retry.
+`doctor` gives restore instructions only for undoing a completed upgrade, using
+releases that match the current store and snapshot schemas. All direct
+database users must run compatible releases together; HTTP clients follow the
+server's protocol compatibility.
 
 A step is one way. Once a newer release has opened the store, an older one
 refuses it (`SCHEMA_UNSUPPORTED`) without touching it: a 3.1 process cannot
@@ -1037,7 +1059,7 @@ forgotten, and every other write made since is lost.
 To bring a store forward now, with a snapshot first and the worker stopped:
 
 ```bash
-python -I -X utf8 -m scope_recall.maintenance.cli upgrade-store --host hermes --instance-root <instance root> --backup-dir <a new directory>
+python -I -X utf8 -m scope_recall.maintenance.cli upgrade-store --host hermes --instance-root <instance root>
 ```
 
 It waits for the store's writer lease before reading the schema, taking the
@@ -1058,8 +1080,9 @@ The migration receipt reports `schema_before`, `schema_after`, `backup_schema` f
 snapshot's header, `backup_recorded_schema` from its metadata, the migration's
 seconds and the journal mode. Both snapshot markers must match the original
 schema before migration starts. A mismatch reports
-`not_upgraded / backup_schema_mismatch`, leaves the store untouched and keeps
-the snapshot for inspection. A header repair checks each marker against its
+`not_upgraded / backup_schema_mismatch` and leaves the store untouched; a
+snapshot in an explicit `--backup-dir` is kept for inspection, and an automatic
+one is removed. A header repair checks each marker against its
 original value because the two intentionally differ.
 
 Read-write initialization supplies the session lookup index without a schema

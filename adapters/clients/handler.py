@@ -15,6 +15,7 @@ from typing import Any, Callable, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY
+from scope_recall.core.storage import SQLiteStorage
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from ..runtime_wiring import strict_hook_budget
@@ -166,6 +167,9 @@ class CodexHookHandler:
         self.prompt_recall = PromptRecall(self)
         self.record_reader = RecordReader(self)
         self.events = HookEvents(self)
+        self._upgrade_wake_context: tuple[Any, float] | None = None
+        if host_runtime is None and isinstance(getattr(self.core, "storage", None), SQLiteStorage):
+            self.core.storage.on_upgrade_pending = self._wake_pending_upgrade
 
     @classmethod
     def from_config_path(
@@ -480,6 +484,7 @@ class CodexHookHandler:
             self._hook_budget() if event == "UserPromptSubmit" or self.record_reader.reads(event) else _TOTAL_BUDGET_S
         )
         deadline = self._hook_deadline(budget)
+        self._upgrade_wake_context = audience, deadline
         if event == "SessionStart":
             return self._session_started(session_id, audience, deadline)
         if event == "UserPromptSubmit":
@@ -505,7 +510,17 @@ class CodexHookHandler:
         if session_id is None or audience is None:
             return {}
         self.bind_project_root(payload, audience)
+        self._upgrade_wake_context = audience, self._hook_deadline(_TOTAL_BUDGET_S)
         return self.core.private_check(self.context(audience, session_id, "host_generated"), payload.get("times"))
+
+    def _wake_pending_upgrade(self) -> None:
+        """Admit maintenance before a hook needs usable storage or a successful capture."""
+        if self._upgrade_wake_context is None:
+            return
+        audience, deadline = self._upgrade_wake_context
+        self.ensure_runtime(audience, deadline=deadline)
+        if self._host_runtime is not None:
+            self._host_runtime.wake_upgrade(known_pending=True)
 
     def _admit(self, event: object, payload: dict[str, Any]) -> tuple[str, Any] | None:
         """The session and audience of a hook this client sends and this handler takes, or None, said why."""

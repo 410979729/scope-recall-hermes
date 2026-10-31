@@ -11,9 +11,9 @@ from typing import Literal
 
 from ..adapters.hermes.installation import load_installation_manifest
 from ..adapters.installation_identity import path_identity
+from ..core.backup_primitives import BackupError
 from ..core.installation_copy import installation_copy_id
 from ..runtime.backup_archive import ArchiveMember
-from ..runtime.backup_primitives import BackupError
 from ..runtime.backup_resources import restored_resource_path
 from .install_hermes import bound_workspace
 

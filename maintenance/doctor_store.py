@@ -26,9 +26,10 @@ from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.core.inbox_rules import given_up, replayable
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
-from scope_recall.core.restore import restore_pending
+from scope_recall.core.restore import restore_pending, snapshot_schema_supported
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.store_upgrade import read_upgrade_state, upgrade_in_progress
 from scope_recall.core.vector_failure import vector_failure_label
 from scope_recall.runtime.model_budget import embedding_calls, provider_holds
 from scope_recall.vector.compaction import instance_vector_footprints
@@ -195,6 +196,22 @@ def _backlog_is_stalled(worker_status: dict[str, Any], *, wake_seconds: float | 
 def _unopened(report: DoctorReport, data_directory: Path) -> bool:
     """Whether the store is left unread for a reason that refuses every open of it but one step of the operator's
     lifts, reported with that step: a restore not yet finished, a schema step not yet applied, a stamped header."""
+    state = read_upgrade_state(data_directory)
+    if state.get("status") in {"running", "failed", "interrupted", "unreadable"}:
+        found = schema_on_disk(data_directory / "memory.sqlite3")
+        # A crash after commit can leave an old running record beside a current store.
+        if found != SCHEMA_VERSION or upgrade_in_progress(data_directory):
+            report.schema_version = found
+            report.capability_gaps.append("schema_upgrade_" + str(state["status"]))
+            record_check(
+                report,
+                "schema_upgrade",
+                str(state["status"]),
+                f"phase={state.get('phase', 'unknown')}; reason={state.get('reason', 'none')}; "
+                f"snapshot={state.get('backup', 'unavailable')}; "
+                f"verified={state.get('snapshot_verified', False)}; " + _upgrade_recovery(state),
+            )
+            return True
     if restore_pending(data_directory):
         report.capability_gaps.append("restore_pending")
         record_check(
@@ -206,6 +223,8 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
         )
         return True
     found = schema_on_disk(data_directory / "memory.sqlite3")
+    if state.get("status") == "complete" and found == state.get("schema_after") == SCHEMA_VERSION:
+        record_check(report, "schema_upgrade", "ok", _upgrade_recovery(state, found))
     if found in UPGRADE_CHAIN:
         # Reported, never applied here: the doctor is read-only.
         report.schema_version = found
@@ -215,8 +234,8 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
             "schema",
             "upgrade_pending",
             f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction "
-            "(on a store above 100 MB, a caller with a minute of budget: the worker pass, apply-install, "
-            "upgrade-store or a Hermes session start)",
+            "(above 100 MB, explicit worker schema maintenance or upgrade-store supplies the budget; "
+            "status calls leave it pending)",
         )
         return True
     recorded = recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
@@ -233,6 +252,40 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
         )
         return True
     return False
+
+
+def _upgrade_recovery(state: dict, found: int | None = None) -> str:
+    """Name a supported recovery action without reviving post-snapshot deletions."""
+    if state.get("status") == "running":
+        return "Schema maintenance is running; wait for it to finish."
+    if state.get("status") != "complete" or found != state.get("schema_after"):
+        hint = "Resolve the reported failure, then reopen the host to retry the rolled-back upgrade."
+        hint += (
+            " Run scope-recall upgrade-store with --host and --instance-root for foreground maintenance "
+            "without a total time limit if background maintenance cannot finish."
+        )
+        if state.get("reason") == "upgrade_blocked_by_reader":
+            hint += " Close the read transactions held by host sessions or other store readers before retrying."
+        return hint
+    schema = state.get("backup_schema")
+    if not isinstance(schema, int) or not snapshot_schema_supported(schema):
+        return (
+            f"The completed upgrade cannot safely restore this snapshot with the restore command (snapshot header "
+            f"{schema}, recorded schema {state.get('backup_recorded_schema')}); preserve it and do not copy it over "
+            "the store, because that could revive deleted content."
+        )
+    hint = (
+        f"To undo this completed upgrade, stop all store users. First use the release with current store schema "
+        f"{found} (this running release) and run scope-recall restore --snapshot <verified-snapshot> "
+        "--backup-dir <new-backup-directory> --apply with the installation's --host and --instance-root. "
+    )
+    if schema != found:
+        hint += (
+            f"After it reports prepared, switch to a release whose current format matches snapshot schema {schema}, "
+            "then run scope-recall restore --snapshot <verified-snapshot> --apply with the same installation "
+            "arguments to finish."
+        )
+    return hint
 
 
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:

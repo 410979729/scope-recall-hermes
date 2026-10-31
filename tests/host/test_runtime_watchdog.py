@@ -333,6 +333,41 @@ def _runtime_payload(tmp_path: Path, *, drain_seconds: float) -> tuple[Path, Pat
     return path, config.config_path
 
 
+def test_schema_child_observes_pause_after_delayed_wake(tmp_path, monkeypatch, capsys):
+    import hashlib
+    import sqlite3
+    from contextlib import closing
+
+    from v11_support import downgrade_store
+
+    path, _ = _runtime_payload(tmp_path, drain_seconds=30)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["supervisor_enabled"] = False
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    data = Path(payload["binding"]["data_directory"])
+    downgrade_store(data / "memory.sqlite3", 1111)
+    identity = payload["binding"]["installation_id"]
+    control = {
+        "installation_id": identity,
+        "enabled": True,
+        "task_name": "ScopeRecall-" + hashlib.sha256(identity.encode()).hexdigest()[:20],
+    }
+    switch = data / "runtime-autostart.json"
+    switch.write_text(json.dumps(control), encoding="utf-8")
+    spawn = worker_watchdog._spawn_worker
+
+    def pause_before_child(*args, **kwargs):
+        switch.write_text(json.dumps({**control, "enabled": False}), encoding="utf-8")
+        return spawn(*args, **kwargs)
+
+    monkeypatch.setattr(worker_watchdog, "_spawn_worker", pause_before_child)
+    assert worker_watchdog.run(path, Path(sys.executable), cleanup_config=False, delay_seconds=0.03) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "paused"
+    with closing(sqlite3.connect(data / "memory.sqlite3")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1111
+    assert not (data / "store-upgrade.json").exists()
+
+
 def test_worker_config_cleanup_is_explicit_and_bounded(tmp_path: Path):
     persistent, _installation = _runtime_payload(tmp_path / "persistent", drain_seconds=30.0)
     normal = launch_worker(persistent, python_executable=sys.executable)
@@ -411,7 +446,9 @@ def test_main_hands_run_the_interpreter_path_as_given(tmp_path: Path, monkeypatc
     config.write_text("{}", encoding="utf-8")
     seen: dict[str, Path] = {}
 
-    def fake_run(config_path, python_executable, *, cleanup_config, after_pid=None, delay_seconds=0.0):
+    def fake_run(
+        config_path, python_executable, *, cleanup_config, after_pid=None, delay_seconds=0.0, upgrade_only=False
+    ):
         seen["python"] = python_executable
         return 0
 

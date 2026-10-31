@@ -57,7 +57,9 @@ from scope_recall.core.restore import (
     pending_restore_ledger,
     replay_deletion_ledger,
     restore_pending,
+    snapshot_schema_supported,
 )
+from scope_recall.core.restore import RESTORE_SCHEMA_FLOOR as RESTORE_SCHEMA_FLOOR
 from scope_recall.core.schema import APPLICATION_ID, SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.truth_connection import connect_truth_database
@@ -70,9 +72,6 @@ from .doctor import load_binding
 from .install_common import HostChoice
 from .shared_run import SharedStoreError, encoded, store_lock
 
-#: The oldest schema read by a release that carries this command.  A snapshot at an older one could be put back only
-#: by a release that cannot replay the ledger, so it is refused.
-RESTORE_SCHEMA_FLOOR = 1110
 #: How long one of the store's own transactions waits for SQLite's lock, and the replay for readers to leave the
 #: write-ahead log; the writer lease is held all along.
 _STORE_SECONDS = 10.0
@@ -212,7 +211,7 @@ def _snapshot_schema(storage: SQLiteStorage, source: sqlite3.Connection) -> int:
         if quick.lower() != "ok":
             raise RestoreError("snapshot_damaged", f"quick_check: {quick[:200]}")
         schema = int(source.execute("PRAGMA user_version").fetchone()[0])
-        if not RESTORE_SCHEMA_FLOOR <= schema <= SCHEMA_VERSION:
+        if not snapshot_schema_supported(schema):
             raise RestoreError("snapshot_schema", _schema_hint(schema))
         try:
             storage.verify(source, expected_schema=schema)

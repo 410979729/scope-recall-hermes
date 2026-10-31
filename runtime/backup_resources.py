@@ -16,10 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..core import private
-from ..core.file_lock import advisory_file_lock
-from .auxiliary import DEFAULT_LEDGER_NAME
-from .backup_archive import ArchiveLayoutError, canonical_member_name
-from .backup_primitives import (
+from ..core.backup_primitives import (
     BackupError,
     backup_sqlite,
     check_backup_deadline,
@@ -28,6 +25,9 @@ from .backup_primitives import (
     safe_path,
     sha256,
 )
+from ..core.file_lock import advisory_file_lock
+from .auxiliary import DEFAULT_LEDGER_NAME
+from .backup_archive import ArchiveLayoutError, canonical_member_name
 from .remote_clock import private_metadata, stored_session_id
 from .validation import validate_worker_day
 

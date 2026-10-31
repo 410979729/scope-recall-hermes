@@ -23,16 +23,17 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from ..contracts import ContractError, TrustedContext
+from ..core.backup_primitives import BackupError, backup_deadline
 from ..core.failure_retry import retry_class
 from ..core.file_lock import advisory_file_lock
 from ..core.storage import SQLiteStorage
 from ..core.writer_lease import TruthWriterBusyError
 from ..vector.process_store import NativeVectorPathError, ProcessLanceVectorStore
-from .backup_primitives import BackupError, backup_deadline
 from .backup_upkeep import BACKUP_JOB_SECONDS, backup_if_due, record_backup_job_failure
 from .instance import build_runtime_instance
 from .instance_config import RuntimeInstanceConfig
 from .model_budget import pre_request_refusals, provider_refusals
+from .store_maintenance import STORE_UPGRADE_SECONDS, store_upgrade_pending
 from .validation import DAILY_COUNTER_MAX, strict_float, utc_now
 
 #: Worker metadata files are small JSON documents; anything larger is not one.
@@ -606,7 +607,47 @@ def run_backup_worker(
     return code
 
 
-def run_worker(config_path: str | Path, *, output: TextIO | None = None, deadline_epoch: float | None = None) -> int:
+def run_upgrade_worker(
+    config_path: str | Path,
+    *,
+    output: TextIO | None = None,
+    deadline_epoch: float | None = None,
+    paused: Callable[[RuntimeInstanceConfig], bool] | None = None,
+) -> int:
+    """Run local schema maintenance with its own budget, without constructing model ports."""
+    sink = sys.stdout if output is None else output
+    config = load_config(config_path)
+    if paused is not None and paused(config):
+        _write(sink, {**_minimal_payload(config, "paused", ""), "job_kind": "upgrade", "capability_gaps": []})
+        return 0
+    seconds = STORE_UPGRADE_SECONDS
+    if deadline_epoch is not None:
+        seconds = min(seconds, deadline_epoch - time.time() - FINALIZE_MARGIN_SECONDS)
+    if seconds <= 0:
+        return _owner_timeout(sink, config, started_at=utc_now())
+    receipt: dict[str, Any] = {}
+    try:
+        SQLiteStorage(config.binding, timeout_seconds=30).initialize(
+            remaining_seconds=seconds, repair_header=True, receipt=receipt
+        )
+    except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
+        payload = _minimal_payload(config, "degraded", _exception_gap(exc))
+        payload.update(job_kind="upgrade")
+        _write(sink, payload)
+        return 1
+    payload = _minimal_payload(config, "ok", "")
+    payload.update(job_kind="upgrade", capability_gaps=[], schema_upgrade=receipt)
+    _write(sink, payload)
+    return 0
+
+
+def run_worker(
+    config_path: str | Path,
+    *,
+    output: TextIO | None = None,
+    deadline_epoch: float | None = None,
+    paused: Callable[[RuntimeInstanceConfig], bool] | None = None,
+) -> int:
     sink: TextIO = sys.stdout if output is None else output
     config: RuntimeInstanceConfig | None = None
     instance = None
@@ -614,6 +655,8 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None, deadlin
     preflight_gap = None
     try:
         config = load_config(config_path)
+        if store_upgrade_pending(config.binding):
+            return run_upgrade_worker(config_path, output=sink, deadline_epoch=deadline_epoch, paused=paused)
         deadline = _pass_deadline(config, deadline_epoch)
         preflight_gap = _vector_preflight_gap(config)
         instance = build_runtime_instance(config)

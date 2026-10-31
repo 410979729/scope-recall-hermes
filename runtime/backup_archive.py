@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .backup_primitives import BackupError, first_link
+from ..core.backup_primitives import BackupError, first_link
 
 _DRIVE_PATH = re.compile(r"^[A-Za-z]:")
 _DEVICE_NAME = re.compile(r"^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)", re.IGNORECASE)

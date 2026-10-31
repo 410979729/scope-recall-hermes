@@ -285,7 +285,11 @@ SUITES = {
         "tests/host/codex/test_dsh_remote.py",
         "tests/host/codex/test_resident_recall.py",
     ],
-    "migration": ["tests/migration/test_migration_drills.py"],
+    "migration": [
+        "tests/migration/test_migration_drills.py",
+        "tests/migration/test_upgrade_coordinator.py",
+        "tests/migration/test_upgrade_policy.py",
+    ],
     "packaging": [
         "tests/packaging/test_clean_v11_wheel.py",
         "tests/packaging/test_package_upgrade.py",

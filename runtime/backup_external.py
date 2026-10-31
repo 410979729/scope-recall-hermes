@@ -11,9 +11,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..core.backup_primitives import BackupError, check_backup_deadline, safe_path, sha256
 from ..core.capture_filters import sanitize_source_capture_text
 from ..core.events import capture_contains_secret
-from .backup_primitives import BackupError, check_backup_deadline, safe_path, sha256
 from .backup_resources import BackupPrivacy, budget_ledger_source, real_files, stage_instance_resources
 
 ConfigStager = Callable[[Path, Path, str, list[dict[str, Any]]], int]

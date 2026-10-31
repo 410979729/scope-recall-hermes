@@ -9,6 +9,7 @@ import logging
 import sys
 from typing import TYPE_CHECKING, Any
 
+from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 
 from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID
@@ -99,7 +100,16 @@ class SessionBinding:
             # capability state: initialize succeeds so the host can report
             # the gap, while no Core read/write is attempted.
             if fresh.runtime_audience.allowed_scope_ids:
-                self._adapter._core.status(fresh.trusted_context())
+                try:
+                    self._adapter._core.status(fresh.trusted_context())
+                except ContractError as exc:
+                    if exc.code != "SCHEMA_UNSUPPORTED" or exc.field not in {
+                        "upgrade_pending",
+                        "upgrade_in_progress",
+                        "header_stale:run_upgrade_store",
+                    }:
+                        raise
+                    self._adapter._host_runtime.wake_upgrade(known_pending=exc.field != "upgrade_in_progress")
             self._adapter._identity = fresh
             self._adapter._ledger.reset()
             self._adapter._turn_counter = 0

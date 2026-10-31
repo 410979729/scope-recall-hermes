@@ -293,8 +293,8 @@ def test_deletions_in_scopes_added_after_snapshot_survive_without_new_grants(tmp
 def test_deadline_during_archive_io_does_not_publish_or_touch_unowned_file(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from scope_recall.core import backup_primitives as io
     from scope_recall.runtime import backup_bundle as bundles
-    from scope_recall.runtime import backup_primitives as io
 
     binding, _ = local_store(tmp_path, "codex")
     output = tmp_path / "backup.zip"
@@ -326,8 +326,8 @@ def test_deadline_during_archive_io_does_not_publish_or_touch_unowned_file(tmp_p
 def test_deadline_during_mirror_io_checkpoints_and_saves_retry_state(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from scope_recall.core import backup_primitives as io
     from scope_recall.core import deletion_mirror
-    from scope_recall.runtime import backup_primitives as io
     from scope_recall.runtime import backup_upkeep as upkeep
 
     binding, core = local_store(tmp_path, "codex")

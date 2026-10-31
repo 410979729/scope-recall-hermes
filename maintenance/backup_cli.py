@@ -16,9 +16,9 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+from ..core.backup_primitives import BackupError, backup_sqlite, safe_path
 from ..core.file_lock import advisory_file_lock
 from ..runtime.backup_bundle import BackupBundleError, create_backup_bundle
-from ..runtime.backup_primitives import BackupError, backup_sqlite, safe_path
 from .backup_bundle import resolve_store_binding, verify_backup_bundle
 from .disaster_restore import DisasterRestoreError
 

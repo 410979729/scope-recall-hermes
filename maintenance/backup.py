@@ -1,11 +1,11 @@
 """Consistent SQLite backup and maintenance re-exports.
 
-Delegates canonical implementation of backup primitives to runtime.backup_primitives.
+Delegates canonical implementation of backup primitives to core.backup_primitives.
 """
 
 from __future__ import annotations
 
-from scope_recall.runtime.backup_primitives import (
+from scope_recall.core.backup_primitives import (
     BackupError,
     atomic_json,
     atomic_write,

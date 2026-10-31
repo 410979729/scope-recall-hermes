@@ -13,6 +13,7 @@ import inspect
 import json
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def binding(root: Path):
 
 def fingerprint(path: Path) -> dict:
     """Hash actual source text, truth, deletions and preserved queue state."""
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         result = {"schema": connection.execute("PRAGMA user_version").fetchone()[0]}
         selections = {
@@ -217,7 +218,7 @@ def create(root: Path) -> dict:
     }
 
 
-def verify(root: Path, *, output: Path | None = None) -> dict:
+def verify(root: Path, *, output: Path | None = None, exercise_next_schema: bool = False) -> dict:
     """Upgrade an independent original snapshot, preserving the historical fixture."""
     original = json.loads((root / "sample.json").read_text(encoding="utf-8"))
     parent = output or root
@@ -228,15 +229,34 @@ def verify(root: Path, *, output: Path | None = None) -> dict:
     snapshot = root / "pre-upgrade.sqlite3"
     expected = fingerprint(snapshot)
     target = instance.data_directory / "memory.sqlite3"
-    with sqlite3.connect(snapshot) as source, sqlite3.connect(target) as destination:
+    with (
+        closing(sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)) as source,
+        closing(sqlite3.connect(target)) as destination,
+    ):
         source.backup(destination)
         # Local fixtures bind their absolute directory. Rebind only the copy;
         # truth and queue contents remain comparable with the original snapshot.
         destination.execute(
             "UPDATE instance_meta SET data_directory=? WHERE singleton=1", (_directory(instance.data_directory),)
         )
+        destination.commit()
     core = MemoryCore(CoreConfig(instance), clock=Clock())
-    core.initialize()
+    # Exercise admission through a normal automatic writable open.
+    with core.storage.write(context):
+        pass
+    upgrade_snapshots = sorted((target.parent / "upgrade-snapshots").glob("*.sqlite3"))
+    automatic_snapshot_equal = bool(upgrade_snapshots) and fingerprint(upgrade_snapshots[0]) == expected
+    first_open_schema = fingerprint(target)["schema"]
+    first_snapshot_checked = expected["schema"] == first_open_schema or automatic_snapshot_equal
+    if exercise_next_schema:
+        before_next = fingerprint(target)
+        register_test_migration()
+        with core.storage.write(context):
+            pass
+        upgrade_snapshots = sorted((target.parent / "upgrade-snapshots").glob("*.sqlite3"))
+        next_snapshot_equal = len(upgrade_snapshots) == 1 and fingerprint(upgrade_snapshots[0]) == before_next
+    else:
+        next_snapshot_equal = True
     actual = fingerprint(core.storage.path)
     comparisons = {
         table: actual.get(table) == block
@@ -253,7 +273,10 @@ def verify(root: Path, *, output: Path | None = None) -> dict:
         )
     fixed = query(core, context)
     rollback = workspace / "rollback-rehearsal.sqlite3"
-    with sqlite3.connect(snapshot) as source, sqlite3.connect(rollback) as destination:
+    with (
+        closing(sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)) as source,
+        closing(sqlite3.connect(rollback)) as destination,
+    ):
         source.backup(destination)
     rollback_ok = fingerprint(rollback) == expected
     config_path = root / "runtime-config.json"
@@ -275,13 +298,35 @@ def verify(root: Path, *, output: Path | None = None) -> dict:
         "old_config_backend": config_backend,
         "validation_path": str(core.storage.path),
         "snapshot_path": str(snapshot),
+        "automatic_upgrade_snapshots": [str(path) for path in upgrade_snapshots],
+        "automatic_snapshot_equal": automatic_snapshot_equal,
+        "first_open_schema": first_open_schema,
+        "first_snapshot_checked": first_snapshot_checked,
+        "next_snapshot_equal": next_snapshot_equal,
         "after": actual,
         "passed": all(comparisons.values())
         and fixed == original["fixed_query"]
         and rollback_ok
+        and first_snapshot_checked
+        and next_snapshot_equal
         and actual["integrity"] == "ok"
         and expected["integrity"] == "ok",
     }
+
+
+def register_test_migration() -> None:
+    """Register a synthetic next-format step only inside the benchmark test process."""
+    from scope_recall.core import storage
+
+    current = storage.SCHEMA_VERSION
+
+    def advance(conn):
+        conn.execute("UPDATE instance_meta SET schema_version=?", (current + 1,))
+        conn.execute(f"PRAGMA user_version={current + 1}")
+
+    storage.SCHEMA_MIGRATIONS = {**storage.SCHEMA_MIGRATIONS, current: advance}
+    storage.UPGRADE_CHAIN = (*storage.UPGRADE_CHAIN, current)
+    storage.SCHEMA_VERSION = current + 1
 
 
 def main():
@@ -290,9 +335,14 @@ def main():
     parser.add_argument("action", choices=["create", "verify"])
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--exercise-next-schema", action="store_true")
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
-    result = create(args.root) if args.action == "create" else verify(args.root, output=args.output)
+    result = (
+        create(args.root)
+        if args.action == "create"
+        else verify(args.root, output=args.output, exercise_next_schema=args.exercise_next_schema)
+    )
     destination = (
         args.root / "sample.json"
         if args.action == "create"

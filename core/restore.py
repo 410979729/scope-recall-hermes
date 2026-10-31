@@ -36,6 +36,14 @@ LEDGER_FILENAME = "restore-ledger.json"
 #: deletions need anything this format does not carry exports another one, which the releases before it refuse.
 LEDGER_FORMAT = "scope-recall-deletion-ledger/2"
 LEGACY_LEDGER_FORMAT = "scope-recall-deletion-ledger/1"
+#: The oldest snapshot schema read by a release that carries the restore command.  A snapshot at an older one could be
+#: put back only by a release that cannot replay the ledger, so it is refused.
+RESTORE_SCHEMA_FLOOR = 1110
+
+
+def snapshot_schema_supported(schema: int) -> bool:
+    """Whether a snapshot's stamped schema can replay the deletion ledger safely."""
+    return RESTORE_SCHEMA_FLOOR <= schema <= SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
