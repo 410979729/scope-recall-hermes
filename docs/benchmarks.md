@@ -99,6 +99,18 @@ their captures and embeddings do not reach the providers at once. The settings
 are recorded as `workers`, `settle_seconds` and `start_interval_seconds` in
 `results.json`.
 
+One runner process keeps about two CPU cores busy whatever `--workers` says,
+because its question threads share one Python interpreter, so a long
+scope-recall split can be limited by the runner rather than the model server.
+`--shard K/N` runs only questions K, K+N, K+2N, ... of the selection (recorded
+as `shard`), so N processes can share a split, each with its own copy of the
+request cache. `tests/public_bench/merge_shards.py --data <root> --output <dir>
+<shard dirs>` joins their reports into the report one process would write: the
+split's question order, scoring recomputed from the rows, summed cache counts
+and workers, the slowest shard's `total_seconds`, and `shards` set to N. It
+refuses shards that differ in split, method, models, prompts or settle limits,
+and an incomplete set.
+
 When a settle round processes nothing and the remaining work was last refused
 for capacity (HTTP 429, 502, 503, 504 or 529), the round waits 30 real seconds
 before it moves the business clock, because a provider's rate limit counts real
