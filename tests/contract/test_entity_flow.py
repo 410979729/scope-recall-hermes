@@ -23,6 +23,15 @@ class RecordingPort:
     def __init__(self, case):
         self.case = case
         self.entity_calls = 0
+        expected = case["expected"]
+        self.target = next(
+            (
+                c
+                for c in case["input"]["candidates"]
+                if (c["ref"], c["revision"]) == (expected["target_ref"], expected["target_revision"])
+            ),
+            None,
+        )
 
     def propose(self, messages, **kwargs):
         body = json.loads(messages[-1]["content"])
@@ -33,11 +42,15 @@ class RecordingPort:
                     (
                         v
                         for v in body["candidates"]
-                        if v["payload"]["subject"] == self.case["input"]["candidates"][0]["payload"]["subject"]
+                        if self.target and v["payload"]["subject"] == self.target["payload"]["subject"]
                     ),
                     None,
                 )
-                same = self.case["same_entity"] and target is not None
+                same = (
+                    self.case["same_entity"]
+                    and target is not None
+                    and body["proposal"]["subject"] == self.case["input"]["proposal"]["subject"]
+                )
                 return json.dumps(
                     dict(
                         support="supported" if same else "uncertain",
@@ -49,7 +62,7 @@ class RecordingPort:
             return json.dumps(dict(support="supported", action="new", target_ref=None, target_revision=None))
         proposals = []
         for source in body["sources"]:
-            options = [self.case["input"]["proposal"], self.case["input"]["candidates"][0]["payload"]]
+            options = [self.case["input"]["proposal"], *(c["payload"] for c in self.case["input"]["candidates"])]
             proposal = deepcopy(next(p for p in options if p["evidence_spans"][0]["quote"] == source["content"]))
             proposal["evidence_spans"][0].update(
                 source_ref=source["source_ref"], source_revision=source["source_revision"]
@@ -72,7 +85,8 @@ def test_recorded_bilingual_entity_flow(tmp_path, case):
     core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
     core.initialize()
     core.test_sequence = itertools.count(1)
-    capture(core, ctx, case["input"]["candidates"][0]["payload"]["evidence_spans"][0]["quote"])
+    for candidate in case["input"]["candidates"]:
+        capture(core, ctx, candidate["payload"]["evidence_spans"][0]["quote"])
     capture(core, ctx, case["input"]["proposal"]["evidence_spans"][0]["quote"])
     port = RecordingPort(case)
     receipt = drain_worker(
@@ -85,6 +99,13 @@ def test_recorded_bilingual_entity_flow(tmp_path, case):
     )
     assert receipt.failed == 0, [(i.work_type, i.error_code, i.error_detail) for i in receipt.items]
     with core.storage.read(ctx) as tx:
-        assert entity_progress(tx) == dict(total=2, completed=2, pending=0)
+        total = len(case["input"]["candidates"]) + 1
+        assert entity_progress(tx) == dict(total=total, completed=total, pending=0)
         count = tx._check().execute("SELECT count(*) FROM entity_alias_proofs").fetchone()[0]
+        if case["same_entity"]:
+            target_ref, revision = (
+                tx._check().execute("SELECT target_ref,target_revision FROM entity_alias_proofs").fetchone()
+            )
+            actual = tx.claims.version(target_ref, revision)
+            assert actual.payload["subject"] == port.target["payload"]["subject"]
     assert count == int(case["same_entity"])

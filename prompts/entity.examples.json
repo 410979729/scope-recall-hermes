@@ -1278,5 +1278,485 @@
       "target_ref": null,
       "target_revision": null
     }
+  },
+  {
+    "id": "en-person-multiple",
+    "language": "en",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Dr Mira",
+        "predicate": "identity",
+        "value_text": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430.",
+            "start": 0,
+            "end": 52
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430."
+        },
+        {
+          "source_ref": "TEST-distractor-source-1",
+          "source_revision": 1,
+          "content": "TEST-Mira Sen TEST-1 is surgeon with license TEST-11430."
+        },
+        {
+          "source_ref": "TEST-distractor-source-2",
+          "source_revision": 1,
+          "content": "TEST-Mira Sen TEST-2 is surgeon with license TEST-2430."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-distractor-1",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Mira Sen TEST-1",
+            "predicate": "identity",
+            "value_text": "TEST-Mira Sen TEST-1 is surgeon with license TEST-11430.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-1",
+                "source_revision": 1,
+                "quote": "TEST-Mira Sen TEST-1 is surgeon with license TEST-11430.",
+                "start": 0,
+                "end": 56
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Mira Sen",
+            "predicate": "identity",
+            "value_text": "TEST-Mira Sen is surgeon with license TEST-430.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Mira Sen is surgeon with license TEST-430.",
+                "start": 0,
+                "end": 47
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-distractor-2",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Mira Sen TEST-2",
+            "predicate": "identity",
+            "value_text": "TEST-Mira Sen TEST-2 is surgeon with license TEST-2430.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-2",
+                "source_revision": 1,
+                "quote": "TEST-Mira Sen TEST-2 is surgeon with license TEST-2430.",
+                "start": 0,
+                "end": 55
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "zh-person-multiple",
+    "language": "zh",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试小王",
+        "predicate": "identity",
+        "value_text": "测试小王就是测试王明医生，执业证是 TEST-431。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试小王就是测试王明医生，执业证是 TEST-431。",
+            "start": 0,
+            "end": 27
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试小王就是测试王明医生，执业证是 TEST-431。"
+        },
+        {
+          "source_ref": "TEST-distractor-source-1",
+          "source_revision": 1,
+          "content": "测试王明医生 TEST-1的执业证是 TEST-11431。"
+        },
+        {
+          "source_ref": "TEST-distractor-source-2",
+          "source_revision": 1,
+          "content": "测试王明医生 TEST-2的执业证是 TEST-2431。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-distractor-1",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试王明医生 TEST-1",
+            "predicate": "identity",
+            "value_text": "测试王明医生 TEST-1的执业证是 TEST-11431。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-1",
+                "source_revision": 1,
+                "quote": "测试王明医生 TEST-1的执业证是 TEST-11431。",
+                "start": 0,
+                "end": 30
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-distractor-2",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试王明医生 TEST-2",
+            "predicate": "identity",
+            "value_text": "测试王明医生 TEST-2的执业证是 TEST-2431。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-2",
+                "source_revision": 1,
+                "quote": "测试王明医生 TEST-2的执业证是 TEST-2431。",
+                "start": 0,
+                "end": 29
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试王明医生",
+            "predicate": "identity",
+            "value_text": "测试王明医生的执业证是 TEST-431。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试王明医生的执业证是 TEST-431。",
+                "start": 0,
+                "end": 21
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "en-place-multiple",
+    "language": "en",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-East Hall",
+        "predicate": "identity",
+        "value_text": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane.",
+            "start": 0,
+            "end": 73
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane."
+        },
+        {
+          "source_ref": "TEST-distractor-source-1",
+          "source_revision": 1,
+          "content": "TEST-Aster Hall TEST-1 is building with address TEST-114 Bay Lane."
+        },
+        {
+          "source_ref": "TEST-distractor-source-2",
+          "source_revision": 1,
+          "content": "TEST-Aster Hall TEST-2 is building with address TEST-214 Bay Lane."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-distractor-1",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Aster Hall TEST-1",
+            "predicate": "identity",
+            "value_text": "TEST-Aster Hall TEST-1 is building with address TEST-114 Bay Lane.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-1",
+                "source_revision": 1,
+                "quote": "TEST-Aster Hall TEST-1 is building with address TEST-114 Bay Lane.",
+                "start": 0,
+                "end": 66
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-distractor-2",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Aster Hall TEST-2",
+            "predicate": "identity",
+            "value_text": "TEST-Aster Hall TEST-2 is building with address TEST-214 Bay Lane.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-2",
+                "source_revision": 1,
+                "quote": "TEST-Aster Hall TEST-2 is building with address TEST-214 Bay Lane.",
+                "start": 0,
+                "end": 66
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Aster Hall",
+            "predicate": "identity",
+            "value_text": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+                "start": 0,
+                "end": 58
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "zh-organization-multiple",
+    "language": "zh",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试青研所",
+        "predicate": "identity",
+        "value_text": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。",
+            "start": 0,
+            "end": 31
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。"
+        },
+        {
+          "source_ref": "TEST-distractor-source-1",
+          "source_revision": 1,
+          "content": "测试青杉研究所 TEST-1的登记号是 TEST-1436。"
+        },
+        {
+          "source_ref": "TEST-distractor-source-2",
+          "source_revision": 1,
+          "content": "测试青杉研究所 TEST-2的登记号是 TEST-2436。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-distractor-1",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试青杉研究所 TEST-1",
+            "predicate": "identity",
+            "value_text": "测试青杉研究所 TEST-1的登记号是 TEST-1436。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-1",
+                "source_revision": 1,
+                "quote": "测试青杉研究所 TEST-1的登记号是 TEST-1436。",
+                "start": 0,
+                "end": 30
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试青杉研究所",
+            "predicate": "identity",
+            "value_text": "测试青杉研究所的登记号是 TEST-436。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试青杉研究所的登记号是 TEST-436。",
+                "start": 0,
+                "end": 22
+              }
+            ]
+          }
+        },
+        {
+          "ref": "claim-TEST-distractor-2",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试青杉研究所 TEST-2",
+            "predicate": "identity",
+            "value_text": "测试青杉研究所 TEST-2的登记号是 TEST-2436。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-distractor-source-2",
+                "source_revision": 1,
+                "quote": "测试青杉研究所 TEST-2的登记号是 TEST-2436。",
+                "start": 0,
+                "end": 30
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
   }
 ]

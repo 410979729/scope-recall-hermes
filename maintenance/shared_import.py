@@ -277,7 +277,9 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         if held is not None:
             left_out.add(claim["claim_id"])
             skipped.append({"claim_id": claim["claim_id"], "kept": held[0], "kind": claim["kind"]})
-    counts["claims"] = _copy(conn, src, "claims", lambda r: None if r["claim_id"] in left_out else r)
+    counts["claims"] = _copy(
+        conn, src, "claims", lambda r: None if r["claim_id"] in left_out else {**r, "entity_indexed": 0}
+    )
     counts["claim_versions"] = _copy(
         conn,
         src,

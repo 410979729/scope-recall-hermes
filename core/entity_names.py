@@ -79,6 +79,7 @@ def index_claim(tx, version):
     if version.payload["kind"] == "alias" or version.current_revision != version.revision:
         return
     conn = tx._check(write=True)
+    conn.execute("UPDATE claims SET entity_indexed=1 WHERE claim_id=?", (version.ref,))
     if conn.execute(
         "SELECT 1 FROM entity_name_mentions WHERE claim_ref=? AND claim_revision=? LIMIT 1",
         (version.ref, version.revision),
@@ -126,6 +127,24 @@ def pending_names(tx, source):
             (source.ref, source.revision),
         )
     )
+
+
+def backfill_names(tx, scope, *, limit=7):
+    """Index a bounded page in the exact namespace before any negative identity decision."""
+    conn = tx._check(write=True)
+    query = (
+        "SELECT claim_id,current_revision FROM claims WHERE scope_id=? AND project_id IS ? AND branch_id IS ? "
+        "AND entity_indexed=0 AND kind IN ('fact','preference','constraint','decision','intention') "
+        "AND read_blocked=0 AND suppressed=0 ORDER BY claim_id LIMIT ?"
+    )
+    namespace = (scope, tx.context.project_id, tx.context.branch_id)
+    for ref, revision in conn.execute(query, (*namespace, limit)).fetchall():
+        version = tx.claims.version(ref, revision)
+        if version is None:
+            conn.execute("UPDATE claims SET entity_indexed=1 WHERE claim_id=?", (ref,))
+        else:
+            index_claim(tx, version)
+    return conn.execute(query, (*namespace, 1)).fetchone() is None
 
 
 def reserve_names(tx, source, item, now):

@@ -173,7 +173,13 @@ _SCHEMA_STEPS = {
                 "entity_source_changed",
             )
         ),
-        "indexes": ("entity_unresolved", "entity_alias_scope", "entity_subject_lookup", "entity_subject_presence"),
+        "indexes": (
+            "entity_unresolved",
+            "entity_alias_scope",
+            "entity_subject_lookup",
+            "entity_subject_presence",
+            "entity_index_pending",
+        ),
         "tables": (
             "entity_name_search",
             "entity_name_mentions",
@@ -181,7 +187,7 @@ _SCHEMA_STEPS = {
             "entity_alias_labels",
             "entity_alias_proofs",
         ),
-        "columns": (("claim_versions", "entity_resolved"),),
+        "columns": (("claim_versions", "entity_resolved"), ("claims", "entity_indexed")),
     },
     1112: {"tables": ("private_intervals",), "columns": (("source_events", "project_root"),)},
     1111: {

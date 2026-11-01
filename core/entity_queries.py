@@ -78,19 +78,21 @@ def resolved_query(tx, query: str, now: str) -> str:
     return _query_mapping(tx, query, now)[0]
 
 
-def resolve_query_context(storage, context, clock):
-    """Map the query inside its existing deadline; unavailable storage preserves literal recall."""
+def resolve_query_context(tx, context, clock):
+    """Freeze names and proofs in the caller's entry read, including a literal miss."""
+    if context.entity_names_resolved:
+        return context
+    context = replace(context, entity_names_resolved=True)
     seconds = context.deadline - clock.monotonic()
     if context.entity_fence or seconds <= 0 or context.mode in {"history", "as_of"}:
         return context
     try:
-        with storage.read(context.trusted_context, remaining_seconds=seconds) as tx:
-            if not hasattr(tx, "claims"):
-                return context
-            query, names, fence = _query_mapping(tx, context.query, context.now)
-            alternatives = [name for name in names if not tuple(_mention_spans(query, name))]
-            if alternatives:
-                query += " " + " ".join(alternatives)
+        if not hasattr(tx, "claims"):
+            return context
+        query, names, fence = _query_mapping(tx, context.query, context.now)
+        alternatives = [name for name in names if not tuple(_mention_spans(query, name))]
+        if alternatives:
+            query += " " + " ".join(alternatives)
     except (ContractError, OSError):
         return context
     if len(query) > 8192:

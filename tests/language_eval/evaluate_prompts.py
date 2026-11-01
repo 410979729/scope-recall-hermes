@@ -55,7 +55,12 @@ def valid_result(name, raw, expected, inputs):
         decision = judgement_result(raw, inputs["candidates"])
         actual = decision["support"] == "supported" and decision["action"] == "duplicate"
         wanted = expected["action"] == "duplicate"
-        return actual == wanted and decision["action"] in {"new", "duplicate"}
+        return (
+            actual == wanted
+            and decision["action"] in {"new", "duplicate"}
+            and (decision["target_ref"], decision["target_revision"])
+            == (expected["target_ref"], expected["target_revision"])
+        )
     if name in {"support", "merge"}:
         return value == expected
     value = validate_payload("consolidation_result", value)
@@ -97,17 +102,20 @@ def entity_metrics(outcomes):
     """Report decision accuracy, merge precision/recall and false merges over all negative cases."""
     positives = [r for r in outcomes if r["expected"]]
     negatives = [r for r in outcomes if not r["expected"]]
-    true_merges = sum(r["merged"] for r in positives)
+    true_merges = sum(r["merged"] and r.get("valid", True) for r in positives)
+    wrong_targets = sum(r["merged"] and not r.get("valid", True) for r in positives)
     false_merges = sum(r["merged"] for r in negatives)
+    attempted = true_merges + false_merges + wrong_targets
     return dict(
         cases=len(outcomes),
         positive_cases=len(positives),
         negative_cases=len(negatives),
         accuracy=sum(r["expected"] == r["merged"] and not r.get("error") and r.get("valid", True) for r in outcomes)
         / len(outcomes),
-        merge_precision=true_merges / (true_merges + false_merges) if true_merges + false_merges else None,
+        merge_precision=true_merges / attempted if attempted else None,
         merge_recall=true_merges / len(positives) if positives else None,
         false_merges=false_merges,
+        wrong_target_merges=wrong_targets,
         false_merge_rate=false_merges / len(negatives) if negatives else None,
     )
 

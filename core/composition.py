@@ -246,6 +246,18 @@ class MemoryCore:
         with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
             return private.recall_state(tx, context, now, after=after)
 
+    def _recall_entry(self, search_context):
+        """Share one entry snapshot between private policy and query identity."""
+        from .entity_queries import resolve_query_context
+
+        context = search_context.trusted_context
+        now = utc_timestamp(self.clock.utc_now())
+        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+            mode, marker = private.recall_state(tx, context, now)
+            if mode != "full":
+                search_context = resolve_query_context(tx, search_context, self.clock)
+        return search_context, mode, marker
+
     def private_capture_blocked(
         self,
         context: TrustedContext,
@@ -533,7 +545,7 @@ class MemoryCore:
         search_context, _deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone
         )
-        mode, private_marker = self._recall_private_state(context)
+        search_context, mode, private_marker = self._recall_entry(search_context)
         if mode == "full":
             return RetrievalResult(
                 (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
@@ -569,14 +581,11 @@ class MemoryCore:
         search_context, _effective_deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone, in_context_since
         )
-        mode, private_marker = self._recall_private_state(context)
+        search_context, mode, private_marker = self._recall_entry(search_context)
         if mode == "full":
             # Before the vector channel, so a full interval makes no query embedding
             # request and reaches no provider.
             return self._private_recall_packet(search_context)
-        from .entity_queries import resolve_query_context
-
-        search_context = resolve_query_context(self.storage, search_context, self.clock)
         result = self.recall_pipeline.search(search_context)
         compiler = self.recall_packet_compiler
         # Keep the compiler on the pipeline's current read boundary.  Tests

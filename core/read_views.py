@@ -291,9 +291,10 @@ def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
         return _AliasResolution("ambiguous", None, (), False)
     fence = tuple(dict.fromkeys(ObjectRef("claim", v.ref, v.revision) for a, t, _s in edges for v in (a, t)))
     proofs = tx._check().execute(
-        "SELECT source_ref,source_revision FROM entity_alias_proofs WHERE alias_ref IN (SELECT "
-        "value FROM json_each(?))",
-        (json.dumps([a.ref for a, _t, _s in edges]),),
+        "SELECT p.source_ref,p.source_revision FROM json_each(?) accepted "
+        "JOIN entity_alias_proofs p ON p.alias_ref=json_extract(accepted.value,'$[0]') "
+        "AND p.alias_revision=json_extract(accepted.value,'$[1]')",
+        (json.dumps([(a.ref, a.revision) for a, _t, _s in edges]),),
     )
     fence = tuple(dict.fromkeys((*fence, *(ObjectRef("claim", row[0], row[1]) for row in proofs))))
     return _AliasResolution("resolved", next(iter(canonical)), fence, False, tuple(sorted(names)))

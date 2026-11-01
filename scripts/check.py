@@ -188,6 +188,7 @@ SUITES = {
         "tests/contract/test_entity_flow.py",
         "tests/contract/test_entity_queries.py",
         "tests/contract/test_entity_scaling.py",
+        "tests/contract/test_entity_lifecycle.py",
         "tests/contract/test_evidence_governance.py",
         "tests/contract/test_candidate_question_identity.py",
         "tests/contract/test_prompt_semantics.py",

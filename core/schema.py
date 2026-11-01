@@ -254,6 +254,9 @@ ENTITY_STATEMENTS = (
         FOREIGN KEY(alias_ref,alias_revision) REFERENCES claim_versions(claim_id,revision) ON DELETE CASCADE
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX entity_unresolved ON claim_versions(entity_resolved,claim_id,revision)",
+    "CREATE INDEX entity_index_pending ON claims(scope_id,project_id,branch_id,claim_id) "
+    "WHERE entity_indexed=0 AND kind IN ('fact','preference','constraint','decision','intention') "
+    "AND read_blocked=0 AND suppressed=0",
     "CREATE INDEX entity_alias_scope ON claims(scope_id,project_id,branch_id,claim_id) WHERE kind='alias'",
     "CREATE INDEX entity_subject_lookup ON claims(scope_id,project_id,branch_id,subject) "
     "WHERE kind IN ('fact','preference','constraint','decision','intention') AND read_blocked=0 AND suppressed=0",
@@ -322,6 +325,7 @@ ENTITY_STATEMENTS = (
         ORDER BY m.subject_name DESC,m.ordinal,m.claim_ref LIMIT 1);
     END""",
     """CREATE TRIGGER entity_name_changed AFTER UPDATE OF current_revision,read_blocked,suppressed ON claims BEGIN
+        UPDATE claims SET entity_indexed=0 WHERE claim_id=new.claim_id;
         UPDATE entity_names SET status='pending' WHERE source_ref=old.claim_id AND status='checked';
         UPDATE entity_names SET status='pending' WHERE target_ref=old.claim_id AND status='checked';
         UPDATE entity_names SET status=CASE WHEN (SELECT state FROM claim_versions
@@ -416,6 +420,7 @@ STATEMENTS = (
         slot_key TEXT NOT NULL UNIQUE, current_revision INTEGER NOT NULL CHECK(current_revision>=1),
         read_blocked INTEGER NOT NULL DEFAULT 0 CHECK(read_blocked IN (0,1)),
         suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)),
+        entity_indexed INTEGER NOT NULL DEFAULT 0 CHECK(entity_indexed IN (0,1)),
         FOREIGN KEY(claim_id,current_revision) REFERENCES claim_versions(claim_id,revision) DEFERRABLE INITIALLY DEFERRED
     ) STRICT""",
         "CREATE INDEX claim_scope_subject ON claims(scope_id,subject,predicate,project_id,branch_id)",
@@ -774,6 +779,9 @@ def upgrade_1111(connection):
 
 def upgrade_1112(connection):
     """Add entity judgement receipts without rewriting claims or waiting for models."""
+    connection.execute(
+        "ALTER TABLE claims ADD COLUMN entity_indexed INTEGER NOT NULL DEFAULT 0 CHECK(entity_indexed IN (0,1))"
+    )
     connection.execute(
         "ALTER TABLE claim_versions ADD COLUMN entity_resolved INTEGER NOT NULL DEFAULT 0 "
         "CHECK(entity_resolved IN (0,1))"

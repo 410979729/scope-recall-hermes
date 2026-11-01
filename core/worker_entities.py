@@ -9,7 +9,7 @@ from ..contracts import ContractError
 from . import private
 from .aliases import ENTITY_KINDS
 from .claims import evidence_refs
-from .entity_names import checked, index_claim, ineligible, pending_names, reserve_names
+from .entity_names import backfill_names, checked, index_claim, ineligible, pending_names, reserve_names
 from .entity_resolution import entity_messages, live_entity, publish_entity_merge
 from .evidence_support import SupportVerdict
 from .retrieval import SearchContext, SearchLimits
@@ -50,16 +50,21 @@ def _vector_hits(storage, clock, context, source, seconds):
 def _prepare(storage, clock, context, item, model, seconds):
     """Read, nominate and judge outside the writer transaction, rechecking outbound authority."""
     deadline = clock.monotonic() + seconds
+    sources = ()
     with storage.write(context, remaining_seconds=seconds) as tx:
         source = tx.claims.version(item.subject_ref, item.subject_revision)
         if source is None:
             raise ContractError("SOURCE_MISSING", "entity")
         index_claim(tx, source)
+        ready = backfill_names(tx, source.scope_id)
         names = pending_names(tx, source)
-        if not names:
+        if ready and not names:
             return source, None, (), None
-        source, sources = live_entity(tx, item.subject_ref, item.subject_revision, clock.utc_now())
-        reserve_names(tx, source, item, clock.utc_now())
+        if ready:
+            source, sources = live_entity(tx, item.subject_ref, item.subject_revision, clock.utc_now())
+            reserve_names(tx, source, item, clock.utc_now())
+    if not ready:
+        raise ContractError("VERSION_CONFLICT", "entity_index_pending")
     targets = ((source.ref, source.revision),)
     check = partial(_publication_blocked, storage, context, sources, targets, clock)
     with private.using_outbound_check(check):
@@ -108,13 +113,14 @@ def process_entity_projection(storage, clock, context, item, *, model, started: 
         )
         return _publish(storage, clock, context, item, (source, decision, names, gap), started, budget)
     except ContractError as exc:
-        if exc.field == "entity_name_lease":
+        if exc.field in {"entity_name_lease", "entity_index_pending"}:
+            code = "entity_name_leased" if exc.field == "entity_name_lease" else exc.field
             with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
                 return work_result(
                     tx.work.defer_without_attempt(
-                        *item.lease, now=clock.utc_now(), error_code="entity_name_leased", seconds=1
+                        *item.lease, now=clock.utc_now(), error_code=code, seconds=int(code == "entity_name_leased")
                     ),
-                    error_code="entity_name_leased",
+                    error_code=code,
                 )
         if exc.field == "private_mode":
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)

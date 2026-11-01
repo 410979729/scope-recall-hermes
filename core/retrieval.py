@@ -158,6 +158,8 @@ class SearchContext:
     in_context_since: str | None = None
     #: Versioned name proofs rechecked by the final read-only release fence.
     entity_fence: tuple[tuple[str, int], ...] = ()
+    #: A literal miss is frozen too: downstream stages must use this entry snapshot.
+    entity_names_resolved: bool = False
 
     @property
     def automatic_injection(self) -> bool:

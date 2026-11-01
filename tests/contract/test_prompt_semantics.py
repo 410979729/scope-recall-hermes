@@ -58,7 +58,31 @@ def test_prompt_evaluation_rejects_wrong_temporal_answers(monkeypatch, field):
         actual = deepcopy(wanted)
         actual["claim_proposals"][0][field] = wrong
         assert not evaluator.valid_result("consolidation", json.dumps(actual), wanted, example["input"])
+
     if field == "occurred_at":
         actual = deepcopy(wanted)
         del actual["claim_proposals"][0][field]
         assert not evaluator.valid_result("consolidation", json.dumps(actual), wanted, example["input"])
+
+
+@pytest.mark.parametrize("field,value", [("target_ref", "claim-TEST-distractor"), ("target_revision", 2)])
+def test_entity_evaluation_rejects_an_allowed_but_wrong_target(monkeypatch, field, value):
+    monkeypatch.syspath_prepend(str(ROOT / "tests/language_eval"))
+    evaluator = importlib.import_module("evaluate_prompts")
+    example = json.loads((ROOT / "prompts/entity.examples.json").read_text(encoding="utf-8"))[0]
+    wrong = deepcopy(example["expected"])
+    wrong[field] = value
+    distractor = deepcopy(example["input"]["candidates"][0])
+    distractor.update(ref=wrong["target_ref"], revision=wrong["target_revision"])
+    example["input"]["candidates"].append(distractor)
+    assert not evaluator.valid_result("entity", json.dumps(wrong), example["expected"], example["input"])
+
+
+def test_entity_metrics_count_wrong_target_merges_as_errors(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "tests/language_eval"))
+    evaluator = importlib.import_module("evaluate_prompts")
+    result = evaluator.entity_metrics(
+        [dict(expected=True, merged=True, valid=False), dict(expected=False, merged=False, valid=True)]
+    )
+    assert result["merge_precision"] == result["merge_recall"] == 0
+    assert result["wrong_target_merges"] == 1
