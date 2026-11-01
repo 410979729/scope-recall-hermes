@@ -111,7 +111,7 @@ def _runtime_error_messages(module_name: str) -> list[str]:
     return messages
 
 
-@pytest.mark.parametrize("module_name", ["scope_recall.vector.process_store", "scope_recall.vector.store"])
+@pytest.mark.parametrize("module_name", ["scope_recall.vector.sqlite_store", "scope_recall.vector.store"])
 def test_the_vocabulary_cannot_silently_fall_behind_the_code(module_name):
     """A new RuntimeError in the vector path that nothing here names would arrive
     as a bare class again, which is the fault this module exists to remove."""

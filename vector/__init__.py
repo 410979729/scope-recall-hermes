@@ -34,7 +34,7 @@ def require_no_text(rows: Iterable[_Row]) -> list[_Row]:
 
     A companion row is a vector and opaque identities: SQLite holds the only answerable text.  Words a row carried
     in ``content`` or ``summary`` would outlive a forget in the companion's own files, which a purge only deletes
-    the row from: the SQLite companion's free space and write-ahead log, Lance's older versions.
+    the row from: the SQLite companion's free space and write-ahead log.
     """
     payload = list(rows)
     if any(row.get("content") or row.get("summary") for row in payload):

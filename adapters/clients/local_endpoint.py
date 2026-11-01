@@ -199,7 +199,7 @@ class _Handler(BaseHTTPRequestHandler):
             with endpoint.lock:
                 endpoint.inflight.pop(id(self), None)
             endpoint.slots.release()
-            # Closed after the answer is out: closing the runtime ends its vector helper, which can take seconds.
+            # Release runtime resources after sending the answer, outside its request budget.
             if close is not None:
                 close()
 
@@ -422,7 +422,7 @@ def _nothing() -> None:
 
 
 def _close_later(handler: Any) -> None:
-    """Close a handler off the request's time: its vector helper can take seconds to stop."""
+    """Close a handler outside the request budget, including any runtime shutdown waits."""
 
     def close() -> None:
         try:
@@ -463,10 +463,8 @@ class KeptRecaller:
         """Make the handler and warm its vector store in the background, when the server starts, then keep it warm
         (``_keep_warm``) until the recaller is closed.
 
-        Made at the first prompt, the handler would attach its runtime, start the vector helper, open the table and read
-        the index inside that prompt's recall, and the first prompt after every start would recall by words alone: for
-        Claude Code that is every session.  A recall that comes meanwhile waits for this (``__call__``) instead of
-        making a second handler.  It writes nothing."""
+        Runtime attachment, companion opening and mapped page reads share this background window. A recall that
+        arrives meanwhile waits for it (``__call__``) instead of making a second handler. It writes nothing."""
         done = threading.Event()
         self._warming = done
         keep = not self._keeping
@@ -514,9 +512,8 @@ class KeptRecaller:
     def _keep_warm(self, seconds: float) -> None:
         """Search the kept handler's vector store again after each ``KEEP_WARM_IDLE_SECONDS`` no recall searched it,
         until the recaller is closed.  A moment a recall holds the handler is skipped; no handler is made for it; it
-        writes nothing.  A search that failed is tried once more at once: one that found the vector helper gone closed
-        the store, and the second opens it again here, not inside the next prompt's recall.  Like the start's warming,
-        a search is not waited for by ``close``, and closes the handler itself when the recaller was closed."""
+        writes nothing. A failed warming is retried once within its background window. Like the start's warming,
+        it is not waited for by ``close``, and closes the handler itself when the recaller was closed."""
         while not self._stopped.wait(KEEP_WARM_CHECK_SECONDS):
             if time.monotonic() - self._used < KEEP_WARM_IDLE_SECONDS or not self._lock.acquire(blocking=False):
                 continue

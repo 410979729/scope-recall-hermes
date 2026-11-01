@@ -321,7 +321,7 @@ def grown(recorded: dict, current: dict) -> list[str]:
 
 
 #: The package's layers, lowest first: a module imports from its own layer or a lower one, at the top or in a
-#: function.  Modules outside them (the package's root, ``_version``, ``_lance_worker``, ``distribution``) keep none,
+#: function.  Modules outside them (the package's root, ``_version``, ``distribution``) keep none,
 #: and an import through one of them counts as an import of what it imports.
 LAYERS = ("contracts", "core", "vector", "runtime", "adapters", "maintenance")
 #: The entry modules the installed hook and server command lines name: composition roots, free to import any layer.

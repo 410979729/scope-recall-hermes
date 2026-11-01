@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any
 
 import numpy as np
 
-from .cache import MappedIndex, MappedScope, check_deadline
+from .cache import CacheCorrupt, MappedIndex, MappedScope, check_deadline
+from .defaults import MIN_CANDIDATES, compute_threads
 
 BATCH_ROWS = 512
-MIN_CANDIDATES = 256
 COARSE_BATCH_ROWS = 8192
 
 
@@ -36,9 +38,10 @@ def _distances(matrix: np.ndarray, query: np.ndarray, metric: str, *, norms: np.
         return 1.0 - dots
     if norms is None:
         norms = np.sqrt(np.einsum("ij,ij->i", matrix, matrix, dtype=np.float64))
-    denominators = np.asarray(norms, dtype=np.float64) * float(
-        np.sqrt(np.einsum("i,i->", query, query, dtype=np.float64))
-    )
+    norm_values = np.asarray(norms, dtype=np.float64)
+    if not np.isfinite(norm_values).all() or np.any(norm_values < 0):
+        raise CacheCorrupt("invalid_norms")
+    denominators = norm_values * float(np.sqrt(np.einsum("i,i->", query, query, dtype=np.float64)))
     similarities = np.divide(dots, denominators, out=np.zeros_like(dots), where=denominators > 0)
     return np.clip(1.0 - similarities, 0.0, 2.0)
 
@@ -81,27 +84,48 @@ def scan(
     return best
 
 
+def _score_block(part, query, coarse_query, begin, end, target) -> None:
+    """Compute one disjoint read-only mapped block under its copied request context."""
+    check_deadline()
+    if len(coarse_query) < len(query):
+        found = np.einsum("ij,j->i", part.coarse[begin:end], coarse_query, dtype=np.float32, optimize=False)
+    else:
+        found = 1.0 - _distances(part.raw[begin:end], query, "cosine", norms=part.norms[begin:end])
+    if not np.isfinite(found).all():
+        raise CacheCorrupt("non_finite_scores")
+    target[:] = found
+    check_deadline()
+
+
 def _coarse_scores(parts: list[MappedScope], query: np.ndarray) -> np.ndarray:
-    """Scan only authorized partitions into one global score array."""
+    """Scan authorized blocks in parallel, joining every task before mappings can close."""
     scores = np.empty(sum(part.count for part in parts), dtype=np.float64)
     if not parts:
         return scores
     width = parts[0].coarse.shape[1]
-    prefix = width < len(query)
     coarse_query = query[:width].astype(np.float64)
     norm = float(np.sqrt(np.einsum("i,i->", coarse_query, coarse_query)))
     coarse_query = (coarse_query / norm).astype(np.float32) if norm else np.zeros(width, dtype=np.float32)
-    offset = 0
+    offset, jobs = 0, []
     for part in parts:
         for begin in range(0, part.count, COARSE_BATCH_ROWS):
-            check_deadline()
             end = min(begin + COARSE_BATCH_ROWS, part.count)
-            if prefix:
-                found = np.einsum("ij,j->i", part.coarse[begin:end], coarse_query, dtype=np.float32, optimize=False)
-            else:
-                found = 1.0 - _distances(part.raw[begin:end], query, "cosine", norms=part.norms[begin:end])
-            scores[offset + begin : offset + end] = found
+            jobs.append((part, query, coarse_query, begin, end, scores[offset + begin : offset + end]))
         offset += part.count
+    workers = min(compute_threads(), len(jobs))
+    if workers <= 1:
+        for job in jobs:
+            _score_block(*job)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scope-recall-vector") as pool:
+            futures = [pool.submit(copy_context().run, _score_block, *job) for job in jobs]
+            try:
+                for future in futures:
+                    future.result()
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
     return scores
 
 
@@ -116,6 +140,8 @@ def _live_groups(conn: sqlite3.Connection, parts: list[MappedScope], selected: n
             check_deadline()
             page = rows[start : start + BATCH_ROWS]
             seqs = [int(seq) for seq in part.seqs[page]]
+            if any(seq < 1 or seq > part.watermark for seq in seqs) or len(set(seqs)) != len(seqs):
+                raise CacheCorrupt("invalid_sequences")
             marks = ",".join("?" for _ in seqs)
             live = {
                 int(row[0])
@@ -155,7 +181,10 @@ def _mapped_distances(groups, query: np.ndarray) -> tuple[np.ndarray, np.ndarray
             check_deadline()
             page = rows[start : start + BATCH_ROWS]
             seqs.append(np.asarray(part.seqs[page]))
-            distances.append(_distances(part.raw[page], query, "cosine", norms=part.norms[page]))
+            found = _distances(part.raw[page], query, "cosine", norms=part.norms[page])
+            if not np.isfinite(found).all():
+                raise CacheCorrupt("non_finite_scores")
+            distances.append(found)
     if not seqs:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
     return np.concatenate(seqs), np.concatenate(distances)
@@ -194,6 +223,28 @@ def _metadata(conn: sqlite3.Connection, seqs: np.ndarray, distances: np.ndarray,
     return _rank(best, limit)
 
 
+def _verify_results(conn: sqlite3.Connection, query: np.ndarray, found: list[dict], metric: str) -> list[dict]:
+    """Check only final result scores against SQLite, then return authoritative distances."""
+    if not found:
+        return found
+    check_deadline()
+    marks = ",".join("?" for _ in found)
+    rows = conn.execute(
+        f"SELECT id,vector FROM vector_records WHERE id IN ({marks})", [row["id"] for row in found]
+    ).fetchall()
+    if len(rows) != len(found):
+        raise CacheCorrupt("authoritative_score_mismatch")
+    matrix = np.frombuffer(b"".join(row[1] for row in rows), dtype="<f4").reshape(-1, len(query))
+    distances = _distances(matrix, query, metric)
+    exact = {row[0]: float(distance) for row, distance in zip(rows, distances, strict=True)}
+    if any(not np.isfinite(row["_distance"]) or abs(row["_distance"] - exact[row["id"]]) > 1e-12 for row in found):
+        raise CacheCorrupt("authoritative_score_mismatch")
+    for row in found:
+        row["_distance"] = exact[row["id"]]
+    check_deadline()
+    return _rank(found, len(found))
+
+
 def search(
     conn: sqlite3.Connection,
     values: Any,
@@ -214,7 +265,11 @@ def search(
     if view is None:
         return scan(conn, query, where, scopes, limit=limit, metric=metric)
     state, parts = view
-    groups = _candidate_groups(conn, parts, query, limit)
-    seqs, distances = _mapped_distances(groups, query)
-    tail = scan(conn, query, where + " AND seq>?", [*scopes, state.watermark], limit=limit, metric=metric)
-    return _metadata(conn, seqs, distances, tail, limit)
+    try:
+        groups = _candidate_groups(conn, parts, query, limit)
+        seqs, distances = _mapped_distances(groups, query)
+        tail = scan(conn, query, where + " AND seq>?", [*scopes, state.watermark], limit=limit, metric=metric)
+        return _verify_results(conn, query, _metadata(conn, seqs, distances, tail, limit), metric)
+    except CacheCorrupt as exc:
+        index.invalidate(state, str(exc))
+        return scan(conn, query, where, scopes, limit=limit, metric=metric)

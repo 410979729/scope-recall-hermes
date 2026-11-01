@@ -67,25 +67,26 @@ class _QueryEmbedding:
     one round trip on one pooled query connection, which leaves the other connections to recalls running alongside.
     """
 
-    def __init__(self, queries: tuple[str, ...], deadline: float) -> None:
+    def __init__(self, queries: tuple[str, ...], deadline: float, *, clock: Callable[[], float] | None = None) -> None:
         self.queries = queries
         self.query = queries[0]
         self.deadline = deadline
+        self._clock = (lambda: time.monotonic()) if clock is None else clock
         self._done = threading.Event()
         self._vectors: tuple[Any, ...] = ()
         self._error: BaseException | None = None
 
     def run(self, embed: Callable[[tuple[str, ...], float], Sequence[Any]]) -> None:
-        began = time.monotonic()
+        began = self._clock()
         try:
-            deadline = RequestDeadline.from_absolute(self.deadline, now=began)
+            deadline = RequestDeadline.from_absolute(self.deadline, now=began, clock=self._clock)
             with using_request_deadline(deadline):
                 budget = deadline.remaining()
                 if budget <= 0:
                     # A built-in TimeoutError keeps recall on its timeout fallback; the two attributes only feed the
                     # vector trace.
                     error = TimeoutError("query embedding stage deadline exhausted")
-                    error.__dict__.update(phase="prefetch", elapsed_ms=round((time.monotonic() - began) * 1000))
+                    error.__dict__.update(phase="prefetch", elapsed_ms=round((self._clock() - began) * 1000))
                     raise error
                 # A connection that failed in milliseconds costs the whole
                 # semantic channel otherwise; a rejected request is not retried.
@@ -107,9 +108,9 @@ class _QueryEmbedding:
     def result(self, deadline: float, query: str | None = None) -> Any:
         """The vector of ``query`` (the question's own by default); the embedding's own failure; a timeout if it is
         still out at ``deadline``."""
-        began = time.monotonic()
-        if not self._done.wait(max(0.0, deadline - time.monotonic())):
-            raise AuxiliaryModelError("timeout", phase="prefetch", elapsed_ms=round((time.monotonic() - began) * 1000))
+        began = self._clock()
+        if not self._done.wait(max(0.0, deadline - self._clock())):
+            raise AuxiliaryModelError("timeout", phase="prefetch", elapsed_ms=round((self._clock() - began) * 1000))
         if self._error is not None:
             raise self._error
         return self._vectors[self.queries.index(self.query if query is None else query)]
@@ -123,7 +124,7 @@ def _taken(prefetched: Any, deadline: float, query: str) -> Any:
 class _LazyVectorPort:
     """Request-local vector facade for direct Core and Runtime calls.
 
-    Construction never opens Lance.  The first real SearchContext opens only
+    Construction opens no vector files.  The first real SearchContext opens only
     an existing companion under that request's absolute deadline, then keeps
     the trusted identity and scope supplied by that context all the way to
     ``VectorPort``.  A disabled query embedding route returns no vector
@@ -137,7 +138,12 @@ class _LazyVectorPort:
         embedding = getattr(self._instance.auxiliary, "query_embedding", None)
         if embedding is None:
             return None
-        return VectorPort(None, embedding, expected_embedding_space=self._instance.config.embedding_space_id())
+        return VectorPort(
+            None,
+            embedding,
+            expected_embedding_space=self._instance.config.embedding_space_id(),
+            clock=self._instance.core.clock.monotonic,
+        )
 
     def _query_embedder(self) -> Callable[[str, float], Any] | None:
         adapter = self._embedding_adapter()
@@ -159,8 +165,11 @@ class _LazyVectorPort:
         adapter = self._embedding_adapter()
         if adapter is None:
             return None
-        now = time.monotonic()
-        window = context.deadline - now
+        bound = RequestDeadline.within(
+            context.deadline, budget_seconds=float("inf"), clock=self._instance.core.clock.monotonic
+        )
+        now = bound.started_monotonic
+        window = bound.remaining(now)
         if window <= 0.0:
             return None
         queries = tuple(dict.fromkeys((context.query, *also)))
@@ -174,7 +183,7 @@ class _LazyVectorPort:
         def checked(texts, seconds):
             return self._checked_query(context, route, texts, seconds)
 
-        pending = _QueryEmbedding(queries, now + window * QUERY_EMBEDDING_SHARE)
+        pending = _QueryEmbedding(queries, now + window * QUERY_EMBEDDING_SHARE, clock=bound.clock)
         threading.Thread(target=pending.run, args=(checked,), name="scope-recall-query-embedding", daemon=True).start()
         return pending
 
@@ -189,21 +198,19 @@ class _LazyVectorPort:
             raise ValueError("remaining_seconds must be finite")
         if prefetched is not None and context.query not in getattr(prefetched, "queries", (prefetched.query,)):
             prefetched = None
-        now = time.monotonic()
-        remaining = min(float(remaining_seconds), context.deadline - now)
+        deadline = RequestDeadline.within(
+            context.deadline, budget_seconds=remaining_seconds, clock=self._instance.core.clock.monotonic
+        )
+        remaining = deadline.remaining(deadline.started_monotonic)
         if remaining <= 0.0:
             return ()
-        effective_deadline = min(context.deadline, now + float(remaining_seconds))
+        effective_deadline = deadline.deadline_monotonic
         context = replace(context, deadline=effective_deadline)
-        deadline = RequestDeadline.from_absolute(effective_deadline, now=now)
         prepared: list[tuple[str, Any]] = []
         failed: list[Exception] = []
 
         def embed_while_opening() -> bool | None:
-            # The embedding's failure is this recall's to report.  Raised inside the open, it would close the
-            # helper as well, and the next prompt would open the table cold again; reported as False, the open is
-            # taken if it has come and parked for the next request if not, so a fast failure does not wait for the
-            # table either.
+            # Embedding failures stay request-local; an opened companion remains available for later recalls.
             try:
                 if prefetched is not None:
                     prepared.append((context.query, _taken(prefetched, effective_deadline, context.query)))
@@ -232,30 +239,28 @@ class _LazyVectorPort:
 
         with using_request_deadline(deadline):
             port = self._instance._ensure_vector_port(
-                allow_create=False, deadline=effective_deadline, during_open=embed_while_opening
+                allow_create=False, deadline=deadline, during_open=embed_while_opening
             )
             if port is None:
                 return ()
             if failed:
                 raise failed[0]
             if deadline.remaining() <= 0.0:
-                # The helper is still opening the table: its answer waits for the next request, which a hook's
-                # process never makes.  Returned as nothing, this recall would look as if the search had found nothing
-                # and report no gap, and a client would lose its vector search this way unseen.
-                raise TimeoutError("native vector helper open deadline exhausted before the search")
+                # An expired open must report the missing semantic stage rather than a searched-but-empty result.
+                raise TimeoutError("vector store open deadline exhausted before the search")
             if not prepared and prefetched is not None:
                 prepared.append((context.query, _taken(prefetched, effective_deadline, context.query)))
             remaining = min(remaining, deadline.remaining())
             if remaining <= 0.0:
                 # The embedding came back with no time left to search: the search would return nothing and say
                 # nothing, and the recall would look as if it had searched by meaning.
-                raise TimeoutError("native vector helper request deadline exhausted before the search")
+                raise TimeoutError("vector store request deadline exhausted before the search")
             if prepared:
                 return port.search(context, limit=limit, remaining_seconds=remaining, _prepared_query=prepared[0])
             return port.search(context, limit=limit, remaining_seconds=remaining)
 
 
-def _open_store(resource: Any, *, allow_create: bool, deadline: float | None, during_open) -> None:
+def _open_store(resource: Any, *, allow_create: bool, deadline: RequestDeadline | float | None, during_open) -> None:
     """Open a companion store; ``during_open`` overlaps an existing-index open when the store can."""
     opener = getattr(resource, "open" if allow_create else "open_existing", None)
     overlap = getattr(resource, "open_existing_with_work", None)
@@ -266,7 +271,8 @@ def _open_store(resource: Any, *, allow_create: bool, deadline: float | None, du
     if deadline is None:
         opener()
         return
-    with using_request_deadline(RequestDeadline.from_absolute(deadline, now=time.monotonic())):
+    bound = deadline if isinstance(deadline, RequestDeadline) else RequestDeadline.from_absolute(deadline)
+    with using_request_deadline(bound):
         opener()
 
 
@@ -321,7 +327,7 @@ class RuntimeInstance:
             raise RuntimeError("runtime_instance_closed")
 
     def _ensure_vector_port(
-        self, *, allow_create: bool = False, deadline: float | None = None, during_open=None
+        self, *, allow_create: bool = False, deadline: RequestDeadline | float | None = None, during_open=None
     ) -> Any:
         """Open the companion store and compose the Core ports over it.
 
@@ -370,7 +376,7 @@ class RuntimeInstance:
                 )
                 if redundant:
                     # Only the first completed open owns the published ports.
-                    # Detach the redundant helper before closing it outside the lock.
+                    # Detach the redundant connection before closing it outside the lock.
                     self._owned_resources[:] = [owned for owned in self._owned_resources if owned is not resource]
                 elif new_resource and self._vector_store is None:
                     self._compose_ports(resource)
@@ -423,11 +429,7 @@ class RuntimeInstance:
             if not callable(search_scopes) or not trusted.allowed_scope_ids:
                 return True
 
-            # Every partition a recall of this runtime filters on (``lance_port._partition_hits``).  The first
-            # search of an index reads all of it into the helper's cache whatever the filter; after that a search
-            # touches only the codes of the rows its filter keeps.  Filtered on the first scope's partition, which
-            # held no rows for any entry of a shared store, the search touched 26 MB of the 306 MB the next recall
-            # paged back in once the helper's memory was trimmed.  What it finds is not looked at.
+            # Warm every authorized physical partition used by a recall of this runtime.
             search_scopes(
                 [1.0] + [0.0] * (self.config.vector.dimensions - 1),
                 scope_ids=list(search_partitions(trusted, self.config.embedding_space_id())),
@@ -482,7 +484,9 @@ class RuntimeInstance:
         port = None
         query_embedding = getattr(self.auxiliary, "query_embedding", None)
         if query_embedding is not None:
-            port = VectorPort(resource, query_embedding, expected_embedding_space=space_id)
+            port = VectorPort(
+                resource, query_embedding, expected_embedding_space=space_id, clock=self.core.clock.monotonic
+            )
             source_embedding = getattr(self.auxiliary, "source_embedding", None)
             if source_embedding is not None:
                 self._default_embed = VectorEmbedPort(

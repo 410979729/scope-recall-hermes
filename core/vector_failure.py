@@ -4,7 +4,7 @@ An exception's identifier-safe ASCII ``error_type`` takes precedence over its
 message, except when the kind is the generic ``RuntimeError``.  A three-digit
 HTTP status accompanies ``http_status`` when the exception supplies one.
 
-Native helper messages are matched against an ordered, fixed vocabulary so
+Vector store messages are matched against an ordered, fixed vocabulary so
 operators can group failures without labels containing arbitrary message text.
 An unrecognised message, or one that cannot be read, falls back to the bare
 exception class.
@@ -102,6 +102,10 @@ def note_embedding_failure(exc: BaseException) -> None:
 #: used by persisted native transport failures; the token is what an operator
 #: reads and what recovery policy classifies, so stored failures keep stable labels.
 NATIVE_VECTOR_FAULTS: tuple[tuple[str, str], ...] = (
+    ("vector store open deadline exhausted", "helper_open_deadline"),
+    ("vector store request deadline exhausted", "helper_request_deadline"),
+    ("vector store is not open", "table_not_open"),
+    ("vector_import_pending", "vector_import_pending"),
     ("helper lock timeout", "helper_lock_timeout"),
     ("helper request deadline exhausted", "helper_request_deadline"),
     ("helper open deadline exhausted", "helper_open_deadline"),

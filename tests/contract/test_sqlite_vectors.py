@@ -274,7 +274,10 @@ def test_pending_vector_pages_keep_the_existing_supervisor_awake(tmp_path):
         now = datetime.now(UTC)
         assert next_vector_wake(config, now)[1] == "vector_index"
         store.maintain_index()
-        assert next_vector_wake(config, now) is None
+        assert next_vector_wake(config, now)[1] == "vector_integrity"
+        store.maintain_index()
+        wake = next_vector_wake(config, now)
+        assert wake[1] == "vector_integrity" and wake[0] > now
     finally:
         store.close()
 

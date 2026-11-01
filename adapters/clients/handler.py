@@ -187,7 +187,7 @@ class CodexHookHandler:
         config = load_codex_config(config_path)
         if host_runtime is None and core is None:
             # Capture uses a basic Core first.  Trusted runtime attach
-            # (Lance/aux/worker) waits until after a durable Source commit.
+            # (vectors/auxiliary/worker) waits until after a durable Source commit.
             core = _hook_core(config, clock)
             handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
             handler._pending_runtime_config_path = trusted_runtime_config_path
@@ -290,7 +290,7 @@ class CodexHookHandler:
         )
 
     def ensure_runtime(self, audience=None, *, deadline: float | None = None) -> None:
-        """Attach Lance/worker runtime only after Source persist, or for wakeup.
+        """Attach the vector and worker runtime only after Source persist, or for wakeup.
 
         With a hook's ``deadline`` the attach has what is left of the hook's time: with less than
         ``RUNTIME_ATTACH_MIN_S`` it is not begun, and the hook waits for it no longer than its time

@@ -219,10 +219,6 @@
   "runtime/instance_config.py": {
    "reportArgumentType": 4
   },
-  "runtime/lance_port.py": {
-   "reportArgumentType": 8,
-   "reportReturnType": 2
-  },
   "runtime/models.py": {
    "reportArgumentType": 1,
    "reportAssignmentType": 1,
@@ -239,6 +235,10 @@
   },
   "runtime/validation.py": {
    "reportArgumentType": 1
+  },
+  "runtime/vector_port.py": {
+   "reportArgumentType": 8,
+   "reportReturnType": 2
   },
   "runtime/vector_retention.py": {
    "reportOptionalMemberAccess": 1
@@ -852,12 +852,6 @@
   "runtime/instance_config.py": {
    "UP037": 2
   },
-  "runtime/lance_port.py": {
-   "B905": 3,
-   "BLE001": 2,
-   "UP017": 1,
-   "UP037": 1
-  },
   "runtime/model_budget.py": {
    "BLE001": 2,
    "UP035": 1
@@ -894,6 +888,12 @@
   "runtime/subscription_budget.py": {
    "E501": 1,
    "UP017": 1
+  },
+  "runtime/vector_port.py": {
+   "B905": 3,
+   "BLE001": 2,
+   "UP017": 1,
+   "UP037": 1
   },
   "runtime/vector_retention.py": {
    "E501": 1,

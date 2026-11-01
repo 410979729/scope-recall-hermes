@@ -15,6 +15,7 @@ import os
 import re
 import sqlite3
 import stat
+import time
 import uuid
 from dataclasses import dataclass
 from functools import cache
@@ -24,13 +25,24 @@ from typing import Any
 import numpy as np
 
 from ..core.deadline import remaining_seconds
+from .defaults import MIN_CANDIDATES, compute_threads
 
-FORMAT = "mapped-float32"
+FORMAT = "mapped-float32-sha256"
 PAGE_ROWS = 512
+VERIFY_PAGES = 8
+VERIFY_SECONDS = 3600.0
+COLLECT_FILES = 64
+COLLECT_RETRY_SECONDS = 60.0
 # Windows junctions can retain directory mode while exposing a reparse point.
 _REPARSE_POINT = 0x400
 _GENERATION = re.compile(r"[0-9a-f]{32}")
-_OWNED_FILE = re.compile(r"[0-9a-f]{32}-[0-9a-f]{64}\.(?:raw\.f32|prefix\.f32|norms\.f64|seqs\.i64)")
+_OWNED_FILE = re.compile(
+    r"(?:[0-9a-f]{32}-[0-9a-f]{64}\.(?:raw\.f32|prefix\.f32|norms\.f64|seqs\.i64)|[0-9a-f]{32}\.invalid)"
+)
+
+
+class CacheCorrupt(ValueError):
+    """Derived bytes disagree with their finite-value or authoritative-score contract."""
 
 
 def check_deadline() -> None:
@@ -111,6 +123,7 @@ class MappedScope:
     def __init__(self, root: Path, state: CacheState, scope: str, key: str, count: int) -> None:
         """Open regular files without mutating permissions or mapping unpublished tails."""
         self.scope, self.key, self.count = scope, key, count
+        self.watermark = state.watermark
         self.arrays: dict[str, np.memmap] = {}
         try:
             for suffix, dtype, width in state.layout():
@@ -239,6 +252,7 @@ class MappedIndex:
         self.dimensions = dimensions
         self.generation = ""
         self.scopes: dict[str, MappedScope] = {}
+        self.quarantined: tuple[str, str] | None = None
 
     def close(self) -> None:
         """Release cached mappings before the owning store closes or changes generation."""
@@ -247,12 +261,61 @@ class MappedIndex:
         self.scopes.clear()
         self.generation = ""
 
+    def error(self, generation: str) -> str | None:
+        """Read a bounded, data-free quarantine marker without following a link."""
+        if self.quarantined is not None and self.quarantined[0] == generation:
+            return self.quarantined[1]
+        path = self.root / f"{generation}.invalid"
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as stream:
+                _regular_file(stream.fileno(), path, mutable=False)
+                reason = stream.read(128).decode("ascii")
+            return (
+                reason
+                if reason
+                in {
+                    "non_finite_scores",
+                    "invalid_norms",
+                    "invalid_sequences",
+                    "authoritative_score_mismatch",
+                    "checksum_mismatch",
+                    "checksum_file_unavailable",
+                }
+                else "invalid_cache_marker"
+            )
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, UnicodeError):
+            return "invalid_cache_marker"
+
+    def invalidate(self, state: CacheState, reason: str) -> None:
+        """Quarantine only the observed generation, including from a read-only SQL connection."""
+        self.quarantined = (state.generation, reason)
+        path = self.root / f"{state.generation}.invalid"
+        try:
+            _directory(self.root)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                _regular_file(stream.fileno(), path, mutable=True)
+                stream.write(reason.encode("ascii"))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            # A read-only filesystem still keeps this reader on the authoritative path.
+            pass
+        self.close()
+
     def view(self, conn: sqlite3.Connection, scopes: list[str]) -> tuple[CacheState, list[MappedScope]] | None:
         """Return authorized committed prefixes, or request an exact raw scan when unavailable."""
         try:
             check_deadline()
             state = _state(conn, self.dimensions)
-            if state is None or state.coarse_dimensions != coarse_dimensions(conn, self.dimensions):
+            if (
+                state is None
+                or self.error(state.generation)
+                or state.coarse_dimensions != coarse_dimensions(conn, self.dimensions)
+            ):
                 self.close()
                 return None
             marks = ",".join("?" for _ in scopes)
@@ -298,6 +361,11 @@ class MappedIndex:
             "CREATE TABLE IF NOT EXISTS vector_cache_scopes("
             "scope_id TEXT PRIMARY KEY,file_key TEXT NOT NULL UNIQUE,row_count INTEGER NOT NULL)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS vector_cache_pages("
+            "page INTEGER PRIMARY KEY,file_key TEXT NOT NULL,first_row INTEGER NOT NULL,"
+            "row_count INTEGER NOT NULL,digest TEXT NOT NULL,UNIQUE(file_key,first_row))"
+        )
         desired = coarse_dimensions(conn, self.dimensions)
         try:
             current = _state(conn, self.dimensions)
@@ -306,6 +374,7 @@ class MappedIndex:
         records = conn.execute("SELECT scope_id,file_key,row_count FROM vector_cache_scopes").fetchall()
         if (
             current is not None
+            and not self.error(current.generation)
             and current.coarse_dimensions == desired
             and _intact(self.root, current, records, complete=True)
         ):
@@ -313,6 +382,7 @@ class MappedIndex:
         self.close()
         current = CacheState(uuid.uuid4().hex, self.dimensions, desired, 0, 0)
         conn.execute("DELETE FROM vector_cache_scopes")
+        conn.execute("DELETE FROM vector_cache_pages")
         _metadata(
             conn,
             {
@@ -321,6 +391,9 @@ class MappedIndex:
                 "cache_coarse_dimensions": str(desired),
                 "cache_dimensions": str(self.dimensions),
                 "cache_rows": "0",
+                "index_watermark": "0",
+                "cache_verify_page": "0",
+                "cache_verify_after": "0",
             },
         )
         return current
@@ -340,32 +413,112 @@ class MappedIndex:
             lengths = np.sqrt(np.einsum("ij,ij->i", prefix, prefix, optimize=False))
             np.divide(prefix, lengths[:, None], out=prefix, where=lengths[:, None] > 0)
             arrays["prefix.f32"] = prefix.astype("<f4")
+        digest = hashlib.sha256()
         for suffix, dtype, width in state.layout():
             check_deadline()
+            digest.update(memoryview(np.ascontiguousarray(arrays[suffix], dtype=dtype)).cast("B"))
             _append(
                 self.root / f"{key}.{suffix}",
                 count * width * np.dtype(dtype).itemsize,
                 np.asarray(arrays[suffix], dtype=dtype),
             )
         conn.execute(
+            "INSERT INTO vector_cache_pages(file_key,first_row,row_count,digest) VALUES(?,?,?,?)",
+            (key, count, len(rows), digest.hexdigest()),
+        )
+        conn.execute(
             "INSERT INTO vector_cache_scopes VALUES(?,?,?) "
             "ON CONFLICT(scope_id) DO UPDATE SET file_key=excluded.file_key,row_count=excluded.row_count",
             (scope, key, count + len(rows)),
         )
 
-    def _collect(self, generation: str) -> None:
-        """Remove only retired owned files; Windows readers may defer their removal."""
+    def _collect(self, conn: sqlite3.Connection) -> bool:
+        """Recheck the published generation under the writer lock; bound retries and file work."""
+        generation = str(conn.execute("SELECT value FROM vector_meta WHERE key='cache_generation'").fetchone()[0])
+        pending, attempted = False, 0
         for path in self.root.iterdir():
-            left = remaining_seconds()
-            if left is not None and left <= 0.5:
-                return
-            if not _OWNED_FILE.fullmatch(path.name) or path.name.startswith(generation + "-"):
+            if (
+                not _OWNED_FILE.fullmatch(path.name)
+                or path.name.startswith(generation + "-")
+                or path.name == generation + ".invalid"
+            ):
                 continue
+            left = remaining_seconds()
+            if attempted >= COLLECT_FILES or (left is not None and left <= 0.5):
+                pending = True
+                break
+            attempted += 1
             try:
-                if stat.S_ISREG(os.lstat(path).st_mode):
+                if not stat.S_ISREG(os.lstat(path).st_mode):
+                    pending = True
+                else:
                     path.unlink()
             except OSError:
-                continue
+                pending = True
+        _metadata(
+            conn,
+            {
+                "cache_collect_pending": str(int(pending)),
+                "cache_collect_after": str(time.time() + COLLECT_RETRY_SECONDS if pending else 0),
+            },
+        )
+        return pending
+
+    def _page_digest(self, state: CacheState, key: str, first: int, count: int) -> str:
+        """Hash one committed page using bounded reads and the publication layout order."""
+        digest = hashlib.sha256()
+        if not key.startswith(state.generation + "-") or not _OWNED_FILE.fullmatch(key + ".raw.f32"):
+            raise CacheCorrupt("checksum_mismatch")
+        if first < 0 or not 0 < count <= PAGE_ROWS:
+            raise CacheCorrupt("checksum_mismatch")
+        for suffix, dtype, width in state.layout():
+            check_deadline()
+            path = self.root / f"{key}.{suffix}"
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as stream:
+                _regular_file(stream.fileno(), path, mutable=False)
+                stride = width * np.dtype(dtype).itemsize
+                stream.seek(first * stride)
+                left = count * stride
+                while left:
+                    check_deadline()
+                    block = stream.read(min(left, 1024 * 1024))
+                    if not block:
+                        raise CacheCorrupt("checksum_mismatch")
+                    digest.update(block)
+                    left -= len(block)
+        return digest.hexdigest()
+
+    def _verify(self, conn: sqlite3.Connection, state: CacheState) -> tuple[int, str | None]:
+        """Audit a bounded page batch and persist the cursor for an eventual full cycle."""
+        meta = dict(conn.execute("SELECT key,value FROM vector_meta"))
+        if float(meta.get("cache_verify_after", 0)) > time.time():
+            return 0, None
+        pages = conn.execute(
+            "SELECT page,file_key,first_row,row_count,digest FROM vector_cache_pages "
+            "WHERE page>? ORDER BY page LIMIT ?",
+            (int(meta.get("cache_verify_page", 0)), VERIFY_PAGES + 1),
+        ).fetchall()
+        verified = 0
+        try:
+            for _page, key, first, count, expected in pages[:VERIFY_PAGES]:
+                if self._page_digest(state, key, first, count) != expected:
+                    raise CacheCorrupt("checksum_mismatch")
+                verified += 1
+        except (OSError, ValueError) as exc:
+            reason = str(exc) if isinstance(exc, CacheCorrupt) else "checksum_file_unavailable"
+            self.invalidate(state, reason)
+            return verified, reason
+        more = len(pages) > VERIFY_PAGES
+        cursor = pages[verified - 1][0] if verified and more else 0
+        _metadata(
+            conn,
+            {
+                "cache_verify_page": str(cursor),
+                "cache_verify_after": str(0 if more else time.time() + VERIFY_SECONDS),
+            },
+        )
+        return verified, None
 
     def maintain(self, conn: sqlite3.Connection, max_rows: int) -> dict[str, Any]:
         """Durably append one bounded page and atomically publish its SQLite watermark."""
@@ -397,12 +550,20 @@ class MappedIndex:
                     "cache_rows": str(state.rows + len(rows)),
                 },
             )
+            verified, error = self._verify(conn, state)
+            collecting = self._collect(conn)
             conn.commit()
         except BaseException:
             conn.rollback()
             raise
-        self._collect(state.generation)
-        return {"outcome": "indexed", "rows": len(rows), "watermark": watermark, "deletes": len(stale)}
+        return {
+            "outcome": "corrupt" if error else "indexed",
+            "rows": len(rows),
+            "watermark": watermark,
+            "deletes": len(stale),
+            "verified_pages": verified,
+            "collection_pending": collecting,
+        }
 
     def diagnostics(self, conn: sqlite3.Connection) -> dict[str, Any]:
         """Report the engine and current derived layout without creating or rebuilding files."""
@@ -413,18 +574,25 @@ class MappedIndex:
             records = conn.execute("SELECT scope_id,file_key,row_count FROM vector_cache_scopes").fetchall()
             ready = (
                 state is not None
+                and not self.error(state.generation)
                 and state.coarse_dimensions == desired
                 and _intact(self.root, state, records, complete=True)
             )
         except (sqlite3.Error, OSError, ValueError, KeyError):
             state = None
+        meta = dict(conn.execute("SELECT key,value FROM vector_meta"))
         return {
+            "cache_error": self.error(state.generation) if state is not None else None,
+            "collection_pending": meta.get("cache_collect_pending") == "1",
+            "collect_after": float(meta.get("cache_collect_after", 0)),
+            "verify_after": float(meta.get("cache_verify_after", 0)),
+            "verified_page": int(meta.get("cache_verify_page", 0)),
             "engine": ("numpy-prefix" if desired < self.dimensions else "numpy-exact") if ready else "numpy-raw",
             "raw_format": "float32-le",
             "coarse_dimensions": desired,
             "dimensions": self.dimensions,
-            "candidate_target": 256,
-            "compute_threads": 1,
+            "candidate_target": MIN_CANDIDATES,
+            "compute_threads": compute_threads(),
             "watermark": state.watermark if ready and state is not None else 0,
             "cache_ready": ready,
             "cached_rows": state.rows if ready and state is not None else 0,

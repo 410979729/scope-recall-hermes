@@ -56,12 +56,6 @@ ENTRY_POINTS = (
     "runtime/worker_watchdog.py",
 )
 
-#: Files that ship as data rather than as importable modules.  ``_lance_worker``
-#: is the clearest case: it is launched as an isolated script and installs its
-#: own package alias, so importing it as ``scope_recall._lance_worker`` would
-#: defeat the isolation it exists to provide.
-_DATA_ONLY = ("_lance_worker.py",)
-
 #: Files whose version line is stamped from ``_version.py``, in the spelling of ``manifest_version``.
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
@@ -144,7 +138,7 @@ def reachable_modules(repo_root: Path | None = None) -> list[str]:
             init = "/".join(parts[:depth]) + "/__init__.py"
             if (root / init).is_file():
                 seen.add(init)
-    return sorted(seen - set(_DATA_ONLY))
+    return sorted(seen)
 
 
 def reachable_packages(modules: list[str]) -> list[str]:

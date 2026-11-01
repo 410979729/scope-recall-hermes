@@ -471,3 +471,33 @@ print(json.dumps({"prompts": len(names), "examples": len(names), "formatted": Tr
     assert report["prompts"] == report["examples"] == 6
     assert report["formatted"]
     assert not Path(report["package"]).is_relative_to(REPO_ROOT)
+
+
+@pytest.mark.parametrize("dotted", [False, True])
+def test_installation_ignores_retired_build_outputs_without_deleting_them(tmp_path, monkeypatch, dotted):
+    """A reused build directory cannot add modules or resources to the wheel."""
+    from setuptools import Distribution
+    from setuptools.command.install_lib import install_lib
+
+    from packaging_hooks import v11_build
+
+    allowlist = {"python_modules": ["runtime/vector_port.py"], "package_data": ["vector/model-capabilities.json"]}
+    monkeypatch.setattr(v11_build, "_load_allowlist", lambda: allowlist)
+    build, destination = tmp_path / "build", tmp_path / "installed"
+    accepted = {"scope_recall/" + path for paths in allowlist.values() for path in paths}
+    retired = {"scope_recall/runtime/lance_port.py", "scope_recall/vector/retired-data.bin"}
+    for name in accepted | retired:
+        path = build / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"TEST artifact")
+    classes = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"][
+        "cmdclass"
+    ]
+    target = classes.get("install_lib")
+    command_class = install_lib if target is None else getattr(v11_build, target.rsplit(".", 1)[1])
+    command = command_class(Distribution())
+    command.build_dir = str(build)
+    command.install_dir = str(destination) + (os.sep + "." if dotted else "")
+    command.copy_tree(str(build), command.install_dir)
+    assert {path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()} == accepted
+    assert all((build / name).read_bytes() == b"TEST artifact" for name in accepted | retired)

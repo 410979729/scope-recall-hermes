@@ -98,7 +98,11 @@ python -m pip install -U "hermes-scope-recall[vectors,codex]"
 The second command adds the MCP SDK for Codex, Claude Code, WorkBuddy and dsh.
 Raw float32 embeddings live in a separate SQLite companion. NumPy scans worker-maintained
 mapped arrays, using approved normalized prefixes to select global candidates and the original
-full vectors for every returned cosine score. Missing derived files use an exact raw scan.
+full vectors for every returned cosine score. The global candidate target is 1024; numerical
+blocks use at most four threads and never more than the physical core count. Final result
+scores are checked against SQLite. Non-finite scan scores or a score mismatch quarantine
+the generation and select an exact raw scan. Workers also audit published page checksums
+in bounded batches. Missing derived files use the same raw scan.
 The `vectors` extra remains accepted for installation compatibility and adds no packages.
 `doctor` reports the selected engine and index/import watermarks. Android's PyPI packages do not
 supply NumPy wheels; without a runtime-provided NumPy, recall remains lexical.

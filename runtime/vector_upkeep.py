@@ -191,8 +191,18 @@ def next_vector_wake(config, now: datetime) -> tuple[datetime, str] | None:
             if latest <= int(meta.get("index_watermark", 0)) and not deleting:
                 from ..vector.cache import MappedIndex
 
-                if MappedIndex(path, int(meta["dimensions"])).diagnostics(conn)["cache_ready"]:
-                    return None
+                details = MappedIndex(path, int(meta["dimensions"])).diagnostics(conn)
+                if details["cache_ready"]:
+                    wakes = []
+                    if details["collection_pending"]:
+                        wakes.append(
+                            (max(now, datetime.fromtimestamp(details["collect_after"], UTC)), "vector_collect")
+                        )
+                    if details["cached_rows"]:
+                        wakes.append(
+                            (max(now, datetime.fromtimestamp(details["verify_after"], UTC)), "vector_integrity")
+                        )
+                    return min(wakes) if wakes else None
             retry = max(retry, float(meta.get("index_retry_after", 0)))
             return (max(now, datetime.fromtimestamp(retry, UTC)), "vector_index")
     except (sqlite3.Error, OSError, ValueError, KeyError):

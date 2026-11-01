@@ -246,7 +246,7 @@ def test_doctor_checks_the_configured_sqlite_companion(tmp_path, monkeypatch, st
         else:
             runtime = report.index_metadata["vector_runtime"]
             assert runtime["engine"] == "numpy-prefix" and runtime["coarse_dimensions"] == 768
-            assert runtime["candidate_target"] == 256 and runtime["compute_threads"] == 1
+            assert runtime["candidate_target"] == 1024 and 1 <= runtime["compute_threads"] <= 4
             assert check["detail"] == "numpy-prefix; sqlite-bruteforce -> sqlite"
     finally:
         writer.close()

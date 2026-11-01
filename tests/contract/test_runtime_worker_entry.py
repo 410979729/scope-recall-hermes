@@ -149,7 +149,7 @@ def test_runtime_construction_is_pure_and_vector_opens_only_on_demand(tmp_path):
     instance.close()
 
 
-def test_existing_store_is_composed_with_trusted_lance_ports_on_demand(tmp_path):
+def test_existing_store_is_composed_with_trusted_vector_ports_on_demand(tmp_path):
     binding = _binding(tmp_path / "data")
     config = RuntimeInstanceConfig(
         binding=binding,
@@ -276,9 +276,7 @@ def test_lazy_vector_facade_opens_existing_store_for_each_core_search_context(tm
 
 
 def test_a_store_open_that_uses_up_the_recall_s_time_is_a_gap_not_an_empty_search(tmp_path):
-    """A helper still opening the table keeps its answer for the next request.  The search then returned nothing
-    and the recall reported no gap: a Claude Code or Codex hook, which never makes a next request, lost its vector
-    search without a trace."""
+    """An open that consumes the request budget reports the missing semantic stage."""
     binding = _binding(tmp_path / "data")
     config = RuntimeInstanceConfig(
         binding=binding,

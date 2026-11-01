@@ -98,6 +98,7 @@ package-dir = { "scope_recall" = "." }
 
 [tool.setuptools.cmdclass]
 build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
+install_lib = "packaging_hooks.v11_build.AllowlistedInstallLib"
 
 [tool.setuptools.package-data]
 "scope_recall" = [

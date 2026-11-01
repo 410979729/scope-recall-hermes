@@ -1,43 +1,853 @@
-"""Shared vector ports over a raw companion and injected embedding capabilities."""
+"""Vector companion boundary for the retrieval pipeline.
 
-from .lance_port import (
-    PreparedSourceEmbedding,
-    QueryEmbeddingPort,
-    SourceEmbeddingPort,
-    VectorEmbedPort,
-    VectorIndexWriter,
-    VectorPort,
-    VectorPurgePort,
-    VectorRecord,
-    _context_value_matches,
-    _embed,
-    _embedding_method,
-    _finite_embedding,
-    _project_branch_combinations,
-    _ranked,
-    _record_row,
-    _score_from_row,
-    physical_partition_scope_id,
-    search_partitions,
-)
+The adapter has no optional native extensions import.  A caller injects the already
+selected vector store and an embedding port, so construction is side-effect
+free: nothing is opened, created, loaded or contacted.
+
+Vector rows are only an index projection.  Search returns ``CandidateRef``
+metadata; the pipeline hydrates and authorizes the object from SQLite before
+any content can be used.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+import json
+import math
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from typing import Any, Protocol, cast
+
+from ..contracts import ContractError, TrustedContext
+from ..core.deadline import RequestDeadline, request_clock, using_request_deadline
+from ..core.recall_policy import SPACE_ID, claim_embedding_text
+from ..core.retrieval import CandidateRef, SearchContext
+from ..core.source_records import StoredSource
+from ..core.vector_failure import vector_phase
+from ..core.worker_projection import PartialEmbeddingFailure
+
+_OBJECT_KINDS = frozenset({"event", "claim", "episode", "artifact", "reference"})
+_MAX_DIMENSIONS = 32768
+_MAX_METADATA_BYTES = 16384
+_PARTITION_VERSION = "p08-v1"
+
+
+def physical_partition_scope_id(
+    *,
+    agent_id: str,
+    installation_id: str,
+    embedding_space: str,
+    logical_scope_id: str,
+    project_id: str | None,
+    branch_id: str | None,
+) -> str:
+    """Deterministic Vector ``scope_id`` partition bound to trusted identity."""
+    payload = {
+        "agent_id": agent_id,
+        "branch_id": branch_id,
+        "embedding_space": embedding_space,
+        "installation_id": installation_id,
+        "logical_scope_id": logical_scope_id,
+        "project_id": project_id,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"{_PARTITION_VERSION}-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _project_branch_combinations(trusted: TrustedContext) -> tuple[tuple[str | None, str | None], ...]:
+    """The bound project/branch first, then each widened to the global partition."""
+    projects = (trusted.project_id, None) if trusted.project_id is not None else (None,)
+    branches = (trusted.branch_id, None) if trusted.branch_id is not None else (None,)
+    return tuple((project, branch) for project in projects for branch in branches)
+
+
+def search_partitions(trusted: TrustedContext, embedding_space: str) -> dict[str, str]:
+    """Every physical partition a search under ``trusted`` filters on, each to its logical scope: every allowed scope,
+    at the bound project/branch and widened to the global partition."""
+    binding = trusted.binding
+    return {
+        physical_partition_scope_id(
+            agent_id=binding.agent_id,
+            installation_id=binding.installation_id,
+            embedding_space=embedding_space,
+            logical_scope_id=logical_scope_id,
+            project_id=project_id,
+            branch_id=branch_id,
+        ): logical_scope_id
+        for logical_scope_id in sorted(trusted.allowed_scope_ids)
+        for project_id, branch_id in _project_branch_combinations(trusted)
+    }
+
+
+class QueryEmbeddingPort(Protocol):
+    def embed_query(self, text: str, *, remaining_seconds: float) -> Sequence[float]: ...
+
+
+class SourceEmbeddingPort(Protocol):
+    def embed_source(self, source: StoredSource, *, remaining_seconds: float) -> Sequence[float]: ...
+
+
+def _embedding_method(port: Any, name: str) -> Callable[..., Sequence[float]]:
+    """``port.<name>`` when it exists, else the port itself when it is callable."""
+    method = getattr(port, name, None)
+    if callable(method):
+        return method
+    if callable(port):
+        return port
+    raise TypeError(f"{name[len('embed_') :]}_embedding must be callable or expose {name}")
+
+
+def _embed(method: Callable[..., Sequence[float]], subject: Any, remaining_seconds: float) -> Sequence[float]:
+    """Call an embedding method, passing the budget only when it is accepted.
+
+    Base embedders take only text; injected ports may take the remaining
+    budget.  The signature is inspected first so a TypeError raised by the
+    embedding itself is never mistaken for a signature mismatch and retried.
+    """
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "remaining_seconds" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    ):
+        return method(subject, remaining_seconds=remaining_seconds)
+    return method(subject)
+
+
+def _finite_embedding(vector: Any) -> tuple[float, ...]:
+    if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)) or not vector:
+        raise ContractError("DERIVATION_INVALID", "empty_embedding")
+    values = tuple(float(value) for value in vector)
+    if any(not math.isfinite(value) for value in values):
+        raise ContractError("DERIVATION_INVALID", "nonfinite_embedding")
+    return values
+
+
+@dataclass(frozen=True)
+class PreparedSourceEmbedding:
+    source_ref: str
+    source_revision: int
+    scope_id: str
+    project_id: str | None
+    branch_id: str | None
+    vector_id: str
+    embedding_space: str
+    embedding: tuple[float, ...]
+
+
+class VectorEmbedPort:
+    """Projects one source or claim version into the index through the fenced writer."""
+
+    def __init__(
+        self,
+        store: Any,
+        source_embedding: SourceEmbeddingPort | Callable[..., Sequence[float]],
+        *,
+        agent_id: str,
+        installation_id: str,
+        embedding_space: str,
+        writer: VectorIndexWriter | None = None,
+    ) -> None:
+        self._embed_source = _embedding_method(source_embedding, "embed_source")
+        if type(agent_id) is not str or not agent_id or type(installation_id) is not str or not installation_id:
+            raise ValueError("trusted identity is required")
+        if type(embedding_space) is not str or not embedding_space:
+            raise ValueError("embedding_space is required")
+        self._source_embedding = source_embedding
+        self._embedding_space = embedding_space
+        self._writer = writer or VectorIndexWriter(store)
+        self._agent_id = agent_id
+        self._installation_id = installation_id
+
+    def prepare_source(self, source: StoredSource, *, remaining_seconds: float = 1.0) -> PreparedSourceEmbedding:
+        return self._prepare(source, lambda budget: _embed(self._embed_source, source, budget), remaining_seconds)
+
+    def prepare_sources(
+        self, sources: Sequence[StoredSource], *, remaining_seconds: float = 1.0
+    ) -> tuple[PreparedSourceEmbedding, ...]:
+        """Prepare an ordered batch, or a deadline-bounded prefix from a single-request port.
+
+        Each prepared vector is published on its own fence exactly as a single
+        one is; sharing the request changes what the provider is asked, not
+        what the store is told.  A port whose embedding cannot batch falls back
+        to one request each under a shared deadline. Its returned prefix carries each subject's identity.
+        """
+        subjects = list(sources)
+        if not subjects:
+            return ()
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        batch = getattr(self._source_embedding, "embed_sources", None)
+        if not callable(batch) or len(subjects) == 1:
+            return self._prepare_singles(subjects, self.prepare_source, remaining_seconds)
+        vectors = batch(subjects, remaining_seconds=remaining_seconds)
+        if len(vectors) != len(subjects):
+            raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
+        return tuple(self._prepared(source, vector) for source, vector in zip(subjects, vectors))
+
+    def prepare_claims(
+        self, claims: Sequence[Any], *, remaining_seconds: float = 1.0
+    ) -> tuple[PreparedSourceEmbedding, ...]:
+        """Prepare many claim versions in as few requests as sources take, in order.
+
+        One request a claim, asked one after another at about two seconds each, would take a
+        store's two thousand claims over an hour while the provider allows thousands of
+        requests a minute.  The text and its encoding are exactly ``prepare_claim``'s, so a
+        claim lands on the same vector either way.  A port that cannot batch falls back to one
+        request each and returns the identified prefix prepared before the shared deadline.
+        """
+        subjects = list(claims)
+        if not subjects:
+            return ()
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        batch = getattr(self._source_embedding, "embed_texts", None)
+        if not callable(batch) or len(subjects) == 1:
+            return self._prepare_singles(subjects, self.prepare_claim, remaining_seconds)
+        texts = [claim_embedding_text(claim.payload) for claim in subjects]
+        vectors = batch(texts, remaining_seconds=remaining_seconds)
+        if len(vectors) != len(subjects):
+            raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
+        return tuple(self._prepared(claim, vector) for claim, vector in zip(subjects, vectors))
+
+    def _prepare_singles(self, subjects, prepare, remaining_seconds: float) -> tuple[PreparedSourceEmbedding, ...]:
+        """Return a prepared prefix within one deadline; the caller reserves time to publish it.
+
+        A prefix carries each subject's identity so a caller can distinguish bounded progress from an invalid
+        batch shape. A later request never receives the original group's budget again.
+        """
+        deadline = time.monotonic() + remaining_seconds
+        prepared = []
+        for subject in subjects:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                prepared.append(prepare(subject, remaining_seconds=left))
+            except Exception as exc:
+                if not prepared:
+                    raise
+                raise PartialEmbeddingFailure(tuple(prepared), exc) from exc
+        return tuple(prepared)
+
+    def prepare_claim(self, claim: Any, *, remaining_seconds: float = 1.0) -> PreparedSourceEmbedding:
+        """Embed one claim version so search can reach the derived layer.
+
+        The embedded text is the rendered assertion rather than the stored
+        JSON payload, so the vector carries meaning, not field names.
+        """
+
+        def embed(budget: float) -> Sequence[float]:
+            embed_text = getattr(self._source_embedding, "embed_text", None)
+            if embed_text is None:
+                raise ContractError("DERIVATION_INVALID", "claim_embedding_unsupported")
+            return embed_text(claim_embedding_text(claim.payload), remaining_seconds=budget)
+
+        return self._prepare(claim, embed, remaining_seconds)
+
+    def _prepare(
+        self,
+        subject: Any,
+        embed: Callable[[float], Sequence[float]],
+        remaining_seconds: float,
+    ) -> PreparedSourceEmbedding:
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        return self._prepared(subject, embed(remaining_seconds))
+
+    def _prepared(self, subject: Any, vector: Any) -> PreparedSourceEmbedding:
+        """The prepared row for one source or claim version and the vector it was given."""
+        return PreparedSourceEmbedding(
+            source_ref=subject.ref,
+            source_revision=subject.revision,
+            scope_id=subject.scope_id,
+            project_id=subject.project_id,
+            branch_id=subject.branch_id,
+            vector_id=f"p10:{subject.ref}@{subject.revision}:{self._embedding_space}",
+            embedding_space=self._embedding_space,
+            embedding=_finite_embedding(vector),
+        )
+
+    def publish_source(
+        self,
+        prepared: PreparedSourceEmbedding,
+        *,
+        source: StoredSource,
+        lease_token: int,
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float = 1.0,
+    ) -> None:
+        self._publish(
+            "event", prepared, source, "prepared_source", lease_token, lease_owner, lease_guard, remaining_seconds
+        )
+
+    def publish_sources(
+        self,
+        prepared: Sequence[PreparedSourceEmbedding],
+        *,
+        sources: Sequence[StoredSource],
+        lease_tokens: Sequence[int],
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float = 1.0,
+    ) -> None:
+        """Publish a whole group's vectors in one fenced commit.
+
+        Publishing the group in one fenced commit avoids a separate lock-held handshake for each row.
+        The fence is the same as a single row's: ``lease_guard``
+        answers for every member of the group while the helper holds the lock, and a group it
+        refuses writes nothing, leaving each member to publish on its own fence.
+        """
+        self._publish_group(
+            "event", "prepared_source", prepared, sources, lease_tokens, lease_owner, lease_guard, remaining_seconds
+        )
+
+    def publish_claims(
+        self,
+        prepared: Sequence[PreparedSourceEmbedding],
+        *,
+        claims: Sequence[Any],
+        lease_tokens: Sequence[int],
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float = 1.0,
+    ) -> None:
+        """Publish a group of claim vectors in one fenced commit, on the terms ``publish_sources`` sets."""
+        self._publish_group(
+            "claim", "prepared_claim", prepared, claims, lease_tokens, lease_owner, lease_guard, remaining_seconds
+        )
+
+    def _publish_group(
+        self,
+        object_kind: str,
+        subject_detail: str,
+        prepared,
+        subjects,
+        lease_tokens,
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float,
+    ) -> None:
+        items, members, tokens = tuple(prepared), tuple(subjects), tuple(lease_tokens)
+        if not items or len(items) != len(members) or len(items) != len(tokens):
+            raise ContractError("INPUT_INVALID", "prepared_group")
+        records = tuple(
+            self._record(object_kind, one, subject, subject_detail, token, lease_owner)
+            for one, subject, token in zip(items, members, tokens)
+        )
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        if not self._writer.upsert_fenced_many(records, guard=lease_guard, remaining_seconds=remaining_seconds):
+            raise ContractError("VERSION_CONFLICT", "publication_fence")
+
+    def publish_claim(
+        self,
+        prepared: PreparedSourceEmbedding,
+        *,
+        claim: Any,
+        lease_token: int,
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float = 1.0,
+    ) -> None:
+        self._publish(
+            "claim", prepared, claim, "prepared_claim", lease_token, lease_owner, lease_guard, remaining_seconds
+        )
+
+    def _record(
+        self,
+        object_kind: str,
+        prepared: PreparedSourceEmbedding,
+        subject: Any,
+        subject_detail: str,
+        lease_token: int,
+        lease_owner: str,
+    ) -> "VectorRecord":
+        """The row a publication writes, once every input has answered for itself."""
+        if not isinstance(prepared, PreparedSourceEmbedding):
+            raise ContractError("INPUT_INVALID", "prepared_embedding")
+        if (prepared.source_ref, prepared.source_revision) != (subject.ref, subject.revision):
+            raise ContractError("VERSION_CONFLICT", subject_detail)
+        if prepared.scope_id != subject.scope_id or (prepared.project_id, prepared.branch_id) != (
+            subject.project_id,
+            subject.branch_id,
+        ):
+            raise ContractError("ACCESS_DENIED", "prepared_scope")
+        if type(lease_token) is not int or lease_token < 1 or type(lease_owner) is not str or not lease_owner:
+            raise ContractError("INPUT_INVALID", "lease")
+        return VectorRecord(
+            object_kind,
+            prepared.source_ref,
+            prepared.source_revision,
+            prepared.vector_id,
+            prepared.embedding_space,
+            prepared.embedding,
+            prepared.scope_id,
+            self._agent_id,
+            self._installation_id,
+            prepared.project_id,
+            prepared.branch_id,
+        )
+
+    def _publish(
+        self,
+        object_kind: str,
+        prepared: PreparedSourceEmbedding,
+        subject: Any,
+        subject_detail: str,
+        lease_token: int,
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float,
+    ) -> None:
+        record = self._record(object_kind, prepared, subject, subject_detail, lease_token, lease_owner)
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        # The guard runs on this thread during the helper's lock-held
+        # handshake; the pipe reader never touches SQLite.
+        if not self._writer.upsert_fenced(record, guard=lease_guard, remaining_seconds=remaining_seconds):
+            raise ContractError("VERSION_CONFLICT", "publication_fence")
+
+
+@dataclass(frozen=True)
+class VectorRecord:
+    """Validated metadata-plus-vector input for an explicit index write.
+
+    ``content`` is intentionally absent: the row carries an empty payload and
+    SQLite remains the only source of answerable text.
+    """
+
+    object_kind: str
+    object_ref: str
+    object_revision: int
+    vector_id: str
+    embedding_space: str
+    embedding: tuple[float, ...]
+    scope_id: str
+    agent_id: str
+    installation_id: str
+    project_id: str | None = None
+    branch_id: str | None = None
+    updated_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.object_kind not in _OBJECT_KINDS:
+            raise ValueError("invalid object_kind")
+        for name, value, maximum in (
+            ("object_ref", self.object_ref, 240),
+            ("vector_id", self.vector_id, 512),
+            ("embedding_space", self.embedding_space, 128),
+            ("scope_id", self.scope_id, 240),
+            ("agent_id", self.agent_id, 240),
+            ("installation_id", self.installation_id, 240),
+        ):
+            if type(value) is not str or not value.strip() or len(value) > maximum:
+                raise ValueError(f"invalid {name}")
+        if type(self.object_revision) is not int or self.object_revision < 1:
+            raise ValueError("invalid object_revision")
+        if type(self.embedding) is not tuple or not 1 <= len(self.embedding) <= _MAX_DIMENSIONS:
+            raise ValueError("invalid embedding")
+        for value in self.embedding:
+            if type(value) not in (int, float) or not math.isfinite(float(value)):
+                raise ValueError("embedding must contain finite numbers")
+        for name, value in (("project_id", self.project_id), ("branch_id", self.branch_id)):
+            if value is not None and (type(value) is not str or not value.strip() or len(value) > 240):
+                raise ValueError(f"invalid {name}")
+        if self.updated_at is not None and (type(self.updated_at) is not str or len(self.updated_at) > 80):
+            raise ValueError("invalid updated_at")
+
+
+def _record_row(record: VectorRecord) -> dict[str, Any]:
+    if not isinstance(record, VectorRecord):
+        raise TypeError("records must be VectorRecord values")
+    metadata = {
+        "object_kind": record.object_kind,
+        "object_ref": record.object_ref,
+        "object_revision": record.object_revision,
+        "vector_id": record.vector_id,
+        "embedding_space": record.embedding_space,
+        "agent_id": record.agent_id,
+        "installation_id": record.installation_id,
+        "project_id": record.project_id,
+        "branch_id": record.branch_id,
+        "logical_scope_id": record.scope_id,
+    }
+    return {
+        "id": record.vector_id,
+        "scope_id": physical_partition_scope_id(
+            agent_id=record.agent_id,
+            installation_id=record.installation_id,
+            embedding_space=record.embedding_space,
+            logical_scope_id=record.scope_id,
+            project_id=record.project_id,
+            branch_id=record.branch_id,
+        ),
+        "source": record.object_ref,
+        "target": json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        "content": "",
+        "summary": "",
+        "updated_at": record.updated_at or datetime.now(timezone.utc).isoformat(),
+        "vector": list(record.embedding),
+    }
+
+
+class VectorIndexWriter:
+    """Explicit, bounded projection writer; never used by read-only search."""
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    def upsert_records(self, records: Iterable[VectorRecord]) -> None:
+        rows = [_record_row(record) for record in records]
+        if rows:
+            # The store owns the native write and its lease semantics; nothing
+            # here creates a table or rebuilds when the target is unavailable.
+            self._store.upsert_records(rows)
+
+    def upsert_fenced(self, record: VectorRecord, *, guard: Callable[[], bool], remaining_seconds: float) -> bool:
+        return self.upsert_fenced_many((record,), guard=guard, remaining_seconds=remaining_seconds)
+
+    def upsert_fenced_many(
+        self, records: Sequence[VectorRecord], *, guard: Callable[[], bool], remaining_seconds: float
+    ) -> bool:
+        """One lock-held commit for every record, guarded once for all of them."""
+        method = getattr(self._store, "fenced_upsert_records", None)
+        if not callable(method):
+            raise ContractError("STORAGE_UNAVAILABLE", "fenced_upsert_unsupported")
+        rows = [_record_row(record) for record in records]
+        if not rows:
+            raise ContractError("INPUT_INVALID", "fenced_records")
+        return bool(method(rows, guard=guard, remaining_seconds=remaining_seconds))
+
+
+class VectorPurgePort:
+    """Single native, lock-held active purge for one trusted installation."""
+
+    def __init__(self, store: Any, *, embedding_spaces: Iterable[str], agent_id: str, installation_id: str) -> None:
+        spaces = tuple(embedding_spaces)
+        if not spaces or any(type(space) is not str or not space.strip() for space in spaces):
+            raise ValueError("at least one governed embedding space is required")
+        if type(agent_id) is not str or not agent_id or type(installation_id) is not str or not installation_id:
+            raise ValueError("trusted purge identity is required")
+        self._store = store
+        self._embedding_spaces = frozenset(spaces)
+        self._agent_id = agent_id
+        self._installation_id = installation_id
+
+    def purge_active(self, operation_id: str, *, receipt: dict, remaining_seconds: float) -> bool:
+        if type(operation_id) is not str or not operation_id:
+            raise ContractError("INPUT_INVALID", "operation_id")
+        if (
+            type(remaining_seconds) not in (int, float)
+            or not math.isfinite(float(remaining_seconds))
+            or remaining_seconds <= 0
+        ):
+            raise ContractError("DEADLINE_EXCEEDED")
+        if not isinstance(receipt, Mapping):
+            return False
+        members = receipt.get("physical_members")
+        scopes = receipt.get("scope_ids")
+        purge = getattr(self._store, "purge_governed_members", None)
+        if not members or not scopes or not callable(purge):
+            return False
+        try:
+            # Only opaque identities cross this boundary.  Deletion covers every
+            # revision, including old versions still present in the active table.
+            project_id, branch_id = receipt.get("project_id"), receipt.get("branch_id")
+            partitions = [
+                {
+                    "scope_id": scope,
+                    "embedding_space": space,
+                    "physical_scope_id": physical_partition_scope_id(
+                        agent_id=self._agent_id,
+                        installation_id=self._installation_id,
+                        embedding_space=space,
+                        logical_scope_id=scope,
+                        project_id=project_id,
+                        branch_id=branch_id,
+                    ),
+                }
+                for scope in scopes
+                for space in sorted(self._embedding_spaces)
+            ]
+            return (
+                purge(
+                    members=[{"kind": entry["kind"], "ref": entry["ref"]} for entry in members],
+                    agent_id=self._agent_id,
+                    installation_id=self._installation_id,
+                    partitions=partitions,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    remaining_seconds=remaining_seconds,
+                )
+                is True
+            )
+        except Exception:
+            # A malformed inventory or an uncertain native outcome leaves the
+            # durable purge work recoverable.
+            return False
+
+
+class VectorPort:
+    """Read-only Vector candidate source for :class:`RetrievalPipeline`."""
+
+    def __init__(
+        self,
+        store: Any,
+        query_embedding: QueryEmbeddingPort | Callable[..., Sequence[float]],
+        *,
+        expected_embedding_space: str = SPACE_ID,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._embed_query_method = _embedding_method(query_embedding, "embed_query")
+        many = getattr(query_embedding, "embed_queries", None)
+        self._embed_queries_method = cast("Callable[..., Sequence[Sequence[float]]]", many) if callable(many) else None
+        if type(expected_embedding_space) is not str or not expected_embedding_space.strip():
+            raise ValueError("expected_embedding_space must be non-empty")
+        self._store = store
+        self._expected_embedding_space = expected_embedding_space
+        self._clock = clock if clock is not None else time.monotonic
+
+    def search(
+        self,
+        context: SearchContext,
+        *,
+        limit: int,
+        remaining_seconds: float,
+        _prepared_query: tuple[str, Sequence[float]] | None = None,
+    ) -> tuple[CandidateRef, ...]:
+        """Search each trusted physical partition and return only validated metadata.
+
+        The store receives only deterministic ``p08-v1-*`` partition literals
+        derived from trusted identity, never a model-controlled predicate.
+        Post-filtering stays mandatory because a faulty or test store may
+        ignore that predicate.
+        """
+        if not isinstance(context, SearchContext):
+            raise TypeError("context must be SearchContext")
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+        if type(remaining_seconds) not in (int, float) or not math.isfinite(float(remaining_seconds)):
+            raise ValueError("remaining_seconds must be finite")
+        if remaining_seconds <= 0:
+            return ()
+        bound = RequestDeadline.within(context.deadline, budget_seconds=remaining_seconds, clock=self._clock)
+        deadline = bound.deadline_monotonic
+        # Store waits and scans share the caller's clock and cannot extend a parent request.
+        with using_request_deadline(bound):
+            query_vector = self._query_vector(context, deadline, _prepared_query)
+            hits = self._partition_hits(context, query_vector, limit, deadline) if query_vector else []
+        return _ranked(hits, limit)
+
+    def _embed_query(self, query: str, remaining_seconds: float) -> Sequence[float]:
+        return _embed(self._embed_query_method, query, remaining_seconds)
+
+    def _queries_embedder(self) -> Callable[[tuple[str, ...], float], Sequence[Sequence[float]]] | None:
+        """Several queries in one request, when the embedding route can send them so; ``None`` when it cannot."""
+        many = self._embed_queries_method
+        if many is None:
+            return None
+        return lambda queries, seconds: many(queries, remaining_seconds=seconds)
+
+    def _query_vector(
+        self,
+        context: SearchContext,
+        deadline: float,
+        prepared: tuple[str, Sequence[float]] | None,
+    ) -> list[float]:
+        if prepared is None:
+            remaining = deadline - request_clock(self._clock)()
+            if remaining <= 0:
+                # Returned as no vector, the recall would say nothing and look as if it had searched by meaning.
+                raise TimeoutError("query embedding stage deadline exhausted")
+            vector = self._embed_query(context.query, remaining)
+        else:
+            query, vector = prepared
+            if query != context.query:
+                raise ValueError("prepared embedding belongs to a different query")
+        if not vector:
+            return []
+        if len(vector) > _MAX_DIMENSIONS:
+            raise ValueError("query embedding is too large")
+        if any(type(value) not in (int, float) or not math.isfinite(float(value)) for value in vector):
+            raise ValueError("query embedding must contain finite numbers")
+        return [float(value) for value in vector]
+
+    def _partition_hits(
+        self,
+        context: SearchContext,
+        query_vector: list[float],
+        limit: int,
+        deadline: float,
+    ) -> list[CandidateRef]:
+        """Query every trusted (scope, project, branch) partition, in one request where the store allows.
+
+        Asked a request each, one after another until the deadline, at about 150 ms apiece, an
+        entry holding 110 scopes would search the first seven of them in sorted order and never
+        reach the owner's own scope, ranked 105th: an agent with that many scopes would not find
+        by meaning what the owner had just told another agent.  One request filters by the whole
+        list of trusted partition literals; a store that cannot is asked one partition at a time.
+        """
+        trusted = context.trusted_context
+        logical = search_partitions(trusted, self._expected_embedding_space)
+        hits: list[CandidateRef] = []
+        search_scopes = getattr(self._store, "search_scopes", None)
+        if callable(search_scopes):
+            if deadline - request_clock(self._clock)() <= 0:
+                # The embedding took the time the search needed.  An empty answer here would report no gap: the recall
+                # would look as if it had searched by meaning and found nothing.
+                raise TimeoutError("vector store request deadline exhausted before the search")
+            for row in self._search_rows(search_scopes, query_vector, scope_ids=list(logical), limit=limit):
+                partition = row.get("scope_id") if isinstance(row, Mapping) else None
+                if partition in logical:
+                    candidate = self._candidate_from_row(row, trusted, partition, logical[partition])
+                    if candidate is not None:
+                        hits.append(candidate)
+            return hits
+        # The slowest completed partition is the reserve the next one needs:
+        # request-local, so concurrent requests are not coupled and no fixed
+        # timeout is invented.
+        reserve = 0.0
+        searched = False
+        for partition, logical_scope_id in logical.items():
+            if deadline - request_clock(self._clock)() <= reserve:
+                if not searched:
+                    raise TimeoutError("vector store request deadline exhausted before the search")
+                return hits
+            searched = True
+            started = request_clock(self._clock)()
+            rows = self._search_rows(self._store.search, query_vector, scope_id=partition, limit=limit)
+            reserve = max(reserve, request_clock(self._clock)() - started)
+            for row in rows or ():
+                candidate = self._candidate_from_row(row, trusted, partition, logical_scope_id)
+                if candidate is not None:
+                    hits.append(candidate)
+        return hits
+
+    def _search_rows(self, search, vector, **kwargs):
+        """Time stores without managed execution diagnostics at their search boundary."""
+        managed = getattr(self._store, "reports_vector_execution", False)
+        with nullcontext() if managed else vector_phase("vector", "search"):
+            return list(search(vector, **kwargs) or ())
+
+    def _candidate_from_row(
+        self,
+        row: Any,
+        trusted: TrustedContext,
+        requested_scope: str,
+        logical_scope_id: str,
+    ) -> CandidateRef | None:
+        if not isinstance(row, Mapping):
+            return None
+        metadata: dict[str, Any] = dict(row)
+        # The writer stores its metadata as JSON in ``target``; explicit
+        # columns win, so a table with first-class metadata columns also works.
+        encoded = row.get("target")
+        if isinstance(encoded, str) and len(encoded.encode("utf-8")) <= _MAX_METADATA_BYTES:
+            try:
+                decoded = json.loads(encoded)
+            except ValueError:
+                decoded = None
+            if isinstance(decoded, dict):
+                for key, value in decoded.items():
+                    metadata.setdefault(key, value)
+        binding = trusted.binding
+        if (
+            metadata.get("scope_id") != requested_scope
+            or metadata.get("logical_scope_id") != logical_scope_id
+            or metadata.get("agent_id") != binding.agent_id
+            or metadata.get("installation_id") != binding.installation_id
+            or metadata.get("embedding_space") != self._expected_embedding_space
+            or not _context_value_matches(metadata, "project_id", trusted.project_id)
+            or not _context_value_matches(metadata, "branch_id", trusted.branch_id)
+        ):
+            return None
+        kind = metadata.get("object_kind")
+        ref = metadata.get("object_ref")
+        revision = metadata.get("object_revision")
+        vector_id = metadata.get("vector_id")
+        if kind not in _OBJECT_KINDS or type(ref) is not str or type(revision) is not int or type(vector_id) is not str:
+            return None
+        score = _score_from_row(row)
+        if score is None:
+            return None
+        try:
+            return CandidateRef(
+                kind,
+                ref,
+                revision,
+                "vector",
+                vector_score=score,
+                vector_id=vector_id,
+                embedding_space=self._expected_embedding_space,
+            )
+        except Exception:
+            return None
+
+
+def _context_value_matches(metadata: Mapping[str, Any], key: str, expected: str | None) -> bool:
+    """A row bound to no project/branch matches any; a bound one must match exactly."""
+    if key not in metadata:
+        return False
+    actual = metadata[key]
+    return actual is None or actual == expected
+
+
+def _score_from_row(row: Mapping[str, Any]) -> float | None:
+    """A stored ``score``, else ``1 - _distance`` as the stores report it."""
+    value = row.get("score")
+    if value is None:
+        distance = row.get("_distance")
+        if type(distance) not in (int, float) or not math.isfinite(float(distance)):
+            return None
+        value = 1.0 - float(distance)
+    if type(value) not in (int, float) or not math.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def _ranked(hits: Iterable[CandidateRef], limit: int) -> tuple[CandidateRef, ...]:
+    """Best score per projection, ordered and re-ranked for the pipeline.
+
+    Different embedding spaces stay visible to the core policy: a stale-space
+    row sharing an object identity with a valid row would otherwise hide the
+    valid projection and erase the mismatch diagnostic.  Exact duplicate
+    projections are collapsed.
+    """
+    best: dict[tuple[tuple[str, str, int], str | None, str | None], CandidateRef] = {}
+    for candidate in hits:
+        key = (candidate.key, candidate.vector_id, candidate.embedding_space)
+        previous = best.get(key)
+        if previous is None or (candidate.vector_score or -math.inf) > (previous.vector_score or -math.inf):
+            best[key] = candidate
+    ordered = sorted(
+        best.values(),
+        key=lambda item: (
+            -(item.vector_score if item.vector_score is not None else -math.inf),
+            item.kind,
+            item.ref,
+            item.revision,
+            item.vector_id or "",
+        ),
+    )[:limit]
+    return tuple(replace(candidate, rank=index) for index, candidate in enumerate(ordered, 1))
+
 
 __all__ = [
-    "physical_partition_scope_id",
-    "_project_branch_combinations",
-    "search_partitions",
-    "QueryEmbeddingPort",
-    "SourceEmbeddingPort",
-    "_embedding_method",
-    "_embed",
-    "_finite_embedding",
-    "PreparedSourceEmbedding",
     "VectorEmbedPort",
-    "VectorRecord",
-    "_record_row",
     "VectorIndexWriter",
     "VectorPurgePort",
     "VectorPort",
-    "_context_value_matches",
-    "_score_from_row",
-    "_ranked",
+    "VectorRecord",
+    "PreparedSourceEmbedding",
+    "QueryEmbeddingPort",
+    "SourceEmbeddingPort",
+    "physical_partition_scope_id",
+    "search_partitions",
 ]

@@ -2108,3 +2108,23 @@ def test_a_released_wrapper_declares_its_core_and_a_candidate_declares_nothing()
     )
     for build in ("3.3.0rc4", "3.3.0.dev1", "3.3.0+local"):
         assert wrapper_manifest(template, build) == template
+
+
+def test_remote_release_candidate_manifest_is_converted_once(tmp_path, monkeypatch):
+    """Remote plugin metadata accepts the shared SemVer spelling unchanged."""
+    from scope_recall.maintenance import install_remote
+
+    monkeypatch.setattr(install_remote, "manifest_version", lambda: "4.0.0-rc.1")
+    (tmp_path / "TEST-token").write_text("TEST-placeholder-token", encoding="utf-8")
+    plugin = tmp_path / "TEST-plugin"
+    files = install_remote.plugin_files(
+        {
+            "host": "codex",
+            "token_file": tmp_path / "TEST-token",
+            "url": "https://example.test",
+            "config": tmp_path / "TEST-client.json",
+        },
+        plugin,
+    )
+    metadata = json.loads(files[plugin / ".codex-plugin" / "plugin.json"])
+    assert metadata["version"] == "4.0.0-rc.1"

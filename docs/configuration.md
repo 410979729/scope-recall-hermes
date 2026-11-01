@@ -155,7 +155,7 @@ The block is a mapping:
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `backend` | `"sqlite"`; legacy `"sqlite-vec"`, `"lancedb"` and `"sqlite-bruteforce"` | `"sqlite"` | One SQLite float32 companion with worker-maintained mapped arrays. Approved embedding spaces use normalized prefix candidates; every returned score uses the full original vector. Legacy values select the same backend and appear as mapped values in doctor. |
+| `backend` | `"sqlite"`; legacy `"sqlite-vec"`, `"lancedb"` and `"sqlite-bruteforce"` | `"sqlite"` | One SQLite float32 companion with worker-maintained mapped arrays. Approved embedding spaces use normalized prefix candidates with a global target of 1024 and at most four physical-core-bounded numerical threads; final full-vector scores are checked against raw SQLite values. Legacy values select the same backend and appear as mapped values in doctor. |
 | `storage_dir` | absolute path | required | Must be `<data_directory>/vectors/<embedding space id>`, or configuration is refused with `VECTOR_STORAGE_OUTSIDE_BINDING`. Raw values live in `vectors.sqlite3`; the rebuildable `vectors.sqlite3.cache/` directory holds scoped float32 arrays and sequence keys. |
 | `table_name` | string, non-blank, ≤ 240 chars | required | Table or collection name inside the store. |
 | `dimensions` | int | required, 1–8192 | Must equal the active embedding space's width, or the file is refused with `VECTOR_DIMENSIONS_MISMATCH`. The shipped space is 3072. |

@@ -53,7 +53,7 @@ def test_global_candidate_budget_and_mapped_reranking(tmp_path, monkeypatch):
         store._require_conn().set_trace_callback(statements.append)
         found = store.search_scopes(query.tolist(), scope_ids=scopes, limit=40)
         assert [r["id"] for r in found] == [f"TEST:{i:04d}" for i in range(40)]
-        assert sum(reranked) <= 256
+        assert sum(reranked) <= 1024 + len(found)
         assert not any("VECTOR FROM VECTOR_RECORDS" in sql.upper() and "SEQ IN" in sql.upper() for sql in statements)
     finally:
         store.close()
@@ -97,7 +97,7 @@ def test_full_dimension_scores_override_prefix_order_and_doctor_reports_scheme(t
         details = store.diagnostics()
         assert details["engine"] == "numpy-prefix"
         assert details["coarse_dimensions"] == 768 and details["dimensions"] == 3072
-        assert details["compute_threads"] == 1 and details["candidate_target"] == 256
+        assert 1 <= details["compute_threads"] <= 4 and details["candidate_target"] == 1024
 
 
 def test_open_reader_sees_tail_replacement_and_worker_appends(tmp_path):

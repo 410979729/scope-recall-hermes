@@ -551,15 +551,30 @@ The gaps that yield `attention` rather than `degraded` are
 
 `index_metadata.vector_runtime` reports the engine (`numpy-prefix`, `numpy-exact`
 or `numpy-raw`), original and coarse dimensions, the global candidate budget,
-compute threads, committed watermark and legacy import states. The worker appends
-scoped continuous files and publishes their row counts only after flushing them.
+compute threads, committed watermark and legacy import states. The default is 1024 global
+candidates and `min(4, physical cores)` numerical threads. SQLite access and global selection
+stay on the calling thread. The worker appends scoped continuous files, records a SHA-256
+checksum for each published page, and publishes counts only after flushing the files.
 Queries use normalized 768-dimensional prefixes only for embedding spaces recording
 approved truncation capabilities in `vector/model-capabilities.json`; other spaces
 scan full dimensions. All returned cosine scores use the full original float32
 values. SQLite sequence checks exclude deleted or replaced rows before reranking,
-and every row newer than the watermark is scanned exactly. Missing derived files
-select a raw NumPy scan and schedule reconstruction from SQLite. Cached deleted
-rows are excluded by raw metadata until the derived files are rebuilt.
+and every row newer than the watermark is scanned exactly. Only the final returned vectors
+are read back from SQLite to verify their full-dimensional scores. Non-finite scan scores,
+invalid candidate sequence keys or a final score disagreement invalidate that generation;
+the current query uses a raw exact scan within its remaining deadline. A small generation
+marker makes the detected fault visible to other readers, doctor and the worker. A reader
+whose filesystem refuses that marker still quarantines the generation locally.
+
+Background maintenance verifies at most eight checksum pages per pass, resuming its cursor
+until the full generation is covered, then schedules another cycle after an hour. Finite
+changes outside the returned rows can remain undetected until this audit.
+`cache_ready` describes the layout and absence of a detected fault, not a full audit on each
+query. Doctor also reports `cache_error`, the verification cursor/time and collection
+progress. Missing files select a raw scan and schedule reconstruction. Cached deleted rows
+are excluded by raw metadata until rebuilt. Retired files held by Windows readers remain
+scheduled for collection after a minute; the collector checks the current generation under
+the same SQLite writer transaction that protects publication.
 Import failures retain their cursor and input, report a recall gap and retry after
 a capability cooldown. No embedding request is made to replace unreadable input.
 
