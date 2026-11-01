@@ -577,6 +577,8 @@ def _brought_in(conn, src, names: _Names, *, payload: dict[str, Any], root: Path
         tx = Transaction(conn, TrustedContext(binding, "import-entry", scopes, "host_generated"), writable=True)
         try:
             copied["counts"]["denials_settled"] = settle_brought_denials(tx, brought, now=now)
+            for ref in brought:
+                lexical_index.index_claim(conn, ref)
         finally:
             tx._finish()
     return copied

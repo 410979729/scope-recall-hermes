@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..contracts import ContractError, TrustedContext
+from . import lexical_index
 from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
 from .retained_artifacts import extended_path
 from .schema import SCHEMA_VERSION
@@ -591,6 +592,7 @@ def _replay_withdrawal(conn, context, ledger, withdrawal) -> None:
             "UPDATE claims SET current_revision=? WHERE claim_id=?",
             (withdrawal["current_revision"], withdrawal["claim_id"]),
         )
+        lexical_index.index_claim(conn, withdrawal["claim_id"])
         conn.execute(
             "UPDATE work_items SET state='obsolete',lease_token=lease_token+1 WHERE subject_ref=? AND state IN ('pending','leased')",
             (withdrawal["claim_id"],),

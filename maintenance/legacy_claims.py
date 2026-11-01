@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import Any, NamedTuple, cast
 
 from scope_recall.contracts import ClaimProposal
+from scope_recall.core import lexical_index
 from scope_recall.core.claims import claim_slot
 
 from .legacy_plan import Conversion, Row
@@ -207,6 +208,7 @@ def _insert_version(
             "[]",
         ),
     )
+    lexical_index.index_claim(conn, claim_id)
     for ref, quote, location in evidence:
         conn.execute(
             "INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote,location) VALUES ('claim',?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",

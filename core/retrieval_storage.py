@@ -14,6 +14,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from itertools import combinations
 from typing import Iterable, cast
 
 from ..contracts import (
@@ -181,6 +182,96 @@ def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...
 _CLAIM_SCAN_LIMIT = 256
 #: Query terms the prefilter looks for, longest first (a query may have 128).
 _CLAIM_PREFILTER_TERMS = 32
+
+
+def _claim_visibility(context: SearchContext) -> tuple[str, tuple]:
+    """The fact prefilter's audience and policy, shared by every indexed intersection."""
+    trusted = context.trusted_context
+    scopes = tuple(sorted(trusted.allowed_scope_ids))
+    automatic = "AND c.suppressed=0" if context.mode == "auto" else ""
+    automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
+    return (
+        f"""c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 {automatic} AND c.kind!='alias'
+            AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
+            AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
+                AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block}))""",
+        (*scopes, trusted.project_id, trusted.branch_id),
+    )
+
+
+def _claim_term_counts(conn, needles: tuple[str, ...]) -> list[tuple[int, int]]:
+    """Posting sizes for choosing an intersection driver, never for pruning or ranking.
+
+    A lone common term needs no full count. Several capped terms are measured
+    exactly so a shared word cannot hide a much cheaper intersection driver.
+    """
+    rows = conn.execute(
+        f"SELECT t.term_id,(SELECT COUNT(*) FROM (SELECT 1 FROM claim_lexical_postings p "
+        f"WHERE p.term_id=t.term_id LIMIT 1024)) AS n "
+        f"FROM lexical_terms t WHERE t.term IN ({_marks(needles)})",
+        needles,
+    ).fetchall()
+    counts = {int(row[0]): int(row[1]) for row in rows if row[1]}
+    capped = tuple(term for term, count in counts.items() if count == 1024)
+    if 1 < len(capped) and len(counts) <= 4:
+        counts.update(
+            (int(row[0]), int(row[1]))
+            for row in conn.execute(
+                f"SELECT term_id,COUNT(*) FROM claim_lexical_postings "
+                f"WHERE term_id IN ({_marks(capped)}) GROUP BY term_id",
+                capped,
+            )
+        )
+    return sorted(counts.items())
+
+
+def _claim_rows(tx, context: SearchContext, needles: tuple[str, ...]) -> list:
+    """Visible heads in descending hit count and public-ref order, capped before version scoring.
+
+    For up to four present terms, intersect each subset from most hits to least.
+    Each posting range is in claim-ref order and each subset returns only the
+    remaining places. The smallest refs across these prefixes are exactly the
+    global prefix; visibility is applied before every LIMIT. Higher-hit refs
+    already returned are excluded from lower levels. At most fifteen subsets
+    avoids exponential work on long prompts, whose postings are grouped once.
+    """
+    conn = tx._check()
+    visibility, parameters = _claim_visibility(context)
+    present = _claim_term_counts(conn, needles)
+    if not present:
+        return []
+    if len(present) > 4:
+        return conn.execute(
+            f"""WITH hits AS MATERIALIZED (
+                SELECT p.claim_id,COUNT(*) AS hits FROM claim_lexical_postings p
+                WHERE p.term_id IN ({_marks(present)}) GROUP BY p.claim_id)
+                SELECT c.claim_id FROM hits h CROSS JOIN claims c ON c.claim_id=h.claim_id
+                WHERE {visibility} ORDER BY h.hits DESC,c.claim_id LIMIT ?""",
+            (*(term for term, _ in present), *parameters, _CLAIM_SCAN_LIMIT),
+        ).fetchall()
+    selected: list[str] = []
+    for count in range(len(present), 0, -1):
+        level: set[str] = set()
+        remaining = _CLAIM_SCAN_LIMIT - len(selected)
+        for subset in combinations(present, count):
+            ordered = sorted(subset, key=lambda term: term[1])
+            probes = " ".join(
+                f"CROSS JOIN claim_lexical_postings k{index} ON k{index}.term_id=? AND k{index}.claim_id=p.claim_id"
+                for index, _ in enumerate(ordered[1:])
+            )
+            excluded = f"AND p.claim_id NOT IN ({_marks(selected)})" if selected else ""
+            rows = conn.execute(
+                f"""SELECT p.claim_id FROM claim_lexical_postings p {probes}
+                    CROSS JOIN claims c ON c.claim_id=p.claim_id
+                    WHERE p.term_id=? AND {visibility} {excluded}
+                    ORDER BY p.claim_id LIMIT ?""",
+                (*(term for term, _ in ordered[1:]), ordered[0][0], *parameters, *selected, remaining),
+            ).fetchall()
+            level.update(row[0] for row in rows)
+        selected.extend(sorted(level)[:remaining])
+        if len(selected) == _CLAIM_SCAN_LIMIT:
+            break
+    return [{"claim_id": ref} for ref in selected]
 
 
 def _claim_version_for(versions, context: SearchContext, instant: str):
@@ -444,30 +535,8 @@ class RetrievalStorage(RetrievalHydration):
         terms = frozenset(meaningful_query_terms(context.query))
         if not terms or limit <= 0:
             return ()
-        trusted = context.trusted_context
-        scopes = tuple(sorted(trusted.allowed_scope_ids))
         needles = tuple(sorted(terms, key=lambda term: (-len(term), term))[:_CLAIM_PREFILTER_TERMS])
-        matched = " + ".join("(instr(statement,?)>0)" for _ in needles)
-        automatic = "AND c.suppressed=0" if context.mode == "auto" else ""
-        automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
-        rows = (
-            tx._check()
-            .execute(
-                f"""WITH heads AS MATERIALIZED (
-                    SELECT c.claim_id AS claim_id,
-                           lower(c.subject || ' ' || c.predicate || ' ' ||
-                                 coalesce(json_extract(v.payload_json,'$.value_text'),'')) AS statement
-                    FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
-                    WHERE c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 {automatic} AND c.kind!='alias'
-                      AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
-                      AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
-                          AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block})))
-                SELECT claim_id FROM (SELECT claim_id, {matched} AS hits FROM heads)
-                WHERE hits>0 ORDER BY hits DESC, claim_id LIMIT ?""",
-                (*scopes, trusted.project_id, trusted.branch_id, *needles, _CLAIM_SCAN_LIMIT),
-            )
-            .fetchall()
-        )
+        rows = _claim_rows(tx, context, needles)
         instant = context.as_of or context.now
         scored = []
         prefetch = getattr(tx.claims, "prefetch_versions", None)

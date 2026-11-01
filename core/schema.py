@@ -1,9 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1113
+SCHEMA_VERSION = 1114
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113)
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -144,6 +144,17 @@ LEXICAL_STATEMENTS = (
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX lexical_postings_source ON lexical_postings(source_id,term_id)",
 )
+# Posting keys include the public claim ref so a term range is already in the
+# nomination tie order. Bounded intersections need no corpus-sized sort.
+CLAIM_LEXICAL_STATEMENTS = (
+    """CREATE TABLE claim_lexical_postings (
+        term_id INTEGER NOT NULL,
+        claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+        PRIMARY KEY(term_id,claim_id)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_lexical_claim ON claim_lexical_postings(claim_id,term_id)",
+)
+
 CANDIDATE_STATEMENTS = (
     """CREATE TABLE candidate_lifecycle (
         candidate_ref TEXT NOT NULL, candidate_revision INTEGER NOT NULL CHECK(candidate_revision>=1),
@@ -411,6 +422,7 @@ STATEMENTS = (
         WORK_ITEMS_STATEMENT,
         "CREATE INDEX work_ready ON work_items(state,available_at,work_id)",
         *LEXICAL_STATEMENTS,
+        *CLAIM_LEXICAL_STATEMENTS,
         """CREATE TABLE claims (
         claim_id TEXT PRIMARY KEY NOT NULL,
         scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
@@ -791,6 +803,17 @@ def upgrade_1112(connection):
     connection.execute(_ENTITY_ALIAS_LABELS.format(selection=""))
     connection.execute("UPDATE instance_meta SET schema_version=1113 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1113")
+
+
+def upgrade_1113(connection):
+    """Install current-fact postings and a durable cursor for bounded initialization pages."""
+    for statement in CLAIM_LEXICAL_STATEMENTS:
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now'))"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1114")
 
 
 def normalize_scope_authorizations(connection) -> int:

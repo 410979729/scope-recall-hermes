@@ -157,6 +157,10 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1114: {
+        "before": ("DELETE FROM candidate_scan_cursors WHERE cursor_name='claim_lexical'",),
+        "tables": ("claim_lexical_postings",),
+    },
     1113: {
         "before": tuple(
             f"DROP TRIGGER {name}"
