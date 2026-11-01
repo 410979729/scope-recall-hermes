@@ -41,6 +41,7 @@ EMBEDDING_SPACE = {
 _SPACE_BYTES = json.dumps(EMBEDDING_SPACE, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 SPACE_ID = hashlib.sha256(_SPACE_BYTES).hexdigest()
 VECTOR_SCORE_TOLERANCE = 1e-6
+BUILTIN_VECTOR_THRESHOLD = 0.70
 
 _WEAK_QUERY = frozenset({"那次", "那件", "那个", "这个", "怎样", "如何", "what", "that", "it"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,239}")
@@ -248,9 +249,9 @@ def _finite_score(value: object) -> float | None:
 
 @dataclass(frozen=True)
 class RecallPolicy:
-    """Admission thresholds are injected by the frozen space configuration."""
+    """Resolve the built-in space's floor; explicit thresholds override it."""
 
-    vector_threshold: float | None
+    vector_threshold: float | None = None
     #: Automatic injection needs independent lexical coverage or vector evidence;
     #: fusion ranks admitted evidence but cannot turn a weak hit into a strong one.
     auto_lexical_min_coverage: float = 0.20
@@ -267,6 +268,8 @@ class RecallPolicy:
     owner_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.vector_threshold is None and self.embedding_space_id == SPACE_ID:
+            object.__setattr__(self, "vector_threshold", BUILTIN_VECTOR_THRESHOLD)
         threshold = _finite_score(self.vector_threshold)
         if self.vector_threshold is not None and (threshold is None or not -1.0 <= threshold <= 1.0):
             raise ContractError("INPUT_INVALID", "vector_threshold")
