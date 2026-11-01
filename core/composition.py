@@ -566,7 +566,7 @@ class MemoryCore:
         Explicit lookup intent also preserves channel admission and bypasses
         conversational prompt skipping when the requested mode is auto.
         """
-        search_context, effective_deadline = self._search_context(
+        search_context, _effective_deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone, in_context_since
         )
         mode, private_marker = self._recall_private_state(context)
@@ -577,13 +577,7 @@ class MemoryCore:
         from .entity_queries import resolve_query_context
 
         search_context = resolve_query_context(self.storage, search_context, self.clock)
-        # Candidate collection is optional work. Reserve part of the original
-        # deadline for the mandatory fresh SQLite release checks and rendering.
-        retrieval_context = replace(
-            search_context,
-            deadline=search_context.deadline - min(1.0, effective_deadline * 0.2),
-        )
-        result = self.recall_pipeline.search(retrieval_context)
+        result = self.recall_pipeline.search(search_context)
         compiler = self.recall_packet_compiler
         # Keep the compiler on the pipeline's current read boundary.  Tests
         # and controlled deployments may replace the injected reader with a
@@ -598,7 +592,7 @@ class MemoryCore:
                 clock=self.clock,
             )
         packet = compiler.compile(
-            search_context,
+            result.release_context(search_context),
             result,
             self.storage,
         )

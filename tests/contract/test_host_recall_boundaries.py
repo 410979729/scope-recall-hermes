@@ -314,19 +314,22 @@ def test_entity_current_subject_reads_only_the_verified_principal(tmp_path):
     core = MemoryCore(CoreConfig(base.binding), clock=Clock())
     core.initialize()
     core.test_sequence = itertools.count(1)
-    source = capture(core, nameone, "principal:TEST-nameone 配色 蓝色。")
+    # Acceptance derives the opaque principal from a verified first-person report.
+    source = capture(core, nameone, "我喜欢蓝色。")
     claim = accept(
         core,
         nameone,
         draft(
             source,
-            subject="principal:TEST-nameone",
+            subject="我",
             value="蓝色",
-            kind="fact",
-            predicate="配色",
+            kind="preference",
+            predicate="喜欢",
             statement_kind="assertion",
         ),
     ).items[0]
+    assert claim.state == "active"
+    assert core.current_claim(nameone, claim.ref).payload["subject"] == "principal:TEST-nameone"
 
     result = core.entity(
         nameone,

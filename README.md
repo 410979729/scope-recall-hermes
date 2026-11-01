@@ -26,7 +26,9 @@ vector similarity floor. Background preferences and tasks accompany passing
 query evidence; a session's first resume request can recover its current task.
 Acknowledgments, approvals, praise, bare continuation and session status prompts
 within an existing session start no search or query embedding. Explicit recall
-keeps its admission behavior. The thresholds and diagnostic counts are described
+keeps its admission behavior. Retrieval reserves time for compilation and fresh
+SQLite release checks, so slow optional channels can leave a partial packet with
+their cutoff reason. Unverified items never ship. The thresholds and diagnostic counts are described
 in [the recall configuration](docs/configuration.md#vector_threshold).
 
 **Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)

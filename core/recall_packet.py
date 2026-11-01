@@ -18,14 +18,14 @@ import json
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Literal, Protocol, cast
 
 from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
 from .background_context import is_background, mark_background
 from .entity_queries import fence_entity_query, resolve_query_context
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
-from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
+from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics, RecallTimings
 from .recall_needs import asks_to_resume, unmet_needs
 from .resume_compaction import (
     compact_episode_variants,
@@ -289,6 +289,13 @@ class _Draft:
         self.stale_drops += len(verified)
         return []
 
+    def expire(self) -> None:
+        """Withhold the entire packet when compilation finishes after its cutoff."""
+        self.gaps.append("deadline_exceeded_compile")
+        self.stale_drops += len(self.items)
+        self.items.clear()
+        self.objects.clear()
+
     def deliver(self, item: RecallItem, obj: RetrievedObject, needs: list[str]) -> None:
         self.items.append(item)
         self.objects.append(obj)
@@ -410,15 +417,15 @@ class RecallPacketCompiler:
     diagnostics: RecallDiagnostics | None = None
     clock: RecallClock | None = None
 
-    def __post_init__(self) -> None:
-        if self.clock is None:
-            object.__setattr__(self, "clock", time)
+    @property
+    def _clock(self) -> RecallClock:
+        return self.clock if self.clock is not None else time
 
     def compile(self, context: SearchContext, result: RetrievalResult, storage) -> RecallPacket:
         if not isinstance(context, SearchContext) or not isinstance(result, RetrievalResult):
             raise ContractError("INPUT_INVALID", "compile_input")
-        context = resolve_query_context(storage, context, self.clock)
-        started = self.clock.monotonic()
+        context = resolve_query_context(storage, result.release_context(context), self._clock)
+        started = self._clock.monotonic()
         limits = effective_limits(context)
         draft = _Draft(
             context, result, result.memory_epoch, gaps=list(result.gaps), unmet_needs=list(result.unmet_needs)
@@ -426,8 +433,12 @@ class RecallPacketCompiler:
         if self._remaining_ms(context) == 0:
             draft.gaps.append("deadline_exceeded_compile")
             return self._finalize(draft, limits, started)
-        verified = self._verify(storage, draft, list(zip(result.candidates, result.items)))
-        verified = self._fence(storage, draft, verified)
+        timings = RecallTimings(self._clock.monotonic)
+        with timings.measure("verify"):
+            verified = self._verify(storage, draft, list(zip(result.candidates, result.items)))
+        with timings.measure("fence"):
+            verified = self._fence(storage, draft, verified)
+        draft.result = replace(result, diagnostics=(*result.diagnostics, *timings.snapshot()))
         self._admit(draft, self._ordered(context, verified, limits), limits)
         include_diagnostic_ref = self._fit(draft, limits)
         if context.mode == "auto" and not any(not is_background(obj) for obj in draft.objects):
@@ -441,20 +452,17 @@ class RecallPacketCompiler:
             draft.items = [draft.items[index] for index in keep]
             draft.objects = [draft.objects[index] for index in keep]
         if draft.items and self._remaining_ms(context) == 0:
-            draft.gaps.append("deadline_exceeded_compile")
-            draft.stale_drops += len(draft.items)
-            draft.items.clear()
-            draft.objects.clear()
+            draft.expire()
         return self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
 
     # -- release --------------------------------------------------------------
 
     def _remaining_ms(self, context: SearchContext) -> int:
-        return max(0, int((context.deadline - self.clock.monotonic()) * 1000))
+        return max(0, int((context.deadline - self._clock.monotonic()) * 1000))
 
     def _read(self, storage, context: SearchContext):
         return storage.read(
-            context.trusted_context, remaining_seconds=max(context.deadline - self.clock.monotonic(), 0.001)
+            context.trusted_context, remaining_seconds=max(context.deadline - self._clock.monotonic(), 0.001)
         )
 
     def _recheck(
@@ -682,10 +690,19 @@ class RecallPacketCompiler:
                 budget_tokens=limits.budget_tokens,
                 items_dropped_stale=draft.stale_drops,
                 items_dropped_budget=draft.budget_drops,
-                elapsed_ms=int((self.clock.monotonic() - started) * 1000),
+                elapsed_ms=int((self._clock.monotonic() - started) * 1000),
                 deadline_remaining_ms=self._remaining_ms(context),
+                stage_timings=(
+                    *draft.result.diagnostics,
+                    ("compile", f"{(self._clock.monotonic() - started) * 1000:.3f}"),
+                ),
             )
         packet["diagnostic_ref"] = diagnostic_ref if packet.get("diagnostic_ref") else None
+        if packet["items"] and self._remaining_ms(draft.context) == 0:
+            draft.expire()
+            # The second pass has no items, so it cannot recurse again. Its
+            # diagnostic describes the empty packet that is actually returned.
+            return self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
         return packet
 
 

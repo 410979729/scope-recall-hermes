@@ -851,13 +851,9 @@ def test_P08_relation_budget_counts_rejected_candidates_and_checks_original_dead
 
     storage_reader.related = related
     storage_reader.hydrate = hydrate
-    # Admitting unpromoted proposals means a relation candidate now resolves its
-    # evidence instead of bailing at the effective-version check, so hydration
-    # costs more per candidate. At 0.25s the deadline cut hydration off before a
-    # single rejection was recorded and this test asserted nothing. Keep the
-    # deadline finite so the deadline path is still exercised, but give it room
-    # to reach the blocked peers.
-    result = recall(core, ctx, query="无关查询", max_items=30, deadline_seconds=1.0)
+    # The injected clock charges every budget probe. Leave enough time for the
+    # initial channels to reach blocked peers, while keeping expansion bounded.
+    result = recall(core, ctx, query="无关查询", max_items=30, deadline_seconds=2.0)
     assert rejected
     assert len(examined) <= 24
     assert "deadline_exceeded_relation" in result.gaps or "relation_bound_reached" in result.gaps

@@ -15,12 +15,14 @@ from .background_context import background_candidates, current_task_candidate
 from .claim_storage import parse_source_ref
 from .claims import canonical_time
 from .coverage import note_truncation
+from .deadline import RequestDeadline, current_request_deadline, using_request_deadline
 from .duplicate_collapse import DistinctContent, note_duplicates
 from .entity_queries import resolve_query_context
 from .events import lexical_terms
 from .model_content import withhold_secret_items
 from .owner_view import OwnerView, owner_names, owner_view
-from .recall_budget import estimate_tokens, event_admission_order
+from .recall_budget import estimate_tokens, event_admission_order, release_reserve_seconds
+from .recall_diagnostics import RecallTimings
 from .recall_needs import (
     CHOICE_MARKERS,
     Answers,
@@ -55,17 +57,6 @@ from .retrieval_hydration import replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import note_embedding_failure, vector_failure_label
 
-#: Ceiling on the candidates hydrated after the deadline is already gone.
-#:
-#: Without a floor, an optional channel that overruns its allowance would empty
-#: the packet: the lexical, exact and recent candidates are all in hand, and
-#: the hydrate loop would abandon every one of them because the clock is gone.
-#: The floor is the caller's own ``max_items`` rather than a fixed number,
-#: because hydrating three when the packet holds eight just moves the emptiness
-#: one stage later.  This ceiling bounds what a large ``max_items`` can cost
-#: once the deadline is gone -- each one is a single bounded storage read, and
-#: the overrun is still reported, so nothing is hidden.
-MINIMUM_HYDRATION_CAP = 16
 #: Claims offered per round.  A packet holds at most 30 items and a default one
 #: six; a claim that answers competes for those slots on rank, so a deep pool
 #: of claims would only spend hydration on statements that cannot be shown.
@@ -142,6 +133,16 @@ def _asked_early(prefetched) -> tuple[str, ...]:
 
 class RetrievalClock(Protocol):
     def monotonic(self) -> float: ...
+
+
+@dataclass(frozen=True)
+class _RecallDeadline(RequestDeadline):
+    """Expose the recall's injected clock to storage and optional channel waits."""
+
+    clock: RetrievalClock
+
+    def remaining(self, now: float | None = None) -> float:
+        return super().remaining(self.clock.monotonic() if now is None else now)
 
 
 class ChannelBudget:
@@ -296,6 +297,11 @@ class RetrievalPipeline:
     def _remaining(self, context: SearchContext) -> float:
         return context.deadline - self.clock.monotonic()
 
+    def _deadline(self, context: SearchContext) -> RequestDeadline:
+        """Bind absolute cutoffs without mixing the caller's clock with wall time."""
+        started = self.clock.monotonic()
+        return _RecallDeadline(started, context.deadline, max(0.0, context.deadline - started), self.clock)
+
     # -- candidate channels ---------------------------------------------------
 
     def _prefetch_query(self, context: SearchContext):
@@ -384,6 +390,8 @@ class RetrievalPipeline:
             # The class alone does not say what went wrong; see core/vector_failure.py.
             gaps.append("vector_unavailable")
             gaps.append(f"vector_error:{vector_failure_label(exc)}")
+            if self._remaining(context) <= 0:
+                gaps.append("deadline_exceeded_vector")
             return ()
         if budget is not None:
             budget.spend(channel, len(raw))
@@ -496,6 +504,7 @@ class RetrievalPipeline:
         seen: set[tuple[str, str, int]],
         budget: ChannelBudget,
         prefetched=None,
+        on_ready=None,
     ) -> tuple[CandidateRef, ...]:
         """One round of exact, lexical, recent and vector candidates, fused by identity."""
         if self._remaining(context) <= 0:
@@ -566,18 +575,35 @@ class RetrievalPipeline:
         if self._remaining(context) <= 0:
             gaps.append("deadline_exceeded_collect")
             return admitted()
-        raw.extend(self._vector_candidates(context, gaps, budget=budget, prefetched=prefetched))
-        view = self._owner_view(context)
-        searchable = self.vector_port is not None and context.limits.vector_limit > 0
-        if view is not None and searchable and self._remaining(context) > 0:
-            # The question as the owner would ask it, beside the question as asked: their own words answer it and never
-            # carry their name, while the question as asked finds what names them.  One candidate the two searches
-            # agree on ranks by both.
-            owned = replace(context, query=view.first)
-            raw.extend(
-                self._vector_candidates(owned, gaps, budget=budget, prefetched=prefetched, channel="vector_owner")
-            )
-        return admitted()
+        return self._collect_optional(
+            context, gaps, raw, budget, prefetched=prefetched, admitted=admitted, on_ready=on_ready
+        )
+
+    def _collect_optional(self, context, gaps, raw, budget, *, prefetched, admitted, on_ready):
+        """Hydrate ready channels before an optional wait, then merge any added signals."""
+        ready = admitted()
+        if on_ready is not None:
+            cutoff = on_ready(ready)
+            if cutoff is not None:
+                context = replace(context, deadline=min(context.deadline, cutoff))
+        if self._remaining(context) <= 0:
+            gaps.append("deadline_exceeded_collect")
+            return ready
+        with using_request_deadline(self._deadline(context)):
+            optional = list(self._vector_candidates(context, gaps, budget=budget, prefetched=prefetched))
+            view = self._owner_view(context)
+            searchable = self.vector_port is not None and context.limits.vector_limit > 0
+            if view is not None and searchable and self._remaining(context) > 0:
+                # The question as the owner would ask it, beside the question as asked: their own words answer it
+                # and never
+                # carry their name, while the question as asked finds what names them.  One candidate the two searches
+                # agree on ranks by both.
+                owned = replace(context, query=view.first)
+                optional.extend(
+                    self._vector_candidates(owned, gaps, budget=budget, prefetched=prefetched, channel="vector_owner")
+                )
+        raw.extend(optional)
+        return admitted() if optional else ready
 
     # -- hydration and admission ----------------------------------------------
 
@@ -631,11 +657,10 @@ class RetrievalPipeline:
         context: SearchContext,
         gaps: list[str],
         *,
-        floor: int,
         original_query: str | None = None,
         aside: _Aside | None = None,
     ) -> None:
-        """Hydrate in rank order; once the deadline is gone, only up to ``floor`` items."""
+        """Hydrate in rank order within the retrieval portion of the request."""
         known = {candidate.key for candidate, _obj in hydrated}
         candidates = tuple(candidates)
         prefetch = getattr(self.storage_reader, "prefetch", None)
@@ -643,7 +668,7 @@ class RetrievalPipeline:
             # What hydration reads, loaded together (``RetrievalStorage.prefetch``).
             prefetch(tx, tuple(candidate for candidate in candidates if candidate.key not in known), context)
         for candidate in candidates:
-            if self._remaining(context) <= 0 and len(hydrated) >= floor:
+            if self._remaining(context) <= 0:
                 gaps.append("deadline_exceeded_hydrate")
                 break
             if candidate.key in known:
@@ -912,7 +937,27 @@ class RetrievalPipeline:
         # now, and no channel searches it or weighs by it otherwise.
         reads_time = context.mode not in {"history", "as_of"}
         time = query_time(context.query, now=context.now, zone=context.zone) if reads_time else None
-        working = replace(context, limits=limits, time=time)
+        started = self.clock.monotonic()
+        deadline = context.deadline
+        outer = current_request_deadline()
+        if outer is not None:
+            deadline = min(deadline, started + outer.remaining())
+        remaining = deadline - started
+        reserve = release_reserve_seconds(limits.max_items, remaining_seconds=remaining)
+        working = replace(context, limits=limits, time=time, deadline=deadline - reserve)
+        timings = RecallTimings(
+            self.clock.monotonic,
+            dict.fromkeys(("prefetch", "collect", "hydrate", "followup", "relation", "select"), 0.0),
+        )
+        with (
+            timings.measure("retrieval"),
+            using_request_deadline(self._deadline(working)),
+        ):
+            result = self._search(working, timings, release_deadline=deadline)
+        return replace(result, diagnostics=timings.snapshot(), release_deadline=deadline)
+
+    def _search(self, working: SearchContext, timings: RecallTimings, *, release_deadline: float) -> RetrievalResult:
+        """Read optional channels within the reserved retrieval window."""
         if self._remaining(working) <= 0:
             return _empty_result(working, "deadline_exceeded")
         gaps: list[str] = []
@@ -933,14 +978,30 @@ class RetrievalPipeline:
                     )
                     if reason is not None:
                         return _empty_result(working, f"auto_recall_skipped:{reason}")
-                prefetched = self._prefetch_query(working)
+                with timings.measure("prefetch"):
+                    prefetched = self._prefetch_query(working)
                 working = self._scoped(tx, working, gaps)
                 aside = _Aside()
-                hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched, aside=aside)
+                hydrated, seed_count, working = self._collect_rounds(
+                    tx,
+                    working,
+                    gaps,
+                    prefetched=prefetched,
+                    aside=aside,
+                    timings=timings,
+                    release_deadline=release_deadline,
+                )
                 if len(meaningful_query_terms(working.query)) < ECHO_TURN_MIN_TERMS:
                     aside.echoes.clear()
-                self._hydrate_related(tx, working, hydrated, gaps, echoes=tuple(aside.echoes), held=tuple(aside.held))
-                ranked, query_items = self._select(tx, working, hydrated, gaps)
+                with (
+                    timings.measure("relation"),
+                    using_request_deadline(self._deadline(working)),
+                ):
+                    self._hydrate_related(
+                        tx, working, hydrated, gaps, echoes=tuple(aside.echoes), held=tuple(aside.held)
+                    )
+                with timings.measure("select"):
+                    ranked, query_items = self._select(tx, working, hydrated, gaps)
                 question = self._admission_query(working)
                 return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question)
         except ContractError as exc:
@@ -983,14 +1044,14 @@ class RetrievalPipeline:
         *,
         prefetched=None,
         aside: _Aside | None = None,
-    ) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
+        timings: RecallTimings,
+        release_deadline: float,
+    ) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int, SearchContext]:
         """The first round plus at most one directed follow-up for an open need; what hydration sets aside on the
         way goes to ``aside``."""
         hydrated: list[tuple[CandidateRef, RetrievedObject]] = []
         seen: set[tuple[str, str, int]] = set()
         seed_count = 0
-        # Enough to fill the packet the caller asked for, and no more.
-        floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
         max_rounds = min(2, 1 + working.limits.followups)
         budget = ChannelBudget(working.limits)
         follow_query: str | None = None
@@ -1001,37 +1062,80 @@ class RetrievalPipeline:
             # The day and the time a question names are read once: a follow-up asks for something else.
             round_context = replace(working, query=follow_query, scope=None, time=None) if follow_query else working
             budget.hold(max_rounds - round_index - 1)
-            seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget, prefetched=prefetched)
+            # Collection leaves one hydration pass before retrieval itself stops.
+            hydration = min(self._remaining(working) / 2, release_reserve_seconds(working.limits.max_items) / 4)
+            collecting = replace(round_context, deadline=round_context.deadline - hydration)
+            attempted: set[tuple[str, str, int]] = set()
+
+            def hydrate_ready(
+                candidates,
+                *,
+                attempted=attempted,
+                round_context=round_context,
+                original_query=working.query,
+            ):
+                fresh = tuple(candidate for candidate in candidates if candidate.key not in attempted)
+                if not fresh:
+                    return
+                with timings.measure("hydrate"):
+                    self._hydrate_all(
+                        tx, hydrated, fresh, round_context, gaps, original_query=original_query, aside=aside
+                    )
+                attempted.update(candidate.key for candidate in candidates)
+                cutoff = self._release_cutoff(round_context, release_deadline, timings, hydrated)
+                return cutoff
+
+            prior_hydration = timings.stages["hydrate"]
+            with (
+                timings.measure("collect"),
+                using_request_deadline(self._deadline(collecting)),
+            ):
+                seeds = self._collect(
+                    tx, collecting, gaps, seen=seen, budget=budget, prefetched=prefetched, on_ready=hydrate_ready
+                )
+            timings.stages["collect"] -= timings.stages["hydrate"] - prior_hydration
             seed_count += len(seeds)
             seen.update(candidate.key for candidate in seeds)
-            self._hydrate_all(
-                tx,
-                hydrated,
-                seeds,
-                round_context,
-                gaps,
-                floor=floor,
-                original_query=working.query,
-                aside=aside,
-            )
+            hydrate_ready(seeds)
+            # Optional signals can improve a ready candidate's fused rank.
+            # Refresh its rank without repeating hydration or echo side effects.
+            fused = {candidate.key: candidate for candidate in seeds}
+            hydrated[:] = [(fused.get(candidate.key, candidate), obj) for candidate, obj in hydrated]
+            cutoff = self._release_cutoff(working, release_deadline, timings, hydrated)
+            working = replace(working, deadline=cutoff)
             if round_index + 1 >= max_rounds:
                 break
-            items = tuple(obj for _candidate, obj in hydrated)
-            needs = unmet_needs(working.query, items)
-            if not needs:
-                break
-            if self._remaining(working) <= 0:
-                gaps.append("deadline_exceeded_followup")
-                break
-            follow_query = directed_followup_query(working, needs, items)
+            follow_query = self._followup_query(tx, working, hydrated, gaps, timings)
             if follow_query is None:
                 break
-            if "resume_state" in needs:
-                task = current_task_candidate(tx, working, self.storage_reader, self.clock)
-                if task is not None and task[0].key not in {candidate.key for candidate, _obj in hydrated}:
-                    # This task answers an explicit resume request.
-                    hydrated.append((replace(task[0], source="relation", lexical_score=1.0), task[1]))
-        return hydrated, seed_count
+        return hydrated, seed_count, working
+
+    def _release_cutoff(self, context, deadline, timings, hydrated) -> float:
+        """Keep two fresh reads of the ready prefix before further optional work."""
+        reserve = release_reserve_seconds(
+            context.limits.max_items,
+            remaining_seconds=deadline - self.clock.monotonic(),
+            hydration_seconds=timings.stages["hydrate"] / 1000,
+            hydrated_count=len(hydrated),
+        )
+        return deadline - reserve
+
+    def _followup_query(self, tx, working, hydrated, gaps, timings) -> str | None:
+        """Plan the next query and admit a grounded task only while retrieval has time."""
+        items = tuple(obj for _candidate, obj in hydrated)
+        needs = unmet_needs(working.query, items)
+        if not needs:
+            return None
+        if self._remaining(working) <= 0:
+            gaps.append("deadline_exceeded_followup")
+            return None
+        with timings.measure("followup"):
+            query = directed_followup_query(working, needs, items)
+        if query is not None and "resume_state" in needs:
+            task = current_task_candidate(tx, working, self.storage_reader, self.clock)
+            if task is not None and task[0].key not in {candidate.key for candidate, _obj in hydrated}:
+                hydrated.append((replace(task[0], source="relation", lexical_score=1.0), task[1]))
+        return query
 
     def _hydrate_related(
         self,
@@ -1051,8 +1155,7 @@ class RetrievalPipeline:
             for candidate in self._expand(tx, working, seeds, gaps, echoes=echoes)
             if candidate.key not in known
         ]
-        floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
-        self._hydrate_all(tx, hydrated, expanded, working, gaps, floor=floor)
+        self._hydrate_all(tx, hydrated, expanded, working, gaps)
         self._raise_echo_turn(tx, working, hydrated, echoes, gaps)
 
     def _raise_echo_turn(
@@ -1163,6 +1266,8 @@ class RetrievalPipeline:
         # background cannot repeat the evidence either.
         distinct = DistinctContent()
         ordered = self._behind_replacements(self._rank_hydrated(hydrated, working), working)
+        if self._remaining(working) <= 0:
+            gaps.append("deadline_exceeded_select")
         ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
