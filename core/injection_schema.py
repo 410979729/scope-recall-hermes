@@ -1,102 +1,153 @@
 """SQLite definitions and seeded rules for synchronous source screening."""
 
+import json
+
+
+def _tokens(*slots):
+    """Encode ordered literal alternatives as stored policy data."""
+    return json.dumps(slots, ensure_ascii=False, separators=(",", ":"))
+
+
 DEFAULT_RULES = (
     (
         "instruction_override_en",
         "instruction",
-        "regex",
-        "\\b(?:ignore|disregard|override)\\s+(?:(?:all|any|the|your|previous|prio"
-        "r|above|earlier|system|safety)\\s+){0,6}(?:instructions?|rules?|guideli"
-        "nes?|prompts?)\\b",
+        "tokens",
+        _tokens(
+            ["ignore", "disregard", "override"],
+            ["instructions", "instruction", "rules", "rule", "guidelines", "guideline", "prompts", "prompt"],
+        ),
         "quarantined",
     ),
     (
         "instruction_override_zh",
         "instruction",
-        "regex",
-        "(?:忽略|无视|覆盖|绕过|不必遵守|不要遵守)[^。！？\\n]{0,24}(?:指令|系统提示|安全规则|之前的规则|此前的规则)",
+        "tokens",
+        _tokens(
+            ["忽略", "无视", "覆盖", "绕过", "不必遵守", "不要遵守"],
+            ["指令", "系统提示", "安全规则", "之前的规则", "此前的规则"],
+        ),
         "quarantined",
     ),
     (
         "role_override",
         "instruction",
-        "regex",
-        "(?:\\[\\s*(?:system|developer)\\s*\\]|<\\|(?:im_start|start_header_id)\\|>\\s"
-        "*(?:system|developer)|(?:system\\s+prompt\\s+override)|(?:你现在是|从现在起你是)[^"
-        "。！？\\n]{0,32}(?:无限制|不受限制|系统管理员))",
+        "tokens",
+        _tokens(
+            [
+                "[system]",
+                "[developer]",
+                "<|im_start|>system",
+                "<|im_start|> system",
+                "<|start_header_id|>system",
+                "system prompt override",
+            ],
+        ),
+        "quarantined",
+    ),
+    (
+        "role_override_zh",
+        "instruction",
+        "tokens",
+        _tokens(
+            ["你现在是", "从现在起你是"],
+            ["无限制", "不受限制", "系统管理员"],
+        ),
         "quarantined",
     ),
     (
         "prompt_disclosure",
         "instruction",
-        "regex",
-        "(?:(?:reveal|output|print|repeat)\\s+(?:(?:your|the|entire|original|ini"
-        "tial)\\s+){0,4}system\\s+prompt|(?:泄露|输出|打印|复述)[^。！？\\n]{0,12}系统提示词)",
+        "tokens",
+        _tokens(
+            ["reveal", "output", "print", "repeat", "泄露", "输出", "打印", "复述"],
+            ["system prompt", "系统提示词"],
+        ),
         "quarantined",
     ),
     (
         "hidden_instruction",
         "instruction",
-        "regex",
-        "<!--[^>]{0,512}(?:ignore|override|system|忽略|指令)[^>]{0,512}-->|<\\s*(?:d"
-        "iv|span)[^>]{0,256}(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden)",
+        "tokens",
+        _tokens(
+            ["<!--", "<div", "<span"],
+            [
+                "ignore",
+                "override",
+                "system",
+                "忽略",
+                "指令",
+                "display:none",
+                "display: none",
+                "visibility:hidden",
+                "visibility: hidden",
+            ],
+        ),
         "quarantined",
     ),
     (
         "exfiltration_link_en",
         "exfiltration",
-        "regex",
-        "\\b(?:send|post|upload|transmit|exfiltrate)\\b[^\\n]{0,512}\\b(?:conversat"
-        "ion|history|messages|context|credentials|secrets|memory|data)\\b[^\\n]{0"
-        ",512}(?:https?://|mailto:)",
+        "tokens",
+        _tokens(
+            ["send", "post", "upload", "transmit", "exfiltrate"],
+            ["conversation", "history", "messages", "context", "credentials", "secrets", "memory", "data"],
+            ["https://", "http://", "mailto:"],
+        ),
         "quarantined",
     ),
     (
         "exfiltration_link_zh",
         "exfiltration",
-        "regex",
-        "(?:(?:把|将)?[^。！？\\n]{0,32}(?:聊天记录|对话记录|会话内容|系统提示|上下文|凭据|密钥|记忆内容|私密数据)[^"
-        "。！？\\n]{0,32}(?:发送|上传|传给|提交|外传)[^\\n]{0,128}(?:https?://|mailto:)|(?:发送|"
-        "上传|外传)[^\\n]{0,32}(?:聊天记录|上下文|密钥)[^\\n]{0,128}https?://)",
+        "tokens",
+        _tokens(
+            ["聊天记录", "对话记录", "会话内容", "系统提示", "上下文", "凭据", "密钥", "记忆内容", "私密数据"],
+            ["发送", "上传", "传给", "提交", "外传"],
+            ["https://", "http://", "mailto:"],
+        ),
+        "quarantined",
+    ),
+    (
+        "exfiltration_link_zh_reverse",
+        "exfiltration",
+        "tokens",
+        _tokens(
+            ["发送", "上传", "外传"],
+            ["聊天记录", "上下文", "密钥"],
+            ["https://", "http://", "mailto:"],
+        ),
         "quarantined",
     ),
     (
         "exfiltration_command",
         "exfiltration",
-        "regex",
-        "\\b(?:curl|wget)\\b[^\\n]{0,512}(?:\\$(?:\\{)?[A-Z_]*(?:KEY|TOKEN|SECRET|PA"
-        "SSWORD)\\b|@[^\\s]*(?:\\.env|credentials))",
+        "command",
+        _tokens(
+            ["curl", "wget"],
+            ["key", "token", "secret", "password", ".env", "credentials"],
+        ),
         "quarantined",
     ),
     (
         "invisible_unicode",
         "unicode",
-        "regex",
-        "[\\u00ad\\u034f\\u061c\\u180e\\u200b\\u200e\\u200f\\u202a-\\u202e\\u2060-\\u2064\\"
-        "u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\U000e0000-\\U000e007f]",
+        "unicode",
+        "controls",
         "quarantined",
-    ),
-    (
-        "external_source_review",
-        "provenance",
-        "origin",
-        "external_document",
-        "pending_review",
     ),
     (
         "join_control_obfuscation",
         "unicode",
-        "regex",
-        "(?<=[A-Za-z\\u4e00-\\u9fff])[\\u200c\\u200d]|[\\u200c\\u200d](?=[A-Za-z\\u4e00-\\u9fff])",
+        "unicode",
+        "join",
         "quarantined",
     ),
-    ("unattributed_source_review", "provenance", "origin", "origin_unknown", "pending_review"),
 )
 
 STATEMENTS = (
     """CREATE TABLE injection_rules (
         rule_id TEXT PRIMARY KEY NOT NULL, category TEXT NOT NULL,
-        matcher TEXT NOT NULL CHECK(matcher IN ('regex','origin')),
+        matcher TEXT NOT NULL CHECK(matcher IN ('regex','origin','tokens','unicode','command')),
         pattern TEXT NOT NULL, disposition TEXT NOT NULL CHECK(disposition IN ('quarantined','pending_review')),
         enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1))
     ) STRICT""",
@@ -123,3 +174,26 @@ def install(connection):
     """Create and seed screening tables inside the caller's upgrade transaction."""
     for statement in (*STATEMENTS, *SEED_STATEMENTS):
         connection.execute(statement)
+
+
+def upgrade_policy(connection):
+    """Replace executable legacy patterns while retaining owner disable decisions.
+
+    Custom rules are retained for validation; unsupported patterns fail closed.
+    Source holds remain intact and can be rescanned or reviewed explicitly.
+    """
+    connection.execute("ALTER TABLE injection_rules RENAME TO old_injection_rules")
+    connection.execute(STATEMENTS[0])
+    retired = {"external_source_review", "unattributed_source_review"}
+    defaults = {rule[0] for rule in DEFAULT_RULES}
+    for row in connection.execute("SELECT * FROM old_injection_rules").fetchall():
+        if row["rule_id"] not in defaults | retired:
+            connection.execute("INSERT INTO injection_rules VALUES (?,?,?,?,?,?)", tuple(row))
+    for rule in DEFAULT_RULES:
+        old = connection.execute("SELECT enabled FROM old_injection_rules WHERE rule_id=?", (rule[0],)).fetchone()
+        connection.execute("INSERT INTO injection_rules VALUES (?,?,?,?,?,?)", (*rule, old[0] if old else 1))
+    connection.execute("DROP TABLE old_injection_rules")
+    connection.execute("""UPDATE source_safety SET rules_json='["policy_rescan_required"]'
+        WHERE state='pending_review' AND json_array_length(rules_json)>0
+        AND NOT EXISTS(SELECT 1 FROM json_each(rules_json)
+            WHERE value NOT IN ('external_source_review','unattributed_source_review'))""")

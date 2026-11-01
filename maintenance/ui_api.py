@@ -146,10 +146,10 @@ class UIApi:
             revision = number(data, "expected_revision")
             if revision is None:
                 raise ContractError("INPUT_INVALID", "expected_revision")
-            item = api.show(ref, revision=revision)
-            if item["value"].get("state") not in {"quarantined", "pending_review"}:
-                raise ContractError("SOURCE_MISSING", "quarantine")
-            return dict(action=action, ref=ref, expected_revision=revision, item=item)
+            item = api.preview_quarantine_release(ref, expected_revision=revision)
+            return dict(
+                action=action, ref=ref, expected_revision=revision, item=item, content_sha256=item["content_sha256"]
+            )
         if action == "forget-session":
             # Session deletion uses the CLI's source filters, independently of browse text.
             return dict(action=action, plan=api.forget_session(filters(dict(data, query=""))))
@@ -191,7 +191,9 @@ class UIApi:
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
         if action == "release-quarantine":
-            return api.release_quarantine(plan["ref"], expected_revision=plan["expected_revision"])
+            return api.release_quarantine(
+                plan["ref"], expected_revision=plan["expected_revision"], content_sha256=plan["content_sha256"]
+            )
         if action == "revise":
             return api.revise(plan["item"]["ref"], expected_revision=plan["expected_revision"], value=plan["value"])
         if action == "private-on":

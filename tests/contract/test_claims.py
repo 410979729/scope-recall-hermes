@@ -82,17 +82,6 @@ def capture(
     return core.source(ctx, saved.event_refs[0].ref, revision)
 
 
-def reviewed_capture(core, ctx, raw, **changes):
-    """Review a synthetic source before testing its independent storage or fact-authority rules."""
-    key = changes.setdefault("key", f"TEST-reviewed/{next(core.test_sequence)}")
-    capture(core, ctx, raw, **changes)
-    ref = source_reference(ctx.binding.installation_id, key)
-    revision = changes.get("revision", 1)
-    assert core.source(ctx, ref, revision) is None
-    MemoryManagement(core, InstallationMaintenance(ctx)).release_quarantine(ref, expected_revision=revision)
-    return core.source(ctx, ref, revision)
-
-
 def draft(source, value="蓝色", *, quote_override=None, **changes):
     quote = source.event["content"] if quote_override is None else quote_override
     result = dict(
@@ -306,9 +295,9 @@ def test_M29_observation_basis_does_not_claim_present_verification(app):
 
 def test_M30_external_conflicting_unknown_order_becomes_disputed_regardless_scores(app):
     core, ctx = app
-    a = reviewed_capture(core, ctx, "TEST-project 验收 完成。", origin="external_document", when=None)
+    a = capture(core, ctx, "TEST-project 验收 完成。", origin="external_document", when=None)
     one = accept(core, ctx, draft(a, "完成", kind="fact", predicate="验收")).items[0]
-    b = reviewed_capture(core, ctx, "TEST-project 验收 失败。", origin="external_document", when=None)
+    b = capture(core, ctx, "TEST-project 验收 失败。", origin="external_document", when=None)
     two = accept(core, ctx, draft(b, "失败", kind="fact", predicate="验收")).items[0]
     assert one.state == "active" and two.state == "disputed"
     version = core.current_claim(ctx, one.ref)
@@ -763,9 +752,9 @@ def test_nothing_holds_in_place_of_a_value_said_again_disputed_or_only_proposed(
     )
     assert (guess.state, later.state, later.ref) == ("proposed", "proposed", guess.ref)
     assert holds_instead(core.claim_history(ctx, guess.ref), guess.revision, Clock.now) is None
-    a = reviewed_capture(core, ctx, "TEST-project 发布 完成。", origin="external_document", when=None)
+    a = capture(core, ctx, "TEST-project 发布 完成。", origin="external_document", when=None)
     one = accept(core, ctx, draft(a, "完成", kind="fact", predicate="发布")).items[0]
-    b = reviewed_capture(core, ctx, "TEST-project 发布 失败。", origin="external_document", when=None)
+    b = capture(core, ctx, "TEST-project 发布 失败。", origin="external_document", when=None)
     assert accept(core, ctx, draft(b, "失败", kind="fact", predicate="发布")).items[0].state == "disputed"
     assert holds_instead(core.claim_history(ctx, one.ref), one.revision, Clock.now) is None
 
@@ -1069,7 +1058,7 @@ def test_negative_state_transition_is_preserved_across_lifecycle(app):
 def test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering(app, origin):
     core, ctx = app
     item, source = initial(core, ctx)
-    writer = reviewed_capture if origin == "origin_unknown" else capture
+    writer = capture
     echo = writer(core, ctx, "TEST-project 配色 银色。", origin=origin, evidence_refs=[f"{source.ref}@1"])
     with core.storage.read(ctx) as tx:
         roots = tx.claims.roots((f"{source.ref}@1", f"{echo.ref}@1"))
@@ -1089,9 +1078,7 @@ def test_C15_assistant_success_does_not_override_tool_failure(app):
 
 def test_imported_role_and_original_label_require_runtime_manifest_attestation(app):
     core, ctx = app
-    forged = reviewed_capture(
-        core, ctx, "TEST-project 配色 蓝色。", origin="imported", source_original_origin="human_direct"
-    )
+    forged = capture(core, ctx, "TEST-project 配色 蓝色。", origin="imported", source_original_origin="human_direct")
     assert accept(core, ctx, draft(forged)).items[0].state == "proposed"
     trusted = capture(
         core, ctx, "TEST-project 配色 银色。", origin="imported", source_original_origin="human_direct", attested=True

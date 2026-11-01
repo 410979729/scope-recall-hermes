@@ -377,6 +377,13 @@ def _candidate_queue_checks(report: DoctorReport, tx):
 
 def _injection_checks(report, conn):
     """Report held source counts without reading or copying their words."""
+    from ..core.injection_policy import load_policy
+
+    try:
+        load_policy(conn)
+    except (ValueError, TypeError, KeyError):
+        report.capability_gaps.append("injection_policy_invalid")
+        record_check(report, "injection_policy", "invalid", "Required source screening policy is incomplete or invalid")
     safety = dict(
         conn.execute(
             "SELECT s.state,count(*) FROM source_safety s JOIN source_events e "

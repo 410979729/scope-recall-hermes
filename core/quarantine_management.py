@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from dataclasses import replace
 
 from ..contracts import ContractError
-from .admission import decide, store_decision
-from .injection_guard import notice, scan
+from .injection_guard import group_rows, notice, scan
 from .restore import maintenance_context
-from .source_records import stored_source
-from .visibility import allowed
+from .source_admission import admit_source, observe_admitted
+from .source_records import SourceWrite, stored_source
 
 
 def review_page(storage, authority, *, limit=30, before=None):
@@ -50,7 +50,7 @@ def review_page(storage, authority, *, limit=30, before=None):
         return dict(items=items, next_before=rows[limit - 1]["source_id"] if len(rows) > limit else None)
 
 
-def _read_held(tx, ref, revision):
+def _read_held(tx, ref, revision, *, writable=True):
     if type(ref) is not str or not 1 <= len(ref) <= 240 or type(revision) is not int or revision < 1:
         raise ContractError("INPUT_INVALID", "source_ref")
     row = (
@@ -63,41 +63,58 @@ def _read_held(tx, ref, revision):
     )
     if row is None or row["source_revision"] != revision:
         raise ContractError("VERSION_CONFLICT", "source_revision")
-    view = tx.with_context(replace(tx.context, project_id=row["project_id"], branch_id=row["branch_id"]), writable=True)
+    view = tx.with_context(
+        replace(tx.context, project_id=row["project_id"], branch_id=row["branch_id"]), writable=writable
+    )
     held = notice(view, ref, revision)
-    if held is None:
+    own = (
+        tx._check()
+        .execute(
+            "SELECT state,rules_json FROM source_safety WHERE source_ref=? AND source_revision=? AND state!='released'",
+            (ref, revision),
+        )
+        .fetchone()
+    )
+    if held is None or own is None:
         raise ContractError("SOURCE_MISSING", "quarantine")
+    held = dict(state=own["state"], rules=json.loads(own["rules_json"]), revision=revision)
     return view, row, held
 
 
+def preview_release(core, authority, ref, revision):
+    """Bind owner review to the exact current bytes of this held version."""
+    context = maintenance_context(core.storage, authority)
+    with core.storage.read(context) as tx:
+        _view, row, held = _read_held(tx, ref, revision, writable=False)
+        return dict(
+            ref=ref,
+            content=row["content"],
+            content_sha256=hashlib.sha256(row["content"].encode("utf-8")).hexdigest(),
+            **held,
+        )
+
+
 def _resume(tx, core, ref, revision):
-    """Use the existing admission and source repositories after all holds lift."""
-    if not allowed(tx, "event", ref):
-        return
-    current = (
-        tx._check().execute("SELECT max(source_revision) FROM source_events WHERE event_id=?", (ref,)).fetchone()[0]
-    )
-    revision = int(current)
-    source = tx.source(ref, revision)
-    if source is None:
-        raise ContractError("SOURCE_MISSING")
-    clock = core.clock
-    decision = decide(tx, source.event, source.scope_id, core.config.admission_policy)
-    store_decision(tx, ref, revision, decision)
-    tx.claims.link_source(ref, revision)
-    tx.sources.index_source(ref, revision)
-    for kind in sorted(decision.work_types):
-        tx.sources.enqueue_source(ref, revision, work_type=kind, available_at=clock.utc_now())
-    tx.episodes.attach(source, clock.utc_now())
-    if decision.disposition != "source_only" and not source.suppressed:
-        tx.candidates.observe_source(ref, revision, observed_at=clock.utc_now())
+    """Admit the latest group through the same boundary as capture."""
+    rows = group_rows(tx, ref)
+    latest = max(row["source_revision"] for row in rows)
+    sources = []
+    for row in rows:
+        if row["source_revision"] != latest:
+            continue
+        decision = admit_source(tx, core.clock, row["event_id"], latest, core.config.admission_policy)
+        if decision is not None:
+            sources.append((SourceWrite("inserted", row["event_id"], latest), decision))
+    observe_admitted(tx, core.clock, sources)
 
 
-def release_source(core, authority, ref, revision):
+def release_source(core, authority, ref, revision, *, content_sha256):
     """Release exactly the reviewed source version and record the owner's action atomically."""
     context = maintenance_context(core.storage, authority)
     with core.storage.write(context, remaining_seconds=10) as tx:
-        view, _row, held = _read_held(tx, ref, revision)
+        view, row, held = _read_held(tx, ref, revision)
+        if hashlib.sha256(row["content"].encode("utf-8")).hexdigest() != content_sha256:
+            raise ContractError("VERSION_CONFLICT", "source_content")
         conn = view._check(write=True)
         conn.execute(
             "UPDATE source_safety SET state='released',reviewed_at=? WHERE source_ref=? AND source_revision=?",
@@ -110,7 +127,17 @@ def release_source(core, authority, ref, revision):
             "INSERT INTO management_actions VALUES (?,'local_user_management','release_quarantine',?,?,?)",
             (
                 action,
-                json.dumps([dict(ref=ref, revision=revision, rules=held["rules"], state=held["state"])]),
+                json.dumps(
+                    [
+                        dict(
+                            ref=ref,
+                            revision=revision,
+                            rules=held["rules"],
+                            state=held["state"],
+                            content_sha256=content_sha256,
+                        )
+                    ]
+                ),
                 core.clock.utc_now(),
                 tx.memory_epoch(),
             ),
@@ -137,16 +164,20 @@ def finish_review(core, authority, ref, revision, *, content_sha256, approved):
             .execute("SELECT max(source_revision) FROM source_events WHERE event_id=?", (ref,))
             .fetchone()[0]
         )
-        if held["state"] != "pending_review" or row["content_sha256"] != content_sha256 or current != revision:
+        if (
+            held["state"] != "pending_review"
+            or hashlib.sha256(row["content"].encode("utf-8")).hexdigest() != content_sha256
+            or current != revision
+        ):
             raise ContractError("VERSION_CONFLICT", "pending_review")
-        verdict = scan(view, stored_source(row, None).event)
+        verdict = scan(view, stored_source(row, None).event, remaining_seconds=5)
         reasons = list(dict.fromkeys((*held["rules"], *verdict.rules)))
         if not approved:
             reasons.append("review_rejected")
         state = (
             "released"
             if approved
-            and verdict.state != "quarantined"
+            and verdict.state == "clear"
             and row["segment_total"] in (None, 1)
             and not {"invalid_scan_rule", "scan_input_budget", "incomplete_scan_group"}.intersection(
                 (*verdict.rules, *held["rules"])
