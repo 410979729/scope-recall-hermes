@@ -12,6 +12,7 @@ from . import private
 from .admission import AdmissionPolicy, decide, decision_marker, store_decision
 from .candidate_lifecycle import CandidateSourceTrigger
 from .events import prepare_capture
+from .injection_guard import screen_source
 from .source_records import SourceWrite
 from .storage import SQLiteStorage
 from .truth_connection import TruthDatabaseConnectionError
@@ -63,13 +64,14 @@ def _store_events(tx, clock: CaptureClock, prepared, scope_id: str, admission_po
     projection_states = []
     admission_markers = []
     candidate_sources = []
+    scans = {}
     for event in prepared.events:
         decision = decide(tx, event, scope_id, admission_policy)
         source = tx.sources.put_source(
             event, scope_id=scope_id, persisted_at=clock.utc_now(), capture_gaps=prepared.gaps
         )
         receipts.append(source)
-        if source.disposition == "inserted":
+        if source.disposition == "inserted" and screen_source(tx, source, prepared, clock.utc_now(), scans):
             candidate_sources.append((source, decision))
             store_decision(tx, source.ref, source.revision, decision)
             tx.claims.link_source(source.ref, source.revision)
@@ -92,6 +94,8 @@ def _capture_mutations(tx, clock: CaptureClock, receipts) -> list:
     for receipt in receipts:
         if receipt.disposition == "inserted":
             stored = tx.source(receipt.ref, receipt.revision)
+            if stored is None:
+                continue
             mutation = capture_correction(tx, stored, clock)
             if mutation is None:
                 # Correction revises what is believed; confirmation
@@ -228,6 +232,8 @@ def record_event(
             receipts, projection_states, admission_markers, candidate_sources = _store_events(
                 tx, clock, prepared, scope_id, admission_policy
             )
+            if clock.monotonic() - started >= remaining_seconds:
+                raise ContractError("DEADLINE_EXCEEDED")
             mutations = _capture_mutations(tx, clock, receipts)
             candidate_triggers = _candidate_triggers(tx, clock, candidate_sources)
             if _inbox_token is not None:

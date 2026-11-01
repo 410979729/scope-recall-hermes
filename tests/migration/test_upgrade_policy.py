@@ -15,6 +15,7 @@ from scope_recall.adapters.clients import install_codex_scope_recall
 from scope_recall.core import storage, store_upgrade
 from scope_recall.core.backup_primitives import BackupError
 from scope_recall.core.file_lock import advisory_file_lock
+from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import cli
 from scope_recall.maintenance.doctor_report import DoctorReport
 from scope_recall.maintenance.doctor_store import check_storage
@@ -56,7 +57,7 @@ def worker_config(root, core):
     return path
 
 
-@pytest.mark.parametrize("latest", [1111, 1112])
+@pytest.mark.parametrize("latest", [1111, SCHEMA_VERSION])
 def test_failed_upgrade_keeps_successful_and_latest_snapshots(tmp_path, monkeypatch, latest):
     _, core = old_store(tmp_path, 1108)
     core.storage.initialize()
@@ -103,8 +104,8 @@ def test_completed_upgrade_recovers_snapshot_role_before_next_attempt(tmp_path, 
     monkeypatch.setattr(store_upgrade, "atomic_json", write)
     core.storage.initialize()
     fail_promotion[0] = False
-    monkeypatch.setattr(storage, "UPGRADE_CHAIN", (*storage.UPGRADE_CHAIN, 1112))
-    monkeypatch.setattr(storage, "SCHEMA_VERSION", 1113)
+    monkeypatch.setattr(storage, "UPGRADE_CHAIN", (*storage.UPGRADE_CHAIN, SCHEMA_VERSION))
+    monkeypatch.setattr(storage, "SCHEMA_VERSION", SCHEMA_VERSION + 1)
 
     def fail(*args):
         raise OSError(errno.ENOSPC, "TEST next migration failed")
@@ -116,7 +117,7 @@ def test_completed_upgrade_recovers_snapshot_role_before_next_attempt(tmp_path, 
     for path in (core.storage.path.parent / "upgrade-snapshots").glob("*.sqlite3"):
         with closing(sqlite3.connect(path)) as conn:
             schemas.append(conn.execute("PRAGMA user_version").fetchone()[0])
-    assert sorted(schemas) == [1111, 1112]
+    assert sorted(schemas) == [1111, SCHEMA_VERSION]
 
 
 def test_failed_upgrade_doctor_recommends_retry_before_restore(tmp_path, monkeypatch):
@@ -275,7 +276,7 @@ def test_doctor_orders_successful_cross_schema_undo_by_actual_versions(tmp_path)
     report = DoctorReport(host="codex", status="degraded")
     assert check_storage(report, core.storage.binding, core.storage.path.parent)
     text = str(report)
-    assert "current store schema 1112" in text and "snapshot schema 1111" in text
+    assert f"current store schema {SCHEMA_VERSION}" in text and "snapshot schema 1111" in text
     assert text.index("--backup-dir") < text.index("After it reports prepared") < text.index("snapshot schema 1111")
     assert "--apply" in text
 

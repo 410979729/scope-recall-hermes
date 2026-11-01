@@ -10,7 +10,7 @@ from threading import Barrier
 import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core.worker_consolidation import decode_consolidation_result
-from test_claims import accept, app, capture, draft
+from test_claims import accept, app, capture, draft, reviewed_capture
 from test_deletion import authorize, request
 
 
@@ -888,7 +888,7 @@ def test_fresh_lane_keeps_purge_first_window_origins_and_fifo(worker_app):
     clock.advance(iso=_iso(now, -60))
     reply = capture(core, ctx, "TEST 助手刚刚的回答。", origin="assistant_visible")
     clock.advance(iso=_iso(now, -30))
-    document = capture(core, ctx, "TEST 刚刚导入的文档。", origin="external_document")
+    document = reviewed_capture(core, ctx, "TEST 刚刚导入的文档。", origin="external_document")
     clock.advance(iso=now)
     with core.storage.write(ctx) as tx:
         assert tx.work.enqueue("purge", "delete-test:TEST-scope", 1, available_at=now)

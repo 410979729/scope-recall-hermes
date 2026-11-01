@@ -412,6 +412,13 @@ def test_unknown_segment_total_keeps_its_gap_and_matches_schema(app, tmp_path):
         capture_state="partial",
         segment={"group_key": "TEST-unknown", "index": 0, "total": None, "truncated": False},
     )
+    api = owner(core, ctx)
+    held = api.quarantine()["items"]
+    assert len(held) == 1 and held[0]["state"] == "pending_review"
+    blocked = tmp_path / "TEST-held-export"
+    export(api, blocked)
+    assert validated(files_of(blocked), "sources.jsonl", "source") == []
+    api.release_quarantine(held[0]["ref"], expected_revision=held[0]["revision"])
     out = tmp_path / "TEST-unknown-total-export"
     export(owner(core, ctx), out)
     files = files_of(out)

@@ -66,7 +66,7 @@ from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
 from .shared_run import Run, SharedStoreError, store_lock
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
-SOURCE_SCHEMAS = frozenset({1109, 1110, 1111, 1112})
+SOURCE_SCHEMAS = frozenset({1109, 1110, 1111, 1112, 1113})
 #: Anything shaped like a source id; renamed only when the old store holds exactly that id.
 _EVENT_TOKEN = re.compile(r"(?<![0-9A-Za-z_-])event-[0-9A-Za-z_-]+")
 _CHUNK = 2000
@@ -204,6 +204,11 @@ def _import_blocks(conn, src, names, left_out, epoch):
                     else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
                 ),
             )
+    if "source_safety" in tables:
+        # The destination owns its rule policy; imported source verdicts keep their exact versions.
+        counts["source_safety"] = _copy(
+            conn, src, "source_safety", lambda r: {**r, "source_ref": names.event(r["source_ref"])}
+        )
     if "management_actions" in tables:
         counts["management_actions"] = _copy(
             conn,

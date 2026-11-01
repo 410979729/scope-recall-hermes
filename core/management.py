@@ -14,6 +14,7 @@ from ..contracts import ContractError
 from .delete_storage import OBJECT_TABLES, canonical
 from .management_query import MemoryFilter, browse, partition, session_refs, source_metadata, witnesses
 from .management_revision import correct
+from .quarantine_management import release_source, review_page
 from .restore import InstallationMaintenance, maintenance_context
 from .suppression import release
 
@@ -32,6 +33,14 @@ class MemoryManagement:
     def list(self, filters: MemoryFilter | None = None, *, limit=30, cursor=None):
         """Return one inventory page, with an opaque cursor for the next page."""
         return browse(self.core, self._context(), filters or MemoryFilter(), limit=limit, cursor=cursor)
+
+    def quarantine(self, *, limit=30, before=None):
+        """Read a bounded held-content page with the installation owner capability."""
+        return review_page(self.core.storage, self.authority, limit=limit, before=before)
+
+    def release_quarantine(self, ref, *, expected_revision):
+        """Return the reviewed source to normal admission and retain its action receipt."""
+        return release_source(self.core, self.authority, ref, expected_revision)
 
     def secrets(self):
         """Find stored secret-bearing versions for the local owner, without content or writes."""

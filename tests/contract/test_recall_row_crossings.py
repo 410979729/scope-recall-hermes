@@ -18,7 +18,16 @@ from scope_recall.core import storage as storage_module
 from scope_recall.core.storage import SQLiteStorage, Transaction
 from scope_recall.core.visibility import allowed
 from test_capture_row_crossings import Crossings
-from test_claims import Clock, accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixtures)
+from test_claims import (  # noqa: F401  (fixtures)
+    Clock,
+    accept,
+    app,
+    capture,
+    draft,
+    initial,
+    reviewed_capture,
+    revise_request,
+)
 from test_shared_store import NOW, put, shared, shared_context  # noqa: F401  (fixture)
 from v11_support import context, recall_request
 
@@ -35,21 +44,21 @@ def _shapes(core, ctx):
     """A plain source, a part of a message whose other part never came, a part of a whole one, and a version a newer
     one replaced."""
     plain = capture(core, ctx, "TEST 普通的一条。")
-    part = capture(
+    part = reviewed_capture(
         core,
         ctx,
         "TEST 只有前一半",
         key="TEST-part1",
         segment=dict(group_key="TEST-full-source", index=0, total=2, truncated=False),
     )
-    whole = capture(
+    whole = reviewed_capture(
         core,
         ctx,
         "TEST 完整的前一半",
         key="TEST-whole1",
         segment=dict(group_key="TEST-whole-source", index=0, total=2, truncated=False),
     )
-    capture(
+    reviewed_capture(
         core,
         ctx,
         "TEST 完整的后一半",
@@ -411,14 +420,14 @@ def test_a_source_blocked_from_reading_stays_out_of_reach_loaded_together(app):
 
 def test_a_part_whose_other_part_was_blocked_reads_incomplete_loaded_together(app):
     core, ctx = app
-    first = capture(
+    first = reviewed_capture(
         core,
         ctx,
         "TEST 完整的前一半",
         key="TEST-whole1",
         segment=dict(group_key="TEST-whole-source", index=0, total=2, truncated=False),
     )
-    second = capture(
+    second = reviewed_capture(
         core,
         ctx,
         "TEST 完整的后一半",

@@ -24,8 +24,9 @@ from .events import (
     withheld_tool_output,
 )
 from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
+from .injection_guard import notice
 from .source_records import PROJECT_IDENTITY_KEY, SourceWrite, StoredSource
-from .visibility import allowed
+from .visibility import deletion_allows
 
 
 def source_reference(installation_id: str, key: str) -> str:
@@ -260,7 +261,7 @@ class Sources:
         return [
             ref
             for ref in (self._source_ref(event["source_event_key"]) for event in events)
-            if not allowed(self._tx, "event", ref)
+            if not deletion_allows(self._tx, "event", ref)
         ]
 
     @staticmethod
@@ -375,7 +376,7 @@ class Sources:
 
         # A message under a deleted key has been compared with the deleted one before its parts are stored
         # (``refuse_under_a_deleted_key``); a hidden key refuses whatever reaches it here.
-        if not allowed(self._tx, "event", ref):
+        if not deletion_allows(self._tx, "event", ref):
             raise ContractError("ACCESS_DENIED", "source_unavailable")
         revision = event["source_revision"]
         fingerprint_input = {k: v for k, v in event.items() if k != "recorded_at"}
@@ -474,6 +475,8 @@ class Sources:
         conn = self._tx._check()
         source = self._tx.source(ref, revision)
         if source is None:
+            if notice(self._tx, ref, revision) is not None:
+                return "not_indexed", "not_scheduled"
             raise ContractError("SOURCE_MISSING")
         actual = lexical_index.terms_of(conn, lexical_index.source_id(conn, ref, revision))
         lexical = "ready" if actual == indexed_terms(source.event) else "not_ready"

@@ -14,7 +14,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 
 from tests.contract.test_aliases import _alias, _identity
-from tests.contract.test_claims import Clock, accept, capture, draft, initial, intention
+from tests.contract.test_claims import Clock, accept, capture, draft, initial, intention, reviewed_capture
 from tests.v11_support import context
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -404,9 +404,9 @@ def test_proposed_disputed_completed_and_reads_do_not_write(app):
     hypothetical = capture(core, ctx, "假设TEST-project 字号 18。")
     proposed = accept(core, ctx, draft(hypothetical, "18", kind="fact", predicate="字号")).items[0]
     assert proposed.state == "proposed"
-    a = capture(core, ctx, "TEST-project 验收 完成。", origin="external_document", when=None)
+    a = reviewed_capture(core, ctx, "TEST-project 验收 完成。", origin="external_document", when=None)
     accept(core, ctx, draft(a, "完成", kind="fact", predicate="验收"))
-    b = capture(core, ctx, "TEST-project 验收 失败。", origin="external_document", when=None)
+    b = reviewed_capture(core, ctx, "TEST-project 验收 失败。", origin="external_document", when=None)
     accept(core, ctx, draft(b, "失败", kind="fact", predicate="验收"))
     done = capture(core, ctx, "TEST-project 散热检查已完成。")
     completed = accept(core, ctx, intention(done, "completed")).items[0]
