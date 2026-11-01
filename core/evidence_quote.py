@@ -8,8 +8,8 @@ always a substring of what is stored, and the byte-strict ``in`` checks in
 ``core/claim_storage.py``, ``core/consolidate.py`` and the alias path in
 ``core/mutate.py`` reject it as ``evidence_span`` / ``fragment_evidence``.
 
-Resolution handles JSON escapes without Unicode normalisation or
-whitespace-tolerant matching, preserving literal evidence spans.
+Model evidence is aligned through exact text, JSON escapes, then NFKC and
+collapsed whitespace. Stored evidence always uses the original substring.
 
 Resolution is monotone.  Rung 1 is exactly the plain substring rule, so
 nothing that passes it can fail here.  Every later rung returns a slice
@@ -20,6 +20,9 @@ the time they run, the quote already *is* a literal substring.
 from __future__ import annotations
 
 import json
+import unicodedata
+
+from ..contracts import ContractError
 
 #: What ``json.dumps(..., ensure_ascii=False)`` emits for each character it
 #: rewrites.  Anything else below 0x20 becomes a ``\u00xx`` escape; everything
@@ -128,6 +131,107 @@ def resolve_evidence_quotes(value: dict, contents: dict) -> int:
                 span["quote"] = stored
                 resolved += 1
     return resolved
+
+
+def _normalized_origin(content: str) -> tuple[str, list[tuple[int, int]]]:
+    """Map normalized characters, including composed marks, back to raw intervals."""
+    characters: list[str] = []
+    origins: list[tuple[int, int]] = []
+    index = 0
+    while index < len(content):
+        end = index + 1
+        while end < len(content) and unicodedata.category(content[end]).startswith("M"):
+            end += 1
+        # Adjacent Hangul jamo compose without a combining-mark category.
+        while end < len(content) and unicodedata.normalize("NFKC", content[index:end] + content[end]) != (
+            unicodedata.normalize("NFKC", content[index:end]) + unicodedata.normalize("NFKC", content[end])
+        ):
+            end += 1
+        for char in unicodedata.normalize("NFKC", content[index:end]):
+            if char.isspace():
+                char = " "
+                if characters and characters[-1] == " ":
+                    origins[-1] = (origins[-1][0], end)
+                    continue
+            characters.append(char)
+            origins.append((index, end))
+        index = end
+    return "".join(characters), origins
+
+
+def quote_interval(quote: str, content: str) -> tuple[int, int] | None:
+    """Find exact or transport-decoded text first, then width/whitespace equivalence.
+
+    Repeated quotes use the first occurrence. A separately verified model hint
+    can select a later occurrence; approximate offsets never choose one.
+    """
+    stored = resolve_quote(quote, content)
+    if stored is not None:
+        start = content.find(stored)
+        return start, start + len(stored)
+    normalized, origins = _normalized_origin(content)
+    needle, _ = _normalized_origin(quote)
+    needle = needle.strip()
+    start = normalized.find(needle) if needle else -1
+    if start < 0:
+        return None
+    return origins[start][0], origins[start + len(needle) - 1][1]
+
+
+def align_claim_evidence(claim: dict, sources: dict, *, index: int) -> None:
+    """Bind model quotes to authorized source versions; offsets are optional hints.
+
+    A window's content is searched before any omitted text and intervals are
+    translated to the complete source. No source outside this map is read.
+    """
+    spans = claim.get("evidence_spans")
+    if not isinstance(spans, list):
+        return
+    for span_index, span in enumerate(spans):
+        if not isinstance(span, dict) or not isinstance(span.get("quote"), str):
+            continue
+        source = sources.get((span.get("source_ref"), span.get("source_revision")))
+        if source is None:
+            field = "source_revision" if any(key[0] == span.get("source_ref") for key in sources) else "source_ref"
+            raise ContractError("DERIVATION_INVALID", f"claim_proposals[{index}].evidence_spans[{span_index}].{field}")
+        content = source.event["content"]
+        window = getattr(source, "consolidation_window", None)
+        offset = window.start if window is not None else 0
+        quote, start, end = span["quote"], span.get("start"), span.get("end")
+        if (
+            type(start) is int
+            and type(end) is int
+            and offset <= start < end <= offset + len(content)
+            and content[start - offset : end - offset] == quote
+        ):
+            continue
+        interval = quote_interval(quote, content) if quote else None
+        if interval is None:
+            raise ContractError("DERIVATION_INVALID", f"claim_proposals[{index}].evidence_spans[{span_index}].quote")
+        start, end = interval
+        span.update(quote=content[start:end], start=start + offset, end=end + offset)
+
+
+def _located_evidence(proposal, contents):
+    spans = []
+    for span in proposal["evidence_spans"]:
+        located = dict(span)
+        content = contents.get((span["source_ref"], span["source_revision"]))
+        if "start" not in span and "end" not in span and content is not None:
+            interval = quote_interval(span["quote"], content)
+            if interval is not None:
+                located.update(start=interval[0], end=interval[1])
+        spans.append(located)
+    return spans
+
+
+def same_evidence(left, right, contents) -> bool:
+    """Adding deterministic positions to a legacy quote is not new evidence.
+
+    Source versions, literal quotes, and verified occurrence choices must still
+    match. A different occurrence or an independent source remains new evidence.
+    """
+    return _located_evidence(left, contents) == _located_evidence(right, contents)
 
 
 def resolve_fragment_summaries(value: dict, page: str, seeds: tuple) -> None:

@@ -184,6 +184,8 @@ SUITES = {
         "tests/contract/test_private_mode.py",
         "tests/contract/test_fragment_quote_recovery.py",
         "tests/contract/test_normalized_evidence.py",
+        "tests/contract/test_model_evidence_alignment.py",
+        "tests/contract/test_consolidation_metadata.py",
         "tests/contract/test_evidence_governance.py",
         "tests/contract/test_candidate_question_identity.py",
         "tests/contract/test_prompt_semantics.py",

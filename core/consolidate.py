@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from importlib.resources import files
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..contracts import ContractError, validate_evidence_positions
@@ -17,7 +15,7 @@ from .consolidation_summary import apply_summary, mark_partial, stage_fragment, 
 from .episodes import source_origin, source_watermark
 from .evidence_quote import resolve_evidence_quotes
 from .failure_retry import validation_feedback as safe_feedback
-from .language_resources import prompt_text
+from .language_resources import model_consolidation_schema, prompt_text
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
 from .secret_patterns import cut_between_runs
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
@@ -39,6 +37,7 @@ class ConsolidationWorkFence:
     skipped_source_refs: frozenset[str] = frozenset()
     pending_sources: tuple[tuple[str, int, int], ...] = ()
     chunk: ConsolidationChunk | None = None
+    rejected_claims: tuple[str, ...] = ()
 
 
 def _model_source_principal(source) -> dict[str, str] | None:
@@ -65,7 +64,9 @@ def _model_source_principal(source) -> dict[str, str] | None:
 CONSOLIDATION_INPUT_BUDGET = 16000
 
 
-def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_INPUT_BUDGET, validation_feedback=None):
+def consolidation_messages(
+    sources, *, episode_ref=None, budget=CONSOLIDATION_INPUT_BUDGET, validation_feedback=None, candidate_kind=None
+):
     """Build one bounded model proposal input from already authorized raw sources.
 
     This is an input formatter, not another application pipeline or a source of
@@ -112,14 +113,7 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
                 coverage="fragment_only",
             )
             record["prior_fragment_goals"] = getattr(source, "consolidation_seed", ())
-    schema_path = Path(__file__).resolve().parents[1] / "contracts" / "consolidation_result.schema.json"
-    if schema_path.exists():
-        schema_text = schema_path.read_text(encoding="utf-8")
-    else:
-        schema_text = (
-            files("scope_recall").joinpath("contracts/consolidation_result.schema.json").read_text(encoding="utf-8")
-        )
-    schema = json.loads(schema_text)
+    schema = model_consolidation_schema(candidate_kind=candidate_kind)
     system = prompt_text("consolidation").format(schema=json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
     if chunked:
         system += prompt_text("fragment")
@@ -127,22 +121,15 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
         feedback = safe_feedback(validation_feedback.get("code"), validation_feedback.get("field"))
         system += prompt_text("repair").format(feedback=json.dumps(feedback, sort_keys=True, separators=(",", ":")))
     watermark = source_watermark(refs)
-    # Sources lead the input.  Providers cache prompts by prefix, and the system
-    # text above is byte-identical on every call, so the longest prefix two
-    # requests can share is that text followed by the same sources.  The refs and
-    # watermark differ as soon as any one source does; placed first, they would
-    # end the shared prefix before a single source.  Replayed over one store's 1,850
-    # candidate evaluations of a day, an ideal prefix cache could reuse 68% of
-    # prompt tokens in this order against 54% in the other.
+    # Sources lead the input so requests with the same schema, fragment and
+    # repair mode can share a provider cache prefix before changing metadata.
     body = dict(
         sources=records,
         episode_ref=episode_ref,
         source_refs=refs,
         source_watermark=watermark,
         resume_envelope=dict(source_refs=refs, source_watermark=watermark),
-        empty_result=dict(
-            protocol_version="1.1", source_refs=refs, claim_proposals=[], resume_proposals=[], reference_proposals=[]
-        ),
+        empty_result={name: [] for name, field in schema["properties"].items() if field.get("type") == "array"},
     )
     user = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
     # UTF-8 bytes conservatively bound even tokenizers with byte fallback.
@@ -232,6 +219,13 @@ def evidence_window(source: StoredSource, needles, evidence_spans=()) -> StoredS
     )
 
 
+def candidate_evidence_sources(candidate, sources):
+    """Share the exact authorized windows between model formatting and quote alignment."""
+    needles = (candidate.payload.get("value_text"), candidate.payload.get("subject"))
+    spans = candidate.payload.get("evidence_spans") or ()
+    return tuple(evidence_window(source, needles, spans) for source in sources)
+
+
 def candidate_evaluation_messages(
     candidate: CandidateSnapshot,
     sources: tuple[StoredSource, ...],
@@ -240,10 +234,14 @@ def candidate_evaluation_messages(
     validation_feedback: dict[str, str] | None = None,
 ) -> list[dict]:
     """Build a bounded candidate-specific request for the shared model port."""
-    needles = (candidate.payload.get("value_text"), candidate.payload.get("subject"))
-    spans = candidate.payload.get("evidence_spans") or ()
-    sources = tuple(evidence_window(source, needles, spans) for source in sources)
-    messages = consolidation_messages(sources, episode_ref=None, budget=budget, validation_feedback=validation_feedback)
+    sources = candidate_evidence_sources(candidate, sources)
+    messages = consolidation_messages(
+        sources,
+        episode_ref=None,
+        budget=budget,
+        validation_feedback=validation_feedback,
+        candidate_kind=candidate.payload["kind"],
+    )
     candidate_json = json.dumps(
         {
             "candidate_ref": candidate.ref,
@@ -348,18 +346,21 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
     return []
 
 
-def _drop_claims(tx, fence: ConsolidationWorkFence, count: int, now: str) -> str:
-    """Name each claim a worker's result proposed with a value no cited source carries, which is left out: it could
-    never be promoted.  A page's result carries the name to the message's outcome; a whole message is partial now."""
+def _drop_claims(tx, fence: ConsolidationWorkFence, fields: list[str] | tuple[str, ...], now: str) -> str:
+    """Record each rejected claim field without losing accepted siblings.
+
+    A page carries the reason to the whole message's outcome; a whole-message
+    result is partial whenever it leaves out an ungrounded claim.
+    """
     conn = tx._check(write=True)
     conn.executemany(
         """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
-           VALUES (?,?,'claim','DERIVATION_INVALID','evidence_value',?)""",
-        [(fence.work_id, fence.lease_token, now)] * count,
+           VALUES (?,?,'claim','DERIVATION_INVALID',?,?)""",
+        [(fence.work_id, fence.lease_token, field, now) for field in fields],
     )
     if fence.chunk is None:
-        mark_partial(conn, fence.work_id, "evidence_value", now)
-    return "evidence_value"
+        mark_partial(conn, fence.work_id, fields[0], now)
+    return fields[0]
 
 
 def accept_consolidation(
@@ -371,13 +372,15 @@ def accept_consolidation(
         dropped: list[str] = []
         if work_fence is not None:
             dropped = _fence_consolidation(tx, value, work_fence, now=now)
+            if work_fence.rejected_claims:
+                dropped.append(_drop_claims(tx, work_fence, work_fence.rejected_claims, now))
             mark = claim_versions_mark(tx)
         items, claim_refs = [], set()
         ungrounded: list[int] | None = [] if work_fence is not None else None
         try:
             result = validate_claims(tx, value, scope_id, ungrounded_values=ungrounded)
             if ungrounded and work_fence is not None:
-                dropped.append(_drop_claims(tx, work_fence, len(ungrounded), now))
+                dropped.append(_drop_claims(tx, work_fence, ["evidence_value"] * len(ungrounded), now))
             for proposal in result["claim_proposals"]:
                 applied = apply_claim_frames(tx, proposal, scope_id, now)
                 claim_refs.update(item.ref for item in applied)

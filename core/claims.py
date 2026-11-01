@@ -1027,7 +1027,13 @@ _REFUSALS = (
 def _qualification_reason(cited, normalized, support_state):
     """Select semantic support gates without allowing a model to override source governance."""
     rules = _REFUSALS
-    if normalized:
+    # No semantic verdict must not erase a known literal refusal merely because
+    # the quote now has positions. Capability failures retain their own state.
+    if normalized and support_state != "unavailable":
+        # Positions locate evidence; they do not invalidate a literal negative
+        # state or a fully stated condition that the ordinary rules already prove.
+        if support_state == "supported" and all(rule(cited) is None for rule in rules):
+            return None
         if POLARITY.search(cited.source_text) or CONDITIONAL.search(cited.source_text):
             return "qualified_statement"
         if support_state != "supported":

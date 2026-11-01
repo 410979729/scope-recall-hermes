@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from ..contracts import ContractError, decode_payload, utc_instant, validate_payload
 from . import private
+from .candidate_lifecycle import candidate_model_subject
 from .consolidate import (
     ConsolidationWorkFence,
     accept_consolidation,
@@ -20,8 +21,9 @@ from .consolidate import (
 )
 from .consolidation_chunks import source_chunk
 from .consolidation_summary import resume_seed
-from .episodes import source_origin
+from .episodes import source_origin, source_watermark
 from .evidence_question import DERIVATION_ROOT_ORIGINS
+from .evidence_quote import align_claim_evidence
 from .evidence_support import using_support
 from .failure_policy import failure_category
 from .semantic_proposals import prepare_publication
@@ -211,8 +213,7 @@ def _undecorate_claim(claim: dict, source_text: dict) -> None:
         if not isinstance(span, dict) or not isinstance(span.get("quote"), str):
             continue
         content = source_text.get((span.get("source_ref"), span.get("source_revision")), "")
-        if "start" not in span and "end" not in span:
-            _requote(claim, span, content)
+        _requote(claim, span, content)
 
 
 def _bare_source_ref(span: dict, source_text: dict) -> None:
@@ -228,7 +229,50 @@ def _bare_source_ref(span: dict, source_text: dict) -> None:
         span["source_ref"] = bare
 
 
-def decode_consolidation_result(raw: str, sources=()) -> dict:
+def _validate_aligned_result(value, indices):
+    """Keep repair fields in the original response's array after per-claim rejection."""
+    try:
+        return validate_payload("consolidation_result", value, indexed_errors=True)
+    except ContractError as exc:
+        for kept, original in enumerate(indices):
+            prefix = f"claim_proposals[{kept}]"
+            if exc.field.startswith(prefix):
+                raise ContractError(
+                    exc.code, exc.field.replace(prefix, f"claim_proposals[{original}]", 1), exc.hint
+                ) from exc
+        raise
+
+
+def _restore_request_fields(value, sources, episode_ref, candidate):
+    """Rebuild request constants; selected evidence and values remain model choices."""
+    # Missing/null arrays express no proposals; other types must reach validation.
+    for field in ("claim_proposals", "resume_proposals", "reference_proposals"):
+        if value.get(field) is None:
+            value[field] = []
+    value["protocol_version"] = "1.1"
+    if not sources:
+        return
+    refs = [f"{s.ref}@{s.revision}" for s in sources]
+    value["source_refs"] = refs
+    if candidate is not None:
+        claims = value.get("claim_proposals")
+        for claim in claims if isinstance(claims, list) else ():
+            if isinstance(claim, dict):
+                claim.update(
+                    kind=candidate.payload["kind"],
+                    subject=candidate_model_subject(candidate, sources),
+                    predicate=candidate.payload["predicate"],
+                )
+    resumes = value.get("resume_proposals")
+    watermark = source_watermark(refs)
+    for resume in resumes if isinstance(resumes, list) else ():
+        if isinstance(resume, dict):
+            resume.update(episode_ref=episode_ref, evidence_refs=list(refs), source_watermark=watermark)
+
+
+def decode_consolidation_result(
+    raw: str, sources=(), *, rejected_evidence: list[str] | None = None, episode_ref=None, candidate=None
+) -> dict:
     """Decode the model envelope without relaxing the consolidation contract.
 
     Some OpenAI-compatible gateways/models still wrap a JSON-object response in
@@ -239,24 +283,49 @@ def decode_consolidation_result(raw: str, sources=()) -> dict:
     and a ``valid_from``/``valid_to`` written with a numeric offset names the
     same instant as its UTC form (see ``contracts.utc_instant``).  All other shape,
     source, quote, and authority checks remain in the existing validators below.
+
+    Missing or null proposal arrays mean no proposals. Other array types and all
+    items retain strict validation. Request metadata, candidate identity and source
+    positions are filled by code. With
+    ``rejected_evidence``, unlocatable claims are omitted and their indexed
+    fields collected there; without it a bad quote refuses the result.
+    Omitting sources retains envelope-only decoding; publication always
+    validates evidence against live authorized source versions.
     """
     if type(raw) is not str:
         raise ValueError("consolidation_result_not_text")
-    candidate = raw.strip()
-    if candidate.startswith("```"):
-        lines = candidate.splitlines()
+    encoded = raw.strip()
+    if encoded.startswith("```"):
+        lines = encoded.splitlines()
         if len(lines) < 3 or lines[0].strip() not in {"```", "```json"} or lines[-1].strip() != "```":
             raise ValueError("consolidation_result_fence")
-        candidate = "\n".join(lines[1:-1]).strip()
-    value = decode_payload(candidate)
+        encoded = "\n".join(lines[1:-1]).strip()
+    value = decode_payload(encoded)
+    _restore_request_fields(value, sources, episode_ref, candidate)
     source_text = {(s.ref, s.revision): s.event["content"] for s in sources}
+    available = {(s.ref, s.revision): s for s in sources}
     claims = value.get("claim_proposals")
+    indices = []
     if isinstance(claims, list):
-        for claim in claims:
+        kept = []
+        for index, claim in enumerate(claims):
             if not isinstance(claim, dict):
+                kept.append(claim)
+                indices.append(index)
                 continue
             _undecorate_claim(claim, source_text)
-    return validate_payload("consolidation_result", value)
+            try:
+                if available:
+                    align_claim_evidence(claim, available, index=index)
+            except ContractError as exc:
+                if rejected_evidence is None:
+                    raise
+                rejected_evidence.append(exc.field)
+                continue
+            kept.append(claim)
+            indices.append(index)
+        value["claim_proposals"] = kept
+    return _validate_aligned_result(value, indices)
 
 
 @dataclass(frozen=True)
@@ -450,7 +519,8 @@ def process_consolidate(
     except Exception as exc:
         return finish(*model_failure(exc))
     try:
-        value = decode_consolidation_result(raw, roots)
+        rejected_evidence: list[str] = []
+        value = decode_consolidation_result(raw, roots, rejected_evidence=rejected_evidence, episode_ref=episode_ref)
         verdicts = prepare_publication(
             storage,
             context,
@@ -461,6 +531,12 @@ def process_consolidate(
             clock=clock,
         )
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        # A suppression replay can block support preparation before publication's
+        # dependency check. Missing sources remain an obsolete authority fence.
+        if isinstance(exc, ContractError) and exc.code == "ACCESS_DENIED":
+            with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+                if derivation_changed(tx, read.dependencies) is not None:
+                    exc = ContractError("VERSION_CONFLICT", "memory_epoch")
         return _decode_refused(
             finish,
             exc,
@@ -477,6 +553,7 @@ def process_consolidate(
         skipped_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch) - allowed_refs,
         pending_sources=pending_sources,
         chunk=chunk,
+        rejected_claims=tuple(rejected_evidence),
     )
     try:
         with using_support(verdicts):
