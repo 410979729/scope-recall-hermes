@@ -101,6 +101,8 @@ build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
 
 [tool.setuptools.package-data]
 "scope_recall" = [
+  "prompts/*.txt",
+  "prompts/*.json",
   "maintenance/migration_mapping.json",
   "vector/model-capabilities.json",
   "maintenance/ui_static/*.html",

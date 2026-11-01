@@ -5,11 +5,12 @@ from __future__ import annotations
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 from ..contracts import (
     ClaimProposal,
     ContractError,
+    EvidenceSpan,
     SourceSnapshot,
     TrustedContext,
     validate_model_request,
@@ -43,7 +44,9 @@ from .claims import (
 from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmation
 from .corroboration import CORROBORATED_REASON, corroboration_promotes
 from .evidence_quote import resolve_evidence_quotes
+from .evidence_support import positioned, support_verdict
 from .secret_patterns import structure_contains_secret_like_text
+from .semantic_proposals import merge_candidates
 from .source_qualification import (
     AUTHORITY_QUESTION,
     CONDITIONAL,
@@ -188,6 +191,16 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     evidence whose order against the head is unknown and has no live human
     behind it becomes disputed.
     """
+    if same_assertion(previous.payload, proposal):
+        # Replaying an assertion cannot create a conflict with itself. An
+        # existing dispute still needs changed evidence before it can resolve.
+        if (
+            previous.state == "disputed"
+            and qualification.state == "active"
+            and (previous.payload["evidence_spans"] == proposal["evidence_spans"])
+        ):
+            qualification = Qualification(previous.state, previous.basis, previous.reason)
+        return qualification, True, ()
     old_roots = tx.claims.roots(evidence_refs(previous.payload))
     new_owner, old_owner = human_owner(roots), human_owner(old_roots)
     new_order, old_order = source_order(tx, roots), source_order(tx, old_roots)
@@ -261,20 +274,79 @@ def _end_denied_value(tx, proposal, roots, previous, held, qualification, scope_
     return Mutation(retracted.ref, retracted.revision, "retracted", retracted.state)
 
 
-def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subject_bound: bool = False) -> Mutation:
-    roots = tx.claims.roots(evidence_refs(proposal))
-
-    proposal = name_frame(normalize_frame(proposal, roots), roots)
-    if _subject_bound:
+def _qualify_incoming(
+    tx, proposal: ClaimProposal, roots, scope_id, now, subject_already_bound
+) -> tuple[ClaimProposal, Qualification, bool]:
+    """Bind source identity, classify support and revalidate any prepared slot decision."""
+    submitted = proposal
+    verdict = support_verdict(proposal, roots) if positioned(proposal) else None
+    support_state = verdict.state if verdict else None
+    if positioned(proposal) and support_state is None:
+        support_state = "supported" if qualify(proposal, roots, _legacy=True).state == "active" else "unavailable"
+    if not positioned(proposal):
+        proposal = cast(ClaimProposal, name_frame(normalize_frame(proposal, roots), roots))
+    if subject_already_bound:
         subject_bound, binding_issue = True, None
     else:
-        proposal, subject_bound, binding_issue = bind_claim_subject(proposal, roots)
+        proposal, subject_bound, binding_issue = bind_claim_subject(
+            proposal, roots, semantic_support=positioned(proposal)
+        )
     if binding_issue is not None:
         qualification = Qualification("proposed", "inferred_suggestion", binding_issue)
     else:
-        qualification = qualify(proposal, roots, project_id=tx.context.project_id, _subject_bound=subject_bound)
+        qualification = qualify(
+            proposal,
+            roots,
+            project_id=tx.context.project_id,
+            _subject_bound=subject_bound,
+            _support_state=support_state,
+        )
     if proposal["kind"] == "alias" and not _alias_verified(tx, proposal, roots, scope_id, now):
         qualification = Qualification("proposed", "inferred_suggestion", "alias_target_or_relation_unverified")
+    if verdict is not None and verdict.target_ref is not None:
+        choices = merge_candidates(tx, submitted, scope_id, now=now)
+        target = next(
+            (c for c in choices if (c["ref"], c["revision"]) == (verdict.target_ref, verdict.target_revision)), None
+        )
+        if target is None:
+            raise ContractError("VERSION_CONFLICT", "merge_target")
+        proposal = deepcopy(proposal)
+        proposal.update(subject=target["payload"]["subject"], predicate=target["payload"]["predicate"])
+    return proposal, qualification, verdict is not None and verdict.action == "duplicate"
+
+
+def _repeat_claim(tx, proposal, history, previous, qualification, denial_reason, scope_id, now):
+    """Return final duplicates without writes; independent corroboration may promote the same assertion."""
+    roots = tx.claims.roots(evidence_refs(proposal))
+    for identical in reversed(history):
+        if not same_assertion(identical.payload, proposal):
+            continue
+        if _corroborated(tx, proposal, roots, identical, previous, qualification, denial_reason):
+            saved = tx.claims.append(
+                scope_id,
+                proposal,
+                Qualification("active", "direct_report", CORROBORATED_REASON),
+                recorded_at=now,
+                previous=previous if previous is not None else identical,
+                advance_head=True,
+            )
+            return Mutation(saved.ref, saved.revision, "inserted", saved.state)
+        # Legacy active-assertion replays are no-ops even when another source
+        # repeats them after retraction. Final disputed verdicts cannot use this path.
+        legacy_active = not positioned(proposal) and identical.state == qualification.state == "active"
+        if legacy_active or (
+            (identical.state, identical.basis, identical.reason)
+            == (qualification.state, qualification.basis, qualification.reason)
+            and identical.payload["evidence_spans"] == proposal["evidence_spans"]
+        ):
+            return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
+    return None
+
+
+def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subject_bound: bool = False) -> Mutation:
+    roots = tx.claims.roots(evidence_refs(proposal))
+
+    proposal, qualification, semantic_duplicate = _qualify_incoming(tx, proposal, roots, scope_id, now, _subject_bound)
     history = tx.claims.slot(scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
     held = select_effective(history, now) if history else None
@@ -282,29 +354,11 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
     gated = qualification
     if denial_reason is not None and qualification.state != "proposed":
         qualification = Qualification("proposed", "inferred_suggestion", denial_reason)
-    # Repeated extraction cannot alter the live identity, validity, head,
-    # lifecycle, epoch or work queue of the same assertion.
-    identical = next(
-        (
-            v
-            for v in reversed(history)
-            if same_assertion(v.payload, proposal) and (v.state == qualification.state or v.state == "active")
-        ),
-        None,
-    )
-    if identical is not None:
-        if _corroborated(tx, proposal, roots, identical, previous, qualification, denial_reason):
-            promoted = Qualification("active", "direct_report", CORROBORATED_REASON)
-            saved = tx.claims.append(
-                scope_id,
-                proposal,
-                promoted,
-                recorded_at=now,
-                previous=previous if previous is not None else identical,
-                advance_head=True,
-            )
-            return Mutation(saved.ref, saved.revision, "inserted", saved.state)
-        return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
+    if semantic_duplicate and previous is not None and previous.state == qualification.state == "active":
+        ordered, advance, _ = _order_against_head(tx, proposal, roots, previous, qualification, scope_id)
+        qualification = ordered
+        if ordered.state == "active" and advance:
+            return Mutation(previous.ref, previous.revision, "duplicate", previous.state)
     if ends_held and gated.state == "active":
         ended = _end_denied_value(tx, proposal, roots, previous, held, gated, scope_id, now)
         if ended is not None:
@@ -319,6 +373,9 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
             qualification, advance, conflicts = _order_against_head(
                 tx, proposal, roots, previous, qualification, scope_id
             )
+    repeated = _repeat_claim(tx, proposal, history, previous, qualification, denial_reason, scope_id, now)
+    if repeated is not None:
+        return repeated
     saved = tx.claims.append(
         scope_id, proposal, qualification, recorded_at=now, previous=previous, advance_head=advance, conflicts=conflicts
     )
@@ -346,7 +403,10 @@ def register_applied_candidate(tx, mutation: Mutation, now: str, *, schedule_ini
 def apply_claim_frames(tx, proposal, scope_id, now):
     roots = tx.claims.roots(evidence_refs(proposal))
     items = []
-    for frame in expand_frames(proposal, roots):
+    frames: list[ClaimProposal] = (
+        [proposal] if positioned(proposal) else cast(list[ClaimProposal], expand_frames(proposal, roots))
+    )
+    for frame in frames:
         item = apply_claim(tx, frame, scope_id, now)
         register_applied_candidate(tx, item, now)
         items.append(item)
@@ -848,7 +908,7 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
         tx.claims.unresolved(source.ref, source.revision, (target.ref,), recorded_at=clock.utc_now())
         return None
     payload = deepcopy(target.payload)
-    spans = list(payload.get("evidence_spans") or ())
+    spans: list[EvidenceSpan] = list(payload.get("evidence_spans") or ())
     # The confirmation is itself evidence: it is the record of who vouched.
     spans.append({"source_ref": source.ref, "source_revision": source.revision, "quote": raw[:2000]})
     payload["evidence_spans"] = spans

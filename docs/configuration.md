@@ -762,3 +762,24 @@ scope-recall doctor --host hermes --instance-root C:\path\to\instance-root --pyt
 
 It exits `0` only when `status` is `ok`; both `attention` and `degraded` exit `1`.
 See [install.md](install.md) for the report and the common gaps.
+
+### Recall deadline stages
+
+Automatic and explicit recall reserve a candidate-scaled allowance for compilation
+and two fresh SQLite release checks. Retrieval and compilation share the same
+effective total deadline, including a shorter outer request deadline. Collection
+leaves a hydration window; ready lexical and exact candidates are hydrated before
+an optional vector wait. Measured hydration can increase the release allowance
+before optional work, capped at half the remaining budget. Query embedding and
+vector waits share the collection cutoff. A
+channel timeout leaves the ready lexical and exact evidence available; scope,
+revision, deletion and epoch checks still govern every delivered item. An expired
+release fence returns no items.
+
+The packet's `deadline_exceeded_*` gaps identify interrupted work. Its
+`diagnostic_ref` exposes `stage_elapsed_ms` for prefetch, collection, hydration,
+follow-up planning, relations, selection, retrieval, verification, the release
+fence and compilation. Repeated collection and hydration rounds accumulate in
+the same fields. Retrieval and compilation are totals and include their nested
+stages; these timings must not be summed together. Timings contain no query or
+item text and use the existing bounded process-local diagnostic records.

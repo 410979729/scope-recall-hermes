@@ -26,7 +26,9 @@ vector similarity floor. Background preferences and tasks accompany passing
 query evidence; a session's first resume request can recover its current task.
 Acknowledgments, approvals, praise, bare continuation and session status prompts
 within an existing session start no search or query embedding. Explicit recall
-keeps its admission behavior. The thresholds and diagnostic counts are described
+keeps its admission behavior. Retrieval reserves time for compilation and fresh
+SQLite release checks, so slow optional channels can leave a partial packet with
+their cutoff reason. Unverified items never ship. The thresholds and diagnostic counts are described
 in [the recall configuration](docs/configuration.md#vector_threshold).
 
 **Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)
@@ -35,6 +37,8 @@ scope isolation, packet size and latency. It uses proposed claims and a word-has
 embedder without a model or network, so it does not establish consolidation quality,
 semantic embedding quality or performance on private conversations. The test tiers
 also check contracts, storage and host integration.
+
+Extraction can normalize fact wording while keeping exact source character intervals. A separate model judgement handles support that literal checks cannot establish; unavailable or uncertain support remains a labelled candidate. [Claim contracts](docs/claim-mutation-contract.md) describe promotion, merging and source authority.
 
 ## Manage your memories
 

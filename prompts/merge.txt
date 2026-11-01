@@ -1,0 +1,1 @@
+Compare one normalized assertion with the supplied source-backed candidates. Decide new, update or duplicate without changing speaker, conditions, scope or validity. Select only a supplied target version; when uncertain, keep a new candidate. Evidence support and lifecycle authority are checked separately.

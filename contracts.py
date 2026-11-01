@@ -175,6 +175,8 @@ class EvidenceSpan(TypedDict):
     source_revision: int
     quote: str
     location: NotRequired[str]
+    start: NotRequired[int]
+    end: NotRequired[int]
 
 
 class SupportedText(TypedDict):
@@ -205,6 +207,7 @@ class Alias(TypedDict):
 
 
 class ClaimProposal(TypedDict):
+    occurred_at: NotRequired[str | None]
     kind: Literal["fact", "preference", "constraint", "decision", "procedure", "intention", "alias"]
     subject: str
     predicate: str
@@ -867,7 +870,8 @@ def _validate_claim_evidence(
         if span["quote"] not in available[key].content:
             raise ContractError("DERIVATION_INVALID", "evidence_quote")
         cited_contents.append(available[key].content)
-    if not proposal_value_in_evidence(claim, cited_contents):
+    validate_evidence_positions(claim, {(s.ref, s.revision): s.content for s in available.values()})
+    if not positioned_evidence(claim) and not proposal_value_in_evidence(claim, cited_contents):
         raise ContractError("DERIVATION_INVALID", "evidence_value")
     for ref in claim.get("procedure", {}).get("counterexample_refs", []):
         if ref not in declared:
@@ -943,3 +947,26 @@ def validate_proposal_references(
         if not set(binding["evidence_refs"]) <= declared:
             raise ContractError("SOURCE_MISSING")
     return cast(ConsolidationResult, result)
+
+
+def positioned_evidence(proposal) -> bool:
+    """Whether every evidence span carries a complete Unicode half-open interval."""
+    spans = proposal.get("evidence_spans") or ()
+    return bool(spans) and all("start" in span and "end" in span for span in spans)
+
+
+def validate_evidence_positions(proposal, contents) -> None:
+    """Reject invented, partial or mismatched offsets before a model can see them."""
+    for span in proposal["evidence_spans"]:
+        if "start" not in span and "end" not in span:
+            continue
+        start, end = span.get("start"), span.get("end")
+        content = contents.get((span["source_ref"], span["source_revision"]))
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or content is None
+            or not 0 <= start < end <= len(content)
+            or content[start:end] != span["quote"]
+        ):
+            raise ContractError("DERIVATION_INVALID", "evidence_position")

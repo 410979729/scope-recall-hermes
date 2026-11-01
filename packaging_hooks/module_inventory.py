@@ -62,7 +62,7 @@ ENTRY_POINTS = (
 #: defeat the isolation it exists to provide.
 _DATA_ONLY = ("_lance_worker.py",)
 
-#: Files whose version line is stamped from ``_version.py``.
+#: Files whose version line is stamped from ``_version.py``, in the spelling of ``manifest_version``.
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
 
@@ -236,6 +236,7 @@ __all__ = [
     "PLUGIN_MANIFESTS",
     "REPO_ROOT",
     "expected_allowlist",
+    "manifest_version",
     "reachable_modules",
     "reachable_packages",
     "source_version",

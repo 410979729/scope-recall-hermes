@@ -99,6 +99,18 @@ their captures and embeddings do not reach the providers at once. The settings
 are recorded as `workers`, `settle_seconds` and `start_interval_seconds` in
 `results.json`.
 
+One runner process keeps about two CPU cores busy whatever `--workers` says,
+because its question threads share one Python interpreter, so a long
+scope-recall split can be limited by the runner rather than the model server.
+`--shard K/N` runs only questions K, K+N, K+2N, ... of the selection (recorded
+as `shard`), so N processes can share a split, each with its own copy of the
+request cache. `tests/public_bench/merge_shards.py --data <root> --output <dir>
+<shard dirs>` joins their reports into the report one process would write: the
+split's question order, scoring recomputed from the rows, summed cache counts
+and workers, the slowest shard's `total_seconds`, and `shards` set to N. It
+refuses shards that differ in split, method, models, prompts or settle limits,
+and an incomplete set.
+
 When a settle round processes nothing and the remaining work was last refused
 for capacity (HTTP 429, 502, 503, 504 or 529), the round waits 30 real seconds
 before it moves the business clock, because a provider's rate limit counts real
@@ -139,9 +151,20 @@ remain unfinished. The runner advances the business clock when waiting for
 settling windows, and enforces round, business-time and real wall-clock limits.
 A pass processing zero items is insufficient evidence of completion.
 Each worker batch receives the remaining wall-clock budget, and the runner
-checks the deadline again after the batch. Incomplete questions appear under
-`incomplete_results`, never call the answerer or judge, and make the command
-exit unsuccessfully. Their scores cannot become a complete baseline.
+checks the deadline again after the batch. A batch whose budget runs out inside
+the drain is followed by the next one, as the shipped worker supervisor does.
+The question is then answered and scored from what its store holds, as the
+product answers its owner whenever they ask, however the queue ended: complete,
+with failed work, or still busy when the round, business-time or wall-clock
+limit ran out. A candidate whose evaluation keeps producing a new revision
+never settles, so a limit is an outcome to report, not a reason to skip the
+question. Each result's `backend_state` records how its queue ended, and
+`pipeline_states` counts the endings across the split. Only an unavailable
+capability leaves a question incomplete, because the run then measured a broken
+configuration: it appears under `incomplete_results`, never calls the answerer
+or judge, and makes the command exit unsuccessfully. Its score cannot become a
+complete baseline. A question that raises is recorded with its error and the
+code locations it passed through (`error_at`), and the split continues.
 
 Results retain dataset provenance, model settings, prompt hashes, per-question
 packets, admission gaps, pipeline states, session/turn evidence recall, estimated

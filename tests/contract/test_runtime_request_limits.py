@@ -112,7 +112,7 @@ def test_default_transport_accepts_the_bounded_candidate_without_losing_sources(
     (body,) = transport.bodies
     assert 32_000 < len(body) <= ledger.policy.max_request_bytes
     assert json.loads(body)["messages"] == messages
-    assert len(json.loads(messages[2]["content"])["sources"]) == 16
+    assert len(json.loads(messages[1]["content"])["sources"]) == 16
     assert read_auxiliary_budget_status(ledger.path)["requests"] == 1
 
 

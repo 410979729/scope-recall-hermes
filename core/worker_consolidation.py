@@ -22,6 +22,9 @@ from .consolidation_chunks import source_chunk
 from .consolidation_summary import resume_seed
 from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS
+from .evidence_support import using_support
+from .failure_policy import failure_category
+from .semantic_proposals import prepare_publication
 from .source_records import StoredSource
 from .worker_outcomes import (
     Outcome,
@@ -194,7 +197,7 @@ def _undecorate_claim(claim: dict, source_text: dict) -> None:
     for kind_field in ("procedure", "intention", "alias"):
         if claim.get("kind") != kind_field and claim.get(kind_field) in (None, {}):
             claim.pop(kind_field, None)
-    for time_field in ("valid_from", "valid_to"):
+    for time_field in ("valid_from", "valid_to", "occurred_at"):
         if time_field in claim:
             claim[time_field] = utc_instant(claim[time_field])
     spans = claim.get("evidence_spans")
@@ -208,7 +211,8 @@ def _undecorate_claim(claim: dict, source_text: dict) -> None:
         if not isinstance(span, dict) or not isinstance(span.get("quote"), str):
             continue
         content = source_text.get((span.get("source_ref"), span.get("source_revision")), "")
-        _requote(claim, span, content)
+        if "start" not in span and "end" not in span:
+            _requote(claim, span, content)
 
 
 def _bare_source_ref(span: dict, source_text: dict) -> None:
@@ -341,8 +345,12 @@ def _needs_chunk(roots, episode_ref, feedback, offset) -> bool:
     return False
 
 
-def _decode_refused(finish, exc: Exception):
+def _decode_refused(finish, exc: Exception, *, private_hold=None):
     """A model answer that does not decode: a bounded fresh attempt, with the clause or envelope that failed."""
+    if isinstance(exc, ContractError) and exc.field == "private_mode" and private_hold is not None:
+        return private_hold()
+    if isinstance(exc, ContractError) and exc.code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
+        return _accept_refused(finish, exc)
     detail = exc.field if isinstance(exc, ContractError) else "json_envelope"
     return Outcome(
         *finish(
@@ -443,8 +451,21 @@ def process_consolidate(
         return finish(*model_failure(exc))
     try:
         value = decode_consolidation_result(raw, roots)
+        verdicts = prepare_publication(
+            storage,
+            context,
+            value,
+            roots,
+            getattr(model, "judge", None),
+            remaining_seconds=budget_left(started, clock, budget),
+            clock=clock,
+        )
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        return _decode_refused(finish, exc)
+        return _decode_refused(
+            finish,
+            exc,
+            private_hold=partial(hold_for_private_mode, storage, clock, context, item, started=started, budget=budget),
+        )
     fence = ConsolidationWorkFence(
         item.work_id,
         item.lease_token,
@@ -458,25 +479,28 @@ def process_consolidate(
         chunk=chunk,
     )
     try:
-        accept_consolidation(
-            storage,
-            clock,
-            # A durable work item runs outside the originating host session.
-            # Use the session from its freshly read source, never from model
-            # output, so current_human can validate that session's actual
-            # latest evidence. Scope, project and the work/dependency fence
-            # remain unchanged; stale or unrelated human evidence still fails.
-            replace(context, session_id=source.session_id, recent_messages=()),
-            value,
-            scope_id=item.scope_id,
-            remaining_seconds=budget_left(started, clock, budget),
-            work_fence=fence,
-        )
+        with using_support(verdicts):
+            accept_consolidation(
+                storage,
+                clock,
+                # A durable work item runs outside the originating host session.
+                # Use the session from its freshly read source, never from model
+                # output, so current_human can validate that session's actual
+                # latest evidence. Scope, project and the work/dependency fence
+                # remain unchanged; stale or unrelated human evidence still fails.
+                replace(context, session_id=source.session_id, recent_messages=()),
+                value,
+                scope_id=item.scope_id,
+                remaining_seconds=budget_left(started, clock, budget),
+                work_fence=fence,
+            )
     except ContractError as exc:
         return _accept_refused(finish, exc)
+    support_failure = next((v.failure_code for v in verdicts if v.failure_code), None)
     if chunk is not None and not chunk.final:
-        return "deferred", None, "pending"
-    return "completed", None, "done"
+        return "deferred", support_failure, "pending"
+    disposition = "deferred" if support_failure and failure_category(support_failure) == "capability" else "completed"
+    return disposition, support_failure, "done"
 
 
 def build_consolidation_model(port) -> ConsolidationModel | None:
@@ -484,6 +508,9 @@ def build_consolidation_model(port) -> ConsolidationModel | None:
         return None
 
     class Adapter:
+        def judge(self, messages, *, remaining_seconds=1.0):
+            return port.propose(messages, remaining_seconds=remaining_seconds)
+
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
             messages = consolidation_messages(sources, episode_ref=episode_ref, validation_feedback=validation_feedback)
             return port.propose(messages, remaining_seconds=remaining_seconds)

@@ -1018,7 +1018,7 @@ def _long_evidence_messages(core, ctx, content):
         "r1-candidate-v1",
     )
     messages = candidate_evaluation_messages(snapshot_, (long_source,))
-    record = json.loads(messages[2]["content"])["sources"][0]
+    record = json.loads(messages[1]["content"])["sources"][0]
     return record, long_source
 
 
@@ -1057,7 +1057,7 @@ def test_a_long_source_without_the_value_sends_its_head_and_a_short_one_is_whole
         "new_evidence",
         "r1-candidate-v1",
     )
-    whole = json.loads(candidate_evaluation_messages(snapshot_, (short_source,))[2]["content"])["sources"][0]
+    whole = json.loads(candidate_evaluation_messages(snapshot_, (short_source,))[1]["content"])["sources"][0]
     assert whole["content"] == short_source.event["content"] and "source_window" not in whole
 
 

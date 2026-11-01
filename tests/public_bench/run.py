@@ -13,6 +13,8 @@ import hashlib
 import json
 import math
 import time
+import traceback
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -123,6 +125,11 @@ def isolated(run, case, *, cache_only: bool) -> dict:
             "status": "failed",
             "turns": len(case.turns),
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            # Code locations only, innermost last: a ContractError message names a code, not where it was raised.
+            "error_at": [
+                f"{Path(frame.filename).name}:{frame.lineno} {frame.name}"
+                for frame in traceback.extract_tb(exc.__traceback__)[-4:]
+            ],
             "answer": None,
             "judge_correct": None,
             "evaluation": {"status": "not_run", "reason": "question_failed"},
@@ -154,7 +161,11 @@ def run_case(
                     admissions.append({"turn": turn.key, "error": receipt.error_code, "gaps": list(receipt.gaps)})
             state = lab.settle(wall_seconds=settle_seconds)
             ports.cache.raise_if_missing()
-            if state["status"] != "complete":
+            # The owner is answered from what the store holds when the question is asked, however the queue ended:
+            # complete, with work the product gave up on, or still busy when a settle limit ran out (a candidate
+            # whose evaluation keeps producing a new revision never settles). Only a missing capability leaves the
+            # question unanswered, because then the run measured a broken configuration, not the product.
+            if state["status"] == "unavailable":
                 return {
                     "id": case.id,
                     "category": case.category,
@@ -225,6 +236,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", choices=["longmemeval", "locomo", "factconsolidation"], default="longmemeval")
     parser.add_argument("--split", choices=["dev", "regression", "sealed"], default="dev")
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--shard",
+        help="K/N: run only questions K, K+N, K+2N, ... of the selection, so N processes share one split; "
+        "merge_shards.py joins their reports",
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--settle-seconds", type=float, default=900)
     parser.add_argument("--start-interval-seconds", type=float, default=0)
@@ -246,6 +262,14 @@ def parse_args() -> argparse.Namespace:
         parser.error("settle-seconds must be finite and positive")
     if not math.isfinite(args.start_interval_seconds) or args.start_interval_seconds < 0:
         parser.error("start-interval-seconds must be finite and not negative")
+    if args.shard is not None:
+        try:
+            index, count = (int(part) for part in args.shard.split("/"))
+        except ValueError:
+            parser.error("shard must be K/N")
+        if not 0 <= index < count:
+            parser.error("shard must be K/N with 0 <= K < N")
+        args.shard = (index, count)
     return args
 
 
@@ -275,6 +299,10 @@ def main() -> None:
         selected = [next(case for case in cases if case.category == category) for category in category_counts(cases)]
     if args.limit:
         selected = selected[: args.limit]
+    # One runner process keeps about two cores busy, since its question threads share one interpreter; a long
+    # split therefore runs as several processes, each taking every N-th question.
+    if args.shard:
+        selected = selected[args.shard[0] :: args.shard[1]]
     args.output.mkdir(parents=True, exist_ok=True)
     cache = RequestCache(args.cache or args.output / "requests.sqlite3", only=args.cache_only)
     config = json.loads(args.config.read_text(encoding="utf-8")) if args.config else None
@@ -321,12 +349,15 @@ def main() -> None:
         if args.dataset == "longmemeval"
         else None,
         "method": args.method,
+        "shard": f"{args.shard[0]}/{args.shard[1]}" if args.shard else None,
+        "retrieval_only": args.retrieval_only,
         "models": ports.config,
         "official_judge_prompts_sha256": digest(prompts) if prompts else None,
         "corpus_categories": category_counts(cases),
         "selected_categories": category_counts(selected),
         "questions": len(selected),
         "completed_questions": len(results),
+        "pipeline_states": dict(Counter((row.get("backend_state") or {}).get("status") for row in results)),
         "results": results,
         "incomplete_results": incomplete,
         "workers": args.workers,

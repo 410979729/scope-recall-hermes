@@ -284,6 +284,7 @@ def test_runner_records_and_passes_concurrency_and_settle_limits(tmp_path, monke
     report = json.loads((output / "results.json").read_text(encoding="utf-8"))
     assert report["workers"] == workers and report["settle_seconds"] == seconds
     assert seen == [{"wall_seconds": seconds}]
+    assert report["pipeline_states"] == {"complete": 1}
 
 
 def test_runner_starts_the_first_wave_apart_and_records_the_interval(tmp_path, monkeypatch):
@@ -301,6 +302,66 @@ def test_runner_starts_the_first_wave_apart_and_records_the_interval(tmp_path, m
     report = json.loads((output / "results.json").read_text(encoding="utf-8"))
     assert report["start_interval_seconds"] == 2.5 and report["completed_questions"] == 5
     assert sorted(slept) == [2.5, 5.0]
+
+
+def _fake_reports(tmp_path, monkeypatch):
+    """Run the fake split as asked and return each run's report, with the split file the runs wrote."""
+    import run
+
+    data = tmp_path / "data"
+    _data_manifest(data)
+    _stub_lab(monkeypatch)
+    monkeypatch.setattr(run, "longmemeval", lambda _: [replace(_question(), id=str(i)) for i in range(500)])
+    monkeypatch.setattr(run, "official_prompts", lambda _: {"default": "{}{}{}"})
+
+    def report(name, *options):
+        output = tmp_path / name
+        argv = ["run.py", "--data", str(data), "--output", str(output), "--fake", "--limit", "7", *options]
+        monkeypatch.setattr(sys, "argv", argv)
+        run.main()
+        return json.loads((output / "results.json").read_text(encoding="utf-8"))
+
+    return report, data
+
+
+@pytest.mark.parametrize("value", ["3/3", "1", "a/3", "0/0", "1/2/3"])
+def test_runner_rejects_a_shard_outside_its_count(tmp_path, monkeypatch, value):
+    import run
+
+    argv = ["run.py", "--data", str(tmp_path), "--output", str(tmp_path), "--fake", "--shard", value]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        run.main()
+
+
+def test_a_shard_runs_every_nth_question_of_the_selection(tmp_path, monkeypatch):
+    report, _ = _fake_reports(tmp_path, monkeypatch)
+    whole, shard = report("whole"), report("shard", "--shard", "1/3")
+    assert [row["id"] for row in shard["results"]] == [row["id"] for row in whole["results"]][1::3]
+    assert shard["shard"] == "1/3" and shard["questions"] == 2 and whole["shard"] is None
+
+
+def test_merged_shards_give_the_report_of_one_run(tmp_path, monkeypatch):
+    import merge_shards
+
+    report, data = _fake_reports(tmp_path, monkeypatch)
+    whole = report("whole")
+    shards = [report(f"shard-{k}", "--shard", f"{k}/3") for k in (2, 0, 1)]
+    order = json.loads((data / "longmemeval-splits.json").read_text(encoding="utf-8"))["dev"]
+    merged = merge_shards.merge(shards, order)
+    # Timings, worker counts and cache hits depend on how the questions were spread over processes.
+    varying = {"results", "shard", "shards", "workers", "total_seconds", "cache"}
+    assert {k: v for k, v in merged.items() if k not in varying} == {k: v for k, v in whole.items() if k not in varying}
+
+    def rows(report):
+        return [{k: v for k, v in row.items() if k not in {"total_seconds", "recall_ms"}} for row in report["results"]]
+
+    assert rows(merged) == rows(whole)
+    assert merged["shards"] == 3 and merged["workers"] == 3 * whole["workers"]
+    with pytest.raises(ValueError, match="shards_incomplete"):
+        merge_shards.merge(shards[:2], order)
+    with pytest.raises(ValueError, match="shards_differ:settle_seconds"):
+        merge_shards.merge([{**shards[0], "settle_seconds": 1.0}, *shards[1:]], order)
 
 
 def test_evaluator_text_window_keeps_each_minute_under_its_limit():
@@ -758,11 +819,10 @@ def test_cache_only_main_rejects_a_swallowed_miss(tmp_path, monkeypatch):
     assert not (output / "results.json").exists()
 
 
-@pytest.mark.parametrize("status", ["failed", "unavailable", "wall_limit", "round_limit"])
-def test_unfinished_questions_never_answer_or_judge(tmp_path, monkeypatch, status):
+def test_a_question_without_a_capability_is_never_answered_or_judged(tmp_path, monkeypatch):
     import run
 
-    _stub_lab(monkeypatch, status=status)
+    _stub_lab(monkeypatch, status="unavailable")
     ports = Ports(RequestCache(tmp_path / "requests.sqlite3"))
     row = run.run_case(
         _question(),
@@ -775,6 +835,25 @@ def test_unfinished_questions_never_answer_or_judge(tmp_path, monkeypatch, statu
     assert row["answer"] is None and row["judge_correct"] is None
     assert "answer" not in ports.cache.operations and "judge" not in ports.cache.operations
     assert row["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("status", ["failed", "wall_limit", "round_limit", "business_time_limit"])
+def test_a_question_is_answered_and_scored_however_its_queue_ended(tmp_path, monkeypatch, status):
+    import run
+
+    _stub_lab(monkeypatch, status=status)
+    ports = Ports(RequestCache(tmp_path / "requests.sqlite3"))
+    row = run.run_case(
+        _question(),
+        root=tmp_path,
+        ports=ports,
+        prompts={"default": "{}{}{}"},
+        method="scope-recall",
+        retrieval_only=False,
+    )
+    assert row["status"] == "complete" and row["backend_state"]["status"] == status
+    assert row["evaluation"]["status"] == "scored"
+    assert {"answer", "judge"} <= set(ports.cache.operations)
 
 
 def test_longmemeval_sorts_sessions_stably_without_reordering_turns(tmp_path):
@@ -819,6 +898,39 @@ def test_settle_checks_the_deadline_after_a_batch_and_passes_remaining_budget(mo
     result = store.settle(wall_seconds=1)
     assert result["status"] == "wall_limit"
     assert 0 < budgets[0] <= 1
+
+
+def test_settle_starts_the_next_pass_after_a_pass_runs_out_of_time():
+    from scope_recall.contracts import ContractError
+
+    passes = []
+
+    def batch(*args, **kwargs):
+        passes.append(kwargs["remaining_seconds"])
+        if len(passes) == 1:
+            raise ContractError("DEADLINE_EXCEEDED")
+        return SimpleNamespace(processed=1)
+
+    store = object.__new__(Lab)
+    store.maintain_vectors = lambda **kwargs: None
+    store.core, store.context = SimpleNamespace(drain_worker=batch), None
+    store.ports = SimpleNamespace(model=None, cache=SimpleNamespace(raise_if_missing=lambda: None))
+    store.embed = store.purge = None
+    store.state = lambda: {
+        "work": [("consolidate", "leased" if len(passes) < 2 else "done", None, 1)],
+        "candidates": [],
+        "phases": {},
+        "next_at": None,
+    }
+    assert store.settle(wall_seconds=60)["status"] == "complete"
+    assert len(passes) == 2
+
+    def refused(*args, **kwargs):
+        raise ContractError("STORAGE_UNAVAILABLE")
+
+    store.core = SimpleNamespace(drain_worker=refused)
+    with pytest.raises(ContractError, match="STORAGE_UNAVAILABLE"):
+        store.settle(wall_seconds=60)
 
 
 def test_lab_deadlines_use_real_time_while_business_dates_are_injected(tmp_path):
@@ -1043,7 +1155,7 @@ def test_incomplete_cli_report_excludes_answers_and_full_scores(tmp_path, monkey
 
     data, output = tmp_path / "data", tmp_path / "output"
     _data_manifest(data)
-    _stub_lab(monkeypatch, status="failed")
+    _stub_lab(monkeypatch, status="unavailable")
     monkeypatch.setattr(run, "longmemeval", lambda _: [replace(_question(), id=str(i)) for i in range(500)])
     monkeypatch.setattr(run, "official_prompts", lambda _: {"default": "{}{}{}"})
     monkeypatch.setattr(sys, "argv", ["run.py", "--data", str(data), "--output", str(output), "--fake", "--limit", "1"])
@@ -1260,6 +1372,7 @@ def test_a_failed_question_is_recorded_and_the_split_continues():
 
     row = isolated(broken, _question(), cache_only=False)
     assert row["status"] == "failed" and "TEST transport closed" in row["error"]
+    assert row["error_at"][-1].startswith("test_public_bench.py:") and row["error_at"][-1].endswith(" broken")
     with pytest.raises(RuntimeError):
         isolated(broken, _question(), cache_only=True)
 

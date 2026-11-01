@@ -12,7 +12,7 @@ import json
 import math
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import tzinfo
 from typing import Literal
 
@@ -337,9 +337,16 @@ class RetrievalResult:
     answerability_hint: Answerability = "unknown"
     candidate_count: int = 0
     admitted_count: int = 0
-    diagnostics: tuple[tuple[str, str], ...] = ()
+    diagnostics: tuple[tuple[str, str], ...] = field(default=(), compare=False)
     request_id: str = ""
     unmet_needs: tuple[str, ...] = ()
+    release_deadline: float | None = field(default=None, compare=False)
+
+    def release_context(self, context: SearchContext) -> SearchContext:
+        """Carry the effective total cutoff into every compiler entry point."""
+        if self.release_deadline is None:
+            return context
+        return replace(context, deadline=min(context.deadline, self.release_deadline))
 
 
 @dataclass(frozen=True)

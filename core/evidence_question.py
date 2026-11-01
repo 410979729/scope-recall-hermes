@@ -34,6 +34,7 @@ from typing import Iterable, Mapping
 
 from ..contracts import nfkc_letters_and_digits, proposal_value_in_evidence
 from .claims import AUTHORITY_ORIGINS, HUMAN_ONLY_KINDS, VALUE_FREE_KINDS
+from .evidence_support import positioned
 from .source_qualification import bound_literal
 
 #: Origins that count as somebody testifying rather than the system observing
@@ -126,7 +127,7 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
     needed = ("human_direct",) if kind in HUMAN_ONLY_KINDS else AUTHORITY_ORIGINS
     if not any(item.complete and item.origin in needed for item in items):
         return "no_authoritative_evidence"
-    if not proposal_value_in_evidence(payload, (item.content for item in items)):
+    if not positioned(payload) and not proposal_value_in_evidence(payload, (item.content for item in items)):
         return "value_not_in_evidence"
     return None
 
@@ -173,7 +174,7 @@ def rooted_verdict(proposal: Mapping, quoted: Iterable[tuple[EvidenceText, str]]
     value = str(proposal.get("value_text") or "")
     if kind in VALUE_FREE_KINDS or not value.strip():
         return True
-    return any(bound_literal(quote, value) for _text, quote in roots)
+    return positioned(proposal) or any(bound_literal(quote, value) for _text, quote in roots)
 
 
 # --- questions worth asking at most so often ---------------------------------

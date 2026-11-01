@@ -99,8 +99,6 @@
    "reportAssignmentType": 1
   },
   "core/mutate.py": {
-   "reportArgumentType": 2,
-   "reportAssignmentType": 1,
    "reportOptionalOperand": 2
   },
   "core/operations.py": {
@@ -117,8 +115,7 @@
    "reportOperatorIssue": 1
   },
   "core/recall_packet.py": {
-   "reportGeneralTypeIssues": 1,
-   "reportOptionalMemberAccess": 4
+   "reportGeneralTypeIssues": 1
   },
   "core/requalify.py": {
    "reportArgumentType": 3
@@ -466,8 +463,7 @@
    "UP017": 1
   },
   "core/consolidate.py": {
-   "B905": 2,
-   "E501": 11
+   "B905": 2
   },
   "core/consolidation_summary.py": {
    "E501": 1

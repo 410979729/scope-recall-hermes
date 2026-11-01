@@ -14,6 +14,24 @@ import unicodedata
 from collections import Counter
 
 
+def release_reserve_seconds(
+    candidates: int, *, remaining_seconds: float = math.inf, hydration_seconds: float = 0.0, hydrated_count: int = 0
+) -> float:
+    """Keep time for both fresh reads and packet construction, scaled by packet slots.
+
+    Warm synthetic SQLite packets of 1/6/16/30 objects took at most 6.2/7/9.4/13.4 ms
+    at p95. A 6 ms base plus 0.25 ms per object bounds that curve; thirty-two times
+    that cost covers the measured 104-131 ms under CPU contention, plus
+    selection, rendering and scheduler delays. This is a scheduling
+    allowance, not permission to deliver an object without the final fence.
+    Observed hydration can increase it, but every allocation retains at least
+    half the remaining time for retrieval.
+    """
+    prefix = min(1.0, candidates / max(1, hydrated_count))
+    estimate = (0.006 + 0.00025 * candidates) * 32 + 2 * hydration_seconds * prefix
+    return min(max(0.0, remaining_seconds) / 2, estimate)
+
+
 def canonical_render_json(value: object) -> str:
     """Serialize rendered recall data once, compactly and deterministically."""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
