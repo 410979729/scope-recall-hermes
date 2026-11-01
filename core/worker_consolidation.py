@@ -288,7 +288,9 @@ def decode_consolidation_result(
     items retain strict validation. Request metadata, candidate identity and source
     positions are filled by code. With
     ``rejected_evidence``, unlocatable claims are omitted and their indexed
-    fields collected there; without it a bad quote refuses the result.
+    fields collected there. Without it, unlocatable quotes in supplied sources remain
+    untrusted envelope data; live publication validates them before any write.
+    Candidate requests and unavailable source versions retain indexed refusals.
     Omitting sources retains envelope-only decoding; publication always
     validates evidence against live authorized source versions.
     """
@@ -318,10 +320,11 @@ def decode_consolidation_result(
                 if available:
                     align_claim_evidence(claim, available, index=index)
             except ContractError as exc:
-                if rejected_evidence is None:
+                if rejected_evidence is not None:
+                    rejected_evidence.append(exc.field)
+                    continue
+                if candidate is not None or not exc.field.endswith(".quote"):
                     raise
-                rejected_evidence.append(exc.field)
-                continue
             kept.append(claim)
             indices.append(index)
         value["claim_proposals"] = kept

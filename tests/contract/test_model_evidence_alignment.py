@@ -7,6 +7,7 @@ import pytest
 from scope_recall.contracts import ContractError, validate_evidence_positions
 from scope_recall.core.consolidate import consolidation_messages
 from scope_recall.core.consolidation_chunks import ChunkedSource, ConsolidationChunk
+from scope_recall.core.evidence_quote import align_claim_evidence
 from scope_recall.core.worker_consolidation import decode_consolidation_result
 from test_claims import capture, draft
 from test_worker import FakeConsolidation, app, consolidation_payload, worker_app
@@ -116,7 +117,7 @@ def test_nonexistent_quote_is_rejected_without_losing_a_good_batch_item(worker_a
         errors = conn.execute("SELECT stage,error_code,error_field FROM work_error_details").fetchall()
     assert ("claim", "DERIVATION_INVALID", "claim_proposals[0].evidence_spans[0].quote") in errors
     with pytest.raises(ContractError, match="claim_proposals\\[0\\].evidence_spans\\[0\\].quote"):
-        decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[bad])), (source,))
+        align_claim_evidence(bad, {(source.ref, source.revision): source}, index=0)
 
 
 def test_acceptance_failure_retries_with_the_field_and_same_budget(worker_app):
@@ -304,7 +305,17 @@ def test_normalized_intervals_never_slice_inside_a_character_expansion(app, raw,
     if matched is None:
         assert quote_interval(quote, raw) is None
         with pytest.raises(ContractError, match="evidence_spans\\[0\\].quote"):
-            decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[claim])), (source,))
+            align_claim_evidence(claim, {(source.ref, source.revision): source}, index=0)
+        rejected = []
+        result = decode_consolidation_result(
+            json.dumps(consolidation_payload(source, claims=[claim])), (source,), rejected_evidence=rejected
+        )
+        assert result["claim_proposals"] == []
+        assert rejected == ["claim_proposals[0].evidence_spans[0].quote"]
+        from test_claims import accept
+
+        with pytest.raises(ContractError, match="evidence_quote"):
+            accept(core, ctx, claim)
     else:
         interval = quote_interval(quote, raw)
         assert interval is not None and raw[slice(*interval)] == matched
@@ -318,3 +329,32 @@ def test_normalized_search_continues_after_an_incomplete_expansion():
     raw, quote = "TEST dose ½; TEST dose １", "TEST dose 1"
     start = raw.index("TEST", 1)
     assert quote_interval(quote, raw) == (start, len(raw))
+
+
+def test_unlocated_envelope_quote_stays_untrusted_until_publication(app):
+    from test_claims import accept
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project 配色蓝色。")
+    claim = draft(source)
+    claim["evidence_spans"][0]["quote"] = "TEST invented quote"
+    raw = json.dumps(consolidation_payload(source, claims=[claim]))
+    decoded = decode_consolidation_result(raw, (source,))
+    assert decoded["claim_proposals"][0]["evidence_spans"][0] == claim["evidence_spans"][0]
+    with pytest.raises(ContractError, match="evidence_quote"):
+        accept(core, ctx, decoded["claim_proposals"][0])
+    rejected = []
+    assert decode_consolidation_result(raw, (source,), rejected_evidence=rejected)["claim_proposals"] == []
+    assert rejected == ["claim_proposals[0].evidence_spans[0].quote"]
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM claim_versions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("field", ["source_ref", "source_revision"])
+def test_envelope_compatibility_never_adds_an_unavailable_source_version(app, field):
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project 配色蓝色。")
+    claim = draft(source)
+    claim["evidence_spans"][0][field] = "TEST-not-supplied" if field == "source_ref" else 2
+    with pytest.raises(ContractError, match=field):
+        decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[claim])), (source,))
