@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import replace
 from unittest.mock import patch
@@ -254,3 +255,133 @@ def test_one_ledger_reuses_and_releases_its_connection(tmp_path, monkeypatch):
     gc.collect()
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         connections[1].execute("SELECT 1")
+
+
+@pytest.mark.parametrize("mutation", ["UPDATE request_totals SET input_tokens=0", "DELETE FROM request_totals"])
+def test_same_process_summary_tampering_cannot_admit_excess_tokens(tmp_path, mutation):
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    ledger.policy = replace(ledger.policy, period="lifetime", total_input_cap=20)
+    ledger.reserve("model", b"TEST", reserved_input=20, reserved_output=0)
+    with closing(sqlite3.connect(ledger.path)) as db, db:
+        db.execute(mutation)
+    try:
+        with pytest.raises(ValueError, match="budget_exhausted_or_meter_breach"):
+            ledger.reserve("model", b"TEST", reserved_input=1, reserved_output=0)
+        with closing(sqlite3.connect(ledger.path)) as db:
+            assert budget.recompute_budget_totals(db)["input_tokens"] == 20
+            assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("operation", ["INSERT", "UPDATE", "DELETE"])
+def test_all_external_summary_writes_mark_the_projection_dirty(tmp_path, operation):
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    reserve(ledger, instant("2026-02-01T00:00:00"))
+    with closing(sqlite3.connect(ledger.path)) as db, db:
+        if operation == "INSERT":
+            db.execute("INSERT INTO request_totals VALUES (1,2,'TEST',0,0,0,0)")
+        elif operation == "UPDATE":
+            db.execute("UPDATE request_totals SET input_tokens=0")
+        else:
+            db.execute("DELETE FROM request_totals")
+        assert db.execute("SELECT dirty FROM budget_summary_state").fetchone()[0] == 1
+    ledger.close()
+
+
+@pytest.mark.parametrize("operation", ["reserve", "settle"])
+@pytest.mark.parametrize(
+    "phase", ["prepare_budget_totals", "_recomputed_summaries", "_replace_summaries", "_adjust_budget_totals"]
+)
+def test_reconciliation_deadline_rolls_back_details_summaries_and_state(tmp_path, monkeypatch, operation, phase):
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    request = reserve(ledger, instant("2026-02-01T00:00:00"))
+    with closing(sqlite3.connect(ledger.path)) as db, db:
+        db.execute("UPDATE requests SET reserved_input=reserved_input WHERE id=?", (request,))
+
+    def snapshot():
+        with closing(sqlite3.connect(ledger.path)) as db:
+            return tuple(
+                db.execute(query).fetchall()
+                for query in (
+                    "SELECT * FROM requests ORDER BY id",
+                    "SELECT * FROM request_totals ORDER BY 1,2,3",
+                    "SELECT * FROM budget_summary_state",
+                    "PRAGMA user_version",
+                )
+            )
+
+    before = snapshot()
+    original = getattr(budget, phase)
+
+    def slow(*args, **kwargs):
+        result = original(*args, **kwargs)
+        time.sleep(0.03)
+        return result
+
+    monkeypatch.setattr(budget, phase, slow)
+    started = time.perf_counter()
+    try:
+        with pytest.raises(ValueError, match="ledger_busy_timeout"):
+            if operation == "reserve":
+                ledger.reserve("model", b"TEST", reserved_input=1, reserved_output=0, timeout_seconds=0.005)
+            else:
+                ledger.finish_embedding(request, "http_200", {"promptTokenCount": 1}, timeout_seconds=0.005)
+        assert time.perf_counter() - started >= 0.03
+        assert snapshot() == before
+    finally:
+        ledger.close()
+
+
+def test_sqlite_busy_timeout_uses_remaining_time_after_reconciliation(tmp_path, monkeypatch):
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    reserve(ledger, instant("2026-02-01T00:00:00"))
+    statements = []
+    ledger._connect_rw().set_trace_callback(statements.append)
+    original = budget.prepare_budget_totals
+
+    def slow(*args, **kwargs):
+        result = original(*args, **kwargs)
+        time.sleep(0.03)
+        return result
+
+    monkeypatch.setattr(budget, "prepare_budget_totals", slow)
+    try:
+        ledger.reserve("model", b"TEST", reserved_input=1, reserved_output=0, timeout_seconds=0.3)
+        waits = [int(sql.split("=")[1]) for sql in statements if sql.upper().startswith("PRAGMA BUSY_TIMEOUT=")]
+        assert waits and max(waits) - waits[-1] >= 20, waits
+    finally:
+        ledger.close()
+
+
+def test_unavailable_historical_calendar_is_marked_and_rebuilt_on_restore(tmp_path, monkeypatch):
+    ledger = open_ledger(tmp_path / "ledger.sqlite3", zone="America/New_York")
+    when = instant("2024-03-01T02:00:00")
+    request = reserve(ledger, when)
+    old_window = budget.budget_window(ledger.policy, when)
+    current = budget.AuxiliaryBudgetLedger(ledger.path, replace(ledger.policy, period="lifetime", time_zone="UTC"))
+    original = budget._zone
+
+    def unavailable(name):
+        if name == "America/New_York":
+            raise budget.ZoneInfoNotFoundError(name)
+        return original(name)
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(budget, "_zone", unavailable)
+            reserve(current, when)
+            current.finish_embedding(request, "http_200", {"promptTokenCount": 4})
+            with closing(sqlite3.connect(ledger.path)) as db:
+                assert budget.budget_totals(db) == budget.recompute_budget_totals(db)
+                assert db.execute("SELECT zone FROM budget_summary_invalid_zones").fetchall() == [("America/New_York",)]
+                assert budget.budget_totals(db, old_window)["requests"] == 0
+            with pytest.raises(ValueError, match="budget_time_zone"):
+                reserve(ledger, when)
+        reserve(current, when)
+        assert_totals(ledger.path, [None, old_window])
+        with closing(sqlite3.connect(ledger.path)) as db:
+            assert db.execute("SELECT zone FROM budget_summary_invalid_zones").fetchall() == []
+    finally:
+        current.close()
+        ledger.close()

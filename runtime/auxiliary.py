@@ -74,15 +74,23 @@ class AuxiliaryRuntimeConfig:
 
 @dataclass(frozen=True)
 class AuxiliaryRuntime:
+    """Own the shared ledger and release it after the embedding transports close."""
+
     source_embedding: GeminiEmbeddingAdapter | None
     query_embedding: GeminiEmbeddingAdapter | None
     consolidation: OpenAIConsolidationAdapter | ResponsesConsolidationAdapter | CodexCliConsolidationAdapter | None
     capability_gaps: tuple[str, ...]
     ledger_path: Path | None
+    ledger: AuxiliaryBudgetLedger | None = None
 
     def close(self) -> None:
-        if self.query_embedding is not None:
-            self.query_embedding.close()
+        """Release owned connections even when transport shutdown fails."""
+        try:
+            if self.query_embedding is not None:
+                self.query_embedding.close()
+        finally:
+            if self.ledger is not None:
+                self.ledger.close()
 
 
 def load_formal_p18_budget_policy() -> BudgetPolicy | None:
@@ -335,6 +343,7 @@ def build_auxiliary_runtime(
         consolidation=consolidation_adapter,
         capability_gaps=tuple(gaps),
         ledger_path=config.ledger_path,
+        ledger=ledger,
     )
 
 

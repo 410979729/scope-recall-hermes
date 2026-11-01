@@ -8,7 +8,7 @@ import os
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -204,6 +204,7 @@ def initialize_auxiliary_budget_ledger(path: Path, policy: BudgetPolicy) -> None
         db.execute("BEGIN IMMEDIATE")
         db.execute(REQUESTS_TABLE)
         prepare_budget_totals(db, policy)
+        db.execute("UPDATE budget_summary_state SET dirty=0 WHERE id=1")
 
 
 def recompute_budget_totals(
@@ -231,7 +232,7 @@ def recompute_budget_totals(
 
 
 _TOTAL_FIELDS = ("requests", "charge_micro_usd", "input_tokens", "output_tokens")
-_SUMMARY_VERSION = 1
+_SUMMARY_VERSION = 2
 _VERIFIED_LEDGERS: set[tuple[int, str, int]] = set()
 _SUMMARY_COLUMNS = (
     "window_start_ns INTEGER, window_end_ns INTEGER, model_key TEXT, "
@@ -263,8 +264,29 @@ def _summary_windows(zones: set[str], started_ns: int | None) -> set[tuple[int, 
     return {(0, 0)} | ({_month_window(zone, started_ns) for zone in zones} if started_ns is not None else set())
 
 
-def _recomputed_summaries(db: sqlite3.Connection, zones: set[str]) -> dict[tuple[int, int, str], list[int]]:
-    """Build every registered calendar's projection in one pass, including outstanding reservations."""
+def _set_ledger_timeout(db: sqlite3.Connection, deadline: float | None) -> None:
+    """Check the caller's deadline and bound the next SQLite wait by its remaining time."""
+    remaining = _remaining_seconds(deadline)
+    if remaining is not None:
+        if remaining <= 0:
+            raise ValueError("ledger_busy_timeout")
+        db.execute(f"PRAGMA busy_timeout={max(0, int(min(5.0, remaining) * 1000))}")
+
+
+def _checked_rows(rows: Iterable, db: sqlite3.Connection, deadline: float | None) -> Iterator:
+    """Bound Python scans and bulk inserts without a deadline check on every historical row."""
+    for index, row in enumerate(rows):
+        if index % 256 == 0:
+            _set_ledger_timeout(db, deadline)
+        yield row
+    _set_ledger_timeout(db, deadline)
+
+
+def _recomputed_summaries(
+    db: sqlite3.Connection, zones: set[str], *, deadline: float | None = None
+) -> dict[tuple[int, int, str], list[int]]:
+    """Build registered available calendars in bounded batches, including outstanding reservations."""
+    _set_ledger_timeout(db, deadline)
     columns = {row[1] for row in db.execute("PRAGMA table_info(requests)")}
     model = "model" if "model" in columns else "NULL"
     started = "started_ns" if "started_ns" in columns else "NULL"
@@ -273,7 +295,7 @@ def _recomputed_summaries(db: sqlite3.Connection, zones: set[str]) -> dict[tuple
         "COALESCE(actual_input,reserved_input,0),COALESCE(actual_output,reserved_output,0) FROM requests"
     )
     totals = {(0, 0, ""): [0, 0, 0, 0]}
-    for name, timestamp, charge, inputs, outputs in rows:
+    for name, timestamp, charge, inputs, outputs in _checked_rows(rows, db, deadline):
         values = (1, charge, inputs, outputs)
         for window in _summary_windows(zones, timestamp):
             for model_key in ("", json.dumps(name)):
@@ -283,26 +305,17 @@ def _recomputed_summaries(db: sqlite3.Connection, zones: set[str]) -> dict[tuple
     return totals
 
 
-def _replace_summaries(db: sqlite3.Connection, zones: set[str], totals: dict, *, readonly: bool) -> None:
-    """Replace derived counters atomically; read-only inspectors use connection-local temporary tables."""
-    prefix = "TEMP " if readonly else ""
-    db.execute(f"CREATE {prefix}TABLE IF NOT EXISTS request_totals ({_SUMMARY_COLUMNS}) WITHOUT ROWID")
-    db.execute(f"CREATE {prefix}TABLE IF NOT EXISTS budget_summary_zones (zone TEXT PRIMARY KEY) WITHOUT ROWID")
-    db.execute("DELETE FROM request_totals")
-    db.executemany(
-        "INSERT INTO request_totals VALUES (?,?,?,?,?,?,?)", ((*key, *value) for key, value in totals.items())
-    )
-    db.executemany("INSERT OR IGNORE INTO budget_summary_zones VALUES (?)", ((zone,) for zone in zones))
-    if readonly:
-        return
+def _install_summary_tracking(db: sqlite3.Connection) -> None:
+    """Track old detail writers and direct summary edits; only a completed writer clears the marker."""
     db.execute("CREATE TABLE IF NOT EXISTS budget_summary_state (id INTEGER PRIMARY KEY CHECK(id=1), dirty INTEGER)")
-    db.execute("INSERT OR REPLACE INTO budget_summary_state VALUES (1,0)")
-    # An older writer changes details without maintaining counters. The marker also catches settlements and deletions.
-    for operation in ("INSERT", "UPDATE", "DELETE"):
-        db.execute(
-            f"CREATE TRIGGER IF NOT EXISTS budget_summary_{operation.lower()} AFTER {operation} ON requests "
-            "BEGIN UPDATE budget_summary_state SET dirty=1 WHERE id=1; END"
-        )
+    db.execute("INSERT OR REPLACE INTO budget_summary_state VALUES (1,1)")
+    for table, suffix in (("requests", ""), ("request_totals", "totals_")):
+        for operation in ("INSERT", "UPDATE", "DELETE"):
+            db.execute(
+                f"CREATE TRIGGER IF NOT EXISTS budget_summary_{suffix}{operation.lower()} "
+                f"AFTER {operation} ON {table} "
+                "BEGIN UPDATE budget_summary_state SET dirty=1 WHERE id=1; END"
+            )
     columns = {row[1] for row in db.execute("PRAGMA table_info(requests)")}
     if "status" in columns:
         db.execute("CREATE INDEX IF NOT EXISTS requests_meter_breach ON requests(id) WHERE status='meter_breach'")
@@ -310,41 +323,101 @@ def _replace_summaries(db: sqlite3.Connection, zones: set[str], totals: dict, *,
     db.execute(f"PRAGMA user_version={max(version, _SUMMARY_VERSION)}")
 
 
-def prepare_budget_totals(
-    db: sqlite3.Connection, policy: BudgetPolicy | None = None, *, readonly: bool = False
-) -> set[str]:
-    """Reconcile once per process/file, or after an old writer or a newly selected calendar.
+def _replace_summaries(
+    db: sqlite3.Connection,
+    zones: set[str],
+    totals: dict,
+    *,
+    readonly: bool,
+    invalid_zones: set[str],
+    deadline: float | None = None,
+) -> None:
+    """Replace derived counters atomically; inspectors rebuild in connection-local temporary tables."""
+    _set_ledger_timeout(db, deadline)
+    prefix = "TEMP " if readonly else ""
+    db.execute(f"CREATE {prefix}TABLE IF NOT EXISTS request_totals ({_SUMMARY_COLUMNS}) WITHOUT ROWID")
+    for table in ("budget_summary_zones", "budget_summary_invalid_zones"):
+        db.execute(f"CREATE {prefix}TABLE IF NOT EXISTS {table} (zone TEXT PRIMARY KEY) WITHOUT ROWID")
+    db.execute("DELETE FROM request_totals")
+    db.executemany(
+        "INSERT INTO request_totals VALUES (?,?,?,?,?,?,?)",
+        _checked_rows(((*key, *value) for key, value in totals.items()), db, deadline),
+    )
+    db.executemany("INSERT OR IGNORE INTO budget_summary_zones VALUES (?)", ((zone,) for zone in zones | invalid_zones))
+    db.execute("DELETE FROM budget_summary_invalid_zones")
+    db.executemany("INSERT INTO budget_summary_invalid_zones VALUES (?)", ((zone,) for zone in invalid_zones))
+    if not readonly:
+        _install_summary_tracking(db)
+    _set_ledger_timeout(db, deadline)
 
-    Writers call inside their immediate transaction. Inspectors call inside a read snapshot: a legacy or stale
-    projection is rebuilt in TEMP, so inspecting a ledger never changes its details, schema or permissions.
-    Registered zones are retained so late settlements keep all readers' calendar totals current.
-    """
-    filename = db.execute("PRAGMA database_list").fetchone()[2]
-    identity = (os.getpid(), filename, Path(filename).stat().st_ino)
+
+def _summary_state(db: sqlite3.Connection) -> tuple[set[str], set[str], bool]:
+    """Retain registered calendars when opening a ledger whose derived schema is incomplete."""
+    zones, invalid, ready = set(), set(), False
     try:
         zones = {row[0] for row in db.execute("SELECT zone FROM budget_summary_zones")}
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= _SUMMARY_VERSION:
+            invalid = {row[0] for row in db.execute("SELECT zone FROM budget_summary_invalid_zones")}
         dirty = db.execute("SELECT dirty FROM budget_summary_state WHERE id=1").fetchone()
-        ready = (
-            dirty is not None and not dirty[0] and db.execute("PRAGMA user_version").fetchone()[0] >= _SUMMARY_VERSION
-        )
+        ready = dirty is not None and not dirty[0] and version >= _SUMMARY_VERSION
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc):
             raise
-        zones, ready = set(), False
-    if policy is not None and getattr(policy, "period", "lifetime") == "monthly":
-        zone = policy.time_zone
-        ready = ready and zone in zones
-        zones.add(zone)
+    return zones, invalid, ready
+
+
+def _invalid_summary_zones(zones: set[str]) -> set[str]:
+    """An unavailable historical calendar cannot be incremented until its projection is rebuilt."""
+    invalid = set()
+    for zone in zones:
+        try:
+            _zone(zone)
+        except ZoneInfoNotFoundError:
+            invalid.add(zone)
+    return invalid
+
+
+def prepare_budget_totals(
+    db: sqlite3.Connection,
+    policy: BudgetPolicy | None = None,
+    *,
+    readonly: bool = False,
+    deadline: float | None = None,
+) -> set[str]:
+    """Reconcile once per process/file or after a dirty marker or calendar availability change.
+
+    Writers call inside their immediate transaction and share its deadline. Inspectors use a read snapshot and
+    rebuild stale projections in TEMP. Unavailable historical calendars remain registered but explicitly invalid;
+    restoring their zone data rebuilds them before use. The selected calendar must always be available.
+    """
+    _set_ledger_timeout(db, deadline)
+    filename = db.execute("PRAGMA database_list").fetchone()[2]
+    identity = (os.getpid(), filename, Path(filename).stat().st_ino)
+    zones, previous_invalid, ready = _summary_state(db)
+    selected = policy.time_zone if policy is not None and getattr(policy, "period", "lifetime") == "monthly" else None
+    if selected is not None:
+        ready = ready and selected in zones
+        zones.add(selected)
+    invalid = _invalid_summary_zones(zones)
+    if selected in invalid:
+        raise ValueError("budget_time_zone")
+    ready = ready and invalid == previous_invalid
+    zones -= invalid
     if ready and identity in _VERIFIED_LEDGERS:
         return zones
-    expected = _recomputed_summaries(db, zones)
+    expected = _recomputed_summaries(db, zones, deadline=deadline)
     actual = {}
     if ready:
-        actual = {tuple(row[:3]): list(row[3:]) for row in db.execute("SELECT * FROM request_totals")}
+        actual = {
+            tuple(row[:3]): list(row[3:])
+            for row in _checked_rows(db.execute("SELECT * FROM request_totals"), db, deadline)
+        }
     if ready and actual == expected:
         _VERIFIED_LEDGERS.add(identity)
     else:
-        _replace_summaries(db, zones, expected, readonly=readonly)
+        _replace_summaries(db, zones, expected, readonly=readonly, invalid_zones=invalid, deadline=deadline)
+    _set_ledger_timeout(db, deadline)
     return zones
 
 
@@ -361,7 +434,6 @@ def _adjust_budget_totals(db: sqlite3.Connection, zones: set[str], started_ns: i
             for model_key in ("", json.dumps(model))
         ),
     )
-    db.execute("UPDATE budget_summary_state SET dirty=0 WHERE id=1")
 
 
 def read_auxiliary_budget_status(path: Path, *, policy: BudgetPolicy | None = None, now_ns: int | None = None) -> dict:
@@ -459,7 +531,7 @@ class AuxiliaryBudgetLedger:
                 # reservations starting together, so the same bounded deadline
                 # covers connection and pager-level waits.  mode=rw never
                 # creates a ledger.
-                timeout = 5.0 if remaining is None else max(0.001, min(5.0, remaining))
+                timeout = 5.0 if remaining is None else max(0, min(5.0, remaining))
                 if self._connection is None:
                     # The process-local write lock serializes this connection across calling threads.
                     self._connection = sqlite3.connect(
@@ -500,7 +572,11 @@ class AuxiliaryBudgetLedger:
         try:
             with self._connect_rw(deadline=deadline) as db:
                 db.execute("BEGIN IMMEDIATE")
+                _set_ledger_timeout(db, deadline)
                 yield db
+                _set_ledger_timeout(db, deadline)
+                db.execute("UPDATE budget_summary_state SET dirty=0 WHERE id=1")
+                _set_ledger_timeout(db, deadline)
         finally:
             self._write_lock.release()
 
@@ -520,7 +596,8 @@ class AuxiliaryBudgetLedger:
         _await_ledger_lock(deadline)
         with self._write_transaction(deadline=deadline) as db:
             db.row_factory = sqlite3.Row
-            zones = prepare_budget_totals(db, self.policy)
+            zones = prepare_budget_totals(db, self.policy, deadline=deadline)
+            _set_ledger_timeout(db, deadline)
             started_ns = time.time_ns()
             self._assert_headroom(db, model, amount, reserved_input, reserved_output, started_ns)
             request_id = db.execute(
@@ -653,7 +730,8 @@ class AuxiliaryBudgetLedger:
             _await_ledger_lock(deadline)
             try:
                 with self._write_transaction(deadline=deadline) as db:
-                    zones = prepare_budget_totals(db, self.policy)
+                    zones = prepare_budget_totals(db, self.policy, deadline=deadline)
+                    _set_ledger_timeout(db, deadline)
                     row = db.execute(
                         "SELECT model,status,reserved_input,reserved_output,started_ns,charge_micro_usd,"
                         "COALESCE(actual_input,reserved_input,0),COALESCE(actual_output,reserved_output,0) "
@@ -665,7 +743,6 @@ class AuxiliaryBudgetLedger:
                     pricing = self.policy.pricing[row[0]]
                     if counts is None:
                         db.execute("UPDATE requests SET status=? WHERE id=?", (retained, request_id))
-                        db.execute("UPDATE budget_summary_state SET dirty=0 WHERE id=1")
                         return retained
                     prompt, completion = counts
                     final = "meter_breach" if prompt > row[2] or completion > row[3] else status
@@ -683,7 +760,6 @@ class AuxiliaryBudgetLedger:
                         _record_observed(db, request_id, "cached_input", cached_input)
                     if unreported_output is not None:
                         _record_observed(db, request_id, "unreported_output", unreported_output)
-                    db.execute("UPDATE budget_summary_state SET dirty=0 WHERE id=1")
                     return final
             except sqlite3.OperationalError as exc:
                 if not _is_locked(exc):

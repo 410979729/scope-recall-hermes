@@ -904,3 +904,36 @@ def test_parent_deadline_keeps_worker_read_phase(persistent_transport):
         _persistent_post(transport, b"slow", timeout=0.1)
     assert getattr(failure.value, "phase", None) == "read"
     assert failure.value.elapsed_ms >= 0
+
+
+def test_frozen_ledger_clock_has_a_physical_deadline_for_persistent_busy(tmp_path, monkeypatch, metered_ledger):
+    import sqlite3
+
+    from scope_recall.runtime import model_budget
+    from test_runtime_auxiliary import _runtime_config
+
+    config, path, policy = _runtime_config(tmp_path)
+    ledger = model_budget.AuxiliaryBudgetLedger(path, policy)
+    request = ledger.reserve(config.embedding.space()["model"], b"TEST", reserved_input=10, reserved_output=0)
+    started = time.perf_counter()
+
+    def busy(**kwargs):
+        if time.perf_counter() - started > 0.3:
+            pytest.fail("the physical ledger deadline did not stop persistent SQLite busy errors")
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ledger, "_connect_rw", busy)
+    try:
+        try:
+            status = ledger.finish_embedding(request, "http_200", {"promptTokenCount": 1}, timeout_seconds=0.02)
+        except ValueError as exc:
+            assert str(exc) == "ledger_busy_timeout"
+        else:
+            assert status == "http_200_usage_unknown_reserved_charge_retained"
+        with closing(sqlite3.connect(path)) as db:
+            assert (
+                db.execute("SELECT status FROM requests WHERE id=?", (request,)).fetchone()[0]
+                == "reserved_before_network"
+            )
+    finally:
+        ledger.close()
