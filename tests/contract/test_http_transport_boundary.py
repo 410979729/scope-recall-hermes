@@ -767,8 +767,11 @@ def test_concurrent_query_embeddings_use_bounded_independent_connections(tmp_pat
         runtime.close()
 
 
-def test_ledger_clock_excludes_physical_transactions_but_preserves_their_rows(tmp_path, monkeypatch, metered_ledger):
-    """Slow ledger connections consume no semantic budget; reservations and settlements remain durable."""
+@pytest.mark.parametrize("slow_phase", ["connect", "queue", "sqlite_wait", "execute", "commit"])
+def test_ledger_clock_excludes_physical_transactions_but_preserves_their_rows(
+    tmp_path, monkeypatch, metered_ledger, slow_phase
+):
+    """Physical ledger work consumes no semantic budget; reservations and settlements remain durable."""
     import sqlite3
 
     from scope_recall.runtime import model_budget
@@ -783,21 +786,69 @@ def test_ledger_clock_excludes_physical_transactions_but_preserves_their_rows(tm
     monkeypatch.setattr(store_clock, "_REAL_MONOTONIC", lambda: physical[0])
     connect = sqlite3.connect
 
+    def delay(phase):
+        if phase == slow_phase:
+            physical[0] += 10
+
+    class SlowConnection(sqlite3.Connection):
+        """Delay real SQLite work while retaining its reads, writes and commits."""
+
+        def execute(self, statement, *args, **kwargs):
+            delay("sqlite_wait" if statement.startswith("BEGIN") else "execute")
+            return super().execute(statement, *args, **kwargs)
+
+        def __exit__(self, *exc):
+            delay("commit")
+            return super().__exit__(*exc)
+
+    class SlowLock:
+        """Delay acquisition while still using the ledger's actual write lock."""
+
+        def __init__(self, lock):
+            self.lock = lock
+
+        def acquire(self, *args, **kwargs):
+            delay("queue")
+            return self.lock.acquire(*args, **kwargs)
+
+        def release(self):
+            self.lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self.release()
+
     def slow_connect(*args, **kwargs):
-        physical[0] += 10
+        delay("connect")
+        kwargs["factory"] = SlowConnection
         return connect(*args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", slow_connect)
+    monkeypatch.setattr(ledger, "_write_lock", SlowLock(ledger._write_lock))
     model = config.embedding.space()["model"]
     started = clock()
-    assert ledger.provider_hold_until(model) is None
-    request = ledger.reserve(model, b"TEST", reserved_input=10, reserved_output=0, timeout_seconds=1)
-    assert ledger.finish_embedding(request, "http_200", {"promptTokenCount": 1}, timeout_seconds=1) == "http_200"
-    assert clock() == started and physical[0] == 130
-    physical[0] += 0.25
-    assert clock() - started == 0.25, "non-ledger work retains its real cost"
-    with closing(connect(path)) as db:
-        assert db.execute("SELECT status,actual_input FROM requests").fetchall() == [("http_200", 1)]
+    physical_started = physical[0]
+    try:
+        assert ledger.provider_hold_until(model) is None
+        assert clock() == started
+        for tokens in (1, 2):
+            request = ledger.reserve(model, b"TEST", reserved_input=10, reserved_output=0, timeout_seconds=1)
+            assert clock() == started
+            result = ledger.finish_embedding(request, "http_200", {"promptTokenCount": tokens}, timeout_seconds=1)
+            assert result == "http_200" and clock() == started
+        assert physical[0] > physical_started, "the selected ledger phase must incur physical time"
+        physical[0] += 0.25
+        assert clock() - started == 0.25, "non-ledger work retains its real cost"
+        with closing(connect(path)) as db:
+            assert db.execute("SELECT status,actual_input FROM requests ORDER BY id").fetchall() == [
+                ("http_200", 1),
+                ("http_200", 2),
+            ]
+    finally:
+        ledger.close()
 
 
 @pytest.mark.parametrize("phase", ["connect", "read"])

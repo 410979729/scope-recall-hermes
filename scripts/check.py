@@ -170,6 +170,7 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_auxiliary_budget_totals.py",
         "tests/contract/test_embed_fallback_deadline.py",
         "tests/contract/test_failure_policy_semantics.py",
         "tests/contract/test_queue_recovery_actions.py",
