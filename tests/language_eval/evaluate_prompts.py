@@ -49,9 +49,8 @@ def messages(name, example, clause):
 
 def valid_result(name, raw, expected, inputs):
     """Check schema and expected disposition without making a second model judgement."""
-    value = json.loads(raw)
     if name in {"support", "merge"}:
-        return value == expected
+        return json.loads(raw) == expected
     sources = tuple(
         SimpleNamespace(
             ref=item["source_ref"],

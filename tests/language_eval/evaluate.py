@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 
+from acceptance import summarize, validation_failed  # noqa: E402
 from scope_recall.contracts import TrustedSourcePrincipal  # noqa: E402
 from scope_recall.core import CoreConfig, MemoryCore  # noqa: E402
 from scope_recall.core.worker import WorkerConfig, drain_worker  # noqa: E402
@@ -186,6 +187,16 @@ def run_case(case, directory, port):
             .fetchall()
         )
         states = [dict(state=r[0], reason=r[1], at=r[2], current=r[3] == r[4]) for r in rows]
+        discarded = 0
+        if capabilities()["proposal_discards"] == "applicable":
+            discarded = (
+                tx._check()
+                .execute(
+                    "SELECT count(*) FROM work_error_details WHERE stage IN ('claim','summary') "
+                    "AND error_code IN ('DERIVATION_INVALID','INPUT_INVALID')"
+                )
+                .fetchone()[0]
+            )
     candidates = [r for r in states if r["current"] and r["state"] in {"proposed", "disputed"}]
     active = [r for r in states if r["state"] == "active"]
     delays = [
@@ -200,9 +211,8 @@ def run_case(case, directory, port):
         active=bool(active),
         promoted_within_1200=bool(delays) and min(delays) <= 1200,
         delay_seconds=min(delays) if delays else None,
-        validation_failed=any(
-            r["error"] in {"derivation_invalid", "DERIVATION_INVALID", "INPUT_INVALID"} for r in receipts
-        ),
+        validation_failed=validation_failed(receipts, discarded),
+        discarded_proposals=discarded,
         states=states,
         receipts=receipts,
         candidate_count=len(candidates),
@@ -210,24 +220,6 @@ def run_case(case, directory, port):
         model_calls=dict(port.calls),
         prompt_sha256={stage: sorted(values) for stage, values in port.prompts.items()},
         operational_errors=sorted(set(port.errors)),
-    )
-
-
-def summarize(rows):
-    """Count validation failures, false acceptance, timely promotion and every candidate reason."""
-    positives = [r for r in rows if r["gold_active"]]
-    negatives = [r for r in rows if not r["gold_active"]]
-    candidates = sum(r.get("candidate_count", 0) for r in rows)
-    reasoned = sum(r.get("candidates_with_reasons", 0) for r in rows)
-    return dict(
-        cases=len(rows),
-        validation_failure_rate=sum(r["validation_failed"] for r in rows) / len(rows),
-        false_acceptance_rate=sum(r["active"] for r in negatives) / max(1, len(negatives)),
-        owner_promotion_rate=sum(r["promoted_within_1200"] for r in positives) / max(1, len(positives)),
-        candidate_reasons=dict(Counter(s["reason"] for r in rows for s in r["states"] if s["state"] == "proposed")),
-        candidate_count=candidates,
-        candidates_with_reasons=reasoned,
-        candidate_reason_coverage=reasoned / candidates if candidates else 1.0,
     )
 
 
@@ -325,6 +317,7 @@ def main():
         max_calls_per_case=args.max_calls_per_case,
         concurrency=args.concurrency,
         judgement="gold_active, any_active, first_active_within_1200, final_candidate_reasons",
+        validation_accounting="work_receipts_or_native_proposal_discards",
     )
     prompts = {}
     for variant in variants:
@@ -335,7 +328,7 @@ def main():
     if base_port is not None:
         base_port.close()
     report = dict(
-        schema="language-evaluation/2",
+        schema="language-evaluation/3",
         mode="fake" if args.fake else "live",
         subject=subject,
         protocol=protocol,

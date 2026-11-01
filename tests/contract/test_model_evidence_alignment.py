@@ -279,3 +279,42 @@ def test_cross_field_repairs_are_indexed_without_changing_public_errors(app, par
     with pytest.raises(ContractError) as model:
         decode_consolidation_result(json.dumps(value), (source,))
     assert model.value.field == indexed
+
+
+@pytest.mark.parametrize(
+    ("raw", "quote", "matched"),
+    [
+        ("TEST dose ½", "TEST dose 1⁄2", "TEST dose ½"),
+        ("TEST dose ½", "TEST dose 1", None),
+        ("½ TEST dose", "2 TEST dose", None),
+        ("TEST word ﬃ", "TEST word ffi", "TEST word ﬃ"),
+        ("TEST word ﬃ", "TEST word ff", None),
+        ("ﬃ TEST word", "fi TEST word", None),
+        ("TEST word ＡＢＣ", "TEST word ABC", "TEST word ＡＢＣ"),
+        ("TEST word ＡＢＣ", "TEST word AB", "TEST word ＡＢ"),
+    ],
+)
+def test_normalized_intervals_never_slice_inside_a_character_expansion(app, raw, quote, matched):
+    from scope_recall.core.evidence_quote import quote_interval
+
+    core, ctx = app
+    source = capture(core, ctx, raw)
+    claim = draft(source)
+    claim["evidence_spans"][0]["quote"] = quote
+    if matched is None:
+        assert quote_interval(quote, raw) is None
+        with pytest.raises(ContractError, match="evidence_spans\\[0\\].quote"):
+            decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[claim])), (source,))
+    else:
+        interval = quote_interval(quote, raw)
+        assert interval is not None and raw[slice(*interval)] == matched
+        result = decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[claim])), (source,))
+        assert result["claim_proposals"][0]["evidence_spans"][0]["quote"] == matched
+
+
+def test_normalized_search_continues_after_an_incomplete_expansion():
+    from scope_recall.core.evidence_quote import quote_interval
+
+    raw, quote = "TEST dose ½; TEST dose １", "TEST dose 1"
+    start = raw.index("TEST", 1)
+    assert quote_interval(quote, raw) == (start, len(raw))

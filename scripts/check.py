@@ -189,6 +189,7 @@ SUITES = {
         "tests/contract/test_evidence_governance.py",
         "tests/contract/test_candidate_question_identity.py",
         "tests/contract/test_prompt_semantics.py",
+        "tests/contract/test_language_evaluation.py",
         "tests/contract/test_model_request_roles.py",
         "tests/contract/test_protocol.py",
         "tests/contract/test_synthetic_inputs.py",

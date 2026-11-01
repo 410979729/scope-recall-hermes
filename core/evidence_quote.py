@@ -173,9 +173,15 @@ def quote_interval(quote: str, content: str) -> tuple[int, int] | None:
     needle, _ = _normalized_origin(quote)
     needle = needle.strip()
     start = normalized.find(needle) if needle else -1
-    if start < 0:
-        return None
-    return origins[start][0], origins[start + len(needle) - 1][1]
+    while start >= 0:
+        interval = origins[start][0], origins[start + len(needle) - 1][1]
+        # A normalized hit may cut through one character's expansion. Only the
+        # complete mapped substring may establish equivalence with the quote.
+        restored, _ = _normalized_origin(content[slice(*interval)])
+        if restored == needle:
+            return interval
+        start = normalized.find(needle, start + 1)
+    return None
 
 
 def align_claim_evidence(claim: dict, sources: dict, *, index: int) -> None:

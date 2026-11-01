@@ -21,7 +21,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.candidate_lifecycle import CandidateSnapshot
 from scope_recall.core.claims import Qualification
 from scope_recall.core.consolidate import candidate_evaluation_messages
-from subject import ChatPort, capabilities, one_system, package_identity
+from subject import ChatPort, capabilities, digest, one_system, package_identity
 from v11_support import context, source_event
 
 
@@ -208,7 +208,8 @@ class EvaluationTests(unittest.TestCase):
                 validation_failed=False,
                 candidate_count=0,
                 candidates_with_reasons=0,
-                states=[],
+                states=[dict(state="active", reason="supported", at="2026-09-06T12:00:10Z", current=True)],
+                delay_seconds=10.0,
             ),
             dict(
                 id="negative",
@@ -218,14 +219,24 @@ class EvaluationTests(unittest.TestCase):
                 validation_failed=False,
                 candidate_count=1,
                 candidates_with_reasons=1,
-                states=[dict(state="proposed", reason="unsupported")],
+                states=[dict(state="proposed", reason="unsupported", at="2026-09-06T12:00:10Z", current=True)],
+                delay_seconds=None,
             ),
         ]
+        for row in rows:
+            row.update(
+                discarded_proposals=0,
+                receipts=[],
+                model_calls={},
+                prompt_sha256={},
+                operational_errors=[],
+                requests_with_clause_removed=0,
+            )
         report = dict(
             schema="TEST",
             mode="fake",
             corpus_sha256="same",
-            case_ids_sha256="same",
+            case_ids_sha256=digest([row["id"] for row in rows]),
             model_config_sha256="same",
             protocol_sha256="same",
             evaluator_sha256="same",
@@ -236,6 +247,9 @@ class EvaluationTests(unittest.TestCase):
         )
         old = copy.deepcopy(report)
         old["variants"][0]["rows"][0]["validation_failed"] = True
+        old["variants"][0]["rows"][0]["receipts"] = [
+            dict(type="consolidate", disposition="retry", error="INPUT_INVALID")
+        ]
         old["variants"][0]["metrics"] = summarize(old["variants"][0]["rows"])
         self.assertTrue(compare(old, report)["accepted"])
         for key in ("corpus_sha256", "case_ids_sha256", "model_config_sha256", "protocol_sha256", "evaluator_sha256"):
@@ -249,6 +263,12 @@ class EvaluationTests(unittest.TestCase):
             compare(old, changed)
         changed = copy.deepcopy(report)
         changed["variants"][0]["metrics"]["candidate_reason_coverage"] = 0
+        with self.assertRaises(ValueError):
+            compare(old, changed)
+        changed = copy.deepcopy(report)
+        changed["variants"][0]["rows"][1]["states"][0]["reason"] = ""
+        changed["variants"][0]["rows"][1]["candidates_with_reasons"] = 0
+        changed["variants"][0]["metrics"] = summarize(changed["variants"][0]["rows"])
         self.assertFalse(compare(old, changed)["acceptance"]["all_candidates_have_reasons"])
         self.assertFalse(compare(report, report)["acceptance"]["validation_improves"])
 
