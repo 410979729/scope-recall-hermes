@@ -50,7 +50,7 @@ def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1
         eligible = candidate_map.get(id(proposal), candidates if not candidate_map else ())
         fingerprint = support_fingerprint(proposal, contents)
         literal = qualify(proposal, roots, _legacy=True).state == "active"
-        if literal and not eligible:
+        if literal and (not eligible or judge is None):
             verdicts.append(SupportVerdict(fingerprint, "supported"))
             continue
         if judge is None or failure_code is not None or time.monotonic() >= deadline:

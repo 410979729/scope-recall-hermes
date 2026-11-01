@@ -290,9 +290,5 @@ def test_positioned_chunk_is_bound_to_its_current_page(worker_app, earlier_page)
         if result.retried or result.failed or row(core, source)[0] == "done":
             break
     assert windows and windows[-1].start > len(text)
-    if earlier_page:
-        assert result.retried == 1
-        assert not claims(core)
-    else:
-        assert row(core, source)[0] == "done"
-        assert claims(core)[0][0]["evidence_spans"][0]["start"] == source.event["content"].rfind(text)
+    assert result.retried == 0 and row(core, source)[0] == "done"
+    assert claims(core)[0][0]["evidence_spans"][0]["start"] == source.event["content"].rfind(text)

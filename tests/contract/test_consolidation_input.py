@@ -2,23 +2,14 @@
 
 import json
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
 from scope_recall.contracts import ContractError, TrustedSourcePrincipal, validate_payload
 from scope_recall.core.consolidate import CONSOLIDATION_INPUT_BUDGET, consolidation_messages
+from scope_recall.core.worker_consolidation import decode_consolidation_result
 from test_claims import app as app
 from test_claims import capture
-
-
-@pytest.fixture(autouse=True)
-def local_contract_resource(monkeypatch):
-    # The isolated checker loads the worktree directly; pin the resource root
-    # in this test so the behavior under test is not masked by package metadata.
-    import scope_recall.core.consolidate as consolidate
-
-    monkeypatch.setattr(consolidate, "files", lambda _package: Path(__file__).parents[2])
 
 
 def test_consolidation_preserves_authorized_origin_role_and_attested_import(app):
@@ -114,7 +105,7 @@ def test_condition_contract_describes_literal_applicability_in_the_prompt(app):
     for phrase in ("说话者处境", "不跨句", "不丢任何一个条件", "不限定值是否成立的不是条件"):
         assert phrase in system
     assert sum(len(message["content"].encode("utf-8")) for message in messages) <= CONSOLIDATION_INPUT_BUDGET
-    validate_payload("consolidation_result", json.loads(messages[1]["content"])["empty_result"])
+    decode_consolidation_result(json.dumps(json.loads(messages[1]["content"])["empty_result"]), (source,))
 
 
 def test_source_instructions_remain_user_data(app):
@@ -133,8 +124,11 @@ def test_empty_result_uses_live_batch_refs_and_accepts_without_invented_state(ap
     messages = consolidation_messages((first, second))
     body = json.loads(messages[1]["content"])
     fallback = body["empty_result"]
-    assert fallback["source_refs"] == [f"{first.ref}@1", f"{second.ref}@2"]
+    assert "source_refs" not in fallback
     assert all(fallback[name] == [] for name in ("claim_proposals", "resume_proposals", "reference_proposals"))
+    assert "protocol_version" not in fallback
+    fallback = decode_consolidation_result(json.dumps(fallback), (first, second))
+    assert fallback["source_refs"] == [f"{first.ref}@1", f"{second.ref}@2"]
     validate_payload("consolidation_result", fallback)
     before = core.status(ctx).memory_epoch
     receipt = core.records.accept_consolidation(ctx, fallback, scope_id="TEST-scope")
@@ -148,7 +142,12 @@ def test_empty_result_does_not_relax_required_fields_or_reference_validation(app
     source = capture(core, ctx, "TEST 无提议时仍需要合法来源引用。")
     fallback = json.loads(consolidation_messages((source,))[1]["content"])["empty_result"]
     missing = {key: value for key, value in fallback.items() if key != "claim_proposals"}
+    decoded = decode_consolidation_result(json.dumps(missing), (source,))
+    assert decoded["claim_proposals"] == []
     with pytest.raises(ContractError):
-        validate_payload("consolidation_result", missing)
+        core.records.accept_consolidation(
+            ctx, {key: value for key, value in decoded.items() if key != "claim_proposals"}, scope_id="TEST-scope"
+        )
+    fallback = decode_consolidation_result(json.dumps(fallback), (source,))
     with pytest.raises(ContractError):
         core.records.accept_consolidation(ctx, {**fallback, "source_refs": ["ref@revision"]}, scope_id="TEST-scope")

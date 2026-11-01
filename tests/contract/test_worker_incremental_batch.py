@@ -338,8 +338,8 @@ def test_correction_to_the_same_slot_during_extraction_discards_result(worker_ap
     assert [version.payload["value_text"] for version in core.claim_history(ctx, item.ref)] == ["H100", "H200"]
 
 
-def test_rejected_result_with_a_claim_written_during_extraction_stays_a_conflict(worker_app):
-    """A result rejected by acceptance while a claim was written meanwhile keeps today's retry code."""
+def test_discarding_a_bad_proposal_keeps_a_concurrent_correction(worker_app):
+    """A discarded claim cannot overwrite a concurrent correction or retry an accepted partial result."""
     core, ctx, _clock = worker_app
     item, _first = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     later = capture(core, ctx, "TEST-project 配色 H150。", when="2026-09-02T12:00:00Z")
@@ -356,8 +356,17 @@ def test_rejected_result_with_a_claim_written_during_extraction_stays_a_conflict
             return json.dumps(consolidation_payload(*sources, claims=[invalid]), ensure_ascii=False)
 
     result = core.drain_worker(ctx, consolidation=CorrectedDuringInvalidModel(), max_items=1, remaining_seconds=30)
-    assert result.retried == 1 and result.completed == 0
-    assert _consolidate_row(core, later.ref) == ("pending", "memory_epoch_changed")
+    assert result.retried == 0 and result.completed == 1
+    assert _consolidate_row(core, later.ref) == ("done", None)
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT o.disposition FROM consolidation_outcomes o JOIN work_items w "
+                "ON w.work_id=o.work_id WHERE w.subject_ref=?",
+                (later.ref,),
+            ).fetchone()[0]
+            == "partial"
+        )
     assert [version.payload["value_text"] for version in core.claim_history(ctx, item.ref)] == ["H100", "H200"]
 
 
@@ -658,28 +667,24 @@ def test_stale_lease_cannot_complete_covered_sibling_work(worker_app):
     assert row[0] == "done" and row[1] == second.lease_token
 
 
-def test_model_subset_only_acknowledges_declared_source_revisions(worker_app):
+def test_model_source_subset_acknowledges_the_actual_input_batch(worker_app):
     core, ctx, _ = worker_app
     sources = [capture(core, ctx, f"TEST subset {i}", key=f"subset/{i}") for i in range(3)]
     _mark_embed_done(core)
     model = FakeConsolidation(lambda batch, episode_ref=None: consolidation_payload(batch[0]))
     core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=30)
-    assert _consolidate_states(core) == [(s.ref, "done" if i == 0 else "pending") for i, s in enumerate(sources)]
+    assert _consolidate_states(core) == [(s.ref, "done") for s in sources]
+    assert model.calls == 1
 
 
-def test_model_omitting_leased_subject_cannot_complete_any_batch_work(worker_app):
-    core, ctx, clock = worker_app
+def test_model_source_copy_omitting_the_subject_does_not_cost_a_retry(worker_app):
+    core, ctx, _ = worker_app
     sources = [capture(core, ctx, f"TEST omitted {i}", key=f"omitted/{i}") for i in range(3)]
     _mark_embed_done(core)
     model = FakeConsolidation(lambda batch, episode_ref=None: consolidation_payload(batch[1]))
-    # Bounded retry: an omission is never accepted for the omitted subject,
-    # it just fails later (other items may legitimately complete when the
-    # payload happens to cover their own subjects).
-    for attempt in range(1, 7):
-        clock.advance(seconds=65.0, iso=f"2026-09-06T12:{attempt:02d}:30Z")
-        core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=30)
-    states = dict(_consolidate_states(core))
-    assert states[sources[0].ref] == "failed"
+    receipt = core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=30)
+    assert model.calls == 1 and receipt.completed == 1 and receipt.retried == receipt.failed == 0
+    assert _consolidate_states(core) == [(s.ref, "done") for s in sources]
 
 
 @pytest.mark.parametrize("transition", ["leased", "failed", "requeued", "project", "branch", "scope"])

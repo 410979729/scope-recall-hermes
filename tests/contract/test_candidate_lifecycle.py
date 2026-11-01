@@ -1212,7 +1212,7 @@ def test_a_verdict_citing_a_source_it_was_not_given_is_still_refused(app):
             row[0]
             for row in conn.execute("SELECT error_field FROM work_error_details WHERE stage='candidate_evaluation'")
         }
-    assert fields == {"evidence_undeclared_source"}, fields
+    assert fields == {"claim_proposals[0].evidence_spans[0].source_ref"}, fields
 
 
 def test_evidence_that_cannot_pose_a_new_question_does_not_wake_a_candidate(app):
