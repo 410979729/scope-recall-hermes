@@ -367,6 +367,20 @@ def _candidate_queue_checks(report: DoctorReport, tx):
     return tx.candidates.summary(include_all_projects=True)
 
 
+def _entity_resolution_check(report, tx, binding):
+    """Report content-free background entity progress alongside the ordinary work queue."""
+    from scope_recall.core.entity_resolution import entity_progress
+
+    _capture_queue_checks(report, binding, tx._check())
+    progress = entity_progress(tx, include_all_projects=True)
+    record_check(
+        report,
+        "entity_resolution",
+        "waiting" if progress["pending"] else "ok",
+        f"{progress['completed']}/{progress['total']} statements checked; {progress['pending']} pending",
+    )
+
+
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
     """Copy the store's queue, source and candidate status onto the report.
 
@@ -390,7 +404,7 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            _capture_queue_checks(report, binding, conn)
+            _entity_resolution_check(report, transaction, binding)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(

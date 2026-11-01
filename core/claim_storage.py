@@ -222,7 +222,16 @@ class Claims:
         return self.versions(row["claim_id"])
 
     def merge_lookup(
-        self, scope_id, *, subjects=(), predicate=None, kind=None, conditions=None, alias_name=None, instant=None
+        self,
+        scope_id,
+        *,
+        subjects=(),
+        predicate=None,
+        kind=None,
+        conditions=None,
+        alias_name=None,
+        instant=None,
+        entity=None,
     ) -> tuple[str, ...]:
         """Find bounded normalized slot/alias matches after filtering the complete authorized scope.
 
@@ -231,6 +240,8 @@ class Claims:
         """
         from .fact_identity import normalize_fact_component
 
+        if entity is not None:
+            return self._entity_lookup(scope_id, *entity)
         self._tx._scope(scope_id)
         conn, ctx = self._tx._check(), self._tx.context
 
@@ -284,6 +295,79 @@ class Claims:
             )
         )
 
+    def _entity_lookup(self, scope_id, name, vector_refs, evidence_text):
+        """Nominate indexed, ranked name representatives in the exact audience."""
+        from .entity_names import candidate_refs
+
+        return candidate_refs(self._tx, scope_id, name, vector_refs, evidence_text)
+
+    def aliases_for_query(self, query: str, *, limit: int = 200) -> tuple[str, ...]:
+        """Probe possible query labels by index without scanning stored aliases."""
+        from .entity_names import audience, query_keys
+
+        keys = query_keys(query)
+        if not keys:
+            return ()
+        ctx = self._tx.context
+        return tuple(
+            row[0]
+            for row in self._tx._check().execute(
+                "SELECT DISTINCT c.claim_id FROM entity_alias_labels l CROSS JOIN "
+                "claims c INDEXED BY sqlite_autoindex_claims_1 ON c.claim_id=l.claim_ref "
+                "CROSS JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
+                "WHERE l.audience IN (SELECT value FROM json_each(?)) AND l.label IN (SELECT value FROM json_each(?)) "
+                "AND l.revision=c.current_revision AND c.kind='alias' AND c.read_blocked=0 AND c.suppressed=0 "
+                "AND v.state='active' AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' "
+                "AND b.object_ref=c.claim_id AND (b.read_blocked=1 OR b.suppressed=1)) LIMIT ?",
+                (json.dumps([audience(ctx, s) for s in sorted(ctx.allowed_scope_ids)]), json.dumps(keys), limit),
+            )
+        )
+
+    def entity_names_for_query(self, query: str, *, matches=(), limit: int = 200) -> tuple[str, ...] | None:
+        """Probe complete labels by exact audience keys, never a nullable range condition."""
+        from .entity_names import query_keys, visible_audiences
+
+        keys = query_keys(query, matches)
+        if keys is None:
+            return None
+        return tuple(
+            row[0]
+            for row in self._tx._check().execute(
+                "SELECT q.value FROM json_each(?) q WHERE EXISTS(SELECT 1 FROM json_each(?) a "
+                "CROSS JOIN claims c INDEXED BY entity_subject_lookup "
+                "WHERE c.scope_id=json_extract(a.value,'$[0]') AND c.project_id IS json_extract(a.value,'$[1]') "
+                "AND c.branch_id IS json_extract(a.value,'$[2]') AND c.subject=q.value "
+                "AND c.kind IN ('fact','preference','constraint','decision','intention') "
+                "AND c.read_blocked=0 AND c.suppressed=0 AND NOT EXISTS(SELECT 1 FROM object_blocks b "
+                "WHERE b.object_kind='claim' AND b.object_ref=c.claim_id "
+                "AND (b.read_blocked=1 OR b.suppressed=1))) LIMIT ?",
+                (json.dumps(keys), json.dumps(visible_audiences(self._tx.context)), limit),
+            )
+        )
+
+    def subject_audiences(self, names, *, all_kinds: bool = False):
+        """Read conservative name-collision metadata without enumerating a subject's facts."""
+        from .entity_names import visible_audiences
+
+        index = "entity_subject_presence" if all_kinds else "entity_subject_lookup"
+        kinds = (
+            ""
+            if all_kinds
+            else "AND c.kind IN ('fact','preference','constraint','decision','intention') AND c.suppressed=0 "
+        )
+        rows = self._tx._check().execute(
+            "SELECT a.value FROM json_each(?) a WHERE EXISTS(SELECT 1 FROM claims c INDEXED BY "
+            + index
+            + " WHERE c.scope_id=json_extract(a.value,'$[0]') AND c.project_id IS json_extract(a.value,'$[1]') "
+            "AND c.branch_id IS json_extract(a.value,'$[2]') AND c.subject IN (SELECT value FROM json_each(?)) "
+            "AND c.read_blocked=0 "
+            + kinds
+            + "AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' "
+            "AND b.object_ref=c.claim_id AND b.read_blocked=1))",
+            (json.dumps(visible_audiences(self._tx.context)), json.dumps(tuple(names))),
+        )
+        return {tuple(json.loads(row[0])) for row in rows}
+
     def list_refs(
         self,
         *,
@@ -316,7 +400,8 @@ class Claims:
             raise ContractError("INPUT_INVALID", "value_text")
         if alias_name is not None and (type(alias_name) is not str or not 1 <= len(alias_name) <= 240):
             raise ContractError("INPUT_INVALID", "alias_name")
-        if value_text is None and alias_name is None:
+        alias_subject = alias_name is None and kind == "alias" and subject is not None
+        if value_text is None and alias_name is None and not alias_subject:
             filters = [
                 f"scope_id IN ({','.join('?' for _ in scopes)})",
                 "read_blocked=0",
@@ -351,13 +436,34 @@ class Claims:
         if value_text is not None:
             filters.append("json_extract(v.payload_json,'$.value_text')=?")
             params.append(value_text)
-        if alias_name is not None:
+        if alias_name is not None or alias_subject:
             filters.append("c.kind='alias'")
-            filters.append(
-                "(json_extract(v.payload_json,'$.value_text')=? OR json_extract(v.payload_json,'$.alias.name')=?)"
+            from dataclasses import replace
+
+            from .entity_names import audience
+
+            audiences = [
+                audience(replace(ctx, project_id=project, branch_id=branch), scope)
+                for scope in scopes
+                for project in {None, ctx.project_id}
+                for branch in {None, ctx.branch_id}
+            ]
+            filters.extend(
+                (
+                    "l.audience IN (SELECT value FROM json_each(?))",
+                    "l.label=?",
+                    "l.roles&4!=0" if alias_subject else "l.roles&3!=0",
+                )
             )
-            params.extend((alias_name, alias_name))
-        source = "claims c JOIN claim_versions v ON v.claim_id=c.claim_id"
+            params.extend((json.dumps(audiences), subject if alias_subject else alias_name))
+        # Fresh alias data can leave partial-index statistics stale; every label joins one identity by its key.
+        source = (
+            "entity_alias_labels l CROSS JOIN claims c INDEXED BY sqlite_autoindex_claims_1 "
+            "ON c.claim_id=l.claim_ref "
+            "CROSS JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=l.revision"
+            if alias_name is not None or alias_subject
+            else "claims c JOIN claim_versions v ON v.claim_id=c.claim_id"
+        )
         return tuple(
             r[0]
             for r in self._tx._check().execute(
@@ -654,7 +760,11 @@ class Claims:
                    VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""",
                 (ref, revision, scope_id, ctx.project_id, ctx.branch_id, recorded),
             )
-        return next(v for v in self.versions(ref) if v.revision == revision)
+        version = next(v for v in self.versions(ref) if v.revision == revision)
+        from .entity_names import index_claim
+
+        index_claim(self._tx, version)
+        return version
 
     def require_target(self, version: ClaimVersion) -> None:
         ctx = self._tx.context

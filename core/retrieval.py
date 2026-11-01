@@ -156,6 +156,8 @@ class SearchContext:
     #: or the session's start when it has had none.  An automatic recall leaves out what stands only on those turns
     #: (``RetrievalPipeline._in_context``).  A trusted caller's word, never a request field; None when unknown.
     in_context_since: str | None = None
+    #: Versioned name proofs rechecked by the final read-only release fence.
+    entity_fence: tuple[tuple[str, int], ...] = ()
 
     @property
     def automatic_injection(self) -> bool:

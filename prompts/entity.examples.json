@@ -1,0 +1,1282 @@
+[
+  {
+    "id": "en-person",
+    "language": "en",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Dr Mira",
+        "predicate": "identity",
+        "value_text": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430.",
+            "start": 0,
+            "end": 52
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Mira Sen",
+            "predicate": "identity",
+            "value_text": "TEST-Mira Sen is surgeon with license TEST-430.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Mira Sen is surgeon with license TEST-430.",
+                "start": 0,
+                "end": 47
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "zh-person",
+    "language": "zh",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试小王",
+        "predicate": "identity",
+        "value_text": "测试小王就是测试王明医生，执业证是 TEST-431。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试小王就是测试王明医生，执业证是 TEST-431。",
+            "start": 0,
+            "end": 27
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试小王就是测试王明医生，执业证是 TEST-431。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试王明医生",
+            "predicate": "identity",
+            "value_text": "测试王明医生的执业证是 TEST-431。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试王明医生的执业证是 TEST-431。",
+                "start": 0,
+                "end": 21
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "en-object",
+    "language": "en",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Ricecake",
+        "predicate": "identity",
+        "value_text": "TEST-Ricecake is TEST-Nian, the cat with chip TEST-432.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Ricecake is TEST-Nian, the cat with chip TEST-432.",
+            "start": 0,
+            "end": 55
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Ricecake is TEST-Nian, the cat with chip TEST-432."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Nian",
+            "predicate": "identity",
+            "value_text": "TEST-Nian is cat with chip TEST-432.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Nian is cat with chip TEST-432.",
+                "start": 0,
+                "end": 36
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "zh-object",
+    "language": "zh",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试白猫",
+        "predicate": "identity",
+        "value_text": "测试白猫就是测试年糕，芯片号是 TEST-433。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试白猫就是测试年糕，芯片号是 TEST-433。",
+            "start": 0,
+            "end": 25
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试白猫就是测试年糕，芯片号是 TEST-433。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试年糕",
+            "predicate": "identity",
+            "value_text": "测试年糕的芯片号是 TEST-433。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试年糕的芯片号是 TEST-433。",
+                "start": 0,
+                "end": 19
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "en-place",
+    "language": "en",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-East Hall",
+        "predicate": "identity",
+        "value_text": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane.",
+            "start": 0,
+            "end": 73
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Aster Hall",
+            "predicate": "identity",
+            "value_text": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+                "start": 0,
+                "end": 58
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "zh-place",
+    "language": "zh",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试东馆",
+        "predicate": "identity",
+        "value_text": "测试东馆已更名为测试星河馆，地址是测试海湾路15号。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试东馆已更名为测试星河馆，地址是测试海湾路15号。",
+            "start": 0,
+            "end": 26
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试东馆已更名为测试星河馆，地址是测试海湾路15号。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试星河馆",
+            "predicate": "identity",
+            "value_text": "测试星河馆的地址是测试海湾路15号。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试星河馆的地址是测试海湾路15号。",
+                "start": 0,
+                "end": 18
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "en-organization",
+    "language": "en",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-CI",
+        "predicate": "identity",
+        "value_text": "TEST-CI is TEST-Cedar Institute, registration TEST-435.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-CI is TEST-Cedar Institute, registration TEST-435.",
+            "start": 0,
+            "end": 55
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-CI is TEST-Cedar Institute, registration TEST-435."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Cedar Institute",
+            "predicate": "identity",
+            "value_text": "TEST-Cedar Institute is organization with registration TEST-435.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Cedar Institute is organization with registration TEST-435.",
+                "start": 0,
+                "end": 64
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "zh-organization",
+    "language": "zh",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试青研所",
+        "predicate": "identity",
+        "value_text": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。",
+            "start": 0,
+            "end": 31
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试青杉研究所",
+            "predicate": "identity",
+            "value_text": "测试青杉研究所的登记号是 TEST-436。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试青杉研究所的登记号是 TEST-436。",
+                "start": 0,
+                "end": 22
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "en-project",
+    "language": "en",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Dawn",
+        "predicate": "identity",
+        "value_text": "TEST-Dawn is an alias of TEST-Aurora, repository TEST-repo-437.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Dawn is an alias of TEST-Aurora, repository TEST-repo-437.",
+            "start": 0,
+            "end": 63
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Dawn is an alias of TEST-Aurora, repository TEST-repo-437."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Aurora",
+            "predicate": "identity",
+            "value_text": "TEST-Aurora is project with repository TEST-repo-437.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Aurora is project with repository TEST-repo-437.",
+                "start": 0,
+                "end": 53
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "zh-project",
+    "language": "zh",
+    "same_entity": true,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试黎明",
+        "predicate": "identity",
+        "value_text": "测试黎明项目已改名为测试晨光，仓库标识是 TEST-repo-438。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试黎明项目已改名为测试晨光，仓库标识是 TEST-repo-438。",
+            "start": 0,
+            "end": 35
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试黎明项目已改名为测试晨光，仓库标识是 TEST-repo-438。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试晨光",
+            "predicate": "identity",
+            "value_text": "测试晨光的仓库标识是 TEST-repo-438。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试晨光的仓库标识是 TEST-repo-438。",
+                "start": 0,
+                "end": 25
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "supported",
+      "action": "duplicate",
+      "target_ref": "claim-TEST-target",
+      "target_revision": 1
+    }
+  },
+  {
+    "id": "en-homonym",
+    "language": "en",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Alex Lee (architect)",
+        "predicate": "identity",
+        "value_text": "TEST-Alex Lee (architect) works at TEST-Studio.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Alex Lee (architect) works at TEST-Studio.",
+            "start": 0,
+            "end": 47
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Alex Lee (architect) works at TEST-Studio."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Alex Lee (teacher)",
+            "predicate": "identity",
+            "value_text": "TEST-Alex Lee (teacher) works at TEST-School.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Alex Lee (teacher) works at TEST-School.",
+                "start": 0,
+                "end": 45
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "zh-homonym",
+    "language": "zh",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试王明厨师",
+        "predicate": "identity",
+        "value_text": "测试王明厨师在测试南餐馆工作。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试王明厨师在测试南餐馆工作。",
+            "start": 0,
+            "end": 15
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试王明厨师在测试南餐馆工作。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试王明医生",
+            "predicate": "identity",
+            "value_text": "测试王明医生在测试北医院工作。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试王明医生在测试北医院工作。",
+                "start": 0,
+                "end": 15
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "en-similar",
+    "language": "en",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Cedar Instruments",
+        "predicate": "identity",
+        "value_text": "TEST-Cedar Instruments is musical equipment manufacturer.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Cedar Instruments is musical equipment manufacturer.",
+            "start": 0,
+            "end": 57
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Cedar Instruments is musical equipment manufacturer."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Cedar Institute",
+            "predicate": "identity",
+            "value_text": "TEST-Cedar Institute is research organization.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Cedar Institute is research organization.",
+                "start": 0,
+                "end": 46
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "zh-similar",
+    "language": "zh",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试星河酒店",
+        "predicate": "identity",
+        "value_text": "测试星河酒店位于测试南城。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试星河酒店位于测试南城。",
+            "start": 0,
+            "end": 13
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试星河酒店位于测试南城。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试星河馆",
+            "predicate": "identity",
+            "value_text": "测试星河馆位于测试北城。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试星河馆位于测试北城。",
+                "start": 0,
+                "end": 12
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "en-object-negative",
+    "language": "en",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Nian Two",
+        "predicate": "identity",
+        "value_text": "TEST-Nian Two has chip TEST-441.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Nian Two has chip TEST-441.",
+            "start": 0,
+            "end": 32
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Nian Two has chip TEST-441."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Nian",
+            "predicate": "identity",
+            "value_text": "TEST-Nian has chip TEST-440.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Nian has chip TEST-440.",
+                "start": 0,
+                "end": 28
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "zh-object-negative",
+    "language": "zh",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试白猫二号",
+        "predicate": "identity",
+        "value_text": "测试白猫二号的芯片号是 TEST-443。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试白猫二号的芯片号是 TEST-443。",
+            "start": 0,
+            "end": 21
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试白猫二号的芯片号是 TEST-443。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试白猫一号",
+            "predicate": "identity",
+            "value_text": "测试白猫一号的芯片号是 TEST-442。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试白猫一号的芯片号是 TEST-442。",
+                "start": 0,
+                "end": 21
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "en-place-negative",
+    "language": "en",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Springfield South",
+        "predicate": "identity",
+        "value_text": "TEST-Springfield South is in TEST-South County.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Springfield South is in TEST-South County.",
+            "start": 0,
+            "end": 47
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Springfield South is in TEST-South County."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Springfield North",
+            "predicate": "identity",
+            "value_text": "TEST-Springfield North is in TEST-North County.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Springfield North is in TEST-North County.",
+                "start": 0,
+                "end": 47
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "zh-place-negative",
+    "language": "zh",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试南城中山路",
+        "predicate": "identity",
+        "value_text": "测试南城中山路位于测试南城。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试南城中山路位于测试南城。",
+            "start": 0,
+            "end": 14
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试南城中山路位于测试南城。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试北城中山路",
+            "predicate": "identity",
+            "value_text": "测试北城中山路位于测试北城。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试北城中山路位于测试北城。",
+                "start": 0,
+                "end": 14
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "en-uncertain",
+    "language": "en",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "TEST-Mira",
+        "predicate": "identity",
+        "value_text": "TEST-Mira is engineer.",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "TEST-Mira is engineer.",
+            "start": 0,
+            "end": 22
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "TEST-Mira is engineer."
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "TEST-Mira Sen",
+            "predicate": "identity",
+            "value_text": "TEST-Mira Sen is engineer.",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "TEST-Mira Sen is engineer.",
+                "start": 0,
+                "end": 26
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  },
+  {
+    "id": "zh-uncertain",
+    "language": "zh",
+    "same_entity": false,
+    "input": {
+      "proposal": {
+        "kind": "fact",
+        "subject": "测试青杉",
+        "predicate": "identity",
+        "value_text": "测试青杉研究植物。",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-source",
+            "source_revision": 1,
+            "quote": "测试青杉研究植物。",
+            "start": 0,
+            "end": 9
+          }
+        ]
+      },
+      "sources": [
+        {
+          "source_ref": "TEST-source",
+          "source_revision": 1,
+          "content": "测试青杉研究植物。"
+        }
+      ],
+      "candidates": [
+        {
+          "ref": "claim-TEST-target",
+          "revision": 1,
+          "payload": {
+            "kind": "fact",
+            "subject": "测试青杉研究所",
+            "predicate": "identity",
+            "value_text": "测试青杉研究所研究植物。",
+            "conditions": [],
+            "statement_kind": "assertion",
+            "valid_from": null,
+            "valid_to": null,
+            "evidence_spans": [
+              {
+                "source_ref": "TEST-target-source",
+                "source_revision": 1,
+                "quote": "测试青杉研究所研究植物。",
+                "start": 0,
+                "end": 12
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "support": "uncertain",
+      "action": "new",
+      "target_ref": null,
+      "target_revision": null
+    }
+  }
+]

@@ -207,6 +207,8 @@ class Alias(TypedDict):
 
 
 class ClaimProposal(TypedDict):
+    entity_type: NotRequired[Literal["unknown", "person", "object", "place", "organization", "project"]]
+    entity_names: NotRequired[list[str]]
     occurred_at: NotRequired[str | None]
     kind: Literal["fact", "preference", "constraint", "decision", "procedure", "intention", "alias"]
     subject: str

@@ -66,7 +66,7 @@ from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
 from .shared_run import Run, SharedStoreError, store_lock
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
-SOURCE_SCHEMAS = frozenset({1109, 1110, 1111, 1112})
+SOURCE_SCHEMAS = frozenset({1109, 1110, 1111, 1112, SCHEMA_VERSION})
 #: Anything shaped like a source id; renamed only when the old store holds exactly that id.
 _EVENT_TOKEN = re.compile(r"(?<![0-9A-Za-z_-])event-[0-9A-Za-z_-]+")
 _CHUNK = 2000
@@ -282,7 +282,12 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         conn,
         src,
         "claim_versions",
-        lambda r: None if r["claim_id"] in left_out else {**r, "payload_json": names.text(r["payload_json"])},
+        # Identity receipts belong to this store's evidence endpoints and are rebuilt after import.
+        lambda r: (
+            None
+            if r["claim_id"] in left_out
+            else {**r, "payload_json": names.text(r["payload_json"]), "entity_resolved": 0}
+        ),
     )
     counts["claims_left_out"] = len(left_out)
 

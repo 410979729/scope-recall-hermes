@@ -30,7 +30,7 @@ def _decode(value: Any) -> Any:
 @lru_cache(maxsize=8)
 def language_rules(name: str) -> dict:
     """Return one immutable-by-convention rule table shipped with the package."""
-    if name not in {"credentials", "query_time"}:
+    if name not in {"credentials", "query_time", "aliases"}:
         raise ValueError("unknown language table")
     return _decode(json.loads(_resource_text(f"{name}.json")))
 
@@ -38,6 +38,6 @@ def language_rules(name: str) -> dict:
 @lru_cache(maxsize=8)
 def prompt_text(name: str) -> str:
     """Return an allowlisted prompt template; callers supply authorized input separately."""
-    if name not in {"consolidation", "candidate", "fragment", "repair", "support", "merge"}:
+    if name not in {"consolidation", "candidate", "fragment", "repair", "support", "merge", "entity"}:
         raise ValueError("unknown prompt")
     return _resource_text(f"{name}.txt").rstrip("\r\n")

@@ -94,12 +94,17 @@ def canonical_time(value: str | None) -> str | None:
 
 def claim_slot(scope_id: str, project_id: str | None, branch_id: str | None, proposal: ClaimProposal) -> str:
     """Only identical explicit slots merge; aliases/semantic similarity confer no identity."""
+    subject = proposal["subject"]
+    relation = proposal.get("alias")
+    if proposal["kind"] == "alias" and proposal["predicate"].startswith("entity_identity:") and relation is not None:
+        # A name has one relation in an audience even when its evidence or target changes.
+        subject = relation["name"]
     identity = [
         scope_id,
         project_id,
         branch_id,
         proposal["kind"],
-        proposal["subject"],
+        subject,
         proposal["predicate"],
         sorted(set(proposal["conditions"])),
     ]

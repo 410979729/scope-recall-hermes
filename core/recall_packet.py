@@ -23,6 +23,7 @@ from typing import Callable, Literal, Protocol, cast
 
 from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
 from .background_context import is_background, mark_background
+from .entity_queries import fence_entity_query, resolve_query_context
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .recall_needs import asks_to_resume, unmet_needs
@@ -416,6 +417,7 @@ class RecallPacketCompiler:
     def compile(self, context: SearchContext, result: RetrievalResult, storage) -> RecallPacket:
         if not isinstance(context, SearchContext) or not isinstance(result, RetrievalResult):
             raise ContractError("INPUT_INVALID", "compile_input")
+        context = resolve_query_context(storage, context, self.clock)
         started = self.clock.monotonic()
         limits = effective_limits(context)
         draft = _Draft(
@@ -525,6 +527,7 @@ class RecallPacketCompiler:
                 if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence", retracted=retracted):
                     return draft.discard(verified)
                 self._prefetch(tx, context, verified)
+                verified = fence_entity_query(tx, context, verified, draft.gaps)
                 for candidate, obj in verified:
                     if self._recheck(tx, context, candidate, obj, draft.gaps) is None:
                         return draft.discard(verified, "release_delete_fence")

@@ -113,6 +113,7 @@ class MemoryCore:
         if self.storage.binding != config.binding:
             raise ValueError("storage binding differs from core binding")
         self.vectors = vectors
+        self.storage.entity_vectors = lambda: self.vectors
         self.consolidation = consolidation
         from .recall import RetrievalPipeline
         from .recall_packet import RecallPacketCompiler, RecallPacketRenderer
@@ -573,6 +574,9 @@ class MemoryCore:
             # Before the vector channel, so a full interval makes no query embedding
             # request and reaches no provider.
             return self._private_recall_packet(search_context)
+        from .entity_queries import resolve_query_context
+
+        search_context = resolve_query_context(self.storage, search_context, self.clock)
         # Candidate collection is optional work. Reserve part of the original
         # deadline for the mandatory fresh SQLite release checks and rendering.
         retrieval_context = replace(

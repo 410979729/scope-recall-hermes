@@ -4838,11 +4838,8 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
     _root, home = dsh
     spool = tmp_path / "TEST-spool"
     spool.mkdir()
-    gone = int(
-        subprocess.run(
-            [sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True
-        ).stdout
-    )
+    # The reserved pid cannot be reused while the plugin starts; owner liveness is tested separately.
+    gone = 0
     now = int(datetime.now(timezone.utc).timestamp() * 1000)
     idle = datetime.now(timezone.utc).timestamp() - 600
     names = []
@@ -4881,7 +4878,7 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
     )
     untouched = [name for name in names if name in result["files"]]
     taken = [name for name in result["files"] if name not in names]
-    assert len(untouched) == 1 and len(taken) == 1, result["files"]
+    assert len(untouched) == 1 and len(taken) == 1, result
     assert taken[0].endswith(f".{result['pid']}.jsonl"), "the first is taken into this process's file and kept"
     assert taken[0].split(".")[0] != untouched[0].split(".")[0]
     assert (

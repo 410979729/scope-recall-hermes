@@ -1,9 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1112
+SCHEMA_VERSION = 1113
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112)
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -235,6 +235,124 @@ RECOVERY_STATEMENTS = (
     ) STRICT""",
 )
 
+_ENTITY_ALIAS_LABELS = """INSERT INTO entity_alias_labels
+    SELECT hex(json_array(c.scope_id,c.project_id,c.branch_id)),labels.value,c.claim_id,v.revision,sum(1<<labels.key)
+    FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
+    JOIN json_each(json_array(json_extract(v.payload_json,'$.alias.name'),
+         json_extract(v.payload_json,'$.value_text'),json_extract(v.payload_json,'$.subject'))) labels
+    WHERE c.kind='alias' AND c.read_blocked=0 AND c.suppressed=0 AND v.state='active'
+    AND typeof(labels.value)='text' {selection}
+    GROUP BY c.claim_id,v.revision,labels.value"""
+
+ENTITY_STATEMENTS = (
+    """CREATE TABLE entity_alias_proofs (
+        alias_ref TEXT NOT NULL, alias_revision INTEGER NOT NULL,
+        source_ref TEXT NOT NULL, source_revision INTEGER NOT NULL,
+        target_ref TEXT NOT NULL, target_revision INTEGER NOT NULL,
+        judgement_sha256 TEXT NOT NULL CHECK(length(judgement_sha256)=64),
+        PRIMARY KEY(alias_ref,alias_revision),
+        FOREIGN KEY(alias_ref,alias_revision) REFERENCES claim_versions(claim_id,revision) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX entity_unresolved ON claim_versions(entity_resolved,claim_id,revision)",
+    "CREATE INDEX entity_alias_scope ON claims(scope_id,project_id,branch_id,claim_id) WHERE kind='alias'",
+    "CREATE INDEX entity_subject_lookup ON claims(scope_id,project_id,branch_id,subject) "
+    "WHERE kind IN ('fact','preference','constraint','decision','intention') AND read_blocked=0 AND suppressed=0",
+    """CREATE TABLE entity_alias_labels (
+        audience TEXT NOT NULL,label TEXT NOT NULL,claim_ref TEXT NOT NULL,revision INTEGER NOT NULL,
+        roles INTEGER NOT NULL CHECK(roles BETWEEN 1 AND 7),
+        PRIMARY KEY(audience,label,claim_ref,revision),
+        FOREIGN KEY(claim_ref,revision) REFERENCES claim_versions(claim_id,revision) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE entity_names (
+        name_id INTEGER PRIMARY KEY,audience TEXT NOT NULL,name TEXT NOT NULL,
+        normalized TEXT NOT NULL,terms TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','checked','withdrawn')),
+        source_ref TEXT,source_revision INTEGER,target_ref TEXT,target_revision INTEGER,
+        alias_ref TEXT,alias_revision INTEGER,work_id INTEGER,
+        UNIQUE(audience,name)
+    ) STRICT""",
+    "CREATE INDEX entity_alias_names ON entity_alias_labels(audience,label,claim_ref,revision) WHERE roles&3!=0",
+    "CREATE INDEX entity_subject_presence ON claims(scope_id,project_id,branch_id,subject) WHERE read_blocked=0",
+    "CREATE INDEX entity_alias_claim ON entity_alias_labels(claim_ref)",
+    "CREATE TRIGGER entity_alias_version AFTER INSERT ON claim_versions BEGIN "
+    "DELETE FROM entity_alias_labels WHERE claim_ref=new.claim_id "
+    "AND new.revision=(SELECT current_revision FROM claims WHERE claim_id=new.claim_id); "
+    + _ENTITY_ALIAS_LABELS.format(selection="AND c.claim_id=new.claim_id AND v.revision=new.revision")
+    + "; END",
+    "CREATE TRIGGER entity_alias_head AFTER UPDATE OF current_revision,read_blocked,suppressed "
+    "ON claims WHEN new.kind='alias' BEGIN "
+    "DELETE FROM entity_alias_labels WHERE claim_ref=new.claim_id; "
+    + _ENTITY_ALIAS_LABELS.format(selection="AND c.claim_id=new.claim_id")
+    + "; END",
+    "CREATE INDEX entity_name_source ON entity_names(source_ref)",
+    "CREATE INDEX entity_name_target ON entity_names(target_ref)",
+    "CREATE INDEX entity_name_alias ON entity_names(alias_ref)",
+    "CREATE VIRTUAL TABLE entity_name_search USING fts5(audience,terms,content='entity_names',content_rowid='name_id')",
+    """CREATE TRIGGER entity_name_index AFTER INSERT ON entity_names BEGIN
+        INSERT INTO entity_name_search(rowid,audience,terms) VALUES(new.name_id,new.audience,new.terms);
+    END""",
+    """CREATE TRIGGER entity_name_reindex AFTER UPDATE OF terms ON entity_names WHEN old.terms!=new.terms BEGIN
+        INSERT INTO entity_name_search(entity_name_search,rowid,audience,terms)
+        VALUES('delete',old.name_id,old.audience,old.terms);
+        INSERT INTO entity_name_search(rowid,audience,terms) VALUES(new.name_id,new.audience,new.terms);
+    END""",
+    """CREATE TRIGGER entity_name_unindex AFTER DELETE ON entity_names BEGIN
+        INSERT INTO entity_name_search(entity_name_search,rowid,audience,terms)
+        VALUES('delete',old.name_id,old.audience,old.terms);
+    END""",
+    """CREATE TABLE entity_name_mentions (
+        name_id INTEGER NOT NULL REFERENCES entity_names(name_id) ON DELETE CASCADE,
+        claim_ref TEXT NOT NULL,claim_revision INTEGER NOT NULL,usable INTEGER NOT NULL CHECK(usable IN (0,1)),
+        ordinal INTEGER NOT NULL,subject_name INTEGER NOT NULL CHECK(subject_name IN (0,1)),
+        PRIMARY KEY(name_id,claim_ref),
+        FOREIGN KEY(claim_ref,claim_revision) REFERENCES claim_versions(claim_id,revision) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX entity_mention_claim ON entity_name_mentions(claim_ref,claim_revision)",
+    "CREATE INDEX entity_mention_live ON entity_name_mentions(name_id,usable,subject_name DESC,ordinal,claim_ref)",
+    """CREATE TRIGGER entity_name_orphan AFTER DELETE ON entity_name_mentions BEGIN
+        DELETE FROM entity_names WHERE name_id=old.name_id
+        AND NOT EXISTS(SELECT 1 FROM entity_name_mentions m WHERE m.name_id=old.name_id)
+        AND NOT EXISTS(SELECT 1 FROM claims c WHERE c.claim_id=entity_names.alias_ref);
+    END""",
+    """CREATE TRIGGER entity_name_pending AFTER UPDATE OF status ON entity_names WHEN new.status='pending' BEGIN
+        UPDATE claim_versions SET entity_resolved=0 WHERE (claim_id,revision)=(SELECT m.claim_ref,m.claim_revision
+        FROM entity_name_mentions m JOIN claims c ON c.claim_id=m.claim_ref AND c.current_revision=m.claim_revision
+        JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
+        WHERE m.name_id=new.name_id AND m.usable=1 AND v.state='active' AND c.read_blocked=0 AND c.suppressed=0
+        ORDER BY m.subject_name DESC,m.ordinal,m.claim_ref LIMIT 1);
+    END""",
+    """CREATE TRIGGER entity_name_changed AFTER UPDATE OF current_revision,read_blocked,suppressed ON claims BEGIN
+        UPDATE entity_names SET status='pending' WHERE source_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status='pending' WHERE target_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status=CASE WHEN (SELECT state FROM claim_versions
+            WHERE claim_id=new.claim_id AND revision=new.current_revision)='retracted'
+            THEN 'withdrawn' ELSE 'pending' END
+        WHERE alias_ref=old.claim_id AND status!='withdrawn';
+        UPDATE entity_name_mentions SET usable=CASE WHEN new.read_blocked=0 AND new.suppressed=0 THEN 1 ELSE 0 END
+        WHERE claim_ref=old.claim_id AND (old.read_blocked!=new.read_blocked OR old.suppressed!=new.suppressed);
+        UPDATE entity_names SET status='pending' WHERE status='pending'
+        AND (old.read_blocked!=new.read_blocked OR old.suppressed!=new.suppressed)
+        AND name_id IN (SELECT name_id FROM entity_name_mentions WHERE claim_ref=old.claim_id);
+    END""",
+    """CREATE TRIGGER entity_name_deleted AFTER DELETE ON claims BEGIN
+        UPDATE entity_names SET status='pending' WHERE source_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status='pending' WHERE target_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status='pending' WHERE alias_ref=old.claim_id AND status='checked';
+        DELETE FROM entity_names WHERE alias_ref=old.claim_id
+        AND NOT EXISTS(SELECT 1 FROM entity_name_mentions m WHERE m.name_id=entity_names.name_id);
+    END""",
+    """CREATE TRIGGER entity_source_changed AFTER INSERT ON source_events WHEN EXISTS(SELECT 1 FROM source_events older
+        WHERE older.source_group_key=new.source_group_key AND older.source_revision<new.source_revision) BEGIN
+        UPDATE entity_names SET status='pending' WHERE status='checked' AND
+        (source_ref IN (SELECT e.object_ref FROM source_events older JOIN evidence_links e
+            ON e.source_ref=older.event_id AND e.source_revision=older.source_revision AND e.object_kind='claim'
+            WHERE older.source_group_key=new.source_group_key AND older.source_revision<new.source_revision)
+        OR target_ref IN (SELECT e.object_ref FROM source_events older JOIN evidence_links e
+            ON e.source_ref=older.event_id AND e.source_revision=older.source_revision AND e.object_kind='claim'
+            WHERE older.source_group_key=new.source_group_key AND older.source_revision<new.source_revision));
+    END""",
+)
+
 STATEMENTS = (
     (
         """CREATE TABLE instance_meta (
@@ -309,6 +427,7 @@ STATEMENTS = (
         qualification_reason TEXT NOT NULL,
         valid_from TEXT, valid_to TEXT, recorded_from TEXT NOT NULL, recorded_to TEXT,
         replaces_revision INTEGER, conflict_revisions_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(conflict_revisions_json)),
+        entity_resolved INTEGER NOT NULL DEFAULT 0 CHECK(entity_resolved IN (0,1)),
         PRIMARY KEY(claim_id,revision),
         FOREIGN KEY(claim_id,replaces_revision) REFERENCES claim_versions(claim_id,revision),
         CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from<valid_to),
@@ -437,6 +556,7 @@ STATEMENTS = (
     )
     + RECOVERY_STATEMENTS
     + CANDIDATE_STATEMENTS
+    + ENTITY_STATEMENTS
     + (RESTORED_SUPPRESSION_STATEMENT,)
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
@@ -650,6 +770,19 @@ def upgrade_1111(connection):
     connection.execute("ALTER TABLE source_events ADD COLUMN project_root TEXT")
     connection.execute("UPDATE instance_meta SET schema_version=1112 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1112")
+
+
+def upgrade_1112(connection):
+    """Add entity judgement receipts without rewriting claims or waiting for models."""
+    connection.execute(
+        "ALTER TABLE claim_versions ADD COLUMN entity_resolved INTEGER NOT NULL DEFAULT 0 "
+        "CHECK(entity_resolved IN (0,1))"
+    )
+    for statement in ENTITY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute(_ENTITY_ALIAS_LABELS.format(selection=""))
+    connection.execute("UPDATE instance_meta SET schema_version=1113 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1113")
 
 
 def normalize_scope_authorizations(connection) -> int:

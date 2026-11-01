@@ -729,3 +729,32 @@ def test_import_preserves_every_tabulated_description_and_settles_only_denials(r
         ]
     assert import_entry(root=root, entry_id="agent3", source=old)["status"] == "already_imported"
     assert _query(root, query) == versions
+
+
+def test_import_rebuilds_name_receipts_in_the_destination(root, entries):
+    agent3, _ = entries
+    scope = _scope(agent3)
+    text = "TEST-Nian category cat."
+    core, context, sources, old = _old_store(agent3, scope, text)
+    with core.storage.write(context) as tx:
+        version = tx.claims.append(
+            scope,
+            dict(
+                kind="fact",
+                subject="TEST-Nian",
+                predicate="category",
+                value_text="cat",
+                conditions=[],
+                statement_kind="assertion",
+                valid_from=None,
+                valid_to=None,
+                evidence_spans=[dict(source_ref=sources[0].ref, source_revision=sources[0].revision, quote=text)],
+            ),
+            Qualification("active", "direct_report", "explicit_scoped_source"),
+            recorded_at=core.clock.utc_now(),
+        )
+        tx._check(write=True).execute("UPDATE claim_versions SET entity_resolved=1 WHERE claim_id=?", (version.ref,))
+    result = import_entry(root=root, entry_id="agent3", source=old)
+    assert result["status"] == "imported"
+    assert _query(root, "SELECT entity_resolved FROM claim_versions") == [(0,)]
+    assert not _query(root, "SELECT * FROM entity_alias_proofs")

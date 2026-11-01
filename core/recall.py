@@ -16,6 +16,7 @@ from .claim_storage import parse_source_ref
 from .claims import canonical_time
 from .coverage import note_truncation
 from .duplicate_collapse import DistinctContent, note_duplicates
+from .entity_queries import resolve_query_context
 from .events import lexical_terms
 from .model_content import withhold_secret_items
 from .owner_view import OwnerView, owner_names, owner_view
@@ -905,6 +906,7 @@ class RetrievalPipeline:
     def search(self, context: SearchContext) -> RetrievalResult:
         if not isinstance(context, SearchContext):
             raise ContractError("INPUT_INVALID", "search_context")
+        context = resolve_query_context(self.storage, context, self.clock)
         limits = effective_limits(context)
         # A historical or as-of read is left as it was: the time a question names is read for a recall of what holds
         # now, and no channel searches it or weighs by it otherwise.

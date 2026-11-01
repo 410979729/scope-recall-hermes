@@ -13,6 +13,7 @@ from . import private
 from .admission import resume_deferred
 from .candidate_lifecycle import PROCESS_BATCH_LIMIT, CandidateEvaluator
 from .consolidate import candidate_evaluation_messages, consolidation_messages
+from .entity_resolution import queue_entity_backfill
 from .failure_policy import (
     BUDGET_PAUSE_ERRORS,
     CAPACITY_REFUSALS,
@@ -318,7 +319,15 @@ def _other_work_ready(storage, clock, context, started: float, budget: float, ki
 
 
 def _recover_failed_work(
-    storage, clock, context, config: WorkerConfig, allowed: frozenset[str], started: float, budget: float
+    storage,
+    clock,
+    context,
+    config: WorkerConfig,
+    allowed: frozenset[str],
+    started: float,
+    budget: float,
+    *,
+    entity_model=None,
 ) -> tuple[int, str | None]:
     """Grant bounded fresh attempts to failures a later fix or budget may have cured.  Also says how far the settle
     sweep looked, for the wake plan (``runtime/scheduling``): ``"complete"``, ``"partial"`` when it filled its page
@@ -344,6 +353,8 @@ def _recover_failed_work(
         # Corrections recorded with no claim to settle them (``close_unplaceable_updates``).
         tx.claims.close_unplaceable_updates(limit=64)
         if "consolidate" in allowed:
+            if callable(getattr(entity_model, "judge", None)):
+                queue_entity_backfill(tx, now=clock.utc_now(), limit=min(8, config.max_items))
             recovered += tx.work.recover_oversized_consolidations(
                 now=clock.utc_now(), formatter=consolidation_messages, limit=min(8, config.max_items)
             )
@@ -526,12 +537,16 @@ def drain_worker(
     # Their items remain pending and become eligible at the next configured wakeup.
     ports = {"consolidate": consolidation, "embed": embed, "evaluate_candidate": candidate}
     allowed, unavailable = _pass_work_types(storage, clock, context, config, ports, started, budget)
-    recovered, sweep = _recover_failed_work(storage, clock, context, config, allowed, started, budget)
+    recovered, sweep = _recover_failed_work(
+        storage, clock, context, config, allowed, started, budget, entity_model=consolidation
+    )
     processors = {
         "consolidate": partial(process_consolidate, model=consolidation),
         "embed": partial(process_embed, embed=embed),
         "evaluate_candidate": partial(process_candidate_evaluation, evaluator=candidate),
-        "rebuild_projection": process_rebuild_projection,
+        "rebuild_projection": partial(
+            process_rebuild_projection, model=consolidation if "consolidate" in allowed else None
+        ),
         "purge": partial(process_purge, purge=purge),
     }
     receipts: list[WorkerItemReceipt] = []
@@ -612,7 +627,7 @@ def drain_worker(
         # vector would be paid for and dropped as stale.
         rest = [member for member in group if member.work_id not in recorded]
         for index, member in enumerate(rest):
-            member_budget = budget
+            member_budget = min(budget, lease_end) if member.work_type == "rebuild_projection" else budget
             if member.work_type == "embed":
                 if budget_left(started, clock, lease_end) <= _group_request_floor(budget, config.lease_seconds):
                     _release_group(storage, clock, context, rest[index:], "lease_ending", started, budget)
@@ -660,7 +675,9 @@ def drain_worker(
             # instead of starting the next pass at once for the next item:
             # without an embedding credential, a store would otherwise park one
             # waiting item every few seconds.
-            paused.append(item.work_type)
+            paused.extend(
+                {"rebuild_projection": ("rebuild_projection", "consolidate")}.get(item.work_type, (item.work_type,))
+            )
         if _rate_limited(error_code):
             # A provider that just answered 429 will answer 429 to the next item
             # too.  Each item backing off on its own is no backoff at all.
