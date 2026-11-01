@@ -385,3 +385,89 @@ def test_unavailable_historical_calendar_is_marked_and_rebuilt_on_restore(tmp_pa
     finally:
         current.close()
         ledger.close()
+
+
+def test_rebuild_interrupts_slow_summary_delete_and_rolls_back(tmp_path):
+    """A bounded rebuild stops an executing DELETE and leaves its connection reusable."""
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    reserve(ledger, instant("2026-02-01T00:00:00"))
+    db = ledger._connect_rw()
+    db.executemany("INSERT INTO request_totals VALUES (1,2,?,0,0,0,0)", ((f"TEST-{n}",) for n in range(200)))
+    db.commit()
+    processed = []
+
+    def slow_row():
+        time.sleep(0.003)
+        processed.append(1)
+        return 0
+
+    db.create_function("TEST_slow_delete", 0, slow_row)
+    db.execute("CREATE TRIGGER TEST_slow_delete BEFORE DELETE ON request_totals BEGIN SELECT TEST_slow_delete(); END")
+    before = tuple(db.iterdump())
+    total = db.execute("SELECT COUNT(*) FROM request_totals").fetchone()[0]
+    started = time.perf_counter()
+    try:
+        with pytest.raises(ValueError, match="ledger_busy_timeout"):
+            ledger.reserve("model", b"TEST", reserved_input=1, reserved_output=0, timeout_seconds=0.02)
+        elapsed = time.perf_counter() - started
+        assert 0 < len(processed) < total, (len(processed), total, elapsed)
+        assert elapsed < 0.5, elapsed
+        assert tuple(db.iterdump()) == before
+        db.execute("DROP TRIGGER TEST_slow_delete")
+        ledger.reserve("model", b"TEST", reserved_input=1, reserved_output=0, timeout_seconds=0.1)
+        time.sleep(0.12)
+        assert (
+            db.execute(
+                "WITH RECURSIVE numbers(n) AS (VALUES(0) UNION ALL "
+                "SELECT n+1 FROM numbers WHERE n<999) SELECT SUM(n) FROM numbers"
+            ).fetchone()[0]
+            == 499500
+        )
+    finally:
+        ledger.close()
+
+
+def test_close_waits_for_an_active_write_to_commit(tmp_path, monkeypatch):
+    """Closing waits behind an admitted transaction and releases its connection only after commit."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    db = ledger._connect_rw()
+    prepared, release, close_started, closed = (Event() for _ in range(4))
+    adjust = budget._adjust_budget_totals
+
+    def pause(*args, **kwargs):
+        adjust(*args, **kwargs)
+        prepared.set()
+        assert release.wait(5), "TEST writer release"
+
+    def close():
+        close_started.set()
+        ledger.close()
+        closed.set()
+
+    monkeypatch.setattr(budget, "_adjust_budget_totals", pause)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            writer = pool.submit(
+                ledger.reserve, "model", b"TEST", reserved_input=1, reserved_output=0, timeout_seconds=10
+            )
+            try:
+                assert prepared.wait(5)
+                closer = pool.submit(close)
+                assert close_started.wait(5)
+                assert not closed.wait(0.05)
+                assert db.in_transaction
+            finally:
+                release.set()
+            request = writer.result(timeout=5)
+            closer.result(timeout=5)
+        assert closed.is_set()
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            db.execute("SELECT 1")
+        with closing(sqlite3.connect(ledger.path)) as stored:
+            assert stored.execute("SELECT reserved_input FROM requests WHERE id=?", (request,)).fetchone() == (1,)
+    finally:
+        release.set()
+        ledger.close()

@@ -273,6 +273,34 @@ def _set_ledger_timeout(db: sqlite3.Connection, deadline: float | None) -> None:
         db.execute(f"PRAGMA busy_timeout={max(0, int(min(5.0, remaining) * 1000))}")
 
 
+@contextmanager
+def _ledger_progress(db: sqlite3.Connection, deadline: float | None) -> Iterator[None]:
+    """Interrupt bounded reconciliation inside SQLite, including DELETE and index creation.
+
+    The connection owner installs this callback only for reconciliation. SQLite checks between VM instructions;
+    a single running user function cannot be preempted. Python work retains its own batch checkpoints.
+    """
+    if deadline is None:
+        yield
+        return
+    expired = False
+
+    def progress() -> int:
+        nonlocal expired
+        expired = time.monotonic() >= deadline
+        return int(expired)
+
+    db.set_progress_handler(progress, 256)
+    try:
+        yield
+    except sqlite3.OperationalError as exc:
+        if expired and getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+            raise ValueError("ledger_busy_timeout") from exc
+        raise
+    finally:
+        db.set_progress_handler(None, 0)
+
+
 def _checked_rows(rows: Iterable, db: sqlite3.Connection, deadline: float | None) -> Iterator:
     """Bound Python scans and bulk inserts without a deadline check on every historical row."""
     for index, row in enumerate(rows):
@@ -391,34 +419,37 @@ def prepare_budget_totals(
     rebuild stale projections in TEMP. Unavailable historical calendars remain registered but explicitly invalid;
     restoring their zone data rebuilds them before use. The selected calendar must always be available.
     """
-    _set_ledger_timeout(db, deadline)
-    filename = db.execute("PRAGMA database_list").fetchone()[2]
-    identity = (os.getpid(), filename, Path(filename).stat().st_ino)
-    zones, previous_invalid, ready = _summary_state(db)
-    selected = policy.time_zone if policy is not None and getattr(policy, "period", "lifetime") == "monthly" else None
-    if selected is not None:
-        ready = ready and selected in zones
-        zones.add(selected)
-    invalid = _invalid_summary_zones(zones)
-    if selected in invalid:
-        raise ValueError("budget_time_zone")
-    ready = ready and invalid == previous_invalid
-    zones -= invalid
-    if ready and identity in _VERIFIED_LEDGERS:
+    with _ledger_progress(db, deadline):
+        _set_ledger_timeout(db, deadline)
+        filename = db.execute("PRAGMA database_list").fetchone()[2]
+        identity = (os.getpid(), filename, Path(filename).stat().st_ino)
+        zones, previous_invalid, ready = _summary_state(db)
+        selected = (
+            policy.time_zone if policy is not None and getattr(policy, "period", "lifetime") == "monthly" else None
+        )
+        if selected is not None:
+            ready = ready and selected in zones
+            zones.add(selected)
+        invalid = _invalid_summary_zones(zones)
+        if selected in invalid:
+            raise ValueError("budget_time_zone")
+        ready = ready and invalid == previous_invalid
+        zones -= invalid
+        if ready and identity in _VERIFIED_LEDGERS:
+            return zones
+        expected = _recomputed_summaries(db, zones, deadline=deadline)
+        actual = {}
+        if ready:
+            actual = {
+                tuple(row[:3]): list(row[3:])
+                for row in _checked_rows(db.execute("SELECT * FROM request_totals"), db, deadline)
+            }
+        if ready and actual == expected:
+            _VERIFIED_LEDGERS.add(identity)
+        else:
+            _replace_summaries(db, zones, expected, readonly=readonly, invalid_zones=invalid, deadline=deadline)
+        _set_ledger_timeout(db, deadline)
         return zones
-    expected = _recomputed_summaries(db, zones, deadline=deadline)
-    actual = {}
-    if ready:
-        actual = {
-            tuple(row[:3]): list(row[3:])
-            for row in _checked_rows(db.execute("SELECT * FROM request_totals"), db, deadline)
-        }
-    if ready and actual == expected:
-        _VERIFIED_LEDGERS.add(identity)
-    else:
-        _replace_summaries(db, zones, expected, readonly=readonly, invalid_zones=invalid, deadline=deadline)
-    _set_ledger_timeout(db, deadline)
-    return zones
 
 
 def _adjust_budget_totals(db: sqlite3.Connection, zones: set[str], started_ns: int, model: str, delta: tuple) -> None:
