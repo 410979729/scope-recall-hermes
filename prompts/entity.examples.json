@@ -294,7 +294,7 @@
             "kind": "fact",
             "subject": "TEST-Aster Hall",
             "predicate": "identity",
-            "value_text": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+            "value_text": "TEST-Aster Hall is a building at TEST-14 Bay Lane.",
             "conditions": [],
             "statement_kind": "assertion",
             "valid_from": null,
@@ -303,9 +303,9 @@
               {
                 "source_ref": "TEST-target-source",
                 "source_revision": 1,
-                "quote": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+                "quote": "TEST-Aster Hall is a building at TEST-14 Bay Lane.",
                 "start": 0,
-                "end": 58
+                "end": 50
               }
             ]
           }
@@ -1552,12 +1552,12 @@
         {
           "source_ref": "TEST-distractor-source-1",
           "source_revision": 1,
-          "content": "TEST-Aster Hall TEST-1 is building with address TEST-114 Bay Lane."
+          "content": "TEST-Aster Hall TEST-1 is a building at TEST-114 Bay Lane."
         },
         {
           "source_ref": "TEST-distractor-source-2",
           "source_revision": 1,
-          "content": "TEST-Aster Hall TEST-2 is building with address TEST-214 Bay Lane."
+          "content": "TEST-Aster Hall TEST-2 is a building at TEST-214 Bay Lane."
         }
       ],
       "candidates": [
@@ -1568,7 +1568,7 @@
             "kind": "fact",
             "subject": "TEST-Aster Hall TEST-1",
             "predicate": "identity",
-            "value_text": "TEST-Aster Hall TEST-1 is building with address TEST-114 Bay Lane.",
+            "value_text": "TEST-Aster Hall TEST-1 is a building at TEST-114 Bay Lane.",
             "conditions": [],
             "statement_kind": "assertion",
             "valid_from": null,
@@ -1577,9 +1577,9 @@
               {
                 "source_ref": "TEST-distractor-source-1",
                 "source_revision": 1,
-                "quote": "TEST-Aster Hall TEST-1 is building with address TEST-114 Bay Lane.",
+                "quote": "TEST-Aster Hall TEST-1 is a building at TEST-114 Bay Lane.",
                 "start": 0,
-                "end": 66
+                "end": 58
               }
             ]
           }
@@ -1591,7 +1591,7 @@
             "kind": "fact",
             "subject": "TEST-Aster Hall TEST-2",
             "predicate": "identity",
-            "value_text": "TEST-Aster Hall TEST-2 is building with address TEST-214 Bay Lane.",
+            "value_text": "TEST-Aster Hall TEST-2 is a building at TEST-214 Bay Lane.",
             "conditions": [],
             "statement_kind": "assertion",
             "valid_from": null,
@@ -1600,9 +1600,9 @@
               {
                 "source_ref": "TEST-distractor-source-2",
                 "source_revision": 1,
-                "quote": "TEST-Aster Hall TEST-2 is building with address TEST-214 Bay Lane.",
+                "quote": "TEST-Aster Hall TEST-2 is a building at TEST-214 Bay Lane.",
                 "start": 0,
-                "end": 66
+                "end": 58
               }
             ]
           }
@@ -1614,7 +1614,7 @@
             "kind": "fact",
             "subject": "TEST-Aster Hall",
             "predicate": "identity",
-            "value_text": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+            "value_text": "TEST-Aster Hall is a building at TEST-14 Bay Lane.",
             "conditions": [],
             "statement_kind": "assertion",
             "valid_from": null,
@@ -1623,9 +1623,9 @@
               {
                 "source_ref": "TEST-target-source",
                 "source_revision": 1,
-                "quote": "TEST-Aster Hall is building with address TEST-14 Bay Lane.",
+                "quote": "TEST-Aster Hall is a building at TEST-14 Bay Lane.",
                 "start": 0,
-                "end": 58
+                "end": 50
               }
             ]
           }

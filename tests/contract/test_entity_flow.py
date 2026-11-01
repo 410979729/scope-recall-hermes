@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.entity_resolution import entity_progress
+from scope_recall.core.language_resources import prompt_text
 from scope_recall.core.worker import WorkerConfig, drain_worker
 from scope_recall.core.worker_consolidation import build_consolidation_model
 
@@ -36,7 +37,7 @@ class RecordingPort:
     def propose(self, messages, **kwargs):
         body = json.loads(messages[-1]["content"])
         if "proposal" in body:
-            if messages[0]["content"].startswith("Determine whether"):
+            if messages[0]["content"] == prompt_text("entity"):
                 self.entity_calls += 1
                 target = next(
                     (
