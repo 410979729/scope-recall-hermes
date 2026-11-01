@@ -174,6 +174,7 @@ SUITES = {
         "tests/contract/test_mapped_vectors.py",
         "tests/contract/test_vector_integrity.py",
         "tests/contract/test_lazy_vector_clock.py",
+        "tests/contract/test_auxiliary_budget_totals.py",
         "tests/contract/test_embed_fallback_deadline.py",
         "tests/contract/test_failure_policy_semantics.py",
         "tests/contract/test_queue_recovery_actions.py",

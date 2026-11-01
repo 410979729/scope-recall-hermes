@@ -26,7 +26,13 @@ from scope_recall.adapters.hermes.identity import unbound_session_hint
 from scope_recall.adapters.hermes.shared_entries import read_attachment
 from scope_recall.adapters.hermes.unbound_sessions import owner_sessions_unbound
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
-from scope_recall.runtime.model_budget import budget_totals, budget_window, pre_request_refusals, provider_refusals
+from scope_recall.runtime.model_budget import (
+    budget_totals,
+    budget_window,
+    pre_request_refusals,
+    prepare_budget_totals,
+    provider_refusals,
+)
 from scope_recall.runtime.running_code import live_records, stale_records
 
 from . import package_health
@@ -244,6 +250,7 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
         window = budget_window(policy, time.time_ns()) if period == "monthly" else None
         with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
             db.execute("BEGIN")
+            prepare_budget_totals(db, policy, readonly=True)
             totals = budget_totals(db, window)
             lifetime = budget_totals(db) if window is not None else totals
     except (sqlite3.Error, OSError, ValueError):
