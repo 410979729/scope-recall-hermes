@@ -10,13 +10,36 @@ import hashlib
 import json
 import threading
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Deque
 
 _MAX_RECORDS = 64
 #: What every record's ref starts with; ``MemoryCore.inspect_object`` reads such a ref here, not in the store.
 RECALL_DIAGNOSTIC_PREFIX = "recall-diag:"
 _MAX_FIELD_LEN = 240
+
+
+@dataclass
+class RecallTimings:
+    """Content-free milliseconds accumulated per request phase; never persisted here."""
+
+    monotonic: Callable[[], float]
+    stages: dict[str, float] = field(default_factory=dict)
+
+    @contextmanager
+    def measure(self, phase: str):
+        """Accumulate repeated rounds of one phase, including interrupted work."""
+        started = self.monotonic()
+        try:
+            yield
+        finally:
+            self.stages[phase] = self.stages.get(phase, 0.0) + max(0.0, (self.monotonic() - started) * 1000)
+
+    def snapshot(self) -> tuple[tuple[str, str], ...]:
+        """Return the bounded timing vocabulary carried by retrieval diagnostics."""
+        return tuple((name, f"{elapsed:.3f}") for name, elapsed in self.stages.items())
 
 
 @dataclass(frozen=True)
@@ -38,9 +61,11 @@ class RecallDiagnosticRecord:
     rendered_bytes: int = 0
     estimated_tokens: int = 0
     budget_tokens: int = 0
+    stage_timings: tuple[tuple[str, str], ...] = ()
 
     def to_public(self) -> dict[str, object]:
         return {
+            "stage_elapsed_ms": dict(self.stage_timings),
             "phase": self.phase,
             "status": self.status,
             "retrieval_gaps": list(self.retrieval_gaps[:16]),
@@ -84,6 +109,7 @@ class RecallDiagnostics:
         rendered_bytes: int = 0,
         estimated_tokens: int = 0,
         budget_tokens: int = 0,
+        **timings: tuple[tuple[str, str], ...],
     ) -> str:
         with self._lock:
             self._counter += 1
@@ -122,6 +148,7 @@ class RecallDiagnostics:
                 rendered_bytes,
                 estimated_tokens,
                 budget_tokens,
+                tuple((name[:40], value[:40]) for name, value in timings.get("stage_timings", ())[:16]),
             )
             self._records.append(entry)
             self._by_ref[entry.ref] = entry

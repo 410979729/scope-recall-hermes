@@ -119,8 +119,7 @@
    "reportOperatorIssue": 1
   },
   "core/recall_packet.py": {
-   "reportGeneralTypeIssues": 1,
-   "reportOptionalMemberAccess": 4
+   "reportGeneralTypeIssues": 1
   },
   "core/requalify.py": {
    "reportArgumentType": 3

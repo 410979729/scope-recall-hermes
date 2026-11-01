@@ -78,6 +78,22 @@ def store(tmp_path):
     return root, homes
 
 
+@pytest.fixture
+def committed_prompt_capture(monkeypatch):
+    """Wait for prompt commits before clock assertions inspect stored sources."""
+    from scope_recall.adapters.clients.handler import CodexHookHandler
+
+    finish_capture = CodexHookHandler.finish_prompt_capture
+
+    def wait_for_capture(self):
+        # The remote hook may return with capture queued; clock assertions read committed sources.
+        if self.pending_capture is not None:
+            assert self.pending_capture.done.wait(2)
+        finish_capture(self)
+
+    monkeypatch.setattr(CodexHookHandler, "finish_prompt_capture", wait_for_capture)
+
+
 def _free_port() -> int:
     with closing(socket.socket()) as probe:
         probe.bind(("127.0.0.1", 0))
@@ -961,7 +977,7 @@ def test_a_request_refused_for_good_neither_stays_nor_stops_the_spool(served, tm
     assert "refused for good: not kept" in (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
 
 
-def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_work(store):
+def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_work(store, committed_prompt_capture):
     """A recall finds nothing dated after its now, and the time a hook carried set when its work fell due: a message
     dated a day ahead by a fast client clock would be found by no recall for a day and embedded a day late.  A time more
     than a minute ahead is this machine's now; within the minute it is kept as sent, so a correct client's hook sent
@@ -1149,7 +1165,7 @@ def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds
     assert "QX-17。" in held and "KZ-42。" not in held, held
 
 
-def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch):
+def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch, committed_prompt_capture):
     """Clamped one time at a time, a client 90 s fast lost its order: a reply said 10 s into the turn kept its time
     (within the minute of the Stop that sent it), the next prompt was clamped to now, and the reply sorted after it
     and joined the next turn.  Every time a request carries moves back by the same lead."""

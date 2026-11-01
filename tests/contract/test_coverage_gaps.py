@@ -268,16 +268,31 @@ def test_an_optional_channel_that_overruns_does_not_empty_the_packet(app):
     )
 
 
-def test_the_floor_is_the_packet_the_caller_asked_for(app):
-    """Hydrating a fixed three when the packet holds eight only moves the
-    emptiness to the byte budget, which discards two of the three."""
-    from scope_recall.core.recall import MINIMUM_HYDRATION_CAP
+@pytest.mark.parametrize("seconds,slots", [(0.2, 6), (0.3, 30)])
+def test_small_budget_keeps_relation_window_for_requested_slots(app, monkeypatch, seconds, slots):
+    """Publication and hydration leave a usable relation window without a floor."""
+    core, ctx = app
+    capture(core, ctx, "TEST-project palette amber.", key="TEST-window")
+    monkeypatch.setattr(core.clock, "monotonic", lambda: 100.0)
+    pipeline = core.recall_pipeline
+    original = pipeline._expand
+    remaining = []
 
-    assert MINIMUM_HYDRATION_CAP >= 8
+    def expand(tx, context, seeds, gaps, **kwargs):
+        remaining.append(context.deadline - core.clock.monotonic())
+        return original(tx, context, seeds, gaps, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_expand", expand)
+    packet = core.recall_packet(
+        ctx, recall_request(query="TEST-project palette", mode="current", max_items=slots), deadline_seconds=seconds
+    )
+    assert remaining == [pytest.approx(seconds / 2)]
+    assert packet["items"]
+    assert not any(gap.startswith("deadline_exceeded") for gap in packet["gaps"])
 
 
 def test_a_healthy_read_is_unchanged(app):
-    """The floor must not change what a recall with time to spare returns."""
+    """Publication reservations preserve a healthy recall with time to spare."""
     core, ctx = app
     for index in range(4):
         capture(core, ctx, f"TEST-project 配色 第{index}版 蓝色。", key=f"TEST-ok/{index}")
