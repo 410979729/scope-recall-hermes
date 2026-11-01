@@ -36,6 +36,7 @@ dependencies = [
   "PyYAML>=6.0,<7",
   "jsonschema>=4.22,<5",
   "packaging>=24,<27",
+  "numpy>=2,<3; sys_platform != 'android'",
   "tzdata>=2025.3,<2027; sys_platform == 'win32'",
 ]
 
@@ -47,6 +48,7 @@ scope-recall = "scope_recall.maintenance.cli:main"
 scope-recall = "scope_recall.distribution.hermes:register"
 
 [project.optional-dependencies]
+vectors = []
 lancedb = [
   "lancedb>=0.30.2,<=0.37.1; sys_platform != 'android'",
   "pyarrow>=24,<25; sys_platform != 'android'",
@@ -96,13 +98,14 @@ package-dir = { "scope_recall" = "." }
 
 [tool.setuptools.cmdclass]
 build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
+install_lib = "packaging_hooks.v11_build.AllowlistedInstallLib"
 
 [tool.setuptools.package-data]
 "scope_recall" = [
-  "_lance_worker.py",
   "prompts/*.txt",
   "prompts/*.json",
   "maintenance/migration_mapping.json",
+  "vector/model-capabilities.json",
   "maintenance/ui_static/*.html",
   "maintenance/ui_static/*.js",
   "maintenance/ui_static/*.css",

@@ -42,7 +42,7 @@ such as a tailnet, not the public internet. Use an HTTPS endpoint when that netw
    python -m scope_recall.adapters.codex.remote_server serve --home D:\ScopeRecall\work-claude-code --host claude-code --env-file <file>
    ```
 
-   The server keeps one handler for its prompts' recall, with its LanceDB table open and its embedding
+   The server keeps one handler for its prompts' recall, with its SQLite vector companion open and its embedding
    worker connected, while each request's own handler stores the hook (as the entry's MCP server on this
    machine does for the hooks here: [shared-store.md](shared-store.md)).
 

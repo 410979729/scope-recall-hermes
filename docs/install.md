@@ -32,10 +32,10 @@ older database is a separate, explicit operation — see
   `<home>\plugins\<name>\`, and builds it again on updates, which drops a core installed there
   by hand. Give such a Hermes `<home>\plugins\scope-recall` as `--target-plugin-dir`
   (section 4): `apply-install` writes the wrapper there, with a `pyproject.toml` that declares the
-  core with its vector dependencies, `hermes-scope-recall[lancedb]==<version>`. The package
-  manager reads a `pyproject.toml` before `plugin.yaml`'s `pip_dependencies`, and one written
-  there by hand without `[lancedb]` builds an environment in which every recall runs without
-  vectors. A gateway that starts on an environment older than the declaration may build it
+  core with its vector dependencies, `hermes-scope-recall[vectors]==<version>`. The package
+  manager reads a `pyproject.toml` before `plugin.yaml`'s `pip_dependencies`. The compatibility
+  extra adds no packages; NumPy retrieval ships with the base package. A gateway that starts
+  on an environment older than the declaration may build it
   again itself, with its own rights and Hermes's whole update tail, and a failure there turns
   memory off without a word. So after `apply-install`,
   rebuild it with Hermes's own sync before the restart (section 4), then run `doctor`, which
@@ -46,47 +46,38 @@ older database is a separate, explicit operation — see
   on such a home once it has. A candidate between releases declares nothing, because a
   requirement Hermes cannot resolve fails its whole build: install a candidate by hand into the
   environment Hermes runs, and again after Hermes rebuilds it.
-- Runtime dependencies are small and pure-Python: `PyYAML`, `jsonschema`,
-  `packaging`, and `tzdata` on Windows only.
+- Runtime dependencies include `PyYAML`, `jsonschema`, `packaging`, NumPy,
+  and `tzdata` on Windows only. NumPy is not resolved from PyPI on Android.
 
-Two optional extras:
+Runtime extras:
 
 | Extra | Adds | What it enables |
 |-------|------|-----------------|
-| `lancedb` | `lancedb`, `pyarrow` | The LanceDB vector companion, which is the `vector.backend` default. Without it, use `sqlite-bruteforce`, which needs no extra. These dependencies are not installed on Android, where recall runs without vectors. |
+| `vectors` | No additional packages | Compatibility extra; the base NumPy dependency provides mapped vector retrieval. |
+| `lancedb` | `lancedb`, `pyarrow` | Read existing LanceDB vectors during import. It is not a runtime search backend. These packages have no Android wheels. |
 | `codex` | `mcp`, `pydantic` | The Codex MCP server. Without it, the Core and Hermes paths still import and the Codex hooks still run, but the MCP server cannot start. |
 
-A third extra, `dev`, adds `build`, `pytest`, `ruff`, `pyright` and packaging
+NumPy wheels cover supported CPython releases on Windows, macOS, glibc Linux
+and musl Linux. Android requires a separately supplied NumPy build; without
+it, omit vector configuration and use lexical recall.
+
+The `dev` extra, adds `build`, `pytest`, `ruff`, `pyright` and packaging
 tools. You need `build` (or the `dev` extra) to produce the wheel.
 
 ## 2. Install the package
 
-From PyPI, into the host's environment, with the vector extra (and `codex` for an
-entry with an MCP server: Codex, Claude Code, WorkBuddy, dsh):
+From PyPI, into the host's environment (add `codex` for an entry with an MCP
+server: Codex, Claude Code, WorkBuddy, dsh):
 
 ```text
-python -m pip install -U "hermes-scope-recall[lancedb]"
-python -m pip install -U "hermes-scope-recall[lancedb,codex]"
+python -m pip install -U hermes-scope-recall
+python -m pip install -U "hermes-scope-recall[codex]"
 ```
 
-`-U` also moves an older install to the current release. Without `[lancedb]` the
-default LanceDB vector store cannot open and recall is lexical (the
-`sqlite-bruteforce` backend needs no extra); `doctor` names that as
-`vector_dependencies_missing` while a LanceDB store is configured.
-
-Outside Windows, the first LanceDB import is rehearsed in a child process with a
-10-second alarm that ends the child even if its host has already exited. Recall
-and prefetch wait only for their remaining request budget; creating a child
-process itself cannot be interrupted. If the probe times out or cannot start,
-a later call can retry after a 30-second cooldown. Consecutive incomplete probes
-double the cooldown up to 30 minutes; a completed failure remains cached until
-the host restarts. Each unsuccessful probe logs only its outcome: timeout
-duration, exit status (or signal name on POSIX), or child start exception type
-and errno. Successful probes are silent. Windows uses the isolated vector helper.
-
-Or build the wheel from a source tree and install that file, which is how a
-candidate between releases is installed. The file name carries the version of the
-tree you built; the ones below are examples.
+`-U` upgrades an existing installation. Raw embeddings are kept in `vectors.sqlite3`;
+the worker builds scoped mapped arrays in `vectors.sqlite3.cache/` and imports
+existing JSON or LanceDB vectors
+without embedding calls. Missing input and incomplete imports remain visible in doctor.
 
 ### Windows
 
@@ -94,7 +85,7 @@ tree you built; the ones below are examples.
 cd C:\path\to\scope-recall-source
 py -m pip install build
 py -m build --wheel
-py -m pip install "C:\path\to\scope-recall-source\dist\hermes_scope_recall-<version>-py3-none-any.whl[lancedb]"
+py -m pip install "C:\path\to\scope-recall-source\dist\hermes_scope_recall-<version>-py3-none-any.whl[vectors]"
 ```
 
 ### Linux and macOS
@@ -103,12 +94,12 @@ py -m pip install "C:\path\to\scope-recall-source\dist\hermes_scope_recall-<vers
 cd /path/to/scope-recall-source
 python3 -m pip install build
 python3 -m build --wheel
-python3 -m pip install "/path/to/scope-recall-source/dist/hermes_scope_recall-<version>-py3-none-any.whl[lancedb]"
+python3 -m pip install "/path/to/scope-recall-source/dist/hermes_scope_recall-<version>-py3-none-any.whl[vectors]"
 ```
 
 Quote the whole argument: the `[extra]` suffix is shell metacharacters in both
 shells, and the path may contain spaces. To install both extras, write
-`...whl[lancedb,codex]`.
+`...whl[vectors,codex]`.
 
 Two console entry points are installed, and they are the same program:
 
@@ -537,7 +528,7 @@ and any mismatch it finds there; without it, it measures itself, which cannot te
 you whether the host's environment has the new wheel.
 
 `doctor` changes no stored data and no configuration; its read of a
-`sqlite-bruteforce` vector companion can leave SQLite's `-wal` and `-shm` files
+SQLite vector companion can leave SQLite's `-wal` and `-shm` files
 beside it (section 10). It prints one JSON object with about fifty fields, sorted
 by key, and exits `0` only when `status` is `"ok"`.
 
@@ -558,27 +549,34 @@ The gaps that yield `attention` rather than `degraded` are
 `work_failed_terminal_only`, `work_needs_review` and
 `worker_capability_unavailable`. Everything else forces `degraded`.
 
-Each store under `index_metadata.vector_stores` names its nearest-neighbour index
-in `index_outcome`. The worker builds the index once the store holds 10,000
-vectors, at the start of a pass that has the time for the build: about 8 s for
-78,000 vectors of 3,072 dimensions. It is IVF over 8-bit quantized vectors, and a
-search probes every partition and re-ranks its nearest candidates exactly, so it
-finds what an exact scan finds, in about 40 ms instead of 750. A vector index of
-another kind is replaced (`rebuilt`). The same outcome is in
-`vectors/<space>/index-state.json`.
+`index_metadata.vector_runtime` reports the engine (`numpy-prefix`, `numpy-exact`
+or `numpy-raw`), original and coarse dimensions, the global candidate budget,
+compute threads, committed watermark and legacy import states. The default is 1024 global
+candidates and `min(4, physical cores)` numerical threads. SQLite access and global selection
+stay on the calling thread. The worker appends scoped continuous files, records a SHA-256
+checksum for each published page, and publishes counts only after flushing the files.
+Queries use normalized 768-dimensional prefixes only for embedding spaces recording
+approved truncation capabilities in `vector/model-capabilities.json`; other spaces
+scan full dimensions. All returned cosine scores use the full original float32
+values. SQLite sequence checks exclude deleted or replaced rows before reranking,
+and every row newer than the watermark is scanned exactly. Only the final returned vectors
+are read back from SQLite to verify their full-dimensional scores. Non-finite scan scores,
+invalid candidate sequence keys or a final score disagreement invalidate that generation;
+the current query uses a raw exact scan within its remaining deadline. A small generation
+marker makes the detected fault visible to other readers, doctor and the worker. A reader
+whose filesystem refuses that marker still quarantines the generation locally.
 
-| `index_outcome` | Meaning |
-|-----------------|---------|
-| `built`, `rebuilt` or `present` | The store has its index; compaction keeps it current. |
-| `below_threshold` | Fewer than 10,000 vectors; an exact scan is quick enough. |
-| `deferred` | The build did not fit the pass; a later pass with more time builds it. |
-| `failed` | The build failed; it is tried again six hours later. |
-| `started` | A build began and no outcome was recorded (the pass was ended); tried again six hours later. |
-| none | No pass has looked yet. |
-
-Without the index a search reads every vector. A Claude Code or Codex hook starts
-its search helper fresh for each prompt, so on a large store its automatic recall
-answers from words alone.
+Background maintenance verifies at most eight checksum pages per pass, resuming its cursor
+until the full generation is covered, then schedules another cycle after an hour. Finite
+changes outside the returned rows can remain undetected until this audit.
+`cache_ready` describes the layout and absence of a detected fault, not a full audit on each
+query. Doctor also reports `cache_error`, the verification cursor/time and collection
+progress. Missing files select a raw scan and schedule reconstruction. Cached deleted rows
+are excluded by raw metadata until rebuilt. Retired files held by Windows readers remain
+scheduled for collection after a minute; the collector checks the current generation under
+the same SQLite writer transaction that protects publication.
+Import failures retain their cursor and input, report a recall gap and retry after
+a capability cooldown. No embedding request is made to replace unreadable input.
 
 Each store also says how far the worker got in giving an import's history the
 embeddings its old store never had (`embed_backfill_outcome`, with
@@ -660,11 +658,10 @@ Things that look wrong in a healthy report and are not:
   `last_day` and `held_until` appear only with an external embedding route,
   and only while the provider holds it.
 - `vector_store` with `result: "missing"` means the worker has not yet created
-  the entry's `sqlite-bruteforce` companion; its first pass does. The check opens
+  the entry's SQLite companion; its first pass does. The check opens
   the companion as recall does, within five seconds, and reads only its tables
   and identity: `readable` is the healthy result, and `unreadable` raises
-  `vector_store_unreadable` (below). A LanceDB store has no `vector_store` check;
-  the doctor reads its files without opening it.
+  `vector_store_unreadable` (below). Engine and import state appear in `index_metadata.vector_runtime`.
 
 ### Common gaps and what they mean
 
@@ -682,9 +679,9 @@ Things that look wrong in a healthy report and are not:
 | `hot_patched` | Installed files no longer match the wheel's recorded digests. | Reinstall. Editing installed files is the usual cause. |
 | `dependency_drift` | A declared requirement is missing or outside its pin. Extras you did not install are *not* drift, and the `codex` extra's pins count only for Codex, Claude Code, WorkBuddy and dsh, which run its MCP server; on a Hermes host they are listed with `applies: false`. | Reinstall with the pins, or install the extra properly. |
 | `hermes_runtime_package_missing` / `hermes_runtime_package_mismatch` | A Hermes that builds its own environment runs plugins from it (`hermes_runtime.environment`), and the core there is missing or another version than this one. Installing into the venv `--python` names does not reach it. | Install with `--target-plugin-dir <home>\plugins\scope-recall`, let Hermes sync, restart (section 4). |
-| `vector_dependencies_missing` | The runtime config names a LanceDB vector store, and the interpreter the doctor checked (`--python`, or its own) has no `lancedb` or `pyarrow`: every recall finds memories by their words alone. On Android the `lancedb` extra intentionally installs neither dependency; elsewhere the extra may be missing. Its recall gaps say `vector_error:RuntimeError:lance_not_installed`. | On Android configure the dependency-free `sqlite-bruteforce` backend, or omit `vector` to recall without vectors. Elsewhere install `pip install "hermes-scope-recall[lancedb]"` into that interpreter (section 2), or use either configuration. |
-| `hermes_runtime_vector_dependencies_missing` | That environment has no `lancedb` or `pyarrow` while the runtime config has a LanceDB vector store: every recall runs without vectors. On Android the wrapper's `lancedb` extra intentionally installs neither dependency. | On Android configure `sqlite-bruteforce`, which needs no extra, or omit `vector` to recall without vectors. Elsewhere the wrapper's `pyproject.toml` declares the extra; check whether a file written by hand omitted it. |
-| `vector_store_unreadable` | The configured `sqlite-bruteforce` companion cannot be opened for recall. The `vector_store` check's detail names the same cause as recall's `vector_error:<label>`; `VectorStoreCompatibilityError` includes a stored identity that differs from the config. | For an identity mismatch, follow “Changing the embedding model rebuilds the vector store” in [configuration.md](configuration.md#changing-the-embedding-model-rebuilds-the-vector-store). |
+| `vector_dependencies_missing` | The runtime config names a vector store, but the interpreter has no NumPy. Recall uses lexical channels. | Install NumPy in that environment. PyPI does not provide an Android wheel; omit `vector` there unless the environment already supplies NumPy. |
+| `hermes_runtime_vector_dependencies_missing` | The environment Hermes actually runs has no NumPy. | Rebuild the host environment from its plugin declaration. On Android, vectors require an independently supplied NumPy build. |
+| `vector_store_unreadable` | The SQLite companion cannot be opened for recall. Its detail identifies the failure, including a stored embedding identity that differs from the config. | For an identity mismatch, follow “Changing the embedding model rebuilds the vector store” in [configuration.md](configuration.md#changing-the-embedding-model-rebuilds-the-vector-store). |
 | `version_mismatch` | Receipt, distribution, imported and running versions disagree. | Stop the old processes, then reinstall. |
 | `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |
 | `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails; on a store above 100 MB, a caller with a minute of budget does (section 9). A step is one way: take a `backup` first if you may want to go back. |
@@ -1190,7 +1187,7 @@ earlier, is refused (`snapshot_schema`): no release that reads it carries
   [deletion-contract.md](deletion-contract.md) says what a purge removes and
   what it does not.
 
-- **The `sqlite-bruteforce` vector companion** is a rebuildable WAL-mode
+- **The SQLite vector companion** is a rebuildable WAL-mode
   `vector.sqlite3` file. Recall reads every committed embedding through the WAL
   while the worker writes, and each read's lock wait is capped by the recall's
   remaining time. A read needs `vector.sqlite3-wal` and the
@@ -1200,10 +1197,10 @@ earlier, is refused (`snapshot_schema`): no release that reads it carries
   when it is the last connection and closes cleanly. On POSIX SQLite gives
   them the database file's owner-only mode; on Windows they inherit the
   directory's ACL.
-- **LanceDB** needs the `lancedb` extra. Keep the data directory short, for
-  example `C:\ScopeRecall\my-agent`: LanceDB appends index, table and temporary
-  file names below it, and the worker reports `native_vector_path_too_long`
-  before touching LanceDB or the embedding API when the result is too long.
+- **Vector search** stores float32 values in a separate SQLite companion. The
+  worker publishes scoped mapped arrays; NumPy selects global candidates and scores
+  full vectors. Missing arrays use an exact raw scan. The `vectors` extra is accepted
+  without additional dependencies; `lancedb` is needed only to read legacy input.
 - **PostgreSQL / pgvector** is not in this distribution. Configuring it is an
   explicit error; keep the old installation and use the migration guide.
 - **`runtime-config.json` is never generated.** Without it the Core runs with

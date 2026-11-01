@@ -7,7 +7,6 @@ a client attached to a shared store, Codex or Claude Code.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -51,9 +50,6 @@ def main(argv: list[str] | None = None) -> int:
     hook_started_at = time.monotonic()
     empty = EMPTY_ANSWER[args.host]
     raw = sys.stdin.buffer.read(65537)
-    # Started whether or not the entry's server is asked: the hook recalls itself when the server has not answered in
-    # time, and without a helper started here that recall would run by words alone.
-    _prestart_vector_helper(raw)
     location = (args.config if args.config is not None else args.home).expanduser()
     if not location.is_absolute():
         sys.stderr.write("CODEX_HOOK:config_path_not_absolute\n")
@@ -144,28 +140,6 @@ def _keep_a_resident_server(home: Path, host: str, env_file: Path | None) -> Non
         started = "failed"
     if started not in ("running", "off"):
         sys.stderr.write(f"CODEX_RECALL_RESIDENT_START:{started}\n")
-
-
-def _prestart_vector_helper(raw: bytes) -> None:
-    """Start the vector search's helper while the prompt is being stored (``vector.process_store.prestart``).
-
-    Each hook is a new process, and a helper started when the recall reaches its vector search would spend the
-    rest of the recall's budget importing LanceDB: Claude Code and Codex would recall from words alone.
-    """
-    if sys.platform != "win32" or len(raw) > 65536:
-        return
-    try:
-        payload = json.loads(raw)
-    except (ValueError, RecursionError):
-        return
-    if not isinstance(payload, dict) or payload.get("hook_event_name") != "UserPromptSubmit":
-        return
-    try:
-        from ...vector.process_store import prestart
-
-        prestart()
-    except OSError:
-        sys.stderr.write("CODEX_HOOK:vector_prestart_failed\n")
 
 
 if __name__ == "__main__":

@@ -240,7 +240,7 @@ revalidate existing snapshots without reinstalling historical releases.
 
 `performance.py` freezes machine/workload conditions before populating 350,000
 and 1,000,000 sources. It uses 3072-dimensional synthetic float32 vectors and
-the shipped LanceDB helper. Fixture bulk loading is separate from measured
+the SQLite vector companion. Fixture bulk loading is separate from measured
 capture/recall/worker operations. Four logical foreground entries are paced at
 four arrivals per second with one request in flight; achieved input rate is
 reported when retrieval prevents that rate. OS page-cache flushing is avoided

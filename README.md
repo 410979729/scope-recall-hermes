@@ -88,27 +88,29 @@ only as an entry; its installer adds them to WorkBuddy's own `settings.json` and
 the installer writes and names in dsh's home patch, also only as an entry, with dsh's upload of its
 session logs switched off ([docs/install.md](docs/install.md), section 13).
 
-The package is `hermes-scope-recall` on PyPI. Install or upgrade it, with its vector extra, into
-the same isolated Python environment the host uses. The default vector store is LanceDB: without
-`[lancedb]` it cannot open, and recall finds memories by their words alone (the
-`sqlite-bruteforce` backend needs no extra):
+The package is `hermes-scope-recall` on PyPI. Install it into the host's isolated Python environment:
 
 ```text
-python -m pip install -U "hermes-scope-recall[lancedb]"
-python -m pip install -U "hermes-scope-recall[lancedb,codex]"
+python -m pip install -U "hermes-scope-recall[vectors]"
+python -m pip install -U "hermes-scope-recall[vectors,codex]"
 ```
 
-The second line is for Codex, Claude Code, WorkBuddy and dsh, whose MCP server needs the `codex`
-extra. `-U` moves an older install to the current release; write `==<version>` instead to pin
-one. A Hermes that builds its own plugin environment
-installs the core from the declaration the installer writes instead (below). `doctor` names an
-environment that lacks the vector extra while a LanceDB store is configured
-(`vector_dependencies_missing`).
+The second command adds the MCP SDK for Codex, Claude Code, WorkBuddy and dsh.
+Raw float32 embeddings live in a separate SQLite companion. NumPy scans worker-maintained
+mapped arrays, using approved normalized prefixes to select global candidates and the original
+full vectors for every returned cosine score. The global candidate target is 1024; numerical
+blocks use at most four threads and never more than the physical core count. Final result
+scores are checked against SQLite. Non-finite scan scores or a score mismatch quarantine
+the generation and select an exact raw scan. Workers also audit published page checksums
+in bounded batches. Missing derived files use the same raw scan.
+The `vectors` extra remains accepted for installation compatibility and adds no packages.
+`doctor` reports the selected engine and index/import watermarks. Android's PyPI packages do not
+supply NumPy wheels; without a runtime-provided NumPy, recall remains lexical.
 
 The same wheel and sdist are attached to each
 [GitHub release](https://github.com/410979729/scope-recall-hermes/releases/latest)
 alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
-(`python -m pip install "<path-to-wheel>[lancedb]"`). To build it yourself from this checkout instead:
+(`python -m pip install "<path-to-wheel>[vectors]"`). To build it yourself from this checkout instead:
 
 ```text
 python -m build --wheel
@@ -151,9 +153,13 @@ scope-recall apply-uninstall --instance-root <absolute-instance-root>
 
 SQLite truth lives in the verified Core data directory. Vector indexes are companions and may be rebuilt only through an explicit configured space. The Hermes and Codex adapters bind host identity, installation identity, scopes, and project roots before opening Core. After that binding is verified, an omitted runtime-config argument checks only `<data_directory>/runtime-config.json`; a missing file stays basic plus an explicit capability gap. The file is never generated or discovered from the current directory, parent directories, or credential locations. Optional host wiring must report a capability gap instead of creating or repairing a database.
 
-The `codex` extra adds the MCP SDK. Without that extra, the Core and Hermes paths remain importable. The `lancedb` extra adds the LanceDB vector companion, the default `vector.backend`; without it, configure `sqlite-bruteforce` or recall stays lexical. PostgreSQL/pgvector is outside this v3 distribution; an explicit configuration error directs operators to retain the old installation and use the migration guide.
-
-On Windows, choose a short data directory such as `C:\ScopeRecall\my-agent`. LanceDB appends index, table, and temporary file names to that path. If the resulting native path is too long, the worker reports `native_vector_path_too_long` before starting LanceDB or calling the embedding API. Use a short target directory for a new installation or an offline migration.
+The `codex` extra adds the MCP SDK. NumPy provides mapped retrieval and exact full-vector
+scoring without SQLite extensions. The `lancedb` extra is only a reader for existing
+LanceDB embeddings. Legacy `vector.backend` values map to the SQLite companion automatically.
+The worker imports existing vectors without embedding calls and retains the original files.
+Until all visible identities are verified, recall uses lexical channels and reports an import gap.
+Missing or unreadable input remains a reported gap. Changing the embedding model still requires
+an explicit re-embedding run; opening a store never authorizes paid reconstruction.
 
 ## Profile and entity read views
 

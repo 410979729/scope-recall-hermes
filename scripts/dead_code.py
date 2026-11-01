@@ -30,7 +30,7 @@ _KEEP = ("main",)
 
 def _shipped() -> list[str]:
     listed = json.loads((ROOT / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))
-    return listed["python_modules"] + ["_lance_worker.py", "scripts/check.py", "packaging_hooks/module_inventory.py"]
+    return listed["python_modules"] + ["scripts/check.py", "packaging_hooks/module_inventory.py"]
 
 
 def _corpus(exclude: str) -> str:

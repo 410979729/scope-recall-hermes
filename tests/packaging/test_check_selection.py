@@ -220,7 +220,7 @@ CHANGES = {
     "client": ["adapters/clients/mcp_server.py"],
     "hermes": ["adapters/hermes/identity.py"],
     "runtime": ["runtime/worker_entry.py"],
-    "vector": ["runtime/lance_port.py"],
+    "vector": ["runtime/vector_port.py"],
     "lance store": ["vector/process_store.py"],
     "store": ["core/delete_storage.py", "core/visibility.py"],
     "claim": ["core/claims.py"],
@@ -363,12 +363,10 @@ def test_a_packaging_change_leaves_the_build_to_a_tier_that_has_the_packaging_he
     assert "packaging" in details["required_tiers"]
 
 
-#: The files and directories the native suite is about: the Lance store and its helper process, and the runtime modules
-#: that start and feed them.
+#: Companion storage and the runtime modules that publish and search its vectors.
 NATIVE_PATHS = [
     *sorted(path.relative_to(ROOT).as_posix() for path in (ROOT / "vector").glob("*.py")),
-    "_lance_worker.py",
-    "runtime/lance_port.py",
+    "runtime/vector_port.py",
     "runtime/vector_upkeep.py",
     "runtime/instance.py",
     "runtime/instance_config.py",

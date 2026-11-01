@@ -1,10 +1,10 @@
-"""LanceDB boundary for the retrieval pipeline.
+"""Vector companion boundary for the retrieval pipeline.
 
-The adapter has no LanceDB/PyArrow import.  A caller injects the already
+The adapter has no optional native extensions import.  A caller injects the already
 selected vector store and an embedding port, so construction is side-effect
 free: nothing is opened, created, loaded or contacted.
 
-Lance rows are only an index projection.  Search returns ``CandidateRef``
+Vector rows are only an index projection.  Search returns ``CandidateRef``
 metadata; the pipeline hydrates and authorizes the object from SQLite before
 any content can be used.
 """
@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol, cast
 
 from ..contracts import ContractError, TrustedContext
-from ..core.deadline import RequestDeadline, using_request_deadline
+from ..core.deadline import RequestDeadline, request_clock, using_request_deadline
 from ..core.recall_policy import SPACE_ID, claim_embedding_text
 from ..core.retrieval import CandidateRef, SearchContext
 from ..core.source_records import StoredSource
@@ -45,7 +45,7 @@ def physical_partition_scope_id(
     project_id: str | None,
     branch_id: str | None,
 ) -> str:
-    """Deterministic Lance ``scope_id`` partition bound to trusted identity."""
+    """Deterministic Vector ``scope_id`` partition bound to trusted identity."""
     payload = {
         "agent_id": agent_id,
         "branch_id": branch_id,
@@ -140,7 +140,7 @@ class PreparedSourceEmbedding:
     embedding: tuple[float, ...]
 
 
-class LanceEmbedPort:
+class VectorEmbedPort:
     """Projects one source or claim version into the index through the fenced writer."""
 
     def __init__(
@@ -151,7 +151,7 @@ class LanceEmbedPort:
         agent_id: str,
         installation_id: str,
         embedding_space: str,
-        writer: LanceIndexWriter | None = None,
+        writer: VectorIndexWriter | None = None,
     ) -> None:
         self._embed_source = _embedding_method(source_embedding, "embed_source")
         if type(agent_id) is not str or not agent_id or type(installation_id) is not str or not installation_id:
@@ -160,7 +160,7 @@ class LanceEmbedPort:
             raise ValueError("embedding_space is required")
         self._source_embedding = source_embedding
         self._embedding_space = embedding_space
-        self._writer = writer or LanceIndexWriter(store)
+        self._writer = writer or VectorIndexWriter(store)
         self._agent_id = agent_id
         self._installation_id = installation_id
 
@@ -368,7 +368,7 @@ class LanceEmbedPort:
         subject_detail: str,
         lease_token: int,
         lease_owner: str,
-    ) -> "LanceVectorRecord":
+    ) -> "VectorRecord":
         """The row a publication writes, once every input has answered for itself."""
         if not isinstance(prepared, PreparedSourceEmbedding):
             raise ContractError("INPUT_INVALID", "prepared_embedding")
@@ -381,7 +381,7 @@ class LanceEmbedPort:
             raise ContractError("ACCESS_DENIED", "prepared_scope")
         if type(lease_token) is not int or lease_token < 1 or type(lease_owner) is not str or not lease_owner:
             raise ContractError("INPUT_INVALID", "lease")
-        return LanceVectorRecord(
+        return VectorRecord(
             object_kind,
             prepared.source_ref,
             prepared.source_revision,
@@ -416,7 +416,7 @@ class LanceEmbedPort:
 
 
 @dataclass(frozen=True)
-class LanceVectorRecord:
+class VectorRecord:
     """Validated metadata-plus-vector input for an explicit index write.
 
     ``content`` is intentionally absent: the row carries an empty payload and
@@ -463,9 +463,9 @@ class LanceVectorRecord:
             raise ValueError("invalid updated_at")
 
 
-def _record_row(record: LanceVectorRecord) -> dict[str, Any]:
-    if not isinstance(record, LanceVectorRecord):
-        raise TypeError("records must be LanceVectorRecord values")
+def _record_row(record: VectorRecord) -> dict[str, Any]:
+    if not isinstance(record, VectorRecord):
+        raise TypeError("records must be VectorRecord values")
     metadata = {
         "object_kind": record.object_kind,
         "object_ref": record.object_ref,
@@ -497,24 +497,24 @@ def _record_row(record: LanceVectorRecord) -> dict[str, Any]:
     }
 
 
-class LanceIndexWriter:
+class VectorIndexWriter:
     """Explicit, bounded projection writer; never used by read-only search."""
 
     def __init__(self, store: Any) -> None:
         self._store = store
 
-    def upsert_records(self, records: Iterable[LanceVectorRecord]) -> None:
+    def upsert_records(self, records: Iterable[VectorRecord]) -> None:
         rows = [_record_row(record) for record in records]
         if rows:
             # The store owns the native write and its lease semantics; nothing
             # here creates a table or rebuilds when the target is unavailable.
             self._store.upsert_records(rows)
 
-    def upsert_fenced(self, record: LanceVectorRecord, *, guard: Callable[[], bool], remaining_seconds: float) -> bool:
+    def upsert_fenced(self, record: VectorRecord, *, guard: Callable[[], bool], remaining_seconds: float) -> bool:
         return self.upsert_fenced_many((record,), guard=guard, remaining_seconds=remaining_seconds)
 
     def upsert_fenced_many(
-        self, records: Sequence[LanceVectorRecord], *, guard: Callable[[], bool], remaining_seconds: float
+        self, records: Sequence[VectorRecord], *, guard: Callable[[], bool], remaining_seconds: float
     ) -> bool:
         """One lock-held commit for every record, guarded once for all of them."""
         method = getattr(self._store, "fenced_upsert_records", None)
@@ -526,7 +526,7 @@ class LanceIndexWriter:
         return bool(method(rows, guard=guard, remaining_seconds=remaining_seconds))
 
 
-class LancePurgePort:
+class VectorPurgePort:
     """Single native, lock-held active purge for one trusted installation."""
 
     def __init__(self, store: Any, *, embedding_spaces: Iterable[str], agent_id: str, installation_id: str) -> None:
@@ -594,8 +594,8 @@ class LancePurgePort:
             return False
 
 
-class LanceVectorPort:
-    """Read-only Lance candidate source for :class:`RetrievalPipeline`."""
+class VectorPort:
+    """Read-only Vector candidate source for :class:`RetrievalPipeline`."""
 
     def __init__(
         self,
@@ -637,11 +637,10 @@ class LanceVectorPort:
             raise ValueError("remaining_seconds must be finite")
         if remaining_seconds <= 0:
             return ()
-        now = self._clock()
-        deadline = min(context.deadline, now + float(remaining_seconds))
-        # The helper reads this request-local deadline to cap its lock and RPC
-        # waits; no worker or future is created here.
-        with using_request_deadline(RequestDeadline.from_absolute(deadline, now=now)):
+        bound = RequestDeadline.within(context.deadline, budget_seconds=remaining_seconds, clock=self._clock)
+        deadline = bound.deadline_monotonic
+        # Store waits and scans share the caller's clock and cannot extend a parent request.
+        with using_request_deadline(bound):
             query_vector = self._query_vector(context, deadline, _prepared_query)
             hits = self._partition_hits(context, query_vector, limit, deadline) if query_vector else []
         return _ranked(hits, limit)
@@ -663,7 +662,7 @@ class LanceVectorPort:
         prepared: tuple[str, Sequence[float]] | None,
     ) -> list[float]:
         if prepared is None:
-            remaining = deadline - self._clock()
+            remaining = deadline - request_clock(self._clock)()
             if remaining <= 0:
                 # Returned as no vector, the recall would say nothing and look as if it had searched by meaning.
                 raise TimeoutError("query embedding stage deadline exhausted")
@@ -700,10 +699,10 @@ class LanceVectorPort:
         hits: list[CandidateRef] = []
         search_scopes = getattr(self._store, "search_scopes", None)
         if callable(search_scopes):
-            if deadline - self._clock() <= 0:
+            if deadline - request_clock(self._clock)() <= 0:
                 # The embedding took the time the search needed.  An empty answer here would report no gap: the recall
                 # would look as if it had searched by meaning and found nothing.
-                raise TimeoutError("native vector helper request deadline exhausted before the search")
+                raise TimeoutError("vector store request deadline exhausted before the search")
             for row in self._search_rows(search_scopes, query_vector, scope_ids=list(logical), limit=limit):
                 partition = row.get("scope_id") if isinstance(row, Mapping) else None
                 if partition in logical:
@@ -717,14 +716,14 @@ class LanceVectorPort:
         reserve = 0.0
         searched = False
         for partition, logical_scope_id in logical.items():
-            if deadline - self._clock() <= reserve:
+            if deadline - request_clock(self._clock)() <= reserve:
                 if not searched:
-                    raise TimeoutError("native vector helper request deadline exhausted before the search")
+                    raise TimeoutError("vector store request deadline exhausted before the search")
                 return hits
             searched = True
-            started = self._clock()
+            started = request_clock(self._clock)()
             rows = self._search_rows(self._store.search, query_vector, scope_id=partition, limit=limit)
-            reserve = max(reserve, self._clock() - started)
+            reserve = max(reserve, request_clock(self._clock)() - started)
             for row in rows or ():
                 candidate = self._candidate_from_row(row, trusted, partition, logical_scope_id)
                 if candidate is not None:
@@ -732,7 +731,7 @@ class LanceVectorPort:
         return hits
 
     def _search_rows(self, search, vector, **kwargs):
-        """Time stores without native RPC diagnostics at their actual search boundary."""
+        """Time stores without managed execution diagnostics at their search boundary."""
         managed = getattr(self._store, "reports_vector_execution", False)
         with nullcontext() if managed else vector_phase("vector", "search"):
             return list(search(vector, **kwargs) or ())
@@ -841,11 +840,11 @@ def _ranked(hits: Iterable[CandidateRef], limit: int) -> tuple[CandidateRef, ...
 
 
 __all__ = [
-    "LanceEmbedPort",
-    "LanceIndexWriter",
-    "LancePurgePort",
-    "LanceVectorPort",
-    "LanceVectorRecord",
+    "VectorEmbedPort",
+    "VectorIndexWriter",
+    "VectorPurgePort",
+    "VectorPort",
+    "VectorRecord",
     "PreparedSourceEmbedding",
     "QueryEmbeddingPort",
     "SourceEmbeddingPort",

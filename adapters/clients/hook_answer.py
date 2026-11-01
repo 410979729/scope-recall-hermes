@@ -128,7 +128,7 @@ def recall_incomplete(packet) -> str | None:
 
 def server_own_vector_fault(gap: object) -> bool:
     """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
-    may not share: no vector search at all, its key (``credential_*``), its LanceDB helper or another fault of its own
+    may not share: no vector search at all, its key (``credential_*``), its vector store or another fault of its own
     process that is not an embedding call's (``core.vector_failure``), or its embedding connection and worker
     (``network_error``, ``http_protocol``, ``transport_*``), which the server keeps between prompts while the hook's
     are new.  Otherwise an embedding call's failure (what the provider answered, the time it took, a spent budget)

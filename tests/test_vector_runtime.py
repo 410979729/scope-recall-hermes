@@ -6,7 +6,7 @@ import pytest
 from scope_recall.vector.store import VectorRecord, build_vector_store
 
 
-def test_vector_store_factory_builds_sqlite_bruteforce_protocol_adapter(tmp_path):
+def test_legacy_backend_name_builds_sqlite_companion_protocol_adapter(tmp_path):
     store = build_vector_store(
         "sqlite-bruteforce",
         storage_dir=tmp_path,
@@ -14,7 +14,7 @@ def test_vector_store_factory_builds_sqlite_bruteforce_protocol_adapter(tmp_path
         dimensions=2,
         metric="cosine",
     )
-    assert store.backend == "sqlite-bruteforce"
+    assert store.backend == "sqlite"
     store.open()
     try:
         store.upsert(
@@ -41,7 +41,7 @@ def test_vector_store_factory_builds_sqlite_bruteforce_protocol_adapter(tmp_path
 
 def test_vector_store_factory_accepts_sqlite_alias_and_rejects_unknown_backend(tmp_path):
     aliased = build_vector_store("sqlite", storage_dir=tmp_path, table_name="memories", dimensions=2, metric="cosine")
-    assert aliased.backend == "sqlite-bruteforce"
+    assert aliased.backend == "sqlite"
 
     with pytest.raises(ValueError, match="unsupported vector backend"):
         build_vector_store("unknown", storage_dir=tmp_path, table_name="memories", dimensions=2, metric="cosine")

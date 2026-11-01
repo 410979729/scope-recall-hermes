@@ -170,6 +170,10 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_sqlite_vectors.py",
+        "tests/contract/test_mapped_vectors.py",
+        "tests/contract/test_vector_integrity.py",
+        "tests/contract/test_lazy_vector_clock.py",
         "tests/contract/test_embed_fallback_deadline.py",
         "tests/contract/test_failure_policy_semantics.py",
         "tests/contract/test_queue_recovery_actions.py",
@@ -247,6 +251,7 @@ SUITES = {
         "tests/recall_bench/test_recall_bench.py",
     ],
     "native": [
+        "tests/storage_native/test_sqlite_vector_native.py",
         "tests/contract/test_lance_embed_fence.py",
         "tests/contract/test_retained_lock_deadline.py",
         "tests/integration/test_lance_retrieval.py",
@@ -581,8 +586,7 @@ INTEGRATION_STABLE_BASELINE = _dedupe(list(SUITES["native"]) + list(SUITES["host
 
 #: The directories and files that decide an impact by where they are rather than by what their names hold.  A directory
 #: ends in ``/``.  Every entry is in the checkout, which tests/packaging/test_check_selection.py holds them to.  The
-#: native entries are the Lance store and its helper process and the runtime modules that start and feed them: what the
-#: native suite is about.
+#: native entries are the SQLite companion, mapped arrays and runtime publication/search boundaries.
 IMPACT_PATHS = {
     "quiet": ("verification/", "docs/", "fixtures/"),
     "tests": ("tests/",),
@@ -594,8 +598,7 @@ IMPACT_PATHS = {
     "clients": ("adapters/clients/", "adapters/codex/"),
     "native": (
         "vector/",
-        "_lance_worker.py",
-        "runtime/lance_port.py",
+        "runtime/vector_port.py",
         "runtime/vector_upkeep.py",
         "runtime/instance.py",
         "runtime/instance_config.py",

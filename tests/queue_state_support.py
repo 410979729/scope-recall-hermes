@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from hypothesis import settings
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import EMBEDDING_SPACE
-from scope_recall.runtime.instance_config import RuntimeInstanceConfig
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
 
 from tests.contract.test_claims import Clock
 from tests.v11_support import context
@@ -81,7 +81,17 @@ def planning_config(context, *, capable):
         consolidation=object(),
         ledger_path=binding.data_directory / "TEST-planner-budget.sqlite3",
     )
-    return replace(config, auxiliary=auxiliary, vector=SimpleNamespace(test_injection_override=True))
+    return replace(
+        config,
+        auxiliary=auxiliary,
+        vector=VectorRuntimeConfig(
+            backend="sqlite-vec",
+            storage_dir=binding.data_directory / "TEST-planner-vectors",
+            table_name="TEST-planner",
+            dimensions=EMBEDDING_SPACE["dimensions"],
+            test_injection_override=True,
+        ),
+    )
 
 
 def store_factory(root):

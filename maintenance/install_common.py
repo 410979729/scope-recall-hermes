@@ -24,6 +24,7 @@ from typing import Any, Literal
 
 import yaml
 from scope_recall._version import __version__
+from scope_recall._version import manifest_version as _manifest_version
 
 from .backup import first_link
 
@@ -374,12 +375,7 @@ def validate_host(host: str) -> HostChoice:
 
 def manifest_version(version: str = PACKAGE_VERSION) -> str:
     """Semver spelling of the PEP 440 package version for host plugin manifests."""
-    if ".dev" in version:
-        return version.replace(".dev", "-dev.", 1)
-    # Unanchored on purpose: with a trailing ``$`` a post-release suffix
-    # (``X.Y.ZrcN.postM``) would stop the match and reach a plugin manifest
-    # verbatim.  The X.Y.Z prefix keeps the pattern specific enough.
-    return re.sub(r"(\d+\.\d+\.\d+)rc(\d+)", r"\1-rc.\2", version)
+    return _manifest_version(version)
 
 
 def json_dump(payload: dict[str, Any]) -> str:

@@ -96,8 +96,8 @@ def main(argv: list[str] | None = None) -> int:
         # their recall answered here, warm (``local_endpoint``).  An override of the runtime config is this server's.
         # A client that keeps a resident recall server instead (WorkBuddy, which runs this one only with a
         # conversation's process) has it started and kept from here while this runs (``keep_resident``), and this
-        # server answers no hook: warmed for every conversation, each would hold a vector helper of its own (about 1 GB)
-        # beside the resident one.  Which of the two is decided once, here: a changed ``resident_recall_minutes``
+        # server answers no hook: the resident process owns the warmed vector connections. Which of the two is
+        # decided once, here: a changed ``resident_recall_minutes``
         # reaches this side when the client starts this server again.
         endpoint = keeping = None
         if isinstance(config, SharedClientConfig) and runtime_config is None:
