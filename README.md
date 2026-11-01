@@ -49,6 +49,10 @@ Use `scope-recall memory` to browse, search, inspect history, correct a fact, mu
 It runs as the local store owner and makes no model request. Deletion shows the dependent sources and facts before
 `--yes` applies it. `scope-recall memory export --out <new directory or .zip>` writes the visible store as a portable
 package with original sources, facts, history, episodes, readable Markdown and optional retained attachments.
+`scope-recall memory import --source <kind> --from <path> --source-id <stable account>` previews external
+memory files and conversation exports without opening the store. Review the original actors, projects and time range,
+then repeat with the same store selection, `--yes --preview-id <shown hash>`. Approval permits import; it does not
+confirm the content as fact. [Importing memories](docs/import.md) describes supported formats and retry behavior.
 `scope-recall memory secrets` lists stored credential matches by reference, provenance, time and pattern names.
 After upgrading, review its findings, remove them with `scope-recall memory forget <refs>` and change any credential found.
 [The management guide](docs/manage.md) covers store selection, filters, version checks and receipts; the

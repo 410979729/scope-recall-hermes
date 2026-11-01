@@ -170,6 +170,7 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_memory_import.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",
         "tests/contract/test_vector_integrity.py",
@@ -274,6 +275,7 @@ SUITES = {
         "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/hermes/test_memory_write.py",
         "tests/host/hermes/test_capture_retry_properties.py",
         "tests/host/test_memory_ui.py",
         "tests/host/test_memory_ui_http.py",
@@ -326,6 +328,7 @@ SUITES = {
         *SCRIPT_GATE_TESTS,
     ],
     "integration": [
+        "tests/integration/test_memory_import.py",
         "tests/contract/test_worker.py",
         "tests/contract/test_worker_incremental_batch.py",
         *GIT_TESTS,

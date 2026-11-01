@@ -1,0 +1,14 @@
+[
+  {
+    "id": "TEST-mixed-thread",
+    "mapping": {
+      "plain": {"message": {"id": "TEST-plain", "author": {"role": "user"}, "content": {"content_type": "text", "parts": ["TEST saffron original words"]}}},
+      "code": {"message": {"id": "TEST-code", "author": {"role": "assistant"}, "content": {"content_type": "code", "text": "TEST literal code"}}},
+      "audio": {"message": {"id": "TEST-audio", "author": {"role": "user"}, "content": {"content_type": "multimodal_text", "parts": [{"content_type": "audio_transcription", "text": "TEST machine transcript"}]}}},
+      "context": {"message": {"id": "TEST-context", "author": {"role": "user"}, "content": {"content_type": "user_editable_context", "user_profile": "TEST profile", "user_instructions": "TEST custom instructions"}}},
+      "realtime": {"message": {"id": "TEST-realtime", "author": {"role": "user"}, "content": {"content_type": "multimodal_text", "parts": [{"content_type": "real_time_user_audio_video_asset_pointer", "audio_asset_pointer": {"content_type": "audio_asset_pointer", "asset_pointer": "TEST-asset-audio"}, "frames_asset_pointers": [], "video_container_asset_pointer": null}]}}},
+      "image": {"message": {"id": "TEST-image", "author": {"role": "user"}, "content": {"content_type": "multimodal_text", "parts": [{"content_type": "image_asset_pointer", "asset_pointer": "TEST-asset-image"}]}}},
+      "transcript": {"message": {"id": "TEST-transcript", "author": {"role": "user"}, "content": {"content_type": "audio_transcription", "text": "TEST second machine transcript"}}}
+    }
+  }
+]

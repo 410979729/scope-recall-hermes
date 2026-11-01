@@ -55,6 +55,7 @@ from .doctor_store import (
     check_unreached,
     check_vector_store,
 )
+from .import_progress import read_progress
 from .install_common import RUNTIME_CONFIG_LIMIT
 
 #: Run as a file by the target interpreter, so an installed package that
@@ -855,6 +856,7 @@ def run_doctor(
         return report
     binding, data_directory = bound
     _check_audiences(report, instance)
+    report.memory_import = read_progress(data_directory)
     _check_local_sessions(report, data_directory)
     _check_running_code(report, data_directory)
     package_health.apply_package_health(report, instance, probe)

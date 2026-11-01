@@ -66,9 +66,14 @@ def parser():
         "forget-session",
         "export",
         "secrets",
+        "import",
     ):
         command = commands.add_parser(action)
         _common(command)
+        if action == "import":
+            from .memory_import import add_arguments
+
+            add_arguments(command)
         if action in {"list", "search", "forget-session", "export"}:
             _filters(command)
         if action in {"list", "search", "history"}:
@@ -197,7 +202,24 @@ def render(payload, *, as_json):
         print(f"{payload['code']}: {payload.get('field', '')}")
         return
     data = payload["data"]
-    if "preview" in data:
+    if "import_preview" in data:
+        plan = data["import_preview"]
+        table(
+            plan["items"],
+            ("key", "project", "write_project", "occurred_at", "role", "original_origin", "review_required"),
+        )
+        print(
+            f"Source: {plan['source']}; records: {plan['count']}; skipped: {plan['skipped']}"
+            f"; time: {plan['time_range']}"
+        )
+        print(f"Projects: {plan['projects']}; preview: {plan['preview_id']}")
+        print("Target: " + json.dumps(plan["target"], ensure_ascii=False))
+        if not data["applied"]:
+            print("Review this selection, then repeat with --yes --preview-id " + plan["preview_id"])
+            print("Import permission does not confirm the content or identify its author as the local owner.")
+        else:
+            print(json.dumps(data["result"], ensure_ascii=False, indent=2))
+    elif "preview" in data:
         plan = data["preview"]
         table(plan["affected"], ("kind", "ref", "revision", "scope_id"))
         entries = sorted({s["entry_id"] for s in plan["sources"]})
@@ -230,10 +252,18 @@ def render(payload, *, as_json):
 def main(argv=None):
     """Run a local owner command; refused inputs or stale selections exit with code 2."""
     args = parser().parse_args(argv)
+    data: dict
     try:
-        api = open_management(args, initialize=args.action != "secrets")
-        payload = dict(format=FORMAT, action=args.action, status="ok", data=execute(api, args))
-        code = 0
+        if args.action == "import":
+            from .import_progress import run_import
+            from .memory_import import execute_import
+
+            data = execute_import(args, open_store=open_management, resolve_store=store_to_restore, run=run_import)
+        else:
+            api = open_management(args, initialize=args.action != "secrets")
+            data = execute(api, args)
+        payload = dict(format=FORMAT, action=args.action, status="ok", data=data)
+        code = 2 if data.get("result", {}).get("error") else 0
     except ContractError as exc:
         payload = dict(format=FORMAT, action=args.action, status="error", code=exc.code, field=exc.field)
         code = 2
