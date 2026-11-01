@@ -325,24 +325,24 @@ def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(
 
 
 def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeypatch):
-    """A statement cannot see the recall's deadline: the lexical one can run 18-21 s for a long Telegram message on a
-    large shared store, and the recall would come back empty long after its deadline.  Past the deadline a candidate
-    statement is interrupted at the next look at the clock, and the recall returns, saying so.  The recall's clock here
-    moves with the statement's rows, a microsecond each: its 0.5 s are up after 500,000 rows on any machine, and an
-    interrupt that came later than a few looks after would let it run on to a million."""
+    """Interrupt a candidate statement at the collection cutoff, within a bounded
+    number of progress-handler steps. The injected clock charges a microsecond
+    per row, independent of machine speed; hydration and release retain their
+    own allowance after collection stops."""
     import sqlite3
 
     from scope_recall.core import retrieval_storage
 
     core, ctx = app
     capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/interrupt")
-    rows, ended = [0], []
+    rows, ended, cutoffs = [0], [], []
 
     def counted():
         rows[0] += 1
         return 1
 
     def slow(self, tx, context, *, limit):
+        cutoffs.append(context.deadline)
         conn = tx._check()
         conn.create_function("counted", 0, counted)
         try:
@@ -361,7 +361,7 @@ def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeyp
     monkeypatch.setattr(retrieval_storage.RetrievalStorage, "lexical", slow)
     result = core.recall(ctx, recall_request(query="TEST 值班表", mode="current"), deadline_seconds=0.5)
     assert ended == [sqlite3.SQLITE_INTERRUPT]
-    assert 500_000 <= rows[0] < 1_000_000, rows
+    assert (cutoffs[0] - started) * 1_000_000 <= rows[0] < 1_000_000, rows
     assert "deadline_exceeded_collect" in result.gaps
     assert not [gap for gap in result.gaps if gap.startswith("sqlite_candidate_error")], result.gaps
     # The interrupt ends with the statement: the next recall's statements run as before.
@@ -370,9 +370,9 @@ def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeyp
 
 
 def test_P08_what_the_channels_before_an_interrupted_one_found_still_answers(app, monkeypatch):
-    """The exact ref is found before the lexical statement is interrupted, and is still delivered: the interrupt is
-    taken off once the candidate statements end, so hydration's own statements, past the deadline too, run to the
-    end.  Left on, the first of them would be interrupted and the recall would come back empty."""
+    """Keep the exact candidate found before an interrupted lexical statement.
+    Hydration has its own allowance and runs without collection's exhausted
+    progress handler; its long statement proves that the handler was removed."""
     from scope_recall.core import recall as recall_module
     from scope_recall.core import retrieval_storage
 
@@ -775,3 +775,44 @@ def test_P08_lexical_query_without_a_synonym_is_untouched_by_the_table(app):
             with _without_synonyms():
                 base = (_lexical_pool(core, reader, query, mode=mode), core.recall(reader, request, deadline_seconds=5))
             assert expanded[0] and expanded == base, (query, mode)
+
+
+def test_claim_scoring_stops_at_cutoff_with_ready_prefix(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from scope_recall.core import retrieval_storage
+
+    from tests.contract.test_claims import accept, draft
+
+    core, ctx = app
+    for index in range(8):
+        source = capture(core, ctx, "TESTpalette color amber.", key=f"TEST-claim-cutoff-{index}")
+        accept(
+            core,
+            ctx,
+            draft(source, "amber", subject="TESTpalette", predicate="color", conditions=[f"TEST condition {index}"]),
+        )
+    calls = [0]
+    original = retrieval_storage.claim_embedding_text
+
+    def scoring(payload):
+        calls[0] += 1
+        return original(payload)
+
+    monkeypatch.setattr(retrieval_storage, "claim_embedding_text", scoring)
+    reader = core.recall_pipeline.storage_reader
+    reader.clock = SimpleNamespace(monotonic=lambda: 100.0 + calls[0] * 0.01)
+    search = SearchContext.from_request(
+        recall_request(query="TESTpalette color amber", mode="current"),
+        ctx,
+        now=core.clock.utc_now(),
+        deadline=110.0,
+    )
+    with core.storage.read(ctx) as tx:
+        complete = reader.claims(tx, search, limit=16)
+    calls[0] = 0
+    with core.storage.read(ctx) as tx:
+        partial = reader.claims(tx, replace(search, deadline=100.025), limit=16)
+    assert 0 < len(partial) < len(complete)
+    assert calls[0] == 3
+    assert {item.key for item in partial} <= {item.key for item in complete}

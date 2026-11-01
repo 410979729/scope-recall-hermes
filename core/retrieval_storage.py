@@ -474,6 +474,10 @@ class RetrievalStorage(RetrievalHydration):
         if prefetch is not None:
             prefetch(row["claim_id"] for row in rows)
         for row in rows:
+            # Scoring is Python work after the SQL statement. Its interrupt
+            # handler cannot stop it, so return the already scored prefix.
+            if self.clock.monotonic() >= context.deadline:
+                break
             chosen = _claim_version_for(tx.claims.versions(row["claim_id"]), context, instant)
             if chosen is None or chosen.payload.get("kind") == "alias":
                 continue

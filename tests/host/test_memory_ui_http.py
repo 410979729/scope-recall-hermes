@@ -43,7 +43,13 @@ def send(server, route="/api/list", *, method="GET", data=None, token=True, head
     fields.update(headers or {})
     connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=6)
     try:
+        # A header refusal can close the socket before a separate body write on Windows.
+        # Send this complete synthetic request at once; header-only refusal has its own test.
+        wire_send, chunks = connection.send, []
+        connection.send = chunks.append
         connection.request(method, route, body=body, headers=fields)
+        connection.send = wire_send
+        wire_send(b"".join(chunks))
         response = connection.getresponse()
         return response.status, dict(response.getheaders()), response.read()
     finally:

@@ -271,7 +271,7 @@ def test_what_the_model_holds_still_leads_to_what_is_related_to_it(app):
     aside = _Aside()
     hydrated: list = []
     seed = CandidateRef("event", "event-held", 1, "lexical", fusion_score=0.9)
-    pipeline._hydrate_all(Tx(), hydrated, (seed,), search, [], floor=6, aside=aside)
+    pipeline._hydrate_all(Tx(), hydrated, (seed,), search, [], aside=aside)
     assert hydrated == [] and aside.held == [seed], "held, not delivered"
     pipeline._hydrate_related(Tx(), search, hydrated, [], held=tuple(aside.held))
     assert sorted(candidate.ref for candidate, _obj in hydrated) == ["claim-old", "claim-other"]
