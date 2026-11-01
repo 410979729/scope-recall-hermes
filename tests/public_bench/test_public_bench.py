@@ -304,6 +304,66 @@ def test_runner_starts_the_first_wave_apart_and_records_the_interval(tmp_path, m
     assert sorted(slept) == [2.5, 5.0]
 
 
+def _fake_reports(tmp_path, monkeypatch):
+    """Run the fake split as asked and return each run's report, with the split file the runs wrote."""
+    import run
+
+    data = tmp_path / "data"
+    _data_manifest(data)
+    _stub_lab(monkeypatch)
+    monkeypatch.setattr(run, "longmemeval", lambda _: [replace(_question(), id=str(i)) for i in range(500)])
+    monkeypatch.setattr(run, "official_prompts", lambda _: {"default": "{}{}{}"})
+
+    def report(name, *options):
+        output = tmp_path / name
+        argv = ["run.py", "--data", str(data), "--output", str(output), "--fake", "--limit", "7", *options]
+        monkeypatch.setattr(sys, "argv", argv)
+        run.main()
+        return json.loads((output / "results.json").read_text(encoding="utf-8"))
+
+    return report, data
+
+
+@pytest.mark.parametrize("value", ["3/3", "1", "a/3", "0/0", "1/2/3"])
+def test_runner_rejects_a_shard_outside_its_count(tmp_path, monkeypatch, value):
+    import run
+
+    argv = ["run.py", "--data", str(tmp_path), "--output", str(tmp_path), "--fake", "--shard", value]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        run.main()
+
+
+def test_a_shard_runs_every_nth_question_of_the_selection(tmp_path, monkeypatch):
+    report, _ = _fake_reports(tmp_path, monkeypatch)
+    whole, shard = report("whole"), report("shard", "--shard", "1/3")
+    assert [row["id"] for row in shard["results"]] == [row["id"] for row in whole["results"]][1::3]
+    assert shard["shard"] == "1/3" and shard["questions"] == 2 and whole["shard"] is None
+
+
+def test_merged_shards_give_the_report_of_one_run(tmp_path, monkeypatch):
+    import merge_shards
+
+    report, data = _fake_reports(tmp_path, monkeypatch)
+    whole = report("whole")
+    shards = [report(f"shard-{k}", "--shard", f"{k}/3") for k in (2, 0, 1)]
+    order = json.loads((data / "longmemeval-splits.json").read_text(encoding="utf-8"))["dev"]
+    merged = merge_shards.merge(shards, order)
+    # Timings, worker counts and cache hits depend on how the questions were spread over processes.
+    varying = {"results", "shard", "shards", "workers", "total_seconds", "cache"}
+    assert {k: v for k, v in merged.items() if k not in varying} == {k: v for k, v in whole.items() if k not in varying}
+
+    def rows(report):
+        return [{k: v for k, v in row.items() if k not in {"total_seconds", "recall_ms"}} for row in report["results"]]
+
+    assert rows(merged) == rows(whole)
+    assert merged["shards"] == 3 and merged["workers"] == 3 * whole["workers"]
+    with pytest.raises(ValueError, match="shards_incomplete"):
+        merge_shards.merge(shards[:2], order)
+    with pytest.raises(ValueError, match="shards_differ:settle_seconds"):
+        merge_shards.merge([{**shards[0], "settle_seconds": 1.0}, *shards[1:]], order)
+
+
 def test_evaluator_text_window_keeps_each_minute_under_its_limit():
     from ports import TextWindow
 
