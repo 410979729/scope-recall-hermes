@@ -1254,7 +1254,7 @@ class RetrievalPipeline:
         # background cannot repeat the evidence either.
         distinct = DistinctContent()
         ordered = self._behind_replacements(self._rank_hydrated(hydrated, working), working)
-        ordered = prefer_originals(tx, ordered, working)
+        ordered = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_select")
         ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)

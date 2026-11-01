@@ -228,6 +228,20 @@ def indexed_terms(event) -> tuple[str, ...]:
     return lexical_terms(error.group(1)) if error else ()
 
 
+# Content comparison preserves every word, CJK character, number and punctuation token.
+# It has no retrieval-query vocabulary, stop-word filter or token-count ceiling.
+_CONTENT_TOKEN = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]"
+    r"|[^\W\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+"
+    r"(?:[./'-][^\W\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)*|[^\w\s]"
+)
+
+
+def lexical_sequence(text: str) -> tuple[str, ...]:
+    """Ordered content tokens, including single characters and repetitions, without query limits."""
+    return tuple(_CONTENT_TOKEN.findall(text))
+
+
 def lexical_terms(text: str) -> tuple[str, ...]:
     """Chinese bigrams and intact identifiers; normalization affects index only."""
     normalized = unicodedata.normalize("NFKC", text).casefold()

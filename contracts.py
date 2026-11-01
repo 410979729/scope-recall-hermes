@@ -155,8 +155,6 @@ class RecallItem(TypedDict):
     #: every entry behind its evidence for a claim.  Another entry's memory is
     #: that agent's experience, not the reader's.  Absent in a local store.
     entries: NotRequired[list[EntryLabel]]
-    #: First-hand sources a cross-entry retelling repeats; entries identify the retelling's author.
-    restatement_of: NotRequired[list[str]]
 
 
 class RecallPacket(TypedDict):

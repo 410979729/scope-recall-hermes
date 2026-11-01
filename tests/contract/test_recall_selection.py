@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import replace
 
 import pytest
+from scope_recall.contracts import TrustedSourcePrincipal
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.background_context import background_candidates
 from scope_recall.core.recall import RetrievalPipeline
@@ -176,7 +177,12 @@ def test_oversized_fallback_checks_deadline_between_withheld_candidates(app, mon
 def restatement_store(tmp_path):
     """Three independent sessions and entries share one isolated truth store."""
     binding = shared_binding(tmp_path / "TEST-restatement")
-    ctx = replace(shared_context(binding), project_id="TEST-project", branch_id="TEST-main")
+    ctx = replace(
+        shared_context(binding),
+        project_id="TEST-project",
+        branch_id="TEST-main",
+        source_principal=TrustedSourcePrincipal("human", "verified", "principal:human:TEST-owner"),
+    )
     core = MemoryCore(CoreConfig(binding), clock=Clock())
     core.initialize()
     core.test_sequence = itertools.count(1)
@@ -215,14 +221,15 @@ def _restatement_packet(store, mode, original, echo, *, linked=False, fact=False
 
 @pytest.mark.parametrize("mode", ["auto", "current"])
 @pytest.mark.parametrize("linked,fact", [(False, False), (True, False), (True, True)])
-def test_original_precedes_and_replaces_cross_entry_restatement(restatement_store, mode, linked, fact):
+def test_original_precedes_attributed_cross_entry_restatement(restatement_store, mode, linked, fact):
     original = "TEST-project 配色使用蓝色，图标和背景统一采用同一种蓝色。"
     packet, source, repeat = _restatement_packet(
         restatement_store, mode, original, "你之前说过：" + original, linked=linked, fact=fact
     )
     assert packet["items"]
     assert packet["items"][0]["origin"] == "human_direct", packet
-    assert repeat.ref not in {item["ref"] for item in packet["items"]}, packet
+    repeat_item = next(item for item in packet["items"] if item["ref"] == repeat.ref)
+    assert repeat_item["basis"] == "derived_summary", packet
     assert any(f"{source.ref}@1" in item["evidence_refs"] for item in packet["items"])
 
 
@@ -240,11 +247,13 @@ def test_restatement_with_additional_information_is_labelled(restatement_store, 
     refs = [item["ref"] for item in packet["items"]]
     assert refs.index(source.ref) < refs.index(repeat.ref), packet
     item = next(item for item in packet["items"] if item["ref"] == repeat.ref)
-    assert item["restatement_of"], packet
+    assert "restatement_of" not in item, packet
+    assert item["basis"] == "derived_summary", packet
     assert item["entries"] == [{"id": "entry-b", "name": "entry-b"}], packet
     assert "银色" in item["content"]
     rendered = render_recall_packet_context(packet, installation_id="TEST-installation", session_id="TEST-render")
-    assert rendered.canonical_text and '"restatement_of"' in rendered.canonical_text
+    assert rendered.canonical_text and '"derived_summary"' in rendered.canonical_text
+    assert '"restatement_of"' not in rendered.canonical_text
     assert '"entry-b"' in rendered.canonical_text
 
 
@@ -290,7 +299,8 @@ def test_correction_precedes_restatement_of_the_old_value(restatement_store, mod
     items = packet["items"]
     assert "银色" in items[0]["content"], packet
     assert any(f"{correction.ref}@1" in item["evidence_refs"] for item in items), packet
-    assert saved.event_refs[0].ref not in {item["ref"] for item in items}, packet
+    old_echo = next(item for item in items if item["ref"] == saved.event_refs[0].ref)
+    assert old_echo["basis"] == "derived_summary", packet
 
 
 @pytest.mark.parametrize("mode", ["history", "as_of"])

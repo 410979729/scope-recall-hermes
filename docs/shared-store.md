@@ -411,13 +411,18 @@ autostart and start its gateway.
 
 ## Repeated evidence in recall
 
-Automatic injection and current lookups put first-hand statements, or facts extracted from
-those statements, before matching later retellings from another entry. Matching uses the
-stored evidence references and overlap between candidate statements. A retelling with no
-additional content is omitted from the packet. A retained retelling carries `restatement_of`
-source references and its existing `entries` labels; it remains assistant evidence.
-Historical reads retain their existing ordering and content deduplication. When no matching first-hand record is retrieved, the
-assistant record remains available.
+Automatic injection and current lookups prefer a matching first-hand statement or
+source-backed fact when verified person and audience proofs agree. Missing person
+identity preserves the existing order and content. Pairing across audiences needs
+explicit evidence links whose nodes are readable in the current request.
+
+A retelling is omitted only when its entire ordered token sequence occurs in the
+first-hand content. Numbers, single characters, case, punctuation and repetitions
+remain significant. Bounded or unfinished comparisons retain the content. A retained
+retelling keeps its assistant origin and entry labels and uses the existing
+`derived_summary` basis. The packet does not publish a `restatement_of` field because
+its transport has no field-capability negotiation. Historical reads and exact
+references retain their existing semantics.
 
 ## Moving the store
 
