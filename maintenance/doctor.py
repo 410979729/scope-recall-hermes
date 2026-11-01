@@ -137,9 +137,9 @@ def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeI
         record_check(report, "hermes_runtime", "unreadable")
         return
     version = _installed_version(names, "hermes-scope-recall")
-    vectors = all(_installed_version(names, name) is not None for name in ("lancedb", "pyarrow"))
+    vectors = all(_installed_version(names, name) is not None for name in ("numpy",))
     vector = config.vector if config is not None else None
-    needs_vectors = vector is not None and vector.backend == "lancedb"
+    needs_vectors = vector is not None
     report.hermes_runtime = {
         "environment": str(environment),
         "package_version": version,
@@ -158,11 +158,11 @@ def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeI
 def _check_vector_dependencies(
     report: DoctorReport, probe: dict[str, Any], config: RuntimeInstanceConfig | None
 ) -> None:
-    """Report missing vector packages only for a configured LanceDB store.
+    """Report missing vector packages for a configured vector companion.
 
     Hermes-managed environments are checked separately. A probe without dependency metadata supplies no finding."""
     vector = config.vector if config is not None else None
-    if report.hermes_runtime is not None or vector is None or vector.backend != "lancedb":
+    if report.hermes_runtime is not None or vector is None:
         return
     found = probe.get("vector_dependencies")
     if not isinstance(found, dict):

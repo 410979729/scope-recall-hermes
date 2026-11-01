@@ -753,37 +753,6 @@ def test_a_failed_recall_s_cause_reaches_the_server_log(served, tmp_path, monkey
     assert "hook UserPromptSubmit: recall_exception (ContractError:INPUT_INVALID), record through None" in log
 
 
-def test_a_server_that_cannot_start_a_vector_helper_ahead_still_serves(store, monkeypatch):
-    """Keeping a helper ready is a speed-up: failing to start one must not keep the entry from being served."""
-    import sys as system
-    import types
-
-    from scope_recall.vector import process_store
-
-    root, homes = store
-    remote_server.write_server_config(
-        homes["codex"], "codex", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
-    )
-    config = remote_server.load_server_config(homes["codex"], "codex")
-    served = []
-    monkeypatch.setattr(system, "platform", "win32")
-    monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: served.append(app)))
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: (_ for _ in ()).throw(OSError("TEST no helper")))
-    root_logger = logging.getLogger()
-    level = root_logger.level
-    try:
-        remote_server.serve(config)
-    finally:
-        for handler in list(root_logger.handlers):
-            if isinstance(handler, logging.handlers.RotatingFileHandler):
-                root_logger.removeHandler(handler)
-                handler.close()
-        root_logger.setLevel(level)
-    assert len(served) == 1
-    log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
-    assert "could not start a vector helper ahead: OSError" in log
-
-
 def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     """The kept handler is warmed when the server starts: made at the first prompt, it would open the table inside
     that prompt's recall, and the first prompts would recall by words alone."""
@@ -791,7 +760,6 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     import types
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
     root, homes = store
     remote_server.write_server_config(
@@ -800,7 +768,6 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     config = remote_server.load_server_config(homes["codex"], "codex")
     warmed = []
     monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: None))
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(local_endpoint.KeptRecaller, "warm", lambda self, *args: warmed.append(self))
     root_logger = logging.getLogger()
     level = root_logger.level
@@ -814,39 +781,6 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
                 handler.close()
         root_logger.setLevel(level)
     assert len(warmed) == 1, "serve warms; a test's app does not"
-
-
-def test_the_server_shares_one_vector_store_among_its_handlers(store, monkeypatch):
-    """A prompt that comes while the kept handler is busy gets a handler whose store would start a LanceDB helper of
-    its own, and parallel sub-agents would lose their vector search to that helper's start.  The server shares its
-    stores before anything builds one."""
-    import sys as system
-    import types
-
-    from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
-
-    root, homes = store
-    remote_server.write_server_config(
-        homes["codex"], "codex", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
-    )
-    config = remote_server.load_server_config(homes["codex"], "codex")
-    seen = []
-    monkeypatch.setattr(system, "platform", "win32")
-    monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: None))
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: seen.append(process_store._sharing))
-    monkeypatch.setattr(local_endpoint.KeptRecaller, "warm", lambda self, *args: seen.append(process_store._sharing))
-    root_logger = logging.getLogger()
-    level = root_logger.level
-    try:
-        remote_server.serve(config)
-    finally:
-        for handler in list(root_logger.handlers):
-            if isinstance(handler, logging.handlers.RotatingFileHandler):
-                root_logger.removeHandler(handler)
-                handler.close()
-        root_logger.setLevel(level)
-    assert seen == [True, True], "sharing before the spare helper and before the kept handler is warmed"
 
 
 def test_a_recall_without_its_vector_search_is_named_in_the_server_log(served, tmp_path, monkeypatch):

@@ -146,15 +146,15 @@ package manager builds (`packages.venv.environment` in that file), not in the ve
 the `hermes` command runs with, and builds it again from each plugin's declaration
 in `<home>\plugins\`. Upgrading the venv with `package-upgrade` does not reach the
 gateway, and pip or uv into the package manager's environment is undone by its next
-build. A declaration written there by hand without the vector extra leaves a LanceDB
-store's recall without vectors; `doctor` reads that environment and reports it
-under `hermes_runtime`.
+build. NumPy vector retrieval is part of the base package; the vector extra remains
+accepted for installation compatibility. `doctor` reads that environment and reports
+it under `hermes_runtime`.
 
 1. Once the release is on PyPI, run plan-install/apply-install with
    `--target-plugin-dir <home>\plugins\scope-recall`. A receipt that names another
    plugin directory is moved (`move` in the plan); a wrapper someone put there by
    hand is backed up and replaced (`replace`). The wrapper's `pyproject.toml`
-   declares `hermes-scope-recall[lancedb]==<version>`.
+   declares `hermes-scope-recall[vectors]==<version>`.
 2. Rebuild the environment with Hermes's own sync, `HERMES_HOME` set to the home:
    `<hermes python> -m hermes_cli.venv_sync --project-root <home>\hermes-agent --json`.
    A running gateway keeps the environment it started with. `"state": "synced"` or

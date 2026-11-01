@@ -1,22 +1,8 @@
-"""Expire the vectors of tool outputs older than the retention window.
+"""Expire only tool-output embeddings beyond the configured retention window.
 
-Sits beside ``vector_upkeep.py``: ``runtime/instance.py`` has the single call
-site, at the start of a drain, just before the compaction that reclaims what
-a pass deleted.  The source text, its lexical index and everything derived
-from it (claims, episodes, candidates) stay; only the vector goes.  An expired
-tool output is still recalled by its words and through whatever cites it, never
-again by meaning alone.  (A withheld output's placeholder has no words of its
-own to be recalled by: ``core/events.indexed_terms``.)
-
-Why tool outputs, and why a window: on a busy instance four in five captured
-sources were tool output, each carrying a 12 KB vector -- the bulk of the
-store's daily growth -- while a few hundred of 170,000 sources ever became
-claim evidence.  A window keeps recent work fully searchable and lets the old
-bulk go, at a pace the operator sets (``vector.tool_output_retention_days``).
-
-Not responsible for: deciding what a tool output is (the source's ``role``),
-the native delete (the store's ``delete_by_ids``), or reclaiming the space
-(``vector_upkeep.compact_if_due``, which the drain runs next).
+Source text, lexical postings, claims and evidence remain in the truth store.
+Raw deletions are fenced against import replay and binary codes are removed
+by the worker's next index page.
 """
 
 from __future__ import annotations

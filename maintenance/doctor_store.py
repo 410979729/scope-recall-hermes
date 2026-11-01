@@ -112,26 +112,24 @@ def check_index(report: DoctorReport, data_directory: Path, *, store_readable: b
     vector = getattr(config, "vector", None)
     if vector is not None:
         metadata["tool_output_retention_days"] = vector.tool_output_retention_days
-    # Fragment count is what a missed compaction shows up as first, and the one
-    # cost an operator can verify with a plain file listing.  Each store also
-    # says whether its nearest-neighbour index was built (``index_outcome``).
+    # File size, import states and the committed watermark remain readable without native imports.
     try:
         metadata["vector_stores"] = instance_vector_footprints(data_directory)
     except Exception:  # noqa: BLE001 - reporting must not fail the report.
         metadata["vector_stores"] = []
-    report.index_metadata = metadata
+    report.index_metadata = {**(report.index_metadata or {}), **metadata}
 
 
 def check_vector_store(report: DoctorReport, config: Any, binding: InstanceBinding) -> None:
     """Validate the entry's SQLite companion through recall's read-only open.
 
-    Only schema and identity are read, within the doctor's SQLite budget.
-    LanceDB remains unopened so diagnostics need no native imports or helper.
+    Schema and identity use the normal read-only connection and SQLite budget.
+    Legacy tables stay unopened; no helper process is started.
     """
     if config is None or not bindings_match(binding, config.binding):
         return
     vector = getattr(config, "vector", None)
-    if vector is None or vector.backend != "sqlite-bruteforce":
+    if vector is None:
         return
     store = None
     try:
@@ -144,7 +142,16 @@ def check_vector_store(report: DoctorReport, config: Any, binding: InstanceBindi
                 metric=vector.metric,
             )
             store.open_existing()
-        record_check(report, "vector_store", "readable")
+        details = store.diagnostics()
+        if vector.backend != "sqlite":
+            details["legacy_backend"] = vector.backend
+        report.index_metadata = {**(report.index_metadata or {}), "vector_runtime": details}
+        if any(item["state"] != "complete" for item in details["imports"]):
+            report.capability_gaps.append("vector_import_pending")
+        detail = details["engine"]
+        if "legacy_backend" in details:
+            detail += f"; {vector.backend} -> sqlite"
+        record_check(report, "vector_store", "readable", detail)
     except FileNotFoundError:
         record_check(report, "vector_store", "missing", "the worker creates the store on its first pass")
     except Exception as exc:  # noqa: BLE001 - an unreadable companion is a finding, not a crash.

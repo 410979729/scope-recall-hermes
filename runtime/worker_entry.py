@@ -28,7 +28,6 @@ from ..core.failure_retry import retry_class
 from ..core.file_lock import advisory_file_lock
 from ..core.storage import SQLiteStorage
 from ..core.writer_lease import TruthWriterBusyError
-from ..vector.process_store import NativeVectorPathError, ProcessLanceVectorStore
 from .backup_upkeep import BACKUP_JOB_SECONDS, backup_if_due, record_backup_job_failure
 from .instance import build_runtime_instance
 from .instance_config import RuntimeInstanceConfig
@@ -380,8 +379,6 @@ def _writer_busy(exc: BaseException) -> bool:
 
 
 def _exception_gap(exc: BaseException) -> str:
-    if isinstance(exc, NativeVectorPathError):
-        return NativeVectorPathError.code
     return f"worker_error:{_failure_label(exc)}"
 
 
@@ -428,18 +425,6 @@ def _report(
     return exit_code
 
 
-def _vector_preflight_gap(config: RuntimeInstanceConfig) -> str | None:
-    """A native path Lance cannot open is reported by name, whatever fails later."""
-    if config.vector is None or config.vector.backend != "lancedb":
-        return None
-
-    vector = config.vector
-    check = ProcessLanceVectorStore(
-        vector.storage_dir, table_name=vector.table_name, dimensions=vector.dimensions, metric=vector.metric
-    )
-    return NativeVectorPathError.code if check.native_path_error() else None
-
-
 def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -> dict[str, Any]:
     budget_path, budget_state, reserved = _reserve_daily_work(config)
     # Read before draining so the status file describes the pass it reports
@@ -473,11 +458,6 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     gaps.extend(ingress_gaps)
     payload = _receipt_payload(config, receipt, gaps)
     payload.update(counts)
-    # The gap names the fault (``vector_unavailable:RuntimeError:worker_failed``); this line, which the doctor
-    # shows, says why the helper could not start (runtime/instance.py ``_helper_start_failure``).
-    helper_error = getattr(instance, "vector_helper_error", None)
-    if isinstance(helper_error, str) and helper_error:
-        payload["worker_error"] = f"vector helper: {helper_error}"
     payload["source_only"] = sum(item.disposition == "source_only" for item in receipt.items)
     payload["daily_queue_used"] = budget_state["used"]
     # The admission counts scan every source's JSON and the queue age walks every
@@ -652,13 +632,11 @@ def run_worker(
     config: RuntimeInstanceConfig | None = None
     instance = None
     started_at = utc_now()
-    preflight_gap = None
     try:
         config = load_config(config_path)
         if store_upgrade_pending(config.binding):
             return run_upgrade_worker(config_path, output=sink, deadline_epoch=deadline_epoch, paused=paused)
         deadline = _pass_deadline(config, deadline_epoch)
-        preflight_gap = _vector_preflight_gap(config)
         instance = build_runtime_instance(config)
         instance.memory_epoch()  # Validate the bound database before writing metadata.
         lock_path = worker_metadata_path(config, "runtime-worker.lock")
@@ -673,12 +651,7 @@ def run_worker(
             payload = _minimal_payload(config, "busy", "worker_wait_timeout")
             return _report(sink, config, payload, started_at=started_at, exit_code=75)
     except Exception as exc:
-        if (
-            deadline_epoch is not None
-            and preflight_gap is None
-            and isinstance(exc, ContractError)
-            and exc.code == "DEADLINE_EXCEEDED"
-        ):
+        if deadline_epoch is not None and isinstance(exc, ContractError) and exc.code == "DEADLINE_EXCEEDED":
             # The window ran out inside the drain, as it does for a pass that
             # starts with milliseconds left.  Like a kill, it keeps its page.
             return _owner_timeout(sink, config, started_at=started_at)
@@ -690,7 +663,7 @@ def run_worker(
             return _report(sink, config, payload, started_at=started_at, exit_code=75)
         # Error classes/codes are useful to a supervisor while details may
         # contain paths or model data.  Keep the protocol bounded and safe.
-        payload = _minimal_payload(config, "degraded", preflight_gap or _exception_gap(exc))
+        payload = _minimal_payload(config, "degraded", _exception_gap(exc))
         return _report(sink, config, payload, started_at=started_at, exit_code=1, best_effort=True)
     finally:
         if instance is not None:

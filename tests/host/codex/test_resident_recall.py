@@ -40,11 +40,9 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 #: Where a process's start time cannot be read (macOS) a stop ends no process, and the tests that stop one do not apply.
 NEEDS_START_TIME = pytest.mark.skipif(_own_start_time() is None, reason="no process start time here: a stop ends none")
 #: A resident server as ``ensure_resident`` starts one, bound to this checkout (``tests/sitecustomize.py``, so no
-#: ``-I``) and with no LanceDB helper prestarted: the TEST store has no vectors.
+#: ``-I``); its synthetic store has no configured vector generation.
 RESIDENT = (
     "import sys\n"
-    "from scope_recall.vector import process_store\n"
-    "process_store.prestart = lambda **kwargs: None\n"
     "from scope_recall.adapters.clients import resident_entry\n"
     "raise SystemExit(resident_entry.main(sys.argv[1:]))\n"
 )
@@ -52,10 +50,8 @@ RESIDENT = (
 
 @pytest.fixture
 def entry(tmp_path, monkeypatch):
-    """A shared store with a Hermes entry and a WorkBuddy entry; no LanceDB helper process is started."""
-    from scope_recall.vector import process_store
+    """A synthetic shared store with a Hermes entry and a WorkBuddy entry."""
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     # ``ensure_resident`` looks at the package-upgrade lock of the venv it runs from: not this test run's.
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "TEST-venv"))
     root = tmp_path / "TEST-shared"

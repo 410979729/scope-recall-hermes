@@ -134,16 +134,6 @@ class RetrievalClock(Protocol):
     def monotonic(self) -> float: ...
 
 
-@dataclass(frozen=True)
-class _RecallDeadline(RequestDeadline):
-    """Expose the recall's injected clock to storage and optional channel waits."""
-
-    clock: RetrievalClock
-
-    def remaining(self, now: float | None = None) -> float:
-        return super().remaining(self.clock.monotonic() if now is None else now)
-
-
 class ChannelBudget:
     """Candidate slots left per channel across follow-up rounds.
 
@@ -297,9 +287,8 @@ class RetrievalPipeline:
         return context.deadline - self.clock.monotonic()
 
     def _deadline(self, context: SearchContext) -> RequestDeadline:
-        """Bind absolute cutoffs without mixing the caller's clock with wall time."""
-        started = self.clock.monotonic()
-        return _RecallDeadline(started, context.deadline, max(0.0, context.deadline - started), self.clock)
+        """Bind the absolute cutoff to the injected clock, so storage and channel waits never read wall time."""
+        return RequestDeadline.from_absolute(context.deadline, clock=self.clock.monotonic)
 
     # -- candidate channels ---------------------------------------------------
 

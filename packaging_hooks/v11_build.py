@@ -1,12 +1,14 @@
-"""Strict allowlisted build_py for the v11 clean wheel."""
+"""Allowlisted build and installation commands for distributable package files."""
 
 from __future__ import annotations
 
 import ast
 import json
+import os
 from pathlib import Path
 
 from setuptools.command.build_py import build_py
+from setuptools.command.install_lib import install_lib
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ALLOWLIST_PATH = _REPO_ROOT / "packaging" / "v11-module-allowlist.json"
@@ -79,3 +81,24 @@ class AllowlistedBuildPy(build_py):
                 continue
             modules.append((package, module, relative))
         return modules
+
+
+class AllowlistedInstallLib(install_lib):
+    """Copy current package members even when a build directory contains retired output."""
+
+    def get_exclusions(self) -> set[str]:
+        """Omit unlisted files from installation while preserving the existing build directory."""
+        excluded = set(super().get_exclusions())
+        if self.build_dir is None or self.install_dir is None:
+            return excluded
+        allowlist = _load_allowlist()
+        allowed = {
+            "scope_recall/" + relative for field in ("python_modules", "package_data") for relative in allowlist[field]
+        }
+        root = Path(self.build_dir)
+        for path in root.rglob("*"):
+            relative = path.relative_to(root)
+            if path.is_file() and relative.as_posix() not in allowed:
+                # The copier preserves a dotted install directory; exclusions need the identical spelling.
+                excluded.add(os.path.join(self.install_dir, *relative.parts))
+        return excluded

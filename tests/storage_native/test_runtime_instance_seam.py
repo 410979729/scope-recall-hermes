@@ -1,9 +1,4 @@
-"""One real RuntimeInstance seam against the isolated ProcessLance helper.
-
-The test is intentionally outside the normal contract suite: its interpreter
-must provide the approved isolated LanceDB installation.  No model or HTTP
-route is used; both embedding ports are deterministic TEST dependencies.
-"""
+"""Runtime source, query and purge paths share the independent SQLite companion."""
 
 from __future__ import annotations
 
@@ -19,11 +14,6 @@ from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
 from scope_recall.runtime.instance import build_runtime_instance, default_vector_factory
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
 from v11_support import source_event
-
-pytestmark = pytest.mark.skipif(
-    importlib.util.find_spec("lancedb") is None,
-    reason="approved NativePY LanceDB is required for this seam",
-)
 
 
 class DeterministicEmbedding:
@@ -231,10 +221,10 @@ def test_runtime_instance_native_source_query_delete_purge(tmp_path: Path):
         # Construction and SQLite status do not create/open the companion.
         instance.core.initialize()
         assert instance.status().sources == 0
-        assert not (config.vector.storage_dir / "lancedb").exists()
+        assert not (config.vector.storage_dir / "vectors.sqlite3").exists()
         disabled_result = instance.recall(_request("完全没有词项重合的语义问题"))
         assert disabled_result.items == ()
-        assert not (config.vector.storage_dir / "lancedb").exists()
+        assert not (config.vector.storage_dir / "vectors.sqlite3").exists()
 
         instance.auxiliary = replace(
             instance.auxiliary,
@@ -260,7 +250,7 @@ def test_runtime_instance_native_source_query_delete_purge(tmp_path: Path):
         # Only explicit background drain may create the first native index.
         drain = instance.drain()
         assert drain.completed == 1
-        assert (config.vector.storage_dir / "lancedb").exists()
+        assert (config.vector.storage_dir / "vectors.sqlite3").exists()
         instance.core.recall_pipeline.policy = RecallPolicy(vector_threshold=0.5)
         result = instance.recall(_request("什么设计手法吸引注意焦点？"))
         assert any(item.ref == source_ref for item in result.items)

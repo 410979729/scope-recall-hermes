@@ -16,8 +16,8 @@ from importlib import metadata
 from pathlib import Path
 
 DISTRIBUTION = "hermes-scope-recall"
-#: What the LanceDB vector store needs in the interpreter that recalls (the ``lancedb`` extra).
-VECTOR_DISTRIBUTIONS = ("lancedb", "pyarrow")
+#: Raw float32 scans need NumPy; extension loading is optional.
+VECTOR_DISTRIBUTIONS = ("numpy",)
 
 
 def installed_version(name: str) -> str | None:
@@ -88,7 +88,7 @@ def dependency_health(requirements, *, version_lookup=metadata.version) -> dict:
             required = marker is None or marker.evaluate({**env, "extra": ""})
             extra = None
             if marker is not None and not required:
-                for name in ("lancedb", "codex"):
+                for name in ("vectors", "lancedb", "codex"):
                     if marker.evaluate({**env, "extra": name}):
                         extra = name
                         break

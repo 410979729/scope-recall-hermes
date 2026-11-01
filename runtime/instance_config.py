@@ -28,7 +28,7 @@ _RUNTIME_ORIGINS: frozenset[Origin] = frozenset({"human_direct", "tool_observati
 _HOST_ADAPTERS = frozenset({"hermes", "codex", "claude-code", "workbuddy", "dsh"})
 
 
-_VECTOR_BACKENDS = frozenset({"lancedb", "sqlite-bruteforce"})
+_VECTOR_BACKENDS = frozenset({"sqlite", "sqlite-vec", "lancedb", "sqlite-bruteforce"})
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,7 @@ class VectorRuntimeConfig:
     def from_mapping(cls, raw: object) -> "VectorRuntimeConfig":
         raw = mapping("vector_mapping_required", raw)
         return cls(
-            backend=raw.get("backend", "lancedb"),
+            backend=raw.get("backend", "sqlite"),
             storage_dir=absolute_path("vector_storage_dir", raw.get("storage_dir")),
             table_name=raw.get("table_name"),
             dimensions=raw.get("dimensions"),

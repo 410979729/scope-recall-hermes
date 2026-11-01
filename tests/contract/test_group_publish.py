@@ -13,8 +13,8 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-from scope_recall.runtime.lance_port import LanceEmbedPort
-from scope_recall.vector.process_store import ProcessLanceVectorStore
+from scope_recall.runtime.vector_port import VectorEmbedPort
+from scope_recall.vector.sqlite_store import SQLiteVectorStore
 from test_claims import Clock, app, capture  # noqa: F401  (fixtures)
 
 
@@ -28,7 +28,7 @@ class FixedEmbedding:
         return tuple((0.25, 0.75) for _ in sources)
 
 
-class CountingStore(ProcessLanceVectorStore):
+class CountingStore(SQLiteVectorStore):
     """The real native store, plus how often it was asked to commit and with how many rows."""
 
     def __init__(self, *args, **kwargs) -> None:
@@ -50,7 +50,7 @@ def _sources(core, ctx, count, *, tag):
 
 
 def _port(store, ctx):
-    return LanceEmbedPort(
+    return VectorEmbedPort(
         store,
         FixedEmbedding(),
         agent_id=ctx.binding.agent_id,

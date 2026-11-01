@@ -11,7 +11,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..core.failure_policy import AUTO_RECOVERABLE_ERRORS, CAPABILITY_RECHECK, SETTLE_RETRY, SUPERVISOR_RETRY
@@ -66,11 +66,11 @@ def _utc(value: str) -> datetime:
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if result.tzinfo is None:
         raise ValueError("supervisor_timestamp")
-    return result.astimezone(timezone.utc)
+    return result.astimezone(UTC)
 
 
 def _stamp(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -196,13 +196,13 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
     Candidate timing is advisory. Core rechecks deletion, scope, epoch and
     leases before every real mutation; this function grants no permission.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     unavailable_until = dict(unavailable_until or {})
     # A provider on hold keeps its work types asleep until the hold ends, so a
     # refusing provider is asked once per hold instead of once per wake.
 
     for work_type, (_model, until) in provider_holds(config.auxiliary, now=now.timestamp()).items():
-        held = datetime.fromtimestamp(until, timezone.utc)
+        held = datetime.fromtimestamp(until, UTC)
         if work_type not in unavailable_until or unavailable_until[work_type] < held:
             unavailable_until[work_type] = held
     capable = capable_work_types(config)
@@ -315,6 +315,11 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
 
 def _wake_plan(config, now, candidates, pending, blocked, failed) -> WakePlan:
     """Choose one wake from queue work and independent local maintenance."""
+    from .vector_upkeep import next_vector_wake
+
+    vector_wake = next_vector_wake(config, now)
+    if vector_wake is not None:
+        candidates.append(vector_wake)
     backup_wake = next_backup_wake(config.binding.data_directory, now)
     if backup_wake is not None:
         candidates.append(backup_wake)
@@ -481,7 +486,7 @@ def supervise(
     delay_seconds=0.0,
     clock=time.monotonic,
     sleep=time.sleep,
-    utc_now=lambda: datetime.now(timezone.utc),
+    utc_now=lambda: datetime.now(UTC),
     planner=next_wake,
     backup_once=None,
 ) -> int:

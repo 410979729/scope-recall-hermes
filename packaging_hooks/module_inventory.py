@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import ast
 import json
-import re
 from pathlib import Path
+
+from _version import manifest_version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST_PATH = REPO_ROOT / "packaging" / "v11-module-allowlist.json"
@@ -55,12 +56,6 @@ ENTRY_POINTS = (
     "runtime/worker_watchdog.py",
 )
 
-#: Files that ship as data rather than as importable modules.  ``_lance_worker``
-#: is the clearest case: it is launched as an isolated script and installs its
-#: own package alias, so importing it as ``scope_recall._lance_worker`` would
-#: defeat the isolation it exists to provide.
-_DATA_ONLY = ("_lance_worker.py",)
-
 #: Files whose version line is stamped from ``_version.py``, in the spelling of ``manifest_version``.
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
@@ -77,19 +72,6 @@ def source_version(repo_root: Path | None = None) -> str:
         if any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets):
             return node.value.value
     raise RuntimeError("_version.py does not define a literal __version__")
-
-
-def manifest_version(version: str) -> str:
-    """The semver spelling a host plugin manifest carries for a PEP 440 package version.
-
-    ``X.Y.Z.devN`` becomes ``X.Y.Z-dev.N`` and ``X.Y.ZrcN`` becomes ``X.Y.Z-rc.N``; a release is unchanged.
-    The installers spell the Codex and Claude Code manifests with
-    ``maintenance.install_common.manifest_version``, which this build hook cannot import from the package it
-    builds; ``tests/packaging`` keeps the two spellings equal.
-    """
-    if ".dev" in version:
-        return version.replace(".dev", "-dev.", 1)
-    return re.sub(r"(\d+\.\d+\.\d+)rc(\d+)", r"\1-rc.\2", version)
 
 
 def _relative_paths(module: str, root: Path) -> list[str]:
@@ -156,7 +138,7 @@ def reachable_modules(repo_root: Path | None = None) -> list[str]:
             init = "/".join(parts[:depth]) + "/__init__.py"
             if (root / init).is_file():
                 seen.add(init)
-    return sorted(seen - set(_DATA_ONLY))
+    return sorted(seen)
 
 
 def reachable_packages(modules: list[str]) -> list[str]:
@@ -190,12 +172,12 @@ def expected_allowlist(repo_root: Path | None = None) -> dict:
 
 
 def stamped_manifest(text: str, version: str) -> str:
-    """Return ``text`` with its ``version:`` line set to ``version``."""
+    """Stamp the host SemVer derived from the distribution version, preserving other fields."""
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if line.startswith("version:"):
             ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
-            lines[index] = f"version: {version}{ending}"
+            lines[index] = f"version: {manifest_version(version)}{ending}"
             return "".join(lines)
     raise RuntimeError("plugin manifest has no version line")
 
@@ -227,7 +209,7 @@ def write_all(repo_root: Path | None = None) -> list[str]:
     for relative in PLUGIN_MANIFESTS:
         path = root / relative
         text = path.read_text(encoding="utf-8")
-        stamped = stamped_manifest(text, manifest_version(version))
+        stamped = stamped_manifest(text, version)
         if stamped != text:
             path.write_text(stamped, encoding="utf-8", newline="\n")
             changed.append(relative)
