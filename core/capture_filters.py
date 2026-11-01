@@ -15,6 +15,21 @@ from .secret_patterns import (
     secret_redaction_spans,
 )
 
+
+def strip_private_content(text: str) -> tuple[str, bool]:
+    """Remove nested private spans; an unclosed opening tag hides the remaining text."""
+    pieces, start, depth, removed = [], 0, 0, False
+    for tag in re.finditer(r"</?private\s*>", text, re.IGNORECASE):
+        if depth == 0:
+            pieces.append(text[start : tag.start()])
+        removed = True
+        depth = max(0, depth - 1) if tag.group().startswith("</") else depth + 1
+        start = tag.end()
+    if depth == 0:
+        pieces.append(text[start:])
+    return "".join(pieces), removed
+
+
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Windows drive paths first so `C:/Users/...` is fully redacted before the
     # POSIX `/Users/...` fallback can leave a `C:` fragment behind.

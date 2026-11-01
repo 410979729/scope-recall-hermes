@@ -52,6 +52,10 @@ class PublicMemoryProvider(ABC):
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         return ""
 
+    def on_memory_write(self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None) -> None:
+        """Notify a successful built-in memory write, with optional host provenance."""
+        return None
+
     def shutdown(self) -> None:
         return None
 

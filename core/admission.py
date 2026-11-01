@@ -177,10 +177,18 @@ def classify(event, policy=None):
     policy = policy or AdmissionPolicy()
     if not policy.enabled:
         return AdmissionDecision("schedule", "policy_disabled")
-    if event.get("origin") == "memory_reinjection":
-        # Before importance: recall output routinely repeats the keywords and
-        # evidence refs that would otherwise raise its priority.
-        return _REINJECTION
+    if event.get("origin") == "memory_reinjection" or (
+        event.get("origin") == "imported"
+        and str(event.get("dataset_id", "")).startswith("memory-import:")
+        and event.get("source_original_origin") != "human_direct"
+    ):
+        # Reused memories retain searchable text without letting their wording
+        # reserve priority work or stand as independent evidence.
+        return (
+            _REINJECTION
+            if event.get("origin") == "memory_reinjection"
+            else AdmissionDecision("source_only", "import_requires_confirmation")
+        )
     text = event["content"]
     if withheld_tool_output(event):
         # Nothing in it to search for by meaning, to derive from or to find by its words (``core/events.py``).
