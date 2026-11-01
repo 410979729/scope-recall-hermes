@@ -170,6 +170,8 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_sqlite_vectors.py",
+        "tests/contract/test_mapped_vectors.py",
         "tests/contract/test_embed_fallback_deadline.py",
         "tests/contract/test_failure_policy_semantics.py",
         "tests/contract/test_queue_recovery_actions.py",
@@ -242,6 +244,7 @@ SUITES = {
         "tests/recall_bench/test_recall_bench.py",
     ],
     "native": [
+        "tests/storage_native/test_sqlite_vector_native.py",
         "tests/contract/test_lance_embed_fence.py",
         "tests/contract/test_retained_lock_deadline.py",
         "tests/integration/test_lance_retrieval.py",

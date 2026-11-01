@@ -25,7 +25,7 @@ from environment import machine
 from lab import Lab
 from ports import Ports
 from scope_recall.core.events import lexical_terms
-from scope_recall.runtime.lance_port import physical_partition_scope_id
+from scope_recall.runtime.vector_port import physical_partition_scope_id
 
 NOW = "2026-01-09T12:00:00Z"
 SCOPES = frozenset({"public", *(f"public-{i}" for i in range(1, 8))})
@@ -62,7 +62,7 @@ def freeze(output: Path) -> dict:
         "backfill_items": 200,
         "backfill_concurrency": 1,
         "cache": "application first-open then warm; OS cache uncontrolled",
-        "backend": "3.16.1 default LanceDB with Windows helper; no vector index initially",
+        "backend": "SQLite float32 with scoped mapped arrays; fixture cache prepared before timing",
         "query_embedding_network_ms": None,
         "query_embedding": "deterministic local synthetic port",
         "deadlines": {
@@ -188,22 +188,13 @@ def seed_truth(lab: Lab, count: int) -> list[str]:
     return [source_ref, *refs]
 
 
-def seed_vectors(lab: Lab, refs: list[str], output: Path) -> dict:
-    """Stream float32 fixture batches, then reopen the production Windows helper.
-
-    Fixture bulk loading avoids measuring repeated JSON pipe serialization as
-    data generation. Measured reads and backfill writes still use the shipped
-    process store and its fencing. No index or quantization is introduced.
-    """
-    import lancedb
-    import pyarrow as pa
-
+def seed_vectors(lab: Lab, refs: list[str]) -> dict:
+    """Stream bounded float32 batches and prepare the shipped mapped cache without embedding calls."""
     rng = np.random.default_rng(42)
     space = digest(lab.ports.config["embedding"])
     started = time.perf_counter()
-    lab.companion.close()
-    database = lancedb.connect(str(lab.binding.data_directory.parent / "vectors" / "lancedb"))
-    table = database.open_table("public_bench")
+    if lab.companion.count_rows():
+        raise RuntimeError("synthetic vector fixture must start empty")
     partitions = {
         scope: physical_partition_scope_id(
             agent_id=lab.binding.agent_id,
@@ -215,55 +206,52 @@ def seed_vectors(lab: Lab, refs: list[str], output: Path) -> dict:
         )
         for scope in SCOPES
     }
-
-    def batches():
-        for start in range(0, len(refs), 4096):
-            end = min(len(refs), start + 4096)
-            matrix = rng.standard_normal((end - start, 3072), dtype=np.float32)
-            matrix /= np.linalg.norm(matrix, axis=1, keepdims=True)
-            metadata, scopes, ids = [], [], []
-            for index in range(start, end):
-                if index % 100 == 0 and index > start:
-                    matrix[index - start] = matrix[index - start - 1]
-                scope = "public" if index % 8 == 0 else f"public-{index % 8}"
-                vector_id = f"TEST-vector-{index}"
-                scopes.append(partitions[scope])
-                ids.append(vector_id)
-                metadata.append(
-                    json.dumps(
-                        {
-                            "object_kind": "event",
-                            "object_ref": refs[index],
-                            "object_revision": 1,
-                            "vector_id": vector_id,
-                            "embedding_space": space,
-                            "agent_id": lab.binding.agent_id,
-                            "installation_id": lab.binding.installation_id,
-                            "project_id": None,
-                            "branch_id": None,
-                            "logical_scope_id": scope,
-                        }
-                    )
-                )
-            columns = {
-                "id": pa.array(ids),
-                "scope_id": pa.array(scopes),
-                "source": pa.array(refs[start:end]),
-                "target": pa.array(metadata),
-                "content": pa.array([""] * (end - start)),
-                "summary": pa.array([""] * (end - start)),
-                "updated_at": pa.array([NOW] * (end - start)),
-                "vector": pa.FixedSizeListArray.from_arrays(pa.array(matrix.reshape(-1)), 3072),
+    for start in range(0, len(refs), 4096):
+        end = min(len(refs), start + 4096)
+        matrix = rng.standard_normal((end - start, 3072), dtype=np.float32)
+        matrix /= np.linalg.norm(matrix, axis=1, keepdims=True)
+        rows = []
+        for index in range(start, end):
+            if index % 100 == 0 and index > start:
+                matrix[index - start] = matrix[index - start - 1]
+            scope = "public" if index % 8 == 0 else f"public-{index % 8}"
+            vector_id = f"TEST-vector-{index}"
+            metadata = {
+                "object_kind": "event",
+                "object_ref": refs[index],
+                "object_revision": 1,
+                "vector_id": vector_id,
+                "embedding_space": space,
+                "agent_id": lab.binding.agent_id,
+                "installation_id": lab.binding.installation_id,
+                "project_id": None,
+                "branch_id": None,
+                "logical_scope_id": scope,
             }
-            yield pa.RecordBatch.from_arrays([columns[name] for name in table.schema.names], schema=table.schema)
-            if start % 40960 == 0:
-                print(f"vectors {start}/{len(refs)}", flush=True)
-
-    table.add(pa.RecordBatchReader.from_batches(table.schema, batches()))
-    if table.count_rows() != len(refs):
+            rows.append(
+                dict(
+                    id=vector_id,
+                    scope_id=partitions[scope],
+                    source=refs[index],
+                    target=json.dumps(metadata),
+                    content="",
+                    summary="",
+                    updated_at=NOW,
+                    vector=matrix[index - start],
+                )
+            )
+        lab.companion.upsert_records(rows)
+        if start % 40960 == 0:
+            print(f"vectors {start}/{len(refs)}", flush=True)
+    while True:
+        receipt = lab.maintain_vectors()
+        if not receipt or receipt["outcome"] != "indexed":
+            raise RuntimeError("synthetic vector cache was not published")
+        if receipt["rows"] < 512:
+            break
+    if lab.companion.count_rows() != len(refs):
         raise RuntimeError("vector row count mismatch")
-    lab.companion.open()
-    return {"rows": len(refs), "seconds": time.perf_counter() - started}
+    return {"rows": len(refs), "seconds": time.perf_counter() - started, "vector_runtime": lab.companion.diagnostics()}
 
 
 def backlog(path: Path) -> dict:
@@ -316,13 +304,13 @@ def measure(output: Path, count: int) -> dict:
     """Build one scale and measure warm, first-read and concurrent-backfill behavior."""
     root = output / str(count)
     ports = Ports(RequestCache(output / f"cache-{count}.sqlite3"))
-    lab = Lab(root, ports, now=NOW, backend="lancedb", scopes=SCOPES)
+    lab = Lab(root, ports, now=NOW, backend="sqlite", scopes=SCOPES)
     try:
         lab.clock.realtime = True
         tick = time.perf_counter()
         refs = seed_truth(lab, count)
         truth_seconds = time.perf_counter() - tick
-        vectors = seed_vectors(lab, refs, output)
+        vectors = seed_vectors(lab, refs)
         conditions = {"sources": count, "claims": count // 10, "vectors": len(refs)}
         first_case = Case("first", "synthetic", "TESTtopic00000 color", NOW, "", (), ())
         lab.context = replace(lab.context, allowed_scope_ids=frozenset({"public"}))
@@ -394,7 +382,7 @@ def measure_channels(output: Path, count: int) -> dict:
     """Measure lexical and vector retrieval independently on the existing task fixture."""
     ports = Ports(RequestCache(output / f"cache-{count}.sqlite3"))
     started = time.perf_counter()
-    store = Lab(output / str(count), ports, now=NOW, backend="lancedb", scopes=SCOPES, existing=True)
+    store = Lab(output / str(count), ports, now=NOW, backend="sqlite", scopes=SCOPES, existing=True)
     opened = (time.perf_counter() - started) * 1000
     store.clock.realtime = True
     context = replace(store.context, allowed_scope_ids=frozenset({"public"}))

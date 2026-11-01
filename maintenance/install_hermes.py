@@ -112,16 +112,16 @@ def wrapper_pyproject(version: str = __version__) -> str | None:
     """The ``pyproject.toml`` beside the wrapper in ``home_plugin_dir``: the same core, vector extra included.
 
     Hermes's package manager builds the environment it runs plugins in from each plugin's declaration, and a
-    ``pyproject.toml`` there wins over ``plugin.yaml``.  One written there by hand can pin the core without
-    ``[lancedb]``, and every recall of that installation then runs without vectors.  Written by the install, it
-    says what the manifest says; a release not on PyPI declares nothing (``wrapper_manifest``).
+    ``pyproject.toml`` there wins over ``plugin.yaml``. The vector extra stays in the declaration for installation
+    compatibility; NumPy retrieval is part of the base dependency set. The declaration matches the manifest;
+    a release not on PyPI declares nothing (``wrapper_manifest``).
     """
     release = Version(version)
     if release.is_prerelease or release.is_devrelease or release.local is not None:
         return None
     return (
         '[project]\nname = "hermes-scope-recall-plugin"\nversion = "0.0.0"\nrequires-python = ">=3.11"\n'
-        f'dependencies = ["hermes-scope-recall[lancedb]=={version}"]\n\n[tool.uv]\npackage = false\n'
+        f'dependencies = ["hermes-scope-recall[vectors]=={version}"]\n\n[tool.uv]\npackage = false\n'
     )
 
 
@@ -151,7 +151,7 @@ def wrapper_manifest(template: str, version: str = __version__) -> str:
     release = Version(version)
     if release.is_prerelease or release.is_devrelease or release.local is not None:
         return template
-    return template.rstrip("\n") + f'\npip_dependencies:\n  - "hermes-scope-recall[lancedb]=={version}"\n'
+    return template.rstrip("\n") + f'\npip_dependencies:\n  - "hermes-scope-recall[vectors]=={version}"\n'
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:

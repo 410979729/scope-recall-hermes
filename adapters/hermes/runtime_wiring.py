@@ -17,7 +17,6 @@ from scope_recall.adapters.runtime_wiring import (
     attach_trusted_host_runtime as _attach_common,
 )
 from scope_recall.runtime.worker_launch import launch_worker
-from scope_recall.vector.process_store import share
 
 
 class HermesHostRuntime(TrustedHostRuntime):
@@ -57,15 +56,7 @@ class HermesHostRuntime(TrustedHostRuntime):
 
 
 def attach_trusted_host_runtime(**kwargs):
-    """The common attach, for Hermes, with one vector helper for the whole process.
-
-    A gateway attaches a runtime for every agent it makes, and Hermes does not always shut down the one it made
-    before.  A vector helper of each runtime's own (about 1.15 GB) would leave a gateway holding two after its agent
-    was made again, one per registration of the provider.  Every runtime of the process searches one store of each
-    table through one helper, as a server's do (``vector.process_store.share``).  Stores are such helpers only on
-    Windows; elsewhere sharing changes nothing.
-    """
-    share()
+    """Attach the common trusted runtime for Hermes."""
     return _attach_common(host_adapter="hermes", runtime_class=HermesHostRuntime, **kwargs)
 
 

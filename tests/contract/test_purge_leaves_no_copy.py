@@ -5,7 +5,7 @@ from contextlib import closing
 
 from scope_recall.core.claims import Qualification
 from scope_recall.core.events import lexical_terms
-from scope_recall.runtime.lance_port import LanceIndexWriter, LancePurgePort, LanceVectorRecord
+from scope_recall.runtime.vector_port import VectorIndexWriter, VectorPurgePort, VectorRecord
 from scope_recall.vector.store import build_vector_store
 from test_claims import app, capture, draft
 from test_deletion import authorize, request
@@ -132,7 +132,7 @@ def test_a_purged_message_leaves_no_copy_in_the_store_files(app):
         host.execute("SELECT count(*) FROM sqlite_master").fetchall()
         source = host_capture(core, ctx, "TEST-purge/1", SECRET)
         binding = ctx.binding
-        record = LanceVectorRecord(
+        record = VectorRecord(
             "event",
             source.ref,
             source.revision,
@@ -145,11 +145,11 @@ def test_a_purged_message_leaves_no_copy_in_the_store_files(app):
             ctx.project_id,
             ctx.branch_id,
         )
-        assert LanceIndexWriter(vectors).upsert_fenced(record, guard=lambda: True, remaining_seconds=5)
+        assert VectorIndexWriter(vectors).upsert_fenced(record, guard=lambda: True, remaining_seconds=5)
         candidate_from(core, ctx, source)
         host_capture(core, ctx, "TEST-purge/2", f"删除 {source.ref}")
         deleted = core.forget(ctx, request(source), remaining_seconds=10)
-        port = LancePurgePort(
+        port = VectorPurgePort(
             vectors, embedding_spaces=(SPACE,), agent_id=binding.agent_id, installation_id=binding.installation_id
         )
         passed = core.drain_worker(ctx, purge=port, remaining_seconds=30)

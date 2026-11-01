@@ -1,0 +1,43 @@
+"""Shared vector ports over a raw companion and injected embedding capabilities."""
+
+from .lance_port import (
+    PreparedSourceEmbedding,
+    QueryEmbeddingPort,
+    SourceEmbeddingPort,
+    VectorEmbedPort,
+    VectorIndexWriter,
+    VectorPort,
+    VectorPurgePort,
+    VectorRecord,
+    _context_value_matches,
+    _embed,
+    _embedding_method,
+    _finite_embedding,
+    _project_branch_combinations,
+    _ranked,
+    _record_row,
+    _score_from_row,
+    physical_partition_scope_id,
+    search_partitions,
+)
+
+__all__ = [
+    "physical_partition_scope_id",
+    "_project_branch_combinations",
+    "search_partitions",
+    "QueryEmbeddingPort",
+    "SourceEmbeddingPort",
+    "_embedding_method",
+    "_embed",
+    "_finite_embedding",
+    "PreparedSourceEmbedding",
+    "VectorEmbedPort",
+    "VectorRecord",
+    "_record_row",
+    "VectorIndexWriter",
+    "VectorPurgePort",
+    "VectorPort",
+    "_context_value_matches",
+    "_score_from_row",
+    "_ranked",
+]

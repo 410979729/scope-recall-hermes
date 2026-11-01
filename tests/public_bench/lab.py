@@ -10,17 +10,18 @@ from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "recall_bench"))
-# The existing benchmark binds scope_recall to this checkout and refuses an
-# already imported package from somewhere else. Reuse that same boundary.
+# Clock helpers leave the caller's application package selection intact.
+from bench_clock import WorldClock
 from cache import digest
-from recall_bench import WorldClock
 from scope_recall.contracts import InstanceBinding, TrustedContext, TrustedSourcePrincipal
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy
 from scope_recall.core.work_storage import CAPACITY_REFUSALS
-from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort
+from scope_recall.runtime.vector_port import VectorEmbedPort, VectorPort, VectorPurgePort
+from scope_recall.runtime.vector_upkeep import index_if_due
 from scope_recall.vector.store import build_vector_store
 
 #: Real seconds an idle settle round waits when the remaining work was last refused for capacity.  A provider's
@@ -39,9 +40,7 @@ def throttled(state: dict) -> bool:
 class Lab:
     """One question's independent store; construction never opens a host config."""
 
-    def __init__(
-        self, root: Path, ports, *, now: str, backend="sqlite-bruteforce", scopes=None, existing=False
-    ) -> None:
+    def __init__(self, root: Path, ports, *, now: str, backend="sqlite", scopes=None, existing=False) -> None:
         if existing and not (root / "truth" / "memory.sqlite3").is_file():
             raise ValueError("existing synthetic store is missing")
         root.mkdir(parents=True, exist_ok=existing)
@@ -62,22 +61,26 @@ class Lab:
             backend, storage_dir=root / "vectors", table_name="public_bench", dimensions=3072, metric="cosine"
         )
         self.companion.open()
-        self.embed = LanceEmbedPort(
+        # Request settings keep their complete identity in the space digest; the cache needs only model geometry.
+        geometry = {
+            "model": ports.config["embedding"].get("model", ""),
+            "dimensions": ports.config["embedding"].get("dimensions", 3072),
+        }
+        self.companion.register_space(space, geometry)
+        self.embed = VectorEmbedPort(
             self.companion,
             ports.embedder,
             agent_id=self.binding.agent_id,
             installation_id=self.binding.installation_id,
             embedding_space=space,
         )
-        self.purge = LancePurgePort(
+        self.purge = VectorPurgePort(
             self.companion,
             embedding_spaces=(space,),
             agent_id=self.binding.agent_id,
             installation_id=self.binding.installation_id,
         )
-        vectors = LanceVectorPort(
-            self.companion, ports.embedder, expected_embedding_space=space, clock=self.clock.monotonic
-        )
+        vectors = VectorPort(self.companion, ports.embedder, expected_embedding_space=space, clock=self.clock.monotonic)
         self.core = MemoryCore(
             CoreConfig(self.binding),
             clock=self.clock,
@@ -152,6 +155,11 @@ class Lab:
             )
         return {"work": work, "candidates": candidates, "next_at": pending, "phases": phases}
 
+    def maintain_vectors(self, *, available_seconds=8.0):
+        """Run the shipped bounded cache upkeep without invoking an embedding port."""
+        config = SimpleNamespace(storage_dir=self.companion.db_path.parent)
+        return index_if_due(self.companion, config, available_seconds=available_seconds)
+
     def settle(self, *, max_rounds=256, wall_seconds=900) -> dict:
         """Drain to verified terminal states, advancing only the injected business clock.
 
@@ -177,6 +185,8 @@ class Lab:
                 remaining_seconds=min(120, remaining),
             )
             self.ports.cache.raise_if_missing()
+            if (left := deadline - time.monotonic()) > 0:
+                self.maintain_vectors(available_seconds=min(8.0, left))
             state = self.state()
             if time.monotonic() >= deadline:
                 return {"status": "wall_limit", "rounds": round_index + 1, **state}

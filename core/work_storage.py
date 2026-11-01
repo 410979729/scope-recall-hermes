@@ -7,6 +7,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from ..contracts import ContractError
 from .delete_storage import purge_work_parts
@@ -1126,6 +1127,26 @@ class WorkItems:
         )
         return self.embed_queue()["pending"]
 
+    def respace_authorization(self, space_id: str) -> str | None:
+        """Read the durable identity of an explicitly authorized re-embedding operation for this space."""
+        row = (
+            self._tx._check()
+            .execute(
+                "SELECT position_ref FROM candidate_scan_cursors WHERE cursor_name=?",
+                ("embedding-authorization:" + space_id,),
+            )
+            .fetchone()
+        )
+        return None if row is None else str(row[0])
+
+    def _authorize_respace(self, space_id: str, now: str) -> None:
+        """Record authorization independently of queue progress so companion recovery survives interruption."""
+        self._tx._check(write=True).execute(
+            "INSERT INTO candidate_scan_cursors(cursor_name,position_ref,completed,updated_at) VALUES(?,?,1,?) "
+            "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=excluded.position_ref,updated_at=excluded.updated_at",
+            ("embedding-authorization:" + space_id, uuid4().hex, now),
+        )
+
     def start_respace(self, space_id: str, *, now: str, restart: bool = False) -> dict:
         """Start a run into ``space_id`` over every embedding done so far, from the newest down (``respace_refusal``
         says when it may).  Work queued after the start is embedded into the new space as it comes and lies above the
@@ -1146,6 +1167,7 @@ class WorkItems:
                    updated_at=excluded.updated_at""",
             (RESPACE_CURSOR, space_id, top, int(top == 0), now),
         )
+        self._authorize_respace(space_id, now)
         return self.respace_run()
 
     def cancel_respace(self) -> bool:
@@ -1173,6 +1195,8 @@ class WorkItems:
             return {"outcome": "none"}
         if run["embedding_space"] != space_id:
             return {"outcome": "space_mismatch", "embedding_space": run["embedding_space"]}
+        if self.respace_authorization(space_id) is None:
+            self._authorize_respace(space_id, now)
         top = run["next_work_id"]
         if room <= 0:
             return {"outcome": "held", "reopened": 0, "next_work_id": top}

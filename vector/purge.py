@@ -1,6 +1,5 @@
 """What a purge of the vector companions removes: the validated targets of one purge and, among a store's rows, the
-ids of the governed ones.  One rule for every companion store (``store.LanceVectorStore`` and
-``sqlite_store.SQLiteBruteForceVectorStore``): a row whose writer metadata cannot be read makes the whole inventory
+ids of the governed ones. A row whose writer metadata cannot be read makes the whole inventory
 unknown, and an unknown inventory is never acknowledged as empty."""
 
 from __future__ import annotations

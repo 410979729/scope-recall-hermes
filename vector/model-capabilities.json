@@ -1,0 +1,6 @@
+{
+  "gemini-embedding-2": {
+    "native_dimensions": 3072,
+    "prefix_dimensions": [768]
+  }
+}

@@ -12,14 +12,14 @@ from threading import Event
 
 import pytest
 from scope_recall.contracts import ContractError
-from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort
-from scope_recall.vector.process_store import ProcessLanceVectorStore
+from scope_recall.runtime.vector_port import VectorEmbedPort, VectorPurgePort
+from scope_recall.vector.sqlite_store import SQLiteVectorStore
 from test_claims import app, capture
 from test_deletion import authorize, request
 
 
 def _purge_port(store, ctx, spaces=("TEST-p10-space",)):
-    return LancePurgePort(
+    return VectorPurgePort(
         store, embedding_spaces=spaces, agent_id=ctx.binding.agent_id, installation_id=ctx.binding.installation_id
     )
 
@@ -32,12 +32,12 @@ def _physical_delete_receipt(core, ctx, source):
 
 
 def _native_row(source, ctx, *, revision=None, space="TEST-p10-space", installation_id=None):
-    from scope_recall.runtime.lance_port import LanceVectorRecord, _record_row
+    from scope_recall.runtime.vector_port import VectorRecord, _record_row
 
     revision = revision or source.revision
     installation_id = installation_id or ctx.binding.installation_id
     return _record_row(
-        LanceVectorRecord(
+        VectorRecord(
             "event",
             source.ref,
             revision,
@@ -53,72 +53,11 @@ def _native_row(source, ctx, *, revision=None, space="TEST-p10-space", installat
     )
 
 
-def test_actual_purge_port_empty_inventory_waits_behind_native_grant(worker_app, tmp_path):
-    core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST actual purge empty inventory race")
-    _mark_consolidation_done(core)
-    item = _claim_embed(core, ctx, clock, "TEST-race-owner")
-    epoch = core.status(ctx).memory_epoch
-    writer = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    cleaner = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    writer.open()
-    cleaner.open_existing()
-    approved, release, purge_started, purge_finished = Event(), Event(), Event(), Event()
-    original_send = writer._send_fence_frame
-
-    def delay_allow(encoded, timeout):
-        if b'"approved": true' in encoded:
-            approved.set()
-            assert release.wait(15)
-        original_send(encoded, timeout)
-
-    writer._send_fence_frame = delay_allow
-    try:
-        port = _port(writer, ctx)
-        prepared = port.prepare_source(source, remaining_seconds=20)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            publication = pool.submit(
-                lambda: port.publish_source(
-                    prepared,
-                    source=source,
-                    lease_token=item.lease_token,
-                    lease_owner=item.lease_owner,
-                    lease_guard=lambda: _live_guard(core, ctx, clock, item, epoch),
-                    remaining_seconds=20,
-                )
-            )
-            assert approved.wait(15)
-            receipt = _physical_delete_receipt(core, ctx, source)
-
-            def purge():
-                purge_started.set()
-                try:
-                    return _purge_port(cleaner, ctx).purge_active(
-                        receipt["operation_id"], receipt=receipt, remaining_seconds=20
-                    )
-                finally:
-                    purge_finished.set()
-
-            cleanup = pool.submit(purge)
-            assert purge_started.wait(5)
-            assert not purge_finished.wait(0.3), "purge ACK overtook the native publication lock"
-            release.set()
-            publication.result(timeout=20)
-            assert cleanup.result(timeout=20) is True
-        cleaner.close()
-        cleaner.open_existing()
-        assert cleaner.list_records() == {}
-    finally:
-        release.set()
-        writer.close()
-        cleaner.close()
-
-
 def test_actual_purge_port_covers_old_revisions_and_spaces_without_other_identity(worker_app, tmp_path):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST vector revision one")
     newer = capture(core, ctx, "TEST vector revision two", key=source.event["source_event_key"], revision=2)
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         rows = [
@@ -152,7 +91,7 @@ def test_actual_purge_port_unknown_metadata_cannot_ack_empty(worker_app, tmp_pat
         metadata = json.loads(row["target"])
         metadata["object_revision"] = True
         row["target"] = json.dumps(metadata)
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         store.upsert_records([row])
@@ -171,102 +110,6 @@ def test_actual_purge_port_unknown_metadata_cannot_ack_empty(worker_app, tmp_pat
 #: The budget of a publication held at its guard while the test does its own work (a delete, two purges and a pause):
 #: 10 s ran out on a CI runner three times slower than usual, and the guard's answer then found no time left to send.
 WRITER_SECONDS = 30
-
-
-def test_actual_purge_port_native_lock_wait_consumes_request_deadline(worker_app, tmp_path):
-    """A caller that stops waiting leaves the healthy helper up and drains its frame later."""
-    core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST purge lock deadline")
-    writer = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    cleaner = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    writer.open()
-    cleaner.open_existing()
-    helper = cleaner._process
-    entered, release = Event(), Event()
-
-    def guard():
-        entered.set()
-        assert release.wait(30)
-        return False
-
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            publication = pool.submit(
-                lambda: writer.fenced_upsert_records(
-                    [_native_row(source, ctx)], guard=guard, remaining_seconds=WRITER_SECONDS
-                )
-            )
-            assert entered.wait(30)
-            receipt = _physical_delete_receipt(core, ctx, source)
-            started = time.monotonic()
-            assert (
-                _purge_port(cleaner, ctx).purge_active(receipt["operation_id"], receipt=receipt, remaining_seconds=0.15)
-                is False
-            )
-            assert time.monotonic() - started < 2
-            # Blocked behind another writer's native lock is slow, not broken:
-            # the helper is kept and the frame it still owes is parked.
-            assert cleaner.requires_reopen is False
-            assert cleaner._process is helper and helper is not None and helper.poll() is None
-            assert cleaner._pending_response_id is not None
-            release.set()
-            assert publication.result(timeout=30) is False
-        # Without any reopen, the next request drains the owed frame first.
-        assert _purge_port(cleaner, ctx).purge_active(receipt["operation_id"], receipt=receipt, remaining_seconds=10)
-        assert cleaner._pending_response_id is None
-        assert cleaner.requires_reopen is False
-    finally:
-        release.set()
-        writer.close()
-        cleaner.close()
-
-
-def test_actual_purge_port_wedged_helper_is_reaped_after_pending_frame_timeout(worker_app, tmp_path):
-    """A frame owed for longer than the helper timeout is a wedged helper, not a slow one."""
-    core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST purge wedged helper")
-    writer = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    cleaner = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    writer.open()
-    cleaner.open_existing()
-    cleaner._pending_response_timeout = 0.2
-    entered, release = Event(), Event()
-
-    def guard():
-        entered.set()
-        assert release.wait(30)
-        return False
-
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            publication = pool.submit(
-                lambda: writer.fenced_upsert_records(
-                    [_native_row(source, ctx)], guard=guard, remaining_seconds=WRITER_SECONDS
-                )
-            )
-            assert entered.wait(30)
-            receipt = _physical_delete_receipt(core, ctx, source)
-            port = _purge_port(cleaner, ctx)
-            assert port.purge_active(receipt["operation_id"], receipt=receipt, remaining_seconds=0.15) is False
-            assert cleaner.requires_reopen is False
-            time.sleep(0.3)
-            # Still blocked: the parked frame has now outlived the helper
-            # timeout, so this request reaps the helper instead of spending
-            # its own budget on the same frame.
-            started = time.monotonic()
-            assert port.purge_active(receipt["operation_id"], receipt=receipt, remaining_seconds=5) is False
-            assert time.monotonic() - started < 2
-            assert cleaner.requires_reopen is True
-            release.set()
-            assert publication.result(timeout=30) is False
-        cleaner.close()
-        cleaner.open_existing()
-        assert cleaner.requires_reopen is False
-        assert _purge_port(cleaner, ctx).purge_active(receipt["operation_id"], receipt=receipt, remaining_seconds=10)
-    finally:
-        release.set()
-        writer.close()
-        cleaner.close()
 
 
 class Clock:
@@ -332,7 +175,7 @@ def _live_guard(core, ctx, clock, item, epoch):
 
 
 def _port(store, ctx):
-    return LanceEmbedPort(
+    return VectorEmbedPort(
         store,
         FixedEmbedding(),
         agent_id=ctx.binding.agent_id,
@@ -345,7 +188,7 @@ def test_real_lance_embed_worker_publishes_fixed_vector(worker_app, tmp_path):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST P10 fixed vector source")
     _mark_consolidation_done(core)
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         receipt = core.drain_worker(
@@ -369,7 +212,7 @@ def test_purge_waits_for_granted_native_write_and_removes_active_vector(worker_a
     _mark_consolidation_done(core)
     item = _claim_embed(core, ctx, clock, "lance-purge-a")
     epoch = core.status(ctx).memory_epoch
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         port = _port(store, ctx)
@@ -377,8 +220,9 @@ def test_purge_waits_for_granted_native_write_and_removes_active_vector(worker_a
         granted = Event()
 
         def guard():
+            allowed = _live_guard(core, ctx, clock, item, epoch)
             granted.set()
-            return _live_guard(core, ctx, clock, item, epoch)
+            return allowed
 
         errors = []
 
@@ -425,7 +269,7 @@ def test_worker_purge_acknowledges_active_vector_only_after_native_delete(worker
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST P10 worker physical purge")
     _mark_consolidation_done(core)
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         # The normal worker path owns the publication fence; the fixed vector
@@ -444,7 +288,7 @@ def test_worker_purge_acknowledges_active_vector_only_after_native_delete(worker
             max_items=1,
             remaining_seconds=20,
             owner_id="purge-native",
-            purge=LancePurgePort(
+            purge=VectorPurgePort(
                 store,
                 agent_id=ctx.binding.agent_id,
                 installation_id=ctx.binding.installation_id,
@@ -468,7 +312,7 @@ def test_purge_port_keeps_unknown_embedding_space_pending(worker_app, tmp_path):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST P10 unknown active vector space")
     _mark_consolidation_done(core)
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         assert (
@@ -484,7 +328,7 @@ def test_purge_port_keeps_unknown_embedding_space_pending(worker_app, tmp_path):
             max_items=1,
             remaining_seconds=20,
             owner_id="unknown-space-purge",
-            purge=LancePurgePort(
+            purge=VectorPurgePort(
                 store,
                 agent_id=ctx.binding.agent_id,
                 installation_id=ctx.binding.installation_id,
@@ -507,7 +351,7 @@ def test_native_guard_denies_new_revision_before_physical_commit(worker_app, tmp
     _mark_consolidation_done(core)
     item = _claim_embed(core, ctx, clock, "lance-revision")
     epoch = core.status(ctx).memory_epoch
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         port = _port(store, ctx)
@@ -534,7 +378,7 @@ def test_native_guard_denies_epoch_flip_before_physical_commit(worker_app, tmp_p
     _mark_consolidation_done(core)
     item = _claim_embed(core, ctx, clock, "lance-epoch")
     epoch = core.status(ctx).memory_epoch
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         port = _port(store, ctx)
@@ -562,10 +406,10 @@ def test_shared_id_lease_reuse_old_owner_cannot_delete_new_owner_vector(worker_a
     _mark_consolidation_done(core)
     item_a = _claim_embed(core, ctx, clock, "lance-owner-a")
     epoch = core.status(ctx).memory_epoch
-    store_a = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    store_b = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store_a = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store_b = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store_a.open()
-    store_b.open_existing()
+    store_b.open()
     try:
         port_a = _port(store_a, ctx)
         port_b = _port(store_b, ctx)
@@ -628,7 +472,7 @@ def test_native_guard_false_is_bounded_no_commit(worker_app, tmp_path):
     source = capture(core, ctx, "TEST P10 bounded guard denial")
     _mark_consolidation_done(core)
     item = _claim_embed(core, ctx, clock, "lance-deny")
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         port = _port(store, ctx)
@@ -649,99 +493,11 @@ def test_native_guard_false_is_bounded_no_commit(worker_app, tmp_path):
         store.close()
 
 
-def test_native_helper_eof_before_guard_allow_fails_closed(worker_app, tmp_path):
-    core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST P10 helper EOF before grant")
-    _mark_consolidation_done(core)
-    item = _claim_embed(core, ctx, clock, "lance-eof")
-    epoch = core.status(ctx).memory_epoch
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    store.open()
-    try:
-        port = _port(store, ctx)
-        prepared = port.prepare_source(source, remaining_seconds=10)
-
-        def kill_before_reply():
-            process = store._process
-            assert process is not None
-            process.kill()
-            return True
-
-        with pytest.raises(RuntimeError, match="fence failed"):
-            port.publish_source(
-                prepared,
-                source=source,
-                lease_token=item.lease_token,
-                lease_owner=item.lease_owner,
-                lease_guard=kill_before_reply,
-                remaining_seconds=10,
-            )
-        assert store.requires_reopen
-    finally:
-        store.close()
-    # The helper died while holding the advisory lock but before approval; a
-    # fresh native process sees no publication and can reopen the same table.
-    recovered = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    recovered.open_existing()
-    try:
-        assert recovered.count_rows() == 0
-    finally:
-        recovered.close()
-
-
-def test_granted_channel_death_allows_native_commit_then_same_lock_purge(worker_app, tmp_path):
-    core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST P10 granted host channel death")
-    _mark_consolidation_done(core)
-    item = _claim_embed(core, ctx, clock, "lance-granted-death")
-    epoch = core.status(ctx).memory_epoch
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    store.open()
-    try:
-        port = _port(store, ctx)
-        prepared = port.prepare_source(source, remaining_seconds=10)
-        original_send = store._send_fence_frame
-        closed = {"value": False}
-
-        def send_then_close(encoded, timeout):
-            original_send(encoded, timeout)
-            if b'"approved": true' in encoded and not closed["value"]:
-                closed["value"] = True
-                stream = store._process.stdin
-                if stream is not None:
-                    stream.close()
-
-        store._send_fence_frame = send_then_close
-        try:
-            port.publish_source(
-                prepared,
-                source=source,
-                lease_token=item.lease_token,
-                lease_owner=item.lease_owner,
-                lease_guard=lambda: _live_guard(core, ctx, clock, item, epoch),
-                remaining_seconds=10,
-            )
-        except RuntimeError:
-            # Closing the host channel may lose the terminal response even
-            # though the helper was already granted and owns the lock.
-            pass
-    finally:
-        store.close()
-    recovered = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    recovered.open_existing()
-    try:
-        assert recovered.count_rows() == 1
-        recovered.delete_by_ids([prepared.vector_id])
-        assert recovered.count_rows() == 0
-    finally:
-        recovered.close()
-
-
 def test_native_commit_with_lost_ack_reopens_and_retries_physical_purge(worker_app, tmp_path):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST P10 lost native acknowledgement")
     _mark_consolidation_done(core)
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         assert (
@@ -752,7 +508,7 @@ def test_native_commit_with_lost_ack_reopens_and_retries_physical_purge(worker_a
         )
         authorize(core, ctx, source)
         deleted = core.forget(ctx, request(source), remaining_seconds=10)
-        actual = LancePurgePort(
+        actual = VectorPurgePort(
             store,
             agent_id=ctx.binding.agent_id,
             installation_id=ctx.binding.installation_id,
@@ -779,57 +535,3 @@ def test_native_commit_with_lost_ack_reopens_and_retries_physical_purge(worker_a
         assert store.count_rows() == 0
     finally:
         store.close()
-
-
-def test_native_commit_lost_terminal_ack_is_recovered_by_physical_purge(worker_app, tmp_path):
-    core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST P10 commit then lost terminal ACK")
-    _mark_consolidation_done(core)
-    item = _claim_embed(core, ctx, clock, "lance-lost-terminal")
-    epoch = core.status(ctx).memory_epoch
-    store = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    store.open()
-    try:
-        port = _port(store, ctx)
-        prepared = port.prepare_source(source, remaining_seconds=10)
-        base_queue = store._responses
-
-        class DropTerminal:
-            def __init__(self, delegate):
-                self.delegate = delegate
-                self.drop = False
-
-            def get(self, timeout=None):
-                if self.drop:
-                    # Consume the real terminal response first, so the native
-                    # merge is complete before the host loses its ACK.
-                    self.delegate.get(timeout=timeout)
-                    raise queue.Empty
-                return self.delegate.get(timeout=timeout)
-
-        def guard():
-            store._responses = DropTerminal(base_queue)
-            store._responses.drop = True
-            return _live_guard(core, ctx, clock, item, epoch)
-
-        with pytest.raises(RuntimeError, match="fence failed"):
-            port.publish_source(
-                prepared,
-                source=source,
-                lease_token=item.lease_token,
-                lease_owner=item.lease_owner,
-                lease_guard=guard,
-                remaining_seconds=10,
-            )
-    finally:
-        store.close()
-    recovered = ProcessLanceVectorStore(tmp_path / "lance", table_name="TEST_vectors", dimensions=2)
-    recovered.open_existing()
-    try:
-        # The native merge occurred before the host intentionally discarded
-        # the terminal frame; physical purge must still remove the row.
-        assert recovered.count_rows() == 1
-        recovered.delete_by_ids([prepared.vector_id])
-        assert recovered.count_rows() == 0
-    finally:
-        recovered.close()

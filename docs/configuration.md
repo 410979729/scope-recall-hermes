@@ -155,13 +155,13 @@ The block is a mapping:
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `backend` | `"lancedb"` or `"sqlite-bruteforce"` | `"lancedb"` | `lancedb` needs the `lancedb` extra installed. Both backends serve recall while the worker writes. `sqlite-bruteforce` is dependency-free and scans; it is meant for hosts where LanceDB or PyArrow is unsafe, and for small to medium memory sets. Recall reads through SQLite's write-ahead log and sees each embedding as soon as the worker commits it; a read needs `vector.sqlite3-wal` and `vector.sqlite3-shm` beside the file, or permission to create them there, as the worker has. A reader that closes last leaves them behind; a writer removes them when it is the last connection and closes cleanly. Any other value, including `"pgvector"`, is refused. |
-| `storage_dir` | absolute path | required | Must be exactly `<data_directory>/vectors/<embedding space id>`, or the file is refused with `VECTOR_STORAGE_OUTSIDE_BINDING`. The backend creates its own store below it: a `lancedb/` directory, or a `vector.sqlite3` file. |
+| `backend` | `"sqlite"`; legacy `"sqlite-vec"`, `"lancedb"` and `"sqlite-bruteforce"` | `"sqlite"` | One SQLite float32 companion with worker-maintained mapped arrays. Approved embedding spaces use normalized prefix candidates; every returned score uses the full original vector. Legacy values select the same backend and appear as mapped values in doctor. |
+| `storage_dir` | absolute path | required | Must be `<data_directory>/vectors/<embedding space id>`, or configuration is refused with `VECTOR_STORAGE_OUTSIDE_BINDING`. Raw values live in `vectors.sqlite3`; the rebuildable `vectors.sqlite3.cache/` directory holds scoped float32 arrays and sequence keys. |
 | `table_name` | string, non-blank, ≤ 240 chars | required | Table or collection name inside the store. |
 | `dimensions` | int | required, 1–8192 | Must equal the active embedding space's width, or the file is refused with `VECTOR_DIMENSIONS_MISMATCH`. The shipped space is 3072. |
 | `metric` | `"cosine"` | `"cosine"` | The only supported metric. |
 | `test_injection_override` | boolean | `false` | A test seam. It is refused unless `binding.test_mode` is true, and it skips the dimension and path checks above. Do not set it in a real installation. |
-| `tool_output_retention_days` | int | `180` | Days a tool output's vector is kept after its source entered the store. A worker pass then deletes the vector, up to 2,000 per pass and hourly once caught up, and the following compaction reclaims the space. The same pass deletes at once, whatever their age, the vectors of a tool output that repeats an earlier one in the same scope (the earliest copy keeps its vector) and of the summary the capture filter leaves in place of an output it withheld. The source text, its lexical index and everything derived from it stay, so the output is still found by its words and through what cites it, never again by meaning alone. `0` turns the pass off entirely. |
+| `tool_output_retention_days` | int | `180` | Days a tool output's vector is kept after its source entered the store. A worker pass then deletes the vector, up to 2,000 per pass and hourly once caught up, and SQLite reuses the freed pages for later writes. The same pass deletes at once, whatever their age, the vectors of a tool output that repeats an earlier one in the same scope (the earliest copy keeps its vector) and of the summary the capture filter leaves in place of an output it withheld. The source text, its lexical index and everything derived from it stay, so the output is still found by its words and through what cites it, never again by meaning alone. `0` turns the pass off entirely. |
 
 The embedding space id is the SHA-256 digest of the active space descriptor. For
 the shipped space it is
@@ -169,10 +169,15 @@ the shipped space it is
 embedding route changes the digest, and therefore the directory — see
 [Pointing a route at another provider](#pointing-a-route-at-another-provider).
 
-On Windows keep the data directory short, for example `C:\ScopeRecall\my-agent`.
-LanceDB appends index, table and temporary file names to `storage_dir`; when the
-resulting native path is too long the worker reports
-`native_vector_path_too_long` before starting LanceDB or calling the embedding API.
+Raw values are little-endian float32 with no quantization or normalization at storage time.
+Each embedding space retains its model, dimensions, normalization policy and query/document encodings.
+Binary codes use positive-component sign bits, padded with zero components to whole bytes.
+Hamming distance selects candidates; returned cosine scores are `1 - distance` from float32 reranking.
+Only the worker updates codes and their committed watermark. Queries scan newer raw rows as well.
+
+The worker imports `vector.sqlite3` JSON arrays and existing LanceDB tables in resumable pages.
+Deletion fences take priority over old pages. Activation compares visible object/revision/space identities,
+not counts. Unreadable inputs remain intact and recall reports `vector_import_pending`.
 
 ## `vector_threshold`
 

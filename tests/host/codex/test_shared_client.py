@@ -1533,60 +1533,16 @@ def test_what_counts_as_a_recall_without_its_vector_search():
     assert recall_without_vectors(["sqlite_unavailable:INPUT_INVALID"]) == "sqlite_unavailable:INPUT_INVALID"
 
 
-def test_a_prompt_hook_starts_the_vector_helper_before_it_stores_the_prompt(monkeypatch):
-    """Each hook is a new process, and a vector helper started when the recall reached its vector search spent the
-    rest of the recall's budget importing LanceDB: Claude Code and Codex recalled from words alone."""
-    from scope_recall.adapters.clients import hook_entry
-    from scope_recall.vector import process_store
-
-    started = []
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: started.append(kwargs))
-    monkeypatch.setattr(hook_entry.sys, "platform", "win32")
-    hook_entry._prestart_vector_helper(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "TEST"}).encode())
-    hook_entry._prestart_vector_helper(
-        json.dumps({"hook_event_name": "Stop", "last_assistant_message": "UserPromptSubmit"}).encode()
-    )
-    hook_entry._prestart_vector_helper(b"not json")
-    assert started == [{}]
-
-
 @pytest.fixture
 def resident(store, monkeypatch):
-    """The Claude Code entry's MCP server answering its prompts' recall, without a LanceDB helper process."""
+    """The client entry's MCP server answering its prompts through the local recall endpoint."""
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code", warm=False)
     assert endpoint is not None
     try:
         yield root, client, endpoint
-    finally:
-        endpoint.stop()
-
-
-@pytest.mark.skipif(os.name != "nt", reason="the LanceDB helper process is Windows'")
-def test_the_mcp_server_shares_one_vector_store_among_its_recalls_before_it_serves(store, monkeypatch):
-    """The kept handler, a handler made for a prompt that comes meanwhile and the tools search one store, through one
-    LanceDB helper (``process_store.share``), from the first prompt it serves."""
-    from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
-
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
-    sharing_when_served = []
-
-    class Server(local_endpoint._Server):
-        def __init__(self, *args, **kwargs):
-            sharing_when_served.append(process_store._sharing)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(local_endpoint, "_Server", Server)
-    _root, _homes, client, _capture = store
-    endpoint = local_endpoint.serve(client, "claude-code", warm=False)
-    assert endpoint is not None
-    try:
-        assert sharing_when_served == [True]
     finally:
         endpoint.stop()
 
@@ -1801,9 +1757,7 @@ def test_a_server_names_itself_again_only_once_no_recall_is_stuck(store, monkeyp
     import time
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(local_endpoint, "ADVERTISE_SECONDS", 0.2)
     _root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code")
@@ -1869,9 +1823,7 @@ def test_credentials_rotated_or_removed_in_the_env_file_are_taken_up(store, monk
     import time
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_KEY", raising=False)
     monkeypatch.delenv("TEST_SCOPE_RECALL_OLD", raising=False)
     _root, _homes, client, _capture = store
@@ -1955,26 +1907,12 @@ def test_a_server_answer_that_ran_out_of_time_is_not_the_last_word(
         assert f"CODEX_RECALL_RESIDENT:{said}\n" in captured.err
 
 
-def test_a_prompt_whose_server_runs_still_starts_its_helper(resident, small_reserve, monkeypatch):
-    """Prompt hooks prepare their own vector helper even when a recall server is available."""
-    from scope_recall.adapters.clients import hook_entry
-
-    _root, client, _endpoint = resident
-    started = []
-    monkeypatch.setattr(hook_entry, "_prestart_vector_helper", started.append)
-    raw = json.dumps(_prompt("TEST 仍然自己预热。", prompt_id="TEST-prompt-prestart")).encode()
-    assert _hook_entry(monkeypatch, raw, client) == 0
-    assert started == [raw]
-
-
 def test_a_failed_read_of_the_env_file_keeps_the_keys(store, monkeypatch, tmp_path):
     """One failed read (a file locked just after a save) dropped the key for the rest of the session."""
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_KEEP", raising=False)
     _root, _homes, client, _capture = store
     env_file = tmp_path / "TEST.env"
@@ -2114,9 +2052,7 @@ def test_a_first_read_of_the_env_file_that_failed_is_tried_again(store, monkeypa
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_LATE", raising=False)
     _root, _homes, client, _capture = store
     env_file = tmp_path / "TEST.env"
@@ -2143,9 +2079,7 @@ def test_a_key_the_runtime_config_comes_to_name_is_taken_up(store, monkeypatch, 
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     names = ("TEST_SCOPE_RECALL_A", "TEST_SCOPE_RECALL_B")
     for name in names:
         monkeypatch.delenv(name, raising=False)
@@ -2302,9 +2236,7 @@ def test_a_runtime_config_that_will_not_load_keeps_the_keys(store, monkeypatch, 
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_STAYS", raising=False)
     _root, _homes, client, _capture = store
     env_file, runtime_config = tmp_path / "TEST.env", tmp_path / "TEST-runtime-config.json"
@@ -2444,9 +2376,7 @@ def test_a_first_read_of_the_key_that_raised_does_not_stop_the_server(store, mon
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_FIRST", raising=False)
     _root, _homes, client, _capture = store
     env_file = tmp_path / "TEST.env"
@@ -2584,9 +2514,7 @@ def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(stor
     import time
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(local_endpoint, "ADVERTISE_SECONDS", 0.2)
     real = local_endpoint._hello
 
@@ -3424,9 +3352,7 @@ def test_a_warming_takes_its_stamp_before_its_build():
 
 def test_the_mcp_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     _root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code")
     assert endpoint is not None
@@ -4003,9 +3929,7 @@ def test_a_workbuddy_prompt_whose_server_answers_too_late_is_stored_once(
     import threading
 
     from scope_recall.adapters.clients import hook_entry, local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     root, home, _projects = workbuddy
     endpoint = local_endpoint.serve(home, "workbuddy", warm=False)
     assert endpoint is not None
@@ -4068,9 +3992,7 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
 
     from scope_recall.adapters.clients import handler as handler_module
     from scope_recall.adapters.clients import hook_entry, local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(CodexHookHandler, "ensure_runtime", lambda self, audience=None, **kwargs: None)
     _root, home, _projects = workbuddy
     if configured is not None:
@@ -4108,9 +4030,7 @@ def test_a_workbuddy_hook_with_nothing_to_add_writes_nothing(workbuddy, tmp_path
     import io
 
     from scope_recall.adapters.clients import hook_entry
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     _root, home, _projects = workbuddy
 
     def answer(payload, where, host):

@@ -611,7 +611,7 @@ def test_a_candidate_declares_no_core_in_the_home_plugin_directory(tmp_path, mon
 
 def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_path, released):
     """Hermes's package manager builds the environment it runs plugins in from the declaration there, and a
-    ``pyproject.toml`` wins over ``plugin.yaml``: both declare the core with ``[lancedb]``, or recall has no vectors."""
+    ``pyproject.toml`` wins over ``plugin.yaml``: both declare the core with ``[vectors]`` to enable binary indexing."""
     import tomllib
 
     import yaml
@@ -619,7 +619,7 @@ def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_p
     instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
     inside = instance_root / "plugins" / "scope-recall"
     apply_install(_hermes_plan(instance_root, inside, project_root))
-    wanted = f"hermes-scope-recall[lancedb]=={released}"
+    wanted = f"hermes-scope-recall[vectors]=={released}"
     assert tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"] == [wanted]
     assert yaml.safe_load((inside / "plugin.yaml").read_text(encoding="utf-8"))["pip_dependencies"] == [wanted]
     apply_uninstall(plan_uninstall(instance_root=instance_root))
@@ -645,7 +645,7 @@ def test_an_install_moves_its_wrapper_into_the_home_plugin_directory_over_a_hand
     ]
     result = apply_install(plan)
     dependencies = tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-    assert dependencies == [f"hermes-scope-recall[lancedb]=={released}"]
+    assert dependencies == [f"hermes-scope-recall[vectors]=={released}"]
     assert any(Path(path).name == "pyproject.toml" for path in result.backups)
     receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
     assert Path(receipt["target_plugin_dir"]) == inside
@@ -1418,8 +1418,9 @@ def test_hermes_reuse_preserves_explicit_legacy_workspace_audience(tmp_path):
     apply_install(plan)
     assert manifest_path.read_bytes() == before
     import yaml
+    from scope_recall.maintenance.install_common import manifest_version
 
-    assert yaml.safe_load((plugin / "plugin.yaml").read_text())["version"] == __version__
+    assert yaml.safe_load((plugin / "plugin.yaml").read_text())["version"] == manifest_version(__version__)
 
 
 def test_codex_rejects_agent_workspace_and_keeps_empty_binding(tmp_path):
@@ -1865,7 +1866,7 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
         "project"
     ]
     specs = list(project["dependencies"])
-    for extra in ("lancedb", "codex"):
+    for extra in ("vectors", "lancedb", "codex"):
         for spec in project["optional-dependencies"][extra]:
             requirement, separator, marker = spec.partition(";")
             conditions = f"({marker}) and " if separator else ""
@@ -1880,6 +1881,8 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
         "jsonschema": "4.25.1",
         "packaging": "25.0",
         "tzdata": "2026.1",
+        "numpy": "2.5.4",
+        "sqlite-vec": "0.1.9",
         "lancedb": "0.37.1",
         "pyarrow": "24.0.0",
         "mcp": "2.0.0",
@@ -2100,7 +2103,7 @@ def test_a_released_wrapper_declares_its_core_and_a_candidate_declares_nothing()
     requirement = Requirement(spec)
     assert (requirement.name, requirement.extras, str(requirement.specifier)) == (
         "hermes-scope-recall",
-        {"lancedb"},
+        {"vectors"},
         "==3.3.0",
     )
     for build in ("3.3.0rc4", "3.3.0.dev1", "3.3.0+local"):

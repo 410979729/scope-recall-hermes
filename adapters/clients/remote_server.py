@@ -29,7 +29,6 @@ import logging
 import logging.handlers
 import os
 import re
-import sys
 import threading
 import time
 from collections import OrderedDict
@@ -673,18 +672,6 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
         client = load_shared_client(config.home, config.host)
         os.environ.update(host_process_credential_environment(client.runtime_config_path, env_file))
     log_to_file(config.home)
-    if sys.platform == "win32":
-        # Every request builds its handler afresh, and a vector helper started for it would spend the recall's budget
-        # importing LanceDB and opening the table: every handler of this process searches one store
-        # (``vector.process_store.share``), whose helper is started now (``prestart``).
-        from ...vector.process_store import prestart, share
-
-        share()
-        try:
-            prestart()
-        except OSError as exc:
-            # Without it each recall starts its own helper: slower, never a reason not to serve.
-            _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
 
     _log.info(
         "serving the %s entry at %s on %s:%d (%s)", config.host, config.home, config.listen, config.port, __version__

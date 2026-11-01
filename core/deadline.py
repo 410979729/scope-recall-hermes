@@ -12,9 +12,10 @@ request-budget failure may finish on an owned reaper after the caller returns.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 # Same default and range as vector.embedder.query_timeout_seconds.
@@ -26,11 +27,12 @@ _CURRENT: ContextVar[RequestDeadline | None] = ContextVar(
 
 @dataclass(frozen=True)
 class RequestDeadline:
-    """Absolute monotonic deadline for one bounded request."""
+    """Absolute deadline and remaining budget in one monotonic clock domain."""
 
     started_monotonic: float
     deadline_monotonic: float
     budget_seconds: float
+    clock: Callable[[], float] | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_budget(
@@ -38,13 +40,16 @@ class RequestDeadline:
         budget_seconds: float,
         *,
         now: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> RequestDeadline:
-        started = time.monotonic() if now is None else float(now)
+        """Create a relative budget using the selected monotonic clock."""
+        started = (time.monotonic() if clock is None else clock()) if now is None else float(now)
         budget = float(budget_seconds)
         return cls(
             started_monotonic=started,
             deadline_monotonic=started + budget,
             budget_seconds=budget,
+            clock=clock,
         )
 
     @classmethod
@@ -53,17 +58,21 @@ class RequestDeadline:
         deadline_monotonic: float,
         *,
         now: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> RequestDeadline:
-        started = time.monotonic() if now is None else float(now)
+        """Bind an absolute limit and its starting tick to one clock."""
+        started = (time.monotonic() if clock is None else clock()) if now is None else float(now)
         absolute = float(deadline_monotonic)
         return cls(
             started_monotonic=started,
             deadline_monotonic=absolute,
             budget_seconds=max(0.0, absolute - started),
+            clock=clock,
         )
 
     def remaining(self, now: float | None = None) -> float:
-        current = time.monotonic() if now is None else float(now)
+        """Return the capped budget at a supplied tick or at the bound clock's current tick."""
+        current = (time.monotonic() if self.clock is None else self.clock()) if now is None else float(now)
         leftover = self.deadline_monotonic - current
         return min(self.budget_seconds, leftover)
 

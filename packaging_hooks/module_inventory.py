@@ -27,6 +27,8 @@ import ast
 import json
 from pathlib import Path
 
+from _version import manifest_version
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST_PATH = REPO_ROOT / "packaging" / "v11-module-allowlist.json"
 
@@ -176,12 +178,12 @@ def expected_allowlist(repo_root: Path | None = None) -> dict:
 
 
 def stamped_manifest(text: str, version: str) -> str:
-    """Return ``text`` with its ``version:`` line set to ``version``."""
+    """Stamp the host SemVer derived from the distribution version, preserving other fields."""
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if line.startswith("version:"):
             ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
-            lines[index] = f"version: {version}{ending}"
+            lines[index] = f"version: {manifest_version(version)}{ending}"
             return "".join(lines)
     raise RuntimeError("plugin manifest has no version line")
 
@@ -196,7 +198,7 @@ def stale_version_files(repo_root: Path | None = None) -> dict[str, str]:
         for line in text.splitlines():
             if line.startswith("version:"):
                 found = line.split(":", 1)[1].strip()
-                if found != version:
+                if found != manifest_version(version):
                     stale[relative] = found
                 break
     listed = json.loads((root / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))

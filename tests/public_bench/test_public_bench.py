@@ -417,6 +417,7 @@ def test_settle_waits_out_a_capacity_refusal_without_spending_business_advances(
     monkeypatch.setattr(lab.time, "sleep", sleep)
     refused = [("embed", "pending", "http_429|capacity:2", 3)]
     store = object.__new__(Lab)
+    store.maintain_vectors = lambda **kwargs: None
     store.core, store.context = SimpleNamespace(drain_worker=batch), None
     store.ports = SimpleNamespace(model=None, cache=SimpleNamespace(raise_if_missing=lambda: None))
     store.embed = store.purge = None
@@ -810,6 +811,7 @@ def test_settle_checks_the_deadline_after_a_batch_and_passes_remaining_budget(mo
         return SimpleNamespace(processed=1)
 
     store = object.__new__(Lab)
+    store.maintain_vectors = lambda **kwargs: None
     store.core, store.context = SimpleNamespace(drain_worker=batch), None
     store.ports = SimpleNamespace(model=None, cache=SimpleNamespace(raise_if_missing=lambda: None))
     store.embed = store.purge = None
@@ -1260,3 +1262,28 @@ def test_a_failed_question_is_recorded_and_the_split_continues():
     assert row["status"] == "failed" and "TEST transport closed" in row["error"]
     with pytest.raises(RuntimeError):
         isolated(broken, _question(), cache_only=True)
+
+
+def test_scale_fixture_uses_mapped_backend_without_legacy_sdk_or_embedding_requests(tmp_path, monkeypatch):
+    """Synthetic scale preparation works with the base backend and no embedding capability."""
+    from performance import SCOPES, seed_vectors
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("TEST fixture seeding must not request embeddings")
+
+    cache = RequestCache(tmp_path / "cache.sqlite3")
+    ports = Ports(cache)
+    monkeypatch.setattr(ports.embedder, "embed_source", forbidden)
+    monkeypatch.setattr(ports.embedder, "embed_query", forbidden)
+    monkeypatch.setitem(sys.modules, "lancedb", None)
+    lab = Lab(tmp_path / "TEST-scale", ports, now="2020-01-01T00:00:00Z", scopes=SCOPES)
+    try:
+        refs = ["event-" + hashlib.sha256(f"TEST-scale:{i}".encode()).hexdigest() for i in range(32)]
+        result = seed_vectors(lab, refs)
+        assert result["rows"] == 32 and lab.companion.count_rows() == 32
+        assert result["vector_runtime"]["cache_ready"]
+        assert result["vector_runtime"]["engine"] == "numpy-exact"
+        with sqlite3.connect(cache.path) as connection:
+            assert connection.execute("SELECT count(*) FROM responses").fetchone()[0] == 0
+    finally:
+        lab.close()

@@ -1,17 +1,17 @@
-"""Rebuildable vector companions: the Lance store, its process-isolated driver, the SQLite brute-force fallback, and compaction.
+"""Raw float32 embeddings and their rebuildable search index.
 
-SQLite is the sole authority for facts; every store here is a derived index
-that can be rebuilt from it.  ``VectorStore`` states once what the runtime asks
-of a companion, and ``store.build_vector_store`` picks the implementation.
+SQLite truth authorizes objects and content. Companion rows carry only
+embeddings and opaque identities; retrieval must hydrate each hit from truth.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, TypeVar
+from typing import Any, TypeVar
 
 
 @dataclass(frozen=True)

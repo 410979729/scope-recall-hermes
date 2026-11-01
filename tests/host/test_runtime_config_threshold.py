@@ -9,7 +9,7 @@ from scope_recall.contracts import ContractError, InstanceBinding
 from scope_recall.core.recall_policy import EMBEDDING_SPACE, SPACE_ID
 from scope_recall.runtime.instance import build_runtime_instance, default_vector_factory
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
-from scope_recall.runtime.lance_port import LanceIndexWriter, LanceVectorRecord
+from scope_recall.runtime.vector_port import VectorIndexWriter, VectorRecord
 from v11_support import source_event
 
 
@@ -131,9 +131,9 @@ def test_named_embedding_route_admits_its_own_vector_hits(tmp_path, route_name):
         store = default_vector_factory(runtime.config.vector)
         store.open()
         try:
-            LanceIndexWriter(store).upsert_records(
+            VectorIndexWriter(store).upsert_records(
                 [
-                    LanceVectorRecord(
+                    VectorRecord(
                         "event",
                         event.ref,
                         event.revision,

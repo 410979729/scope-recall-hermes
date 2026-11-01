@@ -1,8 +1,7 @@
 """A prompt's recall answered by the client's own MCP server, warm for as long as the client is open.
 
-Claude Code and Codex start a new process for every hook.  Starting LanceDB in a prompt hook can exceed the recall
-budget (``helper_request_deadline``).  The client's MCP server keeps a LanceDB helper ready and answers the entry's
-prompt hooks on this machine with the prompt's recall (``serve``).
+Claude Code and Codex start a new process for every hook. The client's MCP server keeps its recall handler
+and embedding connection ready and answers the entry's prompt hooks on this machine (``serve``).
 
 Only the recall is asked for, and the server writes nothing.  The hook stores the prompt itself and asks for the recall
 after (``handler._resident_answer``), with all of its time; if the server has not answered when 1.5 s are left, the hook
@@ -44,7 +43,6 @@ from ..._version import __version__
 from ...runtime.instance_config import RESIDENT_RECALL_MINUTES_BOUNDS
 from ...runtime.validation import strict_int
 from ...runtime.worker_launch import detached_creationflags
-from ...vector.process_store import share
 from ..hermes.installation import MANIFEST_FILENAME
 from ..hermes.shared_entries import attachment_path, read_attachment
 from .config import load_shared_client
@@ -439,7 +437,7 @@ class KeptRecaller:
     """One handler kept across a long-lived server's prompt recalls, with the vector store and embedding worker its
     runtime keeps open.
 
-    Reusing the handler avoids opening the LanceDB table and starting the embedding worker and its connection for
+    Reusing the handler avoids opening the SQLite companion and starting the embedding worker and its connection for
     every prompt.  The handler performs recall without capturing memory events; query embedding requests still
     record usage in the auxiliary budget ledger.  One recall uses it at a time: another at the same moment
     gets None, and its caller recalls without it.  It is made anew when ``stamp`` changes (the files it was made from),
@@ -774,10 +772,6 @@ class HookEndpoint:
                     pass
 
     def start(self) -> None:
-        if sys.platform == "win32":
-            # Before anything is served: the kept handler, a handler made for a prompt that comes meanwhile and the
-            # tools search one store through one helper.
-            share()
         server = _Server(("127.0.0.1", 0), _Handler)
         server.endpoint = self  # type: ignore[attr-defined]
         self._server = server
@@ -786,13 +780,6 @@ class HookEndpoint:
         self._advertise()
         threading.Thread(target=self._keep_named, name="scope-recall-recall-name", daemon=True).start()
         atexit.register(self.stop)
-        if sys.platform == "win32":
-            from ...vector.process_store import prestart
-
-            try:
-                prestart()  # for the shared store's helper, its import under way while the server starts
-            except OSError:
-                pass  # the shared store then starts its own helper when it opens
 
     def stop(self) -> None:
         if self._stopped.is_set():

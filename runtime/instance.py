@@ -17,26 +17,24 @@ import math
 import sqlite3
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, cast
 
 from ..contracts import ContractError, TrustedContext
-from ..core.capture_filters import redact_private_paths
 from ..core.composition import CoreConfig, MemoryCore
 from ..core.deadline import RequestDeadline, using_request_deadline
 from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from ..core.retrieval import SearchContext
 from ..core.storage import SQLiteStorage
-from ..vector.lance_native import helper_start_failure
-from ..vector.process_store import NativeVectorPathError
 from ..vector.store import build_vector_store
 from .auxiliary import build_auxiliary_runtime
 from .backup_upkeep import mirror_if_due
 from .codex_cli import CodexCliConsolidationAdapter
 from .embedding_retry import embed_with_one_retry
 from .instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
-from .lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort, search_partitions
 from .model_budget import provider_holds
 from .models import AuxiliaryModelError
 from .running_code import record_running_code
@@ -44,9 +42,15 @@ from .validation import (
     strict_float,
     utc_now,
 )
+from .vector_port import VectorEmbedPort, VectorPort, VectorPurgePort, search_partitions
 from .vector_retention import expire_if_due
-from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
-from .worker_launch import failure_reason
+from .vector_upkeep import (
+    backfill_if_due,
+    index_if_due,
+    record_vector_failure,
+    release_requested_reembedding,
+    respace_if_due,
+)
 
 #: Share of a recall's window its query embedding may take when it is asked for as the recall starts.  The rest is the
 #: vector search's own: an embedding that took all of it would leave the search nothing.
@@ -122,18 +126,18 @@ class _LazyVectorPort:
     Construction never opens Lance.  The first real SearchContext opens only
     an existing companion under that request's absolute deadline, then keeps
     the trusted identity and scope supplied by that context all the way to
-    ``LanceVectorPort``.  A disabled query embedding route returns no vector
+    ``VectorPort``.  A disabled query embedding route returns no vector
     candidates; it never exposes the raw native store as a Core port.
     """
 
-    def __init__(self, instance: "RuntimeInstance") -> None:
+    def __init__(self, instance: RuntimeInstance) -> None:
         self._instance = instance
 
-    def _embedding_adapter(self) -> LanceVectorPort | None:
+    def _embedding_adapter(self) -> VectorPort | None:
         embedding = getattr(self._instance.auxiliary, "query_embedding", None)
         if embedding is None:
             return None
-        return LanceVectorPort(None, embedding, expected_embedding_space=self._instance.config.embedding_space_id())
+        return VectorPort(None, embedding, expected_embedding_space=self._instance.config.embedding_space_id())
 
     def _query_embedder(self) -> Callable[[str, float], Any] | None:
         adapter = self._embedding_adapter()
@@ -275,24 +279,6 @@ def _close_quietly(resource: Any) -> None:
             pass
 
 
-def _helper_start_failure(deadline: float) -> str | None:
-    """One line saying why the vector helper could not start, from its start-up run once more; or ``None``.
-
-    The helper's stderr is discarded, so a helper that dies at an import (as on Hermes Desktop, at ``import
-    jsonschema``) would leave every pass reporting ``vector_unavailable:RuntimeError`` and nothing else.  The run is
-    sent no request, so it holds no memory
-    text; the line is the last of its traceback, chosen as the watchdog chooses a worker's, paths redacted.  It
-    takes at most a quarter of what is left of the pass.
-    """
-    timeout = (deadline - time.monotonic()) / 4
-    if timeout < 1.0:
-        return None
-
-    stderr = helper_start_failure(timeout)
-    line = failure_reason(stderr) if stderr else None
-    return redact_private_paths(line)[:200] if line else None
-
-
 @dataclass
 class RuntimeInstance:
     """Own runtime ports and release their resources when the instance closes."""
@@ -311,7 +297,7 @@ class RuntimeInstance:
     _closed: bool = False
     _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
     background_gaps: tuple[str, ...] = ()
-    #: Why this drain's vector helper could not start, one line, or ``None`` (``_open_vector_for_drain``).
+    #: Why this drain's companion could not open, one line, or ``None`` (``_open_vector_for_drain``).
     vector_helper_error: str | None = None
     ingress_receipts: tuple[Any, ...] = ()
     #: Receipt of the vector compaction this drain ran, or ``None``.
@@ -365,7 +351,11 @@ class RuntimeInstance:
                     registered = True
             # Registration and publication share the shutdown lock; native I/O
             # stays outside it so one slow open cannot serialize recalls.
-            if new_resource or getattr(resource, "requires_reopen", False):
+            if (
+                new_resource
+                or getattr(resource, "requires_reopen", False)
+                or (allow_create and getattr(resource, "_readonly", False))
+            ):
                 _open_store(resource, allow_create=allow_create, deadline=deadline, during_open=during_open)
             with self._state_lock:
                 self._ensure_open()
@@ -414,12 +404,11 @@ class RuntimeInstance:
             del self._vector_openers[identity]
 
     def warm_vector_store(self, seconds: float) -> bool:
-        """Open the existing companion store and search it once, off any prompt's time.
+        """Open the existing companion and read its arrays before serving a prompt.
 
-        Made at its first prompt, a recall handler kept across prompts (adapters/clients/local_endpoint.KeptRecaller)
-        would start the helper, open the table and read the index inside that prompt's recall, and that recall would
-        answer by words alone (``helper_request_deadline``) after every start of its server, which for Claude Code is
-        every session.  Warmed when the server starts, the first prompt finds them ready.  It writes nothing.
+        The caller supplies a bounded background budget. No storage is created:
+        missing or unreadable companions remain explicit capability gaps, while
+        ready mappings can be reused by the kept recall handler.
         """
         self._ensure_open()
         if self.config.vector is None or self._vector_factory is None:
@@ -487,20 +476,23 @@ class RuntimeInstance:
         embedding routes are disabled."""
         binding = self.config.binding
         space_id = self.config.embedding_space_id()
+        register = getattr(resource, "register_space", None)
+        if callable(register):
+            register(space_id, self.config.embedding_space())
         port = None
         query_embedding = getattr(self.auxiliary, "query_embedding", None)
         if query_embedding is not None:
-            port = LanceVectorPort(resource, query_embedding, expected_embedding_space=space_id)
+            port = VectorPort(resource, query_embedding, expected_embedding_space=space_id)
             source_embedding = getattr(self.auxiliary, "source_embedding", None)
             if source_embedding is not None:
-                self._default_embed = LanceEmbedPort(
+                self._default_embed = VectorEmbedPort(
                     resource,
                     source_embedding,
                     agent_id=binding.agent_id,
                     installation_id=binding.installation_id,
                     embedding_space=space_id,
                 )
-        self._default_purge = LancePurgePort(
+        self._default_purge = VectorPurgePort(
             resource,
             embedding_spaces=(space_id,),
             agent_id=binding.agent_id,
@@ -562,13 +554,6 @@ class RuntimeInstance:
             self.config.context(),
             available_seconds=max(0.0, deadline - time.monotonic()),
         )
-        expired = (self.vector_retention or {}).get("expired", 0)
-        self.vector_compaction = compact_if_due(
-            self._vector_store,
-            self.config.vector,
-            available_seconds=max(0.0, deadline - time.monotonic()),
-            reason=f"vectors_expired:{expired}" if expired else None,
-        )
         # A store this pass could not open says nothing about its index; a look now would be recorded as a
         # failure and put off the build for hours.
         self.vector_index = (
@@ -615,9 +600,12 @@ class RuntimeInstance:
         )
         # An operator's re-embed run (``respace-embeddings``) goes on behind the import backfill, under the same
         # queue ceiling.  A run into another space, or a page that failed, is said where the doctor reads it.
+        respace_allowed = (embed if embed is not None else self._default_embed) is not None and (
+            not vector_gaps or all(gap.startswith("vector_import_pending:") for gap in vector_gaps)
+        )
         self.embed_respace = (
             None
-            if not embeds or purge_only
+            if not respace_allowed or purge_only
             else respace_if_due(
                 self.core.storage,
                 self.config.context(),
@@ -626,6 +614,12 @@ class RuntimeInstance:
                 yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)),
             )
         )
+        if self._vector_store is not None and release_requested_reembedding(
+            self.core.storage, self.config.context(), self._vector_store, self.config.embedding_space_id()
+        ):
+            self.background_gaps = tuple(
+                gap for gap in self.background_gaps if not gap.startswith("vector_import_pending:")
+            )
         outcome = (self.embed_respace or {}).get("outcome")
         if outcome == "failed":
             self.background_gaps = (*self.background_gaps, f"embedding_respace_failed:{self.embed_respace['error']}")
@@ -713,20 +707,55 @@ class RuntimeInstance:
         Optional indexing failure cannot suppress a healthy independent
         consolidation route.  Purge stays pending unless acknowledged.
         """
-        self.vector_helper_error = None
         vector_deadline = min(deadline, time.monotonic() + min(self.config.request_seconds, budget / 4))
         try:
             self._ensure_vector_port(allow_create=True, deadline=vector_deadline)
+            import_legacy = cast(Callable[..., dict[str, Any]], getattr(self._vector_store, "import_legacy_page", None))
+            if callable(import_legacy):
+                from ..vector.imports import visible_in_truth
+
+                truth_path = self.config.binding.data_directory / "memory.sqlite3"
+                with closing(
+                    sqlite3.connect(
+                        truth_path.resolve().as_uri() + "?mode=ro",
+                        uri=True,
+                        timeout=max(0.0, vector_deadline - time.monotonic()),
+                    )
+                ) as truth:
+                    if (
+                        getattr(self._vector_store, "created_fresh", False)
+                        and not self._vector_store.diagnostics()["imports"]
+                        and self._vector_store.count_rows() == 0
+                        and truth.execute(
+                            "SELECT 1 FROM work_items WHERE work_type='embed' AND state='done' LIMIT 1"
+                        ).fetchone()
+                    ):
+                        with self.core.storage.read(self.config.context()) as tx:
+                            authorization = tx.work.respace_authorization(self.config.embedding_space_id())
+                            run = tx.work.respace_run()
+                        if (
+                            run is not None
+                            and run["embedding_space"] == self.config.embedding_space_id()
+                            and not run["completed"]
+                        ):
+                            authorization = None
+                        self._vector_store.note_missing_legacy(authorization)
+                    self._vector_store.created_fresh = False
+                    with using_request_deadline(RequestDeadline.from_absolute(vector_deadline, now=time.monotonic())):
+                        for _ in range(32):
+                            importer = import_legacy(visible=partial(visible_in_truth, truth))
+                            if (
+                                importer["outcome"] in {"complete", "unreadable", "held"}
+                                or time.monotonic() >= vector_deadline - 1
+                            ):
+                                break
+                if importer["outcome"] != "complete":
+                    return ("vector_import_pending:" + importer["outcome"],)
         except Exception as exc:
             from ..core.vector_failure import vector_failure_label  # only when the vector store fails to open
 
-            if isinstance(exc, NativeVectorPathError):
-                return (NativeVectorPathError.code,)
+            record_vector_failure(self.config.vector, type(exc).__name__)
             label = vector_failure_label(exc)
-            # The open here is a fresh helper's first request (a failed store is closed, and reopening starts
-            # another), so ``worker_failed`` means the helper ended before its first answer.
-            if label == "RuntimeError:worker_failed":
-                self.vector_helper_error = _helper_start_failure(deadline)
             return (f"vector_unavailable:{label}",)
         return ()
 

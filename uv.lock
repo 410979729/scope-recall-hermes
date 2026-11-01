@@ -227,6 +227,8 @@ name = "hermes-scope-recall"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' and sys_platform != 'android'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform != 'android'" },
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
@@ -259,6 +261,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.22,<5" },
     { name = "lancedb", marker = "sys_platform != 'android' and extra == 'lancedb'", specifier = ">=0.30.2,<=0.37.1" },
     { name = "mcp", marker = "extra == 'codex'", specifier = ">=2.0.0,<=2.1.0" },
+    { name = "numpy", marker = "sys_platform != 'android'", specifier = ">=2,<3" },
     { name = "packaging", specifier = ">=24,<27" },
     { name = "pyarrow", marker = "sys_platform != 'android' and extra == 'lancedb'", specifier = ">=24,<25" },
     { name = "pydantic", marker = "extra == 'codex'", specifier = ">=2,<3" },
@@ -271,7 +274,7 @@ requires-dist = [
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2025.3,<2027" },
     { name = "wheel", marker = "extra == 'dev'", specifier = ">=0.45,<1" },
 ]
-provides-extras = ["lancedb", "codex", "dev"]
+provides-extras = ["vectors", "lancedb", "codex", "dev"]
 
 [[package]]
 name = "httpcore2"

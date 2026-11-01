@@ -173,9 +173,8 @@ are offered names the gap `mcp_session_is_not_claude_code_conversation_id` (`...
 `..._dsh_...` on those entries): the call is tied to no conversation. It is expected and needs
 nothing.
 
-Each hook is a process of its own, and starting LanceDB in a prompt hook can exceed the recall
-budget. The entry's MCP server, which the client runs for as long as it is open, keeps a
-LanceDB helper ready and answers the recall of the entry's prompts on this machine. The prompt hook
+Each hook is a process of its own. The entry's MCP server, which the client runs for as long
+as it is open, keeps its recall handler ready and answers the entry's prompts on this machine. The prompt hook
 still stores the prompt itself, then asks the server for its recall; the server writes nothing. It
 listens on 127.0.0.1 and names itself, with a token, in a folder of the user's own profile
 (`%LOCALAPPDATA%\scope-recall\hook-endpoints\`, or `~/.cache/scope-recall/hook-endpoints/`), not in
@@ -184,11 +183,10 @@ version, once that server has proved it holds the token, which is never sent. Th
 no vectors and ask nothing.
 
 A prompt hook gives the server all of its time but the answer's way back, whenever at least 1 s is
-left. If the server has not answered when 1.5 s are left, the hook recalls as well, with the LanceDB
-helper it started when it started, and uses the answer that ran its vector search (the server's when
+left. If the server has not answered when 1.5 s are left, the hook recalls as well through its own runtime and uses the answer that ran its vector search (the server's when
 both or neither did); a hook whose own recall went without it waits for the server until its own time
 is up. A server answer without its vector search is used as it is, unless what failed was the
-server's own (its key, its LanceDB helper, or no vector search at all while the hook has one): the
+server's own (its key, its vector store, or no vector search at all while the hook has one): the
 hook then recalls as well and uses its own if that ran its vector search. An embedding call's failure
 (what the provider answered, the network, the time it took) the hook would meet as well.
 With no server running (the client closed, or its MCP server disabled), or one that says it is busy,
@@ -201,18 +199,15 @@ writes no memory; its query embedding's cost is recorded in the spend ledger lik
 the hook's when both recalled. A server with a recall past the time its hook gave it tells every hook
 that it is busy until that recall ends, and one that does not prove itself within 0.5 s loses its name
 until its own check, every 2 s, finds it answering in time. The server keeps the handler it recalls with from
-one prompt to the next, keeping its LanceDB table open and its embedding worker connected to
+one prompt to the next, keeping its SQLite vector companion open and its embedding worker connected to
 avoid reopening them for each prompt. One recall uses the handler at a time; another that comes meanwhile is
 recalled by a handler of its own. It is made anew when the env file or the runtime config changed,
 after a recall that raised, or when its runtime could not be attached. A recall that fails in the server is answered as
 failed, with the last frames of its traceback on the server's stderr (the client's MCP log). It reads its key again at the next prompt
 after its env file or the runtime config changed, or when it could not read them before. A server
 started before an upgrade is not asked until its client restarts; a resident recall server ends itself
-within 30 s of the upgrade ([install.md](install.md), section 12). Each open client keeps one LanceDB
-helper, which its kept handler, the handlers made for prompts that come meanwhile and its tools share.
-The system pages it out while it is idle, and the server searches it once more after each 10 minutes
-without a recall that searched it. Each prompt hook still starts one of its own, which
-ends with the hook, once its import is done, when the hook did not need it.
+within 30 s of the upgrade ([install.md](install.md), section 12). The server searches once more after each 10 minutes without a recall that searched vectors.
+Prompt hooks open their own SQLite companion connections and close them with the hook.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches
 its entry here over HTTP on a private network: [remote-entries.md](remote-entries.md).

@@ -99,9 +99,8 @@ def note_embedding_failure(exc: BaseException) -> None:
 
 
 #: Marker -> token, most specific first.  Markers are fragments of the messages
-#: raised in ``vector.process_store`` and ``vector.store``; the token is what an
-#: operator reads.  ``test_vector_failure`` parses both modules and fails if any
-#: ``RuntimeError`` there stops being covered, so this cannot silently rot.
+#: used by persisted native transport failures; the token is what an operator
+#: reads and what recovery policy classifies, so stored failures keep stable labels.
 NATIVE_VECTOR_FAULTS: tuple[tuple[str, str], ...] = (
     ("helper lock timeout", "helper_lock_timeout"),
     ("helper request deadline exhausted", "helper_request_deadline"),

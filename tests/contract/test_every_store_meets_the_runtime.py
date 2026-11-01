@@ -1,24 +1,4 @@
-"""Every companion store can be asked what the runtime asks of a store.
-
-The runtime reaches a vector store through two seams: ``LanceIndexWriter`` publishes through
-``fenced_upsert_records(rows, guard=, remaining_seconds=)``, and ``LancePurgePort`` purges through
-``purge_governed_members(..., remaining_seconds=)``.  ``build_vector_store`` picks the helper-process
-store on Windows and the in-process one everywhere else, so a fence or purge test that drives only the
-helper-process store, on Windows, leaves three gaps unseen:
-
-- an in-process LanceDB store without ``fenced_upsert_records``: on Linux every publication fails with
-  ``fenced_upsert_unsupported`` and the index stays empty;
-- a ``purge_governed_members`` that takes ``budget_seconds``, the name the Windows helper uses, and refuses
-  the port's ``remaining_seconds`` with a ``TypeError`` the port reads as "not purged": a forget never
-  finishes there;
-- a SQLite companion with no purge at all.
-
-The first test asks each store class for the two calls by signature.  It needs no native code, so it
-runs on every platform and in this tier, which forbids the child process and the socket LanceDB needs
-to load.  The behaviour is written once, as the ``check_*`` functions below: this file runs them
-against the SQLite companion, and ``tests/storage_native/test_in_process_lance_store.py`` runs them
-against the in-process LanceDB store in the native tier.
-"""
+"""The raw companion meets publication, deletion and live-reader contracts."""
 
 from __future__ import annotations
 
@@ -33,11 +13,10 @@ from pathlib import Path
 
 import pytest
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
-from scope_recall.runtime.lance_port import LanceIndexWriter, LancePurgePort, LanceVectorRecord
+from scope_recall.runtime.vector_port import VectorIndexWriter, VectorPurgePort, VectorRecord
 from scope_recall.vector import VectorStoreCompatibilityError
-from scope_recall.vector.process_store import ProcessLanceVectorStore
 from scope_recall.vector.sqlite_store import SQLiteBruteForceVectorStore
-from scope_recall.vector.store import LanceVectorStore, build_vector_store
+from scope_recall.vector.store import build_vector_store
 
 SPACE, SCOPE, AGENT, INSTALLATION = "TEST-space", "TEST-scope", "TEST-agent", "TEST-installation"
 
@@ -49,8 +28,8 @@ def _record(
     revision: int = 1,
     scope: str = SCOPE,
     vector_id: str | None = None,
-) -> LanceVectorRecord:
-    return LanceVectorRecord(
+) -> VectorRecord:
+    return VectorRecord(
         "event", ref, revision, vector_id or f"TEST:{ref}:{revision}", SPACE, vector, scope, AGENT, INSTALLATION
     )
 
@@ -64,11 +43,11 @@ def _receipt(*refs: str, scope: str = SCOPE) -> dict:
     }
 
 
-def _port(store) -> LancePurgePort:
-    return LancePurgePort(store, embedding_spaces=[SPACE], agent_id=AGENT, installation_id=INSTALLATION)
+def _port(store) -> VectorPurgePort:
+    return VectorPurgePort(store, embedding_spaces=[SPACE], agent_id=AGENT, installation_id=INSTALLATION)
 
 
-@pytest.mark.parametrize("store_class", [LanceVectorStore, ProcessLanceVectorStore, SQLiteBruteForceVectorStore])
+@pytest.mark.parametrize("store_class", [SQLiteBruteForceVectorStore])
 def test_each_store_class_takes_the_two_calls_the_runtime_makes(store_class):
     fenced = inspect.signature(store_class.fenced_upsert_records)
     fenced.bind(None, [], guard=lambda: True, remaining_seconds=1.0)
@@ -98,7 +77,7 @@ def test_the_store_chosen_for_this_platform_has_both(backend, tmp_path):
 
 def check_a_group_is_published_under_one_guard_check_and_a_refusal_writes_nothing(store) -> None:
     checks: list[bool] = []
-    writer = LanceIndexWriter(store)
+    writer = VectorIndexWriter(store)
     assert (
         writer.upsert_fenced_many(
             [_record("event-1"), _record("event-2", (0.5, 0.5))],
@@ -119,7 +98,7 @@ def check_a_forget_removes_every_revision_of_its_members_and_only_those(store) -
         _record("event-2", (0.5, 0.5)),
         _record("event-1", scope="TEST-other-scope", vector_id="TEST:other-scope:event-1:1"),
     ]
-    assert LanceIndexWriter(store).upsert_fenced_many(published, guard=lambda: True, remaining_seconds=5.0) is True
+    assert VectorIndexWriter(store).upsert_fenced_many(published, guard=lambda: True, remaining_seconds=5.0) is True
 
     assert _port(store).purge_active("TEST-operation", receipt=_receipt("event-1"), remaining_seconds=5.0) is True
 
@@ -178,7 +157,7 @@ def check_a_search_over_several_partitions_filters_before_it_ranks(store) -> Non
     Filtering after the nearest rows were chosen would return nothing here: thirty rows of another
     partition sit nearer the query than anything the listed partitions hold.
     """
-    from scope_recall.runtime.lance_port import physical_partition_scope_id
+    from scope_recall.runtime.vector_port import physical_partition_scope_id
 
     def partition(scope: str) -> str:
         return physical_partition_scope_id(
@@ -196,7 +175,7 @@ def check_a_search_over_several_partitions_filters_before_it_ranks(store) -> Non
         _record("event-far", (0.0, 1.0), scope="TEST-mine-b"),
     ]
     assert (
-        LanceIndexWriter(store).upsert_fenced_many([*crowd, *mine], guard=lambda: True, remaining_seconds=5.0) is True
+        VectorIndexWriter(store).upsert_fenced_many([*crowd, *mine], guard=lambda: True, remaining_seconds=5.0) is True
     )
 
     listed = [partition("TEST-mine-a"), partition("TEST-mine-b")]
@@ -557,7 +536,7 @@ def test_sqlite_kept_reader_sees_later_commits_deletions_and_checkpoints(tmp_pat
 
 def test_sqlite_existing_open_preserves_storage_and_refuses_creation_and_writes(tmp_path):
     reader, writer = _sqlite_store(tmp_path), _sqlite_store(tmp_path)
-    with pytest.raises(FileNotFoundError, match="sqlite-bruteforce physical storage is missing"):
+    with pytest.raises(FileNotFoundError, match="SQLite vector physical storage is missing"):
         reader.open_existing()
     assert not list(tmp_path.iterdir())
     writer.open()

@@ -1,9 +1,7 @@
-"""SQLite brute-force companion for hosts where LanceDB/PyArrow is unsafe.
+"""Independent SQLite raw embeddings with worker-maintained mapped arrays.
 
-Vectors are stored as JSON arrays and searched with a bounded brute-force
-scan: dependency-free and portable for small or medium local memory sets and
-non-AVX CPUs.  It is still only a rebuildable cache, never the truth store.
-Recall reads committed embeddings through the WAL while the worker writes.
+Raw values and cache watermarks share a SQLite snapshot. Derived files can be
+rebuilt while readers continue to rank committed original float32 values.
 """
 
 from __future__ import annotations
@@ -14,27 +12,50 @@ import os
 import sqlite3
 import stat
 import threading
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any
 
-from ..core.deadline import remaining_seconds
+from ..core.deadline import RequestDeadline, current_request_deadline, remaining_seconds, using_request_deadline
 from . import VectorStore, VectorStoreCompatibilityError, require_no_text
+from .cache import MappedIndex, space_capabilities
 from .purge import governed_row_ids, purge_request
+from .search import as_vector, search
 
-_ROW_COLUMNS = "id, scope_id, source, target, content, summary, updated_at, vector_json"
+_ROW_COLUMNS = "id, scope_id, source, target, updated_at, vector"
 
 #: How long a statement run outside any request waits for a lock: a worker's pass.
 _LOCK_WAIT_SECONDS = 30.0
 
 
-class SQLiteBruteForceVectorStore(VectorStore):
-    backend = "sqlite-bruteforce"
+class SQLiteVectorStore(VectorStore):
+    """One raw vector generation; maintain_index publishes its derived file prefixes."""
 
-    def __init__(self, db_path: Path, *, table_name: str, dimensions: int, metric: str = "cosine") -> None:
+    backend = "sqlite"
+
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        table_name: str,
+        dimensions: int,
+        metric: str = "cosine",
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        """Configure a generation without opening files; an injected clock governs its bounded waits."""
         super().__init__(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
+        self._clock = clock
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.RLock()
+        self._mapped = MappedIndex(self.db_path, self.dimensions)
+        self._readonly = False
+        self.created_fresh = False
+
+    @property
+    def requires_reopen(self) -> bool:
+        """Allow the runtime to recover after an interrupted connection transition."""
+        return self._conn is None
 
     def is_available(self) -> bool:
         return True
@@ -59,7 +80,7 @@ class SQLiteBruteForceVectorStore(VectorStore):
         pretending ``os.chmod(path)`` were equivalent would reintroduce a path race.
         """
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise VectorStoreCompatibilityError(f"sqlite-bruteforce mutable {what} is not a regular file")
+            raise VectorStoreCompatibilityError(f"SQLite vector mutable {what} is not a regular file")
         fchmod = getattr(os, "fchmod", None)
         if fchmod is not None and os.name != "nt":
             fchmod(descriptor, 0o600)
@@ -80,7 +101,7 @@ class SQLiteBruteForceVectorStore(VectorStore):
         try:
             info = os.lstat(path)
             if not stat.S_ISREG(info.st_mode):
-                raise VectorStoreCompatibilityError(f"sqlite-bruteforce mutable {what} is not a regular file")
+                raise VectorStoreCompatibilityError(f"SQLite vector mutable {what} is not a regular file")
             if os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077:
                 descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                 try:
@@ -90,9 +111,9 @@ class SQLiteBruteForceVectorStore(VectorStore):
         except FileNotFoundError as exc:
             if missing_ok:
                 return False
-            raise VectorStoreCompatibilityError(f"sqlite-bruteforce mutable {what} is unsafe or inaccessible") from exc
+            raise VectorStoreCompatibilityError(f"SQLite vector mutable {what} is unsafe or inaccessible") from exc
         except OSError as exc:
-            raise VectorStoreCompatibilityError(f"sqlite-bruteforce mutable {what} is unsafe or inaccessible") from exc
+            raise VectorStoreCompatibilityError(f"SQLite vector mutable {what} is unsafe or inaccessible") from exc
         return True
 
     def _prepare_mutable_storage(self) -> None:
@@ -113,7 +134,7 @@ class SQLiteBruteForceVectorStore(VectorStore):
             self._check_mutable_file(self.db_path, "storage")
             return
         except OSError as exc:
-            raise VectorStoreCompatibilityError("sqlite-bruteforce mutable storage is unsafe or inaccessible") from exc
+            raise VectorStoreCompatibilityError("SQLite vector mutable storage is unsafe or inaccessible") from exc
         try:
             self._harden_regular_file(descriptor, "storage")
         finally:
@@ -139,9 +160,12 @@ class SQLiteBruteForceVectorStore(VectorStore):
 
     def open(self) -> None:
         with self._store_locked():
+            self.close()
+            self.created_fresh = not self.db_path.exists()
             self._prepare_mutable_storage()
             self._harden_mutable_sidecars()
             self._conn = self._connect(self.db_path)
+            self._readonly = False
             try:
                 self._execute("PRAGMA journal_mode=WAL")
                 self._execute("PRAGMA synchronous=NORMAL")
@@ -153,13 +177,18 @@ class SQLiteBruteForceVectorStore(VectorStore):
                 ):
                     self._conn.rollback()
                     raise VectorStoreCompatibilityError(
-                        "existing sqlite-bruteforce generation is incompatible: "
+                        "existing SQLite vector generation is incompatible: "
                         f"dimensions={stored_dimensions}, table_name={stored_table!r}; "
                         f"requested dimensions={self.dimensions}, table_name={self.table_name!r}; "
                         "build and activate a shadow generation explicitly"
                     )
                 self._set_meta("dimensions", str(self.dimensions))
                 self._set_meta("table_name", self.table_name)
+                self._set_meta("format", "float32-le")
+                from .imports import seed
+
+                self._ensure_import_columns()
+                seed(self)
                 self._conn.commit()
             except Exception:
                 self.close()
@@ -184,20 +213,20 @@ class SQLiteBruteForceVectorStore(VectorStore):
         connection and closes cleanly.
         """
         with self._store_locked():
+            self.close()
             try:
                 info = os.lstat(self.db_path)
             except FileNotFoundError as exc:
-                raise FileNotFoundError("sqlite-bruteforce physical storage is missing") from exc
+                raise FileNotFoundError("SQLite vector physical storage is missing") from exc
             if stat.S_ISLNK(info.st_mode):
                 try:
                     info = os.stat(self.db_path)
                 except FileNotFoundError as exc:
-                    raise VectorStoreCompatibilityError(
-                        "sqlite-bruteforce physical storage is not a regular file"
-                    ) from exc
+                    raise VectorStoreCompatibilityError("SQLite vector physical storage is not a regular file") from exc
             if not stat.S_ISREG(info.st_mode):
-                raise VectorStoreCompatibilityError("sqlite-bruteforce physical storage is not a regular file")
+                raise VectorStoreCompatibilityError("SQLite vector physical storage is not a regular file")
             self._conn = self._connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True)
+            self._readonly = True
             try:
                 self._validate_existing_identity()
             except Exception:
@@ -211,24 +240,25 @@ class SQLiteBruteForceVectorStore(VectorStore):
         }
         if not {"vector_records", "vector_meta"} <= tables:
             raise VectorStoreCompatibilityError(
-                "sqlite-bruteforce physical storage is corrupt or incomplete: missing required tables"
+                "SQLite vector physical storage is corrupt or incomplete: missing required tables"
             )
         stored_dimensions = self._get_meta_int("dimensions")
         stored_table = self._get_meta_text("table_name")
         if stored_dimensions != self.dimensions or stored_table != self.table_name:
             raise VectorStoreCompatibilityError(
-                f"sqlite-bruteforce physical identity mismatch: dimensions={stored_dimensions}, table_name={stored_table!r}"
+                f"SQLite vector physical identity mismatch: dimensions={stored_dimensions}, table_name={stored_table!r}"
             )
 
     def close(self) -> None:
         with self._lock:
+            self._mapped.close()
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
 
     def _require_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            raise RuntimeError("sqlite-bruteforce vector store is not open")
+            raise RuntimeError("SQLite vector vector store is not open")
         return self._conn
 
     @contextmanager
@@ -237,11 +267,21 @@ class SQLiteBruteForceVectorStore(VectorStore):
         remaining = remaining_seconds()
         acquired = self._lock.acquire() if remaining is None else self._lock.acquire(timeout=max(0.0, remaining))
         if not acquired:
-            raise TimeoutError("sqlite-bruteforce vector store lock timeout")
+            raise TimeoutError("SQLite vector vector store lock timeout")
         try:
             yield
         finally:
             self._lock.release()
+
+    @contextmanager
+    def _operation(self, budget: float) -> Iterator[None]:
+        """Keep both the process lock and SQLite lock wait inside the publication or purge budget."""
+        outer = remaining_seconds()
+        seconds = budget if outer is None else min(budget, max(0.0, outer))
+        current = current_request_deadline()
+        clock = self._clock if self._clock is not None else current.clock if current is not None else None
+        with using_request_deadline(RequestDeadline.from_budget(seconds, clock=clock)), self._store_locked():
+            yield
 
     def _execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
         """Run a statement with its lock wait capped by the current request.
@@ -257,23 +297,47 @@ class SQLiteBruteForceVectorStore(VectorStore):
         return conn.execute(sql, parameters)
 
     def _ensure_schema(self) -> None:
+        self._execute("""CREATE TABLE IF NOT EXISTS vector_records (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+            scope_id TEXT NOT NULL, source TEXT NOT NULL, target TEXT NOT NULL,
+            updated_at TEXT NOT NULL, vector BLOB NOT NULL, identity TEXT UNIQUE)""")
+        columns = {row[1] for row in self._execute("PRAGMA table_info(vector_records)")}
+        if "vector" not in columns:
+            raise VectorStoreCompatibilityError("raw float32 storage schema mismatch")
+        if "identity" not in columns:
+            self._execute("ALTER TABLE vector_records ADD COLUMN identity TEXT")
+        self._execute("CREATE UNIQUE INDEX IF NOT EXISTS vector_identity ON vector_records(identity)")
+        self._execute("CREATE INDEX IF NOT EXISTS idx_vector_records_scope ON vector_records(scope_id,seq)")
+        self._execute("CREATE TABLE IF NOT EXISTS vector_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
         self._execute(
-            """
-            CREATE TABLE IF NOT EXISTS vector_records (
-                id TEXT PRIMARY KEY,
-                scope_id TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT '',
-                target TEXT NOT NULL DEFAULT '',
-                content TEXT NOT NULL DEFAULT '',
-                summary TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL DEFAULT '',
-                vector_json TEXT NOT NULL
-            )
-            """
+            "CREATE TABLE IF NOT EXISTS embedding_spaces(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,"
+            "capabilities TEXT NOT NULL DEFAULT '{}')"
         )
-        self._execute("CREATE INDEX IF NOT EXISTS idx_vector_records_scope ON vector_records(scope_id)")
-        self._execute("CREATE INDEX IF NOT EXISTS idx_vector_records_updated ON vector_records(updated_at)")
-        self._execute("CREATE TABLE IF NOT EXISTS vector_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        space_columns = {row[1] for row in self._execute("PRAGMA table_info(embedding_spaces)")}
+        if "capabilities" not in space_columns:
+            self._execute("ALTER TABLE embedding_spaces ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}'")
+        self._execute("CREATE TABLE IF NOT EXISTS index_deletes(seq INTEGER PRIMARY KEY)")
+        self._execute("CREATE TABLE IF NOT EXISTS vector_tombstones(id TEXT PRIMARY KEY)")
+        self._execute(
+            "CREATE TABLE IF NOT EXISTS purge_fences(scope_id TEXT,kind TEXT,ref TEXT,PRIMARY KEY(scope_id,kind,ref))"
+        )
+        self._execute(
+            "CREATE TRIGGER IF NOT EXISTS vector_removed AFTER DELETE ON vector_records "
+            "BEGIN INSERT OR IGNORE INTO index_deletes(seq) VALUES(old.seq); END"
+        )
+        self._execute(
+            "CREATE TABLE IF NOT EXISTS vector_imports(source TEXT PRIMARY KEY,watermark INTEGER NOT NULL,"
+            "state TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '')"
+        )
+
+    def _ensure_import_columns(self) -> None:
+        columns = {row[1] for row in self._execute("PRAGMA table_info(vector_imports)")}
+        for column, declaration in (
+            ("retry_after", "REAL NOT NULL DEFAULT 0"),
+            ("last_error", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in columns:
+                self._execute(f"ALTER TABLE vector_imports ADD COLUMN {column} {declaration}")
 
     def _get_meta_text(self, key: str) -> str:
         row = self._execute("SELECT value FROM vector_meta WHERE key = ?", (key,)).fetchone()
@@ -294,67 +358,153 @@ class SQLiteBruteForceVectorStore(VectorStore):
     # -- records -------------------------------------------------------------------
 
     def _coerce_vector(self, value: Any) -> list[float]:
-        raw = json.loads(value) if isinstance(value, str) else value
-        vector = [float(item) for item in (raw or [])]
-        if len(vector) != self.dimensions:
-            raise ValueError(f"vector dimension mismatch: expected {self.dimensions}, got {len(vector)}")
-        return vector
+        return as_vector(value, self.dimensions).tolist()
 
     def _row_to_record(self, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "id": str(row["id"]),
-            "scope_id": str(row["scope_id"]),
-            "source": str(row["source"]),
-            "target": str(row["target"]),
-            "content": str(row["content"]),
-            "summary": str(row["summary"]),
-            "updated_at": str(row["updated_at"]),
-            "vector": self._coerce_vector(row["vector_json"]),
-        }
+        import numpy as np
+
+        return dict(
+            id=row["id"],
+            scope_id=row["scope_id"],
+            source=row["source"],
+            target=row["target"],
+            content="",
+            summary="",
+            updated_at=row["updated_at"],
+            vector=np.frombuffer(row["vector"], dtype="<f4").tolist(),
+        )
 
     def _rows(self, where: str = "", params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         sql = f"SELECT {_ROW_COLUMNS} FROM vector_records"
-        if where:
-            sql += f" WHERE {where}"
         with self._store_locked():
-            return self._execute(sql, params).fetchall()
+            return self._execute(sql + (f" WHERE {where}" if where else ""), params).fetchall()
+
+    def _write_rows(self, rows, *, importing: bool = False) -> None:
+        for row in rows:
+            memory_id = str(row.get("id") or "")
+            if not memory_id:
+                raise ValueError("vector id is required")
+            vector = as_vector(row["vector"], self.dimensions).tobytes()
+            if self._execute("SELECT 1 FROM vector_tombstones WHERE id=?", (memory_id,)).fetchone():
+                continue
+            try:
+                metadata = json.loads(row.get("target") or "{}")
+            except ValueError:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            fence = (row["scope_id"], metadata.get("object_kind", ""), metadata.get("object_ref", ""))
+            if self._execute("SELECT 1 FROM purge_fences WHERE scope_id=? AND kind=? AND ref=?", fence).fetchone():
+                continue
+            identity = None
+            if type(metadata.get("object_revision")) is int and all(
+                type(metadata.get(key)) is str and metadata[key]
+                for key in ("object_kind", "object_ref", "embedding_space")
+            ):
+                identity = json.dumps(
+                    [
+                        row["scope_id"],
+                        metadata["object_kind"],
+                        metadata["object_ref"],
+                        metadata["object_revision"],
+                        metadata["embedding_space"],
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                duplicate = self._execute("SELECT id FROM vector_records WHERE identity=?", (identity,)).fetchone()
+                if duplicate is not None and duplicate[0] != memory_id:
+                    raise VectorStoreCompatibilityError("conflicting vector ids for one object revision and space")
+            values = (
+                memory_id,
+                row["scope_id"],
+                row.get("source", ""),
+                row.get("target", "{}"),
+                row.get("updated_at", ""),
+                vector,
+                identity,
+            )
+            if importing:
+                self._execute(
+                    "INSERT OR IGNORE INTO vector_records(id,scope_id,source,target,updated_at,vector,identity) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    values,
+                )
+            else:
+                # Replacing allocates a new sequence; readers include it even while its old code still exists.
+                self._execute("DELETE FROM vector_records WHERE id=?", (memory_id,))
+                self._execute(
+                    "INSERT INTO vector_records(id,scope_id,source,target,updated_at,vector,identity) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    values,
+                )
 
     def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Commit a group atomically; the worker publishes its derived arrays."""
         payload = require_no_text(rows)
-        if not payload:
-            return
         with self._store_locked():
             conn = self._require_conn()
-            for row in payload:
-                memory_id = str(row.get("id") or "")
-                if not memory_id:
-                    continue
-                vector = self._coerce_vector(row.get("vector"))
-                self._execute(
-                    """
-                    INSERT INTO vector_records(id, scope_id, source, target, content, summary, updated_at, vector_json)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        scope_id = excluded.scope_id,
-                        source = excluded.source,
-                        target = excluded.target,
-                        content = excluded.content,
-                        summary = excluded.summary,
-                        updated_at = excluded.updated_at,
-                        vector_json = excluded.vector_json
-                    """,
-                    (
-                        memory_id,
-                        str(row.get("scope_id") or ""),
-                        str(row.get("source") or ""),
-                        str(row.get("target") or ""),
-                        str(row.get("content") or ""),
-                        str(row.get("summary") or ""),
-                        str(row.get("updated_at") or ""),
-                        json.dumps(vector, separators=(",", ":")),
-                    ),
-                )
-            conn.commit()
+            try:
+                self._execute("BEGIN IMMEDIATE")
+                self._write_rows(payload)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def register_space(self, space_id: str, descriptor: dict) -> None:
+        """Persist the model, dimensions, normalization and query/document encoding contracts."""
+        if self._readonly:
+            return
+        encoded = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
+        with self._store_locked():
+            prior = self._execute("SELECT descriptor FROM embedding_spaces WHERE id=?", (space_id,)).fetchone()
+            if prior and prior[0] != encoded:
+                raise VectorStoreCompatibilityError("embedding space descriptor mismatch")
+            capabilities = json.dumps(space_capabilities(descriptor), sort_keys=True, separators=(",", ":"))
+            self._execute(
+                "INSERT INTO embedding_spaces(id,descriptor,capabilities) VALUES(?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET capabilities=excluded.capabilities",
+                (space_id, encoded, capabilities),
+            )
+            self._require_conn().commit()
+
+    def maintain_index(self, *, max_rows: int = 512) -> dict[str, Any]:
+        """Publish one bounded cache page from committed raw vectors."""
+        with self._store_locked():
+            return self._mapped.maintain(self._require_conn(), max_rows)
+
+    def note_missing_legacy(self, authorization: str | None = None) -> None:
+        """Keep an explicit gap when completed truth projections have no surviving vector input."""
+        with self._store_locked():
+            self._execute(
+                "INSERT OR IGNORE INTO vector_imports(source,watermark,state,detail) "
+                "VALUES('missing:legacy-vectors',0,'unreadable','FileNotFoundError')"
+            )
+            self._set_meta("missing_input_authorization", authorization or "")
+            self._require_conn().commit()
+
+    def allow_requested_reembedding(self, authorization: str | None) -> bool:
+        """Clear the missing-input hold only for a new explicit re-embedding authorization."""
+        with self._store_locked():
+            if not authorization or authorization == self._get_meta_text("missing_input_authorization"):
+                return False
+            cursor = self._execute("DELETE FROM vector_imports WHERE source='missing:legacy-vectors'")
+            self._require_conn().commit()
+            pending = self._execute("SELECT 1 FROM vector_imports WHERE state!='complete' LIMIT 1").fetchone()
+            return bool(cursor.rowcount) and pending is None
+
+    def import_legacy_page(self, *, visible, max_rows: int = 512) -> dict[str, Any]:
+        """Import one recoverable page without any model or embedding capability."""
+        from .imports import import_page
+
+        return import_page(self, visible=visible, max_rows=max_rows)
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Describe the selected search engine, watermark and legacy import without changing them."""
+        with self._store_locked():
+            imports = [dict(row) for row in self._execute("SELECT * FROM vector_imports")]
+            return {**self._mapped.diagnostics(self._require_conn()), "imports": imports}
 
     def fenced_upsert_records(
         self,
@@ -382,11 +532,19 @@ class SQLiteBruteForceVectorStore(VectorStore):
         payload = require_no_text(rows)
         if not payload:
             return True
-        with self._store_locked():
-            if not guard():
-                return False
-            self.upsert_records(payload)
-        return True
+        with self._operation(remaining_seconds):
+            conn = self._require_conn()
+            try:
+                self._execute("BEGIN IMMEDIATE")
+                if not guard():
+                    conn.rollback()
+                    return False
+                self._write_rows(payload)
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
 
     def purge_governed_members(
         self, *, members, agent_id, installation_id, partitions, project_id, branch_id, remaining_seconds: float
@@ -426,23 +584,44 @@ class SQLiteBruteForceVectorStore(VectorStore):
                 for row in found
             ]
 
-        with self._store_locked():
-            ids = governed_row_ids(rows(), **select)
-            if ids is None:
-                return False
-            if ids:
-                self.delete_by_ids(sorted(set(ids)))
-            return governed_row_ids(rows(), **select) == []
+        with self._operation(remaining_seconds):
+            conn = self._require_conn()
+            self._execute("BEGIN IMMEDIATE")
+            try:
+                ids = governed_row_ids(rows(), **select)
+                if ids is None:
+                    conn.rollback()
+                    return False
+                for partition in partitions:
+                    for member in members:
+                        self._execute(
+                            "INSERT OR IGNORE INTO purge_fences VALUES(?,?,?)",
+                            (partition["physical_scope_id"], member["kind"], member["ref"]),
+                        )
+                self._delete_ids(ids)
+                done = governed_row_ids(rows(), **select) == []
+                conn.commit()
+                return done
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def _delete_ids(self, ids: Iterable[str]) -> None:
+        for key in ids:
+            self._execute("INSERT OR IGNORE INTO vector_tombstones VALUES(?)", (key,))
+            self._execute("DELETE FROM vector_records WHERE id=?", (key,))
 
     def delete_by_ids(self, ids: list[str]) -> None:
-        ids = [str(item) for item in ids if str(item)]
-        if not ids:
-            return
-        placeholders = ",".join("?" for _ in ids)
+        """Remove raw rows and persist fences before another import can republish them."""
         with self._store_locked():
             conn = self._require_conn()
-            self._execute(f"DELETE FROM vector_records WHERE id IN ({placeholders})", ids)
-            conn.commit()
+            try:
+                self._execute("BEGIN IMMEDIATE")
+                self._delete_ids(ids)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def contains_id(self, memory_id: str) -> bool:
         """Primary-key probe; never counts or lists the corpus."""
@@ -465,43 +644,35 @@ class SQLiteBruteForceVectorStore(VectorStore):
         return self.search_scopes(vector, scope_ids=(scope_id,), limit=limit)
 
     def search_scopes(self, vector: list[float], *, scope_ids, limit: int) -> list[dict[str, Any]]:
-        listed = list(dict.fromkeys(str(scope_id) for scope_id in scope_ids))
-        if not vector or not listed:
+        """Filter trusted physical partitions before either index or raw-vector ranking."""
+        listed = list(dict.fromkeys(str(scope) for scope in scope_ids))
+        if not vector or not listed or limit <= 0:
             return []
-        query_vector = self._coerce_vector(vector)
-        candidates: list[dict[str, Any]] = []
-        for row in self._rows(f"scope_id IN ({','.join('?' for _ in listed)})", tuple(listed)):
+        with self._store_locked():
+            conn = self._require_conn()
+            self._execute("BEGIN")
             try:
-                record = self._row_to_record(row)
-                distance = self._distance(query_vector, record.pop("vector"))
-            except Exception:
-                continue
-            record["_distance"] = distance
-            candidates.append(record)
-        # Nearest first, then newest truth revision, then id for deterministic
-        # ties.  Three stable sorts: a single tuple key would order the ISO
-        # timestamp ascending and prefer stale records.
-        candidates.sort(key=lambda item: str(item.get("id") or ""))
-        candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
-        candidates.sort(key=lambda item: float(item.get("_distance") or 0.0))
-        return candidates[: max(0, int(limit))]
+                pending = self._execute("SELECT 1 FROM vector_imports WHERE state!='complete' LIMIT 1").fetchone()
+                if pending:
+                    raise RuntimeError("vector_import_pending")
+                return search(
+                    conn,
+                    vector,
+                    listed,
+                    dimensions=self.dimensions,
+                    metric=self.metric,
+                    limit=limit,
+                    index=self._mapped,
+                )
+            finally:
+                conn.rollback()
 
     def count_rows(self) -> int:
         with self._store_locked():
             return int(self._execute("SELECT COUNT(*) FROM vector_records").fetchone()[0])
 
-    def _distance(self, query: list[float], candidate: list[float]) -> float:
-        if self.metric in {"l2", "euclidean"}:
-            return math.sqrt(sum((left - right) ** 2 for left, right in zip(query, candidate)))
-        if self.metric in {"dot", "inner_product"}:
-            return 1.0 - sum(left * right for left, right in zip(query, candidate))
-        # Cosine distance, matching LanceDB's semantic-search shape.
-        q_norm = math.sqrt(sum(value * value for value in query))
-        c_norm = math.sqrt(sum(value * value for value in candidate))
-        if q_norm <= 0.0 or c_norm <= 0.0:
-            return 1.0
-        similarity = sum(left * right for left, right in zip(query, candidate)) / (q_norm * c_norm)
-        return max(0.0, min(2.0, 1.0 - similarity))
 
+# The compatibility import names use the same raw store, never a second storage implementation.
+SQLiteBruteForceVectorStore = SQLiteVectorStore
 
-__all__ = ["SQLiteBruteForceVectorStore"]
+__all__ = ["SQLiteVectorStore", "SQLiteBruteForceVectorStore"]

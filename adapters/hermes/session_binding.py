@@ -6,7 +6,6 @@ a record ``doctor`` reads (``unbound_sessions``).  It works on the adapter's sta
 from __future__ import annotations
 
 import logging
-import sys
 from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import ContractError
@@ -33,24 +32,6 @@ if TYPE_CHECKING:
 #: line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 _BOUNDED_MESSAGE_SCAN = 8
-
-
-def _start_vector_helper(host_runtime) -> None:
-    """Start the vector search's helper when a gateway first binds (``vector.process_store.prestart``).
-
-    Left to the first search, its LanceDB import (about 2 s) could outrun that recall's budget: a probe run as a
-    gateway's first turn after a start came back without its vector search (``helper_open_deadline``).
-    """
-    runtime = getattr(host_runtime, "runtime", None)
-    if sys.platform != "win32" or runtime is None or runtime.config.vector is None:
-        return
-    try:
-        from ...vector.process_store import prestart
-
-        prestart()
-    except OSError as exc:
-        # The first search starts its own helper: slower, never a reason not to bind.
-        _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
 
 
 class SessionBinding:
@@ -85,7 +66,6 @@ class SessionBinding:
                     core=self._adapter._core,
                     clock=self._adapter._clock,
                 )
-                _start_vector_helper(self._adapter._host_runtime)
             else:
                 self._adapter._host_runtime.rebind_session(
                     fresh.session_id,

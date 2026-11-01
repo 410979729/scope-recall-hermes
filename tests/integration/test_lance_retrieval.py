@@ -10,21 +10,16 @@ from typing import Any
 import pytest
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import SPACE_ID, RecallPolicy
-from scope_recall.runtime.lance_port import (
-    LanceIndexWriter,
-    LanceVectorPort,
-    LanceVectorRecord,
+from scope_recall.runtime.vector_port import (
+    VectorIndexWriter,
+    VectorPort,
+    VectorRecord,
     physical_partition_scope_id,
 )
-from scope_recall.vector.process_store import ProcessLanceVectorStore
+from scope_recall.vector.sqlite_store import SQLiteVectorStore
 
 from tests.contract.test_claims import Clock, capture
 from tests.v11_support import context, recall_request
-
-pytestmark = pytest.mark.skipif(
-    importlib.util.find_spec("lancedb") is None,
-    reason="P08 native integration requires the isolated LanceDB environment",
-)
 
 
 class SyntheticQueryEmbedding:
@@ -37,7 +32,7 @@ class SyntheticQueryEmbedding:
 
 
 class SearchCallRecorder:
-    def __init__(self, store: ProcessLanceVectorStore) -> None:
+    def __init__(self, store: SQLiteVectorStore) -> None:
         self._store = store
         self.calls: list[dict[str, Any]] = []
 
@@ -51,7 +46,7 @@ def native_app(tmp_path: Path):
     ctx = replace(context(tmp_path / "TEST-P08-native"), project_id="TEST-project", branch_id="TEST-main")
     core = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
     core.initialize()
-    store = ProcessLanceVectorStore(tmp_path / "TEST-lance", table_name="TEST_vectors", dimensions=2)
+    store = SQLiteVectorStore(tmp_path / "TEST-lance", table_name="TEST_vectors", dimensions=2)
     store.open()
     try:
         yield core, ctx, store
@@ -69,7 +64,7 @@ def _record(
     revision: int | None = None,
     embedding: tuple[float, ...] = (1.0, 0.0),
 ):
-    return LanceVectorRecord(
+    return VectorRecord(
         object_kind="event",
         object_ref=source.ref,
         object_revision=source.revision if revision is None else revision,
@@ -105,8 +100,8 @@ def _expected_partitions(ctx, *, logical_scope_id: str, embedding_space: str = S
 
 
 def test_construction_is_lazy_and_native_query_returns_metadata_only(tmp_path):
-    store = ProcessLanceVectorStore(tmp_path / "not-created", table_name="TEST_vectors", dimensions=2)
-    port = LanceVectorPort(store, SyntheticQueryEmbedding())
+    store = SQLiteVectorStore(tmp_path / "not-created", table_name="TEST_vectors", dimensions=2)
+    port = VectorPort(store, SyntheticQueryEmbedding())
     assert not (tmp_path / "not-created").exists()
     assert port is not None
 
@@ -117,7 +112,7 @@ def test_native_scope_and_metadata_boundary_hydrates_only_sqlite_truth(native_ap
     newer = capture(
         core, ctx, "海上晨雾项目采用晨星方案。", key="TEST-P08/native", revision=2, when="2026-09-05T12:00:00Z"
     )
-    writer = LanceIndexWriter(store)
+    writer = VectorIndexWriter(store)
     writer.upsert_records(
         (
             _record(source, vector_id="v-stale"),
@@ -128,7 +123,7 @@ def test_native_scope_and_metadata_boundary_hydrates_only_sqlite_truth(native_ap
     )
     before = core.status(ctx)
     recorder = SearchCallRecorder(store)
-    port = LanceVectorPort(recorder, SyntheticQueryEmbedding())
+    port = VectorPort(recorder, SyntheticQueryEmbedding())
     search_ctx = _search_context(ctx, query="完全没有共同词的语义问题")
     port_candidates = port.search(search_ctx, limit=10, remaining_seconds=5)
     expected_partitions = _expected_partitions(ctx, logical_scope_id=source.scope_id)
@@ -153,7 +148,7 @@ def test_native_scope_and_metadata_boundary_hydrates_only_sqlite_truth(native_ap
 def test_native_partition_prefilter_avoids_limit_starvation(native_app):
     core, ctx, store = native_app
     source = capture(core, ctx, "松林团队采用霞光协议。", key="TEST-P08/starvation", revision=1)
-    writer = LanceIndexWriter(store)
+    writer = VectorIndexWriter(store)
     writer.upsert_records(
         (
             _record(source, vector_id="v-star-cross-project", project="OTHER-project"),
@@ -165,7 +160,7 @@ def test_native_partition_prefilter_avoids_limit_starvation(native_app):
     assert raw_logical_hits == []
 
     recorder = SearchCallRecorder(store)
-    port = LanceVectorPort(recorder, SyntheticQueryEmbedding())
+    port = VectorPort(recorder, SyntheticQueryEmbedding())
     valid_partition = physical_partition_scope_id(
         agent_id="TEST-agent",
         installation_id="TEST-installation",
@@ -198,7 +193,7 @@ def test_native_global_partition_does_not_expand_permissions(native_app):
     core, ctx, store = native_app
     allowed = capture(core, ctx, "全局白名单条目。", key="TEST-P08/global", revision=1)
     other_project = capture(core, ctx, "其他项目条目。", key="TEST-P08/other", revision=1)
-    writer = LanceIndexWriter(store)
+    writer = VectorIndexWriter(store)
     writer.upsert_records(
         (
             _record(allowed, vector_id="v-global", project=None, branch=None),
@@ -206,7 +201,7 @@ def test_native_global_partition_does_not_expand_permissions(native_app):
             _record(other_project, vector_id="v-other-branch", project="TEST-project", branch="OTHER-branch"),
         )
     )
-    port = LanceVectorPort(store, SyntheticQueryEmbedding())
+    port = VectorPort(store, SyntheticQueryEmbedding())
     search_ctx = _search_context(ctx, query="完全没有共同词的语义问题")
     candidates = port.search(search_ctx, limit=10, remaining_seconds=5)
     assert {item.vector_id for item in candidates} == {"v-global"}

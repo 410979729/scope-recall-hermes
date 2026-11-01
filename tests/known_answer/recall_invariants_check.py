@@ -11,7 +11,7 @@ The invariants:
 
 How it runs:
   * Public MemoryCore calls, the shipped SQLite vector companion (sqlite-bruteforce),
-    the shipped LanceEmbedPort / LanceVectorPort / LancePurgePort adapters, and the
+    the shipped VectorEmbedPort / VectorPort / VectorPurgePort adapters, and the
     documented rebuild path (respace-embeddings into a new space, then worker passes).
   * No host, no network, no API key.  The only stand-ins are the two model seams:
     a stub consolidation model that proposes one fixed claim per known sentence, and a
@@ -48,7 +48,7 @@ from pathlib import Path
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy
-from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort
+from scope_recall.runtime.vector_port import VectorEmbedPort, VectorPort, VectorPurgePort
 
 try:  # 3.8.0 and later: a whole-store re-embed into a new space (respace-embeddings)
     from scope_recall.runtime.vector_upkeep import respace_if_due
@@ -162,13 +162,13 @@ class Harness:
             metric="cosine",
         )
         self.store.open()
-        self.embed_port = LanceEmbedPort(
+        self.embed_port = VectorEmbedPort(
             self.store, self.embedder, agent_id="repro-agent", installation_id="repro-install", embedding_space=space
         )
-        self.purge_port = LancePurgePort(
+        self.purge_port = VectorPurgePort(
             self.store, embedding_spaces=(space,), agent_id="repro-agent", installation_id="repro-install"
         )
-        vectors = LanceVectorPort(self.store, self.embedder, expected_embedding_space=space)
+        vectors = VectorPort(self.store, self.embedder, expected_embedding_space=space)
         self.core = MemoryCore(
             CoreConfig(self.binding),
             vectors=vectors,

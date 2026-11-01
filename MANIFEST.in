@@ -6,6 +6,7 @@ include CONTRIBUTING.md
 include CONTRIBUTORS.md
 include .env.example
 include py.typed
+include vector/model-capabilities.json
 # Docs ship by name, the way modules do: a Markdown file under docs/ reaches
 # the sdist only when it is listed here.
 include docs/install.md

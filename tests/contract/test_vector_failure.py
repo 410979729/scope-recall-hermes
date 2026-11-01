@@ -47,20 +47,6 @@ def test_each_native_fault_gets_its_own_name(message, expected):
     assert vector_failure_label(RuntimeError(message)) == expected
 
 
-@pytest.mark.parametrize("message,expected", NATIVE_FAULTS)
-def test_remote_runtime_errors_keep_the_specific_native_fault(message, expected):
-    """The helper's generic exception class must not hide a known native fault."""
-    from scope_recall.vector.process_store import _remote_failure
-
-    assert vector_failure_label(_remote_failure("RuntimeError", message)) == expected
-
-
-def test_an_unknown_remote_runtime_error_invents_no_category():
-    from scope_recall.vector.process_store import _remote_failure
-
-    assert vector_failure_label(_remote_failure("RuntimeError", "unknown private detail")) == "RuntimeError"
-
-
 def test_the_faults_an_operator_must_tell_apart_are_told_apart():
     """A helper that is busy, one that is gone, and one that never started need
     three different answers; before this they had one label between them."""
@@ -145,36 +131,6 @@ def test_recall_uses_this_and_not_its_own_copy():
 
 
 # --- the other half: a remote failure already knows its own name --------------
-
-
-def test_a_remote_failure_keeps_the_name_the_helper_gave_it():
-    """``_lance_worker`` reports ``error_type``; the parent read it, handled two
-    classes, and dropped the rest -- so every other subprocess failure arrived as
-    the bare word RuntimeError with the diagnosis stranded in a discarded
-    message."""
-    from scope_recall.vector.process_store import _remote_failure
-
-    assert vector_failure_label(_remote_failure("ValueError", "table missing")) == "RuntimeError:ValueError"
-    assert vector_failure_label(_remote_failure("OSError", "pipe closed")) == "RuntimeError:OSError"
-
-
-@pytest.mark.parametrize("bogus", [None, 123, "", "bad type!", "A" * 80, "sk-ant-api03-AAAA!"])
-def test_a_malformed_remote_type_is_refused_rather_than_reported(bogus):
-    from scope_recall.vector.process_store import _remote_failure
-
-    assert vector_failure_label(_remote_failure(bogus, "something went wrong")) == "RuntimeError"
-
-
-def test_the_one_remote_fallback_carries_the_type():
-    """Plain and fenced responses are judged by one function: two copies would drift."""
-    import inspect
-
-    from scope_recall.vector import process_store as lance_process_store
-
-    source = inspect.getsource(lance_process_store)
-    assert source.count("raise _remote_failure(error_type, message)") == 1
-    # The bare fallback must be gone.
-    assert "raise RuntimeError(message)" not in source
 
 
 def test_a_refused_call_says_which_answer_the_provider_gave():

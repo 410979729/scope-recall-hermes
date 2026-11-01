@@ -9,8 +9,8 @@ import pytest
 from scope_recall.core.failure_policy import CAPACITY_RETRY, PROVIDER_RECHECK, WORK_RETRY
 from scope_recall.core.worker import WorkerConfig, drain_worker
 from scope_recall.runtime import lance_port
-from scope_recall.runtime.lance_port import LanceEmbedPort
 from scope_recall.runtime.models import AuxiliaryModelError
+from scope_recall.runtime.vector_port import VectorEmbedPort
 from test_claims import app
 from test_embed_group_bookkeeping import SteppingClock, _claims, _embed_rows, _sources
 from test_private_mode import CountingEmbed
@@ -56,7 +56,7 @@ def test_single_embedding_fallback_publishes_progress_before_shared_deadline(app
     core.clock = clock
     monkeypatch.setattr(lance_port, "time", SimpleNamespace(monotonic=clock.monotonic))
     embedding, writer = SingleEmbedding(clock, timeout), FencedWriter()
-    port = LanceEmbedPort(
+    port = VectorEmbedPort(
         object(),
         embedding,
         agent_id=ctx.binding.agent_id,
@@ -155,7 +155,7 @@ def test_single_fallback_keeps_successful_prefix_and_records_tail_failure(app, m
             return super().embed_source(source, remaining_seconds=remaining_seconds)
 
     embedding, writer = RefusingEmbedding(clock), FencedWriter()
-    port = LanceEmbedPort(
+    port = VectorEmbedPort(
         object(),
         embedding,
         agent_id=ctx.binding.agent_id,

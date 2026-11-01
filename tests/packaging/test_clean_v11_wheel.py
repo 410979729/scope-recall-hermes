@@ -166,8 +166,8 @@ def test_clean_v11_wheel_exact_allowlist(built_wheel: Path) -> None:
     assert f"Version: {allowlist['package_version']}" in metadata
 
 
-def test_vector_extra_dependencies_exclude_android(built_wheel: Path) -> None:
-    """The wheel keeps its dependency bounds and excludes only the vector extra on Android."""
+def test_vector_dependencies_keep_legacy_reader_optional(built_wheel: Path) -> None:
+    """NumPy serves the base backend; legacy readers stay optional and native wheels exclude Android."""
     with zipfile.ZipFile(built_wheel) as archive:
         name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
         metadata = Parser().parsestr(archive.read(name).decode("utf-8"))
@@ -190,6 +190,16 @@ def test_vector_extra_dependencies_exclude_android(built_wheel: Path) -> None:
         for platform in ("win32", "linux", "darwin"):
             assert requirement.marker.evaluate({"sys_platform": platform, "extra": "lancedb"})
             assert not requirement.marker.evaluate({"sys_platform": platform, "extra": ""})
+    native = {
+        requirement.name: requirement for requirement in requirements if requirement.name in {"sqlite-vec", "numpy"}
+    }
+    assert set(native) == {"numpy"}
+    assert project["optional-dependencies"]["vectors"] == []
+    requirement = native["numpy"]
+    assert requirement.marker is not None
+    assert not requirement.marker.evaluate({"sys_platform": "android", "extra": ""})
+    for platform in ("win32", "linux", "darwin"):
+        assert requirement.marker.evaluate({"sys_platform": platform, "extra": ""})
 
 
 def test_clean_v11_wheel_has_no_private_or_legacy_artifacts(built_wheel: Path) -> None:

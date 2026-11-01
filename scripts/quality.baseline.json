@@ -1,9 +1,5 @@
 {
  "pyright": {
-  "_lance_worker.py": {
-   "reportArgumentType": 2,
-   "reportOptionalMemberAccess": 2
-  },
   "adapters/clients/boundary.py": {
    "reportReturnType": 1
   },
@@ -250,11 +246,6 @@
   "runtime/vector_retention.py": {
    "reportOptionalMemberAccess": 1
   },
-  "runtime/vector_upkeep.py": {
-   "reportArgumentType": 3,
-   "reportAttributeAccessIssue": 2,
-   "reportCallIssue": 2
-  },
   "runtime/worker_entry.py": {
    "reportArgumentType": 4
   },
@@ -273,42 +264,14 @@
    "reportOperatorIssue": 1,
    "reportOptionalOperand": 3
   },
-  "vector/lance_native.py": {
-   "reportArgumentType": 1,
-   "reportCallIssue": 1
-  },
-  "vector/process_store.py": {
-   "reportArgumentType": 1,
-   "reportAttributeAccessIssue": 1,
-   "reportOperatorIssue": 1,
-   "reportOptionalMemberAccess": 3
-  },
   "vector/sqlite_store.py": {
    "reportArgumentType": 2
-  },
-  "vector/store.py": {
-   "reportArgumentType": 4,
-   "reportOptionalMemberAccess": 1,
-   "reportOptionalOperand": 1,
-   "reportReturnType": 1
   }
  },
  "ruff": {
   ".github/scripts/release_provenance.py": {
    "PLR0913": {
     "verify_provenance": 9
-   }
-  },
-  "_lance_worker.py": {
-   "BLE001": 2,
-   "C901": {
-    "main": 17
-   },
-   "PLR0912": {
-    "main": 16
-   },
-   "PLR0915": {
-    "main": 72
    }
   },
   "adapters/clients/boundary.py": {
@@ -888,9 +851,7 @@
    "BLE001": 4,
    "C901": {
     "_LazyVectorPort.search": 17
-   },
-   "UP035": 1,
-   "UP037": 1
+   }
   },
   "runtime/instance_config.py": {
    "UP037": 2
@@ -932,8 +893,7 @@
    "PLR0915": {
     "next_wake": 74,
     "supervise": 83
-   },
-   "UP017": 5
+   }
   },
   "runtime/subscription_budget.py": {
    "E501": 1,
@@ -943,9 +903,6 @@
    "E501": 1,
    "UP017": 1,
    "UP035": 1
-  },
-  "runtime/vector_upkeep.py": {
-   "UP017": 3
   },
   "runtime/worker_entry.py": {
    "BLE001": 2
@@ -1042,7 +999,6 @@
   },
   "tests/contract/test_lance_embed_fence.py": {
    "BLE001": 2,
-   "F841": 1,
    "UP017": 1
   },
   "tests/contract/test_operator_retry.py": {
@@ -1179,11 +1135,7 @@
    }
   },
   "tests/storage_native/test_vector_compaction.py": {
-   "UP017": 5
-  },
-  "tests/test_cold_open_overlap.py": {
-   "B017": 2,
-   "E501": 1
+   "UP017": 1
   },
   "tests/unit/test_workbuddy_record.py": {
    "E731": 1
@@ -1193,32 +1145,6 @@
   },
   "tests/v11_support.py": {
    "UP017": 1
-  },
-  "vector/__init__.py": {
-   "E501": 1,
-   "UP035": 1
-  },
-  "vector/compaction.py": {
-   "UP017": 3
-  },
-  "vector/lance_native.py": {
-   "BLE001": 1
-  },
-  "vector/process_store.py": {
-   "BLE001": 3,
-   "E501": 1,
-   "UP035": 1
-  },
-  "vector/sqlite_store.py": {
-   "B905": 3,
-   "BLE001": 1,
-   "E501": 1,
-   "UP035": 1
-  },
-  "vector/store.py": {
-   "BLE001": 1,
-   "E501": 1,
-   "UP035": 1
   }
  }
 }
