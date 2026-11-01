@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections import Counter
 from dataclasses import replace
@@ -11,7 +12,7 @@ from typing import Any
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.capture_filters import redact_secret_text, strip_private_content
-from scope_recall.core.memory_import import digest, import_record
+from scope_recall.core.memory_import import IMPORT_BATCH_SIZE, digest, import_record, prefetch_new_sources
 
 from .import_read import timestamp
 from .import_sources import read_source
@@ -56,8 +57,8 @@ def preview_import(
     project=None,
     since=None,
     until=None,
-    readers=None,
     destination_project=None,
+    target=None,
 ):
     """Parse selected local evidence without opening, initializing or migrating a target store."""
     if not source_id.strip():
@@ -65,7 +66,7 @@ def preview_import(
     after, before = _instant(timestamp(since)), _instant(timestamp(until))
     if after and before and after > before:
         raise ContractError("INPUT_INVALID", "import_time_range")
-    loaded = read_source(source, path, readers=readers)
+    loaded = read_source(source, path)
     records = tuple(item for item in loaded if _selected(item, project, after, before))
     items = [_public_item(item, destination_project) for item in records]
     times = sorted(
@@ -76,6 +77,7 @@ def preview_import(
         source=source,
         source_id=source_id,
         destination_project=destination_project,
+        target=target,
         count=len(items),
         projects=dict(Counter(item.project or "(unassigned)" for item in records)),
         time_range=dict(
@@ -104,16 +106,40 @@ def apply_import(core, context, plan, *, preview_id: str | None, scope_id: str, 
         raise ContractError("VERSION_CONFLICT", "import_preview")
     if [_public_item(item, plan.get("destination_project")) for item in plan["_records"]] != plan["items"]:
         raise ContractError("VERSION_CONFLICT", "import_preview")
+    target = plan.get("target")
+    if target is not None and (
+        target["scope"] != scope_id
+        or target["root"] is not None
+        and target["root"] != _local_path(core.config.binding.data_directory)
+        or target["project_root"] != _local_path(context.project_root)
+    ):
+        raise ContractError("VERSION_CONFLICT", "import_target")
     if plan.get("destination_project"):
         context = replace(context, project_id=plan["destination_project"])
     counts = Counter()
     gaps, refusals = Counter(), Counter()
     started = time.perf_counter()
     error = None
+    new_sources = frozenset()
     for index, item in enumerate(plan["_records"]):
         try:
+            if index % IMPORT_BATCH_SIZE == 0:
+                new_sources = prefetch_new_sources(
+                    core,
+                    context,
+                    plan["_records"][index : index + IMPORT_BATCH_SIZE],
+                    source=plan["source"],
+                    source_id=plan["source_id"],
+                    scope_id=scope_id,
+                )
             receipt = import_record(
-                core, context, item, source=plan["source"], source_id=plan["source_id"], scope_id=scope_id
+                core,
+                context,
+                item,
+                source=plan["source"],
+                source_id=plan["source_id"],
+                scope_id=scope_id,
+                _new_sources=new_sources,
             )
         except ContractError as exc:
             error = dict(code=exc.code, field=exc.field, at=index)
@@ -167,10 +193,26 @@ def add_arguments(parser):
     parser.add_argument("--preview-id", help="exact preview approved by the owner")
 
 
+def _local_path(value):
+    return os.path.normcase(str(Path(value).resolve())) if value is not None else None
+
+
+def _target(args):
+    """Canonical CLI selection, computed without opening a store or reading host data."""
+    return dict(
+        root=_local_path(args.root),
+        host=args.host,
+        instance_root=_local_path(args.instance_root),
+        scope=args.scope,
+        project_root=_local_path(args.project_root),
+    )
+
+
 def execute_import(args, *, open_store, run=apply_import):
     """Preview before binding any destination; only explicit approval opens a writable store."""
     from scope_recall.core.store_upgrade import upgrade_in_progress
 
+    target = _target(args)
     plan = preview_import(
         args.source,
         args.source_path,
@@ -179,12 +221,18 @@ def execute_import(args, *, open_store, run=apply_import):
         since=args.since,
         until=args.until,
         destination_project=args.project_id,
+        target=target,
     )
     public = {k: v for k, v in plan.items() if k != "_records"}
     if not args.yes:
         return dict(import_preview=public, applied=False)
     if not args.preview_id or args.preview_id != plan["preview_id"]:
         raise ContractError("VERSION_CONFLICT", "import_preview")
+    if not target["scope"] or not (target["root"] or target["host"] and target["instance_root"]):
+        raise ContractError("INPUT_INVALID", "import_target")
+    args = type(args)(
+        **{**vars(args), **{key: target[key] for key in ("root", "host", "instance_root", "scope", "project_root")}}
+    )
     # Inspect the coordinator before writable initialization, which would wait
     # for a running upgrade. Reads and preview require no such wait.
     api = open_store(args, initialize=False)

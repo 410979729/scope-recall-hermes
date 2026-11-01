@@ -16,18 +16,60 @@ def _conversations(document):
     return document
 
 
-def _text(content):
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            p["text"]
-            for p in content
-            if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str)
-        )
-    if isinstance(content, dict):
-        return "\n".join(p for p in content.get("parts", []) if isinstance(p, str))
-    return ""
+def _identity(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError("INPUT_INVALID", "import_message_identity")
+    return value
+
+
+def _chatgpt_text(content):
+    if (
+        not isinstance(content, dict)
+        or not isinstance(content.get("content_type"), str)
+        or content["content_type"] not in {"text", "code", "multimodal_text"}
+    ):
+        raise ContractError("INPUT_INVALID", "import_chatgpt_content")
+    if content["content_type"] == "code":
+        if not isinstance(content.get("text"), str):
+            raise ContractError("INPUT_INVALID", "import_chatgpt_code")
+        return content["text"]
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+        raise ContractError("INPUT_INVALID", "import_chatgpt_parts")
+    text = []
+    for part in parts:
+        if isinstance(part, str):
+            text.append(part)
+        elif (
+            content["content_type"] == "multimodal_text"
+            and isinstance(part, dict)
+            and isinstance(part.get("content_type"), str)
+            and part["content_type"] in {"image_asset_pointer", "audio_asset_pointer"}
+            and isinstance(part.get("asset_pointer"), str)
+            and bool(part["asset_pointer"])
+        ):
+            continue
+        else:
+            raise ContractError("INPUT_INVALID", "import_chatgpt_part")
+    return "\n".join(text)
+
+
+def _claude_text(message):
+    if "content" not in message or message["content"] is None:
+        if not isinstance(message.get("text"), str):
+            raise ContractError("INPUT_INVALID", "import_claude_text")
+        return message["text"]
+    if not isinstance(message["content"], list):
+        raise ContractError("INPUT_INVALID", "import_claude_content")
+    text = []
+    for block in message["content"]:
+        if not isinstance(block, dict) or not isinstance(block.get("type"), str):
+            raise ContractError("INPUT_INVALID", "import_claude_block")
+        if block["type"] == "text" and isinstance(block.get("text"), str):
+            text.append(block["text"])
+        elif block["type"] not in {"image", "document", "tool_use", "tool_result", "thinking", "redacted_thinking"}:
+            raise ContractError("INPUT_INVALID", "import_claude_block")
+    return "\n".join(text)
 
 
 def read_chatgpt(path: Path):
@@ -35,25 +77,32 @@ def read_chatgpt(path: Path):
     for document in json_documents(path):
         for chat in _conversations(document):
             session = chat.get("id") or chat.get("conversation_id")
-            if not session or not isinstance(chat.get("mapping"), dict):
+            session = _identity(session)
+            if not isinstance(chat.get("mapping"), dict):
                 raise ContractError("INPUT_INVALID", "import_chatgpt_mapping")
             for node_key, node in chat["mapping"].items():
-                message = node.get("message")
+                if not isinstance(node, dict) or "message" not in node:
+                    raise ContractError("INPUT_INVALID", "import_chatgpt_node")
+                message = node["message"]
                 if message is None:
                     continue
-                role = message.get("author", {}).get("role")
+                if not isinstance(message, dict) or not isinstance(message.get("author"), dict):
+                    raise ContractError("INPUT_INVALID", "import_chatgpt_author")
+                role = message["author"].get("role")
+                if not isinstance(role, str) or role not in {"user", "assistant", "system", "tool"}:
+                    raise ContractError("INPUT_INVALID", "import_chatgpt_role")
                 if role not in {"user", "assistant"}:
                     continue
-                text = _text(message.get("content"))
+                text = _chatgpt_text(message.get("content"))
                 if not text.strip():
                     continue
                 yield ImportRecord(
-                    str(message.get("id") or node_key),
+                    _identity(message.get("id") or node_key),
                     text,
-                    role,
+                    "user" if role == "user" else "assistant",
                     timestamp(message.get("create_time")),
                     chat.get("project_id"),
-                    str(session),
+                    session,
                     "human_direct" if role == "user" else "assistant_visible",
                 )
 
@@ -68,13 +117,15 @@ def read_claude(path: Path):
                 continue
             if not chat.get("uuid") or not isinstance(chat.get("chat_messages"), list):
                 raise ContractError("INPUT_INVALID", "import_claude_messages")
+            _identity(chat["uuid"])
             for message in chat["chat_messages"]:
+                if not isinstance(message, dict):
+                    raise ContractError("INPUT_INVALID", "import_claude_message")
                 sender = message.get("sender")
-                if sender not in {"human", "assistant"}:
-                    continue
-                text = _text(message.get("content")) or _text(message.get("text"))
-                if not message.get("uuid"):
-                    raise ContractError("INPUT_INVALID", "import_message_identity")
+                if not isinstance(sender, str) or sender not in {"human", "assistant"}:
+                    raise ContractError("INPUT_INVALID", "import_claude_sender")
+                text = _claude_text(message)
+                _identity(message.get("uuid"))
                 if text.strip():
                     yield ImportRecord(
                         message["uuid"],

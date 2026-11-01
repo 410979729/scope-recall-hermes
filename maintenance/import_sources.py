@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -29,4 +31,9 @@ def read_source(source: str, path: Path, *, readers=None) -> tuple[ImportRecord,
     reader = (SOURCE_READERS if readers is None else readers).get(source)
     if reader is None:
         raise ContractError("INPUT_INVALID", "import_source")
-    return tuple(reader(Path(path)))
+    try:
+        return tuple(reader(Path(path)))
+    except ContractError:
+        raise
+    except (json.JSONDecodeError, UnicodeError, sqlite3.Error, OSError, OverflowError, ValueError):
+        raise ContractError("INPUT_INVALID", "import_source_format") from None

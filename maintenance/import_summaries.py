@@ -33,7 +33,9 @@ def read_claude_mem(path: Path):
                 continue
             for row in conn.execute(f"SELECT * FROM {table} ORDER BY id"):
                 values = dict(row)
-                text = "\n".join(str(values[f]) for f in fields if values.get(f))
+                if any(values.get(f) is not None and not isinstance(values[f], str) for f in fields):
+                    raise ContractError("INPUT_INVALID", "import_sqlite_text")
+                text = "\n".join(values[f] for f in fields if values.get(f))
                 if not text.strip():
                     continue
                 occurred = timestamp(values.get("created_at")) or timestamp(
@@ -62,11 +64,20 @@ def read_mem0(path: Path):
     if not isinstance(items, list):
         raise ContractError("INPUT_INVALID", "import_mem0")
     for item in items:
-        if not isinstance(item, dict) or not item.get("id") or not isinstance(item.get("memory"), str):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"].strip()
+            or not isinstance(item.get("memory"), str)
+        ):
             raise ContractError("INPUT_INVALID", "import_mem0_record")
-        metadata = item.get("metadata") or {}
+        metadata = item.get("metadata")
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            raise ContractError("INPUT_INVALID", "import_mem0_metadata")
         yield ImportRecord(
-            str(item["id"]),
+            item["id"],
             item["memory"],
             "assistant",
             timestamp(item.get("updated_at") or item.get("created_at")),

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+import stat
+import unicodedata
 import zipfile
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 
 from scope_recall.contracts import ContractError
@@ -46,16 +49,41 @@ def json_documents(path: Path, *, prefixes=("conversations",)):
         for candidate in files:
             yield json.loads(read_bytes(candidate))
     elif path.suffix.lower() == ".zip":
-        read_bytes(path)
-        with zipfile.ZipFile(path) as archive:
-            members = [
-                i
-                for i in archive.infolist()
-                if Path(i.filename).name.startswith(prefixes) and i.filename.endswith(".json") and not i.is_dir()
-            ]
-            if not members or sum(i.file_size for i in members) > MAX_FILE_BYTES:
-                raise ContractError("INPUT_INVALID", "import_archive")
-            for member in sorted(members, key=lambda i: i.filename):
-                yield json.loads(archive.read(member))
+        yield from _archive_documents(path, prefixes)
     else:
         yield json.loads(read_bytes(path))
+
+
+def _archive_members(archive, prefixes):
+    seen, selected = set(), []
+    for member in archive.infolist():
+        name = member.orig_filename
+        pieces = name.rstrip("/").split("/")
+        if (
+            not name
+            or name.startswith("/")
+            or "\\" in name
+            or unicodedata.normalize("NFC", name) != name
+            or any(ch in '<>:"|?*' or ord(ch) < 32 for ch in name)
+            or any(part in {"", ".", ".."} or part.rstrip(" .") != part for part in pieces)
+            or name.casefold() in seen
+            or stat.S_ISLNK(member.external_attr >> 16)
+        ):
+            raise ContractError("INPUT_INVALID", "import_archive")
+        seen.add(name.casefold())
+        if pieces[-1].startswith(prefixes) and name.endswith(".json") and not member.is_dir():
+            selected.append(member)
+    if not selected or sum(member.file_size for member in selected) > MAX_FILE_BYTES:
+        raise ContractError("INPUT_INVALID", "import_archive")
+    return sorted(selected, key=lambda item: item.filename)
+
+
+def _archive_documents(path, prefixes):
+    # Keep one bounded byte snapshot so validation and member reads cannot
+    # observe different files, and never interpolate archive diagnostics.
+    try:
+        with zipfile.ZipFile(BytesIO(read_bytes(path))) as archive:
+            for member in _archive_members(archive, prefixes):
+                yield json.loads(archive.read(member))
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError, ValueError, OSError):
+        raise ContractError("INPUT_INVALID", "import_archive") from None

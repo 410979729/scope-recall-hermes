@@ -1,9 +1,9 @@
 """Conservative scheduling policy; source fidelity and authority are unchanged.
 
-Only exact, content-free acknowledgements, successful tool wrappers and Scope
-Recall's own reinjected output are cheap terminal cases. Unrecognized text
-remains eligible. Queue pressure postpones derived work, never source
-persistence or lexical search.
+Exact, content-free acknowledgements, successful tool wrappers and Scope
+Recall's own reinjected output are cheap terminal cases. Imported and native
+memory material stays source-only until confirmed. Other text remains eligible.
+Queue pressure postpones derived work, never source persistence or lexical search.
 """
 
 from __future__ import annotations
@@ -172,23 +172,34 @@ def _says_nothing_more(body: dict) -> bool:
     return empty_output and empty_message
 
 
+def _memory_material(event):
+    """Reserved source identities are minted by adapters, never inferred from prose.
+
+    This marker only restricts work admission; it cannot attest human origin or
+    grant evidence authority. Conversation imports still require provenance.
+    """
+    # Segmentation hashes occurrence keys; the parent retains the adapter's
+    # source identity for every part of the original memory.
+    segment = event.get("segment")
+    key = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key", "")
+    origin = event.get("origin")
+    return isinstance(key, str) and (
+        origin == "imported"
+        and key.startswith("memory-import:")
+        and event.get("source_original_origin") != "human_direct"
+        or origin in {"assistant_visible", "origin_unknown"}
+        and key.startswith("native-memory:")
+    )
+
+
 def classify(event, policy=None):
     """No semantic guesses: a keyword only raises scheduling priority."""
     policy = policy or AdmissionPolicy()
+    material = _memory_material(event)
+    if material or event.get("origin") == "memory_reinjection" and policy.enabled:
+        return AdmissionDecision("source_only", "import_requires_confirmation") if material else _REINJECTION
     if not policy.enabled:
         return AdmissionDecision("schedule", "policy_disabled")
-    if event.get("origin") == "memory_reinjection" or (
-        event.get("origin") == "imported"
-        and str(event.get("dataset_id", "")).startswith("memory-import:")
-        and event.get("source_original_origin") != "human_direct"
-    ):
-        # Reused memories retain searchable text without letting their wording
-        # reserve priority work or stand as independent evidence.
-        return (
-            _REINJECTION
-            if event.get("origin") == "memory_reinjection"
-            else AdmissionDecision("source_only", "import_requires_confirmation")
-        )
     text = event["content"]
     if withheld_tool_output(event):
         # Nothing in it to search for by meaning, to derive from or to find by its words (``core/events.py``).

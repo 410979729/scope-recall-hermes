@@ -210,6 +210,7 @@ def render(payload, *, as_json):
         )
         print(f"Source: {plan['source']}; records: {plan['count']}; time: {plan['time_range']}")
         print(f"Projects: {plan['projects']}; preview: {plan['preview_id']}")
+        print("Target: " + json.dumps(plan["target"], ensure_ascii=False))
         if not data["applied"]:
             print("Review this selection, then repeat with --yes --preview-id " + plan["preview_id"])
             print("Import permission does not confirm the content or identify its author as the local owner.")

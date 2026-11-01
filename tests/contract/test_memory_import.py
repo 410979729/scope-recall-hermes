@@ -219,6 +219,10 @@ def test_memory_import_command_previews_without_opening_store_and_requires_exact
         str(SAMPLES / "chatgpt"),
         "--source-id",
         "TEST-account",
+        "--root",
+        str(ctx.binding.data_directory),
+        "--scope",
+        "TEST-scope",
         "--json",
     ]
 
@@ -273,7 +277,7 @@ def test_zip_export_and_project_time_selection_match_json(tmp_path):
     path = tmp_path / "TEST-export.zip"
     with zipfile.ZipFile(path, "w") as archive:
         archive.write(SAMPLES / "chatgpt" / "conversations.json", "export/conversations.json")
-        archive.writestr("../../outside.txt", "TEST must never extract")
+        archive.writestr("attachments/outside.txt", "TEST must never extract")
     assert read_source("chatgpt", path) == records("chatgpt")
     plan = preview_import(
         "chatgpt", path, source_id="TEST-account", project="TEST-project", since="2026-01-01T12:00:30Z"
@@ -394,7 +398,6 @@ def test_shared_store_owner_import_uses_registered_management_entry(tmp_path, mo
     app.initialize()
     api = MemoryManagement(app, InstallationMaintenance(ctx))
     monkeypatch.setattr(memory, "open_management", lambda *args, **kwargs: api)
-    plan = preview_import("chatgpt", SAMPLES / "chatgpt", source_id="TEST-account")
     args = [
         "import",
         "--source",
@@ -403,12 +406,15 @@ def test_shared_store_owner_import_uses_registered_management_entry(tmp_path, mo
         str(SAMPLES / "chatgpt"),
         "--source-id",
         "TEST-account",
-        "--yes",
-        "--preview-id",
-        plan["preview_id"],
+        "--root",
+        str(binding.data_directory),
+        "--scope",
+        "TEST-scope",
         "--json",
     ]
     assert memory.main(args) == 0
+    plan = json.loads(capsys.readouterr().out)["data"]["import_preview"]
+    assert memory.main(args + ["--yes", "--preview-id", plan["preview_id"]]) == 0
     assert json.loads(capsys.readouterr().out)["data"]["result"]["counts"] == {"inserted": 2}
     with app.storage.read(ctx) as tx:
         assert tx._check().execute("SELECT DISTINCT entry_id FROM source_events").fetchone()[0] == "local-management"
@@ -516,3 +522,279 @@ def test_import_without_a_timezone_cannot_use_the_local_machine_clock():
 
     with pytest.raises(ContractError):
         timestamp("2026-01-01T12:00:00")
+
+
+@pytest.mark.parametrize("kind", ["chatgpt", "mem0"])
+def test_production_mode_import_keeps_provenance_without_test_fields(tmp_path, kind):
+    ctx = context(tmp_path / "TEST-production-import", test_mode=False)
+    app = MemoryCore(CoreConfig(ctx.binding))
+    app.initialize()
+    item = records(kind)[0]
+    from scope_recall.core.memory_import import prefetch_new_sources
+
+    options = dict(source=kind, source_id="TEST-account", scope_id="TEST-scope")
+    hints = prefetch_new_sources(app, ctx, (item,), **options)
+    receipt = import_record(app, ctx, item, _new_sources=hints, **options)
+    assert import_record(app, ctx, item, **options).disposition == "duplicate"
+    assert receipt.durability == "persisted"
+    saved = app.source(replace(ctx, project_id=item.project), receipt.event_refs[0].ref, 1)
+    assert saved is not None and saved.import_provenance_sha256
+    assert "dataset_id" not in saved.event
+    if item.role != "user":
+        assert receipt.admission == ("admission_source_only:import_requires_confirmation",)
+    else:
+        from v11_support import recall_request
+
+        packet = app.recall(replace(ctx, project_id=item.project), recall_request(query="saffron", mode="current"))
+        assert receipt.event_refs[0].ref in {entry.ref for entry in packet.items}
+
+
+@pytest.mark.parametrize("field", ["root", "scope", "project_root"])
+def test_approval_is_bound_to_normalized_write_target(tmp_path, monkeypatch, capsys, field):
+    from scope_recall.maintenance import memory
+
+    args = [
+        "import",
+        "--source",
+        "chatgpt",
+        "--from",
+        str(SAMPLES / "chatgpt"),
+        "--source-id",
+        "TEST-account",
+        "--root",
+        str(tmp_path / "TEST-destination"),
+        "--scope",
+        "TEST-scope",
+        "--project-root",
+        str(tmp_path / "TEST-project"),
+        "--json",
+    ]
+    monkeypatch.setattr(memory, "open_management", lambda *a, **kw: pytest.fail("target change cannot open store"))
+    assert memory.main(args) == 0
+    before = json.loads(capsys.readouterr().out)["data"]["import_preview"]["preview_id"]
+    changed = list(args)
+    flag = "--" + field.replace("_", "-")
+    changed[changed.index(flag) + 1] += "-changed"
+    assert memory.main(changed) == 0
+    after = json.loads(capsys.readouterr().out)["data"]["import_preview"]["preview_id"]
+    assert before != after
+    assert memory.main(changed + ["--yes", "--preview-id", before]) == 2
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        {"content_type": "unknown", "parts": "hidden-canary"},
+        {"content_type": "text", "parts": "hidden-canary"},
+        {"content_type": "text", "parts": ["TEST", {"text": "hidden-canary"}]},
+    ],
+)
+def test_chatgpt_unknown_text_shape_is_never_attested(tmp_path, content):
+    document = json.loads((SAMPLES / "chatgpt" / "conversations.json").read_text())
+    document[0]["mapping"]["m1"]["message"]["content"] = content
+    path = tmp_path / "TEST-conversations.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError) as failure:
+        read_source("chatgpt", path)
+    assert "hidden-canary" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    "kind,bad", [("chatgpt", "author"), ("chatgpt", "message"), ("claude", "message"), ("claude", "content")]
+)
+def test_chat_exports_reject_malformed_structures_without_source_text(tmp_path, kind, bad):
+    document = json.loads((SAMPLES / kind / "conversations.json").read_text())
+    if kind == "chatgpt":
+        message = document[0]["mapping"]["m1"]["message"]
+        if bad == "author":
+            message["author"] = "hidden-canary"
+        else:
+            document[0]["mapping"]["m1"]["message"] = ["hidden-canary"]
+    elif bad == "message":
+        document[0]["chat_messages"][0] = ["hidden-canary"]
+    else:
+        document[0]["chat_messages"][0]["content"] = [{"type": "text", "text": ["hidden-canary"]}]
+    path = tmp_path / "TEST-conversations.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError) as failure:
+        read_source(kind, path)
+    assert "hidden-canary" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["conversations.json", "conversations.json"],
+        ["../conversations.json"],
+        ["export/../conversations.json"],
+        ["/conversations.json"],
+        ["export\\conversations.json"],
+        ["export//conversations.json"],
+    ],
+)
+def test_export_archive_rejects_duplicate_or_ambiguous_members(tmp_path, names):
+    import zipfile
+
+    path = tmp_path / "TEST-export.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in names:
+            archive.writestr(name, (SAMPLES / "chatgpt" / "conversations.json").read_bytes())
+    if any("\\" in name for name in names):
+        # The Windows ZIP writer canonicalizes separators; change both name
+        # headers to exercise a noncanonical archive received from elsewhere.
+        path.write_bytes(path.read_bytes().replace(b"export/conversations.json", b"export\\conversations.json"))
+    with pytest.raises(ContractError) as failure:
+        read_source("chatgpt", path)
+    assert failure.value.field == "import_archive"
+
+
+def test_broken_archive_never_escapes_cli_or_echoes_member_name(tmp_path, monkeypatch, capsys):
+    from scope_recall.maintenance import memory
+
+    path = tmp_path / "TEST-broken.zip"
+    path.write_bytes(b"TEST not an archive <private>hidden-canary")
+    monkeypatch.setattr(memory, "open_management", lambda *a, **kw: pytest.fail("bad archive cannot open store"))
+    assert (
+        memory.main(["import", "--source", "chatgpt", "--from", str(path), "--source-id", "TEST-account", "--json"])
+        == 2
+    )
+    output = capsys.readouterr()
+    assert "hidden-canary" not in output.out + output.err
+    assert json.loads(output.out)["field"] == "import_archive"
+
+
+@pytest.mark.parametrize("field,value", [("metadata", ["hidden-canary"]), ("id", {"hidden-canary": 1})])
+def test_mem0_malformed_metadata_is_a_content_free_contract_error(tmp_path, field, value):
+    document = {"results": [{"id": "TEST-memory", "memory": "TEST saffron", "metadata": {}}]}
+    document["results"][0][field] = value
+    path = tmp_path / "TEST-mem0.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError) as failure:
+        read_source("mem0", path)
+    assert "hidden-canary" not in str(failure.value)
+
+
+def test_export_archive_is_read_from_disk_once(tmp_path, monkeypatch):
+    import io
+    import zipfile
+
+    path = tmp_path / "TEST-once.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.write(SAMPLES / "chatgpt" / "conversations.json", "export/conversations.json")
+    original, opened = io.open, []
+
+    def observe(file, *args, **kwargs):
+        if isinstance(file, (str, Path)) and Path(file) == path:
+            opened.append(file)
+        return original(file, *args, **kwargs)
+
+    monkeypatch.setattr(io, "open", observe)
+    assert len(read_source("chatgpt", path)) == 2
+    assert len(opened) == 1
+
+
+def test_crc_error_is_a_fixed_archive_error(tmp_path):
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("conversations.json", (SAMPLES / "chatgpt" / "conversations.json").read_bytes())
+    payload = buffer.getvalue().replace(b"saffron", b"indigo!", 1)
+    path = tmp_path / "TEST-corrupt.zip"
+    path.write_bytes(payload)
+    with pytest.raises(ContractError) as failure:
+        read_source("chatgpt", path)
+    assert failure.value.field == "import_archive"
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ({"content_type": "code", "text": "TEST literal code"}, "TEST literal code"),
+        (
+            {
+                "content_type": "multimodal_text",
+                "parts": ["TEST caption", {"content_type": "audio_asset_pointer", "asset_pointer": "TEST-audio"}],
+            },
+            "TEST caption",
+        ),
+    ],
+)
+def test_chatgpt_known_code_and_asset_shapes_preserve_only_original_text(tmp_path, content, expected):
+    document = json.loads((SAMPLES / "chatgpt" / "conversations.json").read_text())
+    document[0]["mapping"]["m1"]["message"]["content"] = content
+    path = tmp_path / "TEST-known.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    assert read_source("chatgpt", path)[0].content == expected
+
+
+@pytest.mark.parametrize(
+    "existing,revision,disposition", [("TEST previous", 2, "inserted"), ("TEST incoming", 1, "duplicate")]
+)
+def test_prefetched_absence_rechecks_a_concurrent_source_write(store, existing, revision, disposition):
+    from scope_recall.core.memory_import import prefetch_new_sources
+
+    app, ctx = store
+    item = ImportRecord("TEST-concurrent", "TEST incoming", "assistant")
+    options = dict(source="mem0", source_id="TEST-account", scope_id="TEST-scope")
+    hint = prefetch_new_sources(app, ctx, (item,), **options)
+    before = import_record(app, ctx, replace(item, content=existing), **options)
+    receipt = import_record(app, ctx, item, _new_sources=hint, **options)
+    assert receipt.disposition == disposition and receipt.event_refs[0].revision == revision
+    assert app.source(ctx, before.event_refs[0].ref, 1).event["content"] == existing
+    assert app.source(ctx, receipt.event_refs[0].ref, revision).event["content"] == item.content
+
+
+def test_bulk_import_prefetch_reduces_reads_without_combining_write_leases(store, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    app, ctx = store
+    path = tmp_path / "TEST-many-memories.json"
+    path.write_text(
+        json.dumps({"results": [{"id": f"TEST-{i}", "memory": f"TEST remember {i}"} for i in range(64)]}),
+        encoding="utf-8",
+    )
+    plan = preview_import("mem0", path, source_id="TEST-account")
+    counts = {"read": 0, "write": 0}
+    for name in counts:
+        original = getattr(type(app.storage), name)
+
+        @contextmanager
+        def observe(*args, _original=original, _name=name, **kwargs):
+            counts[_name] += 1
+            with _original(*args, **kwargs) as tx:
+                yield tx
+
+        monkeypatch.setattr(type(app.storage), name, observe)
+    result = apply_import(app, ctx, plan, preview_id=plan["preview_id"], scope_id="TEST-scope")
+    assert result["complete"] and result["counts"] == {"inserted": 64}
+    assert counts["read"] <= 4 and counts["write"] >= 64
+
+
+@pytest.mark.parametrize("source_kind", ["imported", "native"])
+def test_segmented_memory_material_keeps_its_group_admission(store, source_kind):
+    app, ctx = store
+    text = "TEST remember " * 6000
+    if source_kind == "imported":
+        receipt = import_record(
+            app,
+            ctx,
+            ImportRecord("TEST-large-material", text, "assistant"),
+            source="mem0",
+            source_id="TEST-account",
+            scope_id="TEST-scope",
+        )
+    else:
+        shown = replace(ctx, actor_origin="assistant_visible")
+        event = source_event(
+            source_event_key="native-memory:TEST-large-material",
+            origin="assistant_visible",
+            role="assistant",
+            content=text,
+        )
+        receipt = app.record_event(shown, event, scope_id="TEST-scope")
+    assert receipt.durability == "persisted"
+    assert set(receipt.admission) == {"admission_source_only:import_requires_confirmation"}
+    assert any(app.source(ctx, ref.ref, ref.revision).event.get("segment") for ref in receipt.event_refs)

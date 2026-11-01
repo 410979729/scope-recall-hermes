@@ -10,7 +10,7 @@ from queue import Queue
 
 import pytest
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.memory_import import ImportRecord, import_record
+from scope_recall.core.memory_import import IMPORT_BATCH_SIZE, ImportRecord, import_record, prefetch_new_sources
 from v11_support import context, recall_request, source_event
 
 
@@ -49,8 +49,18 @@ def test_imports_release_writer_for_capture_and_recall(tmp_path):
     def import_many():
         began = time.perf_counter()
         for index in range(count):
-            item = ImportRecord(f"TEST-{index}", f"TEST synthetic imported material {index}", "assistant")
-            receipt = import_record(core, ctx, item, source="mem0", source_id="TEST-large", scope_id="TEST-scope")
+            if index % IMPORT_BATCH_SIZE == 0:
+                batch = tuple(
+                    ImportRecord(f"TEST-{n}", f"TEST synthetic imported material {n}", "assistant")
+                    for n in range(index, min(count, index + IMPORT_BATCH_SIZE))
+                )
+                hints = prefetch_new_sources(
+                    core, ctx, batch, source="mem0", source_id="TEST-large", scope_id="TEST-scope"
+                )
+            item = batch[index % IMPORT_BATCH_SIZE]
+            receipt = import_record(
+                core, ctx, item, source="mem0", source_id="TEST-large", scope_id="TEST-scope", _new_sources=hints
+            )
             assert receipt.durability == "persisted"
             if index % stride == stride // 10:
                 milestones.put(index)

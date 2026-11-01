@@ -87,13 +87,54 @@ def _actor(context, item, source, source_id, scope_id):
     )
 
 
-def _versioned_capture(core, context, prepared):
+IMPORT_BATCH_SIZE = 32
+
+
+def _source_key(actor, item, source, source_id, scope_id):
+    return "memory-import:" + digest(
+        [scope_id, actor.project_id, actor.branch_id, source, source_id, item.project, item.session, item.key]
+    )
+
+
+def prefetch_new_sources(core, context, items, *, source, source_id, scope_id):
+    """Read bounded absence hints; capture remains authoritative for every write.
+
+    Only new identities skip their per-record version read. Existing histories
+    use the normal version path, and stale absence hints retry after conflict.
+    Project partitions retain their own trusted read context.
+    """
+    if not 1 <= len(items) <= IMPORT_BATCH_SIZE:
+        raise ContractError("INPUT_INVALID", "import_batch")
+    groups = {}
+    for item in items:
+        actor = _actor(context, item, source, source_id, scope_id)
+        group = groups.setdefault((actor.project_id, actor.branch_id), (actor, set()))
+        group[1].add(_source_key(actor, item, source, source_id, scope_id))
+    absent = set()
+    for actor, keys in groups.values():
+        with core.storage.read(actor) as tx:
+            present = {
+                row[0]
+                for row in tx._check().execute(
+                    "SELECT DISTINCT source_group_key FROM source_events WHERE source_group_key IN ("
+                    + ",".join("?" for _ in keys)
+                    + ")",
+                    tuple(keys),
+                )
+            }
+        absent.update(keys - present)
+    return frozenset(absent)
+
+
+def _versioned_capture(core, context, prepared, *, known_new=False):
     """Reuse an admitted historical envelope or allocate the next source version.
 
     Comparing admitted text makes a sanitized re-export idempotent. Reusing
     the stored envelope preserves its original occurrence, masking and gaps.
     Capture still rechecks privacy, deletion and concurrent version conflicts.
     """
+    if known_new:
+        return prepared, None
     key = prepared.events[0]["source_event_key"]
     group = prepared.events[0].get("segment", {}).get("group_key", key)
     digests = tuple(hashlib.sha256(e["content"].encode()).hexdigest() for e in prepared.events)
@@ -118,7 +159,7 @@ def _versioned_capture(core, context, prepared):
                 source is not None
                 and all(
                     source.event.get(field) == prepared.events[index].get(field)
-                    for field in ("role", "source_original_origin", "source_principal", "dataset_id")
+                    for field in ("role", "source_original_origin", "source_principal")
                 )
                 for index, source in enumerate(saved)
             ):
@@ -130,7 +171,9 @@ def _versioned_capture(core, context, prepared):
     return replace(prepared, events=tuple({**event, "source_revision": revision} for event in prepared.events)), None
 
 
-def import_record(core, context, item: ImportRecord, *, source: str, source_id: str, scope_id: str):
+def import_record(
+    core, context, item: ImportRecord, *, source: str, source_id: str, scope_id: str, _new_sources=frozenset()
+):
     """Persist one normalized occurrence through the shared, bounded capture boundary.
 
     Reader attestation covers the admitted segments. It stays outside ordinary
@@ -138,9 +181,7 @@ def import_record(core, context, item: ImportRecord, *, source: str, source_id: 
     uses the existing admission queues and worker budgets without model calls.
     """
     actor = _actor(context, item, source, source_id, scope_id)
-    key = "memory-import:" + digest(
-        [scope_id, actor.project_id, actor.branch_id, source, source_id, item.project, item.session, item.key]
-    )
+    key = _source_key(actor, item, source, source_id, scope_id)
     event: SourceEvent = {
         "protocol_version": "1.1",
         "source_event_key": key,
@@ -155,24 +196,32 @@ def import_record(core, context, item: ImportRecord, *, source: str, source_id: 
         "evidence_refs": [],
         "source_original_origin": item.original_origin,
         "source_principal": actor.source_principal.to_payload(),
-        "dataset_id": f"memory-import:{source}:{digest(source_id)[:20]}",
     }
     prepared = prepare_capture(event, actor, private_content_omitted=item.private_content_omitted)
     if len(prepared.events) > 200:
         raise ContractError("INPUT_INVALID", "import_record_budget")
-    if not prepared.rejection:
-        prepared, previous_manifest = _versioned_capture(core, actor, prepared)
-        fingerprints = frozenset(import_source_fingerprint(e) for e in prepared.events)
-        provenance = ImportProvenance(
-            item.original_origin, previous_manifest or digest([key, sorted(fingerprints)]), fingerprints
+    known_new = key in _new_sources
+    receipt = None
+    for attempt in range(2 if known_new else 1):
+        if not prepared.rejection:
+            prepared, previous_manifest = _versioned_capture(
+                core, actor, prepared, known_new=known_new and attempt == 0
+            )
+            fingerprints = frozenset(import_source_fingerprint(e) for e in prepared.events)
+            provenance = ImportProvenance(
+                item.original_origin, previous_manifest or digest([key, sorted(fingerprints)]), fingerprints
+            )
+            actor = replace(actor, import_provenance=provenance)
+        receipt = record_event(
+            core.storage,
+            core.clock,
+            actor,
+            event,
+            scope_id=scope_id,
+            admission_policy=core.config.admission_policy,
+            _prepared=prepared,
         )
-        actor = replace(actor, import_provenance=provenance)
-    return record_event(
-        core.storage,
-        core.clock,
-        actor,
-        event,
-        scope_id=scope_id,
-        admission_policy=core.config.admission_policy,
-        _prepared=prepared,
-    )
+        if receipt.disposition != "conflict":
+            return receipt
+    assert receipt is not None
+    return receipt

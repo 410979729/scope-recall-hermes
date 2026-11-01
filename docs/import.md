@@ -4,7 +4,7 @@
 reads no default home directory and does not change the source. Conversation attachments and tool messages are excluded.
 
 ```console
-scope-recall memory import --root <shared-store> --source chatgpt --from <export.zip> --source-id personal-account
+scope-recall memory import --root <shared-store> --source chatgpt --from <export.zip> --source-id personal-account --scope <scope-id>
 scope-recall memory import --root <shared-store> --source chatgpt --from <export.zip> --source-id personal-account --yes --preview-id <shown-hash> --scope <scope-id>
 ```
 
@@ -28,12 +28,16 @@ Equal text in different original occurrences remains separate evidence.
 | `claude-mem` | SQLite database containing observations and optional session summaries | Assistant summaries; confirmation required |
 | `mem0` | JSON list, `results`/`memories` list, or schema-defined structured export | Assistant summaries or unknown source; confirmation required |
 
+Malformed message authors and text blocks are refused before the source role is attested. Unknown chat structures
+are never repaired into user testimony. ZIP names must be unambiguous relative paths with no duplicate members;
+archive errors omit member names and message contents.
+
 The preview lists every occurrence's role, original origin and confirmation requirement, along with totals by original
 project and a time range. `--project <original-label>`, `--since <ISO-instant>` and `--until <ISO-instant>` select a subset.
 Time bounds include their endpoints and exclude undated records. Dates with no time zone are refused. A Markdown
 frontmatter `modified` or `updated_at` supplies its original time; a record without a source time stays undated.
 `--project-id <label>` selects the destination project for all selected records, while the preview retains their original project groups and shows each write destination. Use `--project "(unassigned)"` to select records without an original label. Project labels do not authorize a filesystem path. `--project-root <local-directory>` supplies the local project
-identity for private-mode matching when it is known. A shared store with several scopes requires `--scope`.
+identity for private-mode matching when it is known. Every confirmed import requires an explicit `--scope` and store selection. The preview hash binds their normalized paths and the private-mode project directory.
 Generated memory thread headers preserve each thread's timestamp and original working-directory label. A generated summary's identity follows its thread, including when its filename changes. Conversation titles do not supply project identity. Claude memory exports preserve their project keys; global summaries stay unassigned unless a destination is selected.
 
 All imported occurrences retain `imported` provenance. The importer attests the parsed source role separately from
@@ -48,6 +52,7 @@ or storage. Nested spans are supported; an unclosed opening tag hides the rest o
 `private_content_omitted`. Entirely private messages leave no source. Private-mode rules are checked at the original
 event time, including historical rules and undated evidence. Credential masking and deletion blocks remain enforced.
 
+The importer checks at most 32 source identities per read snapshot. Only absent identities can skip their individual version read; a concurrent conflict is rechecked against SQLite. Existing histories retain the normal version lookup.
 Each occurrence uses the normal capture transaction and releases its writer lease before the next. Derived work uses
 the existing bounded admission queues and worker model budgets. A schema upgrade or unavailable writer stops the pass;
 repeat the same approved command after it is available. Completed rows are detected as duplicates. Capture import
@@ -62,5 +67,5 @@ Hermes's native memory write notifications record the action and writer reported
 `background_review` are assistant sources. Other writers remain unknown-source edits; a reported human editor has an
 unresolved human principal. Editing a file does not establish that its contents are that person's original statement.
 
-One occurrence is bounded to 200 capture segments of 65,536 characters. Source files are bounded to 256 MiB each. ZIP conversation members share a 256 MiB uncompressed budget and are read
+One occurrence must fit the 2 MiB JSON envelope limit, including metadata and UTF-8 text, before it is split into segments of at most 65,536 characters. Source files are bounded to 256 MiB each. ZIP conversation members share a 256 MiB uncompressed budget and are read
 without extraction. Native session histories use their host transcript readers and are outside these source formats.
