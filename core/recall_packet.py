@@ -27,6 +27,7 @@ from .entity_queries import fence_entity_query
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics, RecallTimings
 from .recall_needs import asks_to_resume, unmet_needs
+from .recall_restatement import mark_restatement
 from .resume_compaction import (
     compact_episode_variants,
     next_step_provenance_supported,
@@ -162,6 +163,9 @@ def packet_item(obj: RetrievedObject, *, content: dict | None = None) -> RecallI
     entries = bounded_entry_labels(optional_json(metadata.get("entries")))
     if entries:
         item["entries"] = entries
+    restatement = optional_json(metadata.get("restatement_of"))
+    if isinstance(restatement, list) and restatement and all(isinstance(ref, str) for ref in restatement):
+        item["restatement_of"] = restatement
     return item
 
 
@@ -478,6 +482,9 @@ class RecallPacketCompiler:
         if (fresh.ref, fresh.revision) != (obj.ref, obj.revision):
             gaps.append(f"revision_changed:{obj.ref}@{obj.revision}")
             return None
+        refs = optional_json(dict(obj.metadata).get("restatement_of"))
+        if isinstance(refs, list) and fresh.content == obj.content:
+            fresh = mark_restatement(fresh, tuple(refs))
         return mark_background(fresh) if candidate.source == "background" else fresh
 
     def _retracted(self, tx, context: SearchContext) -> Callable[[int], bool] | None:
@@ -798,6 +805,7 @@ class RecallPacketRenderer:
                     ),
                     **({"occurred_at": item["occurred_at"]} if "occurred_at" in item else {}),
                     **({"entries": [dict(label) for label in item["entries"]]} if "entries" in item else {}),
+                    **({"restatement_of": list(item["restatement_of"])} if "restatement_of" in item else {}),
                 }
                 for item in packet["items"]
             ],

@@ -409,6 +409,16 @@ return an instance to its own store, detach it, rename `scope-recall.local-<date
 `scope-recall`, install the package version that store was last opened with, re-enable its
 autostart and start its gateway.
 
+## Repeated evidence in recall
+
+Automatic injection and current lookups put first-hand statements, or facts extracted from
+those statements, before matching later retellings from another entry. Matching uses the
+stored evidence references and overlap between candidate statements. A retelling with no
+additional content is omitted from the packet. A retained retelling carries `restatement_of`
+source references and its existing `entries` labels; it remains assistant evidence.
+Historical reads retain their existing ordering and content deduplication. When no matching first-hand record is retrieved, the
+assistant record remains available.
+
 ## Moving the store
 
 1. Pause the shared worker (`autostart pause`), stop every attached host and a WorkBuddy or dsh entry's resident
