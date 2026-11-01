@@ -106,8 +106,8 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
     assert row(core, source)[0] == "pending" and 0 < row(core, source)[1] < len(source.event["content"])
     # A new Core reads the durable cursor; no in-memory model/session state is required.
     core = MemoryCore(CoreConfig(ctx.binding), clock=clock)
-    # About 11.5 KB of each request is fixed overhead, so a 64 KB source takes roughly 85
-    # passes of some 800 characters; the bound only has to be above that.
+    # Schema, instructions and source metadata share the byte limit with each page.
+    # Keep the call bound fixed so growing metadata cannot silently shrink progress.
     for _ in range(120):
         if row(core, source)[0] == "done":
             break

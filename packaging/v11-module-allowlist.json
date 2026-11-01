@@ -110,6 +110,10 @@
     "core/duplicate_collapse.py",
     "core/embedding_budget.py",
     "core/endpoint_policy.py",
+    "core/entity_candidates.py",
+    "core/entity_names.py",
+    "core/entity_queries.py",
+    "core/entity_resolution.py",
     "core/episode_storage.py",
     "core/episodes.py",
     "core/events.py",
@@ -177,6 +181,7 @@
     "core/worker.py",
     "core/worker_candidates.py",
     "core/worker_consolidation.py",
+    "core/worker_entities.py",
     "core/worker_outcomes.py",
     "core/worker_projection.py",
     "core/writer_lease.py",
@@ -327,7 +332,10 @@
     "prompts/fragment.examples.json",
     "prompts/merge.examples.json",
     "prompts/repair.examples.json",
-    "prompts/support.examples.json"
+    "prompts/support.examples.json",
+    "prompts/aliases.json",
+    "prompts/entity.txt",
+    "prompts/entity.examples.json"
   ],
   "forbidden_wheel_substrings": [
     ".execution/",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from scope_recall.core.language_resources import model_consolidation_schema, pro
 from scope_recall.core.worker_consolidation import decode_consolidation_result
 
 ROOT = Path(__file__).resolve().parents[2]
-NAMES = ("consolidation", "candidate", "fragment", "repair", "support", "merge")
+NAMES = ("consolidation", "candidate", "fragment", "repair", "support", "merge", "entity")
 
 
 def messages(name, example, clause):
@@ -31,12 +32,13 @@ def messages(name, example, clause):
         system = selected + "\n\n" + base
     elif name == "fragment":
         system = base + selected
+    elif name == "entity":
+        system = selected
     else:
         system = prompt_text("support") + " " + prompt_text("merge")
     if clause:
-        rendered = clause.format(
-            schema=json.dumps(schema, ensure_ascii=False),
-            feedback=json.dumps(example["input"].get("validation_feedback")),
+        rendered = clause.replace("{schema}", json.dumps(schema, ensure_ascii=False)).replace(
+            "{feedback}", json.dumps(example["input"].get("validation_feedback"))
         )
         if rendered not in system:
             raise ValueError("ablation_clause_not_present")
@@ -49,6 +51,18 @@ def messages(name, example, clause):
 
 def valid_result(name, raw, expected, inputs):
     """Check schema and expected disposition without making a second model judgement."""
+    if name == "entity":
+        from scope_recall.core.semantic_proposals import judgement_result
+
+        decision = judgement_result(raw, inputs["candidates"])
+        actual = decision["support"] == "supported" and decision["action"] == "duplicate"
+        wanted = expected["action"] == "duplicate"
+        return (
+            actual == wanted
+            and decision["action"] in {"new", "duplicate"}
+            and (decision["target_ref"], decision["target_revision"])
+            == (expected["target_ref"], expected["target_revision"])
+        )
     if name in {"support", "merge"}:
         return json.loads(raw) == expected
     sources = tuple(
@@ -80,6 +94,9 @@ def valid_result(name, raw, expected, inputs):
         for actual, wanted in zip(value["claim_proposals"], expected["claim_proposals"], strict=True)
     ):
         return False
+    for actual, wanted in zip(value["claim_proposals"], expected["claim_proposals"], strict=True):
+        if any(actual.get(field) != wanted[field] for field in ("entity_type", "entity_names") if field in wanted):
+            return False
     sources = {(item["source_ref"], item["source_revision"]): item for item in inputs["sources"]}
     for claim in value["claim_proposals"]:
         for span in claim["evidence_spans"]:
@@ -91,6 +108,28 @@ def valid_result(name, raw, expected, inputs):
             if not 0 <= start < end <= len(source["content"]) or source["content"][start:end] != span["quote"]:
                 return False
     return value["source_refs"] == expected["source_refs"]
+
+
+def entity_metrics(outcomes):
+    """Report decision accuracy, merge precision/recall and false merges over all negative cases."""
+    positives = [r for r in outcomes if r["expected"]]
+    negatives = [r for r in outcomes if not r["expected"]]
+    true_merges = sum(r["merged"] and r.get("valid", True) for r in positives)
+    wrong_targets = sum(r["merged"] and not r.get("valid", True) for r in positives)
+    false_merges = sum(r["merged"] for r in negatives)
+    attempted = true_merges + false_merges + wrong_targets
+    return dict(
+        cases=len(outcomes),
+        positive_cases=len(positives),
+        negative_cases=len(negatives),
+        accuracy=sum(r["expected"] == r["merged"] and not r.get("error") and r.get("valid", True) for r in outcomes)
+        / len(outcomes),
+        merge_precision=true_merges / attempted if attempted else None,
+        merge_recall=true_merges / len(positives) if positives else None,
+        false_merges=false_merges,
+        wrong_target_merges=wrong_targets,
+        false_merge_rate=false_merges / len(negatives) if negatives else None,
+    )
 
 
 def main():
@@ -113,6 +152,7 @@ def main():
     config = json.loads(args.config.read_text(encoding="utf-8")) if args.config else None
     port = live_port(config, args.approved_endpoint, args.output) if config else None
     reports = []
+    entity_outcomes = []
     for name in (args.prompt,) if args.prompt else NAMES:
         examples = json.loads((ROOT / f"prompts/{name}.examples.json").read_text(encoding="utf-8"))
         removed = [None]
@@ -128,15 +168,45 @@ def main():
                     raw = (
                         json.dumps(example["expected"]) if port is None else port.propose(request, remaining_seconds=60)
                     )
-                    passed += valid_result(name, raw, example["expected"], example["input"])
+                    accepted = valid_result(name, raw, example["expected"], example["input"])
+                    passed += accepted
+                    if name == "entity" and clause is None:
+                        answer = json.loads(raw)
+                        merged = answer.get("support") == "supported" and answer.get("action") == "duplicate"
+                        entity_outcomes.append(
+                            dict(
+                                id=example["id"],
+                                language=example["language"],
+                                expected=example["same_entity"],
+                                merged=merged,
+                                valid=accepted,
+                            )
+                        )
                 except (ValueError, TypeError) as error:
                     errors.append(dict(example=index, error=type(error).__name__))
+                    if name == "entity" and clause is None:
+                        entity_outcomes.append(
+                            dict(
+                                id=example["id"],
+                                language=example["language"],
+                                expected=example["same_entity"],
+                                merged=False,
+                                error=type(error).__name__,
+                            )
+                        )
             reports.append(dict(prompt=name, removed_clause=clause, passed=passed, total=len(examples), errors=errors))
     result = dict(
         mode="fake" if args.fake else "live",
         quality_claim="workflow only" if args.fake else "format corpus only",
         results=reports,
     )
+    if entity_outcomes:
+        result["entity_metrics"] = entity_metrics(entity_outcomes)
+        result["entity_cases"] = entity_outcomes
+        result["entity_prompt_sha256"] = hashlib.sha256(prompt_text("entity").encode()).hexdigest()
+        result["entity_corpus_sha256"] = hashlib.sha256(
+            (ROOT / "prompts/entity.examples.json").read_bytes()
+        ).hexdigest()
     (args.output / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
         json.dumps(

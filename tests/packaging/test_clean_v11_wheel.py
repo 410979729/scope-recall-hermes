@@ -449,12 +449,12 @@ from scope_recall.core.source_records import StoredSource
 import scope_recall
 
 root = files("scope_recall")
-names = ("consolidation", "candidate", "fragment", "repair", "support", "merge")
+names = ("consolidation", "candidate", "fragment", "repair", "support", "merge", "entity")
 for name in names:
     assert prompt_text(name)
     examples = json.loads(root.joinpath(f"prompts/{name}.examples.json").read_text(encoding="utf-8"))
     assert examples and all("input" in item and "expected" in item for item in examples)
-for name in ("credentials", "query_time"):
+for name in ("credentials", "query_time", "aliases"):
     assert json.loads(root.joinpath(f"prompts/{name}.json").read_text(encoding="utf-8"))
 source = StoredSource("TEST-source", 1, "TEST-scope", "TEST-session", None, None,
     dict(origin="human_direct", content="I prefer deep blue.", occurred_at="2026-09-06T12:00:00Z"),
@@ -468,7 +468,7 @@ print(json.dumps({"prompts": len(names), "examples": len(names), "formatted": Tr
     result = _run_clean_child(installed_venv["python"], cwd=_outside_repo_cwd(), args=["-c", script])
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     report = json.loads(result.stdout)
-    assert report["prompts"] == report["examples"] == 6
+    assert report["prompts"] == report["examples"] == 7
     assert report["formatted"]
     assert not Path(report["package"]).is_relative_to(REPO_ROOT)
 

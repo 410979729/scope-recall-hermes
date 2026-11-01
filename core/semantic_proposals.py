@@ -66,29 +66,64 @@ def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1
             state = "unavailable_" + failure_category(failure_code)
             verdicts.append(SupportVerdict(fingerprint, state, failure_code=failure_code))
             continue
-        result = json.loads(raw)
-        if not isinstance(result, dict) or set(result) != {"support", "action", "target_ref", "target_revision"}:
-            raise ContractError("DERIVATION_INVALID", "support_verdict")
+        result = judgement_result(raw, eligible)
         state, action = result["support"], result["action"]
-        if state not in {"supported", "unsupported", "uncertain"} or action not in {"new", "update", "duplicate"}:
-            raise ContractError("DERIVATION_INVALID", "support_verdict")
-        target = next(
-            (c for c in eligible if (c["ref"], c["revision"]) == (result["target_ref"], result["target_revision"])),
-            None,
-        )
-        if (action == "new" and (result["target_ref"] is not None or result["target_revision"] is not None)) or (
-            action != "new" and target is None
-        ):
-            raise ContractError("DERIVATION_INVALID", "merge_target")
         verdicts.append(SupportVerdict(fingerprint, state, result["target_ref"], result["target_revision"], action))
     return tuple(verdicts)
 
 
-def merge_candidates(tx, proposal, scope_id, *, now):
+def judgement_result(raw, candidates):
+    """Validate the shared support/action decision against only the supplied versions."""
+    result = json.loads(raw)
+    if not isinstance(result, dict) or set(result) != {"support", "action", "target_ref", "target_revision"}:
+        raise ContractError("DERIVATION_INVALID", "support_verdict")
+    if result["support"] not in {"supported", "unsupported", "uncertain"} or result["action"] not in {
+        "new",
+        "update",
+        "duplicate",
+    }:
+        raise ContractError("DERIVATION_INVALID", "support_verdict")
+    if result["action"] != "new" and (
+        type(result["target_ref"]) is not str or type(result["target_revision"]) is not int
+    ):
+        raise ContractError("DERIVATION_INVALID", "merge_target")
+    target = next(
+        (c for c in candidates if (c["ref"], c["revision"]) == (result["target_ref"], result["target_revision"])), None
+    )
+    if (result["action"] == "new" and (result["target_ref"] is not None or result["target_revision"] is not None)) or (
+        result["action"] != "new" and target is None
+    ):
+        raise ContractError("DERIVATION_INVALID", "merge_target")
+    return result
+
+
+def _merge_alias_live(tx, alias, now):
+    """A semantic alias cannot nominate slots after either identity endpoint changes."""
+    from .aliases import entity_alias_proof
+
+    proof = (
+        tx._check()
+        .execute(
+            "SELECT 1 FROM entity_alias_proofs WHERE alias_ref=? AND alias_revision=?", (alias.ref, alias.revision)
+        )
+        .fetchone()
+    )
+    if proof is None:
+        return True
+    versions = tx.claims.versions(alias.payload["alias"]["target_ref"])
+    target = next((v for v in versions if v.revision == v.current_revision), None)
+    return target is not None and entity_alias_proof(tx, alias, target, now)
+
+
+def merge_candidates(tx, proposal, scope_id, *, now, entity=None, vector_hits=()):
     """Find same-slot candidates by normalized components and verified aliases in this audience."""
     from .claims import bind_claim_subject, evidence_refs, valid_at
     from .fact_identity import normalize_fact_component
 
+    if entity is not None:
+        from .entity_candidates import entity_candidates
+
+        return entity_candidates(tx, entity, now=now, vector_hits=vector_hits)
     roots = tx.claims.roots(evidence_refs(proposal))
     bound, _, issue = bind_claim_subject(proposal, roots, semantic_support=True)
     if issue:
@@ -98,7 +133,13 @@ def merge_candidates(tx, proposal, scope_id, *, now):
     subjects = {subject}
     for ref in tx.claims.merge_lookup(scope_id, alias_name=proposal["subject"], instant=now):
         alias = next((v for v in tx.claims.versions(ref) if v.revision == v.current_revision), None)
-        if alias and alias.state == "active" and alias.scope_id == scope_id and valid_at(alias, now, historical=False):
+        if (
+            alias
+            and alias.state == "active"
+            and alias.scope_id == scope_id
+            and valid_at(alias, now, historical=False)
+            and _merge_alias_live(tx, alias, now)
+        ):
             subjects.add(normalize_fact_component(alias.payload["subject"]))
     found = []
     refs = tx.claims.merge_lookup(

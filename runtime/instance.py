@@ -872,7 +872,7 @@ class _Bounded:
 
 
 class _BoundedConsolidation(_Bounded):
-    methods = ("propose",)
+    methods = ("propose", "judge")
 
 
 class _BoundedCandidate(_Bounded):

@@ -55,12 +55,10 @@ def _model_source_principal(source) -> dict[str, str] | None:
     return None
 
 
-#: Conservative UTF-8 byte ceiling for one consolidation request. About 11.5 KB
-#: of every request is fixed overhead (the inlined result schema plus the
-#: instruction prose), so the content actually reaches the model through a far
-#: smaller window than this number suggests. Callers that carry a different
-#: fixed overhead pass their own ceiling rather than silently appending past
-#: this one.
+#: Conservative UTF-8 byte ceiling for one consolidation request. The inlined
+#: result schema, instructions and source envelope share it with the raw text.
+#: Callers with a different fixed overhead pass their own ceiling rather than
+#: appending beyond this one.
 CONSOLIDATION_INPUT_BUDGET = 16000
 
 

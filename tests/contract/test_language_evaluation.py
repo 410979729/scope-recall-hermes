@@ -177,7 +177,9 @@ def test_successful_work_with_discarded_proposals_counts_as_validation_failure(e
 
     case = dict(id="TEST-dropped", text="I prefer blue.", origin="human_direct", gold_active=True)
     row = evaluator.run_case(case, tmp_path / "TEST-case", evaluator.PromptPort(Partial(recording), None))
-    assert not any(receipt["error"] for receipt in row["receipts"])
+    # Work superseded by a newer revision (an entity projection queued before promotion) is closed as
+    # obsolete with a reason code; it is not failed work.
+    assert not any(receipt["error"] for receipt in row["receipts"] if receipt["disposition"] != "obsolete")
     assert row["validation_failed"] == bool(discard_count)
     assert row["discarded_proposals"] == discard_count
     summary = evaluator.summarize([row])
