@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -108,7 +109,8 @@ def test_P08_gem2_old_space_rejected_and_explicit_threshold_tolerates_float_roun
         )[1]
         == "embedding_space_mismatch"
     )
-    assert RecallPolicy(vector_threshold=None).vector_admission(candidate)[1] == "vector_threshold_unconfigured"
+    default = RecallPolicy()
+    assert default.vector_admission(replace(candidate, vector_score=default.vector_threshold)) == (True, None)
 
 
 def test_P08_gem2_vector_rejects_scores_outside_cosine_domain():
@@ -349,3 +351,24 @@ def test_P08_an_openai_route_may_name_the_field_that_carries_the_width():
                 dialect="openai",
                 dimensions_field=bad,
             )
+
+
+def test_builtin_space_admits_vectors_without_an_explicit_threshold():
+    candidate = CandidateRef(
+        "event",
+        "event-TEST-vector",
+        1,
+        "vector",
+        vector_id="TEST-vector",
+        embedding_space=SPACE_ID,
+        vector_score=0.71,
+    )
+    assert RecallPolicy(vector_threshold=None).vector_threshold == 0.70
+    assert RecallPolicy(vector_threshold=None).vector_admission(candidate) == (True, None)
+    assert RecallPolicy(vector_threshold=0.75).vector_admission(candidate) == (False, "vector_below_threshold")
+    assert RecallPolicy(vector_threshold=0.675).vector_admission(replace(candidate, vector_score=0.69)) == (True, None)
+    other = replace(candidate, embedding_space="TEST-other-space")
+    assert RecallPolicy(vector_threshold=None, embedding_space_id="TEST-other-space").vector_admission(other) == (
+        False,
+        "vector_threshold_unconfigured",
+    )
