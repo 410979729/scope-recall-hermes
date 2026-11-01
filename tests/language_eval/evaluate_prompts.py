@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from evaluate import live_port
 from evaluate import prompt_clauses as clauses
-from scope_recall.contracts import validate_payload
-from scope_recall.core.language_resources import prompt_text
+from scope_recall.core.language_resources import model_consolidation_schema, prompt_text
+from scope_recall.core.worker_consolidation import decode_consolidation_result
 
 ROOT = Path(__file__).resolve().parents[2]
 NAMES = ("consolidation", "candidate", "fragment", "repair", "support", "merge")
@@ -17,7 +18,9 @@ NAMES = ("consolidation", "candidate", "fragment", "repair", "support", "merge")
 
 def messages(name, example, clause):
     """Build the same prompt composition used by extraction and support requests."""
-    schema = json.loads((ROOT / "contracts/consolidation_result.schema.json").read_text(encoding="utf-8"))
+    schema = model_consolidation_schema(
+        candidate_kind=example["input"]["candidate"]["kind"] if name == "candidate" else None
+    )
     base = prompt_text("consolidation").format(schema=json.dumps(schema, ensure_ascii=False))
     selected = prompt_text(name)
     if name == "consolidation":
@@ -49,7 +52,17 @@ def valid_result(name, raw, expected, inputs):
     value = json.loads(raw)
     if name in {"support", "merge"}:
         return value == expected
-    value = validate_payload("consolidation_result", value)
+    sources = tuple(
+        SimpleNamespace(
+            ref=item["source_ref"],
+            revision=item["source_revision"],
+            event={"content": item["content"]},
+            consolidation_window=SimpleNamespace(**item["source_window"]) if item.get("source_window") else None,
+        )
+        for item in inputs["sources"]
+    )
+    candidate = SimpleNamespace(payload=inputs["candidate"]) if name == "candidate" else None
+    value = decode_consolidation_result(raw, sources, episode_ref=inputs.get("episode_ref"), candidate=candidate)
     if len(value["claim_proposals"]) != len(expected["claim_proposals"]):
         return False
     fields = (
