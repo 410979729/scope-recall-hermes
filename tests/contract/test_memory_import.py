@@ -1,6 +1,7 @@
 """Synthetic source imports keep permission separate from evidence authority."""
 
 import json
+import os
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -798,3 +799,238 @@ def test_segmented_memory_material_keeps_its_group_admission(store, source_kind)
     assert receipt.durability == "persisted"
     assert set(receipt.admission) == {"admission_source_only:import_requires_confirmation"}
     assert any(app.source(ctx, ref.ref, ref.revision).event.get("segment") for ref in receipt.event_refs)
+
+
+def _host_import_args(tmp_path):
+    from scope_recall.adapters.clients.config import _installation_id
+
+    home = tmp_path / "TEST-host"
+    home.mkdir()
+    config = home / "codex-installation.json"
+    destinations = [tmp_path / name for name in ("TEST-store-a", "TEST-store-b")]
+    for directory in destinations:
+        directory.mkdir()
+        (directory / "memory.sqlite3").write_bytes(b"TEST unopened synthetic database")
+    payload = dict(
+        schema_version="scope-recall.codex-installation.v1",
+        installation_id=_installation_id(config),
+        agent_id="TEST-agent",
+        data_directory=str(destinations[0]),
+        scope_ids=["TEST-scope"],
+        audience_scopes={key: "TEST-scope" for key in ("owner_private", "project", "shared")},
+        allow_owner_private=True,
+        project_roots={str(tmp_path): "TEST-scope"},
+        test_mode=False,
+    )
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    args = [
+        "import",
+        "--source",
+        "chatgpt",
+        "--from",
+        str(SAMPLES / "chatgpt"),
+        "--source-id",
+        "TEST-account",
+        "--host",
+        "codex",
+        "--instance-root",
+        str(home),
+        "--scope",
+        "TEST-scope",
+        "--json",
+    ]
+    return args, config, payload, destinations
+
+
+def test_host_config_redirect_invalidates_approval_before_open(tmp_path, monkeypatch, capsys):
+    from scope_recall.maintenance import memory
+
+    args, config, payload, destinations = _host_import_args(tmp_path)
+    monkeypatch.setattr(memory, "open_management", lambda *a, **kw: pytest.fail("must not open a redirected store"))
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: pytest.fail("preview must not read SQLite"))
+    assert memory.main(args) == 0
+    preview = json.loads(capsys.readouterr().out)["data"]["import_preview"]
+    before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    payload["data_directory"] = str(destinations[1])
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    assert memory.main(args + ["--yes", "--preview-id", preview["preview_id"]]) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "VERSION_CONFLICT"
+    assert preview["target"]["data_directory"] == os.path.normcase(str(destinations[0].resolve()))
+    after = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert {k: v for k, v in before.items() if k != str(config.relative_to(tmp_path))} == {
+        k: v for k, v in after.items() if k != str(config.relative_to(tmp_path))
+    }
+
+
+def test_host_binding_is_rechecked_before_initialize_or_registration(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from scope_recall.maintenance import memory
+
+    args, _config, _payload, destinations = _host_import_args(tmp_path)
+    assert memory.main(args) == 0
+    preview = json.loads(capsys.readouterr().out)["data"]["import_preview"]
+    core = SimpleNamespace(
+        config=SimpleNamespace(binding=SimpleNamespace(data_directory=destinations[1]), write_timeout_seconds=1),
+        storage=SimpleNamespace(initialize=lambda **kw: pytest.fail("cannot initialize changed binding")),
+    )
+    monkeypatch.setattr(memory, "open_management", lambda *a, **kw: SimpleNamespace(core=core))
+    assert memory.main(args + ["--yes", "--preview-id", preview["preview_id"]]) == 2
+    assert json.loads(capsys.readouterr().out)["field"] == "import_target"
+
+
+def test_mixed_chatgpt_export_keeps_transcripts_and_context_unconfirmed(tmp_path):
+    path = SAMPLES / "chatgpt_mixed"
+    plan = preview_import("chatgpt", path, source_id="TEST-account")
+    assert plan["count"] == 5 and plan["skipped"] == 2
+    ctx = context(tmp_path / "TEST-mixed-production", test_mode=False)
+    app = MemoryCore(CoreConfig(ctx.binding))
+    app.initialize()
+    for item in plan["_records"]:
+        original = item.key == "TEST-plain"
+        assert (item.original_origin == "human_direct") is original
+        receipt = import_record(app, ctx, item, source="chatgpt", source_id="TEST-account", scope_id="TEST-scope")
+        assert receipt.durability == "persisted"
+        if not original:
+            from scope_recall.core.evidence_question import evidence_text, unanswerable_reason
+
+            assert receipt.admission == ("admission_source_only:import_requires_confirmation",)
+            saved = app.source(ctx, receipt.event_refs[0].ref, 1)
+            assert unanswerable_reason({"kind": "fact"}, [evidence_text(saved)]) == "no_authoritative_evidence"
+    items = {item["key"]: item for item in plan["items"]}
+    assert items["TEST-audio"]["content"] == "TEST machine transcript"
+    assert items["TEST-context"]["content"] == "TEST profile\nTEST custom instructions"
+    assert items["TEST-plain"]["review_required"] is False
+    assert all(items[key]["review_required"] for key in ("TEST-audio", "TEST-context", "TEST-transcript"))
+    assert "TEST-asset" not in json.dumps({k: v for k, v in plan.items() if k != "_records"})
+
+
+@pytest.mark.parametrize("compression", [8, 12, 14])
+def test_damaged_compressed_stream_returns_fixed_cli_error(tmp_path, monkeypatch, capsys, compression):
+    import struct
+    import zipfile
+
+    from scope_recall.maintenance import memory
+
+    path = tmp_path / "TEST-damaged-stream.zip"
+    with zipfile.ZipFile(path, "w", compression=compression) as archive:
+        archive.writestr(
+            "export/hidden-canary/conversations.json", (SAMPLES / "chatgpt" / "conversations.json").read_bytes()
+        )
+    data = bytearray(path.read_bytes())
+    name_len, extra_len = struct.unpack_from("<HH", data, 26)
+    offset = 30 + name_len + extra_len
+    # DEFLATE's reserved block type, and invalid bzip2/LZMA headers, preserve
+    # the ZIP envelope while forcing the selected decompressor to reject it.
+    if compression == 8:
+        data[offset] = (data[offset] & ~7) | 7
+    elif compression == 12:
+        data[offset : offset + 3] = b"BAD"
+    else:
+        data[offset + 4] = 255
+    path.write_bytes(data)
+    monkeypatch.setattr(memory, "open_management", lambda *a, **kw: pytest.fail("cannot open for bad input"))
+    assert (
+        memory.main(["import", "--source", "chatgpt", "--from", str(path), "--source-id", "TEST-account", "--json"])
+        == 2
+    )
+    output = capsys.readouterr()
+    assert "hidden-canary" not in output.out + output.err
+    payload = json.loads(output.out)
+    assert (payload["code"], payload["field"]) == ("INPUT_INVALID", "import_archive")
+
+
+def test_import_target_aliases_have_one_confirmation_identity(tmp_path, monkeypatch):
+    import argparse
+    import os
+
+    from scope_recall.maintenance.memory_import import _target
+
+    real = tmp_path / "TEST-real"
+    real.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    def preview(path):
+        target = _target(
+            argparse.Namespace(
+                root=str(path), host=None, instance_root=None, scope="TEST-scope", project_root=str(path)
+            )
+        )
+        return preview_import("chatgpt", SAMPLES / "chatgpt", source_id="TEST-account", target=target)["preview_id"]
+
+    expected = preview(real)
+    assert preview(Path("TEST-real")) == expected
+    assert preview(tmp_path / "TEST-other") != expected
+    if os.name == "nt":
+        import _winapi
+
+        assert preview(Path(str(real).upper())) == expected
+        alias = tmp_path / "TEST-junction"
+        _winapi.CreateJunction(str(real), str(alias))
+        try:
+            assert preview(alias) == expected
+        finally:
+            alias.rmdir()
+        other = tmp_path / "TEST-other-real"
+        other.mkdir()
+        other_alias = tmp_path / "TEST-other-junction"
+        _winapi.CreateJunction(str(other), str(other_alias))
+        try:
+            assert preview(other_alias) != expected
+        finally:
+            other_alias.rmdir()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        {"content_type": "audio_transcription", "text": ["hidden-canary"]},
+        {"content_type": "user_editable_context", "user_profile": ["hidden-canary"]},
+        {"content_type": "user_editable_context", "user_instructions": None},
+        {"content_type": "real_time_user_audio_video_asset_pointer", "audio_asset_pointer": "hidden-canary"},
+        {"content_type": "real_time_user_audio_video_asset_pointer", "frames_asset_pointers": "hidden-canary"},
+        {"content_type": "image_asset_pointer", "asset_pointer": ["hidden-canary"]},
+    ],
+)
+def test_known_chatgpt_material_requires_valid_text_and_asset_shapes(tmp_path, content):
+    document = [
+        {
+            "id": "TEST-thread",
+            "mapping": {
+                "node": {
+                    "message": {
+                        "id": "TEST-message",
+                        "author": {"role": "user"},
+                        "content": content,
+                    }
+                }
+            },
+        }
+    ]
+    path = tmp_path / "TEST-malformed-known.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError) as failure:
+        preview_import("chatgpt", path, source_id="TEST-account")
+    assert "hidden-canary" not in str(failure.value)
+
+
+def test_archive_eof_returns_fixed_cli_error(tmp_path, monkeypatch, capsys):
+    import zipfile
+
+    from scope_recall.maintenance import memory
+
+    path = tmp_path / "TEST-eof.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("conversations.json", "[]")
+
+    def interrupted(*args, **kwargs):
+        raise EOFError("hidden-canary")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", interrupted)
+    assert (
+        memory.main(["import", "--source", "chatgpt", "--from", str(path), "--source-id", "TEST-account", "--json"])
+        == 2
+    )
+    output = capsys.readouterr()
+    assert "hidden-canary" not in output.out + output.err
+    assert json.loads(output.out)["field"] == "import_archive"

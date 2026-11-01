@@ -208,7 +208,10 @@ def render(payload, *, as_json):
             plan["items"],
             ("key", "project", "write_project", "occurred_at", "role", "original_origin", "review_required"),
         )
-        print(f"Source: {plan['source']}; records: {plan['count']}; time: {plan['time_range']}")
+        print(
+            f"Source: {plan['source']}; records: {plan['count']}; skipped: {plan['skipped']}"
+            f"; time: {plan['time_range']}"
+        )
         print(f"Projects: {plan['projects']}; preview: {plan['preview_id']}")
         print("Target: " + json.dumps(plan["target"], ensure_ascii=False))
         if not data["applied"]:
@@ -255,7 +258,7 @@ def main(argv=None):
             from .import_progress import run_import
             from .memory_import import execute_import
 
-            data = execute_import(args, open_store=open_management, run=run_import)
+            data = execute_import(args, open_store=open_management, resolve_store=store_to_restore, run=run_import)
         else:
             api = open_management(args, initialize=args.action != "secrets")
             data = execute(api, args)

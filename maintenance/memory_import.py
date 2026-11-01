@@ -66,7 +66,8 @@ def preview_import(
     after, before = _instant(timestamp(since)), _instant(timestamp(until))
     if after and before and after > before:
         raise ContractError("INPUT_INVALID", "import_time_range")
-    loaded = read_source(source, path)
+    skipped = Counter()
+    loaded = read_source(source, path, skipped=skipped)
     records = tuple(item for item in loaded if _selected(item, project, after, before))
     items = [_public_item(item, destination_project) for item in records]
     times = sorted(
@@ -79,6 +80,7 @@ def preview_import(
         destination_project=destination_project,
         target=target,
         count=len(items),
+        skipped=sum(skipped.values()),
         projects=dict(Counter(item.project or "(unassigned)" for item in records)),
         time_range=dict(
             since=times[0] if times else None,
@@ -107,11 +109,10 @@ def apply_import(core, context, plan, *, preview_id: str | None, scope_id: str, 
     if [_public_item(item, plan.get("destination_project")) for item in plan["_records"]] != plan["items"]:
         raise ContractError("VERSION_CONFLICT", "import_preview")
     target = plan.get("target")
+    if target is not None:
+        _check_target_directory(core, target)
     if target is not None and (
-        target["scope"] != scope_id
-        or target["root"] is not None
-        and target["root"] != _local_path(core.config.binding.data_directory)
-        or target["project_root"] != _local_path(context.project_root)
+        target["scope"] != scope_id or target["project_root"] != _local_path(context.project_root)
     ):
         raise ContractError("VERSION_CONFLICT", "import_target")
     if plan.get("destination_project"):
@@ -197,22 +198,37 @@ def _local_path(value):
     return os.path.normcase(str(Path(value).resolve())) if value is not None else None
 
 
-def _target(args):
-    """Canonical CLI selection, computed without opening a store or reading host data."""
+def _target(args, *, resolve_store=None):
+    """Resolve an explicit store's configuration without opening its database."""
+    root = _local_path(args.root)
+    instance_root = _local_path(args.instance_root)
+    directory = root
+    if root is None and args.host and instance_root:
+        if resolve_store is None:
+            raise ContractError("INPUT_INVALID", "import_target")
+        binding = resolve_store(host=args.host, instance_root=Path(instance_root), root=None)
+        directory = _local_path(binding.data_directory)
     return dict(
-        root=_local_path(args.root),
+        root=root,
         host=args.host,
-        instance_root=_local_path(args.instance_root),
+        instance_root=instance_root,
+        data_directory=directory,
         scope=args.scope,
         project_root=_local_path(args.project_root),
     )
 
 
-def execute_import(args, *, open_store, run=apply_import):
+def _check_target_directory(core, target):
+    """Catch configuration redirects before initialization or entry registration."""
+    if target["data_directory"] != _local_path(core.config.binding.data_directory):
+        raise ContractError("VERSION_CONFLICT", "import_target")
+
+
+def execute_import(args, *, open_store, resolve_store=None, run=apply_import):
     """Preview before binding any destination; only explicit approval opens a writable store."""
     from scope_recall.core.store_upgrade import upgrade_in_progress
 
-    target = _target(args)
+    target = _target(args, resolve_store=resolve_store)
     plan = preview_import(
         args.source,
         args.source_path,
@@ -237,6 +253,7 @@ def execute_import(args, *, open_store, run=apply_import):
     # for a running upgrade. Reads and preview require no such wait.
     api = open_store(args, initialize=False)
     core = api.core
+    _check_target_directory(core, target)
     if upgrade_in_progress(core.config.binding.data_directory):
         raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_in_progress")
     core.storage.initialize(remaining_seconds=core.config.write_timeout_seconds)

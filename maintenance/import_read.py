@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import lzma
 import math
 import stat
 import unicodedata
 import zipfile
+import zlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +17,11 @@ from pathlib import Path
 from scope_recall.contracts import ContractError
 
 MAX_FILE_BYTES = 256 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class SkippedImport:
+    """One validated text-free occurrence, counted without retaining its payload."""
 
 
 def timestamp(value, *, milliseconds=False) -> str | None:
@@ -85,5 +93,17 @@ def _archive_documents(path, prefixes):
         with zipfile.ZipFile(BytesIO(read_bytes(path))) as archive:
             for member in _archive_members(archive, prefixes):
                 yield json.loads(archive.read(member))
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError, ValueError, OSError):
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        RuntimeError,
+        NotImplementedError,
+        ValueError,
+        OSError,
+        EOFError,
+        zlib.error,
+        lzma.LZMAError,
+    ):
+        # bzip2 reports invalid streams as OSError; the other decompressors
+        # have separate exception types. None may escape with archive data.
         raise ContractError("INPUT_INVALID", "import_archive") from None

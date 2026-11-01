@@ -7,7 +7,7 @@ from pathlib import Path
 from scope_recall.contracts import ContractError
 from scope_recall.core.memory_import import ImportRecord
 
-from .import_read import json_documents, timestamp
+from .import_read import SkippedImport, json_documents, timestamp
 
 
 def _conversations(document):
@@ -22,36 +22,74 @@ def _identity(value):
     return value
 
 
+def _text_field(content, name):
+    value = content.get(name)
+    if not isinstance(value, str):
+        raise ContractError("INPUT_INVALID", "import_chatgpt_text")
+    return value
+
+
+def _asset_id(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError("INPUT_INVALID", "import_chatgpt_asset")
+
+
+def _realtime_asset(content):
+    audio = content.get("audio_asset_pointer")
+    frames = content.get("frames_asset_pointers", [])
+    video = content.get("video_container_asset_pointer")
+    if not isinstance(frames, list) or not (audio or frames or video):
+        raise ContractError("INPUT_INVALID", "import_chatgpt_asset")
+    if audio is not None:
+        if not isinstance(audio, dict) or audio.get("content_type") != "audio_asset_pointer":
+            raise ContractError("INPUT_INVALID", "import_chatgpt_asset")
+        _asset_id(audio.get("asset_pointer"))
+    if video is not None:
+        _asset_id(video)
+    for frame in frames:
+        _asset_id(frame)
+
+
+def _chatgpt_part(part):
+    if isinstance(part, str):
+        return part, False
+    if not isinstance(part, dict):
+        raise ContractError("INPUT_INVALID", "import_chatgpt_part")
+    kind = part.get("content_type")
+    if kind == "audio_transcription":
+        # Machine transcription is material, never the user's typed wording.
+        return _text_field(part, "text"), True
+    if kind in ("audio_asset_pointer", "image_asset_pointer"):
+        _asset_id(part.get("asset_pointer"))
+    elif kind == "real_time_user_audio_video_asset_pointer":
+        _realtime_asset(part)
+    else:
+        raise ContractError("INPUT_INVALID", "import_chatgpt_part")
+    return "", False
+
+
 def _chatgpt_text(content):
-    if (
-        not isinstance(content, dict)
-        or not isinstance(content.get("content_type"), str)
-        or content["content_type"] not in {"text", "code", "multimodal_text"}
-    ):
+    if not isinstance(content, dict) or not isinstance(content.get("content_type"), str):
         raise ContractError("INPUT_INVALID", "import_chatgpt_content")
-    if content["content_type"] == "code":
-        if not isinstance(content.get("text"), str):
-            raise ContractError("INPUT_INVALID", "import_chatgpt_code")
-        return content["text"]
+    kind = content["content_type"]
+    if kind == "user_editable_context":
+        # Profile/instructions are supplied context, not statements in this
+        # conversation. Keep them unconfirmed even when the author is user.
+        fields = [content[name] for name in ("user_profile", "user_instructions") if name in content]
+        if not fields or any(not isinstance(field, str) for field in fields):
+            raise ContractError("INPUT_INVALID", "import_chatgpt_context")
+        return "\n".join(fields), True
+    if kind == "code":
+        return _text_field(content, "text"), False
+    if kind not in {"text", "multimodal_text"}:
+        return _chatgpt_part(content)
     parts = content.get("parts")
-    if not isinstance(parts, list):
+    if not isinstance(parts, list) or kind == "text" and any(not isinstance(part, str) for part in parts):
         raise ContractError("INPUT_INVALID", "import_chatgpt_parts")
-    text = []
-    for part in parts:
-        if isinstance(part, str):
-            text.append(part)
-        elif (
-            content["content_type"] == "multimodal_text"
-            and isinstance(part, dict)
-            and isinstance(part.get("content_type"), str)
-            and part["content_type"] in {"image_asset_pointer", "audio_asset_pointer"}
-            and isinstance(part.get("asset_pointer"), str)
-            and bool(part["asset_pointer"])
-        ):
-            continue
-        else:
-            raise ContractError("INPUT_INVALID", "import_chatgpt_part")
-    return "\n".join(text)
+    values = [_chatgpt_part(part) for part in parts]
+    # A mixed message containing a transcription is conservatively material
+    # as a whole; no machine-generated span acquires human authority.
+    return "\n".join(text for text, _material in values if text), any(material for _text, material in values)
 
 
 def _claude_text(message):
@@ -93,17 +131,19 @@ def read_chatgpt(path: Path):
                     raise ContractError("INPUT_INVALID", "import_chatgpt_role")
                 if role not in {"user", "assistant"}:
                     continue
-                text = _chatgpt_text(message.get("content"))
+                key = _identity(message.get("id") or node_key)
+                text, material = _chatgpt_text(message.get("content"))
                 if not text.strip():
+                    yield SkippedImport()
                     continue
                 yield ImportRecord(
-                    _identity(message.get("id") or node_key),
+                    key,
                     text,
                     "user" if role == "user" else "assistant",
                     timestamp(message.get("create_time")),
                     chat.get("project_id"),
                     session,
-                    "human_direct" if role == "user" else "assistant_visible",
+                    "origin_unknown" if material else "human_direct" if role == "user" else "assistant_visible",
                 )
 
 

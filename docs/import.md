@@ -9,7 +9,8 @@ scope-recall memory import --root <shared-store> --source chatgpt --from <export
 ```
 
 For an installation with its own store, use `--host <host> --instance-root <home>` instead of `--root`.
-The preview needs no store access. Writing requires the normal local owner store selection and an exact preview hash.
+The preview reads the selected installation configuration to bind its actual data directory, without opening the database.
+Writing rechecks that directory before initialization or entry registration and requires an exact preview hash.
 A changed source, actor, project or time selection requires another review. Omitting the confirmed second command
 cancels the import without touching the destination database.
 
@@ -27,6 +28,11 @@ Equal text in different original occurrences remains separate evidence.
 | `claude` | conversations or memories JSON, an export directory or ZIP | Human messages retain verified human origin; assistant messages and memory summaries require confirmation |
 | `claude-mem` | SQLite database containing observations and optional session summaries | Assistant summaries; confirmation required |
 | `mem0` | JSON list, `results`/`memories` list, or schema-defined structured export | Assistant summaries or unknown source; confirmation required |
+
+Machine audio transcriptions and user-editable profiles/instructions are unconfirmed material, including when their
+author is user. A message mixing typed text with a transcription stays unconfirmed as a whole. Validated image, audio
+and real-time audio/video pointers without text are skipped; the preview counts all validated text-free source
+occurrences before project/time selection. Unknown structures are refused with content-free errors.
 
 Malformed message authors and text blocks are refused before the source role is attested. Unknown chat structures
 are never repaired into user testimony. ZIP names must be unambiguous relative paths with no duplicate members;
