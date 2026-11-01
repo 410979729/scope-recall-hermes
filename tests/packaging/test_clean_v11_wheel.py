@@ -461,7 +461,7 @@ source = StoredSource("TEST-source", 1, "TEST-scope", "TEST-session", None, None
     "0" * 64, False)
 messages = consolidation_messages((source,), budget=64000)
 assert json.loads(messages[-1]["content"])["sources"][0]["content"] == "I prefer deep blue."
-assert "Unicode" in messages[0]["content"]
+assert "{schema}" not in messages[0]["content"] and '"properties"' in messages[0]["content"]
 print(json.dumps({"prompts": len(names), "examples": len(names), "formatted": True,
                   "package": str(Path(scope_recall.__file__).resolve())}))
 """
