@@ -24,6 +24,7 @@ from scope_recall.core.adoption import (
     decode_selection,
     fragments,
 )
+from scope_recall.core.semantic_proposals import judgement_result, support_messages
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -95,7 +96,12 @@ def evaluate(case, config, stopped, *, endpoint):
             confirmation=owner, fragments=parts, assistant=SimpleNamespace(ref="TEST-assistant", revision=1)
         )
         summary = call(decision_messages(snapshot, selection), "decision")
-        decision_proposal(snapshot, selection, summary)
+        proposal = decision_proposal(snapshot, selection, summary)
+        assistant = SimpleNamespace(ref="TEST-assistant", revision=1, event={"content": case["assistant"]})
+        support = call(support_messages(proposal, (owner, assistant), adoption=True), "support")
+        verdict = judgement_result(support, ())
+    else:
+        verdict = None
     return dict(
         id=case["id"],
         confirmation=case["confirmation"],
@@ -105,6 +111,7 @@ def evaluate(case, config, stopped, *, endpoint):
         scope_and_fragments_correct=exact,
         selection=selection,
         calls=records,
+        support=verdict,
     )
 
 
@@ -114,7 +121,7 @@ def main():
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--approved-endpoint", required=True, type=str)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--concurrency", type=int, choices=range(1, 5), default=1)
+    parser.add_argument("--concurrency", type=int, choices=range(1, 3), default=1)
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))["chat"]
     if config["endpoint"] != args.approved_endpoint:

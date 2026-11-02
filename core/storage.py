@@ -48,6 +48,7 @@ from .schema import (
     upgrade_1116,
     upgrade_1117,
     upgrade_1118,
+    upgrade_1119,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -79,6 +80,7 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1116,
             upgrade_1117,
             upgrade_1118,
+            upgrade_1119,
         ),
         strict=True,
     )

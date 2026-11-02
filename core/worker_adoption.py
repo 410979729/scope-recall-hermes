@@ -1,4 +1,4 @@
-"""Prepare adopted decisions outside the consolidation write transaction."""
+"""Stage adopted decisions outside write transactions and publish with source-bound support."""
 
 from __future__ import annotations
 
@@ -8,45 +8,69 @@ from ..contracts import ContractError
 from . import private
 from .adoption import adoption_messages, decision_messages, decision_proposal, decode_selection
 from .adoption_storage import PreparedAdoption, adoption_context, binding_reason, record_binding, source_reason
+from .evidence_support import SupportVerdict, support_fingerprint, using_support
 from .mutate import apply_claim_frames, validate_claims
+from .semantic_proposals import prepare_support
 
 
-def _prepare_one(storage, context, snapshot, judge, clock, deadline):
-    """Check source visibility and privacy immediately before either outbound stage."""
-    sources = (snapshot.confirmation, snapshot.assistant)
-    with storage.read(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+def advance_adoption(storage, context, snapshot, state, judge, *, clock, remaining_seconds):
+    """Run at most one model stage; return a checkpoint and an optional publishable result.
+
+    The same transition serves durable worker passes and bounded synchronous callers.
+    A failed recognition raises; only a decoded adoption can become a review item.
+    """
+    selection = state.get("selection")
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         reason = source_reason(tx, snapshot)
+        if reason is None and selection is not None:
+            reason = binding_reason(tx, snapshot, selection)
     if reason:
-        return PreparedAdoption(snapshot, reason=reason)
+        if selection is None:
+            raise ContractError("SOURCE_MISSING", "adoption_source")
+        return dict(stage="done"), PreparedAdoption(snapshot, selection, reason=reason)
+    stage = state["stage"]
+    if stage == "publish":
+        support = SupportVerdict(**state["support"])
+        return dict(stage="done"), PreparedAdoption(snapshot, selection, state["proposal"], support=support)
+    sources = (snapshot.confirmation, snapshot.assistant)
     if private.outbound_blocked(storage, clock, context, sources=sources):
         raise ContractError("ACCESS_DENIED", "private_mode")
-    try:
-        locator = adoption_messages(snapshot.confirmation, snapshot.fragments)
-    except ContractError:
-        return PreparedAdoption(snapshot, reason="locator_input_budget")
-    raw = judge(
-        locator,
-        remaining_seconds=max(0.001, deadline - time.monotonic()),
-    )
-    try:
+    if stage == "locate":
+        raw = judge(adoption_messages(snapshot.confirmation, snapshot.fragments), remaining_seconds=remaining_seconds)
         selection = decode_selection(raw, snapshot.fragments)
-    except (ContractError, ValueError, TypeError):
-        return PreparedAdoption(snapshot, reason="selection_unbound")
-    if selection is None:
-        return None
-    with storage.read(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
-        reason = binding_reason(tx, snapshot, selection)
-    if reason:
-        return PreparedAdoption(snapshot, selection, reason=reason)
-    if private.outbound_blocked(storage, clock, context, sources=sources):
-        raise ContractError("ACCESS_DENIED", "private_mode")
-    raw = judge(decision_messages(snapshot, selection), remaining_seconds=max(0.001, deadline - time.monotonic()))
-    proposal = decision_proposal(snapshot, selection, raw)
-    return PreparedAdoption(snapshot, selection, proposal)
+        if selection is None:
+            return dict(stage="done"), None
+        with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+            reason = binding_reason(tx, snapshot, selection)
+        if reason:
+            return dict(stage="done"), PreparedAdoption(snapshot, selection, reason=reason)
+        return dict(stage="describe", selection=selection), None
+    if stage == "describe":
+        try:
+            messages = decision_messages(snapshot, selection)
+        except ContractError as exc:
+            if exc.field != "adoption_input_budget":
+                raise
+            return dict(stage="done"), PreparedAdoption(snapshot, selection, reason="decision_input_budget")
+        raw = judge(messages, remaining_seconds=remaining_seconds)
+        proposal = decision_proposal(snapshot, selection, raw)
+        return dict(state, stage="support", proposal=proposal), None
+    if stage != "support":
+        raise ContractError("DERIVATION_INVALID", "adoption_stage")
+    verdict = prepare_support(
+        dict(claim_proposals=[state["proposal"]]), sources, judge, remaining_seconds=remaining_seconds, adoption=True
+    )[0]
+    if verdict.failure_code:
+        raise ContractError("STORAGE_UNAVAILABLE", verdict.failure_code)
+    if verdict.state.startswith("unavailable"):
+        raise ContractError("STORAGE_UNAVAILABLE", "adoption_support_unavailable")
+    from dataclasses import asdict
+
+    return dict(state, stage="publish", support=asdict(verdict)), None
 
 
 def prepare_adoptions(storage, context, sources, judge, *, clock, remaining_seconds=1.0):
-    """Select adjacent owner replies without changing ordinary consolidation input."""
+    """Prepare adjacent owner choices with the same transitions used by worker checkpoints."""
     if judge is None:
         return ()
     deadline = time.monotonic() + remaining_seconds
@@ -54,19 +78,38 @@ def prepare_adoptions(storage, context, sources, judge, *, clock, remaining_seco
         snapshots = tuple(s for source in sources if (s := adoption_context(tx, source)) is not None)
     results = []
     for snapshot in snapshots:
-        result = _prepare_one(storage, context, snapshot, judge, clock, deadline)
-        if result is not None:
-            results.append(result)
+        state = dict(stage="locate")
+        while state["stage"] != "done":
+            state, result = advance_adoption(
+                storage,
+                context,
+                snapshot,
+                state,
+                judge,
+                clock=clock,
+                remaining_seconds=max(0.001, deadline - time.monotonic()),
+            )
+            if result is not None:
+                results.append(result)
     return tuple(results)
 
 
 def publish_adoption(tx, adoption, *, now):
-    """Publish through the existing fact writer after revalidating the binding."""
+    """Publish only a supported decision after revalidating its exact live binding."""
+    if adoption.selection is None:
+        raise ContractError("DERIVATION_INVALID", "adoption_selection")
     reason = adoption.reason or binding_reason(tx, adoption.snapshot, adoption.selection)
-    record_binding(tx, adoption, reason=reason, now=now)
     if reason is not None:
+        record_binding(tx, adoption, reason=reason, now=now)
+        return None
+    if adoption.support is None or adoption.support.state != "supported":
         return None
     proposal = adoption.proposal
+    contents = {
+        (s.ref, s.revision): s.event["content"] for s in (adoption.snapshot.confirmation, adoption.snapshot.assistant)
+    }
+    if adoption.support.fingerprint != support_fingerprint(proposal, contents):
+        raise ContractError("DERIVATION_INVALID", "adoption_support")
     source_refs = list(dict.fromkeys(f"{s['source_ref']}@{s['source_revision']}" for s in proposal["evidence_spans"]))
     envelope = dict(
         protocol_version="1.1",
@@ -75,16 +118,17 @@ def publish_adoption(tx, adoption, *, now):
         resume_proposals=[],
         reference_proposals=[],
     )
-    validated = validate_claims(tx, envelope, adoption.snapshot.confirmation.scope_id)
-    item = apply_claim_frames(tx, validated["claim_proposals"][0], adoption.snapshot.confirmation.scope_id, now)[0]
+    with using_support((adoption.support,)):
+        # The receipt is checked again by qualification against live source contents.
+        record_binding(tx, adoption, reason=None, now=now)
+        validated = validate_claims(tx, envelope, adoption.snapshot.confirmation.scope_id)
+        item = apply_claim_frames(tx, validated["claim_proposals"][0], adoption.snapshot.confirmation.scope_id, now)[0]
     tx._check(write=True).execute(
         "UPDATE adoption_relations SET claim_ref=?,claim_revision=? "
         "WHERE confirmation_ref=? AND confirmation_revision=?",
         (item.ref, item.revision, adoption.snapshot.confirmation.ref, adoption.snapshot.confirmation.revision),
     )
+    from .adoption_dedup import retire_duplicates
+
+    retire_duplicates(tx, adoption, item.ref, now=now)
     return item
-
-
-def publish_adoptions(tx, adoptions, *, now):
-    """Publish all bounded selections while sharing the consolidation transaction."""
-    return [item for adoption in adoptions if (item := publish_adoption(tx, adoption, now=now)) is not None]

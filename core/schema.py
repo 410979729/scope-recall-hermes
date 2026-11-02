@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1119
+SCHEMA_VERSION = 1120
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -114,6 +114,17 @@ ADOPTION_STATEMENTS = (
     "CREATE INDEX adoption_assistant ON adoption_relations(assistant_ref,assistant_revision)",
     "CREATE INDEX adoption_claim ON adoption_relations(claim_ref,claim_revision)",
     "CREATE INDEX adoption_proposal ON adoption_relations(proposal_sha256) WHERE state='bound'",
+)
+
+
+ADOPTION_PROCESSING_STATEMENTS = (
+    """CREATE TABLE adoption_processing (
+        work_id INTEGER PRIMARY KEY REFERENCES work_items(work_id) ON DELETE CASCADE,
+        confirmation_ref TEXT NOT NULL, confirmation_revision INTEGER NOT NULL,
+        assistant_ref TEXT NOT NULL, assistant_revision INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+    ) STRICT""",
+    "CREATE INDEX adoption_processing_sources ON adoption_processing(assistant_ref,confirmation_ref)",
 )
 
 
@@ -631,6 +642,7 @@ STATEMENTS = (
     + ENTITY_STATEMENTS
     + CLAIM_RANK_STATEMENTS
     + ADOPTION_STATEMENTS
+    + ADOPTION_PROCESSING_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
@@ -937,3 +949,11 @@ def upgrade_1118(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1119 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1119")
+
+
+def upgrade_1119(connection):
+    """Install resumable adoption work; ordinary consolidation data remains authoritative."""
+    for statement in ADOPTION_PROCESSING_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1120 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1120")

@@ -78,7 +78,7 @@
    "reportGeneralTypeIssues": 1
   },
   "core/consolidate.py": {
-   "reportArgumentType": 2,
+   "reportArgumentType": 1,
    "reportGeneralTypeIssues": 2
   },
   "core/consolidation_chunks.py": {
@@ -664,10 +664,7 @@
    }
   },
   "core/worker_consolidation.py": {
-   "BLE001": 1,
-   "PLR0911": {
-    "process_consolidate": 9
-   }
+   "BLE001": 1
   },
   "core/worker_outcomes.py": {
    "E501": 3,

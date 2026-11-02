@@ -42,6 +42,8 @@ def model(selection=None):
     def judge(messages, **kwargs):
         body = json.loads(messages[-1]["content"])
         calls.append(body)
+        if "proposal" in body:
+            return json.dumps(dict(support="supported", action="new", target_ref=None, target_revision=None))
         if body["task"] == "locate_adoption":
             return json.dumps(selection if selection is not None else selected(), ensure_ascii=False)
         assert "直接覆盖" not in json.dumps(body, ensure_ascii=False)
@@ -86,7 +88,7 @@ def test_s4_stores_owner_root_and_selected_assistant_fragment(app):
     assert "Owner adopted assistant proposal" in stored.payload["value_text"]
     assert stored.reason == "owner_adopted_assistant_proposal"
     assert {s["source_ref"] for s in stored.payload["evidence_spans"]} == {owner.ref, plan.ref}
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert calls[1]["adopted_fragments"][0]["text"] == fragments(PLAN)[1]["text"]
 
 
@@ -151,8 +153,12 @@ def test_deleted_source_is_not_sent_to_the_model(app):
     owner = capture(core, ctx, "好，就用方案二")
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         tx._check(write=True).execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (plan.ref,))
-    rows, calls = prepared(core, ctx, owner)
-    assert rows[0].reason == "source_missing" and not calls
+    from scope_recall.contracts import ContractError
+
+    with pytest.raises(ContractError, match="SOURCE_MISSING"):
+        prepared(core, ctx, owner)
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM adoption_relations").fetchone()[0] == 0
 
 
 def test_cross_session_and_intervening_user_messages_are_not_adoption_context(app):
@@ -174,6 +180,12 @@ def test_model_cannot_invent_positions_conditions_or_labels(app, change):
     core, ctx = app
     assistant(core, ctx)
     owner = capture(core, ctx, "好，就用方案二")
+    if "fragment_ids" in change or "conditions" in change:
+        from scope_recall.contracts import ContractError
+
+        with pytest.raises(ContractError):
+            prepared(core, ctx, owner, selected() | change)
+        return
     rows, _ = prepared(core, ctx, owner, (selected() | change))
     assert rows[0].reason is not None
     assert publish(core, ctx, rows[0]) is None

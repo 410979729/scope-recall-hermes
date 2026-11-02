@@ -35,6 +35,7 @@ class PreparedAdoption:
     selection: dict | None = None
     proposal: dict | None = None
     reason: str | None = None
+    support: Any = None
 
 
 def adoption_context(tx, owner):
@@ -102,18 +103,26 @@ def binding_reason(tx, snapshot, selection):
     labels = _binding_labels(snapshot, selection)
     if labels is None:
         return "reference_unbound"
-    for label in labels:
-        rows = tx._check().execute(
+    rows = (
+        tx._check()
+        .execute(
             """SELECT e.content FROM source_events e WHERE e.session_id=? AND e.scope_id=? AND e.project_id IS ?
-            AND e.branch_id IS ? AND e.entry_id=? AND e.origin='assistant_visible'
-            AND e.source_id<(SELECT min(source_id) FROM source_events WHERE event_id=?)
-            AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.event_id=e.event_id
-                           AND n.source_revision>e.source_revision)""",
+        AND e.branch_id IS ? AND e.entry_id=? AND e.origin='assistant_visible'
+        AND e.source_id<(SELECT min(source_id) FROM source_events WHERE event_id=?)
+        AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.event_id=e.event_id
+                       AND n.source_revision>e.source_revision)""",
             (owner.session_id, owner.scope_id, owner.project_id, owner.branch_id, owner.entry_id, owner.ref),
         )
-        count = sum(_label_groups(row[0], label) for row in rows)
-        if count != 1:
+        .fetchall()
+    )
+    if not labels and len(rows) != 1:
+        return "ambiguous_reference"
+    for label in labels:
+        if sum(_label_groups(row[0], label) for row in rows) != 1:
             return "ambiguous_reference"
+    quote = selection.get("confirmation_quote")
+    if quote is not None and owner.event["content"].count(quote) != 1:
+        return "confirmation_unbound"
     return None
 
 
@@ -140,9 +149,23 @@ def _binding_labels(snapshot, selection):
 
 def _section_label(text):
     """Read a structural title or list label, retaining the source spelling."""
-    title = re.sub(r"^[-*+]\s+", "", text.splitlines()[0])
-    match = re.match(r"^(?:#{1,6}\s+)?([^:：\n]{1,80})[:：]|^(\d+[.)])\s+|^#{1,6}\s+(.+)$", title)
-    return next((group.strip() for group in match.groups() if group), None) if match else None
+    title = re.sub(r"^[-*+]\s+", "", text.splitlines()[0].strip())
+    heading = re.match(r"^#{1,6}\s+(.+)$", title)
+    title = heading[1] if heading else title
+    numbered = re.match(r"^(\d+[.)])\s+(.+)$", title)
+    title = numbered[2] if numbered else title
+    # Display prefixes do not give a repeated named option a different identity.
+    prose = re.match(
+        r"^((?:方案|选项|计划)\s*[一二三四五六七八九十百零〇两0-9]+|(?:Option|Plan)\s+[A-Z0-9]+)\s*(?:是|为|is\b)",
+        title,
+        re.I,
+    )
+    if prose:
+        return prose[1].strip()
+    colon = re.match(r"^([^:：\n]{1,80})[:：]", title)
+    if colon:
+        return colon[1].strip()
+    return numbered[1] if numbered else title if heading else None
 
 
 def _label_groups(content, label):
@@ -199,7 +222,15 @@ def record_binding(tx, adoption, *, reason, now):
 
 def adoption_qualification(tx, proposal):
     """Grant decision authority only for an exact binding whose sources still hold."""
-    if proposal["kind"] != "decision":
+    from .evidence_support import support_for_contents
+
+    contents = {
+        (span["source_ref"], span["source_revision"]): source.event["content"]
+        for span in proposal["evidence_spans"]
+        if (source := tx.source(span["source_ref"], span["source_revision"])) is not None
+    }
+    verdict = support_for_contents(proposal, contents)
+    if proposal["kind"] != "decision" or verdict is None or verdict.state != "supported":
         return False
     row = (
         tx._check()
@@ -225,6 +256,7 @@ def adoption_qualification(tx, proposal):
 def purge_adoptions(conn, kind, ref):
     """Erase relationships when either source or its decision is physically purged."""
     if kind == "event":
+        conn.execute("DELETE FROM adoption_processing WHERE confirmation_ref=? OR assistant_ref=?", (ref, ref))
         conn.execute("DELETE FROM adoption_relations WHERE confirmation_ref=? OR assistant_ref=?", (ref, ref))
     elif kind == "claim":
         conn.execute("DELETE FROM adoption_relations WHERE claim_ref=?", (ref,))

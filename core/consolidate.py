@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..contracts import ContractError, validate_evidence_positions
+from .adoption_dedup import is_bound_duplicate
+from .adoption_work import schedule_adoptions
 from .candidate_lifecycle import CandidateSnapshot, candidate_model_subject
 from .claim_storage import parse_source_ref
 from .consolidation_chunks import ChunkedSource, ConsolidationChunk
@@ -18,7 +20,6 @@ from .failure_retry import validation_feedback as safe_feedback
 from .language_resources import model_consolidation_schema, prompt_text
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
 from .secret_patterns import cut_between_runs
-from .worker_adoption import publish_adoptions
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
 
 if TYPE_CHECKING:
@@ -39,7 +40,6 @@ class ConsolidationWorkFence:
     pending_sources: tuple[tuple[str, int, int], ...] = ()
     chunk: ConsolidationChunk | None = None
     rejected_claims: tuple[str, ...] = ()
-    adoptions: tuple = ()
 
 
 def _model_source_principal(source) -> dict[str, str] | None:
@@ -381,7 +381,7 @@ def accept_consolidation(
             result = validate_claims(tx, value, scope_id, ungrounded_values=ungrounded)
             if ungrounded and work_fence is not None:
                 dropped.append(_drop_claims(tx, work_fence, ["evidence_value"] * len(ungrounded), now))
-            for proposal in result["claim_proposals"]:
+            for proposal in ordinary_proposals(tx, result):
                 applied = apply_claim_frames(tx, proposal, scope_id, now)
                 claim_refs.update(item.ref for item in applied)
                 items.extend(applied)
@@ -399,7 +399,6 @@ def accept_consolidation(
         if work_fence is not None and work_fence.chunk is not None:
             result = stage_fragment(tx, result, work_fence, now, dropped=dropped)
 
-        items.extend(publish_adoptions(tx, getattr(work_fence, "adoptions", ()), now=now))
         for proposal in result["reference_proposals"]:
             item = apply_summary(tx, work_fence, "reference", proposal, scope_id, now)
             if item is not None:
@@ -408,25 +407,37 @@ def accept_consolidation(
             item = apply_summary(tx, work_fence, "resume", proposal, scope_id, now)
             if item is not None:
                 items.append(Mutation(item.ref, item.revision, "applied", item.state))
-        if work_fence is not None:
-            if work_fence.chunk is not None:
-                tx.work.advance_consolidation(
-                    work_fence.work_id,
-                    work_fence.lease_token,
-                    work_fence.lease_owner,
-                    now=now,
-                    expected_offset=work_fence.chunk.start,
-                    next_offset=work_fence.chunk.end,
-                    final=work_fence.chunk.final,
-                )
-            else:
-                tx.work.complete_consolidation(
-                    work_fence.work_id,
-                    work_fence.lease_token,
-                    work_fence.lease_owner,
-                    now=now,
-                    covered_source_refs=frozenset(result["source_refs"]) | work_fence.skipped_source_refs,
-                    pending_sources=work_fence.pending_sources,
-                )
+        _complete_work(tx, work_fence, result, now=now)
         epoch = tx.status().memory_epoch
     return MutationReceipt(tuple(items), epoch)
+
+
+def ordinary_proposals(tx, result):
+    """Keep ordinary proposals unless the same supported adoption already exists."""
+    return (p for p in result["claim_proposals"] if not is_bound_duplicate(tx, p))
+
+
+def _complete_work(tx, work_fence, result, *, now):
+    """Finish ordinary work and schedule adjacent adoption checkpoints atomically."""
+    if work_fence is not None:
+        if work_fence.chunk is not None:
+            tx.work.advance_consolidation(
+                work_fence.work_id,
+                work_fence.lease_token,
+                work_fence.lease_owner,
+                now=now,
+                expected_offset=work_fence.chunk.start,
+                next_offset=work_fence.chunk.end,
+                final=work_fence.chunk.final,
+            )
+        else:
+            tx.work.complete_consolidation(
+                work_fence.work_id,
+                work_fence.lease_token,
+                work_fence.lease_owner,
+                now=now,
+                covered_source_refs=frozenset(result["source_refs"]) | work_fence.skipped_source_refs,
+                pending_sources=work_fence.pending_sources,
+            )
+        if work_fence.chunk is None or work_fence.chunk.final:
+            schedule_adoptions(tx, frozenset(result["source_refs"]) | work_fence.skipped_source_refs, now=now)
