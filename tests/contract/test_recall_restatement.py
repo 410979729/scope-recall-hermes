@@ -406,7 +406,7 @@ def test_real_client_capture_pairs_assistant_under_same_installation_owner(
 ):
     from scope_recall.adapters.clients import CodexHookHandler
     from scope_recall.adapters.clients.identity import resolve_runtime_audience, trusted_context
-    from scope_recall.adapters.hermes.shared_entries import (
+    from scope_recall.adapters.shared_entries import (
         attach_shared_record,
         client_entry_record,
         read_shared_payload,
@@ -482,7 +482,7 @@ def test_real_client_capture_pairs_assistant_under_same_installation_owner(
             assert first.event["source_principal"]["kind"] == "human"
             assert repeat.event["source_principal"]["kind"] == "assistant"
             assert not repeat.event["evidence_refs"]
-            from scope_recall.adapters.hermes import shared_entries
+            from scope_recall.adapters import shared_entries
 
             read_json, reads = shared_entries._read_json, []
 
@@ -602,8 +602,8 @@ def test_reader_entry_owner_is_independent_of_reader_speaker_kind(restatement_st
 
 
 def test_owner_manifest_failure_is_cached_only_until_the_next_request(client_store, monkeypatch):
+    from scope_recall.adapters import host_identity as identity
     from scope_recall.adapters.clients.config import load_shared_client
-    from scope_recall.adapters.hermes import identity
 
     _, _, client, _ = client_store
     config = load_shared_client(client, "claude-code")

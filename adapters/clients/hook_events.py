@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import ContractError, Origin
+from scope_recall.core.capture_filters import without_private
 from scope_recall.core.secret_patterns import contains_secret_like_text
 
 from . import transcript
@@ -148,6 +149,7 @@ class HookEvents:
         # capture refused, or that holds a credential however the capture ended, goes without it, so that nothing of it
         # reaches an embedding provider.  A read-only private interval is the exception the person asked for: it
         # refuses capture but keeps the ordinary recall, including its query embedding.
+        prompt, _removed = without_private(prompt)
         read_mode = getattr(self._hook.core, "private_mode", None)
         mode = read_mode(context) if callable(read_mode) else None
         vectors = (

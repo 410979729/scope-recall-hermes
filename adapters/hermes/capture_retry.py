@@ -33,6 +33,8 @@ from .installation import assert_binding_matches_manifest
 from .shared_entries import load_binding_for_home
 
 if TYPE_CHECKING:
+    from scope_recall.core.private import CaptureGuard
+
     from .provider import ScopeRecallHermesAdapter
 
 #: The adapter's log name, the provider module's, which this module logs under as well: a host writes it into each
@@ -84,7 +86,6 @@ class CaptureRetry:
         #: What the last capture a pass wrote took: the next is reckoned by it (``fits``), and so is a shutdown's read
         #: of what the inbox holds.
         self.last_took = 0.0
-        self.private_guard = None
 
     def write_observed(self, *, deadline: float | None = None) -> None:
         """Retry only previously observed DTOs with their original identities.
@@ -127,7 +128,7 @@ class CaptureRetry:
         seconds: float | None = None,
         force: bool = False,
         deadline: float | None = None,
-    ) -> None:
+    ) -> CaptureGuard | Exception | None:
         """Write again what a busy store kept in memory; nothing to do, and nothing opened, when it holds none.
 
         Run at every ``sync_turn``, by the retry thread while the buffer holds anything (``_run``), at the session's
@@ -150,16 +151,18 @@ class CaptureRetry:
             self.retrying = True
         try:
             began = time.monotonic()
-            self.private_guard = self._adapter._writer.capture_guard(
+            guard = self._adapter._writer.capture_guard(
                 pending_items[0][1].context,
                 deadline - began,
                 observations=[(pending.context, [pending.event]) for _key, pending in pending_items],
             )
             self.last_took = time.monotonic() - began
-            self._pass(identity, pending_items, deadline=deadline, release=release, force=force)
+            with self._adapter._writer.using_capture_guard(guard):
+                self._pass(identity, pending_items, deadline=deadline, release=release, force=force)
         finally:
             with self._adapter._lock:
                 self.retrying = False
+        return guard
 
     def _pass(
         self, identity: HermesIdentity, pending_items: tuple, *, deadline: float, release: bool, force: bool
@@ -256,7 +259,7 @@ class CaptureRetry:
             pending = self.captures[key]
             self._adapter._ledger.rollback(key)
             self._adapter._merge_gaps(("capture_gap:retry_gave_up",))
-            disposition = self.keep_on_disk(key, pending, guard=self.private_guard)
+            disposition = self.keep_on_disk(key, pending)
             if disposition == "discarded":
                 finished.append(key)
             elif disposition == "kept":
@@ -298,12 +301,30 @@ class CaptureRetry:
         self.on_disk[key] = binding
         return "kept"
 
+    def finish(self, *, seconds: float) -> tuple[tuple[SourceIdentity, ...], int]:
+        """Try one shutdown pass, then preserve its remaining captures under that pass's policy snapshot."""
+        try:
+            guard = self.write_buffered(seconds=seconds, force=True)
+        except Exception as exc:  # noqa: BLE001 - unwritten captures still need their shutdown copy
+            guard = None
+            _log.warning("scope-recall: a retry of buffered captures failed at shutdown (%s)", type(exc).__name__)
+        pending = self.pending_identities()
+        kept, _retained = self.keep_all_on_disk(guard=guard)
+        return pending, kept
+
     def keep_all_on_disk(self, *, guard=None) -> tuple[int, int]:
         """At shutdown: each capture the buffer still holds, one a pass is still writing included, kept on disk for the
         next start, and reported. Captures that could not reach disk remain in memory.
         Return the counts kept on disk and retained in memory. The caller holds ``_lock``."""
         kept = retained = 0
-        for key, capture in tuple(self.captures.items()):
+        pending = tuple(self.captures.items())
+        if pending and guard is None:
+            guard = self._adapter._writer.capture_guard(
+                pending[0][1].context,
+                0.2,
+                observations=[(capture.context, [capture.event]) for _key, capture in pending],
+            )
+        for key, capture in pending:
             disposition = self.keep_on_disk(key, capture, guard=guard)
             if disposition == "discarded":
                 continue

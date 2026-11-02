@@ -291,16 +291,22 @@ def _add_retry_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _retry_failures(args: argparse.Namespace) -> int:
-    return _run_core(
-        args,
-        lambda core, config: core.operations.retry_failed_work(
+    def retry(core, config):
+        from ..adapters.clients.ledger import retry_given_up
+
+        receipt = core.operations.retry_failed_work(
             config.context(),
             limit=args.limit,
             include_terminal=args.include_terminal,
             dry_run=not args.apply,
             remaining_seconds=config.request_seconds,
-        ),
-    )
+        )
+        receipt["transcript_replay"] = retry_given_up(
+            config.binding, limit=args.limit, dry_run=not args.apply, include_terminal=args.include_terminal
+        )
+        return receipt
+
+    return _run_core(args, retry)
 
 
 def _add_respace_arguments(parser: argparse.ArgumentParser) -> None:

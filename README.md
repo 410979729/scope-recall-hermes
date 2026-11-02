@@ -21,6 +21,9 @@ sight; only the owner's explicit correction or confirmation changes a fact as it
 is captured. SQLite is the only fact authority; host adapters share the same
 contracts.
 
+Host messages, linked worktree identity, transcript recovery and MCP lifetime are described in
+[Host capture and identity](docs/host-integration.md).
+
 Automatic recall injects zero to six items that clear a lexical coverage or
 vector similarity floor. Background preferences and tasks accompany passing
 query evidence; a session's first resume request can recover its current task.

@@ -36,6 +36,8 @@ def test_claim_index_upgrade_resumes_after_committed_page(app, monkeypatch):
             core.storage.initialize()
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        identity = conn.execute("SELECT database_id,database_created_at FROM instance_meta").fetchone()
+        assert len(identity[0]) == 32 and identity[1] is None
         assert conn.execute(
             "SELECT processed_count,completed FROM candidate_scan_cursors WHERE cursor_name='claim_lexical'"
         ).fetchone() == (1, 0)
@@ -46,6 +48,7 @@ def test_claim_index_upgrade_resumes_after_committed_page(app, monkeypatch):
     core.storage.initialize()
     assert not store_upgrade_pending(ctx.binding)
     with core.storage.read(ctx) as tx:
+        assert tx.database_identity() == identity
         assert not lexical_index.claim_backfill_pending(tx._check())
         assert tx._check().execute("SELECT count(DISTINCT claim_id) FROM claim_lexical_postings").fetchone()[0] == 4
         assert tx._check().execute("PRAGMA foreign_key_check").fetchall() == []
@@ -141,8 +144,8 @@ def test_each_published_format_preserves_truth_and_finishes_fact_nomination(app,
     with core.storage.read(ctx) as tx:
         conn = tx._check()
         assert _truth_hash(conn) == original
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1118
-        assert conn.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == 1118
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert conn.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == SCHEMA_VERSION
         assert not lexical_index.claim_backfill_pending(conn)
         assert conn.execute("SELECT count(DISTINCT claim_id) FROM claim_lexical_postings").fetchone()[0] == 3
         assert conn.execute("SELECT count(*) FROM injection_rules").fetchone()[0] >= 10
@@ -153,9 +156,9 @@ def test_each_published_format_preserves_truth_and_finishes_fact_nomination(app,
                 actual = RetrievalStorage().claims(tx, context, limit=1)
                 assert actual == _ideal_claims(tx, context, 1, monkeypatch)
                 assert actual
-    assert tuple(SCHEMA_MIGRATIONS) == tuple(range(1105, 1118))
+    assert tuple(SCHEMA_MIGRATIONS) == tuple(range(1105, SCHEMA_VERSION))
     assert all(step.__name__ == f"upgrade_{v}" for v, step in SCHEMA_MIGRATIONS.items())
-    assert SOURCE_SCHEMAS == frozenset(range(1109, 1119))
+    assert SOURCE_SCHEMAS == frozenset(range(1109, SCHEMA_VERSION + 1))
 
 
 def _truth_hash(conn):

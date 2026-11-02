@@ -322,6 +322,7 @@ _NON_ACTIONABLE_GAPS = frozenset(
 _WORKER_STATUS_KEYS = frozenset(
     {
         "status",
+        "transcript_replay",
         "installation_id",
         "started_at",
         "finished_at",
@@ -608,6 +609,32 @@ def _serves(worker, binding) -> bool:
     ) and binding.scope_ids <= worker.scope_ids
 
 
+def _check_transcript_replay(report: DoctorReport, states: object) -> None:
+    """Show content-free ledger outcomes beside the worker's ordinary queue status."""
+    if not isinstance(states, dict):
+        return
+
+    def count(name):
+        return states.get(name, 0) if type(states.get(name, 0)) is int else 0
+
+    if count("given_up") or count("stopped"):
+        record_check(
+            report,
+            "transcript_replay",
+            "blocked",
+            (
+                "Ledger capture stopped; retry-failures --apply reopens given-up and denied checkpoints after repair. "
+                "Invalid input must be corrected at the source."
+            ),
+        )
+    elif count("deferred") or count("ready"):
+        record_check(
+            report, "transcript_replay", "pending", "The worker retains the ledger checkpoint for a later pass."
+        )
+    else:
+        record_check(report, "transcript_replay", "caught_up", "The last bounded ledger pass completed.")
+
+
 def _check_worker_status(report: DoctorReport, binding, data_directory: Path) -> None:
     """The worker's last receipt, when it left one for this binding."""
     try:
@@ -626,6 +653,8 @@ def _check_worker_status(report: DoctorReport, binding, data_directory: Path) ->
         report.capability_gaps.append("worker_last_exit_failed")
     if report.pending_work and status.get("unavailable_work_types"):
         report.capability_gaps.append("worker_capability_unavailable")
+
+    _check_transcript_replay(report, status.get("transcript_replay"))
 
 
 #: Passes in a row that may leave a work type the config enables unavailable before the doctor says so.  One
@@ -834,6 +863,26 @@ def _classify_status(report: DoctorReport) -> None:
     report.status = "degraded" if actionable else ("attention" if attention else "ok")
 
 
+def _check_capture_authorization(report: DoctorReport, instance: Path, binding) -> None:
+    """Report unsafe local grant metadata without changing the owner's authorization."""
+    if report.host != "codex" or binding.installation_kind != "local":
+        return
+    from scope_recall.adapters.clients.ledger_state import authorization_problem
+
+    config = load_codex_config(instance / "codex-installation.json")
+    reason = authorization_problem(config)
+    if reason is not None:
+        report.capability_gaps.append("capture_authorization_invalid")
+        record_check(
+            report,
+            "capture_authorization",
+            "blocked",
+            reason + "; automatic replay is stopped. Re-run the trusted installer for this instance to "
+            "authorize only future capture from the current time, or restore valid authorization state "
+            "from a trusted backup of this database. Do not infer an earlier grant.",
+        )
+
+
 def run_doctor(
     *,
     host: str,
@@ -871,6 +920,7 @@ def run_doctor(
     check_vector_store(report, entry_config, binding)
     check_footprint(report, data_directory, config)
     if readable:
+        _check_capture_authorization(report, instance, binding)
         _check_worker_status(report, binding, data_directory)
         wake_seconds = _check_autostart(report, binding, data_directory)
         _check_supervisor(report, data_directory)

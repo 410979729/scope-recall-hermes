@@ -1,16 +1,8 @@
-"""See or stop an entry's resident prompt recall server (``adapters/clients/resident_entry``).
+"""Inspect or stop the worker-owned recall service shared by local entries of a library.
 
-    scope-recall resident status --home <entry home> --host workbuddy
-    scope-recall resident stop   --home <entry home> --host workbuddy
-
-A resident server runs from the entry's package: stop it before a ``package-upgrade`` of that package, after the client
-itself (a live MCP server of the client starts one again at its next look, every ``RESIDENT_KEEP_SECONDS``, once the
-last start is a minute old).  It writes nothing, so stopping it loses nothing; the next prompt starts one again when
-the client keeps one.  ``running`` says whether one holds the entry's lock; ``servers`` lists those whose process is
-known.  One whose identity cannot be proven, where a process's start time cannot be read (macOS), is listed
-``verified: false`` and never stopped: it ends itself within ``IDLE_CHECK_SECONDS`` once its package is replaced or its
-minutes are 0 (``adapters/clients/resident_entry``).  A ``stop`` after which one still holds the lock says
-``still_running`` and exits 1, so that an upgrade script does not go on.
+The existing --home and --host arguments resolve an attached entry to its library. Status includes the service lock
+and stable process identity; stop never signals an unproven process. The worker may restart the service while client
+activity remains recent. Setting residence to zero disables that restart.
 """
 
 from __future__ import annotations

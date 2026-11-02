@@ -235,7 +235,7 @@ def _resident_names(home, host="workbuddy"):
             info = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if info.get("resident") is True and info.get("host") == host:
+        if info.get("resident") is True and info.get("host") in (host, "*"):
             names.append(info)
     return names
 
@@ -290,7 +290,7 @@ def test_the_runtime_config_bounds_resident_minutes():
     from scope_recall.runtime.instance_config import RESIDENT_RECALL_MINUTES_BOUNDS
 
     assert RESIDENT_RECALL_MINUTES_BOUNDS == (0, 1440)
-    assert local_endpoint.RESIDENT_DEFAULT_MINUTES == {"workbuddy": 120, "dsh": 120}
+    assert local_endpoint.RESIDENT_DEFAULT_MINUTES == dict.fromkeys(("codex", "claude-code", "workbuddy", "dsh"), 120)
 
 
 def test_a_client_starts_a_resident_server_once_and_not_while_one_runs(entry, monkeypatch, tmp_path):
@@ -325,7 +325,9 @@ def test_a_client_starts_a_resident_server_once_and_not_while_one_runs(entry, mo
     holder = _Holder(entry)
     try:
         assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120) == "running"
-        assert alive.exists(), "a client process that finds it running marks the client in use"
+        assert not alive.exists(), "a worker pass cannot keep an idle library alive"
+        local_endpoint.request_recall(entry, "workbuddy")
+        assert alive.exists()
     finally:
         holder.release()
     assert len(started) == 1
@@ -342,7 +344,7 @@ def test_a_stamp_from_the_future_is_stale_and_of_two_starters_at_once_one_starts
     monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     folder = local_endpoint.endpoints(entry)
     folder.mkdir(parents=True, exist_ok=True)
-    stamp = folder / "resident-workbuddy.start"
+    stamp = folder / "resident.start"
     stamp.write_text("1", encoding="ascii")
     later = time.time() + 3600
     os.utime(stamp, (later, later))
@@ -569,7 +571,9 @@ def test_one_unsure_check_does_not_end_a_resident_server_and_two_in_a_row_do(ent
 
     minutes = [120, None, 120, None, None, 120]
     monkeypatch.setattr(
-        resident_entry, "configured_minutes", lambda home, host, **kwargs: minutes.pop(0) if minutes else 120
+        __import__("scope_recall.adapters.clients.store_service", fromlist=["library_minutes"]),
+        "library_minutes",
+        lambda binding, **kwargs: minutes.pop(0) if minutes else 120,
     )
     worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy"])
     worker.join(20)
@@ -632,7 +636,7 @@ def test_a_prompt_hook_replaces_a_resident_server_of_another_version_and_an_mcp_
         for _ in range(2):
             assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120) == "running:3.6.0rc0"
         assert not alive.exists() and started == [] and holder.poll() is None, "an MCP server leaves it alone"
-        stamp = local_endpoint.endpoints(entry) / "resident-workbuddy.start"
+        stamp = local_endpoint.endpoints(entry) / "resident.start"
         stamp.write_text("1", encoding="ascii")  # a start less than a minute ago
         assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120, replace=True) == "replaced:3.6.0rc0"
         assert holder.wait(10) is not None, "the prompt hook stopped it"
@@ -731,75 +735,6 @@ def test_the_resident_command_says_and_stops(entry, capsys):
     assert json.loads(capsys.readouterr().out)["stopped"] == []
 
 
-def test_the_mcp_server_of_a_client_that_keeps_a_resident_server_keeps_one_and_answers_no_hook(entry, monkeypatch):
-    """Warmed with every conversation, each MCP server held a vector helper of its own beside the resident one."""
-    from scope_recall.adapters.clients import mcp_entry
-
-    _runtime_config(entry)
-    calls = []
-    asked = threading.Event()
-    monkeypatch.setattr(local_endpoint, "serve", lambda *args, **kwargs: calls.append("serve"))
-
-    def ensure(home, host, *, minutes, env_file=None):
-        calls.append(("resident", host, minutes))
-        asked.set()
-        return "started"
-
-    monkeypatch.setattr(local_endpoint, "ensure_resident", ensure)
-    real_keep, kept = local_endpoint.keep_resident, {}
-    monkeypatch.setattr(
-        local_endpoint, "keep_resident", lambda *args, **kwargs: kept.setdefault("stop", real_keep(*args, **kwargs))
-    )
-
-    class _Server:
-        class server:
-            @staticmethod
-            def run(transport):
-                asked.wait(5)
-                calls.append(("run", transport))
-
-    monkeypatch.setattr(mcp_entry, "build_server", lambda *args, **kwargs: _Server())
-    assert mcp_entry.main(["--home", str(entry), "--host", "workbuddy"]) == 0
-    assert calls == [("resident", "workbuddy", 120), ("run", "stdio")]
-    assert kept["stop"].is_set(), "it keeps none once it ends"
-
-
-def test_a_client_s_live_mcp_server_keeps_a_resident_server_and_nothing_it_meets_ends_it(entry, monkeypatch, capsys):
-    """A client's live MCP server keeps the resident server: it is not left to end an idle while after its last prompt,
-    which would leave a still-open conversation's next prompt colder than the conversation's own server keeps it, and
-    an error starting it does not end the MCP server before it serves a tool.  The minutes are read at each pass."""
-    _runtime_config(entry)
-    calls, reads = [], []
-
-    def ensure(home, host, *, minutes, env_file=None):
-        calls.append(minutes)
-        if len(calls) == 1:
-            raise RuntimeError("TEST")
-        return "running"
-
-    real_minutes = local_endpoint.resident_minutes
-
-    def minutes(home, host):
-        reads.append(real_minutes(home, host))
-        return reads[-1]
-
-    monkeypatch.setattr(local_endpoint, "resident_minutes", minutes)
-    monkeypatch.setattr(local_endpoint, "ensure_resident", ensure)
-    stop = local_endpoint.keep_resident(entry, "workbuddy", every=0.02)
-    try:
-        assert _wait(lambda: len(calls) >= 3, 5)
-        _runtime_config(entry, resident_recall_minutes=0)
-        # Passes run one after another: once one has read 0, the passes that read 120 are done.
-        assert _wait(lambda: 0 in reads, 5)
-        seen = len(calls)
-        assert _wait(lambda: reads.count(0) >= 4, 5)
-        assert len(calls) == seen, "at 0 it starts none"
-    finally:
-        stop.set()
-    assert calls[:3] == [120, 120, 120]
-    assert "SCOPE_RECALL_RESIDENT_START:RuntimeError" in capsys.readouterr().err
-
-
 def _hook(monkeypatch, payload):
     monkeypatch.setattr(
         sys,
@@ -810,43 +745,6 @@ def _hook(monkeypatch, payload):
             {"buffer": type("B", (), {"read": staticmethod(lambda size: json.dumps(payload).encode("utf-8"))})()},
         )(),
     )
-
-
-def test_a_prompt_hook_starts_a_resident_server_after_its_answer(entry, monkeypatch, capsys, tmp_path):
-    from scope_recall.adapters.clients import hook_entry
-
-    _runtime_config(entry)
-    env_file = tmp_path / "TEST.env"
-    env_file.write_text("", encoding="utf-8")
-    order, said = [], ["started", "running", "replaced:3.6.0rc0"]
-    monkeypatch.setattr(
-        local_endpoint,
-        "ensure_resident",
-        lambda home, host, *, minutes, env_file=None, replace=False: (
-            order.append(("resident", host, minutes, env_file, replace)),
-            said.pop(0),
-        )[1],
-    )
-    real_emit = hook_entry.emit_result
-    monkeypatch.setattr(
-        hook_entry, "emit_result", lambda *args, **kwargs: (order.append("answer"), real_emit(*args, **kwargs))[1]
-    )
-    payload = {
-        "hook_event_name": "UserPromptSubmit",
-        "session_id": "TEST-wb",
-        "prompt": "TEST 你好",
-        "cwd": "C:/TEST/work",
-        "transcript_path": "C:/TEST/projects/c--TEST-work/TEST-wb.jsonl",
-    }
-    for index, expected in enumerate(
-        ("CODEX_RECALL_RESIDENT_START:started\n", None, "CODEX_RECALL_RESIDENT_START:replaced:3.6.0rc0\n")
-    ):
-        _hook(monkeypatch, {**payload, "prompt": f"TEST 你好 {index}"})
-        assert hook_entry.main(["--home", str(entry), "--host", "workbuddy", "--env-file", str(env_file)]) == 0
-        err = capsys.readouterr().err
-        assert (expected in err) if expected else "CODEX_RECALL_RESIDENT_START" not in err, (index, err)
-    # After its answer, and as the one that replaces a server of another version.
-    assert order == ["answer", ("resident", "workbuddy", 120, env_file, True)] * 3
 
 
 def test_a_hook_other_than_a_prompt_s_starts_no_resident_server(entry, monkeypatch, capsys):
@@ -1050,7 +948,7 @@ def test_a_start_waits_for_another_starter_s_look_at_the_stamp(entry, monkeypatc
     looking, done = threading.Event(), threading.Event()
 
     def other_starter():
-        with advisory_file_lock(folder / "resident-workbuddy.start.lock", timeout_seconds=0):
+        with advisory_file_lock(folder / "resident.start.lock", timeout_seconds=0):
             looking.set()
             done.wait(10)
 
@@ -1209,7 +1107,7 @@ def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and
             )
         assert started == [] and holder.poll() is None
         folder = local_endpoint.endpoints(entry)
-        assert not (folder / "resident-workbuddy.start").exists(), "no start stamp: nothing was started"
+        assert not (folder / "resident.start").exists(), "no start stamp: nothing was started"
         assert not local_endpoint.resident_alive(entry, "workbuddy").exists(), "and it is not kept up"
     finally:
         if holder.poll() is None:
@@ -1252,7 +1150,7 @@ def test_hooks_of_two_versions_switch_an_entry_s_server_at_most_once_a_minute(en
 
     started = []
     monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
-    switched = local_endpoint.endpoints(entry) / "resident-workbuddy.replaced"
+    switched = local_endpoint.endpoints(entry) / "resident.replaced"
     for index, expected in enumerate(("replaced:3.6.0rc0", "running:3.6.0rc0", "replaced:3.6.0rc0")):
         if index == 2:
             earlier = time.time() - 120
@@ -1283,19 +1181,21 @@ def test_a_running_server_takes_a_missing_runtime_config_as_not_known(entry, mon
     _runtime_config(entry)
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
     asked = []
-    real = resident_entry.configured_minutes
+    from scope_recall.adapters.clients import store_service
 
-    def configured(home, host, **kwargs):
+    real = store_service.library_minutes
+
+    def configured(binding, **kwargs):
         asked.append(kwargs.get("missing", "default"))
-        return real(home, host, **kwargs)
+        return real(binding, **kwargs)
 
-    monkeypatch.setattr(resident_entry, "configured_minutes", configured)
+    monkeypatch.setattr(store_service, "library_minutes", configured)
     end = _ending(monkeypatch)
     worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy"])
     assert _wait(lambda: len(asked) >= 2, 10)
     end.set()
     worker.join(10)
-    assert not worker.is_alive() and box["code"] == 0 and set(asked) == {None}
+    assert not worker.is_alive() and box["code"] == 0 and None in asked
 
 
 def test_a_server_does_not_start_while_its_package_is_being_replaced(entry, monkeypatch):
@@ -1336,3 +1236,80 @@ def test_a_server_stopped_once_does_not_wait_for_a_stuck_recall_again_at_exit(en
     finally:
         done.set()
         worker.join(5)
+
+
+def test_prompt_and_mcp_publish_activity_without_starting_a_process(entry, monkeypatch, capsys):
+    from scope_recall.adapters.clients import hook_entry, mcp_entry
+
+    _runtime_config(entry)
+    started = []
+    monkeypatch.setattr(local_endpoint, "ensure_resident", lambda *a, **k: started.append(True))
+    monkeypatch.setattr(local_endpoint, "serve", lambda *a, **k: started.append(True))
+    monkeypatch.setattr(mcp_entry, "build_server", lambda *a, **k: type("Server", (), {"server": object()})())
+    monkeypatch.setattr(mcp_entry, "run_stdio", lambda server: None)
+    assert mcp_entry.main(["--home", str(entry), "--host", "workbuddy"]) == 0
+    _hook(monkeypatch, {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-service", "prompt": "TEST color"})
+    assert hook_entry.main(["--home", str(entry), "--host", "workbuddy"]) == 0
+    assert local_endpoint.resident_alive(entry, "workbuddy").exists()
+    assert started == []
+
+
+def test_worker_manages_one_process_for_two_hosts_with_separate_grants(entry, monkeypatch, tmp_path):
+    from scope_recall.adapters.clients import store_service
+    from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
+
+    config = load_shared_client(entry, "workbuddy")
+    other = tmp_path / "TEST-codex-home"
+    attach_shared_record(
+        config.data_directory,
+        client_entry_record(
+            host="codex",
+            home=other,
+            entry_id="test-codex",
+            display_name="TEST Codex",
+            attached_at=NOW,
+            allowed_scope_ids=config.audience.allowed_scope_ids,
+            writable_scope_ids=config.audience.writable_scope_ids,
+            capture_scope_id=config.audience.capture_scope_id,
+        ),
+        now=NOW,
+    )
+    _runtime_config(entry)
+    _runtime_config(other)
+    assert local_endpoint.endpoints(entry) == local_endpoint.endpoints(other)
+    assert local_endpoint.resident_lock(entry, "workbuddy") == local_endpoint.resident_lock(other, "codex")
+    started = []
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
+    assert store_service.manage(config.to_binding()) == "idle"
+    local_endpoint.request_recall(other, "codex")
+    assert store_service.manage(config.to_binding()) == "started"
+    assert store_service.manage(config.to_binding()) == "recent"
+    assert len(started) == 1
+    endpoint = local_endpoint.HookEndpoint(entry, "workbuddy", library=True)
+    seen = []
+    monkeypatch.setattr(
+        endpoint, "_route", lambda route: lambda *a, **k: (seen.append((route.home, route.host)) or {}, {})
+    )
+    for home, host in ((entry, "workbuddy"), (other, "codex")):
+        answer, close = endpoint.recall(
+            {"home": str(home), "host": host, "payload": {}, "current_refs": (), "gaps": (), "remaining": 1.0}
+        )
+        close()
+        assert answer["result"] == {}
+    assert seen == [(entry, "workbuddy"), (other, "codex")]
+    with pytest.raises(CodexConfigError):
+        endpoint.recall(
+            {"home": str(other), "host": "workbuddy", "payload": {}, "current_refs": (), "gaps": (), "remaining": 1.0}
+        )
+    endpoint.stop()
+
+
+def test_library_lock_is_shared_across_os_profile_directories(entry, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "TEST-profile-a"))
+    first = local_endpoint.resident_lock(entry, "workbuddy")
+    private_first = local_endpoint.endpoints(entry)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "TEST-profile-b"))
+    second = local_endpoint.resident_lock(entry, "workbuddy")
+    assert first == second
+    if os.name == "nt":
+        assert private_first != local_endpoint.endpoints(entry)
