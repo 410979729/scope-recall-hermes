@@ -668,20 +668,15 @@
   "maintenance/install.py": {
    "BLE001": 1,
    "C901": {
-    "apply_install": 17,
-    "plan_install": 19
+    "apply_install": 17
    },
    "E501": 1,
    "PLR0912": {
     "apply_install": 17,
-    "plan_install": 20,
     "plan_uninstall": 16
    },
    "PLR0913": {
     "plan_install": 11
-   },
-   "PLR0915": {
-    "plan_install": 61
    }
   },
   "maintenance/install_receipt.py": {
@@ -689,9 +684,6 @@
   },
   "maintenance/install_remote.py": {
    "UP017": 1
-  },
-  "maintenance/install_workbuddy.py": {
-   "UP035": 1
   },
   "maintenance/legacy_catalog.py": {
    "E501": 14
@@ -1075,7 +1067,7 @@
   },
   "tests/packaging/test_shared_cli.py": {
    "PLR0915": {
-    "test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own": 82
+    "test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own": 69
    }
   },
   "tests/storage_native/test_vector_compaction.py": {

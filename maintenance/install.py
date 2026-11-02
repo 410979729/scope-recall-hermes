@@ -154,6 +154,24 @@ def _backup_copy(path: Path, backup_root: Path, plan: InstallPlan | UninstallPla
     return backup_path
 
 
+def _validate_install_roots(adapter, target, instance, project, host, host_files):
+    """Permit only each host's designated nested plugin directory; unrelated roots stay disjoint."""
+    roots = ((instance, "instance_root"), *(((project, "project_root"),) if project is not None else ()))
+    home_plugin = adapter.home_plugin_dir(instance)
+    if (
+        (home_plugin is not None and normalized_path(target) == normalized_path(home_plugin))
+        or (host_files and normalized_path(target) == normalized_path(instance))
+        or (host in {"codex", "claude-code"} and target == instance / "skills" / "scope-recall")
+    ):
+        # The one plugin directory a host reads from inside the home it serves; a project root that
+        # overlapped it would overlap the home too.
+        validate_roots(*roots)
+    else:
+        validate_roots((target, "target_plugin_dir"), *roots)
+
+    return home_plugin
+
+
 def plan_install(
     *,
     target_plugin_dir: Path | str,
@@ -183,14 +201,7 @@ def plan_install(
     host_files = adapter.host_config_files(target)
     if not host_files:
         validate_plugin_name(target.name)
-    roots = ((instance, "instance_root"), *(((project, "project_root"),) if project is not None else ()))
-    home_plugin = adapter.home_plugin_dir(instance)
-    if home_plugin is not None and normalized_path(target) == normalized_path(home_plugin):
-        # The one plugin directory a host reads from inside the home it serves; a project root that
-        # overlapped it would overlap the home too.
-        validate_roots(*roots)
-    else:
-        validate_roots((target, "target_plugin_dir"), *roots)
+    home_plugin = _validate_install_roots(adapter, target, instance, project, host, host_files)
 
     plan = InstallPlan(
         host=host_choice,
@@ -246,6 +257,19 @@ def plan_install(
             plan.conflicts.append(f"foreign instance content: {path}")
         plan.changes.append(PlannedChange("initialize", str(instance), "create empty instance via adapter helper"))
 
+    _plan_wrapper_files(plan, planned, owned, adoptable)
+    _plan_merges(adapter, plan, host_files)
+    plan.changes.append(PlannedChange("write", str(receipt_file(instance)), "install receipt with digest"))
+    if host_files:
+        plan.changes.append(PlannedChange("restart", str(target), adapter.RESTART_NOTE))
+
+    if receipt is not None and receipt.get("host") not in {None, host_choice}:
+        plan.conflicts.append("existing receipt host mismatch")
+    return plan
+
+
+def _plan_wrapper_files(plan: InstallPlan, planned: dict, owned: dict, adoptable: set[str]) -> None:
+    """Keep matching artifacts and editable skills while refusing unrelated or changed owned files."""
     for path in sorted(planned, key=str):
         norm = normalized_path(path)
         if path.is_file():
@@ -253,6 +277,10 @@ def plan_install(
                 plan.changes.append(PlannedChange("replace", str(path), "a wrapper put here by hand; backed up first"))
             elif norm not in owned:
                 plan.conflicts.append(f"no-receipt collision: {path}")
+            elif sha256(path) == owned[norm] == _written_digest(planned[path]):
+                plan.kept[norm] = owned[norm]
+                plan.changes.append(PlannedChange("keep", str(path), "installed artifact already matches"))
+                continue
             elif sha256(path) != owned[norm]:
                 # A Hermes agent keeps what it learns in its skills, and may edit its memory skill between two
                 # releases that leave that skill as it was: refused, the upgrade would stop before its apply, leaving
@@ -266,14 +294,6 @@ def plan_install(
                     continue
                 plan.conflicts.append(f"edited prior file: {path}")
         plan.changes.append(PlannedChange("write", str(path), "install host wrapper artifact"))
-    _plan_merges(adapter, plan, host_files)
-    plan.changes.append(PlannedChange("write", str(receipt_file(instance)), "install receipt with digest"))
-    if host_files:
-        plan.changes.append(PlannedChange("restart", str(target), adapter.RESTART_NOTE))
-
-    if receipt is not None and receipt.get("host") not in {None, host_choice}:
-        plan.conflicts.append("existing receipt host mismatch")
-    return plan
 
 
 def _plan_merges(adapter: ModuleType, plan: InstallPlan, host_files: tuple[Path, ...]) -> None:

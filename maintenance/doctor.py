@@ -57,6 +57,8 @@ from .doctor_store import (
 )
 from .import_progress import read_progress
 from .install_common import RUNTIME_CONFIG_LIMIT
+from .setup_projects import project_suggestions
+from .setup_workload import recommended_workload
 
 #: Run as a file by the target interpreter, so an installed package that
 #: predates these diagnostics is still measured. It imports no optional library.
@@ -208,11 +210,17 @@ def _read_control_file(path: Path) -> dict[str, Any] | None:
     return loaded
 
 
-def _probe_python_package(python: Path) -> dict[str, Any]:
+def probe_python_package(python: Path) -> dict[str, Any]:
     """What the target interpreter imports; empty when it cannot answer cleanly."""
     try:
         result = subprocess.run(
-            [str(python), "-I", "-B", str(_PACKAGE_PROBE)], capture_output=True, text=True, timeout=30, check=False
+            [str(python), "-I", "-B", str(_PACKAGE_PROBE)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
         )
         found = json.loads(result.stdout) if result.returncode == 0 and len(result.stdout) <= 65536 else None
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -469,7 +477,7 @@ def _check_python_package(report: DoctorReport, python: Path) -> dict[str, Any]:
         record_check(report, "python_executable", "missing")
         return {}
     report.python_executable = str(python)
-    probe = _probe_python_package(python)
+    probe = probe_python_package(python)
     if not probe:
         report.capability_gaps.append("python_package_missing")
         record_check(report, "python_package", "missing")
@@ -888,12 +896,16 @@ def run_doctor(
     host: str,
     instance_root: Path | str,
     python_executable: Path | str | None = None,
+    project_root: Path | str | None = None,
 ) -> DoctorReport:
     if host not in ("hermes", "codex", "claude-code", "workbuddy", "dsh"):
         raise ValueError("host must be 'hermes', 'codex', 'claude-code', 'workbuddy' or 'dsh'")
     instance = _require_absolute(Path(instance_root), "instance_root")
     python = Path(python_executable) if python_executable is not None else None
     report = DoctorReport(host=host, status="degraded")
+    report.model_workload_per_100_turns = recommended_workload()
+    if host == "codex":
+        report.project_copy_suggestions = project_suggestions(instance, Path(project_root or Path.cwd()))
 
     _check_host_registration(report, instance, python)
     probe = _check_current_package(report) if python is None else _check_python_package(report, python)

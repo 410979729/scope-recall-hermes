@@ -447,6 +447,39 @@ def _read(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _assert_workbuddy_wiring(workbuddy, settings, mcp, entry):
+    """Verify merged host commands while retaining the surrounding user configuration."""
+    written = _read(workbuddy / "settings.json")
+    assert list(written) == list(settings)
+    assert {key: value for key, value in written.items() if key != "hooks"} == {
+        key: value for key, value in settings.items() if key != "hooks"
+    }
+    assert written["hooks"]["UserPromptSubmit"][0] == settings["hooks"]["UserPromptSubmit"][0], "another hook stays"
+    ours = {event: groups[-1]["hooks"] for event, groups in written["hooks"].items()}
+    assert {event: [(hook["type"], hook["timeout"]) for hook in hooks] for event, hooks in ours.items()} == {
+        "UserPromptSubmit": [("command", 15)],
+        "Stop": [("command", 10)],
+        "SessionEnd": [("command", 10)],
+    }
+    command = ours["UserPromptSubmit"][0]["command"]
+    assert all(hooks[0]["command"] == command for hooks in ours.values())
+    assert command.startswith(f'"{Path(sys.executable).as_posix()}" -I -B -m scope_recall.adapters.codex.hook_entry ')
+    assert command.endswith(f' --home "{entry.as_posix()}" --host workbuddy || exit 1')
+    assert "\\" not in command and "~" not in command, "Git Bash reads a backslash as an escape and ~ as its own home"
+    assert shlex.split(command)[0] == Path(sys.executable).as_posix()
+    servers = _read(workbuddy / "mcp.json")["mcpServers"]
+    assert list(servers) == ["TEST-other-server", "scope-recall"]
+    assert servers["TEST-other-server"] == mcp["mcpServers"]["TEST-other-server"]
+    assert (
+        servers["scope-recall"]["type"] == "stdio"
+        and servers["scope-recall"]["command"] == Path(sys.executable).as_posix()
+    )
+    assert servers["scope-recall"]["description"] == install_workbuddy.SERVER_DESCRIPTION
+    assert servers["scope-recall"]["args"][-4:] == ["--home", entry.as_posix(), "--host", "workbuddy"]
+
+    return command
+
+
 def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own(
     tmp_path, capsys, root, monkeypatch
 ):
@@ -519,36 +552,12 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     )
     copies = {Path(path).name: Path(path).read_bytes() for path in installed.backups if Path(path).name in before}
     assert copies == before, "each file is copied before it is changed"
-    assert {path.name for path in workbuddy.iterdir()} == present, "nothing else is left in WorkBuddy's home"
+    assert {path.name for path in workbuddy.iterdir()} == present | {"skills"}
+    skill = workbuddy / "skills" / "scope-recall-memory" / "SKILL.md"
+    assert skill.is_file()
     assert (workbuddy / ".mcp.json").read_bytes() == proxy, "WorkBuddy's own proxy record is not touched"
 
-    written = _read(workbuddy / "settings.json")
-    assert list(written) == list(settings)
-    assert {key: value for key, value in written.items() if key != "hooks"} == {
-        key: value for key, value in settings.items() if key != "hooks"
-    }
-    assert written["hooks"]["UserPromptSubmit"][0] == settings["hooks"]["UserPromptSubmit"][0], "another hook stays"
-    ours = {event: groups[-1]["hooks"] for event, groups in written["hooks"].items()}
-    assert {event: [(hook["type"], hook["timeout"]) for hook in hooks] for event, hooks in ours.items()} == {
-        "UserPromptSubmit": [("command", 15)],
-        "Stop": [("command", 10)],
-        "SessionEnd": [("command", 10)],
-    }
-    command = ours["UserPromptSubmit"][0]["command"]
-    assert all(hooks[0]["command"] == command for hooks in ours.values())
-    assert command.startswith(f'"{Path(sys.executable).as_posix()}" -I -B -m scope_recall.adapters.codex.hook_entry ')
-    assert command.endswith(f' --home "{entry.as_posix()}" --host workbuddy || exit 1')
-    assert "\\" not in command and "~" not in command, "Git Bash reads a backslash as an escape and ~ as its own home"
-    assert shlex.split(command)[0] == Path(sys.executable).as_posix()
-    servers = _read(workbuddy / "mcp.json")["mcpServers"]
-    assert list(servers) == ["TEST-other-server", "scope-recall"]
-    assert servers["TEST-other-server"] == mcp["mcpServers"]["TEST-other-server"]
-    assert (
-        servers["scope-recall"]["type"] == "stdio"
-        and servers["scope-recall"]["command"] == Path(sys.executable).as_posix()
-    )
-    assert servers["scope-recall"]["description"] == install_workbuddy.SERVER_DESCRIPTION
-    assert servers["scope-recall"]["args"][-4:] == ["--home", entry.as_posix(), "--host", "workbuddy"]
+    command = _assert_workbuddy_wiring(workbuddy, settings, mcp, entry)
 
     # Run again, as after an upgrade: WorkBuddy's files are not touched.
     stamps = {name: ((workbuddy / name).read_bytes(), (workbuddy / name).stat().st_mtime_ns) for name in before}
@@ -584,7 +593,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert report.shared_store == {"root": str(root), "entry_id": "workbuddy", "entry_name": "WorkBuddy"}
 
     removal = plan_uninstall(instance_root=entry)
-    assert removal.conflicts == [] and removal.files_to_remove == []
+    assert removal.conflicts == [] and removal.files_to_remove == [os.path.normcase(str(skill))]
     assert sorted(Path(path).name for path in removal.unmerged_files) == ["mcp.json", "settings.json"]
     held = {name: (workbuddy / name).read_bytes() for name in before}
     removed = apply_uninstall(removal)
@@ -600,6 +609,8 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     }
     assert _read(workbuddy / "mcp.json") == mcp and (workbuddy / ".mcp.json").read_bytes() == proxy
     assert plan_uninstall(instance_root=entry).unmerged_files == [], "nothing of this entry's is left"
+    assert not skill.exists()
+    assert {path.name for path in workbuddy.iterdir()} == present
 
     code, result = _run(capsys, "detach", "--instance-root", str(entry))
     assert (code, result["status"]) == (0, "detached")
@@ -1961,10 +1972,13 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
     }
 
     removal = plan_uninstall(instance_root=entry)
-    assert removal.conflicts == [] and [Path(path).name for path in removal.files_to_remove] == ["index.mjs"]
+    assert removal.conflicts == [] and {Path(path).name.lower() for path in removal.files_to_remove} == {
+        "index.mjs",
+        "skill.md",
+    }
     assert [Path(path).name for path in removal.unmerged_files] == ["cordis.patch.yml"]
     apply_uninstall(removal)
-    assert not plugin.exists()
+    assert not plugin.exists() and not (home / "skills" / "scope-recall-memory" / "SKILL.md").exists()
     assert _patch_ops(home / "cordis.patch.yml") == ops[:3], "the person's rows and the upload switched off stay"
     assert plan_uninstall(instance_root=entry).unmerged_files == []
 
