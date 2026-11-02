@@ -21,6 +21,11 @@ let recallBefore = null;
 let recallFilters = {};
 let recallRows = [];
 let recallIdentity = 0;
+let reviewsCursor = null;
+let reviewActionsBefore = null;
+let reviewRows = [];
+let reviewActionRows = [];
+let reviewPolicyState = null;
 let healthCursor = null;
 let healthActionsBefore = null;
 let healthPages = [];
@@ -101,6 +106,7 @@ async function loadPage(page) {
     else button.removeAttribute("aria-current");
   }
   if (page === "overview") overview(await request("overview"));
+  if (page === "reviews") await loadReviews(false);
   if (page === "entries") await loadEntries();
   if (page === "browse") await browse(false);
   if (page === "health") await loadHealth(false);
@@ -344,7 +350,7 @@ async function preview(values) {
   const data = await request("preview", values, true);
   reviewId = data.id;
   display("preview-data", data.preview);
-  $("review-hint").hidden = values.action === "entry-state";
+  $("review-hint").hidden = values.action === "entry-state" || values.action.startsWith("review-");
   $("review").hidden = false;
   $("receipt").hidden = true;
   $("confirm").disabled = false;
@@ -370,6 +376,9 @@ function translate() {
   if (lastPrivate) privateState(lastPrivate);
   if (lastScan) renderBrowse();
   if (recallRows.length) renderRecalls();
+  if (reviewRows.length) renderReviews();
+  if (reviewActionRows.length) renderReviewActions();
+  if (reviewPolicyState) renderReviewPolicy();
   if (healthPages.length) renderHealth();
   if (healthActionItems.length) renderHealthActions();
   if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
@@ -433,6 +442,7 @@ $("confirm").addEventListener("click", () => run(async () => {
   if (["forget", "forget-session"].includes(data.action)) $("detail").hidden = true;
   if (["revise", "mute", "unmute"].includes(data.action) && selected) await detail(selected.ref);
   if (currentPage === "entries") await loadEntries();
+  if (currentPage === "reviews") await loadReviews(false);
   if (currentPage === "quarantine") await loadQuarantine(false);
   if (currentPage === "private") privateState(await request("private"));
   $("receipt").scrollIntoView({block: "start"});
@@ -441,3 +451,70 @@ $("recall-filters").addEventListener("submit", (event) => { event.preventDefault
 $("recall-next").addEventListener("click", () => run(() => loadRecalls(true)));
 translate();
 run(() => loadPage("overview"));
+
+async function loadReviews(more) {
+  const filters = formValues("review-filters");
+  if (more && reviewsCursor) filters.cursor = reviewsCursor;
+  const data = await request("reviews", filters);
+  reviewRows = more ? [...reviewRows, ...data.items] : data.items;
+  reviewsCursor = data.next_cursor;
+  $("reviews-next").disabled = !reviewsCursor;
+  renderReviews();
+  if (!more) await loadReviewActions(false);
+  if (reviewPolicyState) {
+    reviewPolicyState = await request("review-policy", {scope: reviewPolicyState.scope_id});
+    renderReviewPolicy();
+  }
+}
+function renderReviews() {
+  $("review-items").replaceChildren();
+  for (const item of reviewRows) {
+    const row = node("article", undefined, $("review-items"));
+    node("h3", t("review_" + item.source), row);
+    node("pre", typeof item.content === "string" ? item.content : JSON.stringify(item.content), row);
+    node("h4", t("reviewEvidence"), row);
+    node("pre", JSON.stringify(item.evidence, null, 2), row);
+    node("span", t("reviewTime") + ": " + item.time, row);
+    const chosen = [];
+    for (const fragment of item.fragments || []) {
+      const label = node("label", undefined, row);
+      const checkbox = node("input", undefined, label); checkbox.type = "checkbox";
+      checkbox.addEventListener("change", () => { if (checkbox.checked) chosen.push(fragment.id); else chosen.splice(chosen.indexOf(fragment.id), 1); });
+      node("span", fragment.text, label);
+    }
+    let keep = null;
+    if (item.category === "contradictions") {
+      const label = node("label", t("reviewKeep"), row);
+      keep = node("select", undefined, label);
+      for (const [ref] of item.key[2]) { const option = node("option", ref, keep); option.value = ref; }
+    }
+    for (const decision of ["approve", "reject"]) {
+      const button = node("button", t(decision === "approve" ? "reviewApprove" : "reviewReject"), row);
+      button.addEventListener("click", () => run(() => preview({action: "review-decide", key: item.key, decision, expected_version: item.version, selection: item.source === "adoption" ? {fragment_ids: [...chosen]} : keep ? {keep: keep.value} : null})));
+    }
+  }
+}
+async function loadReviewActions(more) {
+  const data = await request("review-actions", more && reviewActionsBefore ? {before: reviewActionsBefore} : {});
+  reviewActionRows = more ? [...reviewActionRows, ...data.items] : data.items;
+  reviewActionsBefore = data.next_before;
+  $("review-actions-next").disabled = !reviewActionsBefore;
+  renderReviewActions();
+}
+function renderReviewActions() {
+  $("review-actions").replaceChildren();
+  for (const action of reviewActionRows) {
+    const button = node("button", t("reviewUndo") + " · " + t("review_" + action.source) + " · " + t(action.decision === "approve" ? "reviewApprove" : "reviewReject") + " · " + action.time, $("review-actions"));
+    button.addEventListener("click", () => run(() => preview({action: "review-undo", action_id: action.action_id, expected_version: action.version})));
+  }
+}
+function renderReviewPolicy() {
+  $("review-policy-data").replaceChildren();
+  node("span", reviewPolicyState.scope_id + " · " + t("reviewPolicy") + ": " + t(reviewPolicyState.enabled ? "reviewEnabled" : "reviewDisabled"), $("review-policy-data"));
+  const button = node("button", t(reviewPolicyState.enabled ? "reviewDisabled" : "reviewEnabled"), $("review-policy-data"));
+  button.addEventListener("click", () => run(() => preview({action: "review-policy-set", scope: reviewPolicyState.scope_id, enabled: !reviewPolicyState.enabled, expected_version: reviewPolicyState.version})));
+}
+$("review-filters").addEventListener("submit", (event) => { event.preventDefault(); run(() => loadReviews(false)); });
+$("review-policy-form").addEventListener("submit", (event) => { event.preventDefault(); run(async () => { reviewPolicyState = await request("review-policy", formValues("review-policy-form")); renderReviewPolicy(); }); });
+$("reviews-next").addEventListener("click", () => run(() => loadReviews(true)));
+$("review-actions-next").addEventListener("click", () => run(() => loadReviewActions(true)));

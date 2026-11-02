@@ -43,7 +43,7 @@ def _scheduling_decision(tx, source, policy):
         .fetchone()
     )
     marker = json.loads(row[0]).get("_scope_recall_admission", {})
-    if marker.get("disposition") in {"source_only", "deferred"}:
+    if marker.get("disposition") in {"source_only", "deferred"} or marker.get("reason") == "owner_review_approved":
         return AdmissionDecision(marker["disposition"], marker["reason"], bool(marker.get("important")))
     decision = decide(tx, source.event, source.scope_id, policy, source_ref=source.ref, source_revision=source.revision)
     store_decision(tx, source.ref, source.revision, decision)

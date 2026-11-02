@@ -48,6 +48,14 @@ def number(data, key, default=None):
     return value
 
 
+def policy_version(data):
+    """Policy history starts at zero before its first recorded change."""
+    value = data.get("expected_version")
+    if type(value) is not int or not 0 <= value < 2**63:
+        raise ContractError("INPUT_INVALID", "expected_version")
+    return value
+
+
 def filters(data):
     """Keep inventory, search, session selection and export on one filter contract."""
     return MemoryFilter(**{key: text(data, key) for key in FILTERS if key != "query"}, query=text(data, "query") or "")
@@ -112,7 +120,17 @@ class UIApi:
     def read(self, route, data):
         """Dispatch a read without invoking any state-changing owner method."""
         api = self.management
-        if route in {"overview", "backup", "entries", "entry", "health", "health-actions"}:
+        if route in {
+            "overview",
+            "backup",
+            "entries",
+            "entry",
+            "health",
+            "health-actions",
+            "reviews",
+            "review-actions",
+            "review-policy",
+        }:
             return self._read_control(route, data)
         if route in {"list", "search"}:
             return api.list(filters(data), limit=number(data, "limit", 30), cursor=text(data, "cursor"))
@@ -139,8 +157,20 @@ class UIApi:
             return self._lookup(self.receipts, text(data, "id"))
         raise ContractError("INPUT_INVALID", "route")
 
+    def _read_reviews(self, route, data):
+        """Read native queues, receipts and the scope publication switch."""
+        if route == "review-policy":
+            return self.management.review_policy(text(data, "scope"))
+        if route == "review-actions":
+            return self.management.review_actions(limit=number(data, "limit", 30), before=number(data, "before"))
+        return self.management.reviews(
+            source=text(data, "source"), limit=number(data, "limit", 30), cursor=text(data, "cursor")
+        )
+
     def _read_control(self, route, data):
         """Dispatch entry, status and health reads."""
+        if route in {"reviews", "review-actions", "review-policy"}:
+            return self._read_reviews(route, data)
         return (
             self._read_health(route, data)
             if route in {"health", "health-actions"}
@@ -169,6 +199,8 @@ class UIApi:
 
     def _control_plan(self, data, action):
         """Prepare entry, instruction and health changes through the owner boundary."""
+        if action in {"review-decide", "review-undo", "review-policy-set"}:
+            return self._review_plan(data, action)
         if action == "entry-state":
             return dict(action=action, entry_id=text(data, "entry_id"), state=text(data, "state"))
         if action == "instruction-set":
@@ -178,7 +210,9 @@ class UIApi:
     def _plan(self, data):
         api = self.management
         action = text(data, "action")
-        if action in {"entry-state", "instruction-set"} or (action is not None and action.startswith("health-")):
+        if action in {"entry-state", "instruction-set", "review-decide", "review-undo", "review-policy-set"} or (
+            action is not None and action.startswith("health-")
+        ):
             return self._control_plan(data, action)
         if action in {"mute", "unmute", "forget"}:
             ref = text(data, "ref")
@@ -231,6 +265,29 @@ class UIApi:
             )
         raise ContractError("INPUT_INVALID", "action")
 
+    def _review_plan(self, data, action):
+        """Retain only review contract fields in the single-use owner preview."""
+        if action == "review-policy-set":
+            return dict(
+                action=action,
+                scope=text(data, "scope"),
+                enabled=flag(data, "enabled"),
+                expected_version=policy_version(data),
+            )
+        if action == "review-undo":
+            return dict(
+                action=action, action_id=text(data, "action_id"), expected_version=text(data, "expected_version")
+            )
+        if not isinstance(data.get("key"), list) or data.get("decision") not in {"approve", "reject"}:
+            raise ContractError("INPUT_INVALID", "review_decision")
+        return dict(
+            action=action,
+            key=data["key"],
+            decision=data["decision"],
+            selection=data.get("selection"),
+            expected_version=text(data, "expected_version"),
+        )
+
     def _health_plan(self, data, action):
         """Validate the reviewed health decision without disclosing hidden facts."""
         if action in {"health-entity", "health-merge", "health-choose"}:
@@ -263,6 +320,8 @@ class UIApi:
     def _control_apply(self, plan):
         """Apply an entry, instruction or health review."""
         action = plan["action"]
+        if action in {"review-decide", "review-undo", "review-policy-set"}:
+            return self._review_apply(plan)
         if action == "entry-state":
             return self.management.set_entry_state(plan["entry_id"], plan["state"], actor=getpass.getuser())
         if action == "instruction-set":
@@ -272,7 +331,9 @@ class UIApi:
     def _apply(self, plan):
         api = self.management
         action = plan["action"]
-        if action in {"entry-state", "instruction-set"} or (action is not None and action.startswith("health-")):
+        if action in {"entry-state", "instruction-set", "review-decide", "review-undo", "review-policy-set"} or (
+            action is not None and action.startswith("health-")
+        ):
             return self._control_apply(plan)
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
@@ -295,6 +356,18 @@ class UIApi:
             return api.private_off(**plan["arguments"])
         with api.export_reader(MemoryFilter(**plan["filters"])) as reader:
             return write_export(reader, plan["out"], with_attachments=plan["with_attachments"])
+
+    def _review_apply(self, plan):
+        """Route review writes through the same owner boundary as the CLI."""
+        if plan["action"] == "review-policy-set":
+            return self.management.set_review_policy(
+                plan["scope"], plan["enabled"], expected_version=plan["expected_version"]
+            )
+        if plan["action"] == "review-undo":
+            return self.management.review_undo(plan["action_id"], expected_version=plan["expected_version"])
+        return self.management.review_decide(
+            plan["key"], plan["decision"], expected_version=plan["expected_version"], selection=plan["selection"]
+        )
 
     def _health_apply(self, plan):
         """Apply a reviewed health decision through the management boundary."""

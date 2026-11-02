@@ -12,6 +12,7 @@ from .claim_normalization import PROJECT_TAG, normalize_frame
 from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
 from .delete_storage import canonical
 from .importance import record_importance
+from .review_policy import publication_qualification
 from .summary_validity import is_conversation_summary
 from .visibility import allowed, allowed_refs
 
@@ -676,6 +677,16 @@ class Claims:
     ) -> ClaimVersion:
         conn = self._tx._check(write=True)
         self._tx._scope(scope_id)
+        # Exact conversation excerpts are source views with their own dependency
+        # fence; changing their identity would turn quotes into ordinary facts.
+        qualification = publication_qualification(
+            self._tx,
+            scope_id,
+            qualification,
+            previous,
+            proposal,
+            source_view=is_conversation_summary(qualification),
+        )
         ctx = self._tx.context
         recorded = canonical_time(recorded_at)
         slot_key = claim_slot(scope_id, ctx.project_id, ctx.branch_id, proposal)

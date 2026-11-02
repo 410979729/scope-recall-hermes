@@ -29,6 +29,7 @@ from .recall_policy import applicability, in_time_window, parse_time
 from .reflection_validity import reflection_live
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, RetrievedObject, SearchContext
+from .review_policy import REVIEW_REASONS
 from .summary_validity import is_conversation_summary, summary_live, summary_origin
 from .visibility import CLOSED_INTENTION_STATES, allowed, allowed_refs
 
@@ -501,6 +502,7 @@ class RetrievalHydration:
         version = next((item for item in versions if item.revision == candidate.revision), None)
         if (
             version is None
+            or version.reason in REVIEW_REASONS
             or (context.mode == "auto" and version.suppressed)
             or not reflection_live(tx, version, query_scope=context.scope, excluded=context.current_source_refs)
         ):

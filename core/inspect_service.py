@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..contracts import ContractError, TrustedContext
 from .injection_guard import notice
+from .review_policy import REVIEW_REASONS
 from .storage import SQLiteStorage
 from .visibility import ObjectRef, release_objects
 
@@ -39,7 +40,14 @@ def _resolve(tx, ref, revision):
 
 
 def inspect_object(
-    storage: SQLiteStorage, clock, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24
+    storage: SQLiteStorage,
+    clock,
+    context: TrustedContext,
+    ref: str,
+    revision: int | None = None,
+    *,
+    limit: int = 24,
+    owner_review: bool = False,
 ) -> InspectedObject:
     """Resolve one object by direct repository lookups, then release it again.
 
@@ -60,6 +68,8 @@ def inspect_object(
             return InspectedObject("event", ref, held["revision"], held, status.memory_epoch, (held["state"],))
         kind, value = _resolve(tx, ref, revision)
         actual_revision = int(value.revision)
+        if kind == "claim" and getattr(value, "reason", None) in REVIEW_REASONS and not owner_review:
+            return InspectedObject(kind, ref, actual_revision, None, status.memory_epoch, ("owner_review_required",))
     released = release_objects(
         storage,
         clock,

@@ -202,6 +202,7 @@ SUITES = {
         "tests/contract/test_backup_relocation.py",
         "tests/contract/test_full_backup.py",
         "tests/contract/test_memory_admin.py",
+        "tests/contract/test_review_list.py",
         "tests/contract/test_memory_health.py",
         "tests/contract/test_health_repairs.py",
         "tests/contract/test_memory_cli.py",
@@ -371,6 +372,7 @@ SUITES = {
         "tests/migration/test_health_upgrade.py",
         "tests/migration/test_reflection_upgrade.py",
         "tests/migration/test_adoption_upgrade.py",
+        "tests/migration/test_review_upgrade.py",
         "tests/migration/test_database_identity_upgrade.py",
         "tests/migration/test_importance_summary_upgrade.py",
         "tests/migration/test_claim_index_upgrade.py",
@@ -392,6 +394,7 @@ SUITES = {
         *SCRIPT_GATE_TESTS,
     ],
     "integration": [
+        "tests/integration/test_review_list.py",
         "tests/integration/test_health_scale.py",
         "tests/integration/test_memory_import.py",
         "tests/contract/test_worker.py",

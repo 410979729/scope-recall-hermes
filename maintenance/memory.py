@@ -149,10 +149,17 @@ def parser():
         "health-merge",
         "health-choose",
         "health-undo",
+        "reviews",
+        "review-decide",
+        "review-undo",
+        "review-actions",
+        "review-policy",
+        "review-policy-set",
     ):
         command = commands.add_parser(action)
         _common(command)
         _entry_arguments(command, action)
+        _review_arguments(command, action)
 
         _instruction_arguments(command, action)
         if action == "recalls":
@@ -197,6 +204,47 @@ def parser():
             command.add_argument("--out", required=True, help="new directory, or a new file ending in .zip")
             command.add_argument("--with-attachments", action="store_true", help="include retained attachments")
     return root
+
+
+def _review_arguments(command, action):
+    """Expose the identical native review contract to local operators."""
+    if action in {"reviews", "review-actions"}:
+        command.add_argument("--limit", type=int, default=30)
+        command.add_argument(
+            "--cursor" if action == "reviews" else "--before", type=str if action == "reviews" else int
+        )
+    if action == "reviews":
+        command.add_argument("--source", choices=("import", "adoption", "observation", "health", "fact"))
+    if action in {"review-policy", "review-policy-set"}:
+        command.add_argument("--scope", required=True)
+    if action == "review-policy-set":
+        command.add_argument("state", choices=("on", "off"))
+        command.add_argument("--expected-version", type=int, required=True)
+    if action in {"review-decide", "review-undo"}:
+        command.add_argument("--expected-version", required=True)
+        command.add_argument("key" if action == "review-decide" else "action_id")
+    if action == "review-decide":
+        command.add_argument("decision", choices=("approve", "reject"))
+        command.add_argument("--selection", default="null", help="JSON object with fragment_ids or keep")
+
+
+def _execute_review(api, args):
+    """Dispatch source-owned review reads and version-checked owner writes."""
+    if args.action == "reviews":
+        return api.reviews(source=args.source, limit=args.limit, cursor=args.cursor)
+    if args.action == "review-actions":
+        return api.review_actions(limit=args.limit, before=args.before)
+    if args.action == "review-policy":
+        return api.review_policy(args.scope)
+    if args.action == "review-policy-set":
+        return api.set_review_policy(args.scope, args.state == "on", expected_version=args.expected_version)
+    if args.action == "review-undo":
+        return api.review_undo(args.action_id, expected_version=args.expected_version)
+    try:
+        key, selection = json.loads(args.key), json.loads(args.selection)
+    except ValueError as exc:
+        raise ContractError("INPUT_INVALID", "review_json") from exc
+    return api.review_decide(key, args.decision, expected_version=args.expected_version, selection=selection)
 
 
 def _preview(api, args):
@@ -260,11 +308,24 @@ def _execute_instruction_or_health(api, args):
     return api.set_memory_instruction(args.scope, args.text)
 
 
+def _execute_owner(api, args):
+    """Route related owner controls without growing the inventory dispatcher."""
+    if args.action == "reviews" or args.action.startswith("review-"):
+        return _execute_review(api, args)
+    if args.action in {"entries", "entry", "entry-state"}:
+        return _entry_command(api, args)
+    return _execute_instruction_or_health(api, args)
+
+
 def execute(api, args):
     """Translate one parsed command to the same methods used by the local UI."""
     entry_action = args.action in {"entries", "entry", "entry-state"}
-    if entry_action or args.action in {"instruction-get", "instruction-set"} or args.action.startswith("health"):
-        return _entry_command(api, args) if entry_action else _execute_instruction_or_health(api, args)
+    if (
+        entry_action
+        or args.action in {"reviews", "instruction-get", "instruction-set"}
+        or args.action.startswith(("review-", "health"))
+    ):
+        return _execute_owner(api, args)
     if args.action in {"recalls", "secrets", "list", "search"}:
         return _inventory(api, args)
     if args.action == "importance":
@@ -321,6 +382,10 @@ def _render_scan(data):
 
 def _render_items(data):
     """Render inventory and history rows with their respective continuation."""
+    if any("source" in item for item in data["items"]):
+        # Review identities and evidence must remain complete enough to reuse.
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
     rows = [
         dict(
             kind=item.get("kind", ""),

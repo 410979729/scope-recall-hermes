@@ -5,7 +5,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1128
+SCHEMA_VERSION = 1129
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -778,6 +778,12 @@ STATEMENTS = (
     + (
         RESTORED_SUPPRESSION_STATEMENT,
         PRIVATE_COMMAND_FENCES_STATEMENT,
+        """CREATE TABLE scope_review_policy (
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version>=1), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+        changed_at TEXT NOT NULL, changed_by TEXT NOT NULL CHECK(changed_by='local_user_management'),
+        PRIMARY KEY(scope_id,version)
+    ) STRICT, WITHOUT ROWID""",
         """CREATE TABLE scope_memory_instructions (
         scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
         version INTEGER NOT NULL CHECK(version >= 1),
@@ -1208,3 +1214,10 @@ def upgrade_1127(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1128 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1128")
+
+
+def upgrade_1128(connection):
+    """Install owner publication policy without changing existing facts."""
+    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_review_policy")))
+    connection.execute("UPDATE instance_meta SET schema_version=1129 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1129")

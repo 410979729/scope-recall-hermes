@@ -4,6 +4,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Owner review unifies imported material, ambiguous adoptions, observations, health findings and held facts. A versioned per-scope review-before-publication switch defaults off; pending and rejected extractions remain outside recall, briefs and current-fact exports. Decisions are reversible with optimistic version checks. Stores upgrade automatically with a pre-upgrade snapshot; existing facts and source authorship are preserved.
+
 Entry controls record owner changes and apply read-only or paused states to individual entries. Paused entry work is rechecked at dispatch and publication, and stale recall packets are discarded.
 
 

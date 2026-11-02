@@ -237,3 +237,53 @@ def test_provider_discards_memory_when_brief_confirmation_finds_paused_entry(ada
     )
     assert result == ""
     assert "entry_state:paused" in provider._diagnostics.capability_gaps
+
+
+def test_provider_review_gate_withholds_fact_from_prefetch_tools_and_brief(adapter):
+    from dataclasses import replace
+
+    from tests.contract.test_claims import draft
+    from tests.v11_support import recall_request
+
+    provider, _clock = adapter
+    core = provider._require_core()
+    binding = core.storage.binding
+    owner_context = TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated")
+    owner = MemoryManagement(core, InstallationMaintenance(owner_context))
+    for scope in binding.scope_ids:
+        owner.set_review_policy(scope, True, expected_version=0)
+    provider.on_turn_start(1, "TEST-project palette ultramarine.", turn_id="TEST-review")
+    provider.observe_pre_llm(
+        session_id="TEST-session-1", turn_id="TEST-review", user_message="TEST-project palette ultramarine."
+    )
+    with core.storage.read(owner_context) as tx:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT event_id,source_revision,scope_id,project_id,branch_id FROM source_events "
+                "ORDER BY source_id DESC LIMIT 1"
+            )
+            .fetchone()
+        )
+    ctx = replace(owner_context, project_id=row["project_id"], branch_id=row["branch_id"])
+    source = core.source(ctx, row[0], row[1])
+    pending = core.records.accept_claim_proposals(
+        ctx,
+        dict(
+            protocol_version="1.1",
+            source_refs=[f"{source.ref}@{source.revision}"],
+            claim_proposals=[
+                draft(source, "ultramarine", predicate="palette", kind="fact", statement_kind="assertion")
+            ],
+            resume_proposals=[],
+            reference_proposals=[],
+        ),
+        scope_id=row["scope_id"],
+        remaining_seconds=10,
+    ).items[0]
+    assert pending.state == "proposed"
+    assert pending.ref not in provider.prefetch("TEST-project palette")
+    assert pending.ref not in str(
+        core.recall_packet(ctx, recall_request(query="TEST-project palette", mode="current"), deadline_seconds=10)
+    )
+    assert pending.ref not in str(core.session_brief(ctx))

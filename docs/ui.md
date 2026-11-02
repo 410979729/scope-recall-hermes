@@ -124,3 +124,46 @@ ranking signals, processing counts and reasons for an empty packet. Private atte
 available item to correct, mute or delete it with the same preview and confirmation as **Browse and search**.
 Deleted, held, private, stale or unauthorized references have no action link. See [Recall history](manage.md#recall-history)
 for retention settings and command-line lookup.
+
+
+## Review
+
+The Review page reads pending imported material, ambiguous proposal adoptions,
+observations, health findings and extracted facts directly from their source
+records. Each item includes its source, content, evidence and timestamp. Approve
+or reject an item; Decisions offers Undo while the affected versions are unchanged.
+The existing source pages reflect the same decisions. If a scheduled consolidation
+or adoption job has advanced, Undo returns a version conflict. It cannot report
+success while already executed work remains in effect.
+
+Review before publication is a per-scope switch, disabled by default. Enter a
+scope on the Review page to read or change its versioned setting. New extractions
+in an enabled scope wait for approval without replacing existing facts. Recall,
+explicit lookups, session briefs and current-fact exports withhold the held facts;
+original messages remain searchable. Turning the switch off leaves existing
+pending items waiting. Rejected records remain in history.
+
+An ambiguous adoption requires the owner's selected fragment IDs. Approval resumes
+the existing extraction stages; imported material keeps its original authorship
+and existing fact-qualification rules. Observations retain their inductive basis
+and dependency signature. A health finding about an unused fact is acknowledged
+without automatically deleting or muting that fact.
+
+The CLI uses the same owner API:
+
+```text
+scope-recall memory reviews --source fact --json
+scope-recall memory review-policy --scope SCOPE --json
+scope-recall memory review-policy-set on --scope SCOPE --expected-version 0 --json
+scope-recall memory review-decide '["fact","claim-REFERENCE",1]' approve --expected-version TOKEN --json
+scope-recall memory review-actions --json
+scope-recall memory review-undo ACTION_ID --expected-version TOKEN --json
+```
+
+Add the installation selector used by the other memory commands. Adoption approval
+accepts `--selection '{"fragment_ids":[2]}'`; a conflicting health pair accepts
+`--selection '{"keep":"claim-REFERENCE"}'`. Pages continue with `--cursor`;
+decision history continues with `--before`. HTTP reads use `reviews`,
+`review-actions` and `review-policy`; writes use `review-decide`, `review-undo`
+and `review-policy-set` through the existing preview/confirm endpoints. Each write
+requires the version displayed by its corresponding read.

@@ -77,6 +77,44 @@ class MemoryManagement:
         """Return one inventory page, with an opaque cursor for the next page."""
         return browse(self.core, self._context(), filters or MemoryFilter(), limit=limit, cursor=cursor)
 
+    def review_policy(self, scope_id):
+        """Read the scope's publication policy and last policy version."""
+        from .review_policy import policy
+
+        with self.core.storage.read(self._context()) as tx:
+            return policy(tx, scope_id)
+
+    def set_review_policy(self, scope_id, enabled, *, expected_version):
+        """Version an owner policy change in the existing write transaction."""
+        from .review_policy import set_policy
+
+        with self.core.storage.write(self._context(), remaining_seconds=10) as tx:
+            return set_policy(tx, self.core.clock, scope_id, enabled, expected_version)
+
+    def reviews(self, *, source=None, limit=30, cursor=None):
+        """Read one page of source-owned review items."""
+        from .review_list import reviews
+
+        return reviews(self, source=source, limit=limit, cursor=cursor)
+
+    def review_decide(self, key, decision, *, expected_version, selection=None):
+        """Approve or reject one exact native-state snapshot."""
+        from .review_list import decide
+
+        return decide(self, key, decision, expected_version=expected_version, selection=selection)
+
+    def review_undo(self, action_id, *, expected_version):
+        """Restore the source state preceding an unchanged review action."""
+        from .review_list import undo
+
+        return undo(self, action_id, expected_version=expected_version)
+
+    def review_actions(self, *, limit=30, before=None):
+        """Read bounded review receipts available for undo."""
+        from .review_list import actions
+
+        return actions(self, limit=limit, before=before)
+
     def quarantine(self, *, limit=30, before=None):
         """Read a bounded held-content page with the installation owner capability."""
         return review_page(self.core.storage, self.authority, limit=limit, before=before)

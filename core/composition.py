@@ -395,7 +395,9 @@ class MemoryCore:
             record = diagnostic(view)
             result = InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
         else:
-            result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
+            result = inspect_object(
+                self.storage, self.clock, context, ref, revision, limit=limit, owner_review=owner_authority is not None
+            )
         if owner_authority is None:
             if self._entry_blocked(context, entry):
                 return InspectedObject(
