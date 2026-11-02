@@ -392,23 +392,6 @@ def test_claude_default_project_directory_and_project_overrides(tmp_path):
     assert state["files"][0]["path"] == str(memory)
 
 
-def test_session_start_mark_is_specific_and_never_moves_forward(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from scope_recall.adapters.clients.session_marks import mark_session_start, session_start_time
-
-    config = SimpleNamespace(data_directory=tmp_path)
-    now = [1000.0]
-    monkeypatch.setattr("scope_recall.adapters.clients.session_marks.time.time", lambda: now[0])
-    assert session_start_time(config, "codex", "TEST-a") is None
-    mark_session_start(config, "codex", "TEST-a")
-    now[0] = 2000.0
-    mark_session_start(config, "codex", "TEST-a")
-    assert session_start_time(config, "codex", "TEST-a") == 1000.0
-    assert session_start_time(config, "claude-code", "TEST-a") is None
-    assert session_start_time(config, "codex", "TEST-b") is None
-
-
 def test_claude_project_policy_precedence_and_invalid_settings(tmp_path):
     import json
 

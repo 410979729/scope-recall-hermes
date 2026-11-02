@@ -11,6 +11,7 @@ from .aliases import ENTITY_KINDS
 from .claims import evidence_refs
 from .entity_names import backfill_names, checked, index_claim, ineligible, pending_names, reserve_names
 from .entity_resolution import entity_messages, live_entity, publish_entity_merge
+from .entry_control import entry_fence, paused_since
 from .evidence_support import SupportVerdict
 from .injection_guard import blocked_refs
 from .retrieval import SearchContext, SearchLimits
@@ -18,6 +19,7 @@ from .semantic_proposals import _publication_blocked, judgement_result, merge_ca
 from .worker_outcomes import (
     budget_left,
     finalize_work,
+    hold_for_entry_state,
     hold_for_private_mode,
     mark_obsolete,
     model_failure,
@@ -64,6 +66,14 @@ def _vector_hits(storage, clock, context, source, seconds):
         return (), "entity_vector_unavailable"
 
 
+def _entity_outbound_blocked(storage, context, sources, targets, clock, entries):
+    """Fence every source owner before entity evidence leaves the process."""
+    with storage.read(context, remaining_seconds=1.0) as tx:
+        if paused_since(tx, entries):
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
+    return _publication_blocked(storage, context, sources, targets, clock)
+
+
 def _prepare(storage, clock, context, item, model, seconds):
     """Read, nominate and judge outside the writer transaction, rechecking outbound authority."""
     deadline = clock.monotonic() + seconds
@@ -72,18 +82,22 @@ def _prepare(storage, clock, context, item, model, seconds):
         source = tx.claims.version(item.subject_ref, item.subject_revision)
         if source is None:
             raise ContractError("SOURCE_MISSING", "entity")
+        sources = tuple(tx.claims.live_sources(evidence_refs(source.payload), source.scope_id))
+        entries = entry_fence(tx, sources)
+        if paused_since(tx, entries):
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
         index_claim(tx, source)
         ready = backfill_names(tx, source.scope_id)
         names = pending_names(tx, source)
         if ready and not names:
-            return source, None, (), None
+            return source, None, (), None, entries
         if ready:
             source, sources = live_entity(tx, item.subject_ref, item.subject_revision, clock.utc_now())
             reserve_names(tx, source, item, clock.utc_now())
     if not ready:
         raise ContractError("VERSION_CONFLICT", "entity_index_pending")
     targets = ((source.ref, source.revision),)
-    check = partial(_publication_blocked, storage, context, sources, targets, clock)
+    check = partial(_entity_outbound_blocked, storage, context, sources, targets, clock, entries)
     with private.using_outbound_check(check):
         hits, gap = _vector_hits(storage, clock, context, source, max(0.001, deadline - clock.monotonic()))
     with storage.read(context, remaining_seconds=max(0.001, deadline - clock.monotonic())) as tx:
@@ -103,12 +117,16 @@ def _prepare(storage, clock, context, item, model, seconds):
             eligible.append(entry)
             sources += tuple(tx.claims.live_sources(evidence_refs(version.payload), version.scope_id))
         candidates = tuple(eligible)
+        for key, value in entry_fence(tx, sources).items():
+            entries.setdefault(key, value)
     if not candidates:
-        return source, None, names, gap
+        return source, None, names, gap, entries
     targets += tuple((entry["ref"], entry["revision"]) for entry in candidates)
     if deadline <= clock.monotonic():
         raise ContractError("DEADLINE_EXCEEDED")
-    with private.using_outbound_check(partial(_publication_blocked, storage, context, sources, targets, clock)):
+    with private.using_outbound_check(
+        partial(_entity_outbound_blocked, storage, context, sources, targets, clock, entries)
+    ):
         private.require_outbound()
         raw = model.judge(
             entity_messages(source, tuple({(s.ref, s.revision): s for s in sources}.values()), candidates, names=names),
@@ -118,18 +136,20 @@ def _prepare(storage, clock, context, item, model, seconds):
     if answer["action"] == "update":
         raise ContractError("DERIVATION_INVALID", "entity_decision")
     decision = SupportVerdict("", answer["support"], answer["target_ref"], answer["target_revision"], answer["action"])
-    return source, decision, names, gap
+    return source, decision, names, gap, entries
 
 
 def process_entity_projection(storage, clock, context, item, *, model, started: float, budget: float):
     """Finish one fact's identity check atomically with its projection acknowledgement."""
     finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     try:
-        source, decision, names, gap = _prepare(
+        source, decision, names, gap, entries = _prepare(
             storage, clock, context, item, model, budget_left(started, clock, budget)
         )
-        return _publish(storage, clock, context, item, (source, decision, names, gap), started, budget)
+        return _publish(storage, clock, context, item, (source, decision, names, gap, entries), started, budget)
     except ContractError as exc:
+        if exc.field == "entry_state:paused":
+            return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
         if exc.field in {"entity_name_lease", "entity_index_pending"}:
             code = "entity_name_leased" if exc.field == "entity_name_lease" else exc.field
             with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
@@ -160,11 +180,16 @@ def process_entity_projection(storage, clock, context, item, *, model, started: 
 
 def _publish(storage, clock, context, item, prepared, started, budget):
     """Recheck the lease and every endpoint before writing any alias or completion bit."""
-    source, decision, names, gap = prepared
+    source, decision, names, gap, entries = prepared
     with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         now = clock.utc_now()
         if not tx.work._verify_lease(*item.lease, now=now):
             return stale_result(tx, item)
+        if paused_since(tx, entries):
+            return work_result(
+                tx.work.defer_without_attempt(*item.lease, now=now, error_code="entry_paused", seconds=60),
+                error_code="entry_paused",
+            )
         if names:
             live_entity(tx, source.ref, source.revision, now)
         else:

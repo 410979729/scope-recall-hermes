@@ -920,6 +920,8 @@ def build_runtime_instance(
         CoreConfig(
             config.binding,
             auto_recall_seconds=config.auto_recall_seconds,
+            session_brief_enabled=config.session_brief_enabled,
+            session_brief_tokens=config.session_brief_tokens,
             recall_log_policy=LogPolicy(config.recall_log_days, config.recall_log_bytes, config.recall_log_queue),
         ),
         storage=SQLiteStorage(config.binding),

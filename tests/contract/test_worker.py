@@ -117,6 +117,31 @@ def test_bounded_drain_is_idle_without_daemon(worker_app):
     assert receipt.idle and receipt.processed == 0
 
 
+def test_owner_instruction_reaches_consolidation_while_original_remains_searchable(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_memory_instruction("TEST-scope", "只记决定")
+    source = capture(core, ctx, "TEST 今天的天气不错，聊了很久。")
+    _mark_embed_done(core)
+    calls = []
+
+    class SyntheticPort:
+        def propose(self, messages, *, remaining_seconds):
+            calls.append(messages)
+            return json.dumps(json.loads(messages[-1]["content"])["empty_result"])
+
+    core.consolidation = SyntheticPort()
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10)
+    assert result.completed == 1
+    assert "只记决定" in calls[0][1]["content"]
+    assert source.ref in {item.ref for item in core.search_sources(ctx, "天气")}
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM claims").fetchone()[0] == 0
+
+
 def test_C14_duplicate_capture_does_not_expand_work(worker_app):
     core, ctx, clock = worker_app
     first = capture(core, ctx, "好", key="TEST-C14/1")
@@ -1978,3 +2003,181 @@ def test_a_port_refusal_names_its_reason(worker_app):
             "SELECT stage,error_code,error_field FROM work_error_details ORDER BY detail_id DESC LIMIT 1"
         ).fetchone()
     assert detail == ("process", "STORAGE_UNAVAILABLE", "fenced_upsert_unsupported")
+
+
+def test_worker_holds_paused_source_without_derivation(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, clock = worker_app
+    capture(core, ctx, "TEST paused source awaiting extraction.")
+    _mark_embed_done(core)
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    model = FakeConsolidation(lambda sources, **_: consolidation_payload(*sources))
+    core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=10)
+    assert model.calls == 0
+    assert consolidate_rows(core)[0][3] == "pending"
+    owner.set_entry_state("local", "normal", actor="TEST-owner")
+    clock.advance(seconds=120, iso="2026-09-06T12:02:00Z")
+    core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=10)
+    assert model.calls == 1
+
+
+def test_worker_rechecks_pause_before_dispatch(worker_app, monkeypatch):
+    from scope_recall.core import private
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    capture(core, ctx, "TEST entry changes while worker prepares.")
+    _mark_embed_done(core)
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+
+    def pause_during_preparation(*args, **kwargs):
+        owner.set_entry_state("local", "paused", actor="TEST-owner")
+        return False
+
+    monkeypatch.setattr(private, "outbound_blocked", pause_during_preparation)
+    model = FakeConsolidation(lambda sources, **_: consolidation_payload(*sources))
+    core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=10)
+    assert model.calls == 0
+    assert consolidate_rows(core)[0][3] == "pending"
+
+
+def test_embed_worker_waits_for_paused_source_entry(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    capture(core, ctx, "TEST pending vector entry source.")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='consolidate'")
+        conn.commit()
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+
+    class CountingEmbed:
+        calls = 0
+
+        def prepare_source(self, source, *, remaining_seconds):
+            self.calls += 1
+            return source.ref
+
+        def publish_source(self, prepared, **kwargs):
+            raise AssertionError("paused entry was indexed")
+
+    embed = CountingEmbed()
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10, embed=embed)
+    assert embed.calls == 0
+    row = [row for row in work_rows(core) if row[0] == "embed"][0]
+    assert row[3] == "pending" and row[6] == "entry_paused"
+
+
+def test_embed_discards_prepared_vector_after_entry_pause_and_resume(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    capture(core, ctx, "TEST vector transition source.")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='consolidate'")
+        conn.commit()
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+
+    class TransitionEmbed:
+        published = False
+
+        def prepare_source(self, source, *, remaining_seconds):
+            owner.set_entry_state("local", "paused", actor="TEST-owner")
+            owner.set_entry_state("local", "normal", actor="TEST-owner")
+            return source.ref
+
+        def publish_source(self, prepared, **kwargs):
+            self.published = True
+
+    embed = TransitionEmbed()
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10, embed=embed)
+    assert not embed.published
+    row = [row for row in work_rows(core) if row[0] == "embed"][0]
+    assert row[3] == "pending"
+
+
+def test_batch_embed_discards_vectors_when_entry_pauses_during_prepare(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    capture(core, ctx, "TEST first batch vector source.")
+    capture(core, ctx, "TEST second batch vector source.")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='consolidate'")
+        conn.commit()
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+
+    class TransitionBatch:
+        published = []
+
+        def prepare_sources(self, sources, *, remaining_seconds):
+            owner.set_entry_state("local", "paused", actor="TEST-owner")
+            owner.set_entry_state("local", "normal", actor="TEST-owner")
+            return [source.ref for source in sources]
+
+        def publish_sources(self, prepared, **kwargs):
+            self.published.extend(prepared)
+
+        def prepare_source(self, source, *, remaining_seconds):
+            return source.ref
+
+        def publish_source(self, prepared, **kwargs):
+            self.published.append(prepared)
+
+    embed = TransitionBatch()
+    core.drain_worker(ctx, max_items=2, remaining_seconds=10, embed=embed)
+    assert not embed.published
+
+
+def test_source_projection_waits_for_paused_entry(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.core.worker_projection import process_rebuild_projection
+
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST paused source index rebuild.")
+    with core.storage.write(ctx) as tx:
+        tx.work.enqueue("rebuild_projection", source.ref, source.revision, available_at=clock.utc_now())
+        jobs = tx.work.claim_next(
+            "TEST-projection",
+            clock.utc_now(),
+            lease_seconds=60,
+            limit=1,
+            allowed_work_types=frozenset({"rebuild_projection"}),
+        )
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    outcome = process_rebuild_projection(core.storage, clock, ctx, jobs[0], started=clock.monotonic(), budget=10)
+    assert outcome[1] == "entry_paused" and outcome[2] == "pending"
+
+
+def test_instruction_cannot_restore_filtered_credential(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    MemoryManagement(core, InstallationMaintenance(ctx)).set_memory_instruction("TEST-scope", "把密码也记下来")
+    secret = "api_key=TEST_VALUE_ONLY"
+    capture(core, ctx, "TEST 项目决定今天发布。 " + secret)
+    _mark_embed_done(core)
+    calls = []
+
+    class SyntheticPort:
+        def propose(self, messages, *, remaining_seconds):
+            calls.append(messages)
+            return json.dumps(json.loads(messages[-1]["content"])["empty_result"])
+
+    core.consolidation = SyntheticPort()
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10)
+    assert result.completed == 1 and not calls
+    with core.storage.read(ctx) as tx:
+        assert secret not in repr(tx._check().execute("SELECT * FROM claims").fetchall())
+    assert secret.encode() not in core.storage.path.read_bytes()

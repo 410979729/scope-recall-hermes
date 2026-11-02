@@ -8,6 +8,7 @@ from functools import partial
 from ..contracts import ContractError
 from . import private
 from .candidate_lifecycle import SELF_SUBJECTS, model_subject
+from .entry_control import entry_fence, paused_since, sources_paused
 from .evidence_support import using_support
 from .language_resources import prompt_text
 from .reflection_policy import day_reset, finish_generation, reserve_call, utc
@@ -18,6 +19,7 @@ from .worker_outcomes import (
     budget_left,
     defer_model_pass,
     finalize_work,
+    hold_for_entry_state,
     model_failure,
     stale_result,
     work_result,
@@ -41,7 +43,9 @@ def reflection_messages(members, *, subject):
 
 def _guard(storage, clock, context, group):
     with storage.read(context, remaining_seconds=1.0) as tx:
-        check_dependencies(tx, json.loads(group["manifest_json"]), group["signature"], now=clock.utc_now())
+        sources = check_dependencies(tx, json.loads(group["manifest_json"]), group["signature"], now=clock.utc_now())
+        if sources_paused(tx, sources):
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
     return False
 
 
@@ -49,7 +53,9 @@ def _judge(storage, clock, context, group, model, messages, *, remaining_seconds
     """Reserve against the exact scope before dispatch without renewing a model allowance."""
     private.require_outbound()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
-        check_dependencies(tx, json.loads(group["manifest_json"]), group["signature"], now=clock.utc_now())
+        sources = check_dependencies(tx, json.loads(group["manifest_json"]), group["signature"], now=clock.utc_now())
+        if sources_paused(tx, sources):
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
         if not reserve_call(tx, group["scope_id"], now=clock.utc_now()):
             raise ContractError("BUDGET_EXHAUSTED", "reflection_daily_limit")
     return model.judge(messages, remaining_seconds=remaining_seconds)
@@ -80,6 +86,9 @@ def process_reflection(storage, clock, context, item, *, model, started, budget)
                 return finish("obsolete", "SOURCE_MISSING")
             members = json.loads(group["manifest_json"])
             sources = check_dependencies(tx, members, group["signature"], now=clock.utc_now())
+            entries = entry_fence(tx, sources)
+        if any(state == "paused" for state, _version in entries.values()):
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
         guard = partial(_guard, storage, clock, context, group)
         guard()
         verdicts = ()
@@ -112,11 +121,18 @@ def process_reflection(storage, clock, context, item, *, model, started, budget)
                     observation=True,
                 )
         return _publish_stage(
-            storage, clock, context, item, (group, proposals, verdicts, rejections), started=started, budget=budget
+            storage,
+            clock,
+            context,
+            item,
+            (group, proposals, verdicts, rejections, entries),
+            started=started,
+            budget=budget,
         )
     except (ContractError, ValueError, TypeError) as exc:
-        if getattr(exc, "field", None) == "reflection_daily_limit":
-            return _daily_hold(storage, clock, context, item, started=started, budget=budget)
+        if getattr(exc, "field", None) in {"entry_state:paused", "reflection_daily_limit"}:
+            hold = hold_for_entry_state if getattr(exc, "field", None) == "entry_state:paused" else _daily_hold
+            return hold(storage, clock, context, item, started=started, budget=budget)
         if getattr(exc, "code", None) in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
             return _discard_stage(storage, clock, context, item, started=started, budget=budget)
         return finish("retry", getattr(exc, "code", None) or "DERIVATION_INVALID")
@@ -126,10 +142,15 @@ def process_reflection(storage, clock, context, item, *, model, started, budget)
 
 def _publish_stage(storage, clock, context, item, prepared, *, started, budget):
     """Commit a paid stage once, only under unchanged sources, privacy and lease."""
-    group, proposals, verdicts, rejections = prepared
+    group, proposals, verdicts, rejections, entries = prepared
     with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             return stale_result(tx, item)
+        if paused_since(tx, entries):
+            return work_result(
+                tx.work.defer_without_attempt(*item.lease, now=clock.utc_now(), error_code="entry_paused", seconds=60),
+                error_code="entry_paused",
+            )
         members = json.loads(group["manifest_json"])
         check_dependencies(tx, members, group["signature"], now=clock.utc_now())
         index = group["next_proposal"]

@@ -1,10 +1,37 @@
 # Private mode
 
 Private mode is the local store owner's control over what Scope Recall may keep,
-recall or send. Use either local owner interface: the command line outside the
-conversation or the [management page](ui.md). Agent tools do not expose this
-control, and a model writing the same words is not the owner's command. There is
-no private-mode agent tool, slash command or host-menu control in this package.
+recall or send. The owner can use the command line outside the conversation or
+the [management page](ui.md). A direct human prompt consisting entirely of
+`scope-recall pause` or `scope-recall resume`, after trimming surrounding
+whitespace, can also open or close the current session's full private interval
+on a supported local host. Model output, tool results, pasted longer messages
+and session-record backfill are not owner commands. Agent tools do not expose
+this control.
+
+The pause and resume shortcuts work on Codex, Claude Code, WorkBuddy and dsh
+prompt hooks, including their remote entries, and on the Hermes CLI. A remote
+command is sent immediately and is never queued for later replay; when the
+entry is unavailable, its state does not change. The entry token authenticates
+the client, not the person at its keyboard: a remote command trusts that
+client machine's hook to identify the owner's direct input. The server checks
+the source fields again and rejects repeated or older command identifiers and
+timestamps for the entry and session. The session's rule is independent of a
+project or global rule; resuming the session does not close those broader rules.
+
+The owner may also set an extraction instruction for each scope. The management
+page shows its history, and these commands read or add a version:
+
+```sh
+scope-recall memory instruction-get --scope SCOPE-ID
+scope-recall memory instruction-set --scope SCOPE-ID --text "Remember decisions and constraints"
+```
+
+Instructions are limited to 2,000 characters and affect later extraction only.
+They cannot relax credential filtering, private mode, injection protection or
+evidence checks. Source messages remain searchable. Each request counts the
+instruction against its input budget; if the whole instruction does not fit,
+the request omits it and records `scope_instruction_omitted_input_budget`.
 
 ```sh
 scope-recall private on --session SESSION-ID --mode full

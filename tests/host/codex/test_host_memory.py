@@ -144,6 +144,122 @@ def test_claude_without_payload_working_directory_does_not_guess_settings(store,
         monkeypatch.setattr(
             "scope_recall.adapters.clients.prompt_recall.read_host_memory", lambda *a, **kw: pytest.fail("guessed cwd")
         )
-        assert not hook.prompt_recall._host_entries("TEST-session", 2.0)
+        context = hook.context(audience, "TEST-session", "human_direct")
+        assert not hook.prompt_recall._host_entries(context, "TEST-session", 2.0)
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_paused_entry_and_owner_command_never_read_host_memory(store, tmp_path, host, monkeypatch):
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    root, _homes, claude_home, capture_scope = store
+    home = claude_home
+    entry_id = "claude-code"
+    if host == "codex":
+        home = tmp_path / "TEST-codex-home"
+        entry_id = "test-codex"
+        attach_shared_record(
+            root,
+            client_entry_record(
+                host=host,
+                home=home,
+                entry_id=entry_id,
+                display_name="TEST",
+                attached_at="2026-09-24T20:00:00Z",
+                allowed_scope_ids=[capture_scope],
+                writable_scope_ids=[capture_scope],
+                capture_scope_id=capture_scope,
+            ),
+            now="2026-09-24T20:00:00Z",
+        )
+    hook = CodexHookHandler.from_home(str(home), host)
+    binding = hook.core.storage.binding
+    owner = MemoryManagement(
+        hook.core, InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated"))
+    )
+    monkeypatch.setattr(
+        "scope_recall.adapters.clients.prompt_recall.read_host_memory",
+        lambda *a, **kw: pytest.fail("paused read host memory"),
+    )
+    payload = {"session_id": "TEST-paused", "cwd": str(tmp_path), "turn_id": "TEST-turn", "prompt_id": "TEST-prompt"}
+    try:
+        owner.set_entry_state(entry_id, "paused", actor="TEST-owner")
+        assert not hook.handle_payload({**payload, "hook_event_name": "SessionStart"})
+        assert not hook.handle_payload({**payload, "hook_event_name": "UserPromptSubmit", "prompt": "TEST question"})
+        result = hook.handle_payload({**payload, "hook_event_name": "UserPromptSubmit", "prompt": "scope-recall pause"})
+        assert "recording" in str(result).lower()
+    finally:
+        hook.close()
+
+
+def test_compaction_without_observed_start_does_not_attest_host_snapshot(store, tmp_path):
+    from scope_recall.core.session_brief import observed_session_start
+
+    _root, _homes, home, _scope = store
+    hook = CodexHookHandler.from_home(str(home), "claude-code")
+    payload = {
+        "session_id": "TEST-compact-only",
+        "cwd": str(tmp_path),
+        "hook_event_name": "SessionStart",
+        "source": "compact",
+    }
+    try:
+        audience = hook.audience_of(payload)
+        hook.bind_project_root(payload, audience)
+        context = hook.context(audience, payload["session_id"], "host_generated")
+        hook.handle_payload(payload)
+        assert observed_session_start(hook.core.storage, context, remaining_seconds=1) is None
+    finally:
+        hook.close()
+
+
+def test_doctor_keeps_entry_privacy_and_host_memory_together(store, tmp_path):
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.maintenance.doctor import run_doctor
+
+    _root, _homes, home, _scope = store
+    (home / "settings.json").write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+    hook = CodexHookHandler.from_home(str(home), "claude-code")
+    binding = hook.core.storage.binding
+    owner = MemoryManagement(
+        hook.core, InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated"))
+    )
+    try:
+        owner.set_entry_state("claude-code", "read-only", actor="TEST-owner")
+        owner.private_on(target="session", session="TEST-doctor-session")
+        report = run_doctor(host="claude-code", instance_root=home, project_root=tmp_path).to_dict()
+        assert report["host_memory"]["switches"]["autoMemoryEnabled"] is True
+        assert any(row["id"] == "claude-code" and row["state"] == "read-only" for row in report["entries"])
+        assert any(row["session_id"] == "TEST-doctor-session" for row in report["private_rules"])
+    finally:
+        hook.close()
+
+
+def test_unknown_entry_state_does_not_read_host_memory(store, tmp_path, monkeypatch):
+    _root, _homes, home, _scope = store
+    hook = CodexHookHandler.from_home(str(home), "claude-code")
+    payload = {"session_id": "TEST-entry-unavailable", "cwd": str(tmp_path)}
+    try:
+        audience = hook.audience_of(payload)
+        hook.bind_project_root(payload, audience)
+        context = hook.context(audience, payload["session_id"], "human_direct")
+
+        def unavailable(*_args, **_kwargs):
+            raise RuntimeError("TEST state unavailable")
+
+        monkeypatch.setattr(hook.core, "entry_state", unavailable)
+        monkeypatch.setattr(
+            "scope_recall.adapters.clients.prompt_recall.read_host_memory",
+            lambda *a, **kw: pytest.fail("read without state"),
+        )
+        assert not hook.prompt_recall.own(
+            context, "TEST question", "TEST-request", (), time.monotonic() + 2, (), session_id=payload["session_id"]
+        )
     finally:
         hook.close()

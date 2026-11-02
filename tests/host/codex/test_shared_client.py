@@ -272,6 +272,24 @@ def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypat
         hook.close()
 
 
+def test_claude_session_start_accepts_compaction_signal(store):
+    """A compacted session must reach the same start path as a new session."""
+    _root, _homes, client, _capture = store
+    hook = _hook(client)
+    try:
+        hook.handle_payload(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "TEST-cc-session",
+                "source": "compact",
+                "cwd": "C:/anywhere",
+            }
+        )
+        assert hook.diagnostics.last_reason != "unsupported_event"
+    finally:
+        hook.close()
+
+
 def _codex_client(root, tmp_path):
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
     home = tmp_path / "TEST-codex-home"
@@ -290,6 +308,322 @@ def _codex_client(root, tmp_path):
         now=NOW,
     )
     return home
+
+
+def _seed_shared_brief(store):
+    """Prepare a synthetic decision through the shared store's real worker."""
+    from scope_recall.core.worker import WorkerConfig, drain_worker
+
+    root, _homes, client, capture_scope = store
+    writer = _hook(client)
+    payload = _prompt("TEST-project 配色 蓝色。")
+    try:
+        writer.handle_payload(payload)
+        context = writer.context(writer.audience_of(payload), payload["session_id"], "human_direct")
+        [(ref, revision)] = _rows(root, "SELECT event_id,source_revision FROM source_events WHERE role='user'")
+        source = writer.core.source(context, ref, revision)
+        proposal = {
+            "kind": "decision",
+            "subject": "TEST-project",
+            "predicate": "配色",
+            "value_text": "蓝色",
+            "conditions": [],
+            "statement_kind": "decision",
+            "valid_from": source.event["occurred_at"],
+            "valid_to": None,
+            "evidence_spans": [{"source_ref": ref, "source_revision": revision, "quote": source.event["content"]}],
+        }
+        accepted = writer.core.records.accept_claim_proposals(
+            context,
+            {
+                "protocol_version": "1.1",
+                "source_refs": [f"{ref}@{revision}"],
+                "claim_proposals": [proposal],
+                "resume_proposals": [],
+                "reference_proposals": [],
+            },
+            scope_id=capture_scope,
+            remaining_seconds=10,
+        )
+        claim = accepted.items[0]
+        assert claim.state == "active"
+        drain_worker(
+            writer.core.storage,
+            writer.core.clock,
+            context,
+            config=WorkerConfig("TEST-brief-worker"),
+            remaining_seconds=30,
+        )
+    finally:
+        writer.close()
+    return claim
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_session_brief_is_delivered_again_after_compaction(store, tmp_path, host, monkeypatch):
+    """The actual hook returns a stored, source-backed decision at both starts."""
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    monkeypatch.setattr(
+        "scope_recall.adapters.clients.prompt_recall.read_host_memory",
+        lambda *a, **kw: pytest.fail("brief read host memory"),
+    )
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-new-session", "cwd": "C:/anywhere"}
+    try:
+        first = hook.handle_payload({**start, "source": "startup"})
+        assert claim.ref in first["hookSpecificOutput"]["additionalContext"]
+        assert hook.handle_payload(start) == {}
+        compacted = hook.handle_payload({**start, "source": "compact"})
+        assert claim.ref in compacted["hookSpecificOutput"]["additionalContext"]
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_compaction_mark_survives_another_process_holding_writer(store, tmp_path, host):
+    from scope_recall.adapters.clients.session_marks import mark_path
+    from scope_recall.core.retrieval import CandidateRef, SearchContext
+    from scope_recall.core.session_brief import already_injected
+
+    from tests.v11_support import recall_request
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-locked-compact", "cwd": "C:/anywhere"}
+    holder = None
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            before = db.execute(
+                "SELECT delivered_at FROM session_brief_injections WHERE object_ref=?", (claim.ref,)
+            ).fetchone()[0]
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        assert mark_path(hook.config, "compactions", start["session_id"]).exists()
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        ctx = hook.context(hook.audience_of(start), start["session_id"], "human_direct")
+        with hook.core.storage.read(ctx) as tx:
+            assert not already_injected(tx, "claim", claim.ref, claim.revision)
+            search = SearchContext.from_request(
+                recall_request(query="TEST-project color", mode="auto"),
+                ctx,
+                now=hook.core.clock.utc_now(),
+                deadline=hook.core.clock.monotonic() + 10,
+            )
+            assert hook.core.recall_pipeline._hydrate_admit(
+                tx, CandidateRef("claim", claim.ref, claim.revision, "lexical"), search
+            )
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        hook.handle_payload(start)
+        assert not mark_path(hook.config, "compactions", start["session_id"]).exists()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            after = db.execute(
+                "SELECT delivered_at FROM session_brief_injections WHERE object_ref=?", (claim.ref,)
+            ).fetchone()[0]
+            assert after > before
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
+def test_compaction_ack_does_not_remove_a_newer_concurrent_mark(store, monkeypatch):
+    import threading
+
+    from scope_recall.adapters.clients.session_marks import clear_compaction, compaction_at, mark_compaction, mark_path
+
+    _root, _homes, client, _capture_scope = store
+    hook = _hook(client)
+    session = "TEST-concurrent-compact"
+    older = "2026-09-01T00:00:00Z"
+    newer = "2026-09-01T00:00:01Z"
+    mark = mark_path(hook.config, "compactions", session)
+    original = Path.unlink
+    try:
+        acknowledged = mark_compaction(hook.config, session, older)
+        fired = []
+
+        def race(path, *args, **kwargs):
+            if path == mark and not fired:
+                fired.append(True)
+                thread = threading.Thread(target=mark_compaction, args=(hook.config, session, newer))
+                thread.start()
+                thread.join(5)
+                assert not thread.is_alive()
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", race)
+        clear_compaction(hook.config, session, acknowledged)
+        assert fired and compaction_at(hook.config, session).startswith("2026-09-01T00:00:01")
+    finally:
+        hook.close()
+
+
+def test_pending_compaction_is_persisted_on_the_next_stop_write(store):
+    from scope_recall.adapters.clients.session_marks import mark_path
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    hook = _hook(client)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-stop-compaction", "cwd": "C:/anywhere"}
+    holder = None
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        hook.handle_payload({**start, "source": "compact"})
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        mark = mark_path(hook.config, "compactions", start["session_id"])
+        assert mark.exists()
+        hook.handle_payload({**start, "hook_event_name": "Stop", "last_assistant_message": "TEST answer"})
+        assert not mark.exists()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            assert (
+                db.execute("SELECT count(*) FROM session_brief_injections WHERE object_ref=?", (claim.ref,)).fetchone()[
+                    0
+                ]
+                == 0
+            )
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["workbuddy", "dsh"])
+def test_first_prompt_delivers_the_shared_brief_once(store, request, host):
+    claim = _seed_shared_brief(store)
+    entry = request.getfixturevalue(host)
+    home = entry[1]
+    if host == "workbuddy":
+        first, _ = _wb(home, _wb_prompt("继续"))
+        second, _ = _wb(home, _wb_prompt("继续下一步"))
+    else:
+        first, _ = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "1", "prompt": "继续"})
+        second, _ = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "2", "prompt": "继续下一步"})
+    assert claim.ref in first["hookSpecificOutput"]["additionalContext"]
+    assert claim.ref not in second.get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
+def test_hermes_prefetch_delivers_again_after_compression_signal(store):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref not in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_retries_brief_after_compaction_when_storage_is_busy(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        core = provider._require_core()
+        real = core.session_brief
+
+        def unavailable(*args, **kwargs):
+            raise ContractError("DEADLINE_EXCEEDED")
+
+        monkeypatch.setattr(core, "session_brief", unavailable)
+        assert claim.ref not in provider.prefetch("继续")
+        monkeypatch.setattr(core, "session_brief", real)
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_compaction_recall_retries_after_another_process_holds_writer(store):
+    claim = _seed_shared_brief(store)
+    root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    holder = None
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("TEST-project 配色")
+        assert provider._brief_compactions
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        assert claim.ref in provider.prefetch("继续")
+        assert not provider._brief_compactions
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        provider.shutdown()
+
+
+def test_hermes_preserves_a_second_compaction_during_brief_delivery(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        core = provider._require_core()
+        real = core.session_brief
+
+        def compact_again(*args, **kwargs):
+            result = real(*args, **kwargs)
+            provider.on_pre_compress([])
+            monkeypatch.setattr(core, "session_brief", real)
+            return result
+
+        monkeypatch.setattr(core, "session_brief", compact_again)
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref not in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_session_brief_runtime_switch_and_limit_apply_at_the_hook(store):
+    claim = _seed_shared_brief(store)
+    _root, _homes, client, _capture_scope = store
+    config_path = client / "scope-recall" / "runtime-config.json"
+    for index, settings, expected in (
+        (1, {"session_brief_enabled": False}, False),
+        (2, {"session_brief_tokens": 1}, False),
+        (3, {"session_brief_tokens": 1024}, True),
+    ):
+        config_path.write_text(json.dumps(settings), encoding="utf-8")
+        hook = _hook(client)
+        try:
+            result = hook.handle_payload(
+                {"hook_event_name": "SessionStart", "session_id": f"TEST-option-{index}", "cwd": "C:/anywhere"}
+            )
+        finally:
+            hook.close()
+        assert (claim.ref in result.get("hookSpecificOutput", {}).get("additionalContext", "")) is expected
 
 
 def test_a_client_s_prompt_runs_the_entry_s_budget(store, tmp_path):
@@ -4855,3 +5189,202 @@ def test_a_shared_duplicate_capture_preserves_entry_activity_and_all_database_by
             assert tx._check().serialize() == before
     finally:
         hook.close()
+
+
+def test_hermes_returns_brief_when_question_recall_fails(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+
+        def unavailable(*args, **kwargs):
+            raise ContractError("STORAGE_UNAVAILABLE")
+
+        monkeypatch.setattr(core, "recall_packet", unavailable)
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_render_failure_does_not_confirm_brief_delivery(store, monkeypatch):
+    from scope_recall.adapters.hermes import prefetch
+
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    original = prefetch.render_host_recall_context
+    try:
+
+        def fail_render(*args, **kwargs):
+            raise ValueError("TEST synthetic render failure")
+
+        monkeypatch.setattr(prefetch, "render_host_recall_context", fail_render)
+        with pytest.raises(ValueError, match="synthetic render failure"):
+            provider.prefetch("TEST-project color question")
+        monkeypatch.setattr(prefetch, "render_host_recall_context", original)
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_late_prefetch_does_not_confirm_for_an_ended_turn(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+        original = core.recall_packet
+        initial_turn = provider._active_turn_id
+
+        def late(*args, **kwargs):
+            packet = original(*args, **kwargs)
+            provider._active_turn_id = "TEST-next-turn"
+            return packet
+
+        monkeypatch.setattr(core, "recall_packet", late)
+        provider.prefetch("TEST-project color question")
+        monkeypatch.setattr(core, "recall_packet", original)
+        provider._active_turn_id = initial_turn
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("failure", ["exception", "expired"])
+def test_brief_confirmation_failure_never_releases_prepared_text(store, monkeypatch, failure):
+    claim = _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = CodexHookHandler.from_home(str(client), "claude-code")
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-unsafe-release", "cwd": "C:/anywhere"}
+    original = hook.core.confirm_session_brief
+
+    def fail(context, brief, **_kwargs):
+        if failure == "exception":
+            raise sqlite3.OperationalError("TEST safety read failed")
+        with hook.core.storage.write(context) as tx:
+            source = (
+                tx._check()
+                .execute(
+                    "SELECT source_ref,source_revision FROM evidence_links WHERE object_ref=? LIMIT 1", (claim.ref,)
+                )
+                .fetchone()
+            )
+            tx._check(write=True).execute(
+                "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) VALUES(?,?,?,?,?)",
+                (*source, "quarantined", "[]", hook.core.clock.utc_now()),
+            )
+        return original(context, brief, remaining_seconds=0)
+
+    try:
+        monkeypatch.setattr(hook.core, "confirm_session_brief", fail)
+        result = hook.handle_payload(start)
+        assert claim.ref not in result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert hook.diagnostics.last_reason == "brief_safety_unconfirmed"
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_compaction_counter_survives_clock_rollback_and_counter_loss(store, tmp_path, monkeypatch, host):
+    from scope_recall.adapters.clients.session_marks import mark_path
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-clock-back", "cwd": "C:/anywhere"}
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        monkeypatch.setattr(hook.clock, "utc_now", lambda: "2026-09-06T12:00:00Z")
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        monkeypatch.setattr(hook.clock, "utc_now", lambda: "2026-09-06T11:59:59Z")
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        counter = mark_path(hook.config, "compaction-counters", start["session_id"])
+        counter.unlink()
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            assert (
+                db.execute(
+                    "SELECT compacted_seq FROM session_brief_sessions WHERE session_id LIKE ?",
+                    ("%:" + start["session_id"],),
+                ).fetchone()[0]
+                == 3
+            )
+        assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 3
+        counter.unlink()
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        try:
+            assert holder.stdout.readline().strip() == "holding"
+            assert (
+                claim.ref
+                in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+            )
+            assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 4
+            from scope_recall.core.retrieval import CandidateRef, SearchContext
+            from scope_recall.core.session_brief import already_injected
+
+            from tests.v11_support import recall_request
+
+            context = hook.context(hook.audience_of(start), start["session_id"], "human_direct")
+            with hook.core.storage.read(context) as tx:
+                assert not already_injected(tx, "claim", claim.ref, claim.revision)
+                search = SearchContext.from_request(
+                    recall_request(query="TEST-project color", mode="auto"),
+                    context,
+                    now=hook.core.clock.utc_now(),
+                    deadline=hook.core.clock.monotonic() + 10,
+                )
+                assert hook.core.recall_pipeline._hydrate_admit(
+                    tx, CandidateRef("claim", claim.ref, claim.revision, "lexical"), search
+                )
+        finally:
+            holder.communicate(input="release\n", timeout=30)
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+    finally:
+        hook.close()
+
+
+def test_hermes_compaction_counter_ignores_clock_rollback(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        core = provider._require_core()
+        now = datetime.now(UTC) + timedelta(seconds=10)
+        monkeypatch.setattr(core.clock, "utc_now", lambda: now.isoformat())
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("继续")
+        monkeypatch.setattr(core.clock, "utc_now", lambda: (now - timedelta(seconds=1)).isoformat())
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_failed_safety_confirmation_does_not_release_brief(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+        original = core.confirm_session_brief
+
+        def failed(*_args, **_kwargs):
+            raise RuntimeError("TEST safety check failed")
+
+        monkeypatch.setattr(core, "confirm_session_brief", failed)
+        assert claim.ref not in provider.prefetch("继续")
+        monkeypatch.setattr(core, "confirm_session_brief", original)
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()

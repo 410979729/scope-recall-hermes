@@ -99,6 +99,88 @@ def test_host_hook_and_mcp_candidates_share_screening_and_entry_owner(client, tm
         hook.close()
 
 
+def _index_source_with_synthetic_vector(core, ctx, root):
+    """Exercise vector files with fixed numbers and no embedding provider."""
+    from scope_recall.core.recall_policy import SPACE_ID
+    from scope_recall.runtime.vector_port import VectorIndexWriter, VectorRecord
+    from scope_recall.vector.sqlite_store import SQLiteVectorStore
+
+    source = core.search_sources(ctx, "visible")[0]
+    store = SQLiteVectorStore(root / "TEST-vector.sqlite3", table_name="TEST_vectors", dimensions=2)
+    store.open()
+    try:
+        VectorIndexWriter(store).upsert_records(
+            (
+                VectorRecord(
+                    object_kind="event",
+                    object_ref=source.ref,
+                    object_revision=source.revision,
+                    vector_id="TEST-inline-vector",
+                    embedding_space=SPACE_ID,
+                    embedding=(1.0, 0.0),
+                    scope_id=source.scope_id,
+                    agent_id=ctx.binding.agent_id,
+                    installation_id=ctx.binding.installation_id,
+                ),
+            )
+        )
+        store.maintain_index()
+    finally:
+        store.close()
+
+
+def test_host_inline_private_never_reaches_store_recall_export_or_backup(client, tmp_path, monkeypatch):
+    import zipfile
+
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.management_query import MemoryFilter
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.maintenance.memory_export import write_export
+    from scope_recall.runtime.backup_bundle import create_backup_bundle
+
+    root, home, host = client
+    hook = CodexHookHandler.from_home(str(home), host)
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *args, **kwargs: None)
+    try:
+        hook.handle_payload(
+            dict(
+                hook_event_name="UserPromptSubmit",
+                session_id="TEST-private-e2e",
+                prompt_id="TEST-turn",
+                generation_id="TEST-turn",
+                turn_id="TEST-turn",
+                cwd=str(tmp_path),
+                prompt="TEST visible <private>TEST secret sentinel</private> ends",
+            )
+        )
+        assert hook.diagnostics.private_spans_removed == 1
+        hook.core.recall_diagnostics.flush()
+        binding = hook.core.storage.binding
+        ctx = TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated")
+        _index_source_with_synthetic_vector(hook.core, ctx, root)
+        api = MemoryManagement(hook.core, InstallationMaintenance(ctx))
+        export = tmp_path / "TEST-inline-export.zip"
+        with api.export_reader(MemoryFilter()) as reader:
+            write_export(reader, export)
+        backup = tmp_path / "TEST-inline-backup.zip"
+        create_backup_bundle(binding=binding, output=backup)
+        assert (root / "recall.sqlite3").is_file()
+        with closing(sqlite3.connect(root / "recall.sqlite3")) as recall:
+            assert recall.execute("SELECT count(*) FROM attempts").fetchone()[0] > 0
+        for path in root.rglob("*"):
+            if path.is_file():
+                assert b"TEST secret sentinel" not in path.read_bytes()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            assert not db.execute("SELECT 1 FROM source_events WHERE content LIKE '%TEST secret sentinel%'").fetchall()
+            assert not db.execute("SELECT 1 FROM lexical_terms WHERE term LIKE '%sentinel%'").fetchall()
+        for archive_path in (export, backup):
+            with zipfile.ZipFile(archive_path) as archive:
+                assert all(b"TEST secret sentinel" not in archive.read(name) for name in archive.namelist())
+    finally:
+        hook.close()
+
+
 def test_hermes_provider_uses_shared_owner_and_source_screening(store):
     root, homes, _client, _scope = store
     provider = _hermes(homes["agent3"])
@@ -108,6 +190,50 @@ def test_hermes_provider_uses_shared_owner_and_source_screening(store):
         reader = provider._require_identity().trusted_context()
         assert reader.owner_resolver.func is host_identity.entry_owner
         assert reader.owner_resolver(reader.entry_id, None, {}) == reader.binding.installation_id
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_inline_private_never_reaches_store_recall_export_or_backup(store, tmp_path):
+    import zipfile
+
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.management_query import MemoryFilter
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.maintenance.memory_export import write_export
+    from scope_recall.runtime.backup_bundle import create_backup_bundle
+
+    root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        message = "TEST visible <private>TEST hermes sentinel</private> ending"
+        provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-inline", user_message=message)
+        assert "private_spans_removed:1" in provider._diagnostics.pending_outcome_gaps
+        provider.prefetch(message, session_id="TEST-session-1")
+        core = provider._core
+        core.recall_diagnostics.flush()
+        binding = core.storage.binding
+        ctx = TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated")
+        _index_source_with_synthetic_vector(core, ctx, root)
+        api = MemoryManagement(core, InstallationMaintenance(ctx))
+        export = tmp_path / "TEST-hermes-export.zip"
+        with api.export_reader(MemoryFilter()) as reader:
+            write_export(reader, export)
+        backup = tmp_path / "TEST-hermes-backup.zip"
+        create_backup_bundle(binding=binding, output=backup)
+        assert (root / "recall.sqlite3").is_file()
+        with closing(sqlite3.connect(root / "recall.sqlite3")) as recall:
+            assert recall.execute("SELECT count(*) FROM attempts").fetchone()[0] > 0
+        for path in root.rglob("*"):
+            if path.is_file():
+                assert b"TEST hermes sentinel" not in path.read_bytes()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            assert not db.execute("SELECT 1 FROM source_events WHERE content LIKE '%TEST hermes sentinel%'").fetchall()
+            assert not db.execute("SELECT 1 FROM lexical_terms WHERE term LIKE '%sentinel%'").fetchall()
+        for archive_path in (export, backup):
+            with zipfile.ZipFile(archive_path) as archive:
+                assert all(b"TEST hermes sentinel" not in archive.read(name) for name in archive.namelist())
     finally:
         provider.shutdown()
 
@@ -173,3 +299,22 @@ def test_remote_hook_keeps_bound_entry_and_source_screening(client, tmp_path):
         row = db.execute("SELECT entry_id,extra_json FROM source_events WHERE content=?", (ATTACK,)).fetchone()
         assert row[0] == "test-boundary"
         assert '"resolution":"verified"' in row[1]
+
+
+def test_workbuddy_command_uses_supported_blocking_output(client, tmp_path, monkeypatch):
+    _root, home, host = client
+    if host != "workbuddy":
+        pytest.skip("WorkBuddy output contract")
+    hook = CodexHookHandler.from_home(str(home), host)
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *args, **kwargs: None)
+    result = hook.handle_payload(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "TEST-workbuddy-command",
+            "turn_id": "TEST-one",
+            "cwd": str(tmp_path),
+            "prompt": "scope-recall pause",
+        }
+    )
+    assert result["continue"] is False
+    assert "full" in result["stopReason"]

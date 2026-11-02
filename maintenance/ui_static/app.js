@@ -21,6 +21,10 @@ let recallBefore = null;
 let recallFilters = {};
 let recallRows = [];
 let recallIdentity = 0;
+let healthCursor = null;
+let healthActionsBefore = null;
+let healthPages = [];
+let healthActionItems = [];
 const t = (key) => window.UI_STRINGS[language][key] || key;
 
 // Stored values enter only text nodes. No memory field is interpreted as markup.
@@ -97,11 +101,97 @@ async function loadPage(page) {
     else button.removeAttribute("aria-current");
   }
   if (page === "overview") overview(await request("overview"));
+  if (page === "entries") await loadEntries();
   if (page === "browse") await browse(false);
+  if (page === "health") await loadHealth(false);
   if (page === "recalls") await loadRecalls(false);
   if (page === "quarantine") await loadQuarantine(false);
   if (page === "private") privateState(await request("private"));
   if (page === "backup") backup(await request("backup"));
+}
+async function loadEntries() {
+  const data = await request("entries");
+  $("entry-items").replaceChildren();
+  for (const entry of data.entries) {
+    const detail = await request("entry", {entry_id: entry.id});
+    const row = node("article", undefined, $("entry-items"));
+    node("h3", entry.name + " · " + entry.id, row);
+    node("p", t("entry_" + entry.state), row);
+    for (const [label, value] of [["entryReadScopes", entry.read_scopes], ["entryWriteScopes", entry.write_scopes], ["entryActivity", detail.last_activity], ["entryVersion", detail.version_recorded], ["entryWrites", detail.recent_writes], ["entryReads", detail.recent_reads]]) {
+      node("h4", t(label), row);
+      node("pre", value == null ? t("notRecorded") : JSON.stringify(value, null, 2), row);
+    }
+    node("h4", t("entryHistory"), row);
+    for (const change of detail.history) {
+      node("p", change.changed_at + " \u00b7 " + t("entry_" + change.from_state) + " \u2192 " + t("entry_" + change.to_state), row);
+      node("p", t("entryActor") + ": " + change.actor, row);
+      node("p", t("entryAccount") + ": " + (change.account_id || t("notRecorded")), row);
+    }
+    for (const state of ["normal", "read-only", "paused"]) {
+      const button = node("button", t(state === "normal" ? "entry_restore" : "entry_" + state), row);
+      button.disabled = state === entry.state;
+      button.addEventListener("click", () => run(() => preview({action: "entry-state", entry_id: entry.id, state})));
+    }
+  }
+}
+async function loadHealth(more) {
+  const data = await request("health", more && healthCursor ? {cursor: healthCursor} : {});
+  if (!more) {
+    healthPages = [];
+    await loadHealthActions(false);
+  }
+  healthPages.push(data);
+  healthCursor = data.next_cursor;
+  $("health-next").disabled = !healthCursor;
+  renderHealth();
+}
+function renderHealth() {
+  $("health-items").replaceChildren();
+  for (const data of healthPages) {
+    for (const [label, categories] of [["health_duplicateGroup", ["entities", "duplicates"]], ["health_contradictions", ["contradictions"]], ["health_unused", ["unused"]]]) {
+      const group = node("section", undefined, $("health-items"));
+      node("h3", t(label), group);
+      for (const category of categories) {
+        if (categories.length > 1) node("h4", t("health_" + category), group);
+        for (const issue of data[category]) {
+          const row = node("article", undefined, group);
+          if (issue.name) node("div", issue.name, row);
+          node("pre", JSON.stringify(issue.facts, null, 2), row);
+          if (category === "unused") continue;
+          const [first, second] = issue.facts;
+          const action = category === "entities" ? "health-entity" : category === "duplicates" ? "health-merge" : "health-choose";
+          const apply = node("button", t(action), row);
+          apply.addEventListener("click", () => run(() => preview({action, first_ref: first.ref, first_revision: first.revision, second_ref: second.ref, second_revision: second.revision, ...(issue.name ? {name: issue.name} : {})})));
+          if (category === "contradictions") {
+            const reverse = node("button", t("health-choose") + " " + second.ref, row);
+            reverse.addEventListener("click", () => run(() => preview({action, first_ref: second.ref, first_revision: second.revision, second_ref: first.ref, second_revision: first.revision})));
+          }
+        }
+      }
+    }
+  }
+  const data = healthPages[healthPages.length - 1];
+  if (!data) return;
+  $("health-period").textContent = t("observationPeriod") + ": " + (data.observation_start || "—") + " – " + data.observation_end + " · " + data.observation_days + " " + t("days") + (data.records_incomplete ? " · " + t("recordsIncomplete") : "");
+  if (data.unused_complete === false) node("span", " · " + t("unusedIncomplete"), $("health-period"));
+  if (!data.complete) node("span", t("healthPartial"), $("health-period"));
+}
+async function loadHealthActions(more) {
+  if (!more) { healthActionItems = []; healthActionsBefore = null; }
+  const actions = await request("health-actions", more && healthActionsBefore ? {before: healthActionsBefore} : {});
+  healthActionItems.push(...actions.items);
+  healthActionsBefore = actions.next_before;
+  $("health-actions-next").disabled = !healthActionsBefore;
+  renderHealthActions();
+}
+function renderHealthActions() {
+  $("health-actions").replaceChildren();
+  for (const entry of healthActionItems) {
+    const action = {health_entity_merge: "health-entity", health_fact_merge: "health-merge", health_fact_choose: "health-choose"}[entry.action];
+    const label = t("healthUndo") + " · " + entry.recorded_at + " · " + t(action) + " · " + Object.keys(entry.versions).join(", ");
+    const undo = node("button", label, $("health-actions"));
+    undo.addEventListener("click", () => run(() => preview({action: "health-undo", action_id: entry.action_id, versions: entry.versions})));
+  }
 }
 async function loadRecalls(more) {
   if (!more) { recallFilters = formValues("recall-filters"); recallBefore = null; recallRows = []; recallIdentity += 1; }
@@ -254,6 +344,7 @@ async function preview(values) {
   const data = await request("preview", values, true);
   reviewId = data.id;
   display("preview-data", data.preview);
+  $("review-hint").hidden = values.action === "entry-state";
   $("review").hidden = false;
   $("receipt").hidden = true;
   $("confirm").disabled = false;
@@ -279,11 +370,19 @@ function translate() {
   if (lastPrivate) privateState(lastPrivate);
   if (lastScan) renderBrowse();
   if (recallRows.length) renderRecalls();
+  if (healthPages.length) renderHealth();
+  if (healthActionItems.length) renderHealthActions();
   if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
 }
-$("language").addEventListener("change", () => { language = $("language").value; translate(); });
+$("language").addEventListener("change", () => {
+  language = $("language").value;
+  translate();
+  if (currentPage === "entries") run(() => loadEntries());
+});
 for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => run(() => loadPage(button.dataset.page)));
 $("refresh-overview").addEventListener("click", () => run(() => loadPage("overview")));
+$("health-next").addEventListener("click", () => run(() => loadHealth(true)));
+$("health-actions-next").addEventListener("click", () => run(() => loadHealthActions(true)));
 $("refresh-quarantine").addEventListener("click", () => run(() => loadQuarantine(false)));
 $("quarantine-next").addEventListener("click", () => run(() => loadQuarantine(true)));
 $("refresh-backup").addEventListener("click", () => run(() => loadPage("backup")));
@@ -301,6 +400,15 @@ $("importance").addEventListener("submit", (event) => {
   run(() => preview({action: "importance", ref: selected.ref, expected_revision: selected.revision, importance: Number($("importance").elements.importance.value), pinned: $("importance").elements.pinned.checked}));
 });
 $("private-form").addEventListener("submit", (event) => { event.preventDefault(); run(() => preview(privateArguments("private-on"))); });
+$("instruction-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = $("instruction-form");
+  run(() => preview({action: "instruction-set", scope: form.elements.scope.value, instruction: form.elements.instruction.value}));
+});
+$("instruction-read").addEventListener("click", () => run(async () => {
+  const scope = $("instruction-form").elements.scope.value;
+  display("instruction-history", await request("instruction", {scope}));
+}));
 $("private-off").addEventListener("click", () => run(() => preview(privateArguments("private-off"))));
 $("private-inspect").addEventListener("click", () => run(async () => {
   const {session, project} = privateArguments("private-off");
@@ -318,8 +426,13 @@ $("confirm").addEventListener("click", () => run(async () => {
   $("review").hidden = true;
   display("receipt-data", data);
   $("receipt").hidden = false;
+  if (["health-entity", "health-merge", "health-choose"].includes(data.action)) {
+    if (currentPage === "health") await loadHealth(false);
+  }
+  if (data.action === "health-undo" && currentPage === "health") await loadHealth(false);
   if (["forget", "forget-session"].includes(data.action)) $("detail").hidden = true;
   if (["revise", "mute", "unmute"].includes(data.action) && selected) await detail(selected.ref);
+  if (currentPage === "entries") await loadEntries();
   if (currentPage === "quarantine") await loadQuarantine(false);
   if (currentPage === "private") privateState(await request("private"));
   $("receipt").scrollIntoView({block: "start"});

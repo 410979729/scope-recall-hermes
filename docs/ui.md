@@ -29,6 +29,8 @@ and English otherwise. The language selector switches between both languages.
 - **Overview** shows database and vector size, source count, pending work and
   failures, using the same measurements as doctor. Refresh reads the current
   status; it does not start or retry background work.
+- **Entries** shows each entry's scopes, recent activity and state. The owner can choose normal, read-only or
+  paused and review each change before confirming it. Existing memories remain in the store.
 - **Browse and search** accepts literal words and the memory command's kind,
   scope, agent, session and inclusive UTC time filters. Continue follows the
   same bounded scan, including pages with no match while more objects remain.

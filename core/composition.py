@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
-from typing import TYPE_CHECKING, Literal, Protocol, overload
+from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
 from ..contracts import (
     ContractError,
@@ -22,6 +23,7 @@ from ..contracts import (
 from . import private
 from .admission import AdmissionPolicy
 from .capture import CaptureReceipt, record_event
+from .capture_filters import without_private
 from .delete_storage import retraction_after
 from .model_content import withhold_secret_items
 from .operations import Operations
@@ -76,6 +78,8 @@ class CoreConfig:
     write_timeout_seconds: float = 1.0
     auto_recall_seconds: float = 5.0
     admission_policy: AdmissionPolicy = field(default_factory=AdmissionPolicy)
+    session_brief_enabled: bool = True
+    session_brief_tokens: int = 1024
     recall_log_policy: LogPolicy = field(default_factory=LogPolicy)
 
     def __post_init__(self) -> None:
@@ -83,6 +87,10 @@ class CoreConfig:
             raise ValueError("binding must be an InstanceBinding")
         if not isinstance(self.admission_policy, AdmissionPolicy):
             raise ValueError("admission_policy must be an AdmissionPolicy")
+        if type(self.session_brief_enabled) is not bool or type(self.session_brief_tokens) is not int:
+            raise ValueError("invalid session briefing configuration")
+        if not 1 <= self.session_brief_tokens <= 8192:
+            raise ValueError("session briefing token limit must be between 1 and 8192")
         if not isinstance(self.recall_log_policy, LogPolicy):
             raise ValueError("recall_log_policy must be a LogPolicy")
         value = self.write_timeout_seconds
@@ -132,6 +140,9 @@ class MemoryCore:
             self.storage.path.with_name("recall.sqlite3"), config.recall_log_policy
         )
         self.recall_packet_renderer = RecallPacketRenderer()
+        self._packet_fences = {}
+        self._brief_fences = {}
+        self._packet_fences_lock = threading.RLock()
         self.recall_packet_compiler = RecallPacketCompiler(
             self.recall_pipeline.storage_reader,
             diagnostics=self.recall_diagnostics,
@@ -143,6 +154,108 @@ class MemoryCore:
     def initialize(self) -> StoreStatus:
         """Explicit initialization or an identity-checked supported schema upgrade."""
         return self.storage.initialize(created_at=self.clock.utc_now())
+
+    def session_brief(
+        self,
+        context: TrustedContext,
+        *,
+        token_limit: int | None = None,
+        remaining_seconds=None,
+        deliver: bool = False,
+        compact: bool = False,
+        defer_confirmation: bool = False,
+    ) -> dict:
+        """Read a bounded, source-checked briefing for the bound session."""
+        from .session_brief import read
+
+        limit = self.config.session_brief_tokens if token_limit is None else token_limit
+        if not self.config.session_brief_enabled:
+            if not compact:
+                return {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
+            limit = 0
+            deliver = False
+        brief = read(
+            self.storage,
+            self.clock,
+            context,
+            token_limit=limit,
+            remaining_seconds=remaining_seconds,
+            deliver=deliver,
+            compact=compact,
+            defer_confirmation=True,
+        )
+        if "_entry_fence" in brief:
+            fence = brief["_entry_fence"].copy()
+            if self._entry_blocked(context, fence):
+                return {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0, "delivery_reason": "entry_state:paused"}
+            with self._packet_fences_lock:
+                self._brief_fences[id(brief)] = (brief, context.binding.installation_id, fence)
+                while len(self._brief_fences) > 128:
+                    self._brief_fences.pop(next(iter(self._brief_fences)))
+        if not defer_confirmation and (deliver or compact) and "_epoch" in brief:
+            brief["delivery_reason"] = self.confirm_session_brief(context, brief, remaining_seconds=remaining_seconds)
+            if brief["delivery_reason"] in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"}:
+                brief.update(text="", items=[], tokens=0, elapsed_ms=0)
+        return brief
+
+    def confirm_session_brief(self, context: TrustedContext, brief: dict, *, remaining_seconds=None) -> str:
+        """Confirm a prepared briefing once the host has built its response."""
+        from .session_brief import confirm
+
+        with self._packet_fences_lock:
+            saved = self._brief_fences.get(id(brief))
+        if saved is None or saved[0] is not brief or saved[1] != context.binding.installation_id:
+            return "entry_state:paused"
+        fence = saved[2]
+        reason = confirm(
+            self.storage, self.clock, context, brief, entry_fence=fence, remaining_seconds=remaining_seconds
+        )
+        if reason != "entry_state:paused" and self._entry_blocked(context, fence):
+            reason = "entry_state:paused"
+        if brief.get("_deliver") and brief.get("items") and reason in {"brief_delivered", "brief_delivery_unconfirmed"}:
+            from .recall_trace import record_brief
+
+            record_brief(self, context, brief, reason)
+        return reason
+
+    def sync_session_compaction(self, context: TrustedContext, *, remaining_seconds: float = 0.03) -> bool:
+        """Persist an observed compaction without waiting indefinitely for the writer."""
+        from .session_brief import sync_compaction
+
+        return sync_compaction(self.storage, context, remaining_seconds=remaining_seconds)
+
+    @staticmethod
+    def remove_question_overlaps(brief: dict, question_text: str) -> None:
+        """Remove facts already present in the same host response's question recall."""
+        from .session_brief import remove_question_overlaps
+
+        remove_question_overlaps(brief, question_text)
+
+    def session_compaction_watermark(self, context: TrustedContext) -> int:
+        """Read the last committed compaction sequence for this entry and session."""
+        from .session_brief import compaction_watermark
+
+        return compaction_watermark(self.storage, context)
+
+    def reset_session_injections(self, context: TrustedContext, *, remaining_seconds=None) -> None:
+        """Forget the current context's delivered references after host compaction."""
+        from .session_brief import reset_session
+
+        reset_session(self.storage, context, remaining_seconds=remaining_seconds)
+
+    def record_session_recall(self, context: TrustedContext, *, tokens: int, elapsed_ms: int, remaining_seconds: float):
+        """Record content-free automatic recall usage after the host chooses its answer."""
+        from .session_brief import record_recall
+
+        record_recall(
+            self.storage, self.clock, context, tokens=tokens, elapsed_ms=elapsed_ms, remaining_seconds=remaining_seconds
+        )
+
+    def session_injection_stats(self, context: TrustedContext) -> dict:
+        """Return opening and question recall usage for this session."""
+        from .session_brief import session_stats
+
+        return session_stats(self.storage, context)
 
     def status(
         self,
@@ -164,6 +277,27 @@ class MemoryCore:
         with self.storage.read(context) as tx:
             return tx.memory_epoch()
 
+    def entry_state(self, context: TrustedContext):
+        """Read the current entry control without caching across requests."""
+        from .entry_control import state_for
+
+        with self.storage.read(context) as tx:
+            return state_for(tx, context)
+
+    def _entry_fence(self, context):
+        """Capture the request entry's current authority."""
+        from .entry_control import context_fence
+
+        with self.storage.read(context) as tx:
+            return context_fence(tx, context)
+
+    def _entry_blocked(self, context, fence):
+        """Recheck a request against the shared entry-state fence."""
+        from .entry_control import entry_changed
+
+        with self.storage.read(context) as tx:
+            return entry_changed(tx, fence)
+
     def memory_retracted_since(self, context: TrustedContext, epoch: int) -> bool:
         """Whether a deletion or suppression in this context's scopes was recorded after ``epoch``.
 
@@ -182,13 +316,42 @@ class MemoryCore:
         *,
         remaining_seconds: float | None = None,
     ) -> StoredSource | None:
-        """Read first-capture timestamps for an authenticated host replay."""
+        """Read a scoped source by its host event key while the entry is authorized."""
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return None
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            return tx.sources.source_by_event_key(source_event_key, revision)
+            result = tx.sources.source_by_event_key(source_event_key, revision)
+        return None if self._entry_blocked(context, fence) else result
+
+    def _source_replay_metadata(
+        self, context, source_event_key, revision=1, *, remaining_seconds=None
+    ) -> dict[str, Any] | None:
+        """Read only identity, timestamps and a digest needed to recognize a replay."""
+        with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
+            source = tx.sources.source_by_event_key(source_event_key, revision)
+            if source is None:
+                return None
+            return dict(
+                scope_id=source.scope_id,
+                session_id=source.session_id,
+                project_id=source.project_id,
+                branch_id=source.branch_id,
+                content_sha256=source.content_sha256,
+                event={
+                    key: source.event[key]
+                    for key in ("occurred_at", "recorded_at", "time_precision")
+                    if key in source.event
+                },
+            )
 
     def source(self, context: TrustedContext, ref: str, revision: int) -> StoredSource | None:
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return None
         with self.storage.read(context) as tx:
-            return tx.source(ref, revision)
+            result = tx.source(ref, revision)
+        return None if self._entry_blocked(context, fence) else result
 
     def inspect_object(
         self,
@@ -204,6 +367,11 @@ class MemoryCore:
         from .recall_diagnostics import diagnostic
         from .recall_log_view import REQUEST_PREFIX, visible_record
 
+        entry = self._entry_fence(context) if owner_authority is None else None
+        if entry is not None and self._entry_blocked(context, entry):
+            return InspectedObject(
+                "unknown", ref, revision or 1, None, self.memory_epoch(context), ("entry_state:paused",)
+            )
         if owner_authority is not None:
             owner = maintenance_context(self.storage, owner_authority)
             if replace(context, project_id=owner.project_id, branch_id=owner.branch_id) != owner:
@@ -230,6 +398,10 @@ class MemoryCore:
         else:
             result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
         if owner_authority is None:
+            if self._entry_blocked(context, entry):
+                return InspectedObject(
+                    "unknown", ref, revision or 1, None, self.memory_epoch(context), ("entry_state:paused",)
+                )
             self._private_read_refusal(context, after=marker)
             gaps: list[str] = []
             if not withhold_secret_items([result.value], gaps):
@@ -375,6 +547,8 @@ class MemoryCore:
 
     def _private_read_refusal(self, context: TrustedContext, *, after: int | None = None) -> int:
         """Fence read entry and release, including a full interval closed during the read."""
+        if self._entry_blocked(context, self._entry_fence(context)):
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
         mode, marker = self._recall_private_state(context, after=after)
         if mode == "full":
             raise ContractError("ACCESS_DENIED", "private_mode")
@@ -382,27 +556,42 @@ class MemoryCore:
 
     def profile(self, context: TrustedContext, request):
         """Read-only categorized current-fact profile for one explicit subject."""
-        from .read_views import read_profile
+        from .read_views import paused_view, read_profile
 
+        entry = self._entry_fence(context)
+        if self._entry_blocked(context, entry):
+            return paused_view(context, request)
         marker = self._private_read_refusal(context)
         result = read_profile(self.storage, self.clock, context, request)
+        if self._entry_blocked(context, entry):
+            return paused_view(context, request)
         self._private_read_refusal(context, after=marker)
         return result
 
     def trace(self, context: TrustedContext, request, *, deadline_seconds=5.0):
-        from .trace import read_trace
+        from .trace import paused_trace, read_trace
 
+        entry = self._entry_fence(context)
+        if self._entry_blocked(context, entry):
+            return paused_trace(self, context, request)
         marker = self._private_read_refusal(context)
         result = read_trace(self.storage, self.clock, context, request, seconds=deadline_seconds)
+        if self._entry_blocked(context, entry):
+            return paused_trace(self, context, request)
         self._private_read_refusal(context, after=marker)
         return result
 
     def entity(self, context: TrustedContext, request):
         """Read-only exact one-hop entity probe or related-statement view."""
-        from .read_views import read_entity
+        from .read_views import paused_view, read_entity
 
+        entry = self._entry_fence(context)
+        if self._entry_blocked(context, entry):
+            return paused_view(context, request, entity=True)
         marker = self._private_read_refusal(context)
         result = read_entity(self.storage, self.clock, context, request)
+        if self._entry_blocked(context, entry):
+            return paused_view(context, request, entity=True)
         self._private_read_refusal(context, after=marker)
         return result
 
@@ -413,6 +602,7 @@ class MemoryCore:
         *,
         scope_id: str,
         remaining_seconds: float | None = None,
+        _prepared=None,
     ) -> CaptureReceipt:
         return record_event(
             self.storage,
@@ -421,6 +611,7 @@ class MemoryCore:
             value,
             scope_id=scope_id,
             admission_policy=self.config.admission_policy,
+            _prepared=_prepared,
             remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
         )
 
@@ -484,8 +675,12 @@ class MemoryCore:
     def search_sources(
         self, context: TrustedContext, query: str, *, limit: int = 20, history: bool = False, automatic: bool = False
     ) -> tuple[StoredSource, ...]:
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return ()
         with self.storage.read(context) as tx:
-            return tx.sources.search_sources(query, limit=limit, history=history, automatic=automatic)
+            result = tx.sources.search_sources(query, limit=limit, history=history, automatic=automatic)
+        return () if self._entry_blocked(context, fence) else result
 
     def said_in_session(
         self,
@@ -522,6 +717,13 @@ class MemoryCore:
         validate_payload("recall_packet", packet)
         return packet
 
+    @staticmethod
+    def _paused_recall_packet(search_context) -> dict:
+        """Return an empty public packet carrying the entry-state reason."""
+        packet = MemoryCore._private_recall_packet(search_context)
+        packet["gaps"] = ["entry_state:paused"]
+        return packet
+
     def _search_context(
         self,
         context: TrustedContext,
@@ -548,6 +750,8 @@ class MemoryCore:
             trace.enabled = privacy_state[0] is None
             trace.private_marker = privacy_state[1]
         payload = validate_model_request("recall_request", request, context)
+        payload["query"] = without_private(payload["query"])[0]
+        context = replace(context, recent_messages=tuple(without_private(text)[0] for text in context.recent_messages))
         if deadline_seconds is None:
             effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
         else:
@@ -561,7 +765,7 @@ class MemoryCore:
             if payload.get("mode") == "auto":
                 effective_deadline = min(effective_deadline, self.config.auto_recall_seconds)
         search_context = SearchContext.from_request(
-            request,
+            payload,
             context,
             now=self.clock.utc_now(),
             deadline=self.clock.monotonic() + effective_deadline,
@@ -594,12 +798,27 @@ class MemoryCore:
         search_context, _deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone
         )
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return RetrievalResult((), (), None, ("entry_state:paused",), request_id=search_context.request_id)
         search_context, mode, private_marker = self._recall_entry(search_context)
         if mode == "full":
             return RetrievalResult(
                 (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
             )
+        if self._entry_blocked(context, fence):
+            return RetrievalResult((), (), None, ("entry_state:paused",), request_id=search_context.request_id)
         result = self.recall_pipeline.search(search_context)
+        try:
+            blocked = self._entry_blocked(context, fence)
+        except ContractError as exc:
+            if exc.code != "DEADLINE_EXCEEDED":
+                raise
+            return RetrievalResult(
+                (), (), None, ("deadline_exceeded_release_fence",), request_id=search_context.request_id
+            )
+        if blocked:
+            return RetrievalResult((), (), None, ("entry_state:paused",), request_id=search_context.request_id)
         final_private = self._recall_private_state(context, after=private_marker)[0]
         if final_private is not None and (trace := CURRENT_TRACE.get()) is not None:
             trace.enabled = False
@@ -635,11 +854,16 @@ class MemoryCore:
         search_context, _effective_deadline = self._search_context(
             context, request, current_source_refs, deadline_seconds, background_without_evidence, zone, in_context_since
         )
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return self._paused_recall_packet(search_context)
         search_context, mode, private_marker = self._recall_entry(search_context)
         if mode == "full":
             # Before the vector channel, so a full interval makes no query embedding
             # request and reaches no provider.
             return self._private_recall_packet(search_context)
+        if self._entry_blocked(context, fence):
+            return self._paused_recall_packet(search_context)
         try:
             # A malformed optional host snapshot must not prevent an ordinary recall.
             validate_host_memory_entries(host_memory_entries)
@@ -670,28 +894,94 @@ class MemoryCore:
             result,
             self.storage,
         )
+        if packet["items"]:
+            try:
+                blocked = self._entry_blocked(context, fence)
+            except ContractError as exc:
+                if exc.code != "DEADLINE_EXCEEDED":
+                    raise
+                packet = self._paused_recall_packet(search_context)
+                packet["gaps"] = ["deadline_exceeded_release_fence"]
+                return packet
+            if blocked:
+                return self._paused_recall_packet(search_context)
         validate_payload("recall_packet", dict(packet))
         final_private = self._recall_private_state(context, after=private_marker)[0]
         if final_private is not None and (trace := CURRENT_TRACE.get()) is not None:
             trace.enabled = False
         if final_private == "full":
             return self._private_recall_packet(search_context)
+        # A packet remains bound to the entry snapshot that produced it.  The
+        # bounded sidecar keeps the public packet schema unchanged.
+        with self._packet_fences_lock:
+            self._packet_fences[id(packet)] = (packet, context.binding.installation_id, fence)
+            while len(self._packet_fences) > 128:
+                self._packet_fences.pop(next(iter(self._packet_fences)))
         return packet
+
+    def recall_packet_current(self, context: TrustedContext, packet) -> bool:
+        """Whether a packet still belongs to this entry's unchanged recall authority."""
+        with self._packet_fences_lock:
+            saved = self._packet_fences.get(id(packet))
+        return bool(
+            saved is not None
+            and saved[0] is packet
+            and saved[1] == context.binding.installation_id
+            and saved[2] == self._entry_fence(context)
+            and not self._entry_blocked(context, saved[2])
+        )
+
+    def release_recall_packet(self, context: TrustedContext, packet, *, original=None):
+        """Fence a packet at its final delivery boundary, including after intermediate transformations."""
+        if not packet.get("items") or self.recall_packet_current(context, original if original is not None else packet):
+            return packet
+        return dict(
+            protocol_version="1.1",
+            request_id=packet["request_id"],
+            status="no_match",
+            memory_epoch=None,
+            items=[],
+            gaps=["entry_state:paused"],
+            diagnostic_ref=None,
+            answerability="unknown",
+            coverage="unknown",
+            unmet_needs=[],
+        )
 
     def prepare_recall_render(self, context: TrustedContext, packet):
         """Prepare an injection-ready render context; does not assert host adoption."""
-        from .recall_packet import render_recall_packet_context
+        from .entry_control import entry_key
+        from .recall_packet import RecallRenderPreparation, render_recall_packet_context
 
-        return render_recall_packet_context(
+        if not self.recall_packet_current(context, packet):
+            return RecallRenderPreparation(None, None, None)
+        with self._packet_fences_lock:
+            saved = self._packet_fences.get(id(packet))
+        if saved is None:
+            return RecallRenderPreparation(None, None, None)
+        fence = saved[2]
+        version = next(iter(fence.values()))[1] if fence else 0
+
+        result = render_recall_packet_context(
             packet,
             installation_id=context.binding.installation_id,
             session_id=context.session_id,
             renderer=self.recall_packet_renderer,
+            entry_id=entry_key(context),
+            entry_version=version,
         )
+        if self._entry_blocked(context, fence):
+            return RecallRenderPreparation(None, None, None)
+        return result
 
     def collection(self, context: TrustedContext, query, *, cursor=None, deadline_seconds: float = 2.0):
         if type(deadline_seconds) not in (int, float) or deadline_seconds <= 0:
             raise ContractError("INPUT_INVALID", "deadline_seconds")
+        from .retrieval_storage import CollectionPage
+
+        entry = self._entry_fence(context)
+        if self._entry_blocked(context, entry):
+            return CollectionPage((), None, "unknown", self.memory_epoch(context), ("entry_state:paused",))
         marker = self._private_read_refusal(context)
         search_context = SearchContext(
             query="collection",
@@ -715,6 +1005,8 @@ class MemoryCore:
             trusted_context=context,
         )
         result = self.recall_pipeline.collection(search_context, query, cursor)
+        if self._entry_blocked(context, entry):
+            return CollectionPage((), None, "unknown", self.memory_epoch(context), ("entry_state:paused",))
         self._private_read_refusal(context, after=marker)
         return result
 
@@ -734,11 +1026,19 @@ class MemoryCore:
     ):
         from .mutate import current_claim
 
-        return current_claim(self.storage, self.clock, context, ref, as_of=as_of, known_at=known_at)
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return None
+        result = current_claim(self.storage, self.clock, context, ref, as_of=as_of, known_at=known_at)
+        return None if self._entry_blocked(context, fence) else result
 
     def claim_history(self, context: TrustedContext, ref: str):
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return ()
         with self.storage.read(context) as tx:
-            return tx.claims.versions(ref)
+            result = tx.claims.versions(ref)
+        return () if self._entry_blocked(context, fence) else result
 
     def forget(self, context: TrustedContext, value, *, remaining_seconds: float | None = None):
         from .deletion import forget
@@ -752,8 +1052,12 @@ class MemoryCore:
         )
 
     def episodes(self, context, *, limit=200):
+        fence = self._entry_fence(context)
+        if self._entry_blocked(context, fence):
+            return ()
         with self.storage.read(context) as tx:
-            return tx.episodes.list(limit=limit)
+            result = tx.episodes.list(limit=limit)
+        return () if self._entry_blocked(context, fence) else result
 
     def drain_worker(
         self,

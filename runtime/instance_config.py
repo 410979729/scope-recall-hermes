@@ -131,6 +131,8 @@ class RuntimeInstanceConfig:
     drain_seconds: float = 120.0
     auto_recall_seconds: float = 5.0
     hook_processing_seconds: float = 6.0
+    session_brief_enabled: bool = True
+    session_brief_tokens: int = 1024
     max_items: int = 32
     lease_seconds: float = 60.0
     auxiliary: AuxiliaryRuntimeConfig | None = None
@@ -184,6 +186,8 @@ class RuntimeInstanceConfig:
         for name, (low, high) in _COUNT_BOUNDS.items():
             strict_int(name, getattr(self, name), minimum=low, maximum=high)
         strict_bool("supervisor_enabled", self.supervisor_enabled)
+        strict_bool("session_brief_enabled", self.session_brief_enabled)
+        strict_int("session_brief_tokens", self.session_brief_tokens, minimum=1, maximum=8192)
         if self.resident_recall_minutes is not None:
             low, high = RESIDENT_RECALL_MINUTES_BOUNDS
             strict_int("resident_recall_minutes", self.resident_recall_minutes, minimum=low, maximum=high)

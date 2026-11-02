@@ -43,6 +43,9 @@ class DoctorReport:
     host_memory: dict[str, Any] = field(default_factory=dict)
     recall_log: dict[str, Any] = field(default_factory=dict)
     recall_attempt: dict[str, Any] = field(default_factory=dict)
+    entries: list[dict[str, Any]] = field(default_factory=list)
+
+    private_rules: list[dict[str, Any]] = field(default_factory=list)
     summaries: dict[str, Any] = field(default_factory=dict)
     reflections: dict[str, Any] = field(default_factory=dict)
     capture_inbox: int = 0

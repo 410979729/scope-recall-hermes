@@ -1292,7 +1292,11 @@ def test_p09_resume_correction_selects_complete_json_under_auto_budget(app):
     assert selected["decisions"][0]["text"] == correction
     assert selected["decisions"][0]["evidence_refs"] == ["event-correction@1"]
     assert packet["items"][0]["content"] != original
-    prepared = core.prepare_recall_render(ctx, packet)
+    from scope_recall.core.recall_packet import render_recall_packet_context
+
+    prepared = render_recall_packet_context(
+        packet, installation_id=ctx.binding.installation_id, session_id=ctx.session_id
+    )
     assert prepared.canonical_text is not None
     assert estimate_tokens(prepared.canonical_text) <= 1200
 
@@ -1401,7 +1405,11 @@ def test_p09_resume_compact_uses_source_sequence_and_keeps_cross_field_evidence(
         "event-progress@1",
         "event-next@1",
     }
-    prepared = core.prepare_recall_render(ctx, packet)
+    from scope_recall.core.recall_packet import render_recall_packet_context
+
+    prepared = render_recall_packet_context(
+        packet, installation_id=ctx.binding.installation_id, session_id=ctx.session_id
+    )
     assert prepared.canonical_text is not None
     assert estimate_tokens(prepared.canonical_text) <= 1200
 

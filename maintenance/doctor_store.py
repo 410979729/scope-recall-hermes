@@ -21,7 +21,7 @@ from scope_recall.adapters.clients.boundary import (
 )
 from scope_recall.adapters.runtime_wiring import bindings_match
 from scope_recall.contracts import InstanceBinding, TrustedContext
-from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core import CoreConfig, MemoryCore, private
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.core.inbox_rules import deferred_until, given_up, replayable
@@ -439,6 +439,29 @@ def _derived_progress(report, transaction, binding):
     ).fetchone()[0]
 
 
+def _entry_and_derived_progress(report, transaction, binding):
+    """Read each entry's control once alongside the other store diagnostics."""
+    from scope_recall.core.entry_control import state_for
+
+    keys = transaction.registry.entries() if binding.installation_kind == "shared" else {"local": {}}
+    controls = ((key, state_for(transaction, transaction.context, entry_id=key)) for key in keys)
+    report.entries = [dict(id=key, state=state, version=version) for key, (state, version) in controls]
+    _derived_progress(report, transaction, binding)
+
+
+def _private_status(report, transaction):
+    """Expose active interval metadata without reading private content."""
+    moment = datetime.now(UTC)
+    report.private_rules = private.active_intervals(transaction, moment.isoformat())
+    record_check(
+        report,
+        "private_mode",
+        "active" if report.private_rules else "none",
+        f"{len(report.private_rules)} active interval(s)",
+    )
+    return moment
+
+
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
     """Copy the store's queue, source and candidate status onto the report.
 
@@ -462,14 +485,14 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            _derived_progress(report, transaction, binding)
+            _entry_and_derived_progress(report, transaction, binding)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(
                     "SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16"
                 )
             ]
-            moment = datetime.now(UTC)
+            moment = _private_status(report, transaction)
             hour_ago = (moment - timedelta(hours=1)).isoformat()
             growth = conn.execute(
                 "SELECT sum(persisted_at>=?),sum(persisted_at>=?) FROM source_events",

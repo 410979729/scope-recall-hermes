@@ -11,6 +11,8 @@ import time
 from typing import TYPE_CHECKING
 
 from scope_recall.contracts import ContractError
+from scope_recall.core import private
+from scope_recall.core.capture_filters import without_private
 from scope_recall.core.deadline import fits
 
 from .audiences import LOCAL_PLATFORMS
@@ -54,6 +56,15 @@ _STEERS_WRITTEN = 4096
 #: to retry without a store call (``CaptureWriter.defer``), and the hook returns: the buffer's next pass, the next hook
 #: or, past a shutdown, the next start writes it.
 _STEERS_SECONDS = 2.0
+
+
+def direct_owner_cli(identity) -> bool:
+    """A CLI-shaped gateway route is not proof of the owner's local input."""
+    return (
+        identity.scope.platform == "cli"
+        and not identity.scope.gateway_session_key
+        and identity.runtime_audience.includes_owner_private
+    )
 
 
 def steer_deadline() -> float:
@@ -156,8 +167,15 @@ class TurnCapture:
                 self.reset_source_refs()
             self._adapter._active_turn_id = ordinal_turn_id
         session_id = self._adapter._effective_session_id(str(kwargs.get("session_id") or ""))
+        pending = self._adapter._pending_private_receipt
+        stored_session = self._adapter._require_identity().stored_session_id(session_id)
+        if pending is not None and pending[0] == stored_session:
+            removed = self._adapter._private_span_receipts.pop(pending, 0)
+            if removed:
+                self._adapter._private_span_receipts[(stored_session, self._adapter._active_turn_id)] = removed
+            self._adapter._pending_private_receipt = None
         if type(message) is str and message:
-            self._adapter._current_task_message = message[:8192]
+            self._adapter._current_task_message = without_private(message)[0][:8192]
         self._adapter._outcomes.open_turn(session_id, self._adapter._active_turn_id)
 
     def pre_llm(self, **kwargs) -> None:
@@ -177,11 +195,24 @@ class TurnCapture:
         self._adapter._outcomes.open_turn(session_id, turn_id)
         current_message = kwargs.get("user_message")
         if type(current_message) is str and current_message:
-            self._adapter._current_task_message = current_message[:8192]
+            self._adapter._current_task_message = without_private(current_message)[0][:8192]
         notice = self.note_opener(turn_id, kwargs.get("conversation_history"), current_message)
         context = identity.trusted_context(
             session_id=session_id, actor_origin="host_generated" if notice else None, mutation=True
         )
+        if (
+            direct_owner_cli(identity)
+            and context.actor_origin == "human_direct"
+            and private.parse_recording_command(current_message)
+            and kwargs.get("attachments") in (None, [])
+        ):
+            core = self._adapter._require_core()
+            if private.parse_recording_command(current_message) == "pause":
+                private.open_interval(core.storage, core.clock, context, target="session", session=context.session_id)
+            else:
+                private.close_interval(core.storage, core.clock, context, target="session", session=context.session_id)
+            self._adapter._user_captured_turns[turn_id] = None
+            return
         event, gaps, ledger_identity = pre_llm_source_event(
             self._adapter._ledger,
             context,
@@ -200,6 +231,8 @@ class TurnCapture:
             gaps=gaps,
             scope_id=identity.local_scope_id,
         )
+        if receipt is not None and any(gap.startswith("private_spans_removed:") for gap in receipt.gaps):
+            self._adapter._pending_private_receipt = (context.session_id, self._adapter._active_turn_id)
         if receipt is not None and receipt.durability in ("persisted", "queued"):
             self._adapter._user_captured_turns.pop(turn_id, None)
             self._adapter._user_captured_turns[turn_id] = None

@@ -559,6 +559,16 @@ def _unavailable(request: dict, *, epoch: int | None, extra_gaps: tuple[str, ...
     )
 
 
+def paused_view(context, request, *, entity=False):
+    """Return the ordinary empty view contract for a paused entry."""
+    name = "entity_request" if entity else "profile_request"
+    payload = _normalize_read_request(name, request, context, entity=entity)
+    result = _unavailable(payload, epoch=None, entity=entity)
+    result["gaps"] = ["entry_state:paused"]
+    result["unmet_needs"] = []
+    return result
+
+
 def _view_result(payload: dict, loaded: _Loaded, lookup_subject: str, body: dict, gaps: list[str]) -> dict:
     """The shared envelope around a view body, with the bounds that applied."""
     ambiguous = loaded.resolution.status == "ambiguous"

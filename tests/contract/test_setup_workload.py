@@ -43,6 +43,19 @@ def summarize_requests(records):
     return counts
 
 
+def assert_within_a_tenth(counts, rows):
+    """Compare measured stages with the catalog, which recommendations multiply by SAFETY_FACTOR.
+
+    A stage is re-measured once it moves by more than a tenth; small shifts from
+    unrelated worker changes keep the recorded row.
+    """
+    assert set(counts) == {row["task"] for row in rows}
+    for row in rows:
+        for name in ("calls", "input_tokens", "output_tokens"):
+            measured, recorded = counts[row["task"]][name], row[name]
+            assert abs(measured - recorded) <= max(1, recorded // 10), (row["task"], name, measured, recorded)
+
+
 def counting_response(proposals, records):
     """Record each protocol stage while returning bounded synthetic responses."""
 
@@ -285,15 +298,7 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             "workload_measurement",
             json.dumps(dict(turns=100, assistant_token_lengths=lengths, tasks=counts, requests=records)),
         )
-        rows = recommended_workload()
-        assert set(counts) == {row["task"] for row in rows}
-        # The catalog is a planning estimate that recommendations multiply by
-        # SAFETY_FACTOR, so it is re-measured only when a stage moves by more than
-        # a tenth; small shifts from unrelated worker changes keep the recorded row.
-        for row in rows:
-            for name in ("calls", "input_tokens", "output_tokens"):
-                measured, recorded = counts[row["task"]][name], row[name]
-                assert abs(measured - recorded) <= max(1, recorded // 10), (row["task"], name, measured, recorded)
+        assert_within_a_tenth(counts, recommended_workload())
         assert counts["entity_resolution"]["calls"] > 0
     finally:
         runtime.close()
