@@ -153,6 +153,15 @@ class UIApi:
         if action == "forget-session":
             # Session deletion uses the CLI's source filters, independently of browse text.
             return dict(action=action, plan=api.forget_session(filters(dict(data, query=""))))
+        if action == "importance":
+            item = api.show(text(data, "ref"))
+            return dict(
+                action=action,
+                item=item,
+                expected_revision=number(data, "expected_revision"),
+                importance=number(data, "importance"),
+                pinned=flag(data, "pinned"),
+            )
         if action == "revise":
             item = api.show(text(data, "ref"))
             value = None if flag(data, "retract") else text(data, "value")
@@ -193,6 +202,13 @@ class UIApi:
         if action == "release-quarantine":
             return api.release_quarantine(
                 plan["ref"], expected_revision=plan["expected_revision"], content_sha256=plan["content_sha256"]
+            )
+        if action == "importance":
+            return api.importance(
+                plan["item"]["ref"],
+                expected_revision=plan["expected_revision"],
+                importance=plan["importance"],
+                pinned=plan["pinned"],
             )
         if action == "revise":
             return api.revise(plan["item"]["ref"], expected_revision=plan["expected_revision"], value=plan["value"])

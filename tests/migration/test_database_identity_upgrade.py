@@ -35,8 +35,8 @@ def test_every_old_format_preserves_truth_rules_entities_and_claim_index(app, ve
     with closing(sqlite3.connect(core.storage.path)) as db:
         identity, born = db.execute("SELECT database_id,database_created_at FROM instance_meta").fetchone()
         assert len(identity) == 32 and born is None
-        assert db.execute("PRAGMA user_version").fetchone() == (1119,)
-        assert SCHEMA_VERSION == 1119
+        assert db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+        assert SCHEMA_VERSION == 1120
         assert db.execute("SELECT event_id,content,content_sha256 FROM source_events").fetchall() == original
         assert db.execute("SELECT current_revision FROM claims WHERE claim_id=?", (claim.ref,)).fetchone() == (1,)
         assert db.execute("SELECT 1 FROM claim_lexical_heads WHERE claim_id=?", (claim.ref,)).fetchone()

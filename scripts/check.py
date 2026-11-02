@@ -170,6 +170,10 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_importance_summaries.py",
+        "tests/contract/test_summary_repairs.py",
+        "tests/contract/test_summary_merge.py",
+        "tests/contract/test_summary_transfer.py",
         "tests/contract/test_memory_import.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",
@@ -333,6 +337,7 @@ SUITES = {
     ],
     "migration": [
         "tests/migration/test_database_identity_upgrade.py",
+        "tests/migration/test_importance_summary_upgrade.py",
         "tests/migration/test_claim_index_upgrade.py",
         "tests/migration/test_entity_upgrade.py",
         "tests/migration/test_migration_drills.py",

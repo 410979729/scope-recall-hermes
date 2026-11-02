@@ -449,7 +449,8 @@ from scope_recall.core.source_records import StoredSource
 import scope_recall
 
 root = files("scope_recall")
-names = ("consolidation", "candidate", "fragment", "repair", "support", "merge", "entity")
+names = ("consolidation", "candidate", "fragment", "repair", "support", "merge",
+         "entity", "importance", "session_summary")
 for name in names:
     assert prompt_text(name)
     examples = json.loads(root.joinpath(f"prompts/{name}.examples.json").read_text(encoding="utf-8"))
@@ -468,7 +469,7 @@ print(json.dumps({"prompts": len(names), "examples": len(names), "formatted": Tr
     result = _run_clean_child(installed_venv["python"], cwd=_outside_repo_cwd(), args=["-c", script])
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     report = json.loads(result.stdout)
-    assert report["prompts"] == report["examples"] == 7
+    assert report["prompts"] == report["examples"] == 9
     assert report["formatted"]
     assert not Path(report["package"]).is_relative_to(REPO_ROOT)
 

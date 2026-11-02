@@ -30,7 +30,7 @@ from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from ..core.retrieval import SearchContext
 from ..core.storage import SQLiteStorage
 from ..vector.store import build_vector_store
-from .auxiliary import build_auxiliary_runtime
+from .auxiliary import build_auxiliary_runtime, summary_budget_enabled
 from .backup_upkeep import mirror_if_due
 from .codex_cli import CodexCliConsolidationAdapter
 from .embedding_retry import embed_with_one_retry
@@ -648,6 +648,7 @@ class RuntimeInstance:
                 request_seconds=limit,
                 model_request_seconds=self.config.model_request_seconds,
                 held_work_types=frozenset(self.provider_holds),
+                summary_capable=summary_budget_enabled(self.config.auxiliary),
             ),
             remaining_seconds=max(0.001, deadline - time.monotonic()),
             consolidation=model,

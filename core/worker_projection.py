@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from ..contracts import ContractError
 from . import private
@@ -32,6 +32,10 @@ from .worker_outcomes import (
     stale_result,
     work_result,
 )
+from .worker_summaries import is_summary_job, process_summary
+
+if TYPE_CHECKING:
+    from .worker import WorkerConfig
 
 
 class EmbedPort(Protocol):
@@ -538,13 +542,27 @@ def process_embed(
 
 
 def process_rebuild_projection(
-    storage, clock, context, item, *, started: float, budget: float, model=None, admission_policy=None
+    storage,
+    clock,
+    context,
+    item,
+    *,
+    started: float,
+    budget: float,
+    model=None,
+    config: WorkerConfig | None = None,
 ) -> tuple[str, str | None, str]:
     """Screen a held source before rebuilding its index or projecting a claim's entities."""
     from .source_scan import process_screening
 
     screening = process_screening(
-        storage, clock, context, item, started=started, budget=budget, admission_policy=admission_policy
+        storage,
+        clock,
+        context,
+        item,
+        started=started,
+        budget=budget,
+        admission_policy=config.admission_policy if config is not None else None,
     )
     if screening is not None:
         return screening
@@ -552,6 +570,18 @@ def process_rebuild_projection(
         deferred = defer_held_entity(tx, item, clock.utc_now())
         if deferred is not None:
             return deferred
+    with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        summary = is_summary_job(tx, item)
+    if summary:
+        return process_summary(
+            storage,
+            clock,
+            context,
+            item,
+            model=model if config is None or config.summary_capable else None,
+            started=started,
+            budget=budget,
+        )
     if callable(getattr(model, "judge", None)):
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             entity = needs_entity_projection(tx, item)

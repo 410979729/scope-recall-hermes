@@ -1,0 +1,23 @@
+[
+  {
+    "input": {
+      "sources": [
+        {
+          "ref": "event-TEST",
+          "revision": 1,
+          "role": "user",
+          "content": "TEST-project chose blue."
+        }
+      ]
+    },
+    "expected": {
+      "sentences": [
+        {
+          "text": "TEST-project chose blue.",
+          "source_ref": "event-TEST",
+          "source_revision": 1
+        }
+      ]
+    }
+  }
+]
