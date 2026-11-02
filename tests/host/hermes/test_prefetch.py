@@ -355,3 +355,58 @@ def test_prefetch_respects_host_memory_snapshot(adapter, hermes_home):
         os.utime(hermes_home / "config.yaml", (started - 5, started - 5))
         provider.on_turn_start(turn, "TEST observatory palette", turn_id=f"TEST-host-turn-{turn}")
         assert sentence in provider.prefetch("TEST observatory palette")
+
+
+def test_prefetch_falls_back_when_optional_host_read_fails(adapter, monkeypatch):
+    provider, clock = adapter
+    core, identity = provider._core, provider._identity
+    sentence = "TEST observatory palette is amber."
+    core.record_event(
+        identity.trusted_context(session_id="TEST-seed", mutation=True),
+        source_event(
+            content=sentence, source_event_key="TEST-fallback", occurred_at=clock.utc_now(), recorded_at=clock.utc_now()
+        ),
+        scope_id=identity.runtime_audience.capture_scope_id,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("TEST read failure")
+
+    monkeypatch.setattr("scope_recall.adapters.hermes.prefetch.read_host_memory", fail)
+    provider.on_turn_start(1, "TEST observatory palette", turn_id="TEST-fallback-turn")
+    assert sentence in provider.prefetch("TEST observatory palette")
+
+
+def test_prefetch_recalls_when_combined_host_files_exceed_limit(adapter, hermes_home):
+    import os
+    import sqlite3
+    import time
+
+    provider, clock = adapter
+    core, identity = provider._core, provider._identity
+    sentence = "TEST observatory palette is amber."
+    core.record_event(
+        identity.trusted_context(session_id="TEST-seed", mutation=True),
+        source_event(
+            content=sentence,
+            source_event_key="TEST-large-host",
+            occurred_at=clock.utc_now(),
+            recorded_at=clock.utc_now(),
+        ),
+        scope_id=identity.runtime_audience.capture_scope_id,
+    )
+    directory = hermes_home / "memories"
+    directory.mkdir(exist_ok=True)
+    settings = hermes_home / "config.yaml"
+    settings.write_text("memory:\n  memory_enabled: true\n  user_profile_enabled: true\n")
+    memory, profile = directory / "MEMORY.md", directory / "USER.md"
+    memory.write_text("- " + sentence + "\n" + "x" * 40000)
+    profile.write_text("y" * 40000)
+    started = time.time() - 5
+    for path in (settings, memory, profile):
+        os.utime(path, (started - 5, started - 5))
+    with sqlite3.connect(hermes_home / "state.db") as db:
+        db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL)")
+        db.execute("INSERT INTO sessions VALUES (?,?)", ("TEST-session-1", started))
+    provider.on_turn_start(1, "TEST observatory palette", turn_id="TEST-large-host-turn")
+    assert sentence in provider.prefetch("TEST observatory palette")

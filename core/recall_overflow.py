@@ -96,7 +96,11 @@ def _representatives(tx, reader, result, context, packet, clock):
             break
         source = tx.source(candidate.ref, candidate.revision)
         session = _session(source)
-        if context.automatic_injection and host_memory_duplicate(obj, context.host_memory_entries):
+        try:
+            duplicate = context.automatic_injection and host_memory_duplicate(obj, context.host_memory_entries)
+        except Exception:  # noqa: BLE001 - optional host comparison cannot block overflow recall
+            duplicate = False
+        if duplicate:
             note_candidate(candidate, "host_memory_duplicate", obj=obj)
             continue
         if not _qualified(obj) or f"{obj.ref}@{obj.revision}" in selected_refs or session in sessions:

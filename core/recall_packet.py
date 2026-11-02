@@ -400,13 +400,14 @@ class RecallPacketCompiler:
         with timings.measure("fence"):
             verified = self._fence(storage, draft, verified)
         if context.automatic_injection and context.host_memory_entries:
-            retained = []
-            for candidate, obj in verified:
-                if host_memory_duplicate(obj, context.host_memory_entries):
+            try:
+                matches = [host_memory_duplicate(obj, context.host_memory_entries) for _, obj in verified]
+            except Exception:  # noqa: BLE001 - optional host comparison cannot block recall
+                matches = [False] * len(verified)
+            for (candidate, obj), duplicate in zip(verified, matches, strict=True):
+                if duplicate:
                     note_candidate(candidate, "host_memory_duplicate", obj=obj)
-                else:
-                    retained.append((candidate, obj))
-            verified = retained
+            verified = [pair for pair, duplicate in zip(verified, matches, strict=True) if not duplicate]
         draft.result = replace(result, diagnostics=(*result.diagnostics, *timings.snapshot()))
         draft, include_diagnostic_ref = self._select(draft, self._ordered(context, verified, limits), limits)
         if context.mode == "auto" and not any(not is_background(obj) for obj in draft.objects):

@@ -28,3 +28,32 @@ def test_explicit_recall_does_not_deduplicate_host_context(app):
         ctx, recall_request(query="TEST observatory palette", mode="current"), host_memory_entries=(sentence,)
     )
     assert source.ref in {item["ref"] for item in packet["items"]}
+
+
+def test_optional_host_comparison_error_preserves_automatic_recall(app, monkeypatch):
+    import scope_recall.core.recall_packet as recall_packet
+
+    core, ctx = app
+    sentence = "TEST observatory palette is amber."
+    source = capture(core, ctx, sentence)
+
+    def fail(*_args):
+        raise RuntimeError("TEST comparison error")
+
+    monkeypatch.setattr(recall_packet, "host_memory_duplicate", fail)
+    packet = core.recall_packet(
+        ctx, recall_request(query="TEST observatory palette", mode="auto"), host_memory_entries=(sentence,)
+    )
+    assert source.ref in {item["ref"] for item in packet["items"]}
+
+
+def test_invalid_optional_snapshot_preserves_automatic_recall(app):
+    core, ctx = app
+    sentence = "TEST observatory palette is amber."
+    source = capture(core, ctx, sentence)
+    packet = core.recall_packet(
+        ctx,
+        recall_request(query="TEST observatory palette", mode="auto"),
+        host_memory_entries=("x" * 65537,),
+    )
+    assert source.ref in {item["ref"] for item in packet["items"]}

@@ -133,3 +133,17 @@ def test_remote_payload_does_not_open_server_host_memory(store, tmp_path, monkey
         hook.handle_payload(payload, local_record=False)
     finally:
         hook.close()
+
+
+def test_claude_without_payload_working_directory_does_not_guess_settings(store, tmp_path, monkeypatch):
+    root, _homes, home, _scope = store
+    hook = CodexHookHandler.from_home(str(home), "claude-code")
+    try:
+        audience = hook.audience_of({"cwd": str(tmp_path)})
+        hook.bind_project_root({}, audience)
+        monkeypatch.setattr(
+            "scope_recall.adapters.clients.prompt_recall.read_host_memory", lambda *a, **kw: pytest.fail("guessed cwd")
+        )
+        assert not hook.prompt_recall._host_entries("TEST-session", 2.0)
+    finally:
+        hook.close()

@@ -23,6 +23,8 @@ Unknown settings and unsupported file locations remain unknown. Keep project rul
 keep preferences and decisions in Scope Recall. Existing host memory can be reviewed and imported using the
 [memory import workflow](import.md). Automatic recall skips an exact statement already in an enabled host memory file
 only when the file predates the session and can be read within the bounded check. Otherwise recall proceeds normally.
+Headings, parent list items and paragraph continuations remain part of the compared host statement. A claim with
+validity dates or other qualifiers outside its comparison text is not skipped.
 For Claude Code and Codex, the check also needs a recorded SessionStart; rerun setup after upgrading to register the
 Claude Code SessionStart hook, then start a new session. Hermes uses the session store start time. Explicit recall
 continues to return matching Scope Recall records.

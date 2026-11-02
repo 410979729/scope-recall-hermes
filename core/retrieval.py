@@ -128,9 +128,9 @@ def _require_distinct_refs(refs, limit: int, longest: int, field: str) -> None:
         raise ContractError("INPUT_INVALID", field)
 
 
-def _validate_host_memory_entries(entries: tuple[str, ...]) -> None:
+def validate_host_memory_entries(entries: tuple[str, ...] | frozenset[str]) -> None:
     """Keep the adapter-supplied snapshot bounded before any comparison."""
-    if type(entries) is not tuple or any(type(item) is not str for item in entries):
+    if type(entries) not in (tuple, frozenset) or any(type(item) is not str for item in entries):
         raise ContractError("INPUT_INVALID", "host_memory_entries")
     if sum(len(item) for item in entries) > 65536:
         raise ContractError("INPUT_INVALID", "host_memory_entries")
@@ -175,7 +175,7 @@ class SearchContext:
     #: the full envelope. Direct retrieval keeps its ordinary result limits.
     packet_selection: bool = False
     #: Host text attested by the trusted adapter, never supplied by a model request.
-    host_memory_entries: tuple[str, ...] = ()
+    host_memory_entries: tuple[str, ...] | frozenset[str] = ()
 
     @property
     def automatic_injection(self) -> bool:
@@ -199,7 +199,7 @@ class SearchContext:
             raise ContractError("INPUT_INVALID", "scope")
         if self.time is not None and not isinstance(self.time, QueryTime):
             raise ContractError("INPUT_INVALID", "time")
-        _validate_host_memory_entries(self.host_memory_entries)
+        validate_host_memory_entries(self.host_memory_entries)
 
         if self.in_context_since is not None:
             object.__setattr__(self, "in_context_since", utc_timestamp(self.in_context_since))

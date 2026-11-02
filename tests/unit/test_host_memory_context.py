@@ -4,6 +4,187 @@ import pytest
 
 
 @pytest.mark.parametrize(
+    ("text", "complete"),
+    [
+        ("# Only in staging\n- TEST deployment is permitted.", "Only in staging TEST deployment is permitted."),
+        ("- Only in staging\n  - TEST deployment is permitted.", "Only in staging TEST deployment is permitted."),
+        ("TEST deployment is permitted.\nOnly in staging.", "TEST deployment is permitted. Only in staging."),
+        (
+            "# TEST project\n## Only in staging\n- Cluster A\n  - Window B\n    - TEST deployment is permitted.",
+            "TEST project Only in staging Cluster A Window B TEST deployment is permitted.",
+        ),
+    ],
+)
+def test_host_statement_keeps_all_markdown_context(text, complete):
+    from scope_recall.adapters.host_memory import memory_entries
+
+    entries = memory_entries(text)
+    assert "TEST deployment is permitted." not in entries
+    assert complete in entries
+
+
+@pytest.mark.parametrize(
+    "field", ["valid_from", "valid_to", "occurred_at", "procedure", "intention", "alias", "new_qualifier"]
+)
+def test_claim_with_unrepresented_qualification_is_not_duplicate(field):
+    import json
+
+    from scope_recall.core.recall_restatement import host_memory_duplicate
+    from scope_recall.core.retrieval import RetrievedObject
+
+    payload = {
+        "subject": "TEST project",
+        "predicate": "palette",
+        "value_text": "amber",
+        "conditions": [],
+        field: "TEST",
+    }
+    obj = RetrievedObject(
+        "TEST-claim", 1, "claim", json.dumps(payload), "human_direct", "current", "", (), "direct_report", True
+    )
+    assert not host_memory_duplicate(obj, ("TEST project palette amber",))
+
+
+def test_host_comparison_normalizes_candidate_once(monkeypatch):
+    import scope_recall.core.recall_restatement as restatement
+    from scope_recall.core.retrieval import RetrievedObject
+
+    calls = []
+    normalize = restatement.normalized_statement
+    monkeypatch.setattr(restatement, "normalized_statement", lambda text: calls.append(text) or normalize(text))
+    obj = RetrievedObject(
+        "TEST-event", 1, "event", "TEST unmatched", "human_direct", "current", "", (), "direct_report", True
+    )
+    assert not restatement.host_memory_duplicate(obj, frozenset({"TEST a", "TEST b", "TEST c"}))
+    assert calls == ["TEST unmatched"]
+
+
+def test_unstructured_claim_cannot_prove_absence_of_qualifiers():
+    from scope_recall.core.recall_restatement import host_memory_duplicate
+    from scope_recall.core.retrieval import RetrievedObject
+
+    sentence = "TEST project palette amber"
+    obj = RetrievedObject("TEST-claim", 1, "claim", sentence, "human_direct", "current", "", (), "direct_report", True)
+    assert not host_memory_duplicate(obj, frozenset({sentence}))
+
+
+def test_claude_project_settings_follow_session_directory(tmp_path):
+    import json
+
+    from scope_recall.adapters.host_memory import inspect_host_memory
+
+    home, repo = tmp_path / "TEST-home", tmp_path / "TEST-repo"
+    nested = repo / "nested"
+    home.mkdir()
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".claude").mkdir()
+    (nested / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryEnabled": True}))
+    (nested / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryEnabled": False}))
+    state = inspect_host_memory("claude-code", home, project=nested, environment={})
+    assert state["switches"]["autoMemoryEnabled"] is False
+
+
+def test_host_memory_rejects_combined_file_size(tmp_path):
+    import os
+    import time
+
+    from scope_recall.adapters.host_memory import read_host_memory
+
+    home = tmp_path / "TEST-hermes"
+    (home / "memories").mkdir(parents=True)
+    settings = home / "config.yaml"
+    settings.write_text("memory:\n  memory_enabled: true\n  user_profile_enabled: true\n")
+    started = time.time() - 10
+    for path in (settings, home / "memories" / "MEMORY.md", home / "memories" / "USER.md"):
+        if path != settings:
+            path.write_bytes(("a" * 40000).encode())
+        os.utime(path, (started - 5, started - 5))
+    assert not read_host_memory(
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+    )
+
+
+def test_host_context_expansion_stays_bounded(tmp_path):
+    import os
+    import time
+
+    from scope_recall.adapters.host_memory import read_host_memory
+
+    home = tmp_path / "TEST-hermes-expanded"
+    (home / "memories").mkdir(parents=True)
+    settings = home / "config.yaml"
+    settings.write_text("memory:\n  memory_enabled: true\n  user_profile_enabled: false\n")
+    memory = home / "memories" / "MEMORY.md"
+    memory.write_text("# " + "h" * 10000 + "\n" + "- TEST fact\n" * 10)
+    started = time.time() - 10
+    for path in (settings, memory):
+        os.utime(path, (started - 5, started - 5))
+    assert not read_host_memory(
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+    )
+
+
+def test_host_reads_validated_configuration_only_once(tmp_path, monkeypatch):
+    import os
+    import time
+
+    import scope_recall.adapters.host_memory as host_memory
+
+    home = tmp_path / "TEST-hermes"
+    (home / "memories").mkdir(parents=True)
+    settings = home / "config.yaml"
+    settings.write_text("memory:\n  memory_enabled: true\n  user_profile_enabled: false\n")
+    memory = home / "memories" / "MEMORY.md"
+    memory.write_text("- TEST fact\n")
+    started = time.time() - 10
+    for path in (settings, memory):
+        os.utime(path, (started - 5, started - 5))
+    reads = []
+    original = host_memory._host_text
+
+    def observe(path, session_start):
+        if path == settings:
+            reads.append(path)
+        return original(path, session_start)
+
+    monkeypatch.setattr(host_memory, "_host_text", observe)
+    assert "TEST fact" in host_memory.read_host_memory(
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+    )
+    assert reads == [settings]
+
+
+def test_configuration_changed_after_snapshot_does_not_enable_deduplication(tmp_path, monkeypatch):
+    import os
+    import time
+
+    import scope_recall.adapters.host_memory as host_memory
+
+    home = tmp_path / "TEST-hermes-race"
+    (home / "memories").mkdir(parents=True)
+    settings = home / "config.yaml"
+    settings.write_text("memory:\n  memory_enabled: true\n  user_profile_enabled: false\n")
+    memory = home / "memories" / "MEMORY.md"
+    memory.write_text("- TEST fact\n")
+    started = time.time() - 10
+    for path in (settings, memory):
+        os.utime(path, (started - 5, started - 5))
+    original = host_memory._host_text
+
+    def change_settings(path, session_start):
+        if path == memory:
+            settings.write_text("memory:\n  memory_enabled: false\n  user_profile_enabled: false\n")
+            os.utime(settings, (started - 6, started - 6))
+        return original(path, session_start)
+
+    monkeypatch.setattr(host_memory, "_host_text", change_settings)
+    assert not host_memory.read_host_memory(
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+    )
+
+
+@pytest.mark.parametrize(
     ("statement", "entry", "expected"),
     [
         ("TEST palette is blue", "TEST   palette is blue", True),
@@ -22,7 +203,11 @@ def test_markdown_entries_do_not_join_separate_facts():
     from scope_recall.adapters.host_memory import memory_entries
 
     text = "# Preferences\n- TEST palette is blue\n- TEST never publish\n\nTEST project uses Python.\n"
-    assert memory_entries(text) == ("TEST palette is blue", "TEST never publish", "TEST project uses Python.")
+    assert memory_entries(text) == (
+        "Preferences TEST palette is blue",
+        "Preferences TEST never publish",
+        "Preferences TEST project uses Python.",
+    )
 
 
 def test_read_host_memory_uses_enabled_and_old_files_only(tmp_path):
@@ -45,11 +230,11 @@ def test_read_host_memory_uses_enabled_and_old_files_only(tmp_path):
     os.utime(memory, (started - 10, started - 10))
     os.utime(profile, (started - 10, started - 10))
     args = dict(project=tmp_path, session_started=started, deadline=time.monotonic() + 2, environment={})
-    assert read_host_memory("hermes", home, **args) == ("TEST old fact",)
+    assert read_host_memory("hermes", home, **args) == frozenset({"TEST old fact"})
     os.utime(memory, (started + 1, started + 1))
-    assert read_host_memory("hermes", home, **args) == ()
-    assert read_host_memory("hermes", home, **{**args, "session_started": None}) == ()
-    assert read_host_memory("hermes", home, **{**args, "deadline": time.monotonic() - 1}) == ()
+    assert not read_host_memory("hermes", home, **args)
+    assert not read_host_memory("hermes", home, **{**args, "session_started": None})
+    assert not read_host_memory("hermes", home, **{**args, "deadline": time.monotonic() - 1})
 
 
 def test_hermes_session_start_is_read_from_its_session_store(tmp_path):
@@ -80,7 +265,7 @@ def test_hermes_session_start_is_read_from_its_session_store(tmp_path):
         session_id="TEST-session",
         deadline=time.monotonic() + 2,
         environment={},
-    ) == ("TEST stable host fact",)
+    ) == frozenset({"TEST stable host fact"})
     assert (
         read_host_memory(
             "hermes",
@@ -91,7 +276,7 @@ def test_hermes_session_start_is_read_from_its_session_store(tmp_path):
             deadline=time.monotonic() + 2,
             environment={},
         )
-        == ()
+        == frozenset()
     )
 
 
@@ -140,14 +325,14 @@ def test_settings_modified_after_session_do_not_attest_host_switch(tmp_path):
         read_host_memory(
             "hermes", home, project=tmp_path, session_started=started, deadline=time.monotonic() + 2, environment={}
         )
-        == ()
+        == frozenset()
     )
 
 
-def test_adjacent_complete_sentences_are_separate_entries():
+def test_adjacent_sentences_in_same_paragraph_are_one_entry():
     from scope_recall.adapters.host_memory import memory_entries
 
-    assert memory_entries("TEST first fact.\nTEST second fact.") == ("TEST first fact.", "TEST second fact.")
+    assert memory_entries("TEST first fact.\nTEST second fact.") == ("TEST first fact. TEST second fact.",)
 
 
 @pytest.mark.parametrize("host", ["claude-code", "codex"])
@@ -308,6 +493,28 @@ def test_claude_repository_directory_block_is_not_treated_as_loaded(tmp_path):
     assert state["switches"]["autoMemoryEnabled"] is None
 
 
+def test_claude_outside_read_block_is_not_disabled_by_higher_setting(tmp_path):
+    import json
+
+    from scope_recall.adapters.host_memory import inspect_host_memory
+
+    home, project = tmp_path / "TEST-home", tmp_path / "TEST-project"
+    home.mkdir()
+    (project / ".claude").mkdir(parents=True)
+    (home / "settings.json").write_text(json.dumps({"permissions": {"blockReadsOutsideWorkingDirectories": True}}))
+    (project / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "autoMemoryEnabled": True,
+                "autoMemoryDirectory": str(tmp_path / "TEST-memory"),
+                "permissions": {"blockReadsOutsideWorkingDirectories": False},
+            }
+        )
+    )
+    state = inspect_host_memory("claude-code", home, project=project, environment={})
+    assert state["switches"]["autoMemoryEnabled"] is None
+
+
 def test_claude_worktree_uses_common_repository_memory(tmp_path):
     import json
 
@@ -327,3 +534,28 @@ def test_claude_worktree_uses_common_repository_memory(tmp_path):
     expected = home / "projects" / slug / "memory" / "MEMORY.md"
     state = inspect_host_memory("claude-code", home, project=worktree, environment={})
     assert state["files"][0]["path"] == str(expected)
+
+
+def test_claude_windows_worktree_settings_use_session_directory(tmp_path):
+    import json
+    import os
+
+    from scope_recall.adapters.host_memory import inspect_host_memory
+
+    if os.name != "nt":
+        pytest.skip("Windows local settings use the session directory")
+    home = tmp_path / "TEST-home"
+    repo = tmp_path / "TEST-repo"
+    worktree = tmp_path / "TEST-worktree"
+    gitdir = repo / ".git" / "worktrees" / "TEST-worktree"
+    home.mkdir()
+    gitdir.mkdir(parents=True)
+    (repo / ".claude").mkdir()
+    (worktree / ".claude").mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n")
+    (worktree / ".git").write_text("gitdir: " + str(gitdir) + "\n")
+    (repo / ".claude" / "settings.local.json").write_text(json.dumps({"autoMemoryEnabled": False}))
+    (worktree / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryEnabled": False}))
+    (worktree / ".claude" / "settings.local.json").write_text(json.dumps({"autoMemoryEnabled": True}))
+    state = inspect_host_memory("claude-code", home, project=worktree, environment={})
+    assert state["switches"]["autoMemoryEnabled"] is True

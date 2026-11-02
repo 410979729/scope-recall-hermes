@@ -147,6 +147,8 @@ class CodexHookHandler:
         #: shared entry's configured audience has none, so the request's cwd is
         #: used for project-scoped private intervals only; it grants no scope.
         self._project_root: str | None = None
+        #: Host settings require the session's actual working directory, not an audience fallback.
+        self._host_working_dir: str | None = None
         self.remote_paths = False
         self.background_prompt_capture = False
         self.pending_capture: PendingCapture | None = None
@@ -264,9 +266,8 @@ class CodexHookHandler:
         """
         value = payload.get("cwd")
         self._project_identity = "unverified" if payload.get("project_unverified") is True else "remote"
-        self._project_root = project_root_of(
-            value, resolve_links=not getattr(self, "remote_paths", False)
-        ) or project_root_of(audience.matched_project_root)
+        self._host_working_dir = project_root_of(value, resolve_links=not getattr(self, "remote_paths", False))
+        self._project_root = self._host_working_dir or project_root_of(audience.matched_project_root)
         return self._project_root
 
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:

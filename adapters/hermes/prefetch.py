@@ -80,14 +80,17 @@ class Prefetch:
         if type(query) is not str or not query.strip():
             record_refusal(core, context, query, "blank_prompt")
             return notice
-        entries = read_host_memory(
-            "hermes",
-            identity.hermes_home,
-            project=identity.hermes_home,
-            session_started=None,
-            session_id=effective_session,
-            deadline=time.monotonic() + 0.2,
-        )
+        try:
+            entries = read_host_memory(
+                "hermes",
+                identity.hermes_home,
+                project=identity.hermes_home,
+                session_started=None,
+                session_id=effective_session,
+                deadline=time.monotonic() + 0.2,
+            )
+        except Exception:  # noqa: BLE001 - optional host reading must not prevent prefetch
+            entries = frozenset()
         host_context: dict[str, Any] = {"host_memory_entries": entries} if entries else {}
         packet = core.recall_packet(
             context,

@@ -4,7 +4,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
-Setup and doctor report known host memory settings and file sizes without changing host memory. Automatic recall skips exact statements already in enabled, session-old Claude Code, Codex and Hermes memory files; missing or uncertain inputs leave recall unchanged. Rerun setup to register the Claude Code SessionStart hook for new sessions.
+Setup and doctor report known host memory settings and file sizes without changing host memory. Automatic recall skips exact statements already in enabled, session-old Claude Code, Codex and Hermes memory files; headings, list parents, paragraph continuations and claim qualifiers are respected, and missing or uncertain inputs leave recall unchanged. Rerun setup to register the Claude Code SessionStart hook for new sessions.
 
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.

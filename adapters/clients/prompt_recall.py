@@ -224,7 +224,7 @@ class PromptRecall:
             session_id=session_id,
         )
 
-    def _host_entries(self, session_id: str | None, remaining: float) -> tuple[str, ...]:
+    def _host_entries(self, session_id: str | None, remaining: float) -> frozenset[str]:
         """Read only the local host's old snapshot; remote requests cannot name server files."""
         host = self._hook.host
         if (
@@ -232,19 +232,23 @@ class PromptRecall:
             or not session_id
             or self._hook.remote_paths
             or not self._hook.call.local_record
+            or (host == "claude-code" and not self._hook._host_working_dir)
         ):
-            return ()
+            return frozenset()
         config = self._hook.config
         home = config.home if isinstance(config, SharedClientConfig) else config.config_path.parent
-        project = Path(self._hook._project_root or home)
-        return read_host_memory(
-            host,
-            home,
-            project=project,
-            session_started=None,
-            start_reader=lambda: session_start_time(config, host, session_id),
-            deadline=time.monotonic() + min(0.2, max(0.0, remaining)),
-        )
+        project = Path(self._hook._host_working_dir or self._hook._project_root or home)
+        try:
+            return read_host_memory(
+                host,
+                home,
+                project=project,
+                session_started=None,
+                start_reader=lambda: session_start_time(config, host, session_id),
+                deadline=time.monotonic() + min(0.2, max(0.0, remaining)),
+            )
+        except Exception:  # noqa: BLE001 - optional host reading must not prevent recall
+            return frozenset()
 
     @staticmethod
     def _notice(text: str) -> dict[str, Any]:
