@@ -459,6 +459,21 @@ def _coarse_to_fine(items: list) -> list:
     return [items[index] for index in sorted(range(len(items)), key=lambda index: int(f"{index:0{bits}b}"[::-1], 2))]
 
 
+def _scoped_day_selection(days, limit):
+    """Distribute candidate slots across days, spreading each day's retained messages."""
+    picks = []
+    for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
+        day = []
+        for tier in tiers:
+            room = share - len(day)
+            if room <= 0:
+                break
+            step = max(1.0, len(tier) / room)
+            day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
+        picks.append(day)
+    return [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
+
+
 class RetrievalStorage(RetrievalHydration):
     """Typed read boundary used by one ``RetrievalPipeline`` instance."""
 
@@ -762,17 +777,10 @@ class RetrievalStorage(RetrievalHydration):
                     [row for row in rows if row["role"] == "assistant" and row["size"] > _SCOPED_ITEM_CHARS],
                 ]
             )
-        picks = []
-        for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
-            day: list = []
-            for tier in tiers:
-                room = share - len(day)
-                if room <= 0:
-                    break
-                step = max(1.0, len(tier) / room)
-                day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
-            picks.append(day)
-        chosen = [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
+        # Long replies cannot reserve another day's short-message slots. They
+        # stay candidates when the other tiers leave room.
+        chosen = _scoped_day_selection([tiers[:-1] for tiers in days], limit)
+        chosen += _scoped_day_selection([[tiers[-1]] for tiers in days], limit - len(chosen))
         return tuple(
             CandidateRef(
                 row["candidate_kind"] if "candidate_kind" in row.keys() else "event",

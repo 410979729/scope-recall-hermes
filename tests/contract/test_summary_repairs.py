@@ -127,10 +127,82 @@ def test_task_page_accounts_for_recovery_hint_in_request_limit(app, monkeypatch)
     )
     monkeypatch.setattr(worker_summaries, "obsolete_ranges", lambda tx, members: {})
     with core.storage.read(ctx) as tx:
-        page, coverage = worker_summaries._read_page(tx, group, episode)
+        page, coverage, task_hint, omitted = worker_summaries._read_page(tx, group, episode)
     assert len(page) < len(sources) and len(coverage) == len(page)
-    messages = worker_summaries.summary_messages(page, episode_ref=worker_summaries._task_hint(episode, page))
+    assert not omitted
+    messages = worker_summaries.summary_messages(page, episode_ref=task_hint)
     assert sum(len(message["content"].encode("utf-8")) for message in messages) <= 12000
+
+
+@pytest.mark.parametrize("hint_bytes", [12013, 12000])
+def test_oversized_valid_task_hint_is_omitted_and_recorded(app, hint_bytes):
+    from scope_recall.contracts import validate_payload
+    from scope_recall.core.episodes import qualify_resume
+    from scope_recall.core.language_resources import prompt_text
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_storage
+    from test_episodes import apply, resume
+
+    core, ctx = app
+    task = replace(ctx, task_anchor="TEST-large-resume")
+    content = "继续 TEST-project。" + "测" * 400 + "。" + "x " * 400 + "。"
+    source = capture(core, task, content, when="2026-09-05T10:00:00Z")
+    ref = f"{source.ref}@{source.revision}"
+    episode = core.episodes(task)[0]
+
+    def size(proposal):
+        body = dict(
+            sources=[dict(ref=source.ref, revision=source.revision, content="", role="user", start=0)],
+            task=dict(ref=episode.ref, resume=dict(proposal, episode_ref=episode.ref)),
+        )
+        return len(prompt_text("session_summary").encode()) + len(json.dumps(body, ensure_ascii=False).encode())
+
+    proposal = None
+    for length in range(1, 401):
+        items = [dict(text="测" * length, evidence_refs=[ref]) for _ in range(11)]
+        candidate = resume(source, goal=dict(text="继续 TEST-project。", evidence_refs=[ref]), open_items=items)
+        remaining = hint_bytes - size(dict(candidate, open_items=[*items, dict(text="", evidence_refs=[ref])]))
+        if 1 <= remaining <= 400:
+            text = ("x " * ((remaining + 1) // 2))[:remaining].rstrip()
+            if len(text) != remaining:
+                continue
+            proposal = dict(candidate, open_items=[*items, dict(text=text, evidence_refs=[ref])])
+            break
+    assert proposal is not None and size(proposal) == hint_bytes
+    validate_payload(
+        "consolidation_result",
+        dict(
+            protocol_version="1.1",
+            source_refs=[ref],
+            claim_proposals=[],
+            resume_proposals=[proposal],
+            reference_proposals=[],
+        ),
+    )
+    qualify_resume(proposal, [source])
+    apply(core, task, resumes=[proposal])
+    capture(core, task, "The task is completed.", when="2026-09-05T11:02:00Z")
+    model = FirstSentenceModel()
+    for _ in range(4):
+        result = build(core, task, model)
+        assert result.failed == 0
+        with core.storage.read(task) as tx:
+            group = tx._check().execute("SELECT state,failure FROM summary_groups WHERE kind='task'").fetchone()
+            if group and group[0] == "complete":
+                break
+    assert group[0] == "complete" and group[1] is None
+    with core.storage.read(task) as tx:
+        assert (
+            tx._check()
+            .execute(
+                "SELECT 1 FROM work_error_details WHERE stage='summary' "
+                "AND error_field='resume_hint_omitted_input_budget'"
+            )
+            .fetchone()
+        )
+    report = DoctorReport(host="codex", status="ok")
+    assert check_storage(report, task.binding, core.storage.path.parent)
+    assert any(item["error_field"] == "resume_hint_omitted_input_budget" for item in report.recent_work_errors)
 
 
 def test_truncated_assistant_stays_a_time_channel_candidate(app):
@@ -150,6 +222,57 @@ def test_truncated_assistant_stays_a_time_channel_candidate(app):
     assert build(core, ctx, model).failed == 0
     assert len(model.pages[0][0]["content"]) < len(content)
     assert any(item.ref == saved.event_refs[0].ref for item in scoped(core, ctx))
+
+
+@pytest.mark.parametrize("include_short", [True, False])
+def test_cross_day_long_replies_do_not_displace_deliverable_candidates(app, include_short):
+    from scope_recall.core.recall_scope import QueryScope
+    from scope_recall.core.retrieval import SearchContext, SearchLimits
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    from tests.contract.test_recall_packet_compiler import _compiled, _said
+
+    core, ctx = app
+    windows = []
+    contents = {}
+    for day in range(3 if include_short else 2):
+        start, end = f"2026-09-0{day + 1}T00:00:00Z", f"2026-09-0{day + 2}T00:00:00Z"
+        windows.append((start, end))
+        for index in range(12):
+            short = include_short and day == 2
+            content = f"TEST short result {index}." if short else f"TEST long {day}-{index} " + "x" * 20000
+            origin, role = ("human_direct", "user") if short else ("assistant_visible", "assistant")
+            event = source_event(
+                source_event_key=f"TEST-day-{day}-{index}",
+                role=role,
+                origin=origin,
+                content=content,
+                occurred_at=start,
+            )
+            saved = core.record_event(
+                replace(ctx, actor_origin=origin), event, scope_id="TEST-scope", remaining_seconds=10
+            )
+            contents[saved.event_refs[0].ref] = content
+    context = SearchContext(
+        "TEST",
+        "auto",
+        None,
+        (),
+        SearchLimits(),
+        core.clock.monotonic() + 30,
+        core.clock.utc_now(),
+        ctx,
+        scope=QueryScope(tuple(windows), (), "TEST", ()),
+    )
+    with core.storage.read(ctx) as tx:
+        candidates = RetrievalStorage(clock=core.clock).scoped(tx, context, limit=12)
+    assert len(candidates) == 12
+    if not include_short:
+        assert all(contents[item.ref].startswith("TEST long") for item in candidates)
+        return
+    found = [("scoped", _said(item.ref, contents[item.ref])) for item in candidates]
+    packet = _compiled(core, ctx, "TEST", found, max_items=6, budget_tokens=4096)
+    assert sum(item["content"].startswith("TEST short") for item in packet["items"]) >= 6
 
 
 @pytest.mark.parametrize(
