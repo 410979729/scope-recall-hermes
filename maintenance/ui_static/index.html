@@ -13,7 +13,7 @@
   <header><div><h1>Scope Recall</h1><p data-i18n="local"></p></div>
     <label><span data-i18n="language"></span><select id="language"><option value="en">English</option><option value="zh">中文</option></select></label>
   </header>
-  <nav aria-label="Pages"><button data-page="overview" data-i18n="overview"></button><button data-page="browse" data-i18n="browse"></button><button data-page="recalls" data-i18n="recalls"></button><button data-page="quarantine" data-i18n="quarantine"></button><button data-page="private" data-i18n="private"></button><button data-page="export" data-i18n="export"></button><button data-page="backup" data-i18n="backup"></button></nav>
+  <nav aria-label="Pages"><button data-page="overview" data-i18n="overview"></button><button data-page="browse" data-i18n="browse"></button><button data-page="health" data-i18n="health"></button><button data-page="recalls" data-i18n="recalls"></button><button data-page="quarantine" data-i18n="quarantine"></button><button data-page="private" data-i18n="private"></button><button data-page="export" data-i18n="export"></button><button data-page="backup" data-i18n="backup"></button></nav>
   <p id="status" role="status" aria-live="polite"></p>
   <main>
     <section id="overview" class="page"><h2 data-i18n="overview"></h2><button id="refresh-overview" data-i18n="refresh"></button><div id="overview-data" class="cards"></div></section>
@@ -33,6 +33,7 @@
           <div id="item-actions" class="actions"><button data-action="mute" data-i18n="mute"></button><button data-action="unmute" data-i18n="unmute"></button><button data-action="forget" data-i18n="forget" class="danger"></button></div>
       </article>
     </section>
+    <section id="health" class="page" hidden><h2 data-i18n="health"></h2><div id="health-period"></div><div id="health-items"></div><button id="health-next" data-i18n="next" disabled></button><div id="health-actions"></div><button id="health-actions-next" data-i18n="next" disabled></button></section>
     <section id="recalls" class="page" hidden><h2 data-i18n="recalls"></h2>
       <form id="recall-filters" class="grid"><label><span data-i18n="session"></span><input name="session" maxlength="240"></label><label><span data-i18n="requestId"></span><input name="request_id" maxlength="100"></label><button type="submit" data-i18n="search"></button></form>
       <p data-i18n="recallHint"></p><div id="recall-items"></div><button id="recall-next" data-i18n="next" disabled></button>

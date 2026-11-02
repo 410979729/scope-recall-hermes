@@ -1163,6 +1163,8 @@ def select_effective(
         return None
     heads = [v for v in versions if v.revision == 1 or v.replaces_revision is not None]
     head = max(heads, key=lambda v: v.revision)
+    if not as_of and known_at is None and head.state == "superseded" and head.reason == "health_superseded":
+        return None
     # A replacement with an unknown effective date can establish an explicitly
     # current assertion, but supplies no answer about a past date.
     if as_of and head.valid_from is None and head.state != "proposed":

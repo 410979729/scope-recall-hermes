@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1124
+SCHEMA_VERSION = 1125
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -1108,3 +1108,9 @@ def upgrade_1123(connection):
     connection.execute("UPDATE reflection_groups SET new_sources=json_array_length(buffered_json)")
     connection.execute("UPDATE instance_meta SET schema_version=1124 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1124")
+
+
+def upgrade_1124(connection):
+    """Fence writers that cannot interpret reviewed cross-reference replacements."""
+    connection.execute("UPDATE instance_meta SET schema_version=1125 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1125")
