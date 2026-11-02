@@ -4,6 +4,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Budget recommendations include measured summary and adoption processing.
+
 Setup now detects local hosts, previews and confirms a complete installation, preserves existing stores and grants,
 configures referenced model routes and budgets, and verifies capture, worker processing and cross-session recall
 in an isolated store. WorkBuddy and DeepSeek Harness receive the memory skill. Installation guides are split by host and the
