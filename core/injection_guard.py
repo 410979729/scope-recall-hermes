@@ -9,6 +9,7 @@ import time
 from . import injection_policy
 from .injection_policy import SCAN_WINDOWS, ScanResult
 from .injection_policy import scan as scan
+from .retractions import record_safety_retraction
 from .source_records import stored_source
 
 # A ref changes when segment counts change. This identity remains stable across
@@ -137,6 +138,7 @@ def _group_verdict(tx, rows, remaining_seconds, policy, max_windows, *, expired=
 
 def _record_verdict(tx, rows, verdict, now, *, fresh=()):
     conn = tx._check(write=True)
+    new_holds = set()
     for row in rows:
         key = (row["event_id"], row["source_revision"])
         old = (
@@ -152,6 +154,8 @@ def _record_verdict(tx, rows, verdict, now, *, fresh=()):
             if old is not None:
                 conn.execute("DELETE FROM source_safety WHERE source_ref=? AND source_revision=?", key)
         else:
+            if old is None:
+                new_holds.add(row["scope_id"])
             conn.execute(
                 """INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at)
                 VALUES (?,?,?,?,?) ON CONFLICT(source_ref,source_revision) DO UPDATE
@@ -159,6 +163,7 @@ def _record_verdict(tx, rows, verdict, now, *, fresh=()):
                 WHERE source_safety.state NOT IN ('quarantined','released')""",
                 (*key, verdict.state, json.dumps(verdict.rules), now),
             )
+    record_safety_retraction(conn, new_holds)
 
 
 def _remove_held_projections(tx, rows, *, preserve_work_id=None):

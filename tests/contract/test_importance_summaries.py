@@ -154,7 +154,7 @@ def test_brief_delivery_is_deduplicated_until_compaction(app):
     assert core.session_brief(ctx, deliver=True)["text"] == ""
     with core.storage.read(ctx) as tx:
         assert already_injected(tx, "claim", item.ref, item.revision)
-        assert already_injected(tx, "event", source.ref, source.revision)
+        assert not already_injected(tx, "event", source.ref, source.revision)
     assert item.ref in core.session_brief(ctx, deliver=True, compact=True)["text"]
 
 
@@ -824,3 +824,179 @@ def test_importance_cli_uses_the_owner_management_boundary(app):
     )
     value = execute(owner, args)["value"]
     assert value["importance"] == 2 and value["pinned"] is False
+
+
+def test_brief_fact_does_not_hide_unshown_source_details(app):
+    from v11_support import recall_request
+
+    core, writer = app
+    source = capture(core, writer, "TEST-project color blue. Delivery deadline Friday.", when=core.clock.now)
+    item = accept(
+        core, writer, draft(source, "blue", predicate="color", quote_override="TEST-project color blue")
+    ).items[0]
+    drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    reader = replace(writer, session_id="TEST-details-reader")
+    request = recall_request(query="Delivery deadline Friday", mode="auto")
+    before = core.recall_packet(reader, request, deadline_seconds=10)
+    assert any(row["ref"] == source.ref for row in before["items"])
+    brief = core.session_brief(reader, deliver=True)
+    assert item.ref in brief["text"] and "Friday" not in brief["text"]
+    after = core.recall_packet(reader, request, deadline_seconds=10)
+    assert any(row["ref"] == source.ref for row in after["items"])
+
+
+def test_brief_task_goal_does_not_hide_resume_details(app):
+    from scope_recall.core.retrieval import CandidateRef, SearchContext
+    from v11_support import recall_request
+
+    from tests.contract.test_episodes import apply, ref, resume
+
+    core, writer = app
+    task = replace(writer, session_id="TEST-task-writer", task_anchor="TEST-task-details")
+    source = capture(
+        core, task, "TEST task goal launch; progress foundation done; next step deliver Friday.", when=core.clock.now
+    )
+    proposal = resume(
+        source,
+        goal=dict(text="TEST task goal launch", evidence_refs=[ref(source)]),
+        verified_progress=[dict(text="foundation done", evidence_refs=[ref(source)])],
+        next_step="deliver Friday",
+        next_step_basis="user_requested",
+    )
+    episode = apply(core, task, resumes=[proposal]).items[0]
+    drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    reader = replace(writer, session_id="TEST-task-reader")
+    brief = core.session_brief(reader, deliver=True)
+    assert episode.ref in brief["text"] and "Friday" not in brief["text"]
+    request = recall_request(query="TEST task deliver Friday", mode="auto")
+    search = SearchContext.from_request(request, reader, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 10)
+    with core.storage.read(reader) as tx:
+        candidate = CandidateRef("episode", episode.ref, episode.revision, "lexical")
+        hydrated = core.recall_pipeline._hydrate_admit(tx, candidate, search)
+    assert hydrated is not None and "Friday" in hydrated.content
+
+
+def test_brief_signature_tracks_earlier_task_evidence_deletion(app):
+    from scope_recall.core.session_brief import rebuild_scope
+
+    from tests.contract.test_episodes import apply, ref, resume
+
+    core, writer = app
+    task = replace(writer, session_id="TEST-signature-task", task_anchor="TEST-signature-task")
+    first = capture(core, task, "TEST task first detail", when=core.clock.now)
+    apply(core, task, resumes=[resume(first)])
+    second = capture(core, task, "TEST task second detail", when=core.clock.now)
+    refs = [ref(first), ref(second)]
+    from scope_recall.core.episodes import source_watermark
+
+    apply(
+        core,
+        task,
+        resumes=[resume(second, evidence_refs=refs, source_watermark=source_watermark(refs))],
+        source_refs=refs,
+    )
+    with core.storage.write(writer) as tx:
+        assert rebuild_scope(tx, "TEST-scope", core.clock.now)
+        item = json.loads(
+            tx._check().execute("SELECT items_json FROM session_briefs WHERE scope_id='TEST-scope'").fetchone()[0]
+        )[0]
+        earlier = (
+            tx._check()
+            .execute(
+                "SELECT object_revision FROM evidence_links WHERE object_kind='episode' "
+                "AND object_ref=? AND source_ref=?",
+                (item["ref"], first.ref),
+            )
+            .fetchone()[0]
+        )
+        assert earlier < item["revision"]
+        tx._check(write=True).execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (first.ref,))
+        assert rebuild_scope(tx, "TEST-scope", core.clock.now)
+
+
+def test_deleting_earlier_task_evidence_rebuilds_manifest(app):
+    from scope_recall.core.episodes import source_watermark
+    from scope_recall.core.session_brief import rebuild_scope
+
+    from tests.contract.test_episodes import apply, ref, resume
+
+    core, writer = app
+    task = replace(writer, session_id="TEST-delete-task", task_anchor="TEST-delete-task")
+    first = capture(core, task, "TEST task first detail", when=core.clock.now)
+    episode = apply(core, task, resumes=[resume(first)]).items[0]
+    second = capture(core, task, "TEST task next detail", when=core.clock.now)
+    refs = [ref(first), ref(second)]
+    apply(
+        core,
+        task,
+        resumes=[resume(second, evidence_refs=refs, source_watermark=source_watermark(refs))],
+        source_refs=refs,
+    )
+    with core.storage.write(writer) as tx:
+        assert rebuild_scope(tx, "TEST-scope", core.clock.now)
+        before = tx._check().execute("SELECT version FROM session_briefs WHERE scope_id='TEST-scope'").fetchone()[0]
+    owner = MemoryManagement(core, InstallationMaintenance(replace(writer, allowed_scope_ids=writer.binding.scope_ids)))
+    owner.apply(owner.preview([first.ref], mode="delete"))
+    with core.storage.write(writer) as tx:
+        assert rebuild_scope(tx, "TEST-scope", core.clock.now)
+        after = tx._check().execute("SELECT version FROM session_briefs WHERE scope_id='TEST-scope'").fetchone()[0]
+    assert after > before
+    assert episode.ref not in core.session_brief(writer)["text"]
+
+
+def test_brief_returns_without_delivery_mark_when_writer_is_busy(app):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+    core, writer = app
+    item, _source = initial(core, writer, when=core.clock.now)
+    drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    reader = replace(writer, session_id="TEST-locked-brief")
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        with core.storage.write(writer):
+            future = executor.submit(core.session_brief, reader, deliver=True, remaining_seconds=2)
+            try:
+                result = future.result(timeout=0.3)
+            except TimeoutError:
+                pytest.fail("brief waited for the worker's write lock")
+            assert item.ref in result["text"]
+            assert result.get("delivery_reason") == "brief_delivery_unconfirmed"
+        assert item.ref in core.session_brief(reader, deliver=True)["text"]
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_prepared_brief_is_discarded_if_session_becomes_private(app):
+    from scope_recall.core import private
+
+    core, ctx = app
+    item, _source = initial(core, ctx, when="2026-09-05T12:00:00Z")
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx, deliver=True, defer_confirmation=True)
+    assert item.ref in brief["text"]
+    private.open_interval(core.storage, core.clock, ctx, target="session", session=ctx.session_id)
+    assert core.confirm_session_brief(ctx, brief, remaining_seconds=1) == "brief_invalidated"
+
+
+def test_same_response_question_fact_is_not_also_in_brief(app):
+    core, ctx = app
+    item, _source = initial(core, ctx, when="2026-09-05T12:00:00Z")
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx, deliver=True, defer_confirmation=True)
+    core.remove_question_overlaps(brief, f"question recall fact {item.ref}")
+    assert item.ref not in brief["text"]
+    assert not brief["items"]
+
+
+def test_compaction_clears_delivery_even_during_full_privacy(app):
+    from scope_recall.core import private
+    from scope_recall.core.session_brief import already_injected
+
+    core, ctx = app
+    item, _source = initial(core, ctx, when="2026-09-05T12:00:00Z")
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    assert item.ref in core.session_brief(ctx, deliver=True)["text"]
+    private.open_interval(core.storage, core.clock, ctx, target="session", session=ctx.session_id)
+    assert not core.session_brief(ctx, deliver=True, compact=True)["text"]
+    with core.storage.read(ctx) as tx:
+        assert not already_injected(tx, "claim", item.ref, item.revision)

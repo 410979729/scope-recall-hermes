@@ -3,6 +3,7 @@
 from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
+from .retractions import SAFETY_RETRACTIONS
 
 SCHEMA_VERSION = 1123
 #: Schemas a store may carry and be brought forward from, oldest first. Any
@@ -129,7 +130,9 @@ ADOPTION_PROCESSING_STATEMENTS = (
 
 # The cached manifest holds object versions, never copied source text. The
 # reader rechecks each version through the ordinary authority boundary.
+
 SESSION_BRIEF_STATEMENTS = (
+    SAFETY_RETRACTIONS,
     """CREATE TABLE session_briefs (
         scope_id TEXT PRIMARY KEY NOT NULL REFERENCES instance_scopes(scope_id),
         version INTEGER NOT NULL CHECK(version>=1), signature TEXT NOT NULL,

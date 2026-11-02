@@ -5033,3 +5033,63 @@ def test_a_shared_duplicate_capture_preserves_entry_activity_and_all_database_by
             assert tx._check().serialize() == before
     finally:
         hook.close()
+
+
+def test_hermes_returns_brief_when_question_recall_fails(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+
+        def unavailable(*args, **kwargs):
+            raise ContractError("STORAGE_UNAVAILABLE")
+
+        monkeypatch.setattr(core, "recall_packet", unavailable)
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_render_failure_does_not_confirm_brief_delivery(store, monkeypatch):
+    from scope_recall.adapters.hermes import prefetch
+
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    original = prefetch.render_host_recall_context
+    try:
+
+        def fail_render(*args, **kwargs):
+            raise ValueError("TEST synthetic render failure")
+
+        monkeypatch.setattr(prefetch, "render_host_recall_context", fail_render)
+        with pytest.raises(ValueError, match="synthetic render failure"):
+            provider.prefetch("TEST-project color question")
+        monkeypatch.setattr(prefetch, "render_host_recall_context", original)
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_late_prefetch_does_not_confirm_for_an_ended_turn(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+        original = core.recall_packet
+        initial_turn = provider._active_turn_id
+
+        def late(*args, **kwargs):
+            packet = original(*args, **kwargs)
+            provider._active_turn_id = "TEST-next-turn"
+            return packet
+
+        monkeypatch.setattr(core, "recall_packet", late)
+        provider.prefetch("TEST-project color question")
+        monkeypatch.setattr(core, "recall_packet", original)
+        provider._active_turn_id = initial_turn
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()

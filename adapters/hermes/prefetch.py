@@ -72,15 +72,22 @@ class Prefetch:
                 if self._adapter._active_turn_id == turn:
                     self._adapter._diagnostics.last_prefetch_skip_reason = reason
             text = "\n\n".join(part for part in (brief, notice) if part)
-            self._record_usage(core, context, text, briefing, started)
-            return text
-        packet = core.recall_packet(
-            context,
-            request,
-            current_source_refs=current_refs,
-            # A day the message names is read in the zone this profile tells its model, as its memories' times are.
-            zone=display_zone(),
-        )
+            self._record_usage(core, context, text, briefing, started, turn)
+            return self._confirm(core, context, effective_session, turn, briefing, text)
+        try:
+            packet = core.recall_packet(
+                context,
+                request,
+                current_source_refs=current_refs,
+                # A day the message names is read in the zone this profile tells its model, as its memories' times are.
+                zone=display_zone(),
+            )
+        except (ContractError, sqlite3.Error, OSError, RuntimeError, ValueError):
+            if not brief:
+                raise
+            text = "\n\n".join(part for part in (brief, notice) if part)
+            self._record_usage(core, context, text, briefing, started, turn)
+            return self._confirm(core, context, effective_session, turn, briefing, text)
         preparation = core.prepare_recall_render(context, packet)
         with self._adapter._lock:
             if self._adapter._active_turn_id == turn:
@@ -98,14 +105,17 @@ class Prefetch:
             zone=display_zone(),
         )
         if brief:
+            core.remove_question_overlaps(briefing, rendered)
+            brief = briefing["text"]
+        if brief:
             rendered = f"{brief}\n\n{rendered}" if rendered else brief
         if notice:
             rendered = f"{rendered}\n\n{notice}" if rendered else notice
-        self._record_usage(core, context, rendered, briefing, started)
-        return rendered
+        self._record_usage(core, context, rendered, briefing, started, turn)
+        return self._confirm(core, context, effective_session, turn, briefing, rendered)
 
     def _brief(self, core, context, session):
-        """Serialize brief delivery and apply a pending compaction in the same transaction."""
+        """Prepare the brief while preserving a pending compaction until confirmation."""
         empty = {"text": "", "tokens": 0, "elapsed_ms": 0}
         if not self._adapter._brief_lock.acquire(timeout=0.2):
             return empty
@@ -113,19 +123,39 @@ class Prefetch:
             with self._adapter._lock:
                 generation = self._adapter._brief_compactions.get(session, 0)
             try:
-                brief = core.session_brief(context, deliver=True, compact=bool(generation), remaining_seconds=0.2)
+                brief = core.session_brief(
+                    context, deliver=True, compact=bool(generation), remaining_seconds=0.2, defer_confirmation=True
+                )
             except (ContractError, sqlite3.Error, OSError, ValueError):
                 return empty
-            if generation:
-                with self._adapter._lock:
-                    if self._adapter._brief_compactions.get(session) == generation:
-                        del self._adapter._brief_compactions[session]
+            brief["_generation"] = generation
             return brief
         finally:
             self._adapter._brief_lock.release()
 
-    def _record_usage(self, core, context, text, briefing, started):
+    def _confirm(self, core, context, session, turn, briefing, text):
+        """Mark the delivered response after rendering, retaining a pending compaction on failure."""
+        if "_epoch" not in briefing:
+            return text
+        with self._adapter._lock:
+            if self._adapter._active_turn_id != turn:
+                return text
+            reason = core.confirm_session_brief(context, briefing, remaining_seconds=0.03)
+        if reason == "brief_invalidated":
+            text = text.replace(briefing["text"], "", 1).strip() if briefing["text"] else text
+        if reason == "brief_delivered" and briefing.get("_generation"):
+            with self._adapter._lock:
+                if self._adapter._brief_compactions.get(session) == briefing["_generation"]:
+                    del self._adapter._brief_compactions[session]
+        if reason == "brief_delivery_unconfirmed":
+            self._adapter._diagnostics.capability_gaps = (*self._adapter._diagnostics.capability_gaps, reason)
+        return text
+
+    def _record_usage(self, core, context, text, briefing, started, turn):
         """Count only the response Hermes is given, not candidate or retry work."""
+        with self._adapter._lock:
+            if self._adapter._active_turn_id != turn:
+                return
         tokens = max(0, (estimate_tokens(text) if text else 0) - briefing["tokens"])
         elapsed = max(0, round((core.clock.monotonic() - started) * 1000) - briefing.get("elapsed_ms", 0))
         try:

@@ -190,6 +190,7 @@
     "core/restore.py",
     "core/resume_compaction.py",
     "core/retained_artifacts.py",
+    "core/retractions.py",
     "core/retrieval.py",
     "core/retrieval_hydration.py",
     "core/retrieval_storage.py",

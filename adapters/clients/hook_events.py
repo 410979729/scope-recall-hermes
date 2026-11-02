@@ -181,6 +181,13 @@ class HookEvents:
             result = self._hook.prompt_recall.own(
                 context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
             )
+        if brief and self._hook._pending_brief is not None:
+            prepared = self._hook._pending_brief[1]
+            question_text = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+            self._hook.core.remove_question_overlaps(prepared, question_text)
+            brief = prepared["text"]
+            self._hook.diagnostics.brief_tokens = prepared["tokens"]
+            self._hook.diagnostics.brief_items = tuple((item["ref"], item["revision"]) for item in prepared["items"])
         if brief:
             output = result.get("hookSpecificOutput", {})
             prior = output.get("additionalContext", "")

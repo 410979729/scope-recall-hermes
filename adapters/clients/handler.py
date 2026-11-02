@@ -465,6 +465,7 @@ class CodexHookHandler:
         # A client on another machine sends its record's lines, and its own judgement of the Stop's reply.
         self.call = HookCall(local_record=record is None and local_record, client_error_reply=error_reply)
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
+        self._pending_brief = None
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
         if event == "PrivateCheck":
@@ -481,12 +482,13 @@ class CodexHookHandler:
         deadline = self._hook_deadline(budget)
         self._upgrade_wake_context = audience, deadline
         if event == "SessionStart":
-            return self._session_started(session_id, audience, deadline, payload)
+            result = self._session_started(session_id, audience, deadline, payload)
+            return self._confirm_brief(result, deadline)
         if event == "UserPromptSubmit":
             started = self.clock.monotonic()
             result = self.events.prompt(session_id, audience, payload, deadline)
             self._record_prompt_usage(session_id, audience, result, started, deadline)
-            return result
+            return self._confirm_brief(result, deadline)
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
             # A thread opened for application suggestions contains application activity. Its mark excludes later
             # tool calls, replies and end events as well as the request that opened it.
@@ -582,6 +584,7 @@ class CodexHookHandler:
                 deliver=enabled,
                 compact=compact,
                 remaining_seconds=self.remaining(deadline),
+                defer_confirmation=True,
             )
         except (ContractError, sqlite3.Error, OSError, ValueError):
             self.note("brief_unavailable")
@@ -589,7 +592,29 @@ class CodexHookHandler:
         self.diagnostics.brief_tokens = brief["tokens"]
         self.diagnostics.brief_elapsed_ms = brief.get("elapsed_ms", 0)
         self.diagnostics.brief_items = tuple((item["ref"], item["revision"]) for item in brief["items"])
+        if "_epoch" in brief:
+            self._pending_brief = (context, brief)
         return brief["text"]
+
+    def _confirm_brief(self, result: dict, deadline: float) -> dict:
+        """Confirm the background after the response has been constructed."""
+        pending = self._pending_brief
+        if pending is None:
+            return result
+        context, brief = pending
+        try:
+            reason = self.core.confirm_session_brief(context, brief, remaining_seconds=self.remaining(deadline))
+        except (ContractError, sqlite3.Error, OSError, ValueError):
+            reason = "brief_delivery_unconfirmed"
+        if reason == "brief_delivery_unconfirmed":
+            self.note(reason)
+        if reason == "brief_invalidated" and brief["text"]:
+            output = result.get("hookSpecificOutput", {})
+            text = output.get("additionalContext", "").replace(brief["text"], "", 1).strip()
+            if not text:
+                return {}
+            output["additionalContext"] = text
+        return result
 
     def _session_started(self, session_id: str, audience, deadline: float, payload: dict[str, Any]) -> dict[str, Any]:
         context = self.context(audience, session_id, "host_generated")

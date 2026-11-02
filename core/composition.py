@@ -150,6 +150,7 @@ class MemoryCore:
         remaining_seconds=None,
         deliver: bool = False,
         compact: bool = False,
+        defer_confirmation: bool = False,
     ) -> dict:
         """Read a bounded, source-checked briefing for the bound session."""
         from .session_brief import read
@@ -168,7 +169,21 @@ class MemoryCore:
             remaining_seconds=remaining_seconds,
             deliver=deliver,
             compact=compact,
+            defer_confirmation=defer_confirmation,
         )
+
+    def confirm_session_brief(self, context: TrustedContext, brief: dict, *, remaining_seconds=None) -> str:
+        """Confirm a prepared briefing once the host has built its response."""
+        from .session_brief import confirm
+
+        return confirm(self.storage, self.clock, context, brief, remaining_seconds=remaining_seconds)
+
+    @staticmethod
+    def remove_question_overlaps(brief: dict, question_text: str) -> None:
+        """Remove facts already present in the same host response's question recall."""
+        from .session_brief import remove_question_overlaps
+
+        remove_question_overlaps(brief, question_text)
 
     def reset_session_injections(self, context: TrustedContext, *, remaining_seconds=None) -> None:
         """Forget the current context's delivered references after host compaction."""

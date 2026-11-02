@@ -4,35 +4,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from datetime import datetime, timedelta
 
 from ..contracts import utc_timestamp
-from . import private
+from . import lineage, private
 from .claim_storage import parse_source_ref
 from .recall_budget import estimate_tokens
 from .retrieval import CandidateRef, SearchContext, SearchLimits
 from .retrieval_hydration import RetrievalHydration
+from .writer_lease import TruthWriterBusyError
 
 _HEADING = "Session background:"
 
 
 def _dependencies(conn, items):
-    """Bind every selected object's evidence version and its present lifecycle state."""
+    """Bind the shared lineage's source versions to their current lifecycle state."""
     result = []
     for item in items:
         kind = "episode" if item["kind"] == "task" else "claim"
+        pairs = lineage.evidence(conn, kind, item["ref"], item["revision"])
         rows = conn.execute(
-            "SELECT e.source_ref,e.source_revision,s.content_sha256,s.read_blocked,s.suppressed, "
-            "coalesce(guard.state,'released'), "
+            "SELECT json_extract(p.value,'$[0]'),json_extract(p.value,'$[1]'), "
+            "s.content_sha256,s.read_blocked,s.suppressed,coalesce(guard.state,'released'), "
             "(SELECT max(newer.source_revision) FROM source_events newer "
             " WHERE newer.source_group_key=s.source_group_key) "
-            "FROM evidence_links e LEFT JOIN source_events s "
-            "ON s.event_id=e.source_ref AND s.source_revision=e.source_revision "
-            "LEFT JOIN source_safety guard ON guard.source_ref=e.source_ref "
-            "AND guard.source_revision=e.source_revision "
-            "WHERE e.object_kind=? AND e.object_ref=? AND e.object_revision=? "
-            "ORDER BY e.source_ref,e.source_revision,e.relation,e.quote",
-            (kind, item["ref"], item["revision"]),
+            "FROM json_each(?) p LEFT JOIN source_events s "
+            "ON s.event_id=json_extract(p.value,'$[0]') AND s.source_revision=json_extract(p.value,'$[1]') "
+            "LEFT JOIN source_safety guard ON guard.source_ref=s.event_id AND guard.source_revision=s.source_revision "
+            "ORDER BY json_extract(p.value,'$[0]'),json_extract(p.value,'$[1]')",
+            (json.dumps(pairs),),
         )
         result.append((kind, item["ref"], item["revision"], [tuple(row) for row in rows]))
     return result
@@ -133,6 +134,8 @@ def _entry(context) -> str:
 
 def already_injected(tx, kind: str, ref: str, revision: int) -> bool:
     """Whether this session has received the exact object version in its briefing."""
+    if kind != "claim":
+        return False
     context = tx.context
     return (
         tx._check()
@@ -245,9 +248,8 @@ def _safe_line(tx, search, item, intervals, hydration):
     return candidate, obj, line
 
 
-def _mark_delivered(tx, context, candidate, obj) -> None:
-    pairs = [(candidate.kind, candidate.ref, candidate.revision)]
-    pairs.extend(("event", *parse_source_ref(ref)) for ref in obj.evidence_refs)
+def _mark_delivered(tx, context, items) -> None:
+    pairs = [("claim", item["ref"], item["revision"]) for item in items if item["kind"] != "task"]
     tx._check(write=True).executemany(
         "INSERT OR IGNORE INTO session_brief_injections VALUES(?,?,?,?,?)",
         [(_entry(context), context.session_id, *pair) for pair in pairs],
@@ -274,8 +276,6 @@ def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
                 continue
             lines.append(line)
             items.append({"kind": kind, "ref": item["ref"], "revision": item["revision"]})
-            if deliver:
-                _mark_delivered(tx, search.trusted_context, candidate, obj)
     return items, lines
 
 
@@ -289,6 +289,21 @@ def _record_brief(tx, context, tokens: int, elapsed_ms: int) -> None:
     )
 
 
+def remove_question_overlaps(brief: dict, question_text: str) -> None:
+    """Omit fact lines already present in the question recall of the same response."""
+    if "_lines" not in brief or not question_text:
+        return
+    kept = [
+        (item, line)
+        for item, line in zip(brief["items"], brief["_lines"], strict=True)
+        if item["kind"] == "task" or item["ref"] not in question_text
+    ]
+    brief["items"] = [item for item, _line in kept]
+    brief["_lines"] = [line for _item, line in kept]
+    brief["text"] = "\n".join([_HEADING, *brief["_lines"]]) if kept else ""
+    brief["tokens"] = estimate_tokens(brief["text"]) if kept else 0
+
+
 def read(
     storage,
     clock,
@@ -298,34 +313,92 @@ def read(
     remaining_seconds: float | None = None,
     deliver: bool = False,
     compact: bool = False,
+    defer_confirmation: bool = False,
 ) -> dict:
     """Read the saved manifests and recheck each version in the session's current authority snapshot."""
     started = clock.monotonic()
     now = utc_timestamp(clock.utc_now())
     empty = {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
     search = SearchContext("session briefing", "auto", None, (), SearchLimits(), started + 5, now, context)
-    if deliver and not compact:
-        with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            if _started(tx, context):
-                return empty
-    transaction = storage.write if deliver or compact else storage.read
-    with transaction(context, remaining_seconds=remaining_seconds) as tx:
-        if compact:
-            _reset(tx, context)
-        mode, _marker = private.recall_state(tx, context, now)
-        if mode == "full" or (deliver and _started(tx, context)):
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        mode, marker = private.recall_state(tx, context, now)
+        if (mode == "full" and not compact) or (deliver and not compact and _started(tx, context)):
             return empty
-        items, lines = _render(
-            tx, search, _manifest(tx, context), private.active_intervals(tx, now), token_limit, deliver
+        items, lines = (
+            ([], [])
+            if mode == "full"
+            else _render(
+                tx,
+                search,
+                _manifest(tx, context),
+                private.active_intervals(tx, now),
+                token_limit,
+                deliver and not compact,
+            )
         )
+        epoch = tx.memory_epoch()
         text = "\n".join([_HEADING, *lines]) if lines else ""
         tokens = estimate_tokens(text) if text else 0
-        elapsed_ms = max(0, round((clock.monotonic() - started) * 1000))
-        if deliver:
-            _record_brief(tx, context, tokens, elapsed_ms)
-    return {
+    result = {
         "text": text,
         "items": items,
         "tokens": tokens,
         "elapsed_ms": max(0, round((clock.monotonic() - started) * 1000)),
+        "_epoch": epoch,
+        "_privacy_marker": marker,
+        "_lines": lines,
+        "_compact": compact,
+        "_deliver": deliver and mode != "full",
     }
+    if not defer_confirmation and (deliver or compact):
+        result["delivery_reason"] = confirm(storage, clock, context, result, remaining_seconds=remaining_seconds)
+        if result["delivery_reason"] == "brief_invalidated":
+            result.update(empty)
+    return result
+
+
+def _still_valid(tx, clock, context, brief) -> bool:
+    """Recheck selected lines if truth or privacy changed after preparation."""
+    now = utc_timestamp(clock.utc_now())
+    mode, marker = private.recall_state(tx, context, now, after=brief["_privacy_marker"])
+    if (mode == "full" and brief["text"]) or (brief["_deliver"] and not brief["_compact"] and _started(tx, context)):
+        return False
+    if tx.memory_epoch() == brief["_epoch"] and marker == brief["_privacy_marker"]:
+        return True
+    search = SearchContext("session briefing", "auto", None, (), SearchLimits(), clock.monotonic() + 5, now, context)
+    manifest = {(item["kind"], item["ref"], item["revision"]): item for item in _manifest(tx, context)}
+    intervals, hydration = private.active_intervals(tx, now), RetrievalHydration()
+    for item, line in zip(brief["items"], brief["_lines"], strict=True):
+        saved = manifest.get((item["kind"], item["ref"], item["revision"]))
+        found = _safe_line(tx, search, saved, intervals, hydration) if saved else None
+        if found is None or found[2] != line:
+            return False
+    return True
+
+
+def confirm(storage, clock, context, brief: dict, *, remaining_seconds: float | None = None) -> str:
+    """Confirm only a fully prepared response, waiting briefly for the writer lease."""
+    from .retractions import retraction_after
+
+    wait = min(0.03, remaining_seconds) if remaining_seconds is not None else 0.03
+    if wait <= 0:
+        return "brief_delivery_unconfirmed"
+    try:
+        with storage.write(context, remaining_seconds=wait) as tx:
+            if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
+                tx, clock, context, brief
+            ):
+                return "brief_invalidated"
+            if brief["_compact"]:
+                _reset(tx, context)
+            if brief["_deliver"]:
+                _mark_delivered(tx, context, brief["items"])
+                _record_brief(tx, context, brief["tokens"], brief["elapsed_ms"])
+    except (TruthWriterBusyError, sqlite3.OperationalError):
+        with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+            if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
+                tx, clock, context, brief
+            ):
+                return "brief_invalidated"
+        return "brief_delivery_unconfirmed"
+    return "brief_delivered"
