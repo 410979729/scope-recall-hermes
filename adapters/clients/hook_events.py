@@ -180,10 +180,17 @@ class HookEvents:
             since = in_context_since(payload)
         if vectors and self._hook.resident_recall is not None:
             return self._hook.prompt_recall.answer(
-                payload, context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
+                payload,
+                context,
+                prompt,
+                request_id,
+                current_refs,
+                deadline,
+                capture_gaps,
+                since=since,
             )
         return self._hook.prompt_recall.own(
-            context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
+            context, prompt, request_id, current_refs, deadline, capture_gaps, since=since, session_id=session_id
         )
 
     def _with_context_since(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:

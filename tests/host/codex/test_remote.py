@@ -484,7 +484,9 @@ def test_a_remote_client_waits_as_long_as_a_local_one():
     assert codex == {event: install_codex.HOOK_TIMEOUTS[event] for event in codex}
     assert codex["UserPromptSubmit"] == install_claude_code.HOOK_TIMEOUTS["UserPromptSubmit"]
     assert max(install_codex.HOOK_TIMEOUTS["SessionEnd"], install_codex.HOOK_TIMEOUTS["Interrupt"]) <= 3
-    assert remote_client.HOOK_TIMEOUTS["workbuddy"] == remote_client.HOOK_TIMEOUTS["claude-code"]
+    assert remote_client.HOOK_TIMEOUTS["workbuddy"] == {
+        event: remote_client.HOOK_TIMEOUTS["claude-code"][event] for event in remote_client.HOOK_TIMEOUTS["workbuddy"]
+    }
 
 
 @pytest.mark.parametrize("host", remote_client.HOSTS)

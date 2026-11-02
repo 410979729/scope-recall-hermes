@@ -51,6 +51,7 @@ from .runtime_wiring import (
 from .session_marks import (
     forget_turns,
     in_suggestions_thread,
+    mark_session_start,
 )
 
 _MAX_STDIN_BYTES = 65536
@@ -481,6 +482,8 @@ class CodexHookHandler:
         deadline = self._hook_deadline(budget)
         self._upgrade_wake_context = audience, deadline
         if event == "SessionStart":
+            if self.host in {"claude-code", "codex"} and self.call.local_record and not self.remote_paths:
+                mark_session_start(self.config, self.host, session_id)
             return self._session_started(session_id, audience, deadline)
         if event == "UserPromptSubmit":
             return self.events.prompt(session_id, audience, payload, deadline)

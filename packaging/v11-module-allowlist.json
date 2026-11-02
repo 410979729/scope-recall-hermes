@@ -80,6 +80,7 @@
     "adapters/hermes/unbound_sessions.py",
     "adapters/hermes/worker.py",
     "adapters/host_identity.py",
+    "adapters/host_memory.py",
     "adapters/host_profiles.py",
     "adapters/installation.py",
     "adapters/installation_identity.py",

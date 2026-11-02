@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from scope_recall.adapters.host_memory import inspect_host_memory
+
 from ..adapters.hermes.shared_entries import read_attachment, read_shared_payload
 from .install_common import InstallError, require_absolute
 from .install_receipt import load_receipt
@@ -272,6 +274,7 @@ def build_plan(args: argparse.Namespace, *, environment=None) -> SetupPlan:
                 state=state,
                 action="repair missing configuration" if receipt else "install",
                 memory_skill=True,
+                host_memory=inspect_host_memory(host, host_home, project=project, environment=env),
             )
         )
     if len(stores) > 1 and args.store is None:
@@ -341,6 +344,7 @@ def print_plan(plan: SetupPlan, *, machine: bool = False) -> None:
         print(f"    Scopes: {row.get('scopes')}; worker: {row.get('worker')}")
         print(f"    Existing models and budget: {row.get('existing_models')}")
         print(f"    Database planning state: {row.get('database_inspection')}; health is checked by doctor.")
+        print(f"    Host memory: {row.get('host_memory')}")
         if row.get("package_command"):
             print(f"    Install core in host venv: {row['package_command']}")
     print(f"  Store: {plan.store}; scopes: preserve existing grants, or owner's private scope for new entries")

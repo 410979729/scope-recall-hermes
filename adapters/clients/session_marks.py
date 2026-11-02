@@ -29,6 +29,33 @@ def mark_path(config, kind: str, session_id: str) -> Path:
     return folder / hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
 
 
+def mark_session_start(config, host: str, session_id: str) -> None:
+    """Keep the first observed local SessionStart; a duplicate hook cannot move the cutoff forward."""
+    path = mark_path(config, f"memory-start-{host}", session_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("x", encoding="utf-8") as stream:
+            json.dump({"started_at": time.time()}, stream)
+    except OSError:
+        pass
+
+
+def session_start_time(config, host: str, session_id: str) -> float | None:
+    """Return a bounded local start mark, or None when this session has no trustworthy mark."""
+    path = mark_path(config, f"memory-start-{host}", session_id)
+    try:
+        if path.is_symlink():
+            return None
+        with path.open("rb") as stream:
+            raw = stream.read(129)
+        if len(raw) > 128:
+            return None
+        value = json.loads(raw)["started_at"]
+        return float(value) if type(value) in (float, int) and 0 < value < time.time() + 60 else None
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _thread_mark(config, session_id: str) -> Path:
     """One thread's mark (``mark_path``)."""
     return mark_path(config, "host-threads", session_id)

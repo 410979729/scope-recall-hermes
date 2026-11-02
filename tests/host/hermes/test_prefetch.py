@@ -297,3 +297,61 @@ def test_blank_prefetch_remains_empty_and_has_a_record(adapter):
     assert len(rows) == 1
     assert rows[0]["query"]["length"] == 0
     assert "prompt_skipped" in rows[0]["reasons"]
+
+
+def test_prefetch_respects_host_memory_snapshot(adapter, hermes_home):
+    """Only a host fact present before this session suppresses automatic delivery."""
+    import os
+    import sqlite3
+    import time
+
+    provider, clock = adapter
+    core, identity = provider._core, provider._identity
+    sentence = "TEST observatory palette is amber."
+    core.record_event(
+        identity.trusted_context(session_id="TEST-seed", mutation=True),
+        source_event(
+            content=sentence,
+            source_event_key="TEST-host-snapshot",
+            occurred_at=clock.utc_now(),
+            recorded_at=clock.utc_now(),
+        ),
+        scope_id=identity.runtime_audience.capture_scope_id,
+    )
+    memory_dir = hermes_home / "memories"
+    memory_dir.mkdir(exist_ok=True)
+    memory = memory_dir / "MEMORY.md"
+    memory.write_text("- " + sentence + "\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        "memory:\n  memory_enabled: true\n  user_profile_enabled: false\n", encoding="utf-8"
+    )
+    started = time.time() - 5
+    os.utime(hermes_home / "config.yaml", (started - 5, started - 5))
+    os.utime(memory, (started - 5, started - 5))
+    with sqlite3.connect(hermes_home / "state.db") as db:
+        db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL)")
+        db.execute("INSERT INTO sessions VALUES (?,?)", ("TEST-session-1", started))
+    provider.on_turn_start(1, "TEST observatory palette", turn_id="TEST-host-turn-1")
+    assert sentence not in provider.prefetch("TEST observatory palette")
+    assert core.recall_diagnostics.flush()
+    logs = core.recall_diagnostics.store.list()
+    assert any(
+        item.get("reason") == "host_memory_duplicate" and item.get("source_type") == "event"
+        for row in logs
+        for item in row.get("items", [])
+    )
+    os.utime(memory, (started + 1, started + 1))
+    provider.on_turn_start(2, "TEST observatory palette", turn_id="TEST-host-turn-2")
+    assert sentence in provider.prefetch("TEST observatory palette")
+    memory.unlink()
+    provider.on_turn_start(3, "TEST observatory palette", turn_id="TEST-host-turn-3")
+    assert sentence in provider.prefetch("TEST observatory palette")
+    memory.write_text("- " + sentence + "\n", encoding="utf-8")
+    os.utime(memory, (started - 5, started - 5))
+    for turn, value in ((4, "false"), (5, "null")):
+        (hermes_home / "config.yaml").write_text(
+            f"memory:\n  memory_enabled: {value}\n  user_profile_enabled: false\n", encoding="utf-8"
+        )
+        os.utime(hermes_home / "config.yaml", (started - 5, started - 5))
+        provider.on_turn_start(turn, "TEST observatory palette", turn_id=f"TEST-host-turn-{turn}")
+        assert sentence in provider.prefetch("TEST observatory palette")

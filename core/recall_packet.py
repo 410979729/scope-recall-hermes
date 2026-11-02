@@ -35,6 +35,7 @@ from .recall_needs import asks_to_resume, unmet_needs
 from .recall_overflow import append_overflow
 from .recall_restatement import (
     has_conversation_summaries,
+    host_memory_duplicate,
     prioritize_summary_originals,
     recheck_restatement,
     redundant_summary_keys,
@@ -398,6 +399,14 @@ class RecallPacketCompiler:
             verified = self._verify(storage, draft, list(zip(result.candidates, result.items)))
         with timings.measure("fence"):
             verified = self._fence(storage, draft, verified)
+        if context.automatic_injection and context.host_memory_entries:
+            retained = []
+            for candidate, obj in verified:
+                if host_memory_duplicate(obj, context.host_memory_entries):
+                    note_candidate(candidate, "host_memory_duplicate", obj=obj)
+                else:
+                    retained.append((candidate, obj))
+            verified = retained
         draft.result = replace(result, diagnostics=(*result.diagnostics, *timings.snapshot()))
         draft, include_diagnostic_ref = self._select(draft, self._ordered(context, verified, limits), limits)
         if context.mode == "auto" and not any(not is_background(obj) for obj in draft.objects):

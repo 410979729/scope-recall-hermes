@@ -3,13 +3,15 @@ lock, the recall run without it, its context rendered for the model."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import RecallRequest, TrustedContext
 from scope_recall.core.private import notice_for_mode
 from scope_recall.core.recall_trace import record_refusal, record_unbound_attempt
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 
+from ..host_memory import read_host_memory
 from ..runtime_wiring import render_host_recall_context
 from .tool_surface import display_zone
 
@@ -78,10 +80,20 @@ class Prefetch:
         if type(query) is not str or not query.strip():
             record_refusal(core, context, query, "blank_prompt")
             return notice
+        entries = read_host_memory(
+            "hermes",
+            identity.hermes_home,
+            project=identity.hermes_home,
+            session_started=None,
+            session_id=effective_session,
+            deadline=time.monotonic() + 0.2,
+        )
+        host_context: dict[str, Any] = {"host_memory_entries": entries} if entries else {}
         packet = core.recall_packet(
             context,
             request,
             current_source_refs=current_refs,
+            **host_context,
             # A day the message names is read in the zone this profile tells its model, as its memories' times are.
             zone=display_zone(),
         )

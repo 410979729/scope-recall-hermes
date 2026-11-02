@@ -28,6 +28,30 @@ COMPARISON_CHARACTERS = 32768
 COMPARISON_TOTAL_CHARACTERS = 262144
 
 
+def normalized_statement(text: str) -> str:
+    """Fold whitespace while preserving the full wording and punctuation."""
+    return " ".join(text.split())
+
+
+def same_statement(first: str, second: str) -> bool:
+    """Compare two complete statements without ignoring negation or conditions."""
+    body = normalized_statement(first)
+    return bool(body) and body == normalized_statement(second)
+
+
+def host_memory_duplicate(obj: RetrievedObject, entries: tuple[str, ...]) -> bool:
+    """Match a complete candidate statement to one complete host entry."""
+    if not entries:
+        return False
+    payload = optional_json(obj.content) if obj.kind == "claim" else None
+    if isinstance(payload, dict) and not payload.get("conditions"):
+        parts = (payload.get(key) for key in ("subject", "predicate", "value_text"))
+        statement = " ".join(part for part in parts if isinstance(part, str))
+    else:
+        statement = statement_text(obj)
+    return any(same_statement(statement, entry) for entry in entries)
+
+
 class _Expired(Exception):
     """The optional pairing pass must return the untouched ranking."""
 
@@ -239,7 +263,7 @@ class _Pool:
             complete = len(obj.content) <= limit and len(statement) <= limit
             self.characters -= min(limit, len(obj.content))
             self.texts[obj.content] = _Text(
-                " ".join(body.split()), frozenset(lexical_terms(statement[:limit])), complete
+                normalized_statement(body), frozenset(lexical_terms(statement[:limit])), complete
             )
             self.incomplete |= not complete
         self.check()

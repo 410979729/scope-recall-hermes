@@ -381,7 +381,8 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
     installed = apply_install(plan_install(**options))
     assert installed.installation_id == config.installation_id
     hooks = json.loads((plugin / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
-    assert sorted(hooks) == ["SessionEnd", "Stop", "UserPromptSubmit"]
+    assert sorted(hooks) == ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]
+    assert "--host claude-code" in hooks["SessionStart"][0]["hooks"][0]["command"]
     command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
     assert "--home " + client.as_posix() + " --host claude-code" in command
     assert chr(92) not in command, "a shell would read a backslash as an escape"
