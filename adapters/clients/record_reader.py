@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import ContractError
+from scope_recall.core.private import parse_recording_command
 
 from ..host_profiles import HOSTS
 from . import transcript
@@ -62,6 +63,22 @@ class RecordLines:
             if said is not None and (said.entry_id, said.role, said.text) == wanted:
                 found = said
         return found
+
+
+def _without_command_records(lines):
+    """Advance past command text without replaying it as captured content."""
+    return [
+        (
+            end,
+            None
+            if entry is not None
+            and entry.role == "user"
+            and not entry.private_spans_removed
+            and parse_recording_command(entry.text)
+            else entry,
+        )
+        for end, entry in lines
+    ]
 
 
 class RecordReader:
@@ -141,6 +158,7 @@ class RecordReader:
             # Read here or sent by a client on another machine, of any version: the record keeps the reminders
             # Claude's desktop app puts in a person's message, and they are not the person's.
             lines = [(end, _person_words(entry)) for end, entry in lines]
+        lines = _without_command_records(lines)
         said = [entry for _end, entry in lines if entry is not None]
         # WorkBuddy's record names no turn: a person's message there is the turn its prompt hook kept for the same words,
         # and the model's message after it with the words of the Stop's reply is that Stop's turn: held when the Stop
@@ -179,7 +197,9 @@ class RecordReader:
                     recorded_at=self._hook.clock.utc_now(),
                 )
                 origin = "human_direct" if entry.role == "user" else "assistant_visible"
-                if not self._captured_for_good(self._hook.context(bound, session_id, origin), bound, event, until):
+                if not self._captured_for_good(
+                    self._hook.context(bound, session_id, origin), bound, event, until, entry.private_spans_removed
+                ):
                     break
             position = end
         if remote is not None:
@@ -245,11 +265,14 @@ class RecordReader:
             event_id=event_id,
         )
 
-    def _captured_for_good(self, context, audience, event, deadline: float) -> bool:
+    def _captured_for_good(self, context, audience, event, deadline: float, removed: int = 0) -> bool:
         """Capture one record message; False when it may succeed later and the read must stop here."""
         diagnostics = self._hook.diagnostics
         diagnostics.capture_disposition = diagnostics.capture_error_code = diagnostics.capture_error_type = None
-        self._hook.capture(context, audience, event, deadline=deadline, via_inbox=False)
+        gaps = (f"private_spans_removed:{removed}", "private_content_omitted") if removed else ()
+        if gaps:
+            event["capture_state"] = "partial"
+        self._hook.capture(context, audience, event, deadline=deadline, via_inbox=False, gaps=gaps)
         return diagnostics.capture_settled
 
 

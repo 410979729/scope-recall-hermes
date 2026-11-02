@@ -40,8 +40,12 @@ class DoctorReport:
     #: Model answers cut off at the output limit in the last hour.
     recent_output_truncations: int = 0
     memory_import: dict[str, Any] = field(default_factory=dict)
+    host_memory: dict[str, Any] = field(default_factory=dict)
     recall_log: dict[str, Any] = field(default_factory=dict)
     recall_attempt: dict[str, Any] = field(default_factory=dict)
+    entries: list[dict[str, Any]] = field(default_factory=list)
+
+    private_rules: list[dict[str, Any]] = field(default_factory=list)
     summaries: dict[str, Any] = field(default_factory=dict)
     reflections: dict[str, Any] = field(default_factory=dict)
     capture_inbox: int = 0

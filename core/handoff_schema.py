@@ -1,10 +1,13 @@
 """SQLite task-report tables, separate from facts and extraction work."""
 
-LEGACY_STATEMENTS = (
+STATEMENTS = (
     """CREATE TABLE handoffs (
         handoff_id TEXT PRIMARY KEY NOT NULL, task_ref TEXT NOT NULL REFERENCES episodes(episode_id),
         task_revision INTEGER NOT NULL, scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
         project_id TEXT, branch_id TEXT, project_key TEXT, sender_entry TEXT NOT NULL,
+        sender_session TEXT, sender_project_root TEXT,
+        sender_project_identity TEXT NOT NULL DEFAULT 'local'
+            CHECK(sender_project_identity IN ('local','remote','unverified')),
         session_label TEXT, confirmed INTEGER NOT NULL CHECK(confirmed IN (0,1)),
         state TEXT NOT NULL CHECK(state IN ('pending','accepted','cancelled','expired')),
         revision INTEGER NOT NULL CHECK(revision>=1), resume_json TEXT NOT NULL CHECK(json_valid(resume_json)),
@@ -18,21 +21,4 @@ LEGACY_STATEMENTS = (
         action TEXT NOT NULL, actor_entry TEXT NOT NULL, recorded_at TEXT NOT NULL,
         PRIMARY KEY(handoff_id,revision)
     ) STRICT, WITHOUT ROWID""",
-)
-
-
-PROVENANCE_COLUMNS = (
-    ("sender_session", "TEXT"),
-    ("sender_project_root", "TEXT"),
-    (
-        "sender_project_identity",
-        "TEXT NOT NULL DEFAULT 'local' CHECK(sender_project_identity IN ('local','remote','unverified'))",
-    ),
-)
-STATEMENTS = (
-    LEGACY_STATEMENTS[0].replace(
-        "session_label TEXT,",
-        ", ".join(name + " " + definition for name, definition in PROVENANCE_COLUMNS) + ", session_label TEXT,",
-    ),
-    *LEGACY_STATEMENTS[1:],
 )

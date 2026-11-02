@@ -17,7 +17,7 @@ from .model_content import withhold_secret_items
 from .recall_budget import canonical_render_json, estimate_tokens
 from .recall_items import packet_item
 from .recall_policy import meaningful_query_terms
-from .recall_restatement import prefer_originals
+from .recall_restatement import host_memory_duplicate, prefer_originals
 from .recall_trace import note_candidate
 from .retrieval import MAX_PACKET_ITEMS, SearchContext
 from .summary_validity import CONVERSATION_SUMMARY_REASONS
@@ -96,6 +96,13 @@ def _representatives(tx, reader, result, context, packet, clock):
             break
         source = tx.source(candidate.ref, candidate.revision)
         session = _session(source)
+        try:
+            duplicate = context.automatic_injection and host_memory_duplicate(obj, context.host_memory_entries)
+        except Exception:  # noqa: BLE001 - optional host comparison cannot block overflow recall
+            duplicate = False
+        if duplicate:
+            note_candidate(candidate, "host_memory_duplicate", obj=obj)
+            continue
         if not _qualified(obj) or f"{obj.ref}@{obj.revision}" in selected_refs or session in sessions:
             continue
         rows.append((candidate, obj))

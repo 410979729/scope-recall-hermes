@@ -16,7 +16,9 @@ from typing import Any
 
 from ..contracts import ContractError, utc_timestamp
 from . import injection_policy, private
+from .capture_filters import without_private
 from .claim_storage import parse_source_ref
+from .entry_control import capture_refusal, state_for
 from .recall_budget import estimate_tokens
 from .restore import maintenance_context
 from .resume_compaction import resume_evidence_refs
@@ -206,6 +208,20 @@ def _audit(tx, ref, revision, action, now, *, actor=None):
     conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
 
 
+def _report_content(value):
+    """Strip private text while keeping evidence identifiers unchanged for authority checks."""
+    if isinstance(value, str):
+        return without_private(value)[0]
+    if isinstance(value, list):
+        return [cleaned for item in value if (cleaned := _report_content(item)) not in ("", None)]
+    if isinstance(value, dict):
+        return {
+            key: item if key in {"evidence_refs", "next_step_evidence_refs"} else _report_content(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 def _create(tx, task, payload, now, *, confirmed=True, draft_key=None, sender=None, session_known=True):
     now = utc_timestamp(now)
     if private.recall_state(tx, _privacy_context(tx.context, session_known), now)[0] is not None:
@@ -232,9 +248,11 @@ def _create(tx, task, payload, now, *, confirmed=True, draft_key=None, sender=No
     resume["goal"] = (
         task.resume.get("goal") if task.resume else {"text": task.ref, "evidence_refs": list(task.evidence_refs)}
     )
+    resume = _report_content(resume)
     label = payload.get("session_label")
     if label is not None:
         _string(label, "session_label")
+        label = without_private(label)[0] or None
     ttl = _integer(payload.get("ttl_days", DEFAULT_TTL_DAYS), "ttl_days", 365)
     expires = utc_timestamp((datetime.fromisoformat(utc_timestamp(now)) + timedelta(days=ttl)).isoformat())
     verdict = _screen(tx, resume, label)
@@ -467,6 +485,8 @@ def execute(core, context, action, payload, *, session_known=True):
     transaction = core.storage.read if action == "list" else core.storage.write
     with transaction(context) as tx:
         now = utc_timestamp(core.clock.utc_now())
+        if state_for(tx, context)[0] == "paused" or (action != "list" and capture_refusal(tx, context)):
+            raise ContractError("ACCESS_DENIED", "entry_state")
         mode, _marker = private.recall_state(tx, _privacy_context(context, session_known), now)
         if mode is not None and (action != "list" or mode == "full"):
             raise ContractError("ACCESS_DENIED", "private_mode")

@@ -396,6 +396,9 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
         def memory_retracted_since(self, context, epoch):
             return real_core.memory_retracted_since(context, epoch)
 
+        def release_recall_packet(self, context, packet, *, original=None):
+            return real_core.release_recall_packet(context, packet, original=original)
+
     adapter = build_server(config, workspace=project, core=RaceCore())
     human_context = trusted_context(
         config,
@@ -857,6 +860,9 @@ def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -
 
         def memory_retracted_since(self, context, epoch):
             return core.memory_retracted_since(context, epoch)
+
+        def release_recall_packet(self, context, packet, *, original=None):
+            return core.release_recall_packet(context, packet, original=original)
 
     adapter = build_server(config, workspace=project, core=CaptureCore())
     tool = adapter.server._tool_manager.get_tool("recall")

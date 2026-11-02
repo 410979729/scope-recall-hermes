@@ -4,6 +4,15 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Setup and doctor report known host memory settings and file sizes without changing host memory. Automatic recall skips exact statements already in enabled, session-old Claude Code, Codex and Hermes memory files; headings, list parents, paragraph continuations and claim qualifiers are respected, and missing or uncertain inputs leave recall unchanged. Rerun setup to register the Claude Code SessionStart hook for new sessions.
+Entry controls record owner changes and apply read-only or paused states to individual entries. Paused entry work is rechecked at dispatch and publication, and stale recall packets are discarded.
+
+
+Remote recording commands now retain their source metadata and reject replay in the same transaction as the session rule.
+Hermes reports inline private omissions through its prefetch receipt.
+
+Scope owners can version per-scope extraction instructions from management; instructions only narrow later extraction.
+Recording can be paused or resumed for the current session with direct owner commands, and capture receipts count removed inline private spans.
 The shared store can run in a Linux container with host networking and remote client entries.
 
 Task handoffs carry versioned agent reports between entries, with conditional acceptance, sender or owner cancellation, configurable expiry, source checks and injection screening. Pending confirmed reports appear in session briefings; unconfirmed summary drafts and held reports remain outside automatic injection. The local management page lists handoffs and supports reviewed cancellation. All handoff exits check copied-field dependencies and host-attested sender-session privacy; acceptance checks expiry after acquiring the writer, and briefing scans share the remaining time budget.
@@ -12,6 +21,17 @@ Session start can deliver a bounded, source-checked briefing of unfinished tasks
 preferences. Briefings are prepared by the worker, do not require model calls, and omit content already delivered in
 the current context. The coordinated schema upgrade adds rebuildable scope manifests and session delivery accounting.
 Claude Code installations need their host hooks refreshed through setup to receive the new session-start event.
+
+Automatic injection has configurable per-response and session token ceilings, counting the complete host text and
+resetting session usage on compaction. Confirmed question recall joins briefing delivery accounting. Sessions receive
+bounded correction or reference-only withdrawal notices for previously delivered items, including after the session
+budget is exhausted; unconfirmed notices retry on the next interaction. Hook receipts expose usage and ceilings.
+The additive store upgrade preserves existing delivery marks and its rollback snapshot.
+Full private mode discards prepared memory bodies before release. Withdrawn originals receive reference-only notices;
+independent fact corrections from one original keep separate acknowledgements. The default injection ceiling includes
+complete host assembly and the read-only private hint.
+Paused entries defer delivery and accounting, including correction notices. Reviewed fact replacements notify the
+current retained value; evidence-only merges do not repeat an acknowledged correction.
 
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.

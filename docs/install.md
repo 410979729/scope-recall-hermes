@@ -19,6 +19,18 @@ Add `--plan-json` for machine-readable output. `--yes` skips confirmation for an
 Use `--host` to select one detected host, or repeat it to choose several. Only override `--home` or `--python`
 when discovery cannot find your installation. All options are in the generated [configuration reference](configuration.md).
 
+The plan and doctor report known host memory settings and file sizes without changing them. A configured switch
+does not establish what a particular session loaded: host policies, session options and frozen snapshots can differ.
+Unknown settings and unsupported file locations remain unknown. Keep project rules and host habits in host memory;
+keep preferences and decisions in Scope Recall. Existing host memory can be reviewed and imported using the
+[memory import workflow](import.md). Automatic recall skips an exact statement already in an enabled host memory file
+only when the file predates the session and can be read within the bounded check. Otherwise recall proceeds normally.
+Headings, parent list items and paragraph continuations remain part of the compared host statement. A claim with
+validity dates or other qualifiers outside its comparison text is not skipped.
+For Claude Code and Codex, the check also needs a recorded SessionStart; rerun setup after upgrading to register the
+Claude Code SessionStart hook, then start a new session. Hermes uses the session store start time. Explicit recall
+continues to return matching Scope Recall records.
+
 `scope-recall setup --store <absolute-directory>` joins an existing shared store or creates a new one there.
 The default new store is `~/.scope-recall/shared`. Existing attached homes keep their store; moving a home to
 another store remains an explicit [shared-store operation](shared-store.md). Existing local Hermes or Codex

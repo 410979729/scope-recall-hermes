@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.backup_primitives import BackupError, check_backup_deadline, safe_path, sha256
-from ..core.capture_filters import sanitize_source_capture_text
+from ..core.capture_filters import sanitize_source_capture_value
 from ..core.events import capture_contains_secret
 from .backup_resources import BackupPrivacy, budget_ledger_source, real_files, stage_instance_resources
 
@@ -153,17 +153,6 @@ def stage_remote_clients(
     return redacted, spool_redacted, spool_omitted
 
 
-def _capture_form(value: Any) -> Any:
-    """Remove transport bodies with admission's filter while preserving the wire envelope."""
-    if isinstance(value, str):
-        return sanitize_source_capture_text(value)
-    if isinstance(value, dict):
-        return {key: _capture_form(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_capture_form(item) for item in value]
-    return value
-
-
 def _stage_spool(
     source: Path, stage: Path, prefix: str, files: list[dict[str, Any]], *, privacy: BackupPrivacy | None = None
 ) -> tuple[int, int]:
@@ -182,7 +171,7 @@ def _stage_spool(
             if privacy is not None and not privacy.permits_remote(value):
                 omitted += 1
                 continue
-            cleaned = _capture_form(value)
+            cleaned = sanitize_source_capture_value(value)
             body = raw if cleaned == value else (json.dumps(cleaned, ensure_ascii=False) + "\n").encode("utf-8")
         except (OSError, ValueError, UnicodeError, RecursionError):
             omitted += 1

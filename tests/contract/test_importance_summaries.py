@@ -189,6 +189,29 @@ def test_session_totals_keep_brief_and_question_usage_separate(app):
     assert stats["total_elapsed_ms"] == stats["brief_elapsed_ms"] + 17
 
 
+def test_compaction_clears_session_injection_usage(app):
+    """Usage belongs to the context that is discarded by host compaction."""
+    core, ctx = app
+    initial(core, ctx, when="2026-09-05T12:00:00Z")
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    assert core.session_brief(ctx, deliver=True)["tokens"] > 0
+    core.record_session_recall(ctx, tokens=23, elapsed_ms=17, remaining_seconds=1)
+    core.reset_session_injections(ctx, remaining_seconds=1)
+    assert core.session_injection_stats(ctx)["total_tokens"] == 0
+
+
+def test_compaction_sequence_clears_usage_only_when_it_advances(app):
+    """A replayed compaction must not erase usage in the new context."""
+    core, ctx = app
+    core.record_session_recall(ctx, tokens=23, elapsed_ms=17, remaining_seconds=1)
+    compacted = replace(ctx, compaction_seq=1, compaction_epoch="TEST-epoch")
+    assert core.sync_session_compaction(compacted, remaining_seconds=1)
+    assert core.session_injection_stats(ctx)["total_tokens"] == 0
+    core.record_session_recall(compacted, tokens=31, elapsed_ms=5, remaining_seconds=1)
+    assert core.sync_session_compaction(compacted, remaining_seconds=1)
+    assert core.session_injection_stats(ctx)["total_tokens"] == 31
+
+
 def test_brief_caps_and_orders_recent_decisions_and_important_preferences(app):
     core, ctx = app
     owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
@@ -843,6 +866,50 @@ def test_importance_cli_uses_the_owner_management_boundary(app):
     assert value["importance"] == 2 and value["pinned"] is False
 
 
+def test_summary_waits_while_source_entry_is_paused(app):
+    core, ctx = app
+    capture(core, ctx, "TEST paused session summary source.")
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+
+    class CountingSummary(SummaryModel):
+        calls = 0
+
+        def judge(self, messages, *, remaining_seconds):
+            self.calls += 1
+            return super().judge(messages, remaining_seconds=remaining_seconds)
+
+    model = CountingSummary()
+    build(core, ctx, model)
+    assert model.calls == 0
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM summary_parts WHERE coverage_json != '[]'").fetchone()[0] == 0
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )
+
+
+def test_summary_discards_result_when_entry_was_paused_during_call(app):
+    core, ctx = app
+    capture(core, ctx, "TEST session summary state transition.")
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+
+    class TransitionSummary(SummaryModel):
+        def judge(self, messages, *, remaining_seconds):
+            owner.set_entry_state("local", "paused", actor="TEST-owner")
+            owner.set_entry_state("local", "normal", actor="TEST-owner")
+            return super().judge(messages, remaining_seconds=remaining_seconds)
+
+    build(core, ctx, TransitionSummary())
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM summary_parts WHERE coverage_json != '[]'").fetchone()[0] == 0
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )
+
+
 def test_brief_fact_does_not_hide_unshown_source_details(app):
     from v11_support import recall_request
 
@@ -1182,3 +1249,595 @@ def test_replayed_old_compaction_epoch_does_not_invalidate_new_delivery(app):
     with core.storage.read(reader) as tx:
         assert already_injected(tx, "claim", item.ref, item.revision)
     assert core.session_brief(first, deliver=True, compact=True)["text"] == ""
+
+
+def _render_delivery_packet(core, ctx, packet):
+    """Keep the real core's entry fence while choosing synthetic delivery contents."""
+    from v11_support import recall_request
+
+    registered = core.recall_packet(ctx, recall_request(query="TEST-project"))
+    registered.update(packet)
+    return core.prepare_recall_render(ctx, registered)
+
+
+def _question_text(core, ctx, request_id="TEST-delivery"):
+    from scope_recall.adapters.runtime_wiring import render_host_recall_context
+    from v11_support import recall_request
+
+    packet = core.recall_packet(ctx, recall_request(query="TEST-project 配色", mode="auto", request_id=request_id))
+    prepared = core.prepare_recall_render(ctx, packet)
+    return render_host_recall_context(prepared.canonical_text, context=prepared.context)
+
+
+def _deliver_question(core, ctx):
+    prepared = core.prepare_session_injection(ctx, _question_text(core, ctx))
+    assert core.confirm_session_brief(ctx, prepared, remaining_seconds=1) == "brief_delivered"
+    return prepared
+
+
+def test_question_delivery_preparation_is_read_only_and_counts_final_text(app):
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    prepared = core.prepare_session_injection(ctx, _question_text(core, ctx))
+    with core.storage.read(ctx) as tx:
+        assert not tx._check().execute("SELECT 1 FROM session_brief_injections").fetchone()
+    assert core.confirm_session_brief(ctx, prepared, remaining_seconds=1) == "brief_delivered"
+    assert core.session_injection_stats(ctx)["total_tokens"] == estimate_tokens(prepared["_injection"]["text"])
+    with core.storage.read(ctx) as tx:
+        assert (
+            tx._check()
+            .execute("SELECT source FROM session_brief_injections WHERE object_ref=?", (item.ref,))
+            .fetchone()[0]
+            == "question"
+        )
+
+
+@pytest.mark.parametrize("change", ["correct", "delete", "suppress", "quarantine", "private"])
+def test_delivered_changes_notify_once_without_old_content(app, change):
+    from scope_recall.core import private
+
+    core, ctx = app
+    item, source = initial(core, ctx)
+    _deliver_question(core, ctx)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    if change == "correct":
+        owner.revise(item.ref, expected_revision=item.revision, value="green")
+    elif change in {"delete", "suppress"}:
+        owner.apply(owner.preview([item.ref], mode=change))
+    elif change == "quarantine":
+        with core.storage.write(ctx) as tx:
+            tx._check(write=True).execute(
+                "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) VALUES(?,?,?,?,?)",
+                (source.ref, source.revision, "quarantined", "[]", core.clock.utc_now()),
+            )
+    else:
+        private.open_interval(core.storage, core.clock, ctx, target="session", session=source.session_id)
+    pending = core.prepare_session_injection(ctx, "")
+    text = pending["_injection"]["text"]
+    assert item.ref in text and "蓝色" not in text
+    assert ("green" in text) if change == "correct" else ("withdrawn" in text)
+    assert core.prepare_session_injection(ctx, "")["_injection"]["text"] == text
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+
+
+def test_notice_reserve_survives_exhaustion_and_repeated_corrections(app):
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    _deliver_question(core, ctx)
+    core.config = replace(core.config, injection_token_cap=300, session_token_cap=0)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    for revision, value in ((1, "green"), (2, "red")):
+        owner.revise(item.ref, expected_revision=revision, value=value)
+        prepared = core.prepare_session_injection(ctx, _question_text(core, ctx, f"TEST-change-{revision}"))
+        injection = prepared["_injection"]
+        assert injection["reason"] == "session_injection_budget_exhausted"
+        assert value in injection["text"] and not injection["items"]
+        assert estimate_tokens(injection["text"]) <= 300
+        assert core.confirm_session_brief(ctx, prepared, remaining_seconds=1) == "brief_delivered"
+
+
+def test_cached_question_is_fenced_after_correction(app):
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    old = _question_text(core, ctx)
+    _deliver_question(core, replace(ctx, session_id="TEST-cache-reader"))
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.revise(item.ref, expected_revision=item.revision, value="green")
+    prepared = core.prepare_session_injection(ctx, old)
+    assert "蓝色" not in prepared["_injection"]["text"]
+
+
+def test_concurrent_correction_invalidates_prepared_notice(app):
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    _deliver_question(core, ctx)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.revise(item.ref, expected_revision=1, value="green")
+    prepared = core.prepare_session_injection(ctx, "")
+    owner.revise(item.ref, expected_revision=2, value="red")
+    assert core.confirm_session_brief(ctx, prepared, remaining_seconds=1) == "brief_invalidated"
+    assert "red" in core.prepare_session_injection(ctx, "")["_injection"]["text"]
+
+
+def test_question_confirmation_rechecks_receiving_session_privacy(app):
+    from scope_recall.core import private
+
+    core, writer = app
+    initial(core, writer)
+    reader = replace(writer, session_id="TEST-private-recipient")
+    prepared = core.prepare_session_injection(reader, _question_text(core, reader))
+    assert prepared["_injection"]["items"]
+    private.open_interval(core.storage, core.clock, writer, target="session", session=reader.session_id)
+    assert core.confirm_session_brief(reader, prepared, remaining_seconds=1) == "brief_invalidated"
+
+
+def _separate_delivery_claims(core, ctx, count):
+    from scope_recall.adapters.runtime_wiring import render_host_recall_context
+    from v11_support import recall_item, recall_packet
+
+    claims = []
+    for n in range(count):
+        source = capture(core, ctx, f"TEST-project-{n} 配色选蓝色。")
+        claims.append(accept(core, ctx, draft(source, subject=f"TEST-project-{n}")).items[0])
+    packet = recall_packet(items=[recall_item(ref=item.ref, revision=item.revision) for item in claims])
+    rendered = _render_delivery_packet(core, ctx, packet)
+    pending = core.prepare_session_injection(ctx, render_host_recall_context(rendered.canonical_text))
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    return claims
+
+
+def test_simultaneous_notices_are_bounded_and_unsent_notices_remain(app):
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    core, ctx = app
+    claims = _separate_delivery_claims(core, ctx, 4)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    for item in claims:
+        owner.revise(item.ref, expected_revision=1, value="green")
+    first = core.prepare_session_injection(ctx, "")
+    assert len(first["_injection"]["notices"]) == 3
+    assert estimate_tokens(first["_injection"]["text"]) <= 300
+    assert core.confirm_session_brief(ctx, first, remaining_seconds=1) == "brief_delivered"
+    second = core.prepare_session_injection(ctx, "")
+    assert len(second["_injection"]["notices"]) == 1
+    assert core.confirm_session_brief(ctx, second, remaining_seconds=1) == "brief_delivered"
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+
+
+def test_notice_text_truncates_new_value_and_retains_reference(app):
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    _deliver_question(core, ctx)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.revise(item.ref, expected_revision=1, value="green " * 300)
+    pending = core.prepare_session_injection(ctx, "")
+    assert item.ref in pending["_injection"]["text"]
+    assert "green" in pending["_injection"]["text"]
+    assert estimate_tokens(pending["_injection"]["text"]) <= 300
+
+
+def test_busy_notice_confirmation_does_not_acknowledge_delivery(app):
+    from concurrent.futures import ThreadPoolExecutor
+
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    _deliver_question(core, ctx)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.revise(item.ref, expected_revision=1, value="green")
+    pending = core.prepare_session_injection(ctx, "")
+    before = core.session_injection_stats(ctx)["total_tokens"]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with core.storage.write(ctx):
+            result = pool.submit(core.confirm_session_brief, ctx, pending, remaining_seconds=1).result(timeout=0.4)
+            assert result == "injection_delivery_unconfirmed"
+    assert core.session_injection_stats(ctx)["total_tokens"] == before
+    assert core.prepare_session_injection(ctx, "")["_injection"]["text"] == pending["_injection"]["text"]
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["text"]
+
+
+def test_source_and_fact_share_one_correction_notice(app):
+    from scope_recall.adapters.runtime_wiring import render_host_recall_context
+    from v11_support import recall_item, recall_packet
+
+    core, ctx = app
+    item, source = initial(core, ctx)
+    packet = recall_packet(
+        items=[
+            recall_item(ref=item.ref),
+            recall_item(
+                kind="event", ref=source.ref, content=source.event["content"], evidence_refs=[f"{source.ref}@1"]
+            ),
+        ]
+    )
+    rendered = _render_delivery_packet(core, ctx, packet)
+    first = core.prepare_session_injection(ctx, render_host_recall_context(rendered.canonical_text))
+    assert core.confirm_session_brief(ctx, first, remaining_seconds=1) == "brief_delivered"
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.revise(item.ref, expected_revision=1, value="green")
+    update = core.prepare_session_injection(ctx, "")
+    assert len(update["_injection"]["notices"]) == 1
+    assert core.confirm_session_brief(ctx, update, remaining_seconds=1) == "brief_delivered"
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+
+
+def test_private_recipient_gets_no_new_value_in_correction_notice(app):
+    from scope_recall.core import private
+
+    core, writer = app
+    item, _ = initial(core, writer)
+    reader = replace(writer, session_id="TEST-private-notice-recipient")
+    _deliver_question(core, reader)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(writer, allowed_scope_ids=writer.binding.scope_ids)))
+    owner.revise(item.ref, expected_revision=1, value="green")
+    pending = core.prepare_session_injection(reader, "")
+    private.open_interval(core.storage, core.clock, writer, target="session", session=reader.session_id)
+    assert core.confirm_session_brief(reader, pending, remaining_seconds=1) == "brief_invalidated"
+    private_pending = core.prepare_session_injection(reader, "")
+    assert "green" not in private_pending["_injection"]["text"]
+    assert item.ref in private_pending["_injection"]["text"]
+    assert "withdrawn" in private_pending["_injection"]["text"]
+
+
+def _audit_source_claims(core, ctx):
+    source = capture(core, ctx, "TEST-project A OLD_A; TEST-project B OLD_B", when=core.clock.utc_now())
+    claims = accept(
+        core, ctx, draft(source, value="OLD_A", predicate="A"), draft(source, value="OLD_B", predicate="B")
+    ).items
+    return source, claims
+
+
+def _deliver_source_only(core, ctx, source):
+    from scope_recall.adapters.runtime_wiring import render_host_recall_context
+    from v11_support import recall_item, recall_packet
+
+    packet = recall_packet(
+        items=[
+            recall_item(
+                kind="event",
+                ref=source.ref,
+                revision=source.revision,
+                content=source.event["content"],
+                evidence_refs=[f"{source.ref}@1"],
+            )
+        ]
+    )
+    rendered = _render_delivery_packet(core, ctx, packet)
+    pending = core.prepare_session_injection(ctx, render_host_recall_context(rendered.canonical_text))
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+
+
+def test_full_privacy_discards_brief_text_prepared_before_final_assembly(app):
+    from scope_recall.core import private
+
+    core, ctx = app
+    initial(core, ctx, value="OLD_BRIEF", when=core.clock.utc_now())
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx, deliver=True, defer_confirmation=True)
+    old_text = brief["text"]
+    assert "OLD_BRIEF" in old_text
+    private.open_interval(core.storage, core.clock, ctx, target="session", session=ctx.session_id)
+    pending = core.prepare_session_injection(ctx, old_text, brief=brief)
+    assert "OLD_BRIEF" not in pending["_injection"]["text"]
+    assert "not being remembered" in pending["_injection"]["text"]
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) != "brief_delivered"
+    with core.storage.read(ctx) as tx:
+        assert not tx._check().execute("SELECT 1 FROM session_brief_injections").fetchone()
+
+
+@pytest.mark.parametrize("mode", ["suppress", "private"])
+def test_withdrawn_original_never_follows_readable_corrected_claim(app, mode):
+    from scope_recall.core import private
+
+    core, writer = app
+    source, claims = _audit_source_claims(core, writer)
+    reader = replace(writer, session_id="TEST-reader-withdrawal")
+    _deliver_source_only(core, reader, source)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(writer, allowed_scope_ids=writer.binding.scope_ids)))
+    for item, value in zip(claims, ("NEW_A", "NEW_B"), strict=True):
+        owner.revise(item.ref, expected_revision=1, value=value)
+    if mode == "private":
+        private.open_interval(core.storage, core.clock, writer, target="session", session=writer.session_id)
+    else:
+        with core.storage.write(writer) as tx:
+            tx._check(write=True).execute("UPDATE source_events SET suppressed=1 WHERE event_id=?", (source.ref,))
+    text = core.prepare_session_injection(reader, "")["_injection"]["text"]
+    assert source.ref in text and "withdrawn" in text
+    assert "NEW_A" not in text and "NEW_B" not in text and "OLD_" not in text
+
+
+@pytest.mark.parametrize("scenario", ["only_a", "both", "a_then_b"])
+def test_source_tracks_each_corrected_fact_independently(app, scenario):
+    core, writer = app
+    source, claims = _audit_source_claims(core, writer)
+    reader = replace(writer, session_id="TEST-reader-multiple")
+    _deliver_source_only(core, reader, source)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(writer, allowed_scope_ids=writer.binding.scope_ids)))
+    owner.revise(claims[0].ref, expected_revision=1, value="NEW_A")
+    if scenario == "both":
+        owner.revise(claims[1].ref, expected_revision=1, value="NEW_B")
+    pending = core.prepare_session_injection(reader, "")
+    assert "NEW_A" in pending["_injection"]["text"]
+    if scenario == "both":
+        assert "NEW_B" in pending["_injection"]["text"]
+    assert core.confirm_session_brief(reader, pending, remaining_seconds=1) == "brief_delivered"
+    if scenario == "a_then_b":
+        owner.revise(claims[1].ref, expected_revision=1, value="NEW_B")
+        pending = core.prepare_session_injection(reader, "")
+        assert "NEW_B" in pending["_injection"]["text"] and "NEW_A" not in pending["_injection"]["text"]
+    else:
+        assert not core.prepare_session_injection(reader, "")["_injection"]["notices"]
+
+
+def test_notice_preparation_reuses_rules_and_confirmation_reads_only_selected_rows(app, monkeypatch):
+    from scope_recall.core import private, session_injection
+
+    core, ctx = app
+    claims = _separate_delivery_claims(core, ctx, 4)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.revise(claims[0].ref, expected_revision=1, value="green")
+    calls = []
+    original = private.active_intervals
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(private, "active_intervals", counted)
+    pending = core.prepare_session_injection(ctx, "")
+    assert len(calls) <= 2
+    scans = []
+    original_notices = session_injection._notices
+
+    def scan(*args, **kwargs):
+        scans.append(1)
+        return original_notices(*args, **kwargs)
+
+    monkeypatch.setattr(session_injection, "_notices", scan)
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    assert not scans
+
+
+def test_injection_uses_explicit_shared_brief_interfaces():
+    import ast
+    import inspect
+
+    from scope_recall.core import session_brief, session_injection
+
+    for name in (
+        "session_entry",
+        "compaction_cutoff",
+        "apply_compaction",
+        "clear_session",
+        "mark_delivered",
+        "record_brief_usage",
+        "validate_prepared",
+        "visible_object",
+    ):
+        assert callable(getattr(session_brief, name, None))
+    tree = ast.parse(inspect.getsource(session_injection))
+    assert not any(
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "briefing"
+        and node.attr.startswith("_")
+        for node in ast.walk(tree)
+    )
+
+
+def test_compaction_without_sequence_discards_old_notice_targets(app):
+    core, ctx = app
+    item, _ = initial(core, ctx)
+    _deliver_question(core, ctx)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.revise(item.ref, expected_revision=1, value="green")
+    brief = core.session_brief(ctx, token_limit=0, compact=True, deliver=True, defer_confirmation=True)
+    pending = core.prepare_session_injection(ctx, brief["text"], brief=brief)
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    assert not pending["_injection"]["notices"]
+    assert core.session_injection_stats(ctx)["total_tokens"] == 0
+
+
+def test_one_source_defers_each_unconfirmed_fact_beyond_notice_limit(app):
+    core, writer = app
+    source = capture(core, writer, "; ".join(f"TEST-project {key} OLD_{key}" for key in "ABCD"))
+    claims = accept(core, writer, *(draft(source, value=f"OLD_{key}", predicate=key) for key in "ABCD")).items
+    reader = replace(writer, session_id="TEST-many-facts")
+    _deliver_source_only(core, reader, source)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(writer, allowed_scope_ids=writer.binding.scope_ids)))
+    for claim, key in zip(claims, "ABCD", strict=True):
+        owner.revise(claim.ref, expected_revision=1, value=f"NEW_{key}")
+    for count in (3, 1):
+        pending = core.prepare_session_injection(reader, "")
+        assert len(pending["_injection"]["notices"]) == count
+        assert core.confirm_session_brief(reader, pending, remaining_seconds=1) == "brief_delivered"
+    assert not core.prepare_session_injection(reader, "")["_injection"]["notices"]
+
+
+def test_confirmation_does_not_rehydrate_acknowledged_sibling_facts(app, monkeypatch):
+    from scope_recall.core import session_injection
+
+    core, writer = app
+    source, claims = _audit_source_claims(core, writer)
+    reader = replace(writer, session_id="TEST-sibling-reader")
+    _deliver_source_only(core, reader, source)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(writer, allowed_scope_ids=writer.binding.scope_ids)))
+    owner.revise(claims[0].ref, expected_revision=1, value="NEW_A")
+    first = core.prepare_session_injection(reader, "")
+    assert core.confirm_session_brief(reader, first, remaining_seconds=1) == "brief_delivered"
+    owner.revise(claims[1].ref, expected_revision=1, value="NEW_B")
+    second = core.prepare_session_injection(reader, "")
+    reads = []
+    original = session_injection._current
+
+    def observe(tx, search, kind, ref, revision, batch=None):
+        reads.append(ref)
+        return original(tx, search, kind, ref, revision, batch)
+
+    monkeypatch.setattr(session_injection, "_current", observe)
+    assert core.confirm_session_brief(reader, second, remaining_seconds=1) == "brief_delivered"
+    assert claims[0].ref not in reads
+
+
+def test_inline_private_source_is_filtered_before_brief_preparation(app):
+    from scope_recall.core.claims import Qualification
+
+    core, ctx = app
+    source = capture(
+        core,
+        ctx,
+        "TEST-project \u914d\u8272 \u84dd\u8272\u3002 <private>TEST-brief-hidden</private>",
+        when="2026-09-05T12:00:00Z",
+    )
+    with core.storage.write(ctx) as tx:
+        item = tx.claims.append(
+            "TEST-scope",
+            draft(source, "\u84dd\u8272"),
+            Qualification("active", "direct_report", "synthetic"),
+            recorded_at=core.clock.utc_now(),
+        )
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx)
+    assert item.ref in brief["text"] and "\u84dd\u8272" in brief["text"]
+    assert "TEST-brief-hidden" not in json.dumps(brief)
+    with core.storage.read(ctx) as tx:
+        saved = tx._check().execute("SELECT items_json FROM session_briefs").fetchall()
+    assert "TEST-brief-hidden" not in str(saved)
+
+
+@pytest.mark.parametrize("change", ["merge", "choose", "evidence"])
+@pytest.mark.parametrize("delivered", ["claim", "event"])
+def test_health_decisions_notify_replaced_facts_but_not_evidence(app, change, delivered):
+    from scope_recall.core.session_brief import mark_delivered
+
+    from tests.contract.test_memory_health import separate_fact
+
+    core, ctx = app
+    first = separate_fact(core, ctx, "TEST-Object", "blue")
+    second = separate_fact(core, ctx, "test-object", "red" if change == "choose" else "blue")
+    old = first if change == "evidence" else second
+    span = old.payload["evidence_spans"][0]
+    item = (
+        dict(kind="claim", ref=old.ref, revision=old.revision)
+        if delivered == "claim"
+        else dict(kind="event", ref=span["source_ref"], revision=span["source_revision"])
+    )
+    with core.storage.write(ctx) as tx:
+        mark_delivered(tx, ctx, [item], core.clock.utc_now(), 0, "question")
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    if change == "choose":
+        api.health_choose_fact(first.ref, first.revision, second.ref, second.revision)
+    else:
+        api.health_merge_facts(first.ref, first.revision, second.ref, second.revision)
+    pending = core.prepare_session_injection(ctx, "")
+    notices = pending["_injection"]["notices"]
+    if change == "evidence":
+        assert not notices
+    else:
+        assert len(notices) == 1 and notices[0]["corrected"]
+        assert "blue" in notices[0]["text"] and item["ref"] in notices[0]["text"]
+        assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+        assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+
+
+def test_paused_entry_defers_notices_and_usage_until_resumed(app):
+    core, ctx = app
+    item, _source = initial(core, ctx)
+    _deliver_question(core, ctx)
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    before = core.session_injection_stats(ctx)
+    api.set_entry_state("local", "paused", actor="TEST-owner")
+    api.revise(item.ref, expected_revision=1, value="green")
+    pending = core.prepare_session_injection(ctx, "TEST ordinary body")
+    assert not pending["_injection"]["text"]
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "entry_state:paused"
+    assert core.session_injection_stats(ctx) == before
+    api.set_entry_state("local", "normal", actor="TEST-owner")
+    resumed = core.prepare_session_injection(ctx, "")
+    assert "green" in resumed["_injection"]["text"]
+    assert core.confirm_session_brief(ctx, resumed, remaining_seconds=1) == "brief_delivered"
+
+
+def test_entry_pause_after_injection_preparation_prevents_accounting(app):
+    core, ctx = app
+    initial(core, ctx)
+    pending = core.prepare_session_injection(ctx, _question_text(core, ctx))
+    before = core.session_injection_stats(ctx)
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    api.set_entry_state("local", "paused", actor="TEST-owner")
+    api.set_entry_state("local", "normal", actor="TEST-owner")
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "entry_state:paused"
+    assert core.session_injection_stats(ctx) == before
+
+
+def test_acknowledged_correction_does_not_repeat_after_evidence_merge(app):
+    from scope_recall.core.session_brief import mark_delivered
+
+    from tests.contract.test_memory_health import separate_fact
+
+    core, ctx = app
+    first = separate_fact(core, ctx, "TEST-Object", "blue")
+    with core.storage.write(ctx) as tx:
+        mark_delivered(tx, ctx, [dict(kind="claim", ref=first.ref, revision=1)], core.clock.utc_now(), 0, "question")
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    revised = api.revise(first.ref, expected_revision=1, value="green")
+    pending = core.prepare_session_injection(ctx, "")
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    second = separate_fact(
+        core,
+        ctx,
+        "test-object",
+        "green",
+        valid_from=core.current_claim(ctx, first.ref).valid_from,
+        valid_to=core.current_claim(ctx, first.ref).valid_to,
+    )
+    api.health_merge_facts(first.ref, revised["item"]["revision"], second.ref, second.revision)
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+
+
+def test_paused_entry_does_not_commit_pending_compaction(app):
+    core, ctx = app
+    initial(core, ctx)
+    _deliver_question(core, ctx)
+    before = core.session_injection_stats(ctx)
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    api.set_entry_state("local", "paused", actor="TEST-owner")
+    compact = replace(ctx, compaction_seq=1, compaction_epoch="TEST-epoch", compacted_at=core.clock.utc_now())
+    assert not core.sync_session_compaction(compact)
+    assert core.session_injection_stats(ctx) == before
+
+
+def test_distinct_health_replacements_keep_separate_old_references(app):
+    from scope_recall.core.session_brief import mark_delivered
+
+    from tests.contract.test_memory_health import separate_fact
+
+    core, ctx = app
+    kept = separate_fact(core, ctx, "TEST-Object", "blue")
+    dropped = [separate_fact(core, ctx, name, "blue") for name in ("test-object", "Test-object")]
+    with core.storage.write(ctx) as tx:
+        mark_delivered(
+            tx,
+            ctx,
+            [dict(kind="claim", ref=item.ref, revision=1) for item in dropped],
+            core.clock.utc_now(),
+            0,
+            "question",
+        )
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    revision = kept.revision
+    for item in dropped:
+        receipt = api.health_merge_facts(kept.ref, revision, item.ref, item.revision)
+        revision = receipt["versions"][kept.ref]
+    pending = core.prepare_session_injection(ctx, "")
+    assert len(pending["_injection"]["notices"]) == 2
+    assert all(item.ref in pending["_injection"]["text"] for item in dropped)
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]

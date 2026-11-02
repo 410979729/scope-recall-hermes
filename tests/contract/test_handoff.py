@@ -101,11 +101,17 @@ def test_cancel_and_expiry_disappear_including_prepared_brief(app):
     with pytest.raises(ContractError, match="ACCESS_DENIED"):
         handoff.execute(core, receiver, "cancel", dict(ref=first["ref"], expected_revision=1))
     handoff.execute(core, sender, "cancel", dict(ref=first["ref"], expected_revision=1))
-    assert confirm(core.storage, core.clock, receiver, prepared) == "brief_invalidated"
+    assert (
+        confirm(core.storage, core.clock, receiver, prepared, entry_fence=prepared["_entry_fence"])
+        == "brief_invalidated"
+    )
     second = write(core, sender, dict(payload, ttl_days=1))
     prepared = read(core.storage, core.clock, receiver, deliver=True, defer_confirmation=True)
     core.clock.now = "2026-09-07T12:00:00Z"
-    assert confirm(core.storage, core.clock, receiver, prepared) == "brief_invalidated"
+    assert (
+        confirm(core.storage, core.clock, receiver, prepared, entry_fence=prepared["_entry_fence"])
+        == "brief_invalidated"
+    )
     assert second["ref"] not in core.session_brief(receiver)["text"]
     rows = handoff.execute(core, sender, "list", dict(include_closed=True))["items"]
     assert {row["state"] for row in rows} == {"cancelled", "expired"}
@@ -283,6 +289,8 @@ def test_policy_changes_invalidate_prepared_report_and_label_explicit_view(app):
     prepared = read(core.storage, core.clock, sender, deliver=True, defer_confirmation=True)
     with core.storage.write(sender) as tx:
         tx._check().execute("UPDATE injection_rules SET enabled=0")
-    assert confirm(core.storage, core.clock, sender, prepared) == "brief_invalidated"
+    assert (
+        confirm(core.storage, core.clock, sender, prepared, entry_fence=prepared["_entry_fence"]) == "brief_invalidated"
+    )
     row = handoff.execute(core, sender, "list", {})["items"][0]
     assert row["ref"] == saved["ref"] and row["safety_state"] == "pending_review"

@@ -7,6 +7,7 @@ No part becomes visible before the group's last window has been checked.
 
 import json
 
+from .entry_control import entry_fence_for_keys, paused_since
 from .injection_guard import (
     _record_verdict,
     _remove_held_projections,
@@ -20,7 +21,7 @@ from .injection_guard import (
 from .injection_policy import load_policy, policy_fingerprint, scan_events
 from .source_admission import admit_source, observe_admitted
 from .source_records import SourceWrite
-from .worker_outcomes import budget_left, stale_result, work_result
+from .worker_outcomes import budget_left, hold_for_entry_state, stale_result, work_result
 
 WINDOWS_PER_PAGE = 16
 
@@ -54,6 +55,7 @@ def process_screening(storage, clock, context, item, *, started, budget, admissi
         if checkpoint is None:
             return None
         rows = _read_group(tx, item)
+        entries = entry_fence_for_keys(tx, (row["entry_id"] for row in rows))
         if not rows:
             events, digest, policy, cursor = (), "", None, None
         else:
@@ -71,6 +73,8 @@ def process_screening(storage, clock, context, item, *, started, budget, admissi
                 )
                 else None
             )
+    if any(state == "paused" for state, _version in entries.values()):
+        return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
     verdict = (
         None
         if policy is None
@@ -88,7 +92,7 @@ def process_screening(storage, clock, context, item, *, started, budget, admissi
         clock,
         context,
         item,
-        (key, digest, policy),
+        (key, digest, policy, entries),
         verdict,
         budget_left(started, clock, budget),
         admission_policy,
@@ -98,11 +102,16 @@ def process_screening(storage, clock, context, item, *, started, budget, admissi
 def _publish(storage, clock, context, item, snapshot, verdict, remaining_seconds, admission_policy):
     from .injection_policy import ScanResult
 
-    key, digest, policy = snapshot
+    key, digest, policy, entries = snapshot
     with storage.write(context, remaining_seconds=max(0.1, remaining_seconds)) as tx:
         now = clock.utc_now()
         if not tx.work._verify_lease(*item.lease, now=now):
             return stale_result(tx, item)
+        if paused_since(tx, entries):
+            return work_result(
+                tx.work.defer_without_attempt(*item.lease, now=now, error_code="entry_paused", seconds=60),
+                error_code="entry_paused",
+            )
         rows = _read_group(tx, item)
         if not rows:
             tx._check(write=True).execute(

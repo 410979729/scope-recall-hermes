@@ -489,3 +489,50 @@ def test_captured_raw_text_is_searchable_before_any_worker_runs(guarded, monkeyp
     assert core.search_sources(ctx, "blue paint")
     with core.storage.read(ctx) as tx:
         assert tx._check().execute("SELECT count(*) FROM source_scan_progress").fetchone()[0] == 0
+
+
+def test_background_screening_waits_for_paused_source(guarded, monkeypatch):
+    from scope_recall.core import source_scan
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = guarded
+    saved, _, _, _ = store(core, ctx, source_event(content="TEST ordinary screening source"), seconds=0)
+    assert saved
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    monkeypatch.setattr(source_scan, "scan_events", lambda *args, **kwargs: pytest.fail("paused source was scanned"))
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10)
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM source_scan_progress").fetchone()[0] >= 1
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )
+
+
+def test_background_screening_discards_result_after_entry_pause_and_resume(guarded, monkeypatch):
+    from scope_recall.core import source_scan
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = guarded
+    saved, _, _, _ = store(core, ctx, source_event(content="TEST screening transition source"), seconds=0)
+    assert saved
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    scan = source_scan.scan_events
+
+    def transition(*args, **kwargs):
+        result = scan(*args, **kwargs)
+        owner.set_entry_state("local", "paused", actor="TEST-owner")
+        owner.set_entry_state("local", "normal", actor="TEST-owner")
+        return result
+
+    monkeypatch.setattr(source_scan, "scan_events", transition)
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10)
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM source_scan_progress").fetchone()[0] >= 1
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )

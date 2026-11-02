@@ -237,7 +237,26 @@ DeepSeek Harness receive it on their first prompt; their current adapters expose
 session does not automatically receive an already delivered briefing item again. Session usage keeps briefing and
 question-recall counts separate and stores references rather than copying source content.
 
-The store schema is 1125. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+Automatic host injection uses `injection_token_cap` for the complete rendered text, including guidance, and
+`session_token_cap` for the combined briefing and question-recall usage since compaction. The defaults are 12654
+estimated tokens per response and no session ceiling (`null`). The per-response default preserves the saturated
+legacy output even with the largest supported briefing. These are tokenizer-independent estimates, not provider
+billing counts. Zero disables ordinary injection; compaction clears the accumulated usage.
+
+Question recall and briefing references share the delivery ledger. Preparation is read-only; final confirmation
+rechecks current truth and records the chosen references and usage together. If the writer is busy, safe text still
+returns with an unconfirmed-delivery reason, and neither usage nor notice acknowledgements are persisted.
+A session that received a changed fact gets its current value with the old reference. Deleted, suppressed,
+quarantined or private items produce reference-only withdrawals. Up to three notices share at most 300 estimated
+tokens, reserved before ordinary content, and remain eligible after the session ceiling is reached. An undelivered
+notice remains eligible on the next interaction. Hook receipts expose the response usage, committed session usage,
+both ceilings and delivery outcome. An unconfirmed receipt cannot establish a committed cumulative count.
+
+Owner recording commands return before injection or accounting. Paused entries release no background, recalled
+content or correction notices, and retain undelivered notices for resumption. Reviewed fact replacements use the
+current retained value; adding evidence without changing the statement does not send another correction notice.
+
+The store schema is 1129. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.
 

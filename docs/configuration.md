@@ -44,6 +44,8 @@ Credentials are environment variable references. Never put their values in a rou
 | <a id="hook_processing_seconds"></a>`hook_processing_seconds` | `float` | `6.0` |
 | <a id="session_brief_enabled"></a>`session_brief_enabled` | `bool` | `true` |
 | <a id="session_brief_tokens"></a>`session_brief_tokens` | `int` | `1024` |
+| <a id="injection_token_cap"></a>`injection_token_cap` | `int` | `12654` |
+| <a id="session_token_cap"></a>`session_token_cap` | `int &#124; None` | `null` |
 | <a id="max_items"></a>`max_items` | `int` | `32` |
 | <a id="lease_seconds"></a>`lease_seconds` | `float` | `60.0` |
 | <a id="auxiliary"></a>`auxiliary` | `AuxiliaryRuntimeConfig &#124; None` | `{"external_embedding": false, "external_consolidation": false, "installation_dir": null, "ledger_path": null, "budget": {"batch": "auxiliary", "cap_micro_usd": 0, "total_input_cap": 0, "total_output_cap": 0, "total_call_cap": 0, "max_request_bytes": 128000, "default_reserve_input": 32768, "default_reserve_output": 4096, "model_reserve_output": {"mimo-v2.5": 131072}, "model_token_caps": {}, "pricing": {}, "approved_models": [], "period": "lifetime", "time_zone": "UTC"}, "embedding": null, "consolidation": null, "consolidation_reserve_input": 32768}` |
@@ -256,7 +258,7 @@ The session briefing includes at most three confirmed pending handoffs within
 agent report. Accepted, cancelled, expired, quarantined and pending-review reports
 are excluded. Lifecycle, expiry, source visibility and injection policy are checked
 again before delivery. Reads apply expiry immediately; the existing briefing
-worker records expiry transitions in bounded writes. Turning off
+worker records expiry transitions in bounded writes. The final single-injection and session token caps include handoff text. Handoffs do not create correction-notice targets; withdrawn evidence instead prevents the report from being delivered. Inline private spans in report text are removed by the shared capture filter before storage. Turning off
 `session_brief_enabled` also turns off automatic handoff delivery. No host memory
 file needs to be edited.
 

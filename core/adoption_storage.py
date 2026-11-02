@@ -36,6 +36,7 @@ class PreparedAdoption:
     proposal: dict | None = None
     reason: str | None = None
     support: Any = None
+    entry_fence: Any = None
 
 
 def _owner_bound(tx, owner, assistant):

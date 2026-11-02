@@ -232,3 +232,95 @@ def test_sender_private_capture_interval_still_applies_after_it_closes(app):
     private.close_interval(core.storage, core.clock, author, target="session", session=author.session_id)
     reader = replace(sender, session_id="TEST-reader")
     assert saved["ref"] not in json.dumps(handoff.execute(core, reader, "list", {}))
+
+
+def handoff_owner(core, context):
+    from scope_recall.core.management import MemoryManagement
+
+    return MemoryManagement(
+        core, InstallationMaintenance(replace(context, allowed_scope_ids=context.binding.scope_ids))
+    )
+
+
+def test_paused_receiving_entry_gets_no_handoff_or_prepared_delivery(app):
+    core, sender, _source, payload = prepare(app)
+    write(core, sender, payload)
+    reader = replace(sender, entry_id="claude-code", session_id="TEST-recipient")
+    prepared = core.session_brief(reader, deliver=True, defer_confirmation=True)
+    assert prepared["text"]
+    handoff_owner(core, sender).set_entry_state("claude-code", "paused", actor="TEST-owner")
+    assert not core.session_brief(reader)["text"]
+    assert core.confirm_session_brief(reader, prepared) == "entry_state:paused"
+
+
+@pytest.mark.parametrize("state, action", [("paused", "list"), ("read-only", "write")])
+def test_handoff_tools_obey_entry_control(app, state, action):
+    from scope_recall.contracts import ContractError
+
+    core, sender, _source, payload = prepare(app)
+    handoff_owner(core, sender).set_entry_state("codex", state, actor="TEST-owner")
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        handoff.execute(core, sender, action, {} if action == "list" else payload)
+
+
+def test_handoffs_share_final_injection_and_session_token_caps(app):
+    core, sender, _source, payload = prepare(app)
+    saved = write(core, sender, payload)
+    reader = replace(sender, session_id="TEST-budget-session")
+    brief = core.session_brief(reader, token_limit=4096, deliver=True, defer_confirmation=True)
+    cost = brief["tokens"]
+    core.config = replace(core.config, injection_token_cap=cost + 50, session_token_cap=cost)
+    prepared = core.prepare_session_injection(reader, brief["text"], brief=brief, remaining_seconds=2)
+    assert saved["ref"] in prepared["_injection"]["text"]
+    assert core.confirm_session_brief(reader, prepared, remaining_seconds=2) == "brief_delivered"
+    assert prepared["_injection"]["session_tokens"] == cost
+    next_brief = core.session_brief(reader, token_limit=4096, defer_confirmation=True)
+    exhausted = core.prepare_session_injection(reader, next_brief["text"], brief=next_brief, remaining_seconds=2)
+    assert exhausted["_injection"]["tokens"] == 0
+    assert exhausted["_injection"]["reason"] == "session_injection_budget_exhausted"
+    core.config = replace(core.config, injection_token_cap=8, session_token_cap=None)
+    other = replace(reader, session_id="TEST-single-cap")
+    raw = core.session_brief(other, token_limit=4096, defer_confirmation=True)
+    clipped = core.prepare_session_injection(other, raw["text"], brief=raw, remaining_seconds=2)
+    assert clipped["_injection"]["tokens"] <= 8
+    assert saved["ref"] not in clipped["_injection"]["text"]
+
+
+def test_withdrawn_handoff_evidence_does_not_create_a_correction_notice(app):
+    core, sender, source, payload = prepare(app)
+    saved = write(core, sender, payload)
+    reader = replace(sender, session_id="TEST-notice-session")
+    brief = core.session_brief(reader, deliver=True, defer_confirmation=True)
+    prepared = core.prepare_session_injection(reader, brief["text"], brief=brief, remaining_seconds=2)
+    assert core.confirm_session_brief(reader, prepared, remaining_seconds=2) == "brief_delivered"
+    with core.storage.write(sender) as tx:
+        assert (
+            tx._check()
+            .execute("SELECT count(*) FROM session_brief_injections WHERE session_id=?", (reader.session_id,))
+            .fetchone()[0]
+            == 0
+        )
+        tx._check().execute("UPDATE source_events SET suppressed=1 WHERE event_id=?", (source.ref,))
+    raw = core.session_brief(reader, defer_confirmation=True)
+    assert saved["ref"] not in raw["text"]
+    next_turn = core.prepare_session_injection(reader, raw["text"], brief=raw, remaining_seconds=2)
+    assert not next_turn["_injection"]["notices"]
+
+
+def test_inline_private_handoff_fields_are_removed_before_storage(app):
+    core, sender, _source, payload = prepare(app)
+    payload.update(
+        progress="visible <private>TEST-private-progress<private>nested</private></private>",
+        next_step="visible step <private>TEST-private-next",
+        changed_files=["visible.py", "<private>TEST-private-path</private>"],
+        owner_decisions=["visible decision <private>TEST-private-decision</private>"],
+    )
+    saved = write(core, sender, payload)
+    with core.storage.read(sender) as tx:
+        stored = (
+            tx._check().execute("SELECT resume_json FROM handoffs WHERE handoff_id=?", (saved["ref"],)).fetchone()[0]
+        )
+    assert "TEST-private-" not in stored and "<private>" not in stored
+    assert "visible" in stored
+    assert "TEST-private-" not in json.dumps(handoff.execute(core, sender, "list", {}))
+    assert "TEST-private-" not in core.session_brief(sender)["text"]

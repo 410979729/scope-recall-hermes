@@ -16,8 +16,10 @@ from typing import Any, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
-from scope_recall.core.recall_budget import estimate_tokens
+from scope_recall.core.events import prepare_capture
+from scope_recall.core.recall_budget import DEFAULT_INJECTION_TOKEN_CAP
 from scope_recall.core.recall_trace import record_unbound_attempt
+from scope_recall.core.session_brief import observe_session_start
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterBusyError
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
@@ -152,6 +154,8 @@ class CodexHookHandler:
         #: shared entry's configured audience has none, so the request's cwd is
         #: used for project-scoped private intervals only; it grants no scope.
         self._project_root: str | None = None
+        #: Host settings require the session's actual working directory, not an audience fallback.
+        self._host_working_dir: str | None = None
         self._compacted_at: str | None = None
         self._compaction_seq: int | None = None
         self._compaction_epoch: str | None = None
@@ -274,9 +278,8 @@ class CodexHookHandler:
         """
         value = payload.get("cwd")
         self._project_identity = "unverified" if payload.get("project_unverified") is True else "remote"
-        self._project_root = project_root_of(
-            value, resolve_links=not getattr(self, "remote_paths", False)
-        ) or project_root_of(audience.matched_project_root)
+        self._host_working_dir = project_root_of(value, resolve_links=not getattr(self, "remote_paths", False))
+        self._project_root = self._host_working_dir or project_root_of(audience.matched_project_root)
         return self._project_root
 
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
@@ -467,6 +470,73 @@ class CodexHookHandler:
             return None
         return audience
 
+    def _load_compaction(self, event, session_id, payload, compacted_at, compaction_seq, compaction_epoch):
+        """Bind the pending host compaction without consuming it on owner commands."""
+        if self.remote_paths:
+            if compacted_at is not None:
+                from scope_recall.contracts import utc_timestamp
+
+                try:
+                    self._compacted_at = utc_timestamp(compacted_at)
+                except ContractError:
+                    pass
+            if (
+                type(compaction_seq) is int
+                and 1 <= compaction_seq < 2**63
+                and type(compaction_epoch) is str
+                and 1 <= len(compaction_epoch) <= 64
+            ):
+                self._compaction_seq, self._compaction_epoch = compaction_seq, compaction_epoch
+        elif self.host in {"claude-code", "codex"}:
+            if event == "SessionStart" and payload.get("source") == "compact":
+                mark_compaction(self.config, session_id, self.clock.utc_now())
+            marker = compaction_marker(self.config, session_id)
+            if marker is not None:
+                self._compacted_at = marker["at"]
+                self._compaction_seq = marker["ordinal"]
+                self._compaction_epoch = marker["epoch"]
+
+    def _handle_start_or_prompt(self, event, session_id, audience, payload, deadline):
+        """Deliver and account for a normal start or prompt before confirming compaction."""
+        context = self.context(audience, session_id, "host_generated")
+        # An entry state that cannot be read means nothing is injected; the reason stays visible to doctor
+        # and the host, e.g. SCHEMA_UNSUPPORTED while another process upgrades the store.
+        try:
+            if self.core.entry_state(context)[0] == "paused":
+                self.note("entry_state:paused")
+                return {}
+        except ContractError as exc:
+            self.note(exc.code)
+            return {}
+        except (sqlite3.Error, OSError, ValueError, RuntimeError):
+            self.note("entry_state_unavailable")
+            return {}
+        if event == "SessionStart":
+            if (
+                self.host in {"claude-code", "codex"}
+                and self.call.local_record
+                and not self.remote_paths
+                and payload.get("source") != "compact"
+            ):
+                try:
+                    observe_session_start(
+                        self.core.storage,
+                        context,
+                        datetime.now(UTC).isoformat(),
+                        remaining_seconds=min(0.05, max(0.001, self.remaining(deadline))),
+                    )
+                except (ContractError, sqlite3.Error, OSError, ValueError, TruthWriterBusyError):
+                    pass
+            result = self._session_started(session_id, audience, deadline, payload)
+        else:
+            result = self.events.prompt(session_id, audience, payload, deadline)
+        return self._finish_compaction(
+            session_id,
+            audience,
+            deadline,
+            self._confirm_brief(result, deadline, self.context(audience, session_id, "host_generated")),
+        )
+
     def handle_payload(
         self,
         payload: dict[str, Any],
@@ -496,44 +566,21 @@ class CodexHookHandler:
         if admitted is None:
             return {}
         session_id, audience = admitted
-        if self.remote_paths:
-            if compacted_at is not None:
-                from scope_recall.contracts import utc_timestamp
-
-                try:
-                    self._compacted_at = utc_timestamp(compacted_at)
-                except ContractError:
-                    pass
-            if (
-                type(compaction_seq) is int
-                and 1 <= compaction_seq < 2**63
-                and type(compaction_epoch) is str
-                and 1 <= len(compaction_epoch) <= 64
-            ):
-                self._compaction_seq, self._compaction_epoch = compaction_seq, compaction_epoch
-        elif self.host in {"claude-code", "codex"}:
-            if event == "SessionStart" and payload.get("source") == "compact":
-                mark_compaction(self.config, session_id, self.clock.utc_now())
-            marker = compaction_marker(self.config, session_id)
-            if marker is not None:
-                self._compacted_at = marker["at"]
-                self._compaction_seq = marker["ordinal"]
-                self._compaction_epoch = marker["epoch"]
+        if event == "UserPromptSubmit":
+            command_result = self.events.recording_command(session_id, audience, payload)
+            if command_result is not None:
+                return command_result
+        self._load_compaction(event, session_id, payload, compacted_at, compaction_seq, compaction_epoch)
         # The extended trusted budget is for the auto recall path and for a client's
         # read of its session record.  The other hooks keep their short processing cap.
         budget = (
             self._hook_budget() if event == "UserPromptSubmit" or self.record_reader.reads(event) else _TOTAL_BUDGET_S
         )
         deadline = self._hook_deadline(budget)
+        self._injection_started = self.clock.monotonic()
         self._upgrade_wake_context = audience, deadline
-        if event == "SessionStart":
-            result = self._session_started(session_id, audience, deadline, payload)
-            return self._finish_compaction(session_id, audience, deadline, self._confirm_brief(result, deadline))
-        if event == "UserPromptSubmit":
-            started = self.clock.monotonic()
-            result = self.events.prompt(session_id, audience, payload, deadline)
-            self._record_prompt_usage(session_id, audience, result, started, deadline)
-            return self._finish_compaction(session_id, audience, deadline, self._confirm_brief(result, deadline))
+        if event in {"SessionStart", "UserPromptSubmit"}:
+            return self._handle_start_or_prompt(event, session_id, audience, payload, deadline)
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
             # A thread opened for application suggestions contains application activity. Its mark excludes later
             # tool calls, replies and end events as well as the request that opened it.
@@ -614,31 +661,6 @@ class CodexHookHandler:
             self._merge_runtime_gaps()
         return session_id, audience
 
-    def _record_prompt_usage(self, session_id: str, audience, result: dict, started: float, deadline: float) -> None:
-        """Count the answer chosen by this hook, once, without persisting its text."""
-        output = result.get("hookSpecificOutput", {})
-        text = output.get("additionalContext", "") if isinstance(output, dict) else ""
-        tokens = max(0, (estimate_tokens(text) if text else 0) - self.diagnostics.brief_tokens)
-        elapsed = max(0, round((self.clock.monotonic() - started) * 1000) - self.diagnostics.brief_elapsed_ms)
-        left = min(0.05, self.remaining(deadline))
-        if left <= 0:
-            self.diagnostics.session_statistics_failed = True
-            return
-        try:
-            self.core.record_session_recall(
-                self.context(audience, session_id, "host_generated"),
-                tokens=tokens,
-                elapsed_ms=elapsed,
-                remaining_seconds=left,
-            )
-            if self._compaction_seq:
-                self.compaction_watermark = self.core.session_compaction_watermark(
-                    self.context(audience, session_id, "host_generated")
-                )
-                self.compaction_ack = self._compaction_seq
-        except (ContractError, sqlite3.Error, OSError, ValueError, TruthWriterBusyError):
-            self.diagnostics.session_statistics_failed = True
-
     def briefing(self, context: TrustedContext, deadline: float, *, compact: bool = False) -> str:
         """Deliver this session's prepared background within the hook deadline."""
         runtime = self._host_runtime.runtime if self._host_runtime is not None else None
@@ -662,6 +684,8 @@ class CodexHookHandler:
         except (ContractError, sqlite3.Error, OSError, ValueError):
             self.note("brief_unavailable")
             return ""
+        if brief.get("delivery_reason") == "entry_state:paused":
+            self.note("entry_state:paused")
         self.diagnostics.brief_tokens = brief["tokens"]
         self.diagnostics.brief_elapsed_ms = brief.get("elapsed_ms", 0)
         self.diagnostics.brief_items = tuple((item["ref"], item["revision"]) for item in brief["items"])
@@ -669,37 +693,74 @@ class CodexHookHandler:
             self._pending_brief = (context, brief)
         return brief["text"]
 
-    def _confirm_brief(self, result: dict, deadline: float) -> dict:
-        """Confirm the background after the response has been constructed."""
+    def _confirm_brief(self, result: dict, deadline: float, context) -> dict:
+        """Fit and confirm only the final response chosen by this host hook."""
         pending = self._pending_brief
-        if pending is None:
+        brief = pending[1] if pending else None
+        output = result.get("hookSpecificOutput", {})
+        text = output.get("additionalContext", "")
+        if not text and self.remaining(deadline) <= 0:
             return result
-        context, brief = pending
         try:
-            reason = self.core.confirm_session_brief(context, brief, remaining_seconds=self.remaining(deadline))
-        except Exception:  # noqa: BLE001 - an unfinished safety check cannot release the prepared background.
-            reason = "brief_safety_unconfirmed"
-        if reason in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed"}:
+            self._injection_limits()
+            prepared = self.core.prepare_session_injection(
+                context, text, brief=brief, remaining_seconds=self.remaining(deadline)
+            )
+            prepared["_injection"]["elapsed_ms"] = max(
+                0, round((self.clock.monotonic() - self._injection_started) * 1000) - prepared["elapsed_ms"]
+            )
+            reason = self.core.confirm_session_brief(context, prepared, remaining_seconds=self.remaining(deadline))
+        except Exception:  # noqa: BLE001 - an unfinished safety check cannot release prepared text.
+            self.note("brief_safety_unconfirmed")
+            return {}
+        usage = prepared["_injection"]
+        for name in ("injection_token_cap", "session_token_cap", "session_tokens"):
+            setattr(self.diagnostics, name, usage[name])
+        self.diagnostics.injection_tokens = usage["tokens"]
+        self.diagnostics.delivery_reason = reason
+        self.diagnostics.brief_tokens = prepared["tokens"]
+        if usage["reason"]:
+            self.note(usage["reason"])
+        if reason in {"brief_delivery_unconfirmed", "injection_delivery_unconfirmed", "brief_safety_unconfirmed"}:
+            self.diagnostics.session_statistics_failed = True
             self.note(reason)
-        if reason == "brief_delivery_unconfirmed" and brief.get("_log_checked"):
-            self.compaction_watermark = brief.get("_compaction_cutoff")
+        if reason == "brief_delivery_unconfirmed" and prepared.get("_log_checked"):
+            self.compaction_watermark = prepared.get("_compaction_cutoff")
         if reason == "brief_delivered":
             self.compaction_ack = context.compaction_seq
-            self.compaction_watermark = brief.get("_confirmed_seq")
-        if reason in {"brief_invalidated", "brief_safety_unconfirmed"} and brief["text"]:
-            output = result.get("hookSpecificOutput", {})
-            text = output.get("additionalContext", "").replace(brief["text"], "", 1).strip()
-            if not text:
-                return {}
-            output["additionalContext"] = text
-        return result
+            self.compaction_watermark = prepared.get("_confirmed_seq")
+        if reason == "entry_state:paused":
+            self.note(reason)
+        if reason in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"}:
+            self.diagnostics.injection_tokens = 0
+            return {}
+        text = usage["text"]
+        if not text:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": self.diagnostics.last_event, "additionalContext": text}}
+
+    def _injection_limits(self) -> None:
+        """Read owner limits even when model runtime attachment is unavailable."""
+        path = self._pending_runtime_config_path
+        if not path:
+            return
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        self.core.config = replace(
+            self.core.config,
+            injection_token_cap=raw.get("injection_token_cap", DEFAULT_INJECTION_TOKEN_CAP),
+            session_token_cap=raw.get("session_token_cap"),
+        )
 
     def _finish_compaction(self, session_id: str, audience, deadline: float, result: dict) -> dict:
         """Retire only a watermark that the core committed in this request."""
         if (
             self._compaction_seq
             and not self.compaction_ack
-            and self.diagnostics.last_reason not in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed"}
+            and self.diagnostics.last_reason
+            not in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed", "entry_state:paused"}
         ):
             left = min(0.03, self.remaining(deadline))
             if left > 0:
@@ -794,6 +855,10 @@ class CodexHookHandler:
         if filtered is not None:
             return filtered
         result = self.handle_payload(payload)
+        notice = self.diagnostics.private_notice()
+        if notice:
+            prior = result.get("systemMessage")
+            result = {**result, "systemMessage": f"{prior}\n{notice}" if isinstance(prior, str) and prior else notice}
         if self.host == "dsh" and payload.get("hook_event_name") != "PrivateCheck":
             session_id, audience = self.session_of(payload), self.audience_of(payload)
             if session_id is not None and audience is not None:
@@ -808,6 +873,50 @@ class CodexHookHandler:
         return result
 
     # -- capture ---------------------------------------------------------
+
+    def _capture_event(self, context, audience, event, deadline, gaps, via_inbox, wait):
+        """Preserve prefiltered omission metadata through either capture route."""
+        removed_gaps = tuple(
+            gap for gap in gaps if gap == "private_content_omitted" or gap.startswith("private_spans_removed:")
+        )
+        prepared = None
+        if removed_gaps and isinstance(self.core, MemoryCore):
+            prepared = prepare_capture(event, context)
+            prepared = replace(prepared, gaps=tuple(dict.fromkeys((*prepared.gaps, *removed_gaps))))
+        if via_inbox:
+            receipt = self.core.record_host_event(
+                context,
+                event,
+                scope_id=audience.capture_scope_id,
+                host_scope=audience.host_scope,
+                remaining_seconds=min(wait, self.remaining(deadline)),
+                **({"_prepared": prepared} if prepared is not None else {}),
+                **(
+                    {"background": True}
+                    if self.background_prompt_capture and self.diagnostics.last_event == "UserPromptSubmit"
+                    else {}
+                ),
+            )
+            if isinstance(receipt, PendingCapture):
+                self.pending_capture = receipt
+                receipt = receipt.receipt
+        else:
+            receipt = self.core.record_event(
+                context,
+                event,
+                scope_id=audience.capture_scope_id,
+                remaining_seconds=min(wait, self.remaining(deadline)),
+                **({"_prepared": prepared} if prepared is not None else {}),
+            )
+        return receipt
+
+    def _note_private_spans(self, receipt):
+        """Count content-free omission markers from a capture receipt."""
+        for gap in set(receipt.gaps):
+            if gap.startswith("private_spans_removed:"):
+                count = gap.removeprefix("private_spans_removed:")
+                if count.isascii() and count.isdecimal():
+                    self.diagnostics.private_spans_removed += int(count)
 
     def capture(
         self,
@@ -837,29 +946,7 @@ class CodexHookHandler:
             self.note("deadline_exceeded", gaps=gaps)
             return (), gaps
         try:
-            if via_inbox:
-                receipt = self.core.record_host_event(
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    host_scope=audience.host_scope,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                    **(
-                        {"background": True}
-                        if self.background_prompt_capture and self.diagnostics.last_event == "UserPromptSubmit"
-                        else {}
-                    ),
-                )
-                if isinstance(receipt, PendingCapture):
-                    self.pending_capture = receipt
-                    receipt = receipt.receipt
-            else:
-                receipt = self.core.record_event(
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                )
+            receipt = self._capture_event(context, audience, event, deadline, gaps, via_inbox, wait)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
@@ -880,6 +967,7 @@ class CodexHookHandler:
         self.diagnostics.capture_disposition = receipt.disposition
         self.diagnostics.capture_durability = receipt.durability
         self.diagnostics.masked_secret_count += receipt.masked_secret_count
+        self._note_private_spans(receipt)
         if receipt.error_code:
             self.diagnostics.note_capture_error(receipt.error_code)
         if receipt.durability == "queued":
@@ -894,7 +982,7 @@ class CodexHookHandler:
             self.note("private_mode", gaps=gaps)
             return (), gaps
         if receipt.durability != "persisted":
-            gaps = (*gaps, f"capture_gap:{receipt.disposition}")
+            gaps = (*gaps, *receipt.gaps, f"capture_gap:{receipt.disposition}")
             self.note("capture_unavailable", gaps=gaps)
             return (), gaps
         self.call.persisted = True

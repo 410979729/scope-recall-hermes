@@ -454,12 +454,14 @@ class CodexMCPServer:
         # mode is still clamped by the trusted CoreConfig budget.  A lookup
         # that finds nothing says so; its lookup intent remains explicit in auto mode.
         packet = self.core.recall_packet(context, body, deadline_seconds=5.0, background_without_evidence=False)
+        original_packet = packet
         packet = fence_epoch(
             packet,
             self.core.memory_epoch(context),
             FENCED_RECALL,
             retracted=lambda since: self.core.memory_retracted_since(context, since),
         )
+        packet = self.core.release_recall_packet(context, packet, original=original_packet)
         _budget_retry_hint(packet)
         return self._reply(ctx, call_id, packet)
 

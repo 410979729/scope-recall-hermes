@@ -19,6 +19,41 @@ FORMAT = "scope-recall-management/1"
 _FILTERS = ("kind", "scope", "agent", "session", "since", "until")
 
 
+def entry_grants(args):
+    """Read the selected installation's configured audience grants on demand."""
+    if args.root:
+        from scope_recall.adapters.shared_entries import read_shared_payload
+
+        records = read_shared_payload(Path(args.root).resolve())["entries"]
+        return {
+            record["entry_id"]: {
+                "read_scopes": sorted({scope for row in record["audiences"] for scope in row["allowed_scope_ids"]}),
+                "write_scopes": sorted({scope for row in record["audiences"] for scope in row["writable_scope_ids"]}),
+            }
+            for record in records
+        }
+    home = Path(args.instance_root).resolve()
+    if args.host == "hermes":
+        from scope_recall.adapters.shared_entries import load_binding_for_home
+
+        rows = load_binding_for_home(home).audiences
+        return {
+            "local": {
+                "read_scopes": sorted({scope for row in rows for scope in row["allowed_scope_ids"]}),
+                "write_scopes": sorted({scope for row in rows for scope in row["writable_scope_ids"]}),
+                "host": args.host,
+            }
+        }
+    from scope_recall.adapters.clients.config import load_codex_config
+
+    config = load_codex_config(home / "codex-installation.json")
+    scopes = {config.audience_scopes["shared"], *config.project_roots.values()}
+    if config.allow_owner_private:
+        scopes.add(config.audience_scopes["owner_private"])
+    scopes &= config.scope_ids
+    return {"local": {"read_scopes": sorted(scopes), "write_scopes": sorted(scopes), "host": args.host}}
+
+
 def open_management(args, *, initialize: bool = True):
     """Bind the explicit local installation without registering an agent entry.
 
@@ -36,7 +71,7 @@ def open_management(args, *, initialize: bool = True):
     if initialize:
         core.initialize()
     context = TrustedContext(binding, "local-management", binding.scope_ids, "host_generated")
-    return MemoryManagement(core, InstallationMaintenance(context))
+    return MemoryManagement(core, InstallationMaintenance(context), entry_grants=lambda: entry_grants(args))
 
 
 def _common(parser):
@@ -49,6 +84,23 @@ def _common(parser):
 def _filters(parser):
     for name in _FILTERS:
         parser.add_argument("--" + name)
+
+
+def _entry_arguments(command, action):
+    """Add entry selectors and transition arguments to owner commands."""
+    if action in {"entry", "entry-state"}:
+        command.add_argument("entry_id")
+    if action == "entry-state":
+        command.add_argument("state", choices=("normal", "read-only", "paused"))
+        command.add_argument("--actor", required=True)
+
+
+def _instruction_arguments(command, action):
+    """Expose scope instruction fields only on management commands."""
+    if action in {"instruction-get", "instruction-set"}:
+        command.add_argument("--scope", required=True)
+    if action == "instruction-set":
+        command.add_argument("--text", required=True, help="instruction text, at most 2000 characters")
 
 
 def _health_arguments(command, action):
@@ -86,7 +138,12 @@ def parser():
         "export",
         "secrets",
         "recalls",
+        "entries",
+        "entry",
+        "entry-state",
         "import",
+        "instruction-get",
+        "instruction-set",
         "health",
         "health-entity",
         "health-merge",
@@ -95,6 +152,9 @@ def parser():
     ):
         command = commands.add_parser(action)
         _common(command)
+        _entry_arguments(command, action)
+
+        _instruction_arguments(command, action)
         if action == "recalls":
             command.add_argument("--session")
             command.add_argument("--request-id")
@@ -165,6 +225,15 @@ def _inventory(api, args):
     return api.list(filters, limit=args.limit, cursor=args.cursor)
 
 
+def _entry_command(api, args):
+    """Dispatch entry inventory and owner-only transitions."""
+    if args.action == "entries":
+        return {"entries": api.entries()}
+    if args.action == "entry":
+        return api.entry(args.entry_id)
+    return api.set_entry_state(args.entry_id, args.state, actor=args.actor)
+
+
 def _execute_health(api, args):
     """Route health actions through the same owner methods as the UI."""
     if args.action == "health":
@@ -182,10 +251,20 @@ def _execute_health(api, args):
     raise ContractError("INPUT_INVALID", "action")
 
 
-def execute(api, args):
-    """Translate one parsed command to the same methods used by the local UI."""
+def _execute_instruction_or_health(api, args):
+    """Route scope instructions and reviewed health actions through management."""
     if args.action.startswith("health"):
         return _execute_health(api, args)
+    if args.action == "instruction-get":
+        return {"instructions": api.memory_instructions(args.scope)}
+    return api.set_memory_instruction(args.scope, args.text)
+
+
+def execute(api, args):
+    """Translate one parsed command to the same methods used by the local UI."""
+    entry_action = args.action in {"entries", "entry", "entry-state"}
+    if entry_action or args.action in {"instruction-get", "instruction-set"} or args.action.startswith("health"):
+        return _entry_command(api, args) if entry_action else _execute_instruction_or_health(api, args)
     if args.action in {"recalls", "secrets", "list", "search"}:
         return _inventory(api, args)
     if args.action == "importance":

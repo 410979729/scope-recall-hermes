@@ -82,6 +82,25 @@ def test_imported_user_words_are_searchable_and_replays_are_idempotent(store):
     assert changed.event_refs[0].revision == 2
 
 
+@pytest.mark.parametrize("kind", ["claude-code", "codex", "hermes"])
+def test_host_memory_import_is_reviewed_and_repeatable(store, kind):
+    app, ctx = store
+    plan = preview_import(kind, SAMPLES / kind, source_id="TEST-host")
+    assert plan["count"] > 0
+    assert all(item["review_required"] for item in plan["items"])
+    with pytest.raises(ContractError):
+        apply_import(app, ctx, plan, preview_id=None, scope_id="TEST-scope")
+    first = apply_import(app, ctx, plan, preview_id=plan["preview_id"], scope_id="TEST-scope")
+    again = apply_import(app, ctx, plan, preview_id=plan["preview_id"], scope_id="TEST-scope")
+    assert first["complete"] and again["complete"]
+    assert again["counts"] == {"duplicate": plan["count"]}
+    with app.storage.read(ctx) as tx:
+        assert (
+            tx._check().execute("SELECT count(*) FROM source_events WHERE origin='imported'").fetchone()[0]
+            == plan["count"]
+        )
+
+
 def test_stale_or_missing_confirmation_refuses_every_write(store):
     app, ctx = store
     plan = preview_import("chatgpt", SAMPLES / "chatgpt", source_id="TEST-account")

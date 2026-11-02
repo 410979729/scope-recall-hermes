@@ -722,3 +722,21 @@ def test_health_action_history_excludes_muted_facts(app):
     receipt = api.health_choose_fact(first.ref, first.revision, second.ref, second.revision)
     api.apply(api.preview([first.ref], mode="suppress"))
     assert all(item["action_id"] != receipt["action_id"] for item in api.health_actions()["items"])
+
+
+def test_inline_private_source_is_filtered_before_health_reads(app):
+    core, ctx = app
+    source = capture(core, ctx, "TEST-Object color blue. <private>TEST-health-hidden</private>")
+    proposal = draft(source, "blue", kind="fact", statement_kind="assertion", subject="TEST-Object", predicate="color")
+    with core.storage.write(ctx) as tx:
+        item = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("active", "direct_report", "synthetic"),
+            recorded_at=core.clock.utc_now(),
+        )
+    separate_fact(core, ctx, "test-object", "red")
+    page = owner(app).health(limit=100, deadline_seconds=5)
+    assert item.ref in json.dumps(page)
+    assert "TEST-health-hidden" not in json.dumps(page)
+    assert "TEST-health-hidden" not in source.event["content"]

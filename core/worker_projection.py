@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from ..contracts import ContractError
 from . import private
+from .claims import evidence_refs
 from .delete_storage import purge_finished, purge_work_parts
+from .entry_control import entry_fence, paused_since, sources_paused, state_for
 from .failure_policy import BUDGET_PAUSE_ERRORS, CAPACITY_REFUSALS
 from .file_lock import advisory_file_lock
 from .reflection_storage import reflection_job
@@ -26,6 +28,7 @@ from .worker_outcomes import (
     embedding_prepare_budget,
     epoch_changed,
     finalize_work,
+    hold_for_entry_state,
     hold_for_private_mode,
     mark_obsolete,
     port_failure,
@@ -121,8 +124,43 @@ _GROUP_METHODS = {
 GROUP_RECORD_CHUNK = 200
 
 
+def _embed_sources(tx, kind, subject):
+    """Resolve the entry-owned evidence behind a source or fact projection."""
+    if kind == "source":
+        return (subject,)
+    return tuple(tx.claims.live_sources(evidence_refs(subject.payload), subject.scope_id))
+
+
+def _embed_entries_blocked(storage, context, subjects, kind):
+    """Check each projection's source owner without confusing privacy reasons."""
+    with storage.read(context, remaining_seconds=1.0) as tx:
+        return any(sources_paused(tx, _embed_sources(tx, kind, subject)) for subject in subjects)
+
+
+def _embed_hold_reason(storage, clock, context, subject, kind):
+    """Keep private and entry refusals distinct before a single preparation."""
+    if private.outbound_blocked(storage, clock, context, **{("sources" if kind == "source" else "claims"): (subject,)}):
+        return "private_mode"
+    return "entry_paused" if _embed_entries_blocked(storage, context, (subject,), kind) else None
+
+
+def _embed_blocked(storage, clock, context, subjects, kind):
+    """Recheck entry and privacy authority before a batch leaves the process."""
+    return _embed_entries_blocked(storage, context, subjects, kind) or private.outbound_blocked(
+        storage, clock, context, **{("sources" if kind == "source" else "claims"): subjects}
+    )
+
+
 def _subject_kind(item) -> str:
     return "claim" if item.subject_ref.startswith("claim-") else "source"
+
+
+class PreparedEmbeddingGroup(dict):
+    """Prepared vectors with the source-entry versions observed before dispatch."""
+
+    def __init__(self, values=(), *, entry_fences=None):
+        super().__init__(values)
+        self.entry_fences = entry_fences or {}
 
 
 class PartialEmbeddingFailure(Exception):
@@ -166,6 +204,7 @@ def prepare_embed_group(storage, clock, context, items, *, embed, started: float
     if len(items) < 2 or budget_left(started, clock, budget) <= 0:
         return {}
     subjects: dict[str, list] = {"source": [], "claim": []}
+    entry_fences = {}
     try:
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             intervals = private.active_intervals(tx, clock.utc_now())
@@ -179,11 +218,13 @@ def prepare_embed_group(storage, clock, context, items, *, embed, started: float
                     if kind == "source"
                     else private.claim_blocked(tx, intervals, subject)
                 )
-                if not blocked:
+                roots = _embed_sources(tx, kind, subject)
+                if not blocked and not sources_paused(tx, roots):
                     subjects[kind].append(subject)
+                    entry_fences[(subject.ref, subject.revision)] = entry_fence(tx, roots)
     except ContractError:
         return {}
-    prepared_group: dict = {}
+    prepared_group = PreparedEmbeddingGroup(entry_fences=entry_fences)
     for kind, members in subjects.items():
         batch = getattr(embed, _GROUP_METHODS[kind][0], None)
         if callable(batch):
@@ -195,13 +236,11 @@ def prepare_embed_group(storage, clock, context, items, *, embed, started: float
                         clock=clock,
                         started=started,
                         budget=budget,
-                        blocked=lambda subjects, kind=kind: private.outbound_blocked(
-                            storage, clock, context, **{("sources" if kind == "source" else "claims"): subjects}
-                        ),
+                        blocked=lambda subjects, kind=kind: _embed_blocked(storage, clock, context, subjects, kind),
                     )
                 )
             except EmbedGroupFailure as failure:
-                failure.prepared = prepared_group | failure.prepared
+                failure.prepared = PreparedEmbeddingGroup(prepared_group | failure.prepared, entry_fences=entry_fences)
                 raise
     return prepared_group
 
@@ -310,26 +349,37 @@ def publish_embed_group(
     return published
 
 
+def _read_embed_members(tx, items, kind, prepared_group):
+    """Keep only authorized prepared members and capture their publication fences."""
+    live = _EMBED_SUBJECTS[kind].live
+    members, prepared, fences = [], [], {}
+    for item in items:
+        subject = live(tx, item.subject_ref, item.subject_revision)
+        if subject is None:
+            continue
+        roots = _embed_sources(tx, kind, subject)
+        prior = getattr(prepared_group, "entry_fences", {}).get((subject.ref, subject.revision), {})
+        if sources_paused(tx, roots) or paused_since(tx, prior):
+            continue
+        fences[item.work_id] = read_derivation_fence(
+            tx,
+            scope_id=item.scope_id,
+            sources=roots,
+            claims=((subject.ref, subject.revision),) if kind == "claim" else (),
+        )
+        members.append((item, subject))
+        prepared.append(prepared_group[(item.subject_ref, item.subject_revision)])
+    return members, prepared, fences
+
+
 def _publish_kind(
     storage, clock, context, items, *, kind: str, publish, prepared_group: dict, started: float, budget: float
 ) -> dict:
     """One fenced commit for the group's members of one subject kind."""
     live = _EMBED_SUBJECTS[kind].live
-    members, prepared, fences = [], [], {}
     try:
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
-            for item in items:
-                subject = live(tx, item.subject_ref, item.subject_revision)
-                if subject is None:
-                    continue
-                fences[item.work_id] = read_derivation_fence(
-                    tx,
-                    scope_id=item.scope_id,
-                    sources=(subject,) if kind == "source" else (),
-                    claims=((subject.ref, subject.revision),) if kind == "claim" else (),
-                )
-                members.append((item, subject))
-                prepared.append(prepared_group[(item.subject_ref, item.subject_revision)])
+            members, prepared, fences = _read_embed_members(tx, items, kind, prepared_group)
     except ContractError:
         return {}
     if not members:
@@ -352,6 +402,8 @@ def _publish_kind(
                     if current is None or current.scope_id not in context.allowed_scope_ids:
                         return False
                     if (current.project_id, current.branch_id) != (context.project_id, context.branch_id):
+                        return False
+                    if sources_paused(tx, _embed_sources(tx, kind, current)):
                         return False
                     if derivation_changed(tx, fences[item.work_id]) is not None:
                         return False
@@ -439,6 +491,9 @@ class _EmbedFence:
                     return False
                 if (current.project_id, current.branch_id) != (self.context.project_id, self.context.branch_id):
                     return False
+                if sources_paused(tx, _embed_sources(tx, self.kind.keyword, current)):
+                    self.dependency_changed = True
+                    return False
                 if derivation_changed(tx, self.dependencies) is not None:
                     self.dependency_changed = True
                     return False
@@ -471,18 +526,25 @@ def process_embed(
     finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         subject = kind.live(tx, item.subject_ref, item.subject_revision)
+        roots = () if subject is None else _embed_sources(tx, kind.keyword, subject)
+        prior_entries = getattr(prepared_group, "entry_fences", {}).get((item.subject_ref, item.subject_revision), {})
+        entry_paused = sources_paused(tx, roots) or paused_since(tx, prior_entries)
         dependencies = (
             None
             if subject is None
             else read_derivation_fence(
                 tx,
                 scope_id=item.scope_id,
-                sources=(subject,) if kind.keyword == "source" else (),
+                sources=roots,
                 claims=((subject.ref, subject.revision),) if kind.keyword == "claim" else (),
             )
         )
-    if subject is None:
-        return finish("obsolete", "authority_revoked")
+    if subject is None or entry_paused:
+        return (
+            finish("obsolete", "authority_revoked")
+            if subject is None
+            else hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
+        )
     prepare = getattr(embed, kind.prepare, None)
     publish = getattr(embed, kind.publish, None)
     if prepare is None or publish is None:
@@ -491,15 +553,13 @@ def process_embed(
         return finish("retry", "model_unavailable")
     prepared = None if prepared_group is None else prepared_group.get((item.subject_ref, item.subject_revision))
     if prepared is None:
-        if private.outbound_blocked(
-            storage, clock, context, **{("sources" if kind.keyword == "source" else "claims"): (subject,)}
-        ):
-            return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
+        reason = _embed_hold_reason(storage, clock, context, subject, kind.keyword)
+        if reason:
+            hold = hold_for_private_mode if reason == "private_mode" else hold_for_entry_state
+            return hold(storage, clock, context, item, started=started, budget=budget)
         try:
             with private.using_outbound_check(
-                lambda: private.outbound_blocked(
-                    storage, clock, context, **{("sources" if kind.keyword == "source" else "claims"): (subject,)}
-                )
+                lambda: _embed_blocked(storage, clock, context, (subject,), kind.keyword)
             ):
                 request_end = embedding_prepare_budget(clock, started, budget)
                 prepared = prepare(subject, remaining_seconds=budget_left(started, clock, request_end))
@@ -543,6 +603,20 @@ def process_embed(
         return work_result(tx.work.complete(*item.lease, now=now))
 
 
+def _projection_entry_paused(storage, clock, context, item, started, budget):
+    """Resolve source ownership without assigning an entry to unrelated work."""
+    with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT entry_id FROM source_events WHERE event_id=? AND source_revision=? LIMIT 1",
+                (item.subject_ref, item.subject_revision),
+            )
+            .fetchone()
+        )
+        return row is not None and state_for(tx, context, entry_id=row[0])[0] == "paused"
+
+
 def process_rebuild_projection(
     storage,
     clock,
@@ -557,14 +631,18 @@ def process_rebuild_projection(
     """Screen a held source before rebuilding its index or projecting a claim's entities."""
     from .source_scan import process_screening
 
-    screening = process_screening(
-        storage,
-        clock,
-        context,
-        item,
-        started=started,
-        budget=budget,
-        admission_policy=config.admission_policy if config is not None else None,
+    screening = (
+        hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
+        if _projection_entry_paused(storage, clock, context, item, started, budget)
+        else process_screening(
+            storage,
+            clock,
+            context,
+            item,
+            started=started,
+            budget=budget,
+            admission_policy=config.admission_policy if config is not None else None,
+        )
     )
     if screening is not None:
         return screening
@@ -599,14 +677,20 @@ def process_rebuild_projection(
         if not tx.work._verify_lease(*item.lease, now=now):
             return stale_result(tx, item)
         source = tx.source(item.subject_ref, item.subject_revision)
-        if source is not None:
+        if source is not None and sources_paused(tx, (source,)):
+            result = work_result(
+                tx.work.defer_without_attempt(*item.lease, now=now, error_code="entry_paused", seconds=60),
+                error_code="entry_paused",
+            )
+        elif source is not None:
             tx.sources.index_source(source.ref, source.revision)
+            result = work_result(tx.work.complete(*item.lease, now=now))
         elif _live_claim(tx, item.subject_ref, item.subject_revision) is None:
-            # Claims are queried from their versioned SQLite tables, so
-            # completing the item is their whole projection; a missing or
-            # inaccessible claim revision is obsolete, not an indexing failure.
-            return mark_obsolete(tx, item, now)
-        return work_result(tx.work.complete(*item.lease, now=now))
+            # Claims are read from their versioned tables; missing ones are obsolete.
+            result = mark_obsolete(tx, item, now)
+        else:
+            result = work_result(tx.work.complete(*item.lease, now=now))
+        return result
 
 
 def _refusal_field(exc: BaseException) -> str | None:

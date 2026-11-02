@@ -206,7 +206,16 @@ class RecallLogStore:
             conn.execute("UPDATE retention SET capacity_loss_at=?", (timestamp,))
 
     def list(
-        self, *, installation_id=None, session_id=None, request_id=None, ref=None, before=None, limit=30, now=None
+        self,
+        *,
+        installation_id=None,
+        session_id=None,
+        request_id=None,
+        ref=None,
+        entry_id=None,
+        before=None,
+        limit=30,
+        now=None,
     ):
         """Read one bounded newest-first page; missing logs are an empty history."""
         if not self.path.exists():
@@ -221,6 +230,9 @@ class RecallLogStore:
             if value is not None:
                 clauses.append(f"{name}=?")
                 values.append(value)
+        if entry_id is not None:
+            clauses.append("json_extract(payload,'$.entry_id')=?")
+            values.append(entry_id)
         if before is not None:
             clauses.append("sequence<?")
             values.append(before)

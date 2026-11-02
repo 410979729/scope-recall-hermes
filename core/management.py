@@ -19,19 +19,59 @@ from .management_query import MemoryFilter, browse, partition, session_refs, sou
 from .management_revision import correct
 from .quarantine_management import preview_release, release_source, review_page
 from .restore import InstallationMaintenance, maintenance_context
+from .secret_patterns import contains_secret_like_text
 from .suppression import release
 
 
 class MemoryManagement:
     """Manage a bound installation, preserving Core visibility and version checks."""
 
-    def __init__(self, core, authority: InstallationMaintenance):
+    def __init__(self, core, authority: InstallationMaintenance, *, entry_grants=None):
         self.core = core
         self.authority = authority
+        self.entry_grants = entry_grants
         self._context()
 
     def _context(self):
         return maintenance_context(self.core.storage, self.authority)
+
+    def memory_instructions(self, scope_id):
+        """Read the owner's instruction history for one authorized scope, newest first."""
+        context = self._context()
+        if scope_id not in context.allowed_scope_ids:
+            raise ContractError("ACCESS_DENIED", "scope_id")
+        with self.core.storage.read(context) as tx:
+            return [
+                dict(row)
+                for row in tx._check().execute(
+                    "SELECT scope_id,version,text,changed_at,changed_by FROM scope_memory_instructions "
+                    "WHERE scope_id=? ORDER BY version DESC",
+                    (scope_id,),
+                )
+            ]
+
+    def set_memory_instruction(self, scope_id, text):
+        """Append one owner instruction version; source and fact rows are unchanged."""
+        context = self._context()
+        if scope_id not in context.allowed_scope_ids:
+            raise ContractError("ACCESS_DENIED", "scope_id")
+        if type(text) is not str or len(text) > 2000:
+            raise ContractError("INPUT_INVALID", "instruction_max_2000_chars")
+        if contains_secret_like_text(text):
+            raise ContractError("SECRET_DETECTED", "memory_instruction")
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            conn = tx._check()
+            version = conn.execute(
+                "SELECT coalesce(max(version),0)+1 FROM scope_memory_instructions WHERE scope_id=?", (scope_id,)
+            ).fetchone()[0]
+            changed_at = self.core.clock.utc_now()
+            conn.execute(
+                "INSERT INTO scope_memory_instructions VALUES(?,?,?,?,?)",
+                (scope_id, version, text, changed_at, "local_user_management"),
+            )
+            return dict(
+                scope_id=scope_id, version=version, text=text, changed_at=changed_at, changed_by="local_user_management"
+            )
 
     def list(self, filters: MemoryFilter | None = None, *, limit=30, cursor=None):
         """Return one inventory page, with an opaque cursor for the next page."""
@@ -41,11 +81,102 @@ class MemoryManagement:
         """Read a bounded held-content page with the installation owner capability."""
         return review_page(self.core.storage, self.authority, limit=limit, before=before)
 
-    def recalls(self, *, session=None, request_id=None, before=None, limit=30):
+    def recalls(self, *, session=None, request_id=None, entry_id=None, before=None, limit=30):
         """Read recall attempts by session or request, retaining current visibility fences."""
         from .recall_log_view import history
 
-        return history(self.core, self._context(), session=session, request_id=request_id, before=before, limit=limit)
+        return history(
+            self.core,
+            self._context(),
+            session=session,
+            request_id=request_id,
+            entry_id=entry_id,
+            before=before,
+            limit=limit,
+        )
+
+    def entries(self):
+        """List each registered entry and its current control state."""
+        from .entry_control import state_for
+
+        context = self._context()
+        with self.core.storage.read(context) as tx:
+            registered = (
+                tx.registry.entries()
+                if context.binding.installation_kind == "shared"
+                else {"local": {"name": context.binding.agent_id, "host": None}}
+            )
+            controls = {key: state_for(tx, context, entry_id=key) for key in registered}
+        grants = self.entry_grants() if self.entry_grants is not None else {}
+        return [
+            dict(id=key, state=controls[key][0], version=controls[key][1], **(details | grants.get(key, {})))
+            for key, details in registered.items()
+        ]
+
+    def set_entry_state(self, entry_id, state, *, actor):
+        """Change an entry only through the installation owner's capability."""
+        from .entry_control import change
+
+        context = self._context()
+        with self.core.storage.write(context) as tx:
+            return change(tx, context, entry_id, state, actor, self.core.clock.utc_now())
+
+    def entry(self, entry_id):
+        """Read the current entry state and bounded change history."""
+        from .entry_control import state_for
+
+        context = self._context()
+        with self.core.storage.read(context) as tx:
+            if context.binding.installation_kind == "shared":
+                if entry_id not in tx.registry.entries():
+                    raise ContractError("SOURCE_MISSING", "entry")
+            elif entry_id != "local":
+                raise ContractError("SOURCE_MISSING", "entry")
+            state, version = state_for(tx, context, entry_id=entry_id)
+            rows = tx._check().execute(
+                "SELECT version,from_state,to_state,actor,account_id,changed_at FROM entry_control_history "
+                "WHERE entry_id=? ORDER BY version DESC LIMIT 100",
+                (entry_id,),
+            )
+            history_rows = [dict(row) for row in rows]
+            latest_capture = (
+                tx._check()
+                .execute(
+                    "SELECT persisted_at,extra_json FROM source_events WHERE entry_id=? "
+                    "ORDER BY persisted_at DESC,source_id DESC LIMIT 1",
+                    (entry_id,),
+                )
+                .fetchone()
+            )
+            latest = latest_capture[0] if latest_capture is not None else None
+            capture_version = json.loads(latest_capture[1]).get("protocol_version") if latest_capture else None
+        log_entry = context.binding.agent_id if context.binding.installation_kind == "local" else entry_id
+        records = self.recalls(entry_id=log_entry, limit=10)["items"]
+        recorded = records[0] if records else None
+        activity = max((stamp for stamp in (latest, recorded and recorded.get("timestamp")) if stamp), default=None)
+        recent = sorted(
+            (
+                item
+                for kind in ("event", "claim")
+                for item in self.list(MemoryFilter(kind=kind, agent=entry_id), limit=10)["items"]
+            ),
+            key=lambda item: item.get("sort_time", ""),
+            reverse=True,
+        )
+        return {
+            "id": entry_id,
+            "state": state,
+            "version": version,
+            "history": history_rows,
+            "recent_writes": recent,
+            "recent_reads": records,
+            "last_activity": activity,
+            "version_recorded": (
+                recorded.get("protocol_version")
+                if recorded and activity == recorded.get("timestamp")
+                else capture_version
+            ),
+        }
 
     def health(self, *, limit=30, cursor=None, deadline_seconds=2.0):
         """Compute one page of visible health candidates without persisting it."""

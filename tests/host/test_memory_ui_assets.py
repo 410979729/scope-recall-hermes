@@ -241,6 +241,51 @@ console.log(JSON.stringify({recalls: true, visibility: true, bilingual: true}));
     assert json.loads(completed.stdout) == {"recalls": True, "visibility": True, "bilingual": True}
 
 
+def test_entry_page_refreshes_after_state_change_and_language_switch():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    script = (
+        DOM_HARNESS
+        + r"""
+const assert = require('assert/strict');
+(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  let state = 'normal';
+  global.fetch = async (url) => {
+    let data;
+    if (url.startsWith('/api/entries')) data = {entries: [{id: 'local', name: 'TEST-host', state,
+      read_scopes: ['TEST-scope'], write_scopes: ['TEST-scope']}]};
+    else if (url.startsWith('/api/entry?')) data = {last_activity: null, version_recorded: null,
+      recent_writes: [], recent_reads: [], history: [{changed_at: 'TEST-time', from_state: 'normal',
+        to_state: 'paused', actor: 'TEST-label', account_id: 'TEST-account'}]};
+    else if (url === '/api/preview') data = {id: 'TEST-preview', preview: {state: 'paused'}};
+    else if (url === '/api/confirm') { state = 'paused'; data = {action: 'entry-state'}; }
+    else throw new Error('unexpected route ' + url);
+    return {ok: true, json: async () => ({data})};
+  };
+  await loadPage('entries');
+  assert(document.getElementById('entry-items').textContent.includes(window.UI_STRINGS.zh.entry_normal));
+  await preview({action: 'entry-state', entry_id: 'local', state: 'paused'});
+  assert.equal(document.getElementById('review-hint').hidden, true);
+  await document.getElementById('confirm').click();
+  assert(document.getElementById('entry-items').textContent.includes(window.UI_STRINGS.zh.entry_paused));
+  document.getElementById('language').value = 'en';
+  document.getElementById('language').change();
+  await new Promise(resolve => setImmediate(resolve));
+  assert(document.getElementById('entry-items').textContent.includes('Paused'));
+  assert(document.getElementById('entry-items').textContent.includes('Restore'));
+  assert(document.getElementById('entry-items').textContent.includes('Declared actor: TEST-label'));
+  assert(document.getElementById('entry-items').textContent.includes('Operating system account: TEST-account'));
+  console.log(JSON.stringify({refresh: true, bilingual: true}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"refresh": True, "bilingual": True}
+
+
 def test_health_page_groups_findings_and_pages_undo_actions():
     executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
     if not executable:
@@ -316,3 +361,40 @@ const assert = require('assert/strict');
     completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"handoffs": True, "literal": True, "review": True}
+
+
+def test_entry_handoff_and_existing_pages_coexist():
+    from html.parser import HTMLParser
+
+    class Page(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = []
+            self.pages = set()
+            self.navigation = set()
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if "id" in values:
+                self.ids.append(values["id"])
+            if tag == "section" and "page" in values.get("class", "").split():
+                self.pages.add(values["id"])
+            if "data-page" in values:
+                self.navigation.add(values["data-page"])
+
+    page = Page()
+    page.feed((ASSETS / "index.html").read_text(encoding="utf-8"))
+    expected = {
+        "entries",
+        "handoffs",
+        "overview",
+        "browse",
+        "health",
+        "recalls",
+        "quarantine",
+        "private",
+        "export",
+        "backup",
+    }
+    assert expected <= page.pages and expected <= page.navigation
+    assert len(page.ids) == len(set(page.ids))

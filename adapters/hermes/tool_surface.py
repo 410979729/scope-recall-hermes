@@ -336,12 +336,16 @@ class HermesToolSurface:
             # Lookup intent remains explicit even when the requested mode is auto.
             background_without_evidence=False,
         )
+        original_packet = packet
         packet = fence_epoch(
             packet,
             core.memory_epoch(context),
             FENCED_RECALL,
             retracted=lambda since: core.memory_retracted_since(context, since),
         )
+        release = getattr(core, "release_recall_packet", None)
+        if callable(release):
+            packet = release(context, packet, original=original_packet)
         return self._reply(body["request_id"], packet)
 
     def _handle_inspect(self, args: object) -> str:

@@ -27,6 +27,7 @@ _CAPTURE_ERROR_CODES = frozenset(
         "SECRET_DETECTED",
         "PRIVATE_MODE",
         "PRIVATE_MODE_UNVERIFIED",
+        "ENTRY_STATE",
     }
 )
 
@@ -38,6 +39,11 @@ class HookDiagnostics:
     brief_tokens: int = 0
     brief_elapsed_ms: int = 0
     brief_items: tuple[tuple[str, int], ...] = ()
+    injection_tokens: int = 0
+    session_tokens: int = 0
+    injection_token_cap: int = 0
+    session_token_cap: int | None = None
+    delivery_reason: str | None = None
     session_statistics_failed: bool = False
     capability_gaps: tuple[str, ...] = ()
     capture_stage: str | None = None
@@ -45,6 +51,7 @@ class HookDiagnostics:
     capture_durability: str | None = None
     #: Replacement spans across this hook's captures; diagnostics contain no matched text.
     masked_secret_count: int = 0
+    private_spans_removed: int = 0
     capture_error_type: str | None = None
     capture_error_code: str | None = None
     #: The code before the frozen allowlist collapsed it to CAPTURE_ERROR.
@@ -71,6 +78,19 @@ class HookDiagnostics:
     #: the last one's).
     capture_total_ms: int | None = None
 
+    def injection_receipt(self) -> dict:
+        """Return content-free usage and delivery status for operator receipts."""
+        return {
+            name: getattr(self, name)
+            for name in (
+                "injection_tokens",
+                "session_tokens",
+                "injection_token_cap",
+                "session_token_cap",
+                "delivery_reason",
+            )
+        }
+
     @property
     def capture_settled(self) -> bool:
         """No capture, or one stored, queued, or refused in a way no retry changes (a secret, an invalid message,
@@ -83,6 +103,10 @@ class HookDiagnostics:
             or self.capture_error_code in _SETTLED_CAPTURE_CODES
         )
 
+    def private_notice(self) -> str:
+        """A content-free receipt for spans removed during this hook."""
+        return f"private_spans_removed:{self.private_spans_removed}" if self.private_spans_removed else ""
+
     def note_capture_error(self, code: object) -> None:
         """A capture's error: as the host may read it (one of ``_CAPTURE_ERROR_CODES``, else ``CAPTURE_ERROR``), and
         as it was, for the local diagnostic line."""
@@ -93,6 +117,13 @@ class HookDiagnostics:
     def capture_refused(self) -> bool:
         """The capture refused its message (a credential, or nothing left to store), rather than failing to write it."""
         return self.capture_disposition == "rejected" or self.capture_error_detail in _SECRET_REFUSALS
+
+
+def command_block(host: str, reason: str) -> dict[str, Any]:
+    """Stop a direct command using the host's documented prompt output contract."""
+    if host == "workbuddy":
+        return {"continue": False, "stopReason": reason}
+    return {"decision": "block", "reason": reason}
 
 
 def error_detail(code: object) -> str | None:
@@ -169,6 +200,12 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
     sys.stdout.write(json.dumps(result, ensure_ascii=True) if result else empty)
     if diagnostics is not None and diagnostics.last_reason:
         sys.stderr.write(f"CODEX_HOOK:{diagnostics.last_reason}\n")
+    if diagnostics is not None and diagnostics.delivery_reason is not None:
+        sys.stderr.write(
+            "CODEX_INJECTION:"
+            + json.dumps(diagnostics.injection_receipt(), ensure_ascii=True, separators=(",", ":"))
+            + "\n"
+        )
     if diagnostics is not None and diagnostics.capture_stage:
         detail = {
             "stage": diagnostics.capture_stage,
@@ -178,6 +215,7 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
             "error_code": diagnostics.capture_error_code,
             "elapsed_ms": diagnostics.capture_elapsed_ms,
             "masked_secret_count": diagnostics.masked_secret_count,
+            "private_spans_removed": diagnostics.private_spans_removed,
         }
         # Local operator channel only.  stdout carries the host contract; this
         # line is what a person reads when the contract code is not specific

@@ -6,6 +6,7 @@ checks and export publication remain in their owning management interfaces.
 
 from __future__ import annotations
 
+import getpass
 import secrets
 import time
 from collections import OrderedDict
@@ -101,11 +102,19 @@ class UIApi:
             problem=backup_upkeep.backup_job_problem(directory) or state.get("last_error"),
         )
 
+    def _entry_or_status(self, route, data):
+        """Read an owner entry or installation status."""
+        if route == "entries":
+            return {"entries": self.management.entries()}
+        if route == "entry":
+            return self.management.entry(text(data, "entry_id"))
+        return getattr(self, route)()
+
     def read(self, route, data):
         """Dispatch a read without invoking any state-changing owner method."""
         api = self.management
-        if route in {"overview", "backup", "health", "health-actions", "handoffs"}:
-            return self._read_overview_or_health(route, data)
+        if route in {"overview", "backup", "entries", "entry", "health", "health-actions", "handoffs"}:
+            return self._read_control(route, data)
         if route in {"list", "search"}:
             return api.list(filters(data), limit=number(data, "limit", 30), cursor=text(data, "cursor"))
         if route == "detail":
@@ -121,14 +130,18 @@ class UIApi:
                 before=number(data, "before"),
                 limit=number(data, "limit", 30),
             )
-        if route == "private":
-            return api.private_status(session=text(data, "session"), project=text(data, "project"))
+        if route in {"private", "instruction"}:
+            return (
+                api.private_status(session=text(data, "session"), project=text(data, "project"))
+                if route == "private"
+                else {"instructions": api.memory_instructions(text(data, "scope"))}
+            )
         if route == "receipt":
             return self._lookup(self.receipts, text(data, "id"))
         raise ContractError("INPUT_INVALID", "route")
 
-    def _read_overview_or_health(self, route, data):
-        """Dispatch overview, handoff and health read-only routes."""
+    def _read_control(self, route, data):
+        """Dispatch entry, status and health reads."""
         if route == "handoffs":
             return manage_handoffs(
                 self.management.core,
@@ -136,9 +149,11 @@ class UIApi:
                 "list",
                 dict(include_closed=True, limit=number(data, "limit", 30), before=number(data, "before")),
             )
-        if route in {"overview", "backup"}:
-            return getattr(self, route)()
-        return self._read_health(route, data)
+        return (
+            self._read_health(route, data)
+            if route in {"health", "health-actions"}
+            else self._entry_or_status(route, data)
+        )
 
     def _read_health(self, route, data):
         """Read health findings or undoable action receipts."""
@@ -160,11 +175,21 @@ class UIApi:
             raise ContractError("SOURCE_MISSING", "review_or_receipt")
         return found[1]
 
+    def _control_plan(self, data, action):
+        """Prepare entry, instruction and health changes through the owner boundary."""
+        if action == "entry-state":
+            return dict(action=action, entry_id=text(data, "entry_id"), state=text(data, "state"))
+        if action == "instruction-set":
+            return dict(action=action, scope=text(data, "scope"), instruction=text(data, "instruction"))
+        return self._health_plan(data, action)
+
     def _plan(self, data):
         api = self.management
         action = text(data, "action")
-        if action is not None and (action.startswith("health-") or action == "handoff-cancel"):
-            return self._health_plan(data, action)
+        if action in {"entry-state", "instruction-set", "handoff-cancel"} or (
+            action is not None and action.startswith("health-")
+        ):
+            return self._control_plan(data, action)
         if action in {"mute", "unmute", "forget"}:
             ref = text(data, "ref")
             revision = number(data, "expected_revision")
@@ -247,11 +272,22 @@ class UIApi:
             self._remember(self.previews, identity, plan)
             return dict(id=identity, preview=plan, expires_in_seconds=REVIEW_SECONDS)
 
+    def _control_apply(self, plan):
+        """Apply an entry, instruction or health review."""
+        action = plan["action"]
+        if action == "entry-state":
+            return self.management.set_entry_state(plan["entry_id"], plan["state"], actor=getpass.getuser())
+        if action == "instruction-set":
+            return self.management.set_memory_instruction(plan["scope"], plan["instruction"])
+        return self._health_apply(plan)
+
     def _apply(self, plan):
         api = self.management
         action = plan["action"]
-        if action is not None and (action.startswith("health-") or action == "handoff-cancel"):
-            return self._health_apply(plan)
+        if action in {"entry-state", "instruction-set", "handoff-cancel"} or (
+            action is not None and action.startswith("health-")
+        ):
+            return self._control_apply(plan)
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
         if action == "release-quarantine":

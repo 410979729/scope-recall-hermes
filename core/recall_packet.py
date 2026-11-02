@@ -35,6 +35,7 @@ from .recall_needs import asks_to_resume, unmet_needs
 from .recall_overflow import append_overflow
 from .recall_restatement import (
     has_conversation_summaries,
+    host_memory_duplicate,
     prioritize_summary_originals,
     recheck_restatement,
     redundant_summary_keys,
@@ -398,6 +399,15 @@ class RecallPacketCompiler:
             verified = self._verify(storage, draft, list(zip(result.candidates, result.items)))
         with timings.measure("fence"):
             verified = self._fence(storage, draft, verified)
+        if context.automatic_injection and context.host_memory_entries:
+            try:
+                matches = [host_memory_duplicate(obj, context.host_memory_entries) for _, obj in verified]
+            except Exception:  # noqa: BLE001 - optional host comparison cannot block recall
+                matches = [False] * len(verified)
+            for (candidate, obj), duplicate in zip(verified, matches, strict=True):
+                if duplicate:
+                    note_candidate(candidate, "host_memory_duplicate", obj=obj)
+            verified = [pair for pair, duplicate in zip(verified, matches, strict=True) if not duplicate]
         draft.result = replace(result, diagnostics=(*result.diagnostics, *timings.snapshot()))
         draft, include_diagnostic_ref = self._select(draft, self._ordered(context, verified, limits), limits)
         if context.mode == "auto" and not any(not is_background(obj) for obj in draft.objects):
@@ -804,13 +814,22 @@ class RecallPacketRenderer:
     def __init__(self, *, max_prepared: int = _MAX_RENDER_PREPARED) -> None:
         self._max_prepared = max_prepared
         self._lock = threading.RLock()
-        self._prepared: OrderedDict[tuple[str, str, str, int | None], RecallRenderPreparation] = OrderedDict()
+        self._prepared: OrderedDict[tuple[str, str | None, str, str, int | None, int], RecallRenderPreparation] = (
+            OrderedDict()
+        )
         self._counter = 0
 
     def prepare(
-        self, packet: RecallPacket, *, installation_id: str, session_id: str, request_id: str
+        self,
+        packet: RecallPacket,
+        *,
+        installation_id: str,
+        session_id: str,
+        request_id: str,
+        entry_id: str | None = None,
+        entry_version: int = 0,
     ) -> RecallRenderPreparation:
-        key = (installation_id, session_id, request_id, packet.get("memory_epoch"))
+        key = (installation_id, entry_id, session_id, request_id, packet.get("memory_epoch"), entry_version)
         with self._lock:
             if key in self._prepared:
                 # A repeated automatic callback is acknowledged as a duplicate
@@ -824,6 +843,7 @@ class RecallPacketRenderer:
                     json.dumps(
                         {
                             "installation_id": installation_id,
+                            "entry_id": entry_id,
                             "session_id": session_id,
                             "request_id": request_id[:100],
                             "counter": self._counter,
@@ -908,9 +928,16 @@ def render_recall_packet_context(
     installation_id: str,
     session_id: str,
     renderer: RecallPacketRenderer | None = None,
+    entry_id: str | None = None,
+    entry_version: int = 0,
 ) -> RecallRenderPreparation:
     """Prepare an injection-ready memory context without instruction authority."""
     active = renderer if renderer is not None else RecallPacketRenderer()
     return active.prepare(
-        packet, installation_id=installation_id, session_id=session_id, request_id=packet["request_id"]
+        packet,
+        installation_id=installation_id,
+        session_id=session_id,
+        request_id=packet["request_id"],
+        entry_id=entry_id,
+        entry_version=entry_version,
     )

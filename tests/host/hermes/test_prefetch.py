@@ -19,6 +19,37 @@ from tests.v11_support import source_event
 _UNRELATED_QUERY = "紫色海豚量子温泉"
 
 
+def test_prefetch_removes_inline_private_from_query_and_recent_context(adapter):
+    provider, _clock = adapter
+    core = provider._core
+    seen = []
+
+    class CapturePipeline:
+        storage_reader = core.recall_pipeline.storage_reader
+
+        def search(self, search_context):
+            seen.append(search_context)
+            return RetrievalResult(
+                items=(),
+                candidates=(),
+                memory_epoch=0,
+                gaps=(),
+                answerability_hint="unknown",
+                coverage="unknown",
+                candidate_count=0,
+                admitted_count=0,
+                request_id="TEST-request",
+            )
+
+    core.recall_pipeline = CapturePipeline()
+    message = "TEST visible <private>TEST secret sentinel</private> ending"
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn", user_message=message)
+    provider.prefetch(message)
+    assert seen
+    assert "TEST secret sentinel" not in seen[0].query
+    assert "TEST secret sentinel" not in repr(seen[0].trusted_context.recent_messages)
+
+
 def test_prefetch_returns_canonical_render_text_once(adapter, initialize_kwargs):
     provider, _clock = adapter
     core = provider._core
@@ -297,3 +328,137 @@ def test_blank_prefetch_remains_empty_and_has_a_record(adapter):
     assert len(rows) == 1
     assert rows[0]["query"]["length"] == 0
     assert "prompt_skipped" in rows[0]["reasons"]
+
+
+def test_prefetch_respects_host_memory_snapshot(adapter, hermes_home):
+    """Only a host fact present before this session suppresses automatic delivery."""
+    import os
+    import sqlite3
+    import time
+
+    provider, clock = adapter
+    core, identity = provider._core, provider._identity
+    sentence = "TEST observatory palette is amber."
+    core.record_event(
+        identity.trusted_context(session_id="TEST-seed", mutation=True),
+        source_event(
+            content=sentence,
+            source_event_key="TEST-host-snapshot",
+            occurred_at=clock.utc_now(),
+            recorded_at=clock.utc_now(),
+        ),
+        scope_id=identity.runtime_audience.capture_scope_id,
+    )
+    memory_dir = hermes_home / "memories"
+    memory_dir.mkdir(exist_ok=True)
+    memory = memory_dir / "MEMORY.md"
+    memory.write_text("- " + sentence + "\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        "memory:\n  memory_enabled: true\n  user_profile_enabled: false\n", encoding="utf-8"
+    )
+    started = time.time() - 5
+    os.utime(hermes_home / "config.yaml", (started - 5, started - 5))
+    os.utime(memory, (started - 5, started - 5))
+    with sqlite3.connect(hermes_home / "state.db") as db:
+        db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL)")
+        db.execute("INSERT INTO sessions VALUES (?,?)", ("TEST-session-1", started))
+    provider.on_turn_start(1, "TEST observatory palette", turn_id="TEST-host-turn-1")
+    assert sentence not in provider.prefetch("TEST observatory palette")
+    assert core.recall_diagnostics.flush()
+    logs = core.recall_diagnostics.store.list()
+    assert any(
+        item.get("reason") == "host_memory_duplicate" and item.get("source_type") == "event"
+        for row in logs
+        for item in row.get("items", [])
+    )
+    os.utime(memory, (started + 1, started + 1))
+    provider.on_turn_start(2, "TEST observatory palette", turn_id="TEST-host-turn-2")
+    assert sentence in provider.prefetch("TEST observatory palette")
+    memory.unlink()
+    provider.on_turn_start(3, "TEST observatory palette", turn_id="TEST-host-turn-3")
+    assert sentence in provider.prefetch("TEST observatory palette")
+    memory.write_text("- " + sentence + "\n", encoding="utf-8")
+    os.utime(memory, (started - 5, started - 5))
+    for turn, value in ((4, "false"), (5, "null")):
+        (hermes_home / "config.yaml").write_text(
+            f"memory:\n  memory_enabled: {value}\n  user_profile_enabled: false\n", encoding="utf-8"
+        )
+        os.utime(hermes_home / "config.yaml", (started - 5, started - 5))
+        provider.on_turn_start(turn, "TEST observatory palette", turn_id=f"TEST-host-turn-{turn}")
+        assert sentence in provider.prefetch("TEST observatory palette")
+
+
+def test_prefetch_falls_back_when_optional_host_read_fails(adapter, monkeypatch):
+    provider, clock = adapter
+    core, identity = provider._core, provider._identity
+    sentence = "TEST observatory palette is amber."
+    core.record_event(
+        identity.trusted_context(session_id="TEST-seed", mutation=True),
+        source_event(
+            content=sentence, source_event_key="TEST-fallback", occurred_at=clock.utc_now(), recorded_at=clock.utc_now()
+        ),
+        scope_id=identity.runtime_audience.capture_scope_id,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("TEST read failure")
+
+    monkeypatch.setattr("scope_recall.adapters.hermes.prefetch.read_host_memory", fail)
+    provider.on_turn_start(1, "TEST observatory palette", turn_id="TEST-fallback-turn")
+    assert sentence in provider.prefetch("TEST observatory palette")
+
+
+def test_prefetch_recalls_when_combined_host_files_exceed_limit(adapter, hermes_home):
+    import os
+    import sqlite3
+    import time
+
+    provider, clock = adapter
+    core, identity = provider._core, provider._identity
+    sentence = "TEST observatory palette is amber."
+    core.record_event(
+        identity.trusted_context(session_id="TEST-seed", mutation=True),
+        source_event(
+            content=sentence,
+            source_event_key="TEST-large-host",
+            occurred_at=clock.utc_now(),
+            recorded_at=clock.utc_now(),
+        ),
+        scope_id=identity.runtime_audience.capture_scope_id,
+    )
+    directory = hermes_home / "memories"
+    directory.mkdir(exist_ok=True)
+    settings = hermes_home / "config.yaml"
+    settings.write_text("memory:\n  memory_enabled: true\n  user_profile_enabled: true\n")
+    memory, profile = directory / "MEMORY.md", directory / "USER.md"
+    memory.write_text("- " + sentence + "\n" + "x" * 40000)
+    profile.write_text("y" * 40000)
+    started = time.time() - 5
+    for path in (settings, memory, profile):
+        os.utime(path, (started - 5, started - 5))
+    with sqlite3.connect(hermes_home / "state.db") as db:
+        db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL)")
+        db.execute("INSERT INTO sessions VALUES (?,?)", ("TEST-session-1", started))
+    provider.on_turn_start(1, "TEST observatory palette", turn_id="TEST-large-host-turn")
+    assert sentence in provider.prefetch("TEST observatory palette")
+
+
+def test_paused_prefetch_does_not_read_host_memory(adapter, monkeypatch):
+    import pytest
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    provider, _clock = adapter
+    core = provider._require_core()
+    binding = core.storage.binding
+    owner = MemoryManagement(
+        core, InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated"))
+    )
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    monkeypatch.setattr(
+        "scope_recall.adapters.hermes.prefetch.read_host_memory",
+        lambda *a, **kw: pytest.fail("paused read host memory"),
+    )
+    provider.on_turn_start(1, "TEST question", turn_id="TEST-paused")
+    assert provider.prefetch("TEST question") == ""

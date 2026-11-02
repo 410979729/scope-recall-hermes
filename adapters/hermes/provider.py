@@ -59,6 +59,11 @@ _MemoryProviderBase = _memory_provider_base()
 
 @dataclass
 class AdapterDiagnostics:
+    injection_tokens: int = 0
+    session_tokens: int = 0
+    injection_token_cap: int = 0
+    session_token_cap: int | None = None
+    delivery_reason: str | None = None
     last_prefetch_request_id: str | None = None
     last_prefetch_skip_reason: str | None = None
     last_render_ref: str | None = None
@@ -130,6 +135,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: off until the refs reset rather than run with an incomplete fence.
         self._current_source_refs_overflow = False
         self._current_task_message = ""
+        # Per-turn receipt counts survive tool diagnostic updates without retaining source text.
+        self._private_span_receipts: dict[tuple[str, str], int] = {}
+        self._pending_private_receipt: tuple[str, str] | None = None
         self._retry = CaptureRetry(self)
         self._writer = CaptureWriter(self)
         self._turns = TurnCapture(self)
