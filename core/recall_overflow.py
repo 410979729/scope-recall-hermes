@@ -52,7 +52,13 @@ def _qualified(obj):
     return (
         obj.kind in {"event", "claim"}
         and dict(obj.metadata).get("qualification_reason")
-        not in (*CONVERSATION_SUMMARY_REASONS, "owner_adopted_assistant_proposal")
+        not in (
+            *CONVERSATION_SUMMARY_REASONS,
+            "owner_adopted_assistant_proposal",
+            "reflection_pending",
+            "grounded_observation",
+            "confirmed_observation",
+        )
         and obj.temporal_status == "current"
         and not {"restatement_of", "replaced_by", "recall_echo"}.intersection(dict(obj.metadata))
     )

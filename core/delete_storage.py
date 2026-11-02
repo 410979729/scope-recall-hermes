@@ -632,6 +632,7 @@ class Deletions:
             else:
                 raise ContractError("DERIVATION_INVALID", "unresolved_purge_kind")
             purge_adoptions(conn, kind, ref)
+            purge_reflections(conn, kind, ref)
             lineage.purge_quotes(conn, kind, ref)
         layers = receipt["layers"]
         layers["sqlite_active"] = "removed"
@@ -731,3 +732,14 @@ class Deletions:
                 raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
             return updated
         raise ContractError("STORAGE_UNAVAILABLE", "attachment_physical_phase_required")
+
+
+def purge_reflections(conn, kind, ref):
+    """Erase disposable proposals and dependency manifests beside the normal source purge."""
+    if kind == "event":
+        for table in ("reflection_groups", "observations"):
+            conn.execute(f"DELETE FROM {table} WHERE instr(manifest_json,?)>0", (ref,))
+        conn.execute("DELETE FROM reflection_groups WHERE instr(buffered_json,?)>0", (ref,))
+    elif kind == "claim":
+        conn.execute("DELETE FROM observations WHERE claim_ref=?", (ref,))
+        conn.execute("DELETE FROM reflection_groups WHERE job_ref=?", (ref,))

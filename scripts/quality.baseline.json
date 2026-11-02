@@ -600,7 +600,7 @@
     "drain_worker": 9
    },
    "PLR0915": {
-    "drain_worker": 73
+    "drain_worker": 72
    }
   },
   "core/worker_candidates.py": {

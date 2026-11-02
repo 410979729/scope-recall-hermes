@@ -509,6 +509,18 @@ def _source_matches(interval, source) -> bool:
     )
 
 
+def source_rules(tx, sources):
+    """Relevant full-private history binds a derived result across policy changes."""
+    return [
+        tuple(row)
+        for row in tx._check().execute(
+            "SELECT interval_id,target_kind,session_id,project_path,mode,starts_at,ends_at FR"
+            "OM private_intervals WHERE mode='full' ORDER BY interval_id"
+        )
+        if any(_source_matches(dict(row), source) for source in sources)
+    ]
+
+
 def source_blocked(intervals, source) -> bool:
     """Whether full mode covers a source; None asks only about a whole-store interval."""
     return any(interval["mode"] == "full" and _source_matches(interval, source) for interval in intervals)

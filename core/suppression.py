@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 from ..contracts import ContractError
@@ -27,7 +28,7 @@ def release(tx, targets, *, now):
         )
         conn.execute(f"UPDATE {table} SET suppressed=0 WHERE {key}=? AND read_blocked=0", (target.ref,))
         conn.execute(
-            "UPDATE object_blocks SET suppressed=0 WHERE object_kind=? AND object_ref=? AND read_blocked=0",
+            ("UPDATE object_blocks SET suppressed=0 WHERE object_kind=? AND object_ref=? AND read_blocked=0"),
             (target.kind, target.ref),
         )
         if target.kind == "event":
@@ -107,3 +108,38 @@ def resume_candidates(tx, *, now):
         context = replace(tx.context, project_id=row["project_id"], branch_id=row["branch_id"])
         view = tx.with_context(context, writable=True)
         view.candidates.register(row["claim_id"], row["current_revision"], observed_at=now)
+
+
+def renew_observation_head(tx, ref):
+    """Release only an inherited block before a freshly supported observation revision.
+
+    Direct owner suppression/deletion and restored blocks remain authoritative.
+    A deleted dependency's physical purge must finish before this object can
+    receive a new head, so its queued scrub cannot erase the new result.
+    Historical versions and deletion receipts are retained unchanged.
+    """
+    conn = tx._check(write=True)
+    row = conn.execute(
+        "SELECT read_blocked,suppressed FROM claims WHERE claim_id=? AND kind='observation'", (ref,)
+    ).fetchone()
+    if row is None or not any(row):
+        return True
+    if conn.execute(
+        "SELECT 1 FROM restored_suppression_blocks WHERE object_kind='claim' AND object_ref=?", (ref,)
+    ).fetchone():
+        return False
+    operations = conn.execute(
+        (
+            "SELECT d.mode,d.active_content_removed,d.requested_refs_json FROM deletion_opera"
+            "tions d JOIN deletion_members m USING(operation_id) WHERE m.object_kind='claim' "
+            "AND m.object_ref=?"
+        ),
+        (ref,),
+    ).fetchall()
+    if not operations or any(ref in json.loads(op[2]) or (op[0] == "delete" and not op[1]) for op in operations):
+        return False
+    conn.execute("UPDATE claims SET read_blocked=0,suppressed=0 WHERE claim_id=?", (ref,))
+    conn.execute(
+        ("UPDATE object_blocks SET read_blocked=0,suppressed=0 WHERE object_kind='claim' AND object_ref=?"), (ref,)
+    )
+    return True

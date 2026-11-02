@@ -9,6 +9,7 @@ from dataclasses import replace
 
 from ..contracts import ContractError
 from .injection_guard import group_rows, notice, scan
+from .reflection_validity import reflection_live
 from .restore import maintenance_context
 from .source_admission import admit_source, observe_admitted
 from .source_records import SourceWrite, stored_source
@@ -22,6 +23,9 @@ def review_page(storage, authority, *, limit=30, before=None):
     if before is not None and (type(before) is not int or before < 1):
         raise ContractError("INPUT_INVALID", "before")
     with storage.read(context) as tx:
+        observations = review_observations(tx, limit=limit, before=before)
+        if observations is not None:
+            return observations
         rows = (
             tx._check()
             .execute(
@@ -60,6 +64,46 @@ def review_page(storage, authority, *, limit=30, before=None):
                     )
                 )
         return dict(items=items, next_before=rows[limit - 1]["source_id"] if len(rows) > limit else None)
+
+
+def review_observations(tx, *, limit, before):
+    """Advance by scanned rows, including invalid inductions, before listing held sources."""
+    offset = 2**62
+    if before is not None and before <= offset:
+        return None
+    candidates = (
+        tx._check()
+        .execute(
+            "SELECT o.rowid AS position,o.claim_ref,o.claim_revision,c.project_id,c.branch_id FROM observations o "
+            "JOIN claims c ON c.claim_id=o.claim_ref AND c.current_revision=o.claim_revision "
+            "WHERE o.confirmed=0 AND o.rowid+?<? ORDER BY o.rowid DESC LIMIT ?",
+            (offset, before if before is not None else 2**63 - 1, limit + 1),
+        )
+        .fetchall()
+    )
+    if not candidates:
+        return None
+    items = []
+    for candidate in candidates[:limit]:
+        view = tx.with_context(
+            replace(tx.context, project_id=candidate["project_id"], branch_id=candidate["branch_id"])
+        )
+        version = view.claims.version(candidate["claim_ref"], candidate["claim_revision"])
+        if version is not None and reflection_live(view, version):
+            items.append(
+                dict(
+                    ref=version.ref,
+                    revision=version.revision,
+                    category="observation",
+                    scope=version.scope_id,
+                    content=version.payload["value_text"],
+                    state="pending_review",
+                    rules=["inductive_observation"],
+                )
+            )
+    return dict(
+        items=items, next_before=offset + candidates[limit - 1]["position"] if len(candidates) > limit else offset
+    )
 
 
 def _read_held(tx, ref, revision, *, writable=True):
