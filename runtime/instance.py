@@ -27,6 +27,7 @@ from ..contracts import ContractError, TrustedContext
 from ..core.composition import CoreConfig, MemoryCore
 from ..core.deadline import RequestDeadline, using_request_deadline
 from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
+from ..core.recall_log_storage import LogPolicy
 from ..core.retrieval import SearchContext
 from ..core.storage import SQLiteStorage
 from ..vector.store import build_vector_store
@@ -37,6 +38,7 @@ from .embedding_retry import embed_with_one_retry
 from .instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
 from .model_budget import provider_holds
 from .models import AuxiliaryModelError
+from .recall_log_state import worker_observation
 from .running_code import record_running_code
 from .validation import (
     strict_float,
@@ -824,6 +826,7 @@ class RuntimeInstance:
             self._vector_port = None
             self._default_embed = None
             self._default_purge = None
+        self.core.recall_diagnostics.close(timeout=1.0)
         seen: set[int] = set()
         for resource in reversed(resources):
             if id(resource) not in seen:
@@ -914,12 +917,17 @@ def build_runtime_instance(
         raise TypeError("config must be RuntimeInstanceConfig")
     auxiliary = build_auxiliary_runtime(config.auxiliary) if config.auxiliary is not None else None
     core = MemoryCore(
-        CoreConfig(config.binding, auto_recall_seconds=config.auto_recall_seconds),
+        CoreConfig(
+            config.binding,
+            auto_recall_seconds=config.auto_recall_seconds,
+            recall_log_policy=LogPolicy(config.recall_log_days, config.recall_log_bytes, config.recall_log_queue),
+        ),
         storage=SQLiteStorage(config.binding),
         vectors=vectors,
         consolidation=consolidation if consolidation is not None else getattr(auxiliary, "consolidation", None),
         retrieval_policy=config.recall_policy(),
     )
+    core.recall_diagnostics.writer.observe = lambda: worker_observation(config.binding)
     ingress_authorizer = None
     # A shared store's inbox holds its Hermes entries' captures, whichever
     # process replays them; each is checked against the entry that made it.

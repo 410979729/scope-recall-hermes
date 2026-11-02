@@ -18,6 +18,7 @@ from .recall_budget import canonical_render_json, estimate_tokens
 from .recall_items import packet_item
 from .recall_policy import meaningful_query_terms
 from .recall_restatement import prefer_originals
+from .recall_trace import note_candidate
 from .retrieval import MAX_PACKET_ITEMS, SearchContext
 from .summary_validity import CONVERSATION_SUMMARY_REASONS
 
@@ -213,6 +214,8 @@ def append_overflow(storage, context: SearchContext, result, packet: RecallPacke
             policy = replace(context, now=getattr(clock, "utc_now", lambda: context.now)())
             if not _unchanged(tx, reader, policy, packet, result, chosen, epoch, revision):
                 return packet
+        for candidate, _obj in chosen:
+            note_candidate(candidate, obj=_obj)
         return extended if clock.monotonic() < context.deadline else packet
     except Exception:  # noqa: BLE001 - Optional reads cannot revoke a finalized packet.
         # Optional evidence cannot turn a successfully released full packet

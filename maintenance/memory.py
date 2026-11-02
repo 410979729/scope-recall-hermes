@@ -11,6 +11,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.management_query import MemoryFilter
 from scope_recall.core.restore import InstallationMaintenance
+from scope_recall.core.storage import SQLiteStorage
 
 from .restore import RestoreError, store_to_restore
 
@@ -31,7 +32,7 @@ def open_management(args, *, initialize: bool = True):
     )
     if not (binding.data_directory / "memory.sqlite3").is_file():
         raise ContractError("SOURCE_MISSING", "database")
-    core = MemoryCore(CoreConfig(binding))
+    core = MemoryCore(CoreConfig(binding), storage=SQLiteStorage(binding, upgrade_on_open=initialize))
     if initialize:
         core.initialize()
     context = TrustedContext(binding, "local-management", binding.scope_ids, "host_generated")
@@ -67,17 +68,22 @@ def parser():
         "forget-session",
         "export",
         "secrets",
+        "recalls",
         "import",
     ):
         command = commands.add_parser(action)
         _common(command)
+        if action == "recalls":
+            command.add_argument("--session")
+            command.add_argument("--request-id")
+            command.add_argument("--before", type=int)
         if action == "import":
             from .memory_import import add_arguments
 
             add_arguments(command)
         if action in {"list", "search", "forget-session", "export"}:
             _filters(command)
-        if action in {"list", "search", "history"}:
+        if action in {"list", "search", "history", "recalls"}:
             command.add_argument("--limit", type=int, default=30)
         if action in {"list", "search"}:
             command.add_argument("--cursor")
@@ -91,10 +97,8 @@ def parser():
             pin = command.add_mutually_exclusive_group()
             pin.add_argument("--pin", dest="pinned", action="store_true", default=None)
             pin.add_argument("--unpin", dest="pinned", action="store_false")
-        if action == "show":
-            command.add_argument("--revision", type=int)
-        if action == "history":
-            command.add_argument("--before", type=int)
+        if action in {"show", "history"}:
+            command.add_argument("--revision" if action == "show" else "--before", type=int)
         if action == "revise":
             command.add_argument("--expected-revision", type=int, required=True)
             value = command.add_mutually_exclusive_group(required=True)
@@ -128,13 +132,20 @@ def _preview(api, args):
     return dict(preview=plan, applied=True, result=api.apply(plan))
 
 
-def execute(api, args):
-    """Translate one parsed command to the same methods used by the local UI."""
+def _inventory(api, args):
+    """Translate bounded inventory reads, including history and diagnostic metadata."""
+    if args.action == "recalls":
+        return api.recalls(session=args.session, request_id=args.request_id, before=args.before, limit=args.limit)
     if args.action == "secrets":
         return api.secrets()
-    if args.action in {"list", "search"}:
-        filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
-        return api.list(filters, limit=args.limit, cursor=args.cursor)
+    filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
+    return api.list(filters, limit=args.limit, cursor=args.cursor)
+
+
+def execute(api, args):
+    """Translate one parsed command to the same methods used by the local UI."""
+    if args.action in {"recalls", "secrets", "list", "search"}:
+        return _inventory(api, args)
     if args.action == "importance":
         return api.importance(
             args.ref, expected_revision=args.expected_revision, importance=args.score, pinned=args.pinned
@@ -271,7 +282,7 @@ def main(argv=None):
 
             data = execute_import(args, open_store=open_management, resolve_store=store_to_restore, run=run_import)
         else:
-            api = open_management(args, initialize=args.action != "secrets")
+            api = open_management(args, initialize=args.action not in {"secrets", "recalls"})
             data = execute(api, args)
         payload = dict(format=FORMAT, action=args.action, status="ok", data=data)
         code = 2 if data.get("result", {}).get("error") else 0

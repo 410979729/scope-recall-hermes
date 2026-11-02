@@ -56,6 +56,8 @@ WATCHDOG_SECONDS_PER_FILE = 20
 #: 300 s.
 HEAVY_FILE_SECONDS = {
     "tests/recall_bench/test_recall_bench.py": 600,
+    # A hundred complete worker turns include adoption probes and metered local model substitutes.
+    "tests/contract/test_setup_workload.py": 600,
     "tests/contract/test_memory_export.py": 300,
     "tests/host/codex/test_shared_client.py": 300,
     "tests/host/codex/test_dsh_remote.py": 300,
@@ -200,6 +202,10 @@ SUITES = {
         "tests/contract/test_memory_admin.py",
         "tests/contract/test_memory_cli.py",
         "tests/contract/test_memory_ui_api.py",
+        "tests/contract/test_recall_log.py",
+        "tests/contract/test_recall_log_fences.py",
+        "tests/contract/test_recall_log_merge.py",
+        "tests/contract/test_recall_log_observations.py",
         "tests/contract/test_memory_export.py",
         "tests/contract/test_private_mode.py",
         "tests/contract/test_fragment_quote_recovery.py",
@@ -303,6 +309,8 @@ SUITES = {
         "tests/host/hermes/test_capture_retry_properties.py",
         "tests/host/hermes/test_upgrade_capture.py",
         "tests/host/test_memory_ui.py",
+        "tests/host/test_recall_log.py",
+        "tests/host/test_recall_log_recovery.py",
         "tests/host/test_memory_ui_http.py",
         "tests/host/test_memory_ui_assets.py",
         "tests/host/codex/test_client_private_mode.py",

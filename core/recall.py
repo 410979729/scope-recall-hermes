@@ -45,6 +45,7 @@ from .recall_policy import (
 )
 from .recall_restatement import has_conversation_summaries, prefer_originals
 from .recall_scope import asks_what_held_before, asks_what_was_said, query_scope, query_time
+from .recall_trace import note_candidate, note_removed, snapshot
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -408,6 +409,7 @@ class RetrievalPipeline:
             if candidate.rank != rank:
                 candidate = replace(candidate, rank=rank)
             accepted, reason = self.policy.vector_admission(candidate)
+            note_candidate(candidate, None if accepted else "threshold")
             if accepted:
                 admitted.append(candidate)
                 continue
@@ -474,6 +476,7 @@ class RetrievalPipeline:
                 candidate = replace(candidate, matched_query_terms=tuple(sorted(matched)))
         if self.policy.automatic_admission(candidate, question):
             return True
+        note_candidate(candidate, "threshold")
         _note_below_floor(gaps, candidate.source)
         return False
 
@@ -487,6 +490,11 @@ class RetrievalPipeline:
         For a named time window, the dated channel owns relaxed lexical
         admission; ordinary fallback would bypass that window.
         """
+        for candidate in raw:
+            note_candidate(
+                candidate,
+                "current_prompt" if f"{candidate.ref}@{candidate.revision}" in context.current_source_refs else None,
+            )
         admitted = [candidate for candidate in raw if self._admit(candidate, context)]
         if not context.automatic_injection:
             return admitted
@@ -625,7 +633,11 @@ class RetrievalPipeline:
         aside: _Aside | None = None,
     ) -> RetrievedObject | None:
         obj = self.storage_reader.hydrate(tx, candidate, context)
+        note_candidate(candidate, obj=obj)
         if obj is None:
+            from .recall_log_view import rejection_reason
+
+            note_candidate(candidate, rejection_reason(tx, candidate, context))
             return None
         # The current message already supplies this text. Older copies add no
         # information to automatic context and can crowd out its actual evidence.
@@ -636,16 +648,19 @@ class RetrievalPipeline:
             if same_message(obj.content, query):
                 if aside is not None:
                     aside.echoes.append(candidate)
+                note_candidate(candidate, "current_prompt")
                 return None
         if candidate.source != "exact_ref" and not identifiers_compatible(
             _identifiers_asked(candidate, context), obj.content
         ):
+            note_candidate(candidate, "identifier_mismatch")
             return None
         # An episode whose resume was never consolidated carries nothing but its
         # own state: `{"state": "unknown"}` fills a packet slot and answers
         # nothing.  Every plain chat turn opens one.  Named directly it is still
         # delivered, because then the caller asked for that object.
         if candidate.source != "exact_ref" and obj.kind == "episode" and _says_only_its_state(obj.content):
+            note_candidate(candidate, "empty_resume")
             return None
         if context.mode == "auto" and context.in_context_since is not None and _in_context(tx, obj, context):
             # The asking model still holds everything it stands on, word for word: delivered, it would be a second copy
@@ -654,6 +669,7 @@ class RetrievalPipeline:
             # would stop leading to the claims and procedures drawn from it before its last compaction.
             if aside is not None:
                 aside.held.append(candidate)
+            note_candidate(candidate, "already_in_context")
             return None
         return obj
 
@@ -970,6 +986,7 @@ class RetrievalPipeline:
                 working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)
             ) as tx:
                 working = replace(working, current_source_refs=current_prompt_refs(tx, working.current_source_refs))
+                snapshot(tx, working)
                 epoch = self.storage_reader.epoch(tx)
                 if working.automatic_injection and not working.focus_refs:
                     reason = automatic_recall_skip_reason(
@@ -1278,16 +1295,23 @@ class RetrievalPipeline:
         # background cannot repeat the evidence either.
         distinct = DistinctContent()
         ordered = self._behind_replacements(self._rank_hydrated(hydrated, working), working)
-        ordered = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
+        originals = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
+        note_removed(ordered, originals, "restatement")
+        ordered = originals
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_select")
-        ordered = visible_query_pairs(
+        safe = withhold_secret_items(ordered, gaps, content=lambda pair: pair[1])
+        note_removed(ordered, safe, "secret")
+        visible = visible_query_pairs(
             tx,
-            withhold_secret_items(ordered, gaps, content=lambda pair: pair[1]),
+            safe,
             working,
             now=getattr(self.clock, "utc_now", lambda: working.now)(),
         )
+        note_removed(safe, visible, "private_or_muted")
+        ordered = visible
         pool = distinct.filtered(ordered)
+        note_removed(ordered, pool, "duplicate")
         defer_budget = working.packet_selection and has_conversation_summaries(pool)
         # A summary cannot be discarded until the original survives the packet's
         # full envelope and schema limits. Keep a bounded pool for that compiler,
@@ -1297,6 +1321,7 @@ class RetrievalPipeline:
             if defer_budget
             else self._apply_budget(pool, working.limits, gaps, context=working)
         )
+        note_removed(pool, ranked, "budget")
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):

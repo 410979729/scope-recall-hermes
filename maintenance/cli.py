@@ -440,6 +440,7 @@ def _add_doctor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy", "dsh"))
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--python")
+    parser.add_argument("--recall-request-id")
     parser.add_argument("--project-root")
 
 
@@ -448,6 +449,7 @@ def _doctor(args: argparse.Namespace) -> int:
         host=args.host,
         instance_root=_path(args.instance_root, "instance_root"),
         python_executable=_interpreter(args.python, "python"),
+        recall_request_id=getattr(args, "recall_request_id", None),
         project_root=_optional_path(args.project_root, "project_root"),
     )
     _emit(report.to_dict())

@@ -379,14 +379,14 @@ def _unverified_connection_rule(conn) -> list[dict]:
     )
 
 
-def recall_state(tx, context, now: str, *, after: int | None = None):
+def recall_state(tx, context, now: str, *, after: int | None = None, logging: bool = False):
     """Current mode and a rule marker; a new full rule invalidates an in-flight recall.
 
     New rules are read by their primary key, so closing one before release cannot
     revive a decision made before it, and closed history is never scanned.
     """
     mode = mode_at(matching_intervals(tx, context, now=now), now)
-    invalidated, marker = rules_changed(tx, context, after=after)
+    invalidated, marker = rules_changed(tx, context, after=after, modes=MODES if logging else ("full",))
     return ("full" if invalidated else mode), marker
 
 
@@ -402,13 +402,16 @@ def capture_blocked(tx, context, prepared) -> bool:
     return capture_mode(matching_intervals(tx, context, events=prepared.events), prepared.events) is not None
 
 
-def rules_changed(tx, context, *, after: int | None = None):
-    """Return whether a new full rule targets this decision and the latest rule marker."""
+def rules_changed(tx, context, *, after: int | None = None, modes=("full",)):
+    """Check new matching rules; recall uses full mode, while logging covers both modes."""
     conn = tx._check()
     marker = rule_revision(tx)
     if after is not None and marker > after:
         project = _project_for(context)
-        for row in conn.execute("SELECT * FROM private_intervals WHERE interval_id>? AND mode='full'", (after,)):
+        for row in conn.execute(
+            f"SELECT * FROM private_intervals WHERE interval_id>? AND mode IN ({','.join('?' for _ in modes)})",
+            (after, *modes),
+        ):
             if _target_matches(row, context, project):
                 return True, marker
     return False, marker

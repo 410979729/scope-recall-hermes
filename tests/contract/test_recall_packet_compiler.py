@@ -831,9 +831,8 @@ def test_p09_diagnostics_channel_is_sanitized_and_bounded(app):
 
 
 def test_p09_a_packet_s_diagnostic_ref_can_be_inspected_by_the_session_that_recalled(app):
-    """The ref a packet hands out names a record this process keeps, never a stored object, so inspect must not answer
-    it SOURCE_MISSING every time.  The recalling session reads its counts and gap codes;
-    another session, or a ref this process no longer holds, reads nothing."""
+    """A packet names a persisted diagnostic rather than a truth object. The recalling session reads its metrics;
+    another session or an expired reference reads nothing."""
     core, ctx = app
     capture(core, ctx, "P09 diagnostics inspected by their own session.", key="TEST-p09/diag-inspect")
     packet = _packet(core, ctx, query="diagnostics inspected", request_id="TEST-p09-diag-inspect")
@@ -1051,8 +1050,8 @@ def test_p09_deadline_without_safe_item_is_unavailable_not_no_match(app):
     assert any(gap.startswith("deadline_exceeded") for gap in packet["gaps"])
 
 
-def test_diagnostics_keep_only_the_newest_records_readable():
-    diagnostics = RecallDiagnostics()
+def test_diagnostics_keep_records_beyond_process_local_window(tmp_path):
+    diagnostics = RecallDiagnostics(tmp_path / "recall.sqlite3")
     refs: list[str] = []
     for index in range(70):
         refs.append(
@@ -1072,8 +1071,8 @@ def test_diagnostics_keep_only_the_newest_records_readable():
                 deadline_remaining_ms=1000,
             )
         )
-    # The 64 newest are still readable by their ref; the 6 oldest left the lookup with their records.
-    assert [ref for ref in refs if diagnostics.get(ref) is not None] == refs[6:]
+    diagnostics.flush()
+    assert [ref for ref in refs if diagnostics.get(ref) is not None] == refs
 
 
 def test_p09_renderer_state_is_bounded_across_requests():

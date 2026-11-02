@@ -47,6 +47,18 @@ def check_dependencies(tx, members, signature=None, *, now=None):
     return sources
 
 
+def observation_dependencies(tx, ref, revision):
+    """Return the complete source manifest and signature for this version, or None when absent."""
+    row = (
+        tx._check()
+        .execute(
+            "SELECT manifest_json,signature FROM observations WHERE claim_ref=? AND claim_revision=?", (ref, revision)
+        )
+        .fetchone()
+    )
+    return (json.loads(row[0]), row[1]) if row is not None else None
+
+
 def reflection_live(tx, version, *, query_scope=None, excluded=(), check_conflicts=True):
     """Release only the current, supported induction with all original dependencies intact."""
     if version.payload.get("kind") != "observation":
@@ -58,18 +70,14 @@ def reflection_live(tx, version, *, query_scope=None, excluded=(), check_conflic
         tx.context.branch_id,
     ):
         return False
-    row = (
-        tx._check()
-        .execute("SELECT * FROM observations WHERE claim_ref=? AND claim_revision=?", (version.ref, version.revision))
-        .fetchone()
-    )
-    if row is None:
+    dependencies = observation_dependencies(tx, version.ref, version.revision)
+    if dependencies is None:
         return False
-    members = json.loads(row["manifest_json"])
+    members, signature = dependencies
     if not members_in_scope(members, query_scope) or any(f"{m['ref']}@{m['revision']}" in excluded for m in members):
         return False
     try:
-        check_dependencies(tx, members, row["signature"])
+        check_dependencies(tx, members, signature)
         return not check_conflicts or not owner_conflict(tx, version, members)
     except ContractError:
         return False

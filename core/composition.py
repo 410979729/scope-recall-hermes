@@ -6,7 +6,7 @@ import math
 import time
 import uuid
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone, tzinfo
+from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Literal, Protocol, overload
 
 from ..contracts import (
@@ -26,6 +26,8 @@ from .delete_storage import retraction_after
 from .model_content import withhold_secret_items
 from .operations import Operations
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
+from .recall_log_storage import LogPolicy
+from .recall_trace import CURRENT_TRACE, logged_recall
 from .records import Records
 from .restore import InstallationMaintenance, maintenance_context
 from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits
@@ -40,7 +42,7 @@ class Clock(Protocol):
 
 class SystemClock:
     def utc_now(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     def monotonic(self) -> float:
         return time.monotonic()
@@ -73,12 +75,15 @@ class CoreConfig:
     write_timeout_seconds: float = 1.0
     auto_recall_seconds: float = 5.0
     admission_policy: AdmissionPolicy = field(default_factory=AdmissionPolicy)
+    recall_log_policy: LogPolicy = field(default_factory=LogPolicy)
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):
             raise ValueError("binding must be an InstanceBinding")
         if not isinstance(self.admission_policy, AdmissionPolicy):
             raise ValueError("admission_policy must be an AdmissionPolicy")
+        if not isinstance(self.recall_log_policy, LogPolicy):
+            raise ValueError("recall_log_policy must be a LogPolicy")
         value = self.write_timeout_seconds
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 30:
             raise ValueError("write timeout must be finite and between zero and 30 seconds")
@@ -122,7 +127,9 @@ class MemoryCore:
         self.recall_pipeline = RetrievalPipeline(
             self.storage, vector_port=vectors, policy=retrieval_policy, clock=self.clock
         )
-        self.recall_diagnostics = RecallDiagnostics()
+        self.recall_diagnostics = RecallDiagnostics(
+            self.storage.path.with_name("recall.sqlite3"), config.recall_log_policy
+        )
         self.recall_packet_renderer = RecallPacketRenderer()
         self.recall_packet_compiler = RecallPacketCompiler(
             self.recall_pipeline.storage_reader,
@@ -193,27 +200,31 @@ class MemoryCore:
     ):
         """Inspect within scope and deletion fences; only a local owner may read during privacy."""
         from .inspect_service import InspectedObject, inspect_object
+        from .recall_diagnostics import diagnostic
+        from .recall_log_view import REQUEST_PREFIX, visible_record
 
         if owner_authority is not None:
             owner = maintenance_context(self.storage, owner_authority)
             if replace(context, project_id=owner.project_id, branch_id=owner.branch_id) != owner:
                 raise ContractError("ACCESS_DENIED", "owner_authority")
         marker = self._private_read_refusal(context) if owner_authority is None else None
-        if type(ref) is str and ref.startswith(RECALL_DIAGNOSTIC_PREFIX):
-            # A recall packet's ``diagnostic_ref`` names a record this process keeps for its last recalls
-            # (``recall_diagnostics``), never a stored object: looked up in the store it would always be
-            # SOURCE_MISSING.  Only the session that recalled reads it, and only counts and gap codes.
+        if type(ref) is str and ref.startswith((RECALL_DIAGNOSTIC_PREFIX, REQUEST_PREFIX)):
             if revision not in (None, 1):
                 raise ContractError("INPUT_INVALID", "revision")
-            record = self.recall_diagnostics.get(ref)
-            if (
-                record is None
-                or record.installation_id != context.binding.installation_id
-                or record.session_id != context.session_id
-            ):
-                # Gone from this process's last recalls, recalled by another process (a prompt hook), or not the
-                # caller's: all read the same.
+            self.recall_diagnostics.expire(self.clock.utc_now())
+            self.recall_diagnostics.flush()
+            selector = {"request_id": ref[len(REQUEST_PREFIX) :]} if ref.startswith(REQUEST_PREFIX) else {"ref": ref}
+            rows = self.recall_diagnostics.store.list(
+                installation_id=context.binding.installation_id,
+                session_id=context.session_id,
+                limit=1,
+                now=self.clock.utc_now(),
+                **selector,
+            )
+            view = visible_record(self, context, rows[0]) if rows else None
+            if view is None:
                 raise ContractError("SOURCE_MISSING", "recall_diagnostic")
+            record = diagnostic(view)
             result = InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
         else:
             result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
@@ -241,11 +252,21 @@ class MemoryCore:
                 return "unavailable"
             raise
 
-    def _recall_private_state(self, context: TrustedContext, *, after: int | None = None):
+    def _recall_private_state(self, context: TrustedContext, *, after: int | None = None, logging: bool = False):
         """Read a fresh decision and rule marker at recall entry or release."""
         now = utc_timestamp(self.clock.utc_now())
-        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
-            return private.recall_state(tx, context, now, after=after)
+        policy_context = (
+            context if context.allowed_scope_ids else replace(context, allowed_scope_ids=context.binding.scope_ids)
+        )
+        with self.storage.read(policy_context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+            state = private.recall_state(tx, context, now, after=after, logging=logging)
+            trace = CURRENT_TRACE.get()
+            # The ordinary release read also fences diagnostic publication.
+            # With no newly opened rule, its marker avoids a second lookup.
+            if not logging and trace is not None and trace.enabled and after is not None and state[1] > after:
+                if private.rules_changed(tx, context, after=after, modes=private.MODES)[0]:
+                    trace.enabled = False
+            return state
 
     def _recall_entry(self, search_context):
         """Share one entry snapshot between private policy and query identity."""
@@ -253,9 +274,16 @@ class MemoryCore:
 
         context = search_context.trusted_context
         now = utc_timestamp(self.clock.utc_now())
-        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+        policy_context = (
+            context if context.allowed_scope_ids else replace(context, allowed_scope_ids=context.binding.scope_ids)
+        )
+        with self.storage.read(policy_context, remaining_seconds=self.config.write_timeout_seconds) as tx:
             mode, marker = private.recall_state(tx, context, now)
-            if mode != "full":
+            trace = CURRENT_TRACE.get()
+            if trace is not None:
+                trace.enabled = mode is None
+                trace.private_marker = marker
+            if mode != "full" and context.allowed_scope_ids:
                 search_context = resolve_query_context(tx, search_context, self.clock)
         return search_context, mode, marker
 
@@ -505,6 +533,19 @@ class MemoryCore:
     ) -> tuple[SearchContext, float]:
         """A recall request's search context, and the seconds it was given: the caller's, else the core's for an
         automatic recall and 2 for any other; an automatic recall never gets more than the core's."""
+        if not context.allowed_scope_ids and (trace := CURRENT_TRACE.get()) is not None:
+            # Validate only the diagnostic shape; the original unbound request
+            # still fails its ordinary authorization check below.
+            diagnostic_context = SearchContext.from_request(
+                request,
+                replace(context, allowed_scope_ids=context.binding.scope_ids),
+                now=self.clock.utc_now(),
+                deadline=self.clock.monotonic() + 1,
+            )
+            trace.context = replace(diagnostic_context, trusted_context=context)
+            privacy_state = self._recall_private_state(context)
+            trace.enabled = privacy_state[0] is None
+            trace.private_marker = privacy_state[1]
         payload = validate_model_request("recall_request", request, context)
         if deadline_seconds is None:
             effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
@@ -528,8 +569,12 @@ class MemoryCore:
             zone=zone,
             in_context_since=in_context_since,
         )
+        trace = CURRENT_TRACE.get()
+        if trace is not None:
+            trace.context = search_context
         return search_context, effective_deadline
 
+    @logged_recall
     def recall(
         self,
         context: TrustedContext,
@@ -554,12 +599,16 @@ class MemoryCore:
                 (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
             )
         result = self.recall_pipeline.search(search_context)
-        if self._recall_private_state(context, after=private_marker)[0] == "full":
+        final_private = self._recall_private_state(context, after=private_marker)[0]
+        if final_private is not None and (trace := CURRENT_TRACE.get()) is not None:
+            trace.enabled = False
+        if final_private == "full":
             return RetrievalResult(
                 (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
             )
         return result
 
+    @logged_recall
     def recall_packet(
         self,
         context: TrustedContext,
@@ -610,7 +659,10 @@ class MemoryCore:
             self.storage,
         )
         validate_payload("recall_packet", dict(packet))
-        if self._recall_private_state(context, after=private_marker)[0] == "full":
+        final_private = self._recall_private_state(context, after=private_marker)[0]
+        if final_private is not None and (trace := CURRENT_TRACE.get()) is not None:
+            trace.enabled = False
+        if final_private == "full":
             return self._private_recall_packet(search_context)
         return packet
 

@@ -543,7 +543,8 @@ def test_missing_core_is_installed_into_a_new_hermes_venv(fake_user, monkeypatch
     home = fake_user / ".hermes"
     environment = home / "venv"
     venv.EnvBuilder(with_pip=False).create(environment)
-    monkeypatch.setenv("UV_CACHE_DIR", str(fake_user / "TEST-package-cache"))
+    # Reuse an explicitly prepared task cache; the host venv remains new and pip-less.
+    monkeypatch.setenv("UV_CACHE_DIR", os.environ.get("UV_CACHE_DIR") or str(fake_user / "TEST-package-cache"))
     args = parser().parse_args(["--host", "hermes", "--test-mode", "--worker", "manual"])
     plan = build_plan(args)
     assert plan.hosts[0]["package_command"]
