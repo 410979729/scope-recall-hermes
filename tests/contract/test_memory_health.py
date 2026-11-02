@@ -691,7 +691,7 @@ def test_fact_undo_rejects_concurrent_head_change(app, action):
         api.health_undo(receipt["action_id"], receipt["versions"])
 
 
-def test_fact_decisions_invalidate_existing_dependency_signatures(app):
+def test_evidence_only_merge_preserves_dependency_signatures(app):
     from scope_recall.core.summary_validity import group_signature
 
     core, ctx = app
@@ -708,10 +708,10 @@ def test_fact_decisions_invalidate_existing_dependency_signatures(app):
     receipt = api.health_merge_facts(first.ref, first.revision, second.ref, second.revision)
     with core.storage.read(ctx) as tx:
         merged = group_signature(tx, members)
-    assert merged != before
+    assert merged == before
     api.health_undo(receipt["action_id"], receipt["versions"])
     with core.storage.read(ctx) as tx:
-        assert group_signature(tx, members) != merged
+        assert group_signature(tx, members) == before
 
 
 def test_health_action_history_excludes_muted_facts(app):

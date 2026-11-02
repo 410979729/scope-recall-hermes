@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from ..contracts import ContractError
 from . import private
 from .reflection_conflicts import owner_conflict
-from .summary_validity import group_signature, members_in_scope
+from .summary_validity import group_signature, legacy_group_signature, members_in_scope
 
 OBSERVATION_REASONS = ("reflection_pending", "grounded_observation", "confirmed_observation")
 
@@ -43,7 +43,14 @@ def check_dependencies(tx, members, signature=None, *, now=None):
     """One fence for dispatch, publication, hydration, inspection and final release."""
     sources = live_members(tx, members, now=now)
     if signature is not None and dependency_signature(tx, members, sources=sources) != signature:
-        raise ContractError("VERSION_CONFLICT", "reflection_dependencies")
+        rules = private.source_rules(tx, sources)
+        legacy = (legacy_group_signature(tx, members, before_health=mode) for mode in (False, True))
+        values = (
+            hashlib.sha256(json.dumps([item, rules], sort_keys=True).encode()).hexdigest() if rules else item
+            for item in legacy
+        )
+        if signature not in values:
+            raise ContractError("VERSION_CONFLICT", "reflection_dependencies")
     return sources
 
 
@@ -57,6 +64,26 @@ def observation_dependencies(tx, ref, revision):
         .fetchone()
     )
     return (json.loads(row[0]), row[1]) if row is not None else None
+
+
+def reflection_historical(tx, version):
+    """Permit explicit historical display only while its complete source manifest is visible."""
+    if version.payload.get("kind") != "observation":
+        return True
+    if (
+        version.suppressed
+        or version.scope_id not in tx.context.allowed_scope_ids
+        or (version.project_id, version.branch_id) != (tx.context.project_id, tx.context.branch_id)
+    ):
+        return False
+    dependencies = observation_dependencies(tx, version.ref, version.revision)
+    if dependencies is None:
+        return False
+    try:
+        live_members(tx, dependencies[0])
+        return True
+    except ContractError:
+        return False
 
 
 def reflection_live(tx, version, *, query_scope=None, excluded=(), check_conflicts=True):

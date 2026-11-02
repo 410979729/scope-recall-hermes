@@ -288,7 +288,75 @@ __all__ = [
     "link_unless_carried",
     "purge_quotes",
     "related",
+    "resolve_replacement",
     "revision_bound",
     "sources_of",
     "supported_claims",
 ]
+
+
+# At most 32 claim nodes are visited, bounding corrupted histories and their read cost.
+MAX_REPLACEMENT_DEPTH = 32
+
+
+def resolve_replacement(tx, ref, instant=None):
+    """Follow current owner decisions to a visible live target, or return None if no target holds.
+
+    Each edge is pinned to the superseded head and reviewed target version. An undo advances
+    the head, so the old edge ceases to apply. Cycles and chains over the bound fail closed.
+    """
+    from datetime import UTC, datetime
+
+    from ..contracts import ContractError
+    from . import private
+    from .claims import evidence_refs, select_effective
+
+    visited = set()
+    start = ref
+    audience = None
+    now = instant or datetime.now(UTC).isoformat()
+    rules = private.active_intervals(tx, now)
+    for _ in range(MAX_REPLACEMENT_DEPTH):
+        if ref in visited:
+            raise ContractError("DERIVATION_INVALID", "replacement_cycle")
+        visited.add(ref)
+        revision = tx.claims.current_revision(ref)
+        head = tx.claims.version(ref, revision) if revision is not None else None
+        if head is None or head.suppressed or private.claim_blocked(tx, rules, head):
+            return None
+        namespace = (head.scope_id, head.project_id, head.branch_id)
+        if audience is None:
+            audience = namespace
+        elif namespace != audience:
+            return None
+        try:
+            sources = tx.claims.live_sources(evidence_refs(head.payload), head.scope_id)
+        except ContractError:
+            return None
+        if any(source.suppressed for source in sources):
+            return None
+        if head.state != "superseded" or head.reason != "health_superseded":
+            if ref != start and head.state == "active":
+                return select_effective(tx.claims.versions(ref), instant) if instant else head
+            break
+        row = (
+            tx._check()
+            .execute(
+                "SELECT json_extract(j.value,'$.replacement_ref'), json_extract(j.value,'$.replacement_revision') "
+                "FROM management_actions a, json_each(a.targets_json) j "
+                "WHERE a.action IN ('health_fact_choose','health_fact_merge') AND json_extract(j.value,'$.ref')=? "
+                "AND json_extract(j.value,'$.revision')=? "
+                "AND json_extract(j.value,'$.replacement_ref') IS NOT NULL LIMIT 1",
+                (ref, head.revision),
+            )
+            .fetchone()
+        )
+        if not row or not row[0] or type(row[1]) is not int:
+            break
+        target = tx.claims.version(row[0], row[1])
+        if target is None or target.current_revision < row[1]:
+            break
+        ref = row[0]
+    else:
+        raise ContractError("DERIVATION_INVALID", "replacement_depth")
+    return None

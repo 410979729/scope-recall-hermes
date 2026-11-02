@@ -28,7 +28,7 @@ def observation(core, deadline):
     path = core.recall_diagnostics.path
     days = core.recall_diagnostics.store.policy.retention_days
     result: dict[str, Any] = dict(
-        days=days, start=None, end=core.clock.utc_now(), incomplete=True, eligible=False, used=set()
+        days=days, start=None, end=core.clock.utc_now(), incomplete=True, eligible=False, used=set(), timed_out=False
     )
     if not path.is_file():
         return result
@@ -71,6 +71,7 @@ def observation(core, deadline):
                 return result
             for (raw,) in conn.execute("SELECT payload FROM attempts WHERE timestamp>=?", (first[0],)):
                 if time.monotonic() >= deadline:
+                    result["timed_out"] = True
                     break
                 record = json.loads(raw)
                 for item in record.get("items", ()):
@@ -80,6 +81,7 @@ def observation(core, deadline):
                 result["eligible"] = True
                 result["incomplete"] = False
     except (sqlite3.Error, OSError, ValueError, TypeError, KeyError):
+        result["timed_out"] = time.monotonic() >= deadline
         return result
     return result
 
@@ -115,6 +117,11 @@ def _encode(ref, phase, marker):
 
 def _visible(tx, clock, ref, revision) -> Any:
     version = tx.claims.version(ref, revision)
+    if version is not None and version.state == "superseded" and version.reason == "health_superseded":
+        from .lineage import resolve_replacement
+
+        resolve_replacement(tx, ref, clock.utc_now())
+        return None
     if (
         version is None
         or version.current_revision != revision
@@ -208,7 +215,8 @@ def health_page(core, context, *, limit=30, cursor=None, deadline_seconds=2.0):
     _validate_page(limit, deadline_seconds)
     source_ref, phase, marker = _cursor(cursor)
     deadline = time.monotonic() + deadline_seconds
-    log = observation(core, deadline)
+    # Reserve three quarters of the page budget for fact and entity scanning.
+    log = observation(core, time.monotonic() + deadline_seconds * 0.25)
     result: dict[str, Any] = dict(
         entities=[],
         duplicates=[],
@@ -217,7 +225,8 @@ def health_page(core, context, *, limit=30, cursor=None, deadline_seconds=2.0):
         observation_days=log["days"],
         observation_start=log["start"],
         observation_end=log["end"],
-        records_incomplete=log["incomplete"],
+        records_incomplete=log["incomplete"] and not log.get("timed_out", False),
+        unused_complete=not log.get("timed_out", False),
         complete=False,
         next_cursor=None,
     )

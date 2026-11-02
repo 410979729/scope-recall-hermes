@@ -202,6 +202,7 @@ SUITES = {
         "tests/contract/test_full_backup.py",
         "tests/contract/test_memory_admin.py",
         "tests/contract/test_memory_health.py",
+        "tests/contract/test_health_repairs.py",
         "tests/contract/test_memory_cli.py",
         "tests/contract/test_memory_ui_api.py",
         "tests/contract/test_recall_log.py",

@@ -152,13 +152,19 @@ def health_pair_kind(first, second):
         return None
     values = [normalize_fact_component(p["value_text"]) for p in proposals]
     if values[0] == values[1]:
-        return "duplicate"
+        periods = [(canonical_time(v.valid_from), canonical_time(v.valid_to)) for v in (first, second)]
+        return "duplicate" if periods[0] == periods[1] else None
     start = max((v.valid_from for v in (first, second) if v.valid_from), default="0001-01-01T00:00:00Z")
     return "contradiction" if all(valid_at(v, start, historical=False) for v in (first, second)) else None
 
 
 def health_apply_facts(tx, clock, first, second, *, merge):
     """Append owner-reviewed fact heads; callers record the cross-reference atomically."""
+    if merge and (canonical_time(first.valid_from), canonical_time(first.valid_to)) != (
+        canonical_time(second.valid_from),
+        canonical_time(second.valid_to),
+    ):
+        raise ContractError("DERIVATION_INVALID", "different_validity")
     kind = health_pair_kind(first, second)
     if kind != ("duplicate" if merge else "contradiction"):
         raise ContractError("VERSION_CONFLICT", "fact_pair")
@@ -202,7 +208,17 @@ def health_restore_fact(tx, clock, original, head):
         expected_revision=head.revision,
     )
     if original.payload["kind"] == "observation":
-        health_observation_dependencies(tx, saved, (original,))
+        row = (
+            tx._check()
+            .execute(
+                "SELECT manifest_json,signature,confirmed FROM observations WHERE claim_ref=? AND claim_revision=?",
+                (original.ref, original.revision),
+            )
+            .fetchone()
+        )
+        if row is None:
+            raise ContractError("SOURCE_MISSING", "observation_dependencies")
+        tx._check(write=True).execute("INSERT INTO observations VALUES(?,?,?,?,?)", (saved.ref, saved.revision, *row))
     return saved
 
 

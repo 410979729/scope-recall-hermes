@@ -147,6 +147,7 @@ function renderHealth() {
   const data = healthPages[healthPages.length - 1];
   if (!data) return;
   $("health-period").textContent = t("observationPeriod") + ": " + (data.observation_start || "—") + " – " + data.observation_end + " · " + data.observation_days + " " + t("days") + (data.records_incomplete ? " · " + t("recordsIncomplete") : "");
+  if (data.unused_complete === false) node("span", " · " + t("unusedIncomplete"), $("health-period"));
   if (!data.complete) node("span", t("healthPartial"), $("health-period"));
 }
 async function loadHealthActions(more) {

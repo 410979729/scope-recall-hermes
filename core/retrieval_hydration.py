@@ -467,32 +467,11 @@ class RetrievalHydration:
                 continue
             instead = holds_instead(versions, revision, context.now)
             if instead is None:
-                instead = RetrievalHydration._health_replacement(tx, versions, context)
+                instead = lineage.resolve_replacement(tx, claim_ref, context.now)
             if instead is None:
                 return None
             holding.append((stated, instead))
         return holding
-
-    @staticmethod
-    def _health_replacement(tx, versions, context: SearchContext):
-        """Resolve an owner's current cross-reference choice without reviving a withdrawn decision."""
-        head = next((item for item in versions if item.revision == item.current_revision), None)
-        if head is None or head.state != "superseded" or head.reason != "health_superseded":
-            return None
-        row = (
-            tx._check()
-            .execute(
-                "SELECT json_extract(j.value,'$.replacement_ref') "
-                "FROM management_actions a, json_each(a.targets_json) j "
-                "WHERE a.action='health_fact_choose' AND json_extract(j.value,'$.ref')=? "
-                "AND json_extract(j.value,'$.revision')=? LIMIT 1",
-                (head.ref, head.revision),
-            )
-            .fetchone()
-        )
-        if not row or not row[0]:
-            return None
-        return select_effective(tx.claims.versions(row[0]), context.now)
 
     def _later_evidence(self, tx, instead, stated, source, context: SearchContext) -> tuple[tuple[str, int], ...]:
         """The source versions the claim version ``instead`` stands on, when they are deliverable in this mode

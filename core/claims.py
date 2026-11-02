@@ -135,6 +135,38 @@ def same_assertion(left: ClaimProposal, right: ClaimProposal) -> bool:
     )
 
 
+def statement_key(payload):
+    """Canonical assertion content, excluding evidence, for dependency comparisons."""
+    from .fact_identity import normalize_fact_component
+
+    value = {
+        key: payload.get(key)
+        for key in (
+            "kind",
+            "subject",
+            "predicate",
+            "value_text",
+            "conditions",
+            "statement_kind",
+            "valid_from",
+            "valid_to",
+            "occurred_at",
+            "procedure",
+            "intention",
+            "alias",
+        )
+    }
+    for key in ("subject", "predicate", "value_text"):
+        value[key] = normalize_fact_component(value[key], max_chars=2048, allow_empty=True)
+    value["conditions"] = sorted(set(value["conditions"] or ()))
+    for key in ("valid_from", "valid_to", "occurred_at"):
+        value[key] = canonical_time(value[key])
+    if value["kind"] in {"fact", "preference", "constraint", "decision", "observation"}:
+        for key in ("statement_kind", "occurred_at", "procedure", "intention", "alias"):
+            del value[key]
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
 _HYPOTHETICAL = re.compile(r"假设|假如|设想|虚构|假定|\b(?:suppose|hypothetic|fictional|what if)\b", re.I)
 _UNDECIDED = re.compile(r"先不要定|还[没未]决定|尚未确定|没有决定|待定|\b(?:not decided|undecided)\b", re.I)
 _QUOTED_OTHER = re.compile(r"不是我的|不是我本人|客户原文|\b(?:not my preference|customer said)\b", re.I)
