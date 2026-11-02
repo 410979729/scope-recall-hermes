@@ -184,6 +184,8 @@
     "core/recall_scope.py",
     "core/records.py",
     "core/reference_storage.py",
+    "core/reflection_conflicts.py",
+    "core/reflection_policy.py",
     "core/reflection_revision.py",
     "core/reflection_storage.py",
     "core/reflection_validity.py",

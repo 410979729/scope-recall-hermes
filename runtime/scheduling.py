@@ -219,6 +219,13 @@ def _consolidation_candidates(tx, capable, now, base, params, scheduled, legacy_
     return result
 
 
+def _conflict_wakes(tx, now):
+    """Local dependency checks can progress even when no model route is authorized."""
+    from ..core.reflection_conflicts import conflict_candidates
+
+    return [(now, "observation_conflict_scan")] if conflict_candidates(tx) else []
+
+
 def next_wake(config, *, now: datetime | None = None, unavailable_until=None) -> WakePlan:
     """Read only generic work fields under the same partition as claim_next.
 
@@ -262,8 +269,8 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
     storage = SQLiteStorage(config.binding)
     with storage.read(config.context(), remaining_seconds=1.0) as tx:
         conn = tx._check()
-        source_pages = tx.candidates.pending_source_pages()
-        if source_pages:
+        candidates.extend(_conflict_wakes(tx, now))
+        if source_pages := tx.candidates.pending_source_pages():
             pending += source_pages
             if "evaluate_candidate" in capable:
                 cooldown = unavailable_until.get("evaluate_candidate", unavailable_until.get("consolidate"))

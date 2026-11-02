@@ -8,9 +8,8 @@ from copy import deepcopy
 
 from ..contracts import ContractError
 from .claims import Qualification
-from .reflection_validity import reflection_live
+from .reflection_validity import dependency_signature, reflection_live
 from .secret_patterns import structure_contains_secret_like_text
-from .summary_validity import group_signature
 
 
 def revise_observation(tx, clock, head, value, source):
@@ -66,7 +65,7 @@ def revise_observation(tx, clock, head, value, source):
     )
     tx._check().execute(
         "INSERT INTO observations VALUES(?,?,?,?,1)",
-        (saved.ref, saved.revision, json.dumps(members), group_signature(tx, members)),
+        (saved.ref, saved.revision, json.dumps(members), dependency_signature(tx, members)),
     )
     tx.claims.resolve_updates(saved.ref, resolved_at=clock.utc_now())
     return saved

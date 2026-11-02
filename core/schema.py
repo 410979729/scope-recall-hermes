@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1123
+SCHEMA_VERSION = 1124
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -471,6 +471,30 @@ REFLECTION_STATEMENTS = (
 )
 
 
+REFLECTION_POLICY_STATEMENTS = (
+    (
+        "CREATE TABLE reflection_daily_usage(scope_id TEXT NOT NULL,day TEXT NOT NULL,cal"
+        "ls INTEGER NOT NULL CHECK(calls>=0),PRIMARY KEY(scope_id,day)) STRICT"
+    ),
+    ("CREATE TABLE reflection_discovery(audience TEXT PRIMARY KEY,history_end INTEGER NOT NULL,next_at TEXT) STRICT"),
+    (
+        "CREATE TABLE observation_conflicts(claim_ref TEXT NOT NULL,claim_revision INTEGE"
+        "R NOT NULL,position INTEGER NOT NULL,conflicted INTEGER NOT NULL DEFAULT 0,PRIMA"
+        "RY KEY(claim_ref,claim_revision),FOREIGN KEY(claim_ref,claim_revision) REFERENCE"
+        "S observations(claim_ref,claim_revision) ON DELETE CASCADE) STRICT"
+    ),
+    (
+        "CREATE TABLE reflection_rejections(job_ref TEXT NOT NULL,job_revision INTEGER NO"
+        "T NULL,candidate INTEGER NOT NULL,reason TEXT NOT NULL,recorded_at TEXT NOT NULL"
+        ") STRICT"
+    ),
+    *(
+        f"ALTER TABLE reflection_groups ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}"
+        for column, default in (("empty_streak", 0), ("new_sources", 0), ("required_sources", 8))
+    ),
+)
+
+
 STATEMENTS = (
     (
         """CREATE TABLE instance_meta (
@@ -689,6 +713,7 @@ STATEMENTS = (
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
     + REFLECTION_STATEMENTS
+    + REFLECTION_POLICY_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
@@ -1074,3 +1099,12 @@ def upgrade_1122(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1123 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1123")
+
+
+def upgrade_1123(connection):
+    """Add durable reflection policy without rewriting observations or source evidence."""
+    for statement in REFLECTION_POLICY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE reflection_groups SET new_sources=json_array_length(buffered_json)")
+    connection.execute("UPDATE instance_meta SET schema_version=1124 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1124")

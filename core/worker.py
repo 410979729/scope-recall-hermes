@@ -544,6 +544,9 @@ def _claim_idle(storage, clock, context, config, allowed, fresh_lane, started, b
             allowed_work_types=allowed,
             fresh_lane=fresh_lane,
         )
+        from .reflection_conflicts import advance_conflicts
+
+        advance_conflicts(tx)
         items = claim()
         if not items and config.reflection_capable and "consolidate" in allowed:
             if queue_reflections(tx, now=clock.utc_now(), enabled=True):

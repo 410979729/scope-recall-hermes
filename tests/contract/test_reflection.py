@@ -32,6 +32,12 @@ class ReflectionModel:
                         dict(
                             subject="TEST-project",
                             predicate="recurring failure",
+                            sessions=sorted(
+                                {
+                                    list(dict.fromkeys(s["session_id"] for s in sources)).index(s["session_id"]) + 1
+                                    for s in (sources[0], sources[-1])
+                                }
+                            ),
                             value_text="TEST-project repeatedly encounters connection timeouts.",
                             evidence_spans=[
                                 dict(
@@ -398,8 +404,9 @@ def test_quote_alignment_keeps_positions_authoritative(app, positions):
         result = decode_observations(value, members, original)
         assert all("start" in span for span in result[0]["evidence_spans"])
     else:
-        with pytest.raises(ContractError):
-            decode_observations(value, members, original)
+        rejected = []
+        assert decode_observations(value, members, original, rejections=rejected) == []
+        assert rejected
 
 
 def test_owner_can_resolve_a_pending_observation_correction(app):
@@ -457,7 +464,9 @@ def test_historical_discovery_keeps_the_supervisor_awake_until_all_sources_are_s
     model = ReflectionModel()
     run(core, ctx, model)
     with core.storage.read(ctx) as tx:
-        assert next_reflection_due(tx, now=core.clock.utc_now()) == core.clock.utc_now()
+        due = next_reflection_due(tx, now=core.clock.utc_now())
+        assert due > core.clock.utc_now()
+    core.clock.now = due
     run(core, ctx, model)
     assert observation(core, ctx) is not None
     with core.storage.read(ctx) as tx:

@@ -171,6 +171,7 @@ SUITES = {
     ],
     "contract": [
         "tests/contract/test_reflection.py",
+        "tests/contract/test_reflection_repairs.py",
         "tests/contract/test_reflection_cost.py",
         "tests/contract/test_adoption.py",
         "tests/contract/test_adoption_merge.py",
