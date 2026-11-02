@@ -8,6 +8,8 @@ integration and skills, and sets up bounded worker commands. Confirm once to app
 Choose your host: [Claude Code](install/claude-code.md), [Codex](install/codex.md), [Hermes](install/hermes.md),
 [WorkBuddy](install/workbuddy.md), [DeepSeek Harness](install/dsh.md).
 
+For a shared store on a Linux Docker host, see [Docker deployment](docker.md).
+
 ## Plan and apply
 
 `scope-recall setup --dry-run` prints a plan without changing user files, host configuration or stores,

@@ -1,0 +1,21 @@
+services:
+  scope-recall:
+    image: scope-recall:${SCOPE_RECALL_VERSION:?Set SCOPE_RECALL_VERSION from _version.py}
+    build:
+      context: ../..
+      dockerfile: distribution/docker/Dockerfile
+      args:
+        SCOPE_RECALL_VERSION: ${SCOPE_RECALL_VERSION:?Set SCOPE_RECALL_VERSION from _version.py}
+    network_mode: host
+    volumes:
+      - scope-recall-data:/data
+    secrets:
+      - runtime
+    restart: unless-stopped
+
+volumes:
+  scope-recall-data:
+
+secrets:
+  runtime:
+    file: ${SCOPE_RECALL_ENV_FILE:?Set SCOPE_RECALL_ENV_FILE to the credentials file}
