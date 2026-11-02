@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from functools import partial
 
-from ..contracts import ContractError, validate_payload
-from . import lineage, private
-from .claims import Qualification
-from .consolidation_chunks import source_chunk
+from ..contracts import ContractError
+from . import private
+from .consolidation_chunks import ChunkedSource, ConsolidationChunk, source_chunk
 from .consolidation_summary import grounded_sentences
 from .language_resources import prompt_text
 from .resume_compaction import resume_evidence_refs
-from .summary_storage import queue_summary_part
-from .summary_validity import group_members, group_signature
+from .source_qualification import sentence_bounds
+from .summary_parts import queue_summary_part, store_excerpt_claim, unprocessed_ranges, update_progress
+from .summary_validity import group_members, group_signature, obsolete_ranges
 from .worker_outcomes import budget_left, finalize_work, hold_for_private_mode, model_failure, stale_result, work_result
 
 
@@ -42,25 +43,45 @@ def summary_messages(sources, *, episode_ref=None):
 
 
 def _read_page(tx, group):
+    """Prepare only unprocessed ranges, hiding whole sentences of obsolete facts."""
     members = json.loads(group["manifest_json"])
-    index = group["next_offset"]
+    blocked = obsolete_ranges(tx, members)
     sources = []
-    for member in members[index : index + 16]:
+    for index, start, end in unprocessed_ranges(tx, group):
+        member = members[index]
         source = tx.source(member["ref"], member["revision"])
         if source is None or source.suppressed or source.capture_gaps:
             raise ContractError("SOURCE_MISSING", "summary_source")
         tx.claims.require_live_source(source.ref, source.revision)
+        content = source.event["content"]
+        mask = list(content)
+        for a, b in blocked.get((source.ref, source.revision), ()):
+            left, right = sentence_bounds(content, a, b)
+            mask[left:right] = " " * (right - left)
+        source = replace(source, event=dict(source.event, content="".join(mask)))
+        if start or end != member["total"]:
+            if sources:
+                break
+            values: dict = dict(source.__dict__, event=dict(source.event, content=source.event["content"][start:end]))
+            source = ChunkedSource(**values, consolidation_window=ConsolidationChunk(start, end, member["total"]))
         try:
             summary_messages((*sources, source))
         except ContractError:
-            break
+            if sources:
+                break
+            source = tx.source(member["ref"], member["revision"])
+            source = replace(source, event=dict(source.event, content="".join(mask)))
+            source, _chunk = source_chunk(source, start, formatter=summary_messages)
+            assert _chunk is not None
+            if _chunk.end > end:
+                source = replace(
+                    source,
+                    event=dict(source.event, content=source.event["content"][: end - start]),
+                    consolidation_window=ConsolidationChunk(start, end, member["total"]),
+                )
         sources.append(source)
-    if not sources:
-        member = members[index]
-        source = tx.source(member["ref"], member["revision"])
-        offset = group["covered_units"] - sum(m["total"] for m in members[:index])
-        source, _chunk = source_chunk(source, offset, formatter=summary_messages)
-        sources = [source]
+        if len(sources) == 16 or getattr(source, "consolidation_window", None) is not None:
+            break
     coverage = []
     for source in sources:
         window = getattr(source, "consolidation_window", None)
@@ -114,6 +135,7 @@ def process_summary(storage, clock, context, item, *, model, started, budget):
                 return finish("obsolete", "SOURCE_MISSING")
             sources, coverage = _read_page(tx, group)
             originals = {(s.ref, s.revision): tx.source(s.ref, s.revision).event["content"] for s in sources}
+            blocked = obsolete_ranges(tx, json.loads(group["manifest_json"]))
             episode = tx.episodes.get(group["subject_ref"]) if group["kind"] == "task" else None
             page_refs = {f"{s.ref}@{s.revision}" for s in sources}
             resume = episode.resume if episode is not None else None
@@ -123,20 +145,23 @@ def process_summary(storage, clock, context, item, *, model, started, budget):
         guard = partial(_outbound_blocked, storage, clock, context, sources, group)
         if guard():
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
-        with private.using_outbound_check(guard):
-            private.require_outbound()
-            raw = model.judge(
-                summary_messages(sources, episode_ref=task),
-                remaining_seconds=budget_left(started, clock, budget),
-            )
-        value = json.loads(raw) if isinstance(raw, str) else raw
-        sentences, spans = grounded_sentences(value, sources, originals=originals)
+        submitted = tuple(source for source in sources if source.event["content"].strip())
+        sentences, spans = [], []
+        if submitted:
+            with private.using_outbound_check(guard):
+                private.require_outbound()
+                raw = model.judge(
+                    summary_messages(submitted, episode_ref=task),
+                    remaining_seconds=budget_left(started, clock, budget),
+                )
+            value = json.loads(raw) if isinstance(raw, str) else raw
+            sentences, spans = grounded_sentences(value, submitted, originals=originals, blocked=blocked)
         return _publish_summary(
             storage,
             clock,
             context,
             item,
-            (group, sources, coverage, sentences, spans, page_refs),
+            (group, coverage, sentences, spans),
             started=started,
             budget=budget,
         )
@@ -159,7 +184,7 @@ def process_summary(storage, clock, context, item, *, model, started, budget):
 
 def _publish_summary(storage, clock, context, item, prepared, *, started, budget):
     """Publish a grounded page and its next job in one fenced transaction."""
-    group, sources, coverage, sentences, spans, page_refs = prepared
+    group, coverage, sentences, spans = prepared
     with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             return stale_result(tx, item)
@@ -167,53 +192,14 @@ def _publish_summary(storage, clock, context, item, prepared, *, started, budget
         if current is None or current["signature"] != group_signature(tx, group_members(tx, current)):
             return work_result(tx.work.mark_obsolete(*item.lease, now=clock.utc_now()))
         head = tx.claims.version(item.subject_ref, item.subject_revision)
-        roles = {(s.ref, s.revision): s.event["role"] for s in sources}
-        text = "\n".join(
-            f"{roles[(span['source_ref'], span['source_revision'])]}: {sentence}"
-            for sentence, span in zip(sentences, spans, strict=True)
-        )
-        payload = dict(head.payload, value_text=text, evidence_spans=spans)
-        validate_payload(
-            "consolidation_result",
-            dict(
-                protocol_version="1.1",
-                source_refs=list(page_refs),
-                claim_proposals=[payload],
-                resume_proposals=[],
-                reference_proposals=[],
-            ),
-        )
-        saved = tx.claims.append(
-            group["scope_id"],
-            payload,
-            Qualification("active", "derived_summary", "grounded_" + group["kind"] + "_summary"),
-            previous=head,
-            recorded_at=clock.utc_now(),
-        )
-        for source in sources:
-            lineage.link(
-                tx._check(),
-                "claim",
-                saved.ref,
-                saved.revision,
-                source.ref,
-                source.revision,
-                relation="derived_from",
-            )
-        covered = group["covered_units"] + sum(end - start for _r, _v, start, end, _t in coverage)
-        next_offset = group["next_offset"] + sum(end == total for _r, _v, _s, end, total in coverage)
+        saved = store_excerpt_claim(tx, group, head, sentences, spans, coverage, now=clock.utc_now())
         tx._check().execute(
             "UPDATE summary_parts SET claim_revision=?,coverage_json=? WHERE group_key=? AND "
             "generation=? AND ordinal=?",
             (saved.revision, json.dumps(coverage), group["group_key"], group["generation"], group["ordinal"]),
         )
-        complete = covered == group["total_units"]
-        tx._check().execute(
-            "UPDATE summary_groups SET covered_units=?,next_offset=?,state=? WHERE group_key=?",
-            (covered, next_offset, "complete" if complete else "pending", group["group_key"]),
-        )
-        if not complete:
-            updated = dict(group, covered_units=covered, next_offset=next_offset)
+        updated = update_progress(tx, group)
+        if updated["state"] != "complete":
             queue_summary_part(tx, updated, group["ordinal"] + 1, clock.utc_now())
         return work_result(tx.work.complete(*item.lease, now=clock.utc_now()))
 

@@ -31,11 +31,15 @@ def set_importance(tx, head, *, importance=None, pinned=None):
         raise ContractError("INPUT_INVALID", "pinned")
     if importance is None and pinned is None:
         raise ContractError("INPUT_INVALID", "importance")
-    score = head.importance if importance is None else importance
+    score = (
+        tx._check().execute("SELECT importance FROM claims WHERE claim_id=?", (head.ref,)).fetchone()[0]
+        if importance is None
+        else importance
+    )
     pin = head.pinned if pinned is None else pinned
     tx._check(write=True).execute(
         "UPDATE claims SET importance=?,pinned=?,importance_assigned=1,importance_owner=1 WHERE claim_id=?",
-        (5 if pin else score, int(pin), head.ref),
+        (score, int(pin), head.ref),
     )
     tx._check().execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
 
@@ -56,7 +60,6 @@ def record_importance(tx, ref, proposal, *, advance_head):
     """Accept model salience only while the owner has not supplied an override."""
     if advance_head and "importance" in proposal:
         tx._check(write=True).execute(
-            "UPDATE claims SET importance=CASE WHEN pinned=1 THEN 5 ELSE ? END,importance_assigned=1 "
-            "WHERE claim_id=? AND importance_owner=0",
+            "UPDATE claims SET importance=?,importance_assigned=1 WHERE claim_id=? AND importance_owner=0",
             (proposal["importance"], ref),
         )

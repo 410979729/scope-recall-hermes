@@ -8,10 +8,11 @@ from datetime import datetime, timedelta
 
 from ..contracts import ContractError
 from . import private
-from .claims import Qualification, canonical_time
+from .claims import canonical_time
 from .language_resources import language_rules
 from .recall_scope import QueryScope
-from .summary_validity import group_members, group_signature, open_task, summary_live
+from .summary_parts import queue_summary_part, reuse_completed_parts
+from .summary_validity import group_members, group_signature, members_in_scope, open_task, summary_live
 
 IDLE_SECONDS = 1800
 
@@ -138,44 +139,6 @@ def _ended(tx, group, now):
     return datetime.fromisoformat(current) - datetime.fromisoformat(last) >= timedelta(seconds=IDLE_SECONDS)
 
 
-def queue_summary_part(tx, group, ordinal, now):
-    """Use an ordinary proposed claim as a leased summary job and eventual content record."""
-    members = json.loads(group["manifest_json"])
-    source = tx.source(
-        members[min(group["next_offset"], len(members) - 1)]["ref"],
-        members[min(group["next_offset"], len(members) - 1)]["revision"],
-    )
-    if source is None or source.suppressed:
-        raise ContractError("SOURCE_MISSING", "summary_source")
-    proposal = dict(
-        kind="fact",
-        subject="summary:" + group["group_key"] + ":" + str(ordinal),
-        predicate="summary",
-        value_text="Conversation summary",
-        conditions=[],
-        statement_kind="assertion",
-        valid_from=None,
-        valid_to=None,
-        evidence_spans=[
-            dict(source_ref=source.ref, source_revision=source.revision, quote=source.event["content"][:1])
-        ],
-    )
-    previous = tx.claims.slot(group["scope_id"], proposal)
-    head = previous[-1] if previous else None
-    saved = tx.claims.append(
-        group["scope_id"],
-        proposal,
-        Qualification("proposed", "derived_summary", "summary_pending"),
-        recorded_at=now,
-        previous=head,
-    )
-    tx._check().execute(
-        "INSERT INTO summary_parts VALUES(?,?,?,?,?,?,?)",
-        (group["group_key"], group["generation"], ordinal, saved.ref, saved.revision, "[]", group["signature"]),
-    )
-    tx.work.enqueue("rebuild_projection", saved.ref, saved.revision, available_at=now)
-
-
 def queue_summaries(tx, *, now, limit=128, enabled=True):
     """Discover one old-source page and queue at most eight ended groups for the budgeted worker."""
     if not enabled:
@@ -238,7 +201,17 @@ def queue_summaries(tx, *, now, limit=128, enabled=True):
             (group["generation"], group["manifest_json"], group["total_units"], signature, group["group_key"]),
         )
         try:
-            queue_summary_part(tx, group, 0, now)
+            group = reuse_completed_parts(tx, row, group, now=now)
+            if group["state"] != "complete":
+                ordinal = (
+                    tx._check()
+                    .execute(
+                        "SELECT COALESCE(max(ordinal),-1)+1 FROM summary_parts WHERE group_key=? AND generation=?",
+                        (group["group_key"], group["generation"]),
+                    )
+                    .fetchone()[0]
+                )
+                queue_summary_part(tx, group, ordinal, now)
         except ContractError:
             tx._check().execute(
                 "UPDATE summary_groups SET state='partial',failure='source_unavailable' WHERE group_key=?",
@@ -250,7 +223,7 @@ def queue_summaries(tx, *, now, limit=128, enabled=True):
 
 
 def summarized_rows(tx, context, rows, *, limit):
-    """Replace only complete, fresh groups wholly present in the already date-filtered raw page."""
+    """Offer valid summaries first; remove only raw messages literally covered in full."""
     if context.mode in {"history", "as_of"}:
         return rows
     raw = {(r["event_id"], r["source_revision"]) for r in rows}
@@ -275,8 +248,15 @@ def summarized_rows(tx, context, rows, *, limit):
     )
     replacements, covered = [], set()
     for group in groups:
-        members = {(m["ref"], m["revision"]) for m in json.loads(group["manifest_json"])}
-        if not members or not members <= raw or members & covered:
+        manifest = json.loads(group["manifest_json"])
+        members = {(m["ref"], m["revision"]) for m in manifest if m.get("role") in {"user", "assistant"}}
+        if (
+            not members
+            or not members <= raw
+            or members & covered
+            or not members_in_scope(manifest, context.scope)
+            or any(f"{m['ref']}@{m['revision']}" in context.current_source_refs for m in manifest)
+        ):
             continue
         parts = (
             tx._check()
@@ -286,28 +266,50 @@ def summarized_rows(tx, context, rows, *, limit):
             )
             .fetchall()
         )
-        if len(parts) + len(replacements) > limit or not all(
-            summary_live(tx, p["claim_ref"], p["claim_revision"]) for p in parts
+        versions = [(p, tx.claims.version(p["claim_ref"], p["claim_revision"])) for p in parts]
+        active = [(p, v) for p, v in versions if v is not None and v.state == "active"]
+        if (
+            not active
+            or len(active) + len(replacements) > limit
+            or not all(summary_live(tx, p["claim_ref"], p["claim_revision"]) for p, _v in active)
         ):
             continue
-        for part in parts:
-            version = tx.claims.version(part["claim_ref"], part["claim_revision"])
-            if version is None or version.suppressed:
-                break
-        else:
+        if all(not version.suppressed for _p, version in active):
             replacements.extend(
                 dict(
                     event_id=p["claim_ref"],
                     source_revision=p["claim_revision"],
-                    role="user",
+                    role="summary",
                     size=0,
                     short=None,
                     candidate_kind="claim",
                 )
-                for p in parts
+                for p, _v in active
             )
-            covered.update(members)
+            covered.update(fully_quoted_sources(tx, [version for _p, version in active], members))
     return [*replacements, *(r for r in rows if (r["event_id"], r["source_revision"]) not in covered)]
+
+
+def fully_quoted_sources(tx, versions, members):
+    """Identify raw entries whose every character is present in positioned exact excerpts."""
+    spans = {}
+    for version in versions:
+        for span in version.payload["evidence_spans"]:
+            if "start" in span and "end" in span:
+                spans.setdefault((span["source_ref"], span["source_revision"]), []).append(span)
+    covered = set()
+    for key in members:
+        source = tx.source(*key)
+        if source is None:
+            continue
+        content, position = source.event["content"], 0
+        for span in sorted(spans.get(key, ()), key=lambda span: span["start"]):
+            if span["start"] > position or content[span["start"] : span["end"]] != span["quote"]:
+                break
+            position = max(position, span["end"])
+        if position == len(content):
+            covered.add(key)
+    return covered
 
 
 def next_summary_due(tx, *, now):

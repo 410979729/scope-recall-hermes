@@ -21,13 +21,14 @@ def group_members(tx, group):
     join = "JOIN episode_events ee ON ee.source_ref=s.event_id AND ee.source_revision=s.source_revision" if task else ""
     roles = "('user','assistant','tool')" if task else "('user','assistant')"
     origins = "'human_direct','assistant_visible','tool_observation'" if task else "'human_direct','assistant_visible'"
-    target = "ee.episode_id=?" if task else "s.session_id=? AND s.entry_id=?"
-    params = (group["subject_ref"],) if task else (group["subject_ref"], group["entry_id"])
+    target = "ee.episode_id=? AND s.entry_id=?" if task else "s.session_id=? AND s.entry_id=?"
+    params = (group["subject_ref"], group["entry_id"])
     return [
         dict(row)
         for row in tx._check().execute(
             f"""SELECT s.event_id AS ref,s.source_revision AS revision,s.content_sha256 AS digest,
-             length(s.content) AS total,s.occurred_at,s.recorded_at,s.read_blocked,s.suppressed
+             length(s.content) AS total,s.role,s.entry_id,s.session_id,s.occurred_at,s.recorded_at,
+             s.read_blocked,s.suppressed
           FROM source_events s {join} WHERE {target} AND s.scope_id=?
           AND s.project_id IS ? AND s.branch_id IS ? AND s.role IN {roles}
           AND (s.origin IN ({origins}) OR (s.origin='imported'
@@ -41,6 +42,43 @@ def group_members(tx, group):
     ]
 
 
+def obsolete_ranges(tx, members):
+    """Locate evidence belonging to corrected or withdrawn fact versions.
+
+    Positioned evidence excludes only the overlapping sentence. Legacy evidence
+    without positions conservatively excludes its whole source, never a guessed
+    occurrence. Conversation summaries do not invalidate each other.
+    """
+    ranges = {}
+    by_ref = {(m["ref"], m["revision"]): m for m in members}
+    for start in range(0, len(members), 128):
+        page = members[start : start + 128]
+        rows = tx._check().execute(
+            "SELECT DISTINCT l.source_ref,l.source_revision,v.payload_json FROM evidence_links l "
+            "JOIN claims c ON c.claim_id=l.object_ref JOIN claim_versions v ON v.claim_id=c.claim_id "
+            "AND v.revision=l.object_revision JOIN claim_versions h ON h.claim_id=c.claim_id "
+            "AND h.revision=c.current_revision WHERE l.object_kind='claim' "
+            "AND ((v.revision!=c.current_revision AND v.payload_json!=h.payload_json) "
+            "OR h.state IN ('retracted','superseded')) "
+            "AND v.qualification_reason NOT IN (?,?,?) AND (l.source_ref,l.source_revision) IN ("
+            + ",".join("(?,?)" for _ in page)
+            + ")",
+            [*CONVERSATION_SUMMARY_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
+        )
+        for row in rows:
+            key = (row[0], row[1])
+            spans = [
+                span
+                for span in json.loads(row[2])["evidence_spans"]
+                if (span["source_ref"], span["source_revision"]) == key
+            ]
+            for span in spans or [{}]:
+                positioned = type(span.get("start")) is int and type(span.get("end")) is int
+                bounds = (span["start"], span["end"]) if positioned else (0, by_ref[key]["total"])
+                ranges.setdefault(key, set()).add(bounds)
+    return {key: sorted(value) for key, value in ranges.items()}
+
+
 def group_signature(tx, members):
     """Bind raw versions and all facts derived from them, including later corrections."""
     facts = []
@@ -51,7 +89,8 @@ def group_signature(tx, members):
         rows = (
             tx._check()
             .execute(
-                "SELECT DISTINCT c.claim_id,c.current_revision,c.read_blocked,c.suppressed FROM evidence_links l "
+                "SELECT DISTINCT c.claim_id,c.current_revision,c.read_blocked,c.suppressed,v.state "
+                "FROM evidence_links l "
                 "JOIN claims c ON c.claim_id=l.object_ref JOIN claim_versions v "
                 "ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
                 "WHERE l.object_kind='claim' AND v.qualification_reason NOT IN (?,?,?) "
@@ -61,7 +100,8 @@ def group_signature(tx, members):
             .fetchall()
         )
         facts.extend(tuple(row) for row in rows)
-    body = json.dumps([members, sorted(set(facts))], sort_keys=True, separators=(",", ":"))
+    excluded = [(ref, rev, spans) for (ref, rev), spans in sorted(obsolete_ranges(tx, members).items())]
+    body = json.dumps(["whole_sentences", members, sorted(set(facts)), excluded], sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode()).hexdigest()
 
 
@@ -83,7 +123,18 @@ def open_task(tx, group):
     return row is not None
 
 
-def summary_live(tx, ref, revision):
+def members_in_scope(members, scope):
+    """Apply a conversation query's date, entry and session limits to every evidence member."""
+    return scope is None or all(
+        all(key in member for key in ("entry_id", "session_id", "occurred_at"))
+        and any(start <= member["occurred_at"] < end for start, end in scope.windows)
+        and (not scope.entry_ids or member["entry_id"] in scope.entry_ids)
+        and (not scope.session_ids or member["session_id"] in scope.session_ids)
+        for member in members
+    )
+
+
+def summary_live(tx, ref, revision, *, query_scope=None, excluded=()):
     """Fail closed until full coverage exists and every dependency is still current and visible."""
     row = (
         tx._check()
@@ -97,6 +148,11 @@ def summary_live(tx, ref, revision):
     )
     if row is None or row["state"] != "complete" or row["covered_units"] != row["total_units"]:
         return False
+    members = json.loads(row["manifest_json"])
+    if not members_in_scope(members, query_scope) or any(
+        f"{member['ref']}@{member['revision']}" in excluded for member in members
+    ):
+        return False
     ctx = tx.context
     if row["scope_id"] not in ctx.allowed_scope_ids or (row["project_id"], row["branch_id"]) != (
         ctx.project_id,
@@ -109,7 +165,8 @@ def summary_live(tx, ref, revision):
         if row["kind"] == "task"
         else not open_task(tx, row)
     )
-    if tx.claims.current_revision(ref) != revision or not ended:
+    head = tx.claims.version(ref, revision)
+    if head is None or head.current_revision != revision or head.state != "active" or not ended:
         return False
     current = tx.remembered(
         ("summary_signature", row["group_key"], row["generation"]), lambda: group_signature(tx, group_members(tx, row))
@@ -118,7 +175,8 @@ def summary_live(tx, ref, revision):
         return False
     try:
         coverage = json.loads(row["coverage_json"])
-        for source_ref, source_revision, _start, _end, _total in coverage:
+        for member in json.loads(row["manifest_json"]):
+            source_ref, source_revision = member["ref"], member["revision"]
             source = tx.source(source_ref, source_revision)
             tx.claims.require_live_source(source_ref, source_revision)
             if source is None or source.suppressed or source.capture_gaps:

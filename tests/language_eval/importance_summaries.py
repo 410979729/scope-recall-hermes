@@ -17,22 +17,8 @@ from scope_recall.core.worker_summaries import summary_messages
 from subject import ChatPort, package_identity
 
 
-def main():
-    """Record unmodified replies, corpus hashes, score agreement, evidence coverage and server token meters."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--approved-endpoint", required=True)
-    args = parser.parse_args()
-    if args.output.exists():
-        parser.error("output must be a new task-owned directory")
-    args.output.mkdir(parents=True)
-    corpus = Path(__file__).parents[2] / "fixtures/language/importance_cases.json"
-    cases = json.loads(corpus.read_text(encoding="utf-8"))
-    port = ChatPort(json.loads(args.config.read_text(encoding="utf-8")), {args.approved_endpoint})
-    score_route = replace(port.route, max_output_tokens=128)
-    summary_route = port.route
-    port.route = score_route
+def evaluate_scores(port, cases, *, summaries_only):
+    """Run the fixed optional salience probes without adding calls to summary-only evaluation."""
 
     def score(pair):
         index, repeat = pair
@@ -54,8 +40,31 @@ def main():
             result = None
         return dict(id=case["id"], repeat=repeat, category=case["category"], gold=case["score"], score=result, raw=raw)
 
+    if summaries_only:
+        return []
     with ThreadPoolExecutor(max_workers=4) as pool:
-        scores = list(pool.map(score, ((index, repeat) for index in range(len(cases)) for repeat in range(3))))
+        return list(pool.map(score, ((index, repeat) for index in range(len(cases)) for repeat in range(3))))
+
+
+def main():
+    """Record unmodified replies, corpus hashes, score agreement, evidence coverage and server token meters."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--approved-endpoint", required=True)
+    parser.add_argument("--summaries-only", action="store_true")
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error("output must be a new task-owned directory")
+    args.output.mkdir(parents=True)
+    corpus = Path(__file__).parents[2] / "fixtures/language/importance_cases.json"
+    cases = json.loads(corpus.read_text(encoding="utf-8"))
+    port = ChatPort(json.loads(args.config.read_text(encoding="utf-8")), {args.approved_endpoint})
+    score_route = replace(port.route, max_output_tokens=128)
+    summary_route = port.route
+    port.route = score_route
+
+    scores = evaluate_scores(port, cases, summaries_only=args.summaries_only)
     score_usage = dict(port.usage)
     port.route = summary_route
     pages = []
@@ -78,9 +87,12 @@ def main():
     def summarize(page):
         session, sources = page
         raw = port.propose(summary_messages(sources), remaining_seconds=120)
+        stats = {"expanded": 0, "rejected": 0}
+        accepted_sentences = 0
         try:
             value = json.loads(raw)
-            sentences, _spans = grounded_sentences(value, sources)
+            sentences, _spans = grounded_sentences(value, sources, stats=stats)
+            accepted_sentences = len(sentences)
             grounded = len(sentences)
             total = len(sentences)
             accepted = True
@@ -100,7 +112,15 @@ def main():
                 for s in value["sentences"]
             )
         return dict(
-            session=session, input_sources=len(sources), sentences=total, grounded=grounded, accepted=accepted, raw=raw
+            session=session,
+            input_sources=len(sources),
+            sentences=total,
+            grounded=grounded,
+            accepted=accepted,
+            accepted_sentences=accepted_sentences,
+            expanded=stats["expanded"],
+            rejected=stats["rejected"],
+            raw=raw,
         )
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -129,6 +149,9 @@ def main():
             grounded=sum(s["grounded"] for s in summaries), total=sum(s["sentences"] for s in summaries)
         ),
         all_summary_pages_accepted=all(s["accepted"] for s in summaries),
+        excerpt_expanded=sum(s["expanded"] for s in summaries),
+        excerpt_rejected=sum(s["rejected"] for s in summaries),
+        accepted_sentences=sum(s["accepted_sentences"] for s in summaries),
         score_histogram=dict(Counter(str(s["score"]) for s in scores)),
     )
     result.update(
@@ -140,7 +163,7 @@ def main():
         },
         protocol=dict(
             concurrency=4,
-            score_repeats=3,
+            score_repeats=0 if args.summaries_only else 3,
             summary_sessions=12,
             summary_turns=100,
             input_sources_per_page=16,

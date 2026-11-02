@@ -171,6 +171,7 @@ SUITES = {
     ],
     "contract": [
         "tests/contract/test_importance_summaries.py",
+        "tests/contract/test_summary_repairs.py",
         "tests/contract/test_memory_import.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",

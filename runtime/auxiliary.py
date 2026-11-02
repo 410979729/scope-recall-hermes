@@ -82,7 +82,7 @@ def summary_budget_enabled(auxiliary):
     ):
         return False
     if isinstance(auxiliary.consolidation, CodexCliRouteConfig):
-        return True
+        return auxiliary.consolidation.subscription_budget_explicit
     policy = auxiliary.budget
     return (
         all(getattr(policy, field) != 0 for field in ("total_input_cap", "total_output_cap", "total_call_cap"))

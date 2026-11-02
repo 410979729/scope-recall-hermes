@@ -595,6 +595,7 @@ class RetrievalStorage(RetrievalHydration):
             # dropped and other days' short items delivered instead.
             days.append(
                 [
+                    [row for row in rows if row["role"] == "summary"],
                     [row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS],

@@ -81,8 +81,9 @@ def _claim_version(row) -> ClaimVersion:
         row["replaces_revision"],
         tuple(json.loads(row["conflict_revisions_json"])),
         bool(row["suppressed"]),
-        int(row["importance"]),
+        5 if row["pinned"] else int(row["importance"]),
         bool(row["pinned"]),
+        int(row["importance"]),
     )
 
 

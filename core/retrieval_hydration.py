@@ -495,7 +495,9 @@ class RetrievalHydration:
         version = next((item for item in versions if item.revision == candidate.revision), None)
         if version is None or (context.mode == "auto" and version.suppressed):
             return None
-        if is_conversation_summary(version) and not summary_live(tx, version.ref, version.revision):
+        if is_conversation_summary(version) and not summary_live(
+            tx, version.ref, version.revision, query_scope=context.scope, excluded=context.current_source_refs
+        ):
             return None
         instant = context.as_of or context.now
         effective = select_effective(versions, instant, as_of=context.mode == "as_of")

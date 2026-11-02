@@ -146,7 +146,7 @@ Every extracted claim can carry an importance from 1 to 5. Explicit requests to 
 or safety preferences receive 5; decisions and long-term constraints receive 4; ordinary stable facts receive 3;
 short-term useful events receive 2; incidental conversation receives 1. Scoring does not grant fact authority.
 Older claims read as 3 immediately and the worker marks neutral defaults in pages of 128 without model calls.
-Pinned claims always read as 5. The owner's metadata override survives later model extraction. Importance selects
+The stored importance remains the base score when pinned; pinned claims read as 5 and unpinning restores that base. The owner's metadata override survives later model extraction. Importance selects
 background preferences; ordinary query ranking does not read it.
 
 The management detail page edits importance and pinning. The CLI uses
@@ -162,23 +162,29 @@ projects, branches or entries are never combined. A session closes on `records.c
 its existing episode state is completed; an open task never closes merely because it has been idle.
 
 Coverage is processed Unicode codepoints divided by all codepoints in the current eligible source versions. It
-measures complete input traversal, not retention of every detail. Every model page must cite each input source;
-all consecutive fragments must finish before any part can substitute for raw conversation. Pages contain at most
+measures complete input traversal, not retention of every detail. Input traversal and excerpt coverage are separate. All consecutive input fragments must finish before summaries
+are offered. Summaries are offered first; a raw message is removed only when positioned exact excerpts cover
+every character. Messages with unquoted details remain candidates under the existing packet budget. Pages contain at most
 16 sources and 12,000 UTF-8 bytes including instructions, and each result is at most 32 sentences and 1,536 excerpt characters, within the claim limit of 2,048 including speaker labels.
 A group exceeding 2,048 sources remains on the raw path. Historical discovery reads 128 sources per pass, visits
 64 group records per scheduling page and queues at most eight groups. Durable cursors make later groups reachable.
 
-The supervisor wakes at the idle deadline or for old-source discovery. Generation uses the existing projection
+The supervisor wakes at the idle deadline or for old-source discovery. Unchanged completed input pages are reused after continuation, and only new or changed pages request the model.
+Generation uses the existing projection
 lease and auxiliary model port, including private-mode and budget-ledger checks; no new provider is configured.
-With no model or budget, raw messages and existing facts remain usable. Doctor reports summary group states and
+Automatic summaries require explicitly configured API or CLI subscription budgets. The CLI default budget for
+other work does not authorize summaries. With no model or budget, raw messages and existing facts remain usable. Doctor reports summary group states and
 pending importance defaults. Failed and incomplete summaries retain raw fallback and use the existing bounded
 work retry policy.
 
 A summary records the source versions, content hashes and related fact revisions. Hydration and final release
 recheck them, including current scope, deletion and suppression. A source withdrawal, new source version or fact
-correction blocks the previous summary immediately. Date and entry parsing, date filters and raw expansion remain
-available. The dated-conversation channel substitutes only a complete group wholly present in its filtered raw
-page; other messages remain available. Previous-conversation questions resolve to the latest visible prior session,
+correction blocks the previous summary immediately. Rebuilding removes excerpts overlapping corrected or retracted
+fact evidence; positioned evidence narrows the exclusion, and unpositioned evidence excludes the whole source.
+Whole sentences are selected using the existing Chinese/English sentence boundaries, preserving conditions across
+commas and semicolons. Over-budget sentences are omitted with raw fallback. Reused quotes retain their positions. Date and entry parsing, date filters and raw expansion remain
+available. The dated-conversation channel checks every member, including tools, against its date, entry and session filters.
+Replacement eligibility considers only the user and assistant messages that this channel reads; other messages remain available. Previous-conversation questions resolve to the latest visible prior session,
 then use the same channel and fallback. Portable fact exports include importance and pinning and omit stale summaries.
 
 The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can

@@ -351,10 +351,10 @@ def test_summary_excerpt_keeps_negation_and_conditions(app, content, text):
 
     core, ctx = app
     source = capture(core, ctx, content)
-    with pytest.raises(ContractError, match="summary_qualifiers"):
-        grounded_sentences(
-            dict(sentences=[dict(text=text, source_ref=source.ref, source_revision=source.revision)]), (source,)
-        )
+    sentences, _spans = grounded_sentences(
+        dict(sentences=[dict(text=text, source_ref=source.ref, source_revision=source.revision)]), (source,)
+    )
+    assert sentences == [content]
 
 
 def test_summary_enforces_the_shared_claim_text_budget(app):
@@ -362,13 +362,11 @@ def test_summary_enforces_the_shared_claim_text_budget(app):
 
     core, ctx = app
     source = capture(core, ctx, "X" * 3000)
-    with pytest.raises(ContractError, match="summary_incomplete"):
-        grounded_sentences(
-            dict(
-                sentences=[dict(text=source.event["content"], source_ref=source.ref, source_revision=source.revision)]
-            ),
-            (source,),
-        )
+    sentences, _spans = grounded_sentences(
+        dict(sentences=[dict(text=source.event["content"], source_ref=source.ref, source_revision=source.revision)]),
+        (source,),
+    )
+    assert sentences == []
 
 
 def test_obsolete_summary_error_cannot_change_a_newer_generation(app):
@@ -428,10 +426,12 @@ def test_other_derived_fact_versions_remain_summary_dependencies(app):
             previous=head,
             recorded_at=core.clock.utc_now(),
         )
+        assert not summary_live(tx, *old_part)
         for _ in range(3):
             queue_summaries(tx, now=core.clock.utc_now(), limit=128)
     with core.storage.read(ctx) as tx:
-        assert not summary_live(tx, *old_part)
+        # An unchanged assertion is safe to renew after a fresh dependency check.
+        assert summary_live(tx, *old_part)
 
 
 def test_runtime_summary_capability_requires_an_explicit_model_and_budget(app):

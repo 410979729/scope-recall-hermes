@@ -316,7 +316,7 @@ class MemoryExport:
     def _claim_record(version, kind: str, sources: list[dict]) -> dict:
         payload = {key: value for key, value in version.payload.items() if key != "evidence_spans"}
         return {
-            "importance": version.importance,
+            "importance": version.base_importance,
             "pinned": version.pinned,
             "kind": kind,
             "ref": version.ref,

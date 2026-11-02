@@ -176,6 +176,7 @@
     "core/storage.py",
     "core/store_upgrade.py",
     "core/subject_binding.py",
+    "core/summary_parts.py",
     "core/summary_storage.py",
     "core/summary_validity.py",
     "core/suppression.py",

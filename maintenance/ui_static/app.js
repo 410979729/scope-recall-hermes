@@ -175,7 +175,7 @@ async function detail(ref, revision) {
   $("correction").hidden = selected.kind !== "claim";
   $("importance").hidden = selected.kind !== "claim";
   if (selected.kind === "claim") {
-    $("importance").elements.importance.value = selected.value.importance;
+    $("importance").elements.importance.value = selected.value.base_importance;
     $("importance").elements.pinned.checked = selected.value.pinned;
   }
   if (selected.kind === "claim") {
