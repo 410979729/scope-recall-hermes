@@ -37,6 +37,7 @@ from scope_recall.runtime.model_budget import (
 from scope_recall.runtime.running_code import live_records, stale_records
 
 from . import package_health
+from .doctor_recall import check_recall_log
 from .doctor_report import DoctorReport, HostChoice, record_check
 from .doctor_store import (
     check_backlog,
@@ -888,6 +889,7 @@ def run_doctor(
     host: str,
     instance_root: Path | str,
     python_executable: Path | str | None = None,
+    recall_request_id: str | None = None,
 ) -> DoctorReport:
     if host not in ("hermes", "codex", "claude-code", "workbuddy", "dsh"):
         raise ValueError("host must be 'hermes', 'codex', 'claude-code', 'workbuddy' or 'dsh'")
@@ -913,6 +915,7 @@ def run_doctor(
     _check_vector_threshold(report, binding, data_directory)
 
     readable = check_storage(report, binding, data_directory)
+    check_recall_log(report, binding, request_id=recall_request_id)
     config = _runtime_config(data_directory)
     entry_config = _entry_runtime_config(instance, data_directory)
     _check_hermes_runtime(report, instance, entry_config)

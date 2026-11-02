@@ -103,8 +103,8 @@ class UIApi:
     def read(self, route, data):
         """Dispatch a read without invoking any state-changing owner method."""
         api = self.management
-        if route == "overview":
-            return self.overview()
+        if route in {"overview", "backup"}:
+            return getattr(self, route)()
         if route in {"list", "search"}:
             return api.list(filters(data), limit=number(data, "limit", 30), cursor=text(data, "cursor"))
         if route == "detail":
@@ -113,10 +113,15 @@ class UIApi:
             return api.history(text(data, "ref"), before=number(data, "before"), limit=number(data, "limit", 30))
         if route == "quarantine":
             return api.quarantine(limit=number(data, "limit", 30), before=number(data, "before"))
+        if route == "recalls":
+            return api.recalls(
+                session=text(data, "session"),
+                request_id=text(data, "request_id"),
+                before=number(data, "before"),
+                limit=number(data, "limit", 30),
+            )
         if route == "private":
             return api.private_status(session=text(data, "session"), project=text(data, "project"))
-        if route == "backup":
-            return self.backup()
         if route == "receipt":
             return self._lookup(self.receipts, text(data, "id"))
         raise ContractError("INPUT_INVALID", "route")

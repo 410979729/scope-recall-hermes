@@ -16,6 +16,7 @@ from typing import Any, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
+from scope_recall.core.recall_trace import record_unbound_attempt
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
@@ -37,7 +38,7 @@ from .hook_events import (
     WORKER_START_MIN_S,
     HookEvents,
 )
-from .identity import project_root_of, resolve_runtime_audience, trusted_context
+from .identity import project_root_of, resolve_runtime_audience, stored_session_id, trusted_context
 from .prompt_recall import PromptRecall
 from .record_locator import remember
 from .record_reader import RecordLines, RecordReader
@@ -515,6 +516,21 @@ class CodexHookHandler:
         if self._host_runtime is not None:
             self._host_runtime.wake_upgrade(known_pending=True)
 
+    def _note_unbound_prompt(self, session_id, payload):
+        """Translate an authenticated hook refusal into core-only diagnostic metadata."""
+        if payload.get("hook_event_name") != "UserPromptSubmit":
+            return
+        context = TrustedContext(
+            self.config.to_binding(),
+            stored_session_id(self.config, session_id),
+            frozenset(),
+            "human_direct",
+            entry_id=self.config.entry_id if isinstance(self.config, SharedClientConfig) else None,
+            project_root=project_root_of(payload.get("cwd"), resolve_links=False),
+            project_identity="unverified",
+        )
+        record_unbound_attempt(self.core, context, payload.get("prompt"))
+
     def _admit(self, event: object, payload: dict[str, Any]) -> tuple[str, Any] | None:
         """The session and audience of a hook this client sends and this handler takes, or None, said why."""
         if event not in _HOST_EVENTS[self.host]:
@@ -531,6 +547,7 @@ class CodexHookHandler:
             return None
         audience = self.audience_of(payload)
         if audience is None:
+            self._note_unbound_prompt(session_id, payload)
             return None
         self.bind_project_root(payload, audience)
         if self.call.local_record:

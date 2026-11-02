@@ -33,6 +33,7 @@ from .recall_items import packet_kind as packet_kind
 from .recall_needs import asks_to_resume, unmet_needs
 from .recall_overflow import append_overflow
 from .recall_restatement import recheck_restatement
+from .recall_trace import note_candidate
 from .resume_compaction import (
     compact_episode_variants,
     next_step_provenance_supported,
@@ -448,6 +449,7 @@ class RecallPacketCompiler:
             return None
         fresh = self.storage_reader.hydrate(tx, candidate, context)
         if fresh is None:
+            note_candidate(candidate, "stale")
             gaps.append(f"stale_candidate:{candidate.ref}@{candidate.revision}")
             return None
         if (fresh.ref, fresh.revision) != (obj.ref, obj.revision):
@@ -571,6 +573,7 @@ class RecallPacketCompiler:
             rejected_needs.extend(needs)
 
         for _candidate, obj in verified:
+            note_candidate(_candidate, "budget")
             expandable = f"expandable:{obj.ref}@{obj.revision}"
             if len(draft.items) >= limits.max_items:
                 reject(obj, "budget_item_cap")
@@ -604,7 +607,7 @@ class RecallPacketCompiler:
         """Re-check the exact final envelope; returns whether the diagnostic ref fits.
 
         Preference order at the cap: keep everything; withhold only the optional
-        diagnostic lookup ref (the process-local record itself stays); repack
+        diagnostic lookup ref (the persistent record itself stays); repack
         one retained episode into fewer complete fields; finally drop the
         lowest-ranked complete unit.  Content, qualifiers and evidence are never
         sliced.
@@ -652,7 +655,7 @@ class RecallPacketCompiler:
         measured = canonical_render_json(packet)
         diagnostic_ref = None
         if self.diagnostics is not None:
-            # The process-local record is always written; only the public
+            # Compilation stages metrics in the outer attempt. Only the public
             # lookup ref is optional when it would displace answer evidence.
             context = draft.context
             diagnostic_ref = self.diagnostics.record(

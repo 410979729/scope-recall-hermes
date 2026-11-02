@@ -66,17 +66,22 @@ def parser():
         "forget-session",
         "export",
         "secrets",
+        "recalls",
         "import",
     ):
         command = commands.add_parser(action)
         _common(command)
+        if action == "recalls":
+            command.add_argument("--session")
+            command.add_argument("--request-id")
+            command.add_argument("--before", type=int)
         if action == "import":
             from .memory_import import add_arguments
 
             add_arguments(command)
         if action in {"list", "search", "forget-session", "export"}:
             _filters(command)
-        if action in {"list", "search", "history"}:
+        if action in {"list", "search", "history", "recalls"}:
             command.add_argument("--limit", type=int, default=30)
         if action in {"list", "search"}:
             command.add_argument("--cursor")
@@ -123,6 +128,8 @@ def _preview(api, args):
 
 def execute(api, args):
     """Translate one parsed command to the same methods used by the local UI."""
+    if args.action == "recalls":
+        return api.recalls(session=args.session, request_id=args.request_id, before=args.before, limit=args.limit)
     if args.action == "secrets":
         return api.secrets()
     if args.action in {"list", "search"}:
@@ -260,7 +267,7 @@ def main(argv=None):
 
             data = execute_import(args, open_store=open_management, resolve_store=store_to_restore, run=run_import)
         else:
-            api = open_management(args, initialize=args.action != "secrets")
+            api = open_management(args, initialize=args.action not in {"secrets", "recalls"})
             data = execute(api, args)
         payload = dict(format=FORMAT, action=args.action, status="ok", data=data)
         code = 2 if data.get("result", {}).get("error") else 0

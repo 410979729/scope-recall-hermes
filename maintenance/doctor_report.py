@@ -40,6 +40,8 @@ class DoctorReport:
     #: Model answers cut off at the output limit in the last hour.
     recent_output_truncations: int = 0
     memory_import: dict[str, Any] = field(default_factory=dict)
+    recall_log: dict[str, Any] = field(default_factory=dict)
+    recall_attempt: dict[str, Any] = field(default_factory=dict)
     capture_inbox: int = 0
     capture_inbox_blocked: int = 0
     #: Of those, rows a replay gave up after its tries (``retry-failures --apply`` returns them to it).

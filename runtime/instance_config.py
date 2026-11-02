@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts import ContractError, InstanceBinding, Origin, TrustedContext
+from ..core.recall_log_storage import DEFAULT_LOG_POLICY, LOG_POLICY_BOUNDS
 from ..core.recall_policy import EMBEDDING_SPACE, RecallPolicy, embedding_space_id
 from .auxiliary import AuxiliaryRuntimeConfig
 from .validation import (
@@ -57,7 +58,7 @@ class VectorRuntimeConfig:
         strict_int("vector_tool_output_retention_days", self.tool_output_retention_days, minimum=0, maximum=36500)
 
     @classmethod
-    def from_mapping(cls, raw: object) -> "VectorRuntimeConfig":
+    def from_mapping(cls, raw: object) -> VectorRuntimeConfig:
         raw = mapping("vector_mapping_required", raw)
         return cls(
             backend=raw.get("backend", "sqlite"),
@@ -92,6 +93,9 @@ _COUNT_BOUNDS = {
     "max_auto_recoveries": (0, 4),
     "supervisor_max_drains": (1, 1024),
     "storage_budget_bytes": (0, 1 << 50),
+    "recall_log_days": LOG_POLICY_BOUNDS["retention_days"],
+    "recall_log_bytes": LOG_POLICY_BOUNDS["max_bytes"],
+    "recall_log_queue": LOG_POLICY_BOUNDS["queue_size"],
 }
 
 
@@ -150,6 +154,9 @@ class RuntimeInstanceConfig:
     #: Bytes the store and its vectors may occupy before the doctor reports
     #: ``storage_budget_exceeded``; 0 sets no budget.  Nothing is deleted for it.
     storage_budget_bytes: int = 0
+    recall_log_days: int = DEFAULT_LOG_POLICY.retention_days
+    recall_log_bytes: int = DEFAULT_LOG_POLICY.max_bytes
+    recall_log_queue: int = DEFAULT_LOG_POLICY.queue_size
     #: Minutes the resident prompt recall server of a client attached to a shared store stays up without a recall
     #: (``adapters/clients/resident_entry``); 0 keeps none.  Unset, the client's default applies
     #: (``adapters/clients/local_endpoint.RESIDENT_DEFAULT_MINUTES``).
@@ -242,7 +249,7 @@ class RuntimeInstanceConfig:
         )
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "RuntimeInstanceConfig":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> RuntimeInstanceConfig:
         raw = mapping("runtime_config_mapping_required", raw)
         binding_raw = mapping("binding_mapping_required", raw.get("binding"))
         binding = InstanceBinding(

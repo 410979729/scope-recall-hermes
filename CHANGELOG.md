@@ -32,6 +32,12 @@ Raw float32 embeddings now live in an independent SQLite companion. Workers publ
 
 Fact nomination checks indexed subject coverage before loading versions and ranks every qualifying candidate before applying the result limit. Predicate-only matches cannot displace an answering fact, and token matching remains consistent with final claim scoring. Legacy conversion rebuilds the fact index after selecting explicit current heads. Subject markers are backfilled in resumable pages; ordinary recall is unavailable until upgrade completion: the public packet entry raises a schema error and the retrieval pipeline reports an empty result with a schema gap. [Upgrade guidance](docs/upgrade-guide.zh-CN.md#事实词法索引升级) describes this interval.
 
+Recall attempts now use an independent, bounded SQLite diagnostic log with asynchronous best-effort writes.
+The management page, local memory command, inspect and doctor can find attempts by session or request ID;
+references are rechecked against current access, deletion, privacy and injection holds. Logs contain references,
+ranking decisions and processing counts, with no query or memory text, and private attempts are excluded.
+Existing stores require no truth migration; past process-local diagnostics are not backfilled.
+
 ## [3.17.0] - 2026-10-31
 
 Capture masks a detected credential instead of refusing the whole message. The value after a credential label, and a key-shaped token, becomes `[REDACTED_SECRET]`; the label and the text outside the value are kept. An unquoted value is masked to the end of its line or its item in a structure; a quoted one to its closing quote, or to the end of the line when anything after the quote could extend it; a three-quote literal to its closing quotes. Capture still refuses a credential in an identity or reference field, a message that would be left as the marker alone, a private-key block and a value that may continue on the next line. Receipts, hook diagnostics and the remote server's hook log report how many values were masked (`masked_secret_count`). What counts as a credential is unchanged, and recall, model requests and corrections keep their checks.
