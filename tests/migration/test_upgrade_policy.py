@@ -104,8 +104,9 @@ def test_completed_upgrade_recovers_snapshot_role_before_next_attempt(tmp_path, 
     monkeypatch.setattr(store_upgrade, "atomic_json", write)
     core.storage.initialize()
     fail_promotion[0] = False
-    monkeypatch.setattr(storage, "UPGRADE_CHAIN", (*storage.UPGRADE_CHAIN, SCHEMA_VERSION))
-    monkeypatch.setattr(storage, "SCHEMA_VERSION", SCHEMA_VERSION + 1)
+    current = storage.SCHEMA_VERSION
+    monkeypatch.setattr(storage, "UPGRADE_CHAIN", (*storage.UPGRADE_CHAIN, current))
+    monkeypatch.setattr(storage, "SCHEMA_VERSION", current + 1)
 
     def fail(*args):
         raise OSError(errno.ENOSPC, "TEST next migration failed")
@@ -117,7 +118,7 @@ def test_completed_upgrade_recovers_snapshot_role_before_next_attempt(tmp_path, 
     for path in (core.storage.path.parent / "upgrade-snapshots").glob("*.sqlite3"):
         with closing(sqlite3.connect(path)) as conn:
             schemas.append(conn.execute("PRAGMA user_version").fetchone()[0])
-    assert sorted(schemas) == [1111, SCHEMA_VERSION]
+    assert sorted(schemas) == [1111, current]
 
 
 def test_failed_upgrade_doctor_recommends_retry_before_restore(tmp_path, monkeypatch):
@@ -305,7 +306,7 @@ def test_interrupted_maintenance_doctor_names_foreground_command(tmp_path):
         "phase": "snapshot",
         "reason": "process_interrupted",
         "schema_before": 1111,
-        "schema_target": 1112,
+        "schema_target": SCHEMA_VERSION,
         "snapshot_verified": False,
     }
     (core.storage.path.parent / store_upgrade.UPGRADE_STATE).write_text(json.dumps(state), encoding="utf-8")

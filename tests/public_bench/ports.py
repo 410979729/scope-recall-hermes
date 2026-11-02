@@ -433,6 +433,7 @@ class Ports:
             "weights": "deterministic-substrings/3-sparse",
             "temperature": 0,
             "thinking": "disabled",
+            "vector_threshold": 0.7,
             "embedding": {"model": "hash", "dimensions": 3072},
         }
         if self.fake:

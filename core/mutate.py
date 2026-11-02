@@ -43,7 +43,7 @@ from .claims import (
 )
 from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmation
 from .corroboration import CORROBORATED_REASON, corroboration_promotes
-from .evidence_quote import resolve_evidence_quotes
+from .evidence_quote import resolve_evidence_quotes, same_evidence
 from .evidence_support import positioned, support_verdict
 from .secret_patterns import structure_contains_secret_like_text
 from .semantic_proposals import merge_candidates
@@ -197,7 +197,7 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
         if (
             previous.state == "disputed"
             and qualification.state == "active"
-            and (previous.payload["evidence_spans"] == proposal["evidence_spans"])
+            and same_evidence(previous.payload, proposal, {(r.ref, r.revision): r.content for r in roots})
         ):
             qualification = Qualification(previous.state, previous.basis, previous.reason)
         return qualification, True, ()
@@ -337,7 +337,7 @@ def _repeat_claim(tx, proposal, history, previous, qualification, denial_reason,
         if legacy_active or (
             (identical.state, identical.basis, identical.reason)
             == (qualification.state, qualification.basis, qualification.reason)
-            and identical.payload["evidence_spans"] == proposal["evidence_spans"]
+            and same_evidence(identical.payload, proposal, {(r.ref, r.revision): r.content for r in roots})
         ):
             return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
     return None

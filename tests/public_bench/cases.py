@@ -46,10 +46,12 @@ def stamp(value: str) -> str:
     return datetime.strptime(value, "%Y/%m/%d (%a) %H:%M").replace(tzinfo=UTC).isoformat()
 
 
-def longmemeval(path: Path) -> list[Case]:
+def longmemeval(path: Path, *, ids: set[str] | None = None) -> list[Case]:
     """Load the cleaned file, retaining assistant roles and answer-turn labels."""
     cases = []
     for row in json.loads(path.read_text(encoding="utf-8")):
+        if ids is not None and row["question_id"] not in ids:
+            continue
         turns = []
         sessions = zip(row["haystack_session_ids"], row["haystack_dates"], row["haystack_sessions"], strict=True)
         # Stable sorting retains file order for simultaneous sessions and never

@@ -94,12 +94,17 @@ def canonical_time(value: str | None) -> str | None:
 
 def claim_slot(scope_id: str, project_id: str | None, branch_id: str | None, proposal: ClaimProposal) -> str:
     """Only identical explicit slots merge; aliases/semantic similarity confer no identity."""
+    subject = proposal["subject"]
+    relation = proposal.get("alias")
+    if proposal["kind"] == "alias" and proposal["predicate"].startswith("entity_identity:") and relation is not None:
+        # A name has one relation in an audience even when its evidence or target changes.
+        subject = relation["name"]
     identity = [
         scope_id,
         project_id,
         branch_id,
         proposal["kind"],
-        proposal["subject"],
+        subject,
         proposal["predicate"],
         sorted(set(proposal["conditions"])),
     ]
@@ -1027,7 +1032,13 @@ _REFUSALS = (
 def _qualification_reason(cited, normalized, support_state):
     """Select semantic support gates without allowing a model to override source governance."""
     rules = _REFUSALS
-    if normalized:
+    # No semantic verdict must not erase a known literal refusal merely because
+    # the quote now has positions. Capability failures retain their own state.
+    if normalized and support_state != "unavailable":
+        # Positions locate evidence; they do not invalidate a literal negative
+        # state or a fully stated condition that the ordinary rules already prove.
+        if support_state == "supported" and all(rule(cited) is None for rule in rules):
+            return None
         if POLARITY.search(cited.source_text) or CONDITIONAL.search(cited.source_text):
             return "qualified_statement"
         if support_state != "supported":

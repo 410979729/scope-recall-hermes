@@ -186,8 +186,8 @@ SEED_STATEMENTS = tuple(
 
 
 def install(connection):
-    """Create and seed screening tables inside the caller's upgrade transaction."""
-    for statement in (*STATEMENTS, *SEED_STATEMENTS):
+    """Install initial policy and holds; scan checkpoints have their own upgrade step."""
+    for statement in (*STATEMENTS[:-1], *SEED_STATEMENTS):
         connection.execute(statement)
 
 

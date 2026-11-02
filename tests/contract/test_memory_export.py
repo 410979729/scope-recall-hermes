@@ -443,7 +443,9 @@ def history_store(tmp_path, name, count):
         conn = tx._check()
         conn.execute(
             """WITH RECURSIVE numbers(n) AS (VALUES(2) UNION ALL SELECT n+1 FROM numbers WHERE n<?)
-            INSERT INTO claim_versions
+            INSERT INTO claim_versions(claim_id,revision,payload_json,state,basis,qualification_reason,
+                                       valid_from,valid_to,recorded_from,recorded_to,
+                                       replaces_revision,conflict_revisions_json)
             SELECT v.claim_id,n,v.payload_json,v.state,v.basis,v.qualification_reason,
                    v.valid_from,v.valid_to,v.recorded_from,v.recorded_to,NULL,v.conflict_revisions_json
             FROM numbers CROSS JOIN claim_versions v WHERE v.claim_id=? AND v.revision=1""",

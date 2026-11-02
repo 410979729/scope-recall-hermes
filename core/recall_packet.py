@@ -23,6 +23,7 @@ from typing import Callable, Literal, Protocol, cast
 
 from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
 from .background_context import is_background, mark_background
+from .entity_queries import fence_entity_query
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics, RecallTimings
 from .recall_needs import asks_to_resume, unmet_needs
@@ -534,6 +535,7 @@ class RecallPacketCompiler:
                 if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence", retracted=retracted):
                     return draft.discard(verified)
                 self._prefetch(tx, context, verified)
+                verified = fence_entity_query(tx, context, verified, draft.gaps)
                 for candidate, obj in verified:
                     if self._recheck(tx, context, candidate, obj, draft.gaps) is None:
                         return draft.discard(verified, "release_delete_fence")

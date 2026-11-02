@@ -497,8 +497,15 @@ def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(wor
         raise AssertionError(row(core, source))
 
     def quoting_the_first(sources, **_):
-        # Right on the first page; on the second, evidence from another page, refused.
-        return consolidation_payload(sources[0], claims=[proposal(sources[0], FIRST)])
+        # A later page has an invalid proposal array; accepted earlier pages
+        # remain checkpointed while this envelope is refused.
+        page = sources[0]
+        value = consolidation_payload(
+            page, claims=[proposal(page, FIRST)] if not page.consolidation_window.start else []
+        )
+        if page.consolidation_window.start:
+            value["claim_proposals"] = "TEST-invalid-array"
+        return value
 
     drain(FakeConsolidation(quoting_the_first), "failed")
     _state, offset, _attempt = row(core, source)
@@ -508,7 +515,7 @@ def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(wor
         conn.commit()
     assert retry_class(next(iter(_codes(core).values()))) == "terminal"
     report = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)
-    assert (report["retried"], report["by_kind"]) == (1, {"DERIVATION_INVALID": 1})
+    assert (report["retried"], report["by_kind"]) == (1, {"derivation_invalid": 1})
 
     def fixed(sources, **_):
         page = sources[0]
@@ -1064,7 +1071,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
             calls.append(json.dumps(messages))
             expected = {
                 "code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-                "field": "payload" if legacy or not repair_success else "source_refs",
+                "field": "payload" if legacy or not repair_success else "claim_proposals",
             }
             hint = "validation_error=" + json.dumps(expected, sort_keys=True, separators=(",", ":"))
             if repair_success:
@@ -1075,7 +1082,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
                         if message["role"] == "user" and message["content"].startswith("{")
                     )
                     return json.dumps(body["empty_result"])
-                return '{"protocol_version":"1.1"}'
+                return '{"claim_proposals":"TEST-invalid-array"}'
             return "{not-json FAILED_BODY_SENTINEL"
 
     model = _BoundedCandidate(build_consolidation_model(InvalidPort()), 3)
@@ -1094,7 +1101,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
     assert len(calls) == (1 if legacy else 2), (work, evaluations)
     hint = {
         "code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-        "field": "payload" if legacy or not repair_success else "source_refs",
+        "field": "payload" if legacy or not repair_success else "claim_proposals",
     }
     assert "validation_error=" + json.dumps(hint, sort_keys=True, separators=(",", ":")) in " ".join(
         message["content"] for message in json.loads(calls[-1])

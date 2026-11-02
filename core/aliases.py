@@ -5,16 +5,13 @@ from __future__ import annotations
 import re
 
 from ..contracts import ContractError
+from .language_resources import language_rules
 from .source_qualification import AUTHORITY_QUESTION, CLAUSE_BREAK, CONDITIONAL, preserves_qualifiers
 
-_NEGATED = re.compile(r"(?:不是|并非|没有|未曾|不叫|不要|别把|不应|不能)|\b(?:not|never|do not|don't)\b", re.I)
-#: A condition or supposition (``CONDITIONAL``), or a fiction: no rename has happened.
-_HYPOTHETICAL = re.compile(CONDITIONAL.pattern + r"|虚构|\b(?:hypothetical|fictional)\b", re.I)
-
-
-# Hyphens, path separators, and dots can be part of stable identifiers.  They
-# must not be treated as a boundary when the model starts a quote in the
-# middle of a longer identifier.
+ENTITY_KINDS = ("fact", "preference", "constraint", "decision", "intention")
+_RULES = language_rules("aliases")
+_NEGATED = re.compile(_RULES["negated"], re.I)
+_HYPOTHETICAL = re.compile(CONDITIONAL.pattern + _RULES["hypothetical"], re.I)
 _NAME_CHAR = r"\w\u3400-\u9fff./\\-"
 
 
@@ -23,9 +20,9 @@ def _rename_pattern(anchor: str, name: str) -> re.Pattern[str]:
 
     return re.compile(
         rf"(?<![{_NAME_CHAR}]){re.escape(anchor)}[ \t]*"
-        rf"(?:项目|project)?[ \t]*"
-        rf"(?:以后|之后|现在|正式|已|已经)?[ \t]*"
-        rf"(?:改名为|更名为|改称|改叫|renamed[ \t]+to|is[ \t]+now[ \t]+called)[ \t]*"
+        rf"{_RULES['project']}[ \t]*"
+        rf"{_RULES['aspect']}[ \t]*"
+        rf"{_RULES['rename']}[ \t]*"
         rf"[“\"'「]?{re.escape(name)}"
         rf"(?=$|[”\"'」\s，,。.;；!！?？])",
         re.I,
@@ -89,7 +86,9 @@ def validate_alias_source(
     raise ContractError("ACCESS_DENIED", "alias_relation_not_bound")
 
 
-def validate_alias_target(target, *, scope_id: str, project_id: str | None, branch_id: str | None) -> None:
+def validate_alias_target(
+    target, *, scope_id: str, project_id: str | None, branch_id: str | None, entity: bool = False
+) -> None:
     """Bind an alias to one live claim in the caller's exact identity scope."""
     if target is None or target.scope_id != scope_id:
         raise ContractError("ACCESS_DENIED", "alias_target_scope")
@@ -97,12 +96,50 @@ def validate_alias_target(target, *, scope_id: str, project_id: str | None, bran
         raise ContractError("ACCESS_DENIED", "alias_target_project")
     if target.state != "active" or target.suppressed:
         raise ContractError("ACCESS_DENIED", "alias_target_not_live")
-    if target.payload["kind"] != "fact" or target.payload["predicate"].casefold() not in {
-        "项目名称",
-        "项目名",
-        "名称",
-        "project_name",
-        "project name",
-        "name",
-    }:
+    if entity:
+        if target.payload["kind"] not in ENTITY_KINDS:
+            raise ContractError("ACCESS_DENIED", "alias_target_not_entity")
+    elif target.payload["kind"] != "fact" or target.payload["predicate"].casefold() not in _RULES["name_predicates"]:
         raise ContractError("ACCESS_DENIED", "alias_target_not_name_identity")
+
+
+def entity_alias_proof(tx, alias, target, now: str) -> bool:
+    """Accept only a stored judgement whose two live fact versions still match the alias.
+
+    Retraction, a changed endpoint, a deleted source or a different audience invalidates
+    the relation without changing either fact. No model is called while reading.
+    """
+    from .claims import evidence_refs, valid_at
+    from .visibility import allowed
+
+    row = (
+        tx._check()
+        .execute(
+            "SELECT source_ref,source_revision,target_ref,target_revision FROM entity_alias_proofs "
+            "WHERE alias_ref=? AND alias_revision=?",
+            (alias.ref, alias.revision),
+        )
+        .fetchone()
+    )
+    if row is None or (target.ref, target.revision) != (row[2], row[3]):
+        return False
+    source = tx.claims.version(row[0], row[1])
+    if source is None:
+        return False
+    names = alias.payload.get("alias", {})
+    source_names = {source.payload.get("subject"), *source.payload.get("entity_names", [])}
+    if names.get("name") not in source_names or target.payload.get("subject") != alias.payload["subject"]:
+        return False
+    audience = (alias.scope_id, alias.project_id, alias.branch_id)
+    for version in (source, target):
+        if (version.scope_id, version.project_id, version.branch_id) != audience:
+            return False
+        if version.current_revision != version.revision or version.state != "active" or version.suppressed:
+            return False
+        if not valid_at(version, now, historical=False) or not allowed(tx, "claim", version.ref, automatic=False):
+            return False
+        try:
+            tx.claims.live_sources(evidence_refs(version.payload), version.scope_id)
+        except ContractError:
+            return False
+    return True

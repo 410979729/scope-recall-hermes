@@ -164,7 +164,7 @@ def test_candidate_speaker_label_round_trip_rechecks_the_cited_principal(app, re
     receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=20, consolidation=evaluator)
     assert evaluator.calls == 1
     current = core.current_claim(ctx, saved.ref)
-    if reply == "echo":
+    if reply != "wrong_source":
         assert receipt.items[0].error_code is None
         assert (current.state, current.payload["subject"]) == ("active", "principal:TEST-A")
     else:

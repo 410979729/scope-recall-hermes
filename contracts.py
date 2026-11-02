@@ -207,6 +207,8 @@ class Alias(TypedDict):
 
 
 class ClaimProposal(TypedDict):
+    entity_type: NotRequired[Literal["unknown", "person", "object", "place", "organization", "project"]]
+    entity_names: NotRequired[list[str]]
     occurred_at: NotRequired[str | None]
     kind: Literal["fact", "preference", "constraint", "decision", "procedure", "intention", "alias"]
     subject: str
@@ -513,16 +515,19 @@ def _check_forget_request(payload: dict) -> None:
         raise ContractError("INPUT_INVALID", "expected_revisions")
 
 
-def _check_consolidation_result(payload: dict) -> None:
-    for claim in payload["claim_proposals"]:
+def _check_consolidation_result(payload: dict, *, indexed_errors: bool = False) -> None:
+    for index, claim in enumerate(payload["claim_proposals"]):
         start, end = claim["valid_from"], claim["valid_to"]
         if start is not None and end is not None and datetime.fromisoformat(end) <= datetime.fromisoformat(start):
-            raise ContractError("DERIVATION_INVALID", "valid_interval")
-    for binding in payload["reference_proposals"]:
+            field = f"claim_proposals[{index}].valid_interval" if indexed_errors else "valid_interval"
+            raise ContractError("DERIVATION_INVALID", field)
+    for index, binding in enumerate(payload["reference_proposals"]):
         if binding["resolution"] == "resolved" and binding["resolved_ref"] not in binding["candidate_refs"]:
-            raise ContractError("DERIVATION_INVALID", "resolved_ref")
+            field = f"reference_proposals[{index}].resolved_ref" if indexed_errors else "resolved_ref"
+            raise ContractError("DERIVATION_INVALID", field)
         if binding["resolution"] == "ambiguous" and len(binding["candidate_refs"]) < 2:
-            raise ContractError("DERIVATION_INVALID", "candidate_refs")
+            field = f"reference_proposals[{index}].candidate_refs" if indexed_errors else "candidate_refs"
+            raise ContractError("DERIVATION_INVALID", field)
 
 
 #: Cross-field rules JSON Schema cannot express, keyed by schema name.
@@ -536,7 +541,7 @@ _CROSS_FIELD_CHECKS = {
 }
 
 
-def _offending_field(error) -> str:
+def _offending_field(error, *, indexed: bool = False) -> str:
     """The property a validation error is about, or the keyword when it is about the whole payload.
 
     The failing keyword alone does not say what to fix.  A recall asking for a
@@ -546,7 +551,17 @@ def _offending_field(error) -> str:
     in the keyword's own value.  The same field is what a failed derivation
     feeds back to the model on its one repair attempt.
     """
-    named = [part for part in error.absolute_path if isinstance(part, str)]
+    path = list(error.absolute_path)
+    if indexed and any(type(part) is int for part in path):
+        field = "".join(
+            f"[{part}]" if type(part) is int else ("." if i else "") + str(part) for i, part in enumerate(path)
+        )
+        if error.validator == "required" and isinstance(error.instance, dict):
+            missing = next((name for name in error.validator_value if name not in error.instance), None)
+            if missing is not None:
+                field += "." + missing
+        return field
+    named = [part for part in path if isinstance(part, str)]
     if named:
         return named[-1]
     if error.validator == "required" and isinstance(error.instance, dict):
@@ -556,7 +571,8 @@ def _offending_field(error) -> str:
     return str(error.validator or "schema")
 
 
-def validate_payload(name: str, value: str | bytes | dict) -> dict:
+def validate_payload(name: str, value: str | bytes | dict, *, indexed_errors: bool = False) -> dict:
+    """Validate a payload; model repair may opt into indexed error paths."""
     if name not in _SCHEMAS:
         raise ContractError("INPUT_INVALID", "schema_name")
     payload = decode_payload(value)
@@ -565,9 +581,11 @@ def validate_payload(name: str, value: str | bytes | dict) -> dict:
     checker.checks("date-time")(_utc_time)
     error = next(Draft202012Validator(schema, format_checker=checker).iter_errors(payload), None)
     if error is not None:
-        raise ContractError("INPUT_INVALID", _offending_field(error))
+        raise ContractError("INPUT_INVALID", _offending_field(error, indexed=indexed_errors))
     check = _CROSS_FIELD_CHECKS.get(name)
-    if check is not None:
+    if name == "consolidation_result":
+        _check_consolidation_result(payload, indexed_errors=indexed_errors)
+    elif check is not None:
         check(payload)
     return payload
 

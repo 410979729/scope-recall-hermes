@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ..contracts import ContractError, SourceEvent, TrustedContext, decode_payload, validate_capture
-from .capture_filters import redact_secret_text, sanitize_source_capture_text
+from .capture_filters import redact_secret_text, sanitize_source_capture_text, strip_private_content
 from .secret_patterns import REDACTED_SECRET, contains_secret_like_text
 
 MAX_SEGMENT_CHARS = 65536
@@ -108,7 +108,9 @@ def capture_text_segments(text: str) -> tuple[str, ...]:
     return tuple(parts) or ("",)
 
 
-def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedContext) -> PreparedCapture:
+def prepare_capture(
+    value: SourceEvent | dict | str | bytes, context: TrustedContext, *, private_content_omitted: bool = False
+) -> PreparedCapture:
     """Validate identity, mask stored text once, then sanitize transport and split bounded source segments."""
     raw = decode_payload(dict(value) if isinstance(value, dict) else value)
     content = raw.get("content")
@@ -118,6 +120,7 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
     # original content is never repaired or supplied to a model to pass schema.
     checked = validate_capture({**raw, "content": ""}, _principal_context(raw, context))
     raw = {**checked, "content": content}
+    raw["content"], private_removed = strip_private_content(content)
     if not raw["source_event_key"].strip() or "\x00" in raw["source_event_key"]:
         raise ContractError("INPUT_INVALID", "source_event_key")
     if capture_contains_secret(_capture_identity(raw, context)):
@@ -130,6 +133,8 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
     content = raw["content"]
     filtered = sanitize_source_capture_text(content)
     gaps = ("transport_payload_omitted",) if filtered != content else ()
+    if private_removed or private_content_omitted:
+        gaps = (*gaps, "private_content_omitted")
     if masked_secret_count:
         gaps = (*gaps, "secret_values_masked")
     if not filtered.strip() and not raw.get("artifact_refs") and raw["capture_state"] == "complete":
@@ -165,7 +170,7 @@ def segment_key(group_key: str, index: int) -> str:
 
 def _stored_segments(content: str) -> tuple[str, ...]:
     """The texts a capture of ``content`` stores: masked, sanitized and split the way ``prepare_capture`` does."""
-    masked, _count = redact_secret_text(content)
+    masked, _count = redact_secret_text(strip_private_content(content)[0])
     return capture_text_segments(sanitize_source_capture_text(masked))
 
 

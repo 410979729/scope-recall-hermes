@@ -413,3 +413,23 @@ def test_a_verdict_rests_on_what_a_person_or_a_document_said():
     port = dict(_payload(kind="fact"), value_text="80")
     assert not rooted_verdict(port, [(_said("端口是 8080。"), "端口是 8080。")])
     assert rooted_verdict(port, [(_said("端口是 80。"), "端口是 80。")])
+
+
+@pytest.mark.parametrize("origin", ["tool_observation", "assistant_visible", "origin_unknown"])
+def test_positions_do_not_give_an_agents_quote_independent_authority(origin):
+    from scope_recall.core.evidence_question import rooted_verdict
+
+    fact = _payload(kind="fact")
+    fact["evidence_spans"] = [dict(source_ref="TEST-e", source_revision=1, quote="蓝色", start=0, end=2)]
+    independent = _said("TEST-project 配色 蓝色。另外需要收尾。")
+    assert not rooted_verdict(fact, [(_said("蓝色", origin=origin), "蓝色"), (independent, "另外需要收尾。")])
+    assert rooted_verdict(fact, [(_said("蓝色", origin=origin), "蓝色"), (independent, "蓝色")])
+
+
+def test_positions_allow_semantic_values_only_on_independent_quotes():
+    from scope_recall.core.evidence_question import rooted_verdict
+
+    fact = _payload(kind="fact")
+    fact["value_text"] = "blue"
+    fact["evidence_spans"] = [dict(source_ref="TEST-e", source_revision=1, quote="蓝色", start=0, end=2)]
+    assert rooted_verdict(fact, [(_said("TEST-project 配色 蓝色。"), "蓝色")])

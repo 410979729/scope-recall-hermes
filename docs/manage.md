@@ -151,10 +151,11 @@ files are outside that active-content receipt.
 
 ## Migration and rollback
 
-The first open of a supported older store migrates it transactionally to schema 1112. The added tables contain local
+The first open of a supported older store migrates it transactionally to schema 1116. The added tables contain local
 management action identities, actor, action, target versions, timestamp and memory epoch, content-free suppression
 constraints for records that can arrive after a restore, and private intervals that hold only target, session or
-project path, mode and UTC boundaries. Original source rows are preserved; the new `project_root` column is metadata
+project path, mode and UTC boundaries. Entity judgement receipts, source-screening policies, holds and resumable scan
+checkpoints share the same upgrade transaction. Original source rows are preserved; the `project_root` column is metadata
 and existing rows keep NULL. Earlier executables refuse this newer schema; see
 [private-mode.md](private-mode.md#migration-and-rollback) for the rollback consequence.
 

@@ -1,4 +1,4 @@
-"""Compare optional language libraries on fixed synthetic corpora without network access."""
+"""Compare paired language evaluations or optional language libraries without network access."""
 
 from __future__ import annotations
 
@@ -133,8 +133,22 @@ def main():
     """Write reproducible comparison evidence; this entry point always forbids network access."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--before", type=Path)
+    parser.add_argument("--after", type=Path)
+    parser.add_argument("--require-acceptance", action="store_true")
     args = parser.parse_args()
     sys.addaudithook(offline)
+    if args.before or args.after:
+        if not args.before or not args.after:
+            parser.error("paired comparison requires both --before and --after")
+        from acceptance import compare
+
+        result = compare(
+            json.loads(args.before.read_text(encoding="utf-8")), json.loads(args.after.read_text(encoding="utf-8"))
+        )
+        args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(result))
+        return int(args.require_acceptance and not result["accepted"])
     report = dict(time=time_comparison(), credentials=credential_comparison())
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: value["summary"] for key, value in report.items()}))

@@ -258,8 +258,8 @@ def candidate_identity_restored(
     is restored rather than rejected: re-asking costs a model call and usually comes
     back written differently again.  A name that is not the candidate's is refused,
     and so is any other kind: a kind is one of a fixed set, so there is nothing to
-    write differently.  A verified human principal keeps its own rule -- the model
-    must say a self label and ``apply_claim`` performs the binding.
+    write differently. Request-local labels supplied by the decoder are restored
+    before ``apply_claim`` binds the cited sources to a verified human principal.
     """
     subject = candidate.payload.get("subject")
     identities = candidate_identities(candidate, sources)

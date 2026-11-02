@@ -190,7 +190,7 @@ keep their admission thresholds and do not skip conversational queries.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `auto_lexical_min_coverage` | `0.20` | Minimum share of the query's meaningful terms a lexical candidate matches, from `0.0` to `1.0`. |
+| `auto_lexical_min_coverage` | `0.20` | Minimum share of meaningful query terms matched by a lexical candidate, from `0.0` to `1.0`. |
 | `auto_lexical_min_terms` | `2` | Minimum matched terms for queries with at least this many terms; an integer of at least `2`. Shorter queries must match every term. |
 | `auto_vector_threshold` | `0.30` | Minimum cosine similarity for automatic vector hits, from `-1.0` to `1.0`; `vector_threshold` must also be met. |
 
@@ -200,7 +200,7 @@ candidates that clear their channel's floor; it cannot admit a weak match.
 For a long Chinese prompt with multiple substantive clauses, a clause that
 meets the core lexical-specificity rule can clear the same coverage floor on
 its own. An attachment cannot dilute an independently matched question.
-The vector default preserves the synthetic word-hashing benchmark's admission
+The automatic vector floor preserves the synthetic word-hashing benchmark's admission
 floor. A store configured with `vector_threshold: 0.70` still requires at least
 `0.70`; set `auto_vector_threshold` higher to tighten automatic injection alone.
 Exact references pass directly. A relation-expanded item inherits a passing
@@ -220,26 +220,26 @@ questions about the owner, a named topic or the past still search. A skipped
 prompt starts neither search nor query embedding; diagnostics record
 `auto_recall_skipped:<reason>`.
 
-`vector_threshold` has no default and no installer writes it. Without it, recall refuses every
-vector hit with `vector_threshold_unconfigured` and answers degrade to lexical,
-while sources and queries are still embedded and metered. `doctor` reports that
-state as the gap `vector_threshold_unconfigured` when a `vector` store and an
-approved embedding route are configured but the threshold is not.
+For the built-in space, an omitted or null `vector_threshold` resolves to
+`0.70`. An explicit numeric value takes precedence. `doctor`
+reports the effective value as `default` or `configured`. No installer needs
+to write the default into configuration.
 
 A threshold is calibrated for one embedding space and does not carry over. The
 shipped space — `gemini-embedding-2` at 3072 dimensions, the space used when
-`auxiliary.embedding` names no model — was accepted at `0.653189984350642`, and
-that is the value the tests pin. The acceptance covers that frozen model,
+`auxiliary.embedding` names no model — uses `0.70`. This covers that frozen model,
 encoder and space descriptor only. A route that states `model`, `endpoint`,
 `dimensions` and `dialect` is a different space with its own digest and vector
 directory, **even when it repeats the shipped values**, and falls outside it.
-Any other model needs its own calibration on labelled relevant and irrelevant
+Every other space has no default: vector hits are refused with
+`vector_threshold_unconfigured`, which `doctor` reports when vector recall is
+configured. It needs its own calibration on labelled relevant and irrelevant
 query-memory pairs embedded with that model. Until one exists, leave the field
 unset and let recall stay lexical; a guessed threshold either admits noise as
 evidence or admits nothing at all.
 
-On a shared store (`docs/shared-store.md`) in the shipped space, the accepted
-value admits too much: the store holds every entry's memories, so a question
+On a shared store (`docs/shared-store.md`) in the shipped space, an explicit
+`0.653` admits too much: the store holds every entry's memories, so a question
 with no answer meets far more unrelated memories just above `0.653`, while the
 replies that do answer the owner's questions score well above `0.70`. On a
 shared store in the shipped space whose runtime configs hold `0.653`, set `0.70`

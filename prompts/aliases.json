@@ -1,0 +1,15 @@
+{
+  "negated": "(?:不是|并非|没有|未曾|不叫|不要|别把|不应|不能)|\\b(?:not|never|do not|don't)\\b",
+  "hypothetical": "|虚构|\\b(?:hypothetical|fictional)\\b",
+  "project": "(?:项目|project)?",
+  "aspect": "(?:以后|之后|现在|正式|已|已经)?",
+  "rename": "(?:改名为|更名为|改称|改叫|renamed[ \\t]+to|is[ \\t]+now[ \\t]+called)",
+  "name_predicates": [
+    "项目名称",
+    "项目名",
+    "名称",
+    "project_name",
+    "project name",
+    "name"
+  ]
+}

@@ -43,6 +43,7 @@ from .schema import (
     upgrade_1112,
     upgrade_1113,
     upgrade_1114,
+    upgrade_1115,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -70,6 +71,7 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1112,
             upgrade_1113,
             upgrade_1114,
+            upgrade_1115,
         ),
         strict=True,
     )
@@ -581,6 +583,8 @@ class SQLiteStorage:
         self.__pending_close: list[sqlite3.Connection] = []
         #: Optional runtime-owned scheduling edge; core never imports a worker launcher.
         self.on_upgrade_pending: Callable[[], object] | None = None
+        #: Late-bound vector read port owned by the composition root.
+        self.entity_vectors: Callable[[], object] | None = None
 
     def _defer_upgrade(self) -> NoReturn:
         """Notify the scheduling owner without replacing the authoritative schema gap."""

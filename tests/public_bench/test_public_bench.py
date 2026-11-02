@@ -15,10 +15,9 @@ from types import SimpleNamespace
 import pytest
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
 
 # Standalone runners and pytest share these helpers without installing them in
-# the product wheel; the explicit test-directory path is established above.
+# the product wheel; conftest establishes their test-directory import path.
 from cache import RequestCache, digest  # noqa: E402
 from cases import LOCOMO_CATEGORIES, Case, Turn, fixed_splits, longmemeval  # noqa: E402
 from lab import Lab  # noqa: E402

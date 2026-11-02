@@ -605,13 +605,15 @@ def test_process_death_leaves_original_store_and_retry(tmp_path, journal, phase)
     try:
         assert child.stdout.readline().strip() == "ready", child.stderr.read() if child.poll() is not None else ""
         child.kill()
+        # Termination is asynchronous on Windows; keep stdin open until the child is gone.
+        child.wait(timeout=10)
         child.communicate(timeout=10)
         # Opening a writable pager performs SQLite's hot-journal crash recovery.
         with closing(connect_truth_database(core.storage.path, mode="rw")) as conn:
             assert conn.execute("PRAGMA user_version").fetchone()[0] == 1111
         assert _logical_content(core.storage.path) == before
         state = store_upgrade.read_upgrade_state(core.storage.path.parent)
-        assert state["status"] == "interrupted" and state["snapshot_verified"] == (phase == "hold")
+        assert state["status"] == "interrupted" and state["snapshot_verified"] == (phase == "hold"), state
         report = DoctorReport(host="codex", status="degraded")
         assert not check_storage(report, core.storage.binding, core.storage.path.parent)
         assert "process_interrupted" in str(report)
