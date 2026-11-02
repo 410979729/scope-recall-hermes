@@ -12,12 +12,22 @@ from pathlib import Path
 
 import pytest
 import yaml
+from scope_recall.adapters.clients.config import load_shared_client
+from scope_recall.adapters.clients.local_endpoint import endpoints, resident_running
 from scope_recall.maintenance.setup import build_plan, parser
 from scope_recall.maintenance.setup_apply import apply_setup
 from scope_recall.maintenance.setup_verify import MARKER, QUESTION, STATEMENT
 from scope_recall.runtime.worker_entry import run_worker
 
 from tests.packaging.test_setup import fake_user  # noqa: F401 -- shared isolated host fixture.
+
+
+def disable_resident(home, host):
+    """Keep installed-hook acceptance runs from starting detached library services."""
+    runtime = load_shared_client(home, host).runtime_config_path
+    config = json.loads(runtime.read_text(encoding="utf-8"))
+    config["resident_recall_minutes"] = 0
+    runtime.write_text(json.dumps(config), encoding="utf-8")
 
 
 @pytest.mark.parametrize("host,folder", [("codex", ".codex"), ("claude-code", ".claude"), ("workbuddy", ".workbuddy")])
@@ -27,6 +37,9 @@ def test_installed_hook_command_recalls_a_previous_session(fake_user, host, fold
     started = time.monotonic()
     result = apply_setup(build_plan(parser().parse_args(["--host", host, "--test-mode", "--worker", "manual"])))
     assert result["status"] == "ready", result
+    # This acceptance test exercises the installed hook and worker, not a long-lived recall service.
+    # Disable residence before either can request a detached start, including one that has not yet registered.
+    disable_resident(home, host)
     path = home / "settings.json" if host == "workbuddy" else home / "skills" / "scope-recall" / "hooks" / "hooks.json"
     hook = json.loads(path.read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"][0]["hooks"][0]
     command = hook["command"] if host == "workbuddy" else shlex.split(hook["command"])
@@ -62,6 +75,8 @@ def test_installed_hook_command_recalls_a_previous_session(fake_user, host, fold
     assert child.returncode == 0, child.stderr
     answer = invoke("TEST-installed-second", QUESTION)
     assert MARKER in answer, answer
+    assert not resident_running(home, host)
+    assert not (endpoints(home) / "resident.start").exists()
     record_property("seconds_to_installed_recall", time.monotonic() - started)
     record_property("installed_command", json.dumps(command))
 
@@ -120,6 +135,7 @@ def test_installed_dsh_plugin_uses_its_configured_python_bridge(fake_user, recor
     started = time.monotonic()
     result = apply_setup(build_plan(parser().parse_args(["--host", "dsh", "--test-mode", "--worker", "manual"])))
     assert result["status"] == "ready", result
+    disable_resident(home, "dsh")
     layers = yaml.safe_load((home / "cordis.patch.yml").read_text(encoding="utf-8"))
     rows = [row for layer in layers for row in layer.get("insert", []) if row.get("id") == "scope-recall"]
     config = dict(rows[0]["config"], prompt=STATEMENT, spool=str(home / "scope-recall" / "TEST-spool"))
@@ -156,4 +172,6 @@ def test_installed_dsh_plugin_uses_its_configured_python_bridge(fake_user, recor
     child = subprocess.run(hook, input=json.dumps(event), capture_output=True, text=True, encoding="utf-8", timeout=45)
     assert child.returncode == 0, child.stderr
     assert MARKER in child.stdout, child.stdout
+    assert not (endpoints(home) / "resident.start").exists()
+    assert not resident_running(home, "dsh")
     record_property("seconds_to_installed_recall", time.monotonic() - started)

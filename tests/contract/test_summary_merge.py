@@ -7,8 +7,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from scope_recall.core.capture import _store_events
 from scope_recall.core.events import prepare_capture
+from scope_recall.core.injection_guard import screen_sources
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
+from scope_recall.core.source_records import SourceWrite
 from scope_recall.core.summary_storage import next_summary_due, queue_summaries
 from scope_recall.core.summary_validity import summary_live
 
@@ -53,7 +55,7 @@ def test_completed_summary_is_unreadable_during_hold_and_recovers_after_clear(ap
         assert summary_live(tx, *part)
     if state == "pending_review":
         with core.storage.write(ctx) as tx:
-            _store_events(tx, core.clock, prepare_capture(source.event, ctx), "TEST-scope", None, lambda: 0)
+            screen_sources(tx, [SourceWrite("duplicate", source.ref, 1)], core.clock.utc_now(), remaining_seconds=0)
     else:
         with core.storage.write(ctx) as tx:
             tx._check(write=True).execute(
@@ -61,6 +63,11 @@ def test_completed_summary_is_unreadable_during_hold_and_recovers_after_clear(ap
                 (source.ref, 1, state, '["TEST-held"]', core.clock.now),
             )
     with core.storage.read(ctx) as tx:
+        if state == "pending_review":
+            assert (
+                tx._check().execute("SELECT state FROM source_safety WHERE source_ref=?", (source.ref,)).fetchone()[0]
+                == state
+            )
         assert not summary_live(tx, *part)
     packet, _rendered = rendered_conversation(core, ctx)
     assert all("TEST-project trusted result" not in item["content"] for item in packet["items"])
@@ -73,7 +80,7 @@ def test_completed_summary_is_unreadable_during_hold_and_recovers_after_clear(ap
         )
     else:
         with core.storage.write(ctx) as tx:
-            _store_events(tx, core.clock, prepare_capture(source.event, ctx), "TEST-scope", None, lambda: 1)
+            screen_sources(tx, [SourceWrite("duplicate", source.ref, 1)], core.clock.utc_now(), remaining_seconds=10)
     with core.storage.read(ctx) as tx:
         assert summary_live(tx, *part)
 
@@ -178,7 +185,8 @@ def test_cleared_pending_source_can_resume_a_group_that_could_not_create_its_fir
         occurred_at="2026-09-01T00:00:00Z",
     )
     with core.storage.write(ctx) as tx:
-        _store_events(tx, core.clock, prepare_capture(event, ctx), "TEST-scope", None, lambda: 0)
+        receipts, _, _, _ = _store_events(tx, core.clock, prepare_capture(event, ctx), "TEST-scope", None, lambda: 1)
+        screen_sources(tx, [SourceWrite("duplicate", receipts[0].ref, 1)], core.clock.utc_now(), remaining_seconds=0)
     from scope_recall.core.summary_storage import close_session
 
     with core.storage.write(ctx) as tx:
@@ -187,8 +195,12 @@ def test_cleared_pending_source_can_resume_a_group_that_could_not_create_its_fir
         queue_summaries(tx, now=core.clock.now)
     with core.storage.read(ctx) as tx:
         assert tx._check().execute("SELECT state FROM summary_groups").fetchone()[0] == "partial"
-    with core.storage.write(ctx) as tx:
-        _store_events(tx, core.clock, prepare_capture(event, ctx), "TEST-scope", None, lambda: 1)
+        assert (
+            tx._check().execute("SELECT state FROM source_safety WHERE source_ref=?", (receipts[0].ref,)).fetchone()[0]
+            == "pending_review"
+        )
+        assert tx._check().execute("SELECT count(*) FROM summary_parts").fetchone()[0] == 0
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10)
     model = FirstSentenceModel()
     build(core, ctx, model)
     assert model.pages
