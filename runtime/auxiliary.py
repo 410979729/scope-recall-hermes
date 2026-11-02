@@ -72,6 +72,24 @@ class AuxiliaryRuntimeConfig:
         )
 
 
+def summary_budget_enabled(auxiliary):
+    """Admit new background summary work only with an explicitly configured, budgeted model route."""
+    if (
+        auxiliary is None
+        or not auxiliary.external_consolidation
+        or auxiliary.consolidation is None
+        or auxiliary.ledger_path is None
+    ):
+        return False
+    if isinstance(auxiliary.consolidation, CodexCliRouteConfig):
+        return auxiliary.consolidation.subscription_budget_explicit
+    policy = auxiliary.budget
+    return (
+        all(getattr(policy, field) != 0 for field in ("total_input_cap", "total_output_cap", "total_call_cap"))
+        and getattr(auxiliary.consolidation, "model", None) in policy.approved_models
+    )
+
+
 @dataclass(frozen=True)
 class AuxiliaryRuntime:
     """Own the shared ledger and release it after the embedding transports close."""

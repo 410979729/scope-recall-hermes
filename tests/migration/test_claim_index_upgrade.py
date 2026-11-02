@@ -36,6 +36,8 @@ def test_claim_index_upgrade_resumes_after_committed_page(app, monkeypatch):
             core.storage.initialize()
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        identity = conn.execute("SELECT database_id,database_created_at FROM instance_meta").fetchone()
+        assert len(identity[0]) == 32 and identity[1] is None
         assert conn.execute(
             "SELECT processed_count,completed FROM candidate_scan_cursors WHERE cursor_name='claim_lexical'"
         ).fetchone() == (1, 0)
@@ -46,6 +48,7 @@ def test_claim_index_upgrade_resumes_after_committed_page(app, monkeypatch):
     core.storage.initialize()
     assert not store_upgrade_pending(ctx.binding)
     with core.storage.read(ctx) as tx:
+        assert tx.database_identity() == identity
         assert not lexical_index.claim_backfill_pending(tx._check())
         assert tx._check().execute("SELECT count(DISTINCT claim_id) FROM claim_lexical_postings").fetchone()[0] == 4
         assert tx._check().execute("PRAGMA foreign_key_check").fetchall() == []

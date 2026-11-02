@@ -667,6 +667,13 @@ def _record_revision(tx, clock, head, updated, qualification, request, authority
 def _revise_in_transaction(tx, clock, request) -> Mutation:
     head = _revision_head(tx, request)
     authority = _revision_authority(tx, head, request)
+    changes = request["new_value"]
+    if isinstance(changes, dict) and changes and set(changes) <= {"importance", "pinned"}:
+        from .importance import require_importance_statement, set_importance
+
+        require_importance_statement(authority.raw, changes)
+        set_importance(tx, head, **changes)
+        return Mutation(head.ref, head.revision, "revised", head.state)
     updated = _revised_payload(head, request, authority.retraction)
     proof = _revision_proof(head, updated, authority)
     source = authority.source

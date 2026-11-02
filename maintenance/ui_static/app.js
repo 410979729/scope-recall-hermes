@@ -193,6 +193,11 @@ async function detail(ref, revision) {
   display("detail-data", selected);
   $("detail").hidden = false;
   $("correction").hidden = selected.kind !== "claim";
+  $("importance").hidden = selected.kind !== "claim";
+  if (selected.kind === "claim") {
+    $("importance").elements.importance.value = selected.value.base_importance;
+    $("importance").elements.pinned.checked = selected.value.pinned;
+  }
   if (selected.kind === "claim") {
     $("correction").elements.value.value = selected.value.payload.value_text || "";
     $("correction").elements.retract.checked = false;
@@ -246,6 +251,10 @@ for (const button of document.querySelectorAll("[data-action]")) button.addEvent
 $("correction").addEventListener("submit", (event) => {
   event.preventDefault();
   run(() => preview({action: "revise", ref: selected.ref, expected_revision: selected.revision, value: $("correction").elements.value.value, retract: $("correction").elements.retract.checked}));
+});
+$("importance").addEventListener("submit", (event) => {
+  event.preventDefault();
+  run(() => preview({action: "importance", ref: selected.ref, expected_revision: selected.revision, importance: Number($("importance").elements.importance.value), pinned: $("importance").elements.pinned.checked}));
 });
 $("private-form").addEventListener("submit", (event) => { event.preventDefault(); run(() => preview(privateArguments("private-on"))); });
 $("private-off").addEventListener("click", () => run(() => preview(privateArguments("private-off"))));

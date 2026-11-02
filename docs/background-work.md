@@ -80,6 +80,41 @@ These are logical states encoded by row presence and last_error_code, not anothe
 Deferred stamps whose timestamp is malformed or implausibly far in the future are due immediately. Give-up
 counts survive release changes. A conflict is rekeyed from the content fingerprint, never by widening authority.
 
+Session records are also durable capture ledgers. A worker reads bounded pages from attached Claude Code, Codex and
+WorkBuddy homes and from a local Codex installation's registered record or native session directory. It records only
+offsets and failure codes beside the home; content remains in the host's record until normal capture accepts it.
+Unchanged completed files cost no store read. Installation time bounds automatic recovery; importing earlier history
+is a separate owner operation. dsh retains unacknowledged messages in its existing plugin spool. Incomplete or deferred pages request a later
+worker pass. Completed ledgers rely on ordinary worker autostart and host end hooks for discovery; they create no
+perpetual polling task. A library-wide checkpoint retains the next scan position across files and entries. A budget
+cut returns `pending_scan` and requests another worker pass; it does not complete an unvisited record or consume a
+failure attempt. Partial files retain their byte cursor and yield to later files and entries, including when a file
+ends in an incomplete line or continues growing. A scan retains its revisit requirement across budget cuts until
+a full sweep resolves all unfinished files; per-file retry timestamps still prevent early retry.
+
+Local capture authorization has an immutable timestamp separate from configuration saves. An older installation
+uses its verified, bound installation receipt's write time, or its entry's first recorded capture when no receipt
+exists. Without either evidence, automatic replay stops. Reinstalling an existing store preserves that time; creating
+a fresh store starts a new capture lifetime and resets its scan position. Authorization and rotation checkpoints
+bind to the immutable database identity, which survives file replacement and schema upgrades. Existing databases
+receive an identity without an inferred creation time. The installer preserves old receipt evidence before writing
+a replacement receipt. A valid JSON grant with an invalid time stops replay; doctor reports the reason. Re-running
+the trusted installer authorizes only future capture, while restoring a trusted grant requires a backup of the same
+database. WorkBuddy message records attest their session through
+`sessionId`; filenames may identify a different storage agent and cannot grant a session identity. Every replayed
+message must agree with that session before its page reaches capture.
+
+Ledger checkpoints use the inbox's `deferral`, `replayable` and `given_up` rules and delay limits. The worker receipt
+and doctor expose aggregate `transcript_replay` outcomes. `retry-failures --apply` reopens given-up and denied
+checkpoints; `--include-terminal` additionally permits an explicit retry after invalid input is repaired. Recovery
+checks current entry grants, original occurrence times, deletion fences and private history again. Inline private
+spans are removed through the same capture filter, including nested or unfinished spans.
+
+While ordinary storage refuses an upgrade, a metadata-only privacy snapshot may still recognize the unchanged private
+interval contract. It checks the recorded and header schemas, installation identity, location and scopes, exact table
+and index declarations, and restore fences. It cannot read sources or write data. An unknown privacy format still
+refuses a local copy.
+
 ## Hermes capture replay
 
 | State | Next states | Next action and lease expiry | Wake after capability recovery | Retry limit | Terminal |
@@ -138,3 +173,55 @@ recreated by automatic backfill. Existing statement bodies are preserved.
 Older stores gain an unresolved progress bit with a default value. The worker queues bounded pages through the
 existing projection lifecycle. Doctor reports completed and pending identity checks; literal recall remains
 available throughout. A missing judgement capability leaves the backfill pending.
+
+
+## Importance and ended conversations
+
+Every extracted claim can carry an importance from 1 to 5. Explicit requests to remember, corrections and health
+or safety preferences receive 5; decisions and long-term constraints receive 4; ordinary stable facts receive 3;
+short-term useful events receive 2; incidental conversation receives 1. Scoring does not grant fact authority.
+Older claims read as 3 immediately and the worker marks neutral defaults in pages of 128 without model calls.
+The stored importance remains the base score when pinned; pinned claims read as 5 and unpinning restores that base. The owner's metadata override survives later model extraction. Importance selects
+background preferences; ordinary query ranking does not read it.
+
+The management detail page edits importance and pinning. The CLI uses
+`scope-recall memory importance <ref> --expected-revision <n> --score 4 --pin` (or `--unpin`). The existing revise
+request accepts `new_value: {"importance": 4, "pinned": false}` with current human evidence explicitly naming the
+claim and the requested metadata. These changes preserve the fact's wording and content revision.
+
+Conversation summaries are extractive claims with the derived-summary basis and sentence-level source positions.
+Each sentence retains its speaker role. The item origin reflects the least trusted member, including verified imports: tool observation, then assistant, then human. Summaries remain claims and never become fact evidence roots. A summary is omitted only when every excerpted sentence appears verbatim in displayed original messages; partial overlap keeps the whole summary. Packet fitting retains the summary when an original cannot be displayed and refills released capacity from the bounded candidate pool. Task summaries also receive the existing recovery structure and can cite
+actual tool observations; an assistant's report remains attributed to the assistant. Sources from different scopes,
+projects, branches or entries are never combined. A session closes on `records.close_session(context)` or after
+30 minutes without capture. Hosts that do not supply an end signal use the idle trigger. A task closes only when
+its existing episode state is completed; an open task never closes merely because it has been idle. Automatic host anchors with unknown task state do not block a session idle summary; only recorded open or interrupted work does. Unknown tasks still receive no task summary. Source holds block both input and reads; a completed clear scan or owner release restores source-backed eligibility. Shared-store imports rebuild summaries from renamed originals, while portable exports include only a currently valid summary snapshot.
+
+Coverage is processed Unicode codepoints divided by all codepoints in the current eligible source versions. It
+measures complete input traversal, not retention of every detail. Input traversal and excerpt coverage are separate. All consecutive input fragments must finish before summaries
+are offered. Summaries are offered first; a raw message is removed only when positioned exact excerpts cover
+every character. Messages with unquoted details remain candidates under the existing packet budget. Pages contain at most
+16 sources and 12,000 UTF-8 bytes including instructions, and each result is at most 32 sentences and 1,536 excerpt characters, within the claim limit of 2,048 including speaker labels.
+A group exceeding 2,048 sources remains on the raw path. Historical discovery reads 128 sources per pass, visits
+64 group records per scheduling page and queues at most eight groups. Durable cursors make later groups reachable.
+
+The supervisor wakes at the idle deadline or for old-source discovery. Unchanged completed input pages are reused after continuation, and only new or changed pages request the model.
+Generation uses the existing projection
+lease and auxiliary model port, including private-mode and budget-ledger checks; no new provider is configured.
+Automatic summaries require explicitly configured API or CLI subscription budgets. The CLI default budget for
+other work does not authorize summaries. With no model or budget, raw messages and existing facts remain usable. Doctor reports summary group states and
+pending importance defaults. Failed and incomplete summaries retain raw fallback and use the existing bounded
+work retry policy.
+
+A summary records the source versions, content hashes and related fact revisions. Hydration and final release
+recheck them, including current scope, deletion and suppression. A source withdrawal, new source version or fact
+correction blocks the previous summary immediately. Rebuilding removes excerpts overlapping corrected or retracted
+fact evidence; positioned evidence narrows the exclusion, and unpositioned evidence excludes the whole source.
+Whole sentences are selected using the existing Chinese/English sentence boundaries, preserving conditions across
+commas and semicolons. Over-budget sentences are omitted with raw fallback. Reused quotes retain their positions. Date and entry parsing, date filters and raw expansion remain
+available. The dated-conversation channel checks every member, including tools, against its date, entry and session filters.
+Replacement eligibility considers only the user and assistant messages that this channel reads; other messages remain available. Previous-conversation questions resolve to the latest visible prior session,
+then use the same channel and fallback. Portable fact exports include importance and pinning and omit stale summaries.
+
+The store schema is 1122; supported layouts 1105 through 1121 upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
+not rewritten by the upgrade.

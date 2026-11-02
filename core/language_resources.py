@@ -38,7 +38,17 @@ def language_rules(name: str) -> dict:
 @lru_cache(maxsize=8)
 def prompt_text(name: str) -> str:
     """Return an allowlisted prompt template; callers supply authorized input separately."""
-    if name not in {"consolidation", "candidate", "fragment", "repair", "support", "merge", "entity"}:
+    if name not in {
+        "consolidation",
+        "candidate",
+        "fragment",
+        "repair",
+        "support",
+        "merge",
+        "entity",
+        "session_summary",
+        "importance",
+    }:
         raise ValueError("unknown prompt")
     return _resource_text(f"{name}.txt").rstrip("\r\n")
 

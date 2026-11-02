@@ -65,8 +65,9 @@ def _store_events(tx, clock: CaptureClock, prepared, scope_id: str, admission_po
     ]
     eligible = screen_sources(tx, receipts, clock.utc_now(), remaining_seconds=scan_budget())
     candidates = []
+    fresh = {(source.ref, source.revision) for source in receipts if source.disposition == "inserted"}
     for ref, revision in eligible:
-        decision = admit_source(tx, clock, ref, revision, admission_policy)
+        decision = admit_source(tx, clock, ref, revision, admission_policy, new_activity=(ref, revision) in fresh)
         if decision is not None:
             candidates.append((SourceWrite("inserted", ref, revision), decision))
     markers = [decision_marker(tx, source.ref, source.revision) for source in receipts]

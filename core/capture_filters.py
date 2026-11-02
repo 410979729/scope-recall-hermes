@@ -16,18 +16,34 @@ from .secret_patterns import (
 )
 
 
-def strip_private_content(text: str) -> tuple[str, bool]:
-    """Remove nested private spans; an unclosed opening tag hides the remaining text."""
-    pieces, start, depth, removed = [], 0, 0, False
+def without_private(text: str) -> tuple[str, int]:
+    """Remove inline private spans before any durable or outbound use.
+
+    Nested spans stay private until the matching close. An unfinished span hides the remaining text, so a partial
+    transcript line cannot release it on replay. The count is metadata only and never includes hidden content.
+    """
+    kept, position, depth, count = [], 0, 0, 0
     for tag in re.finditer(r"</?private\s*>", text, re.IGNORECASE):
         if depth == 0:
-            pieces.append(text[start : tag.start()])
-        removed = True
-        depth = max(0, depth - 1) if tag.group().startswith("</") else depth + 1
-        start = tag.end()
+            kept.append(text[position : tag.start()])
+        if not tag.group().startswith("</"):
+            if depth == 0:
+                count += 1
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            count += 1
+        position = tag.end()
     if depth == 0:
-        pieces.append(text[start:])
-    return "".join(pieces), removed
+        kept.append(text[position:])
+    return "".join(kept), count
+
+
+def strip_private_content(text: str) -> tuple[str, bool]:
+    """Expose whether the shared nested-span filter omitted any private markup or content."""
+    filtered, count = without_private(text)
+    return filtered, bool(count)
 
 
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (

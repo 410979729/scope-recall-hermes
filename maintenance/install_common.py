@@ -25,6 +25,7 @@ from typing import Any, Literal
 import yaml
 from scope_recall._version import __version__
 from scope_recall._version import manifest_version as _manifest_version
+from scope_recall.adapters.installation_receipt import RECEIPT_FILENAME as RECEIPT_FILENAME
 
 from .backup import first_link
 
@@ -53,7 +54,7 @@ SKILLS: dict[str, Path] = {
 }
 PACKAGE_VERSION = __version__
 HostChoice = Literal["hermes", "codex", "claude-code", "workbuddy", "dsh"]
-RECEIPT_FILENAME = ".scope-recall-install-receipt.json"
+
 BACKUP_DIRNAME = ".scope-recall-backups"
 #: What a store's runtime-config.json may weigh, for the shared commands that write it and the doctor that
 #: reads it.  The shared worker's lists every scope of the store twice (its binding and its allowed scopes),

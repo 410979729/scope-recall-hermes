@@ -16,6 +16,7 @@ from .recall_needs import statement_text
 from .retrieval import CandidateRef, RetrievedObject, optional_json
 from .retrieval_hydration import RetrievalHydration, replacements
 from .source_records import StoredSource
+from .summary_validity import CONVERSATION_SUMMARY_REASONS
 from .visibility import allowed
 
 Pair = tuple[CandidateRef, RetrievedObject]
@@ -405,3 +406,79 @@ def prefer_originals(tx, ranked: list[Pair], context, *, clock=None, gaps=None) 
     if pool.incomplete and gaps is not None:
         gaps.append("restatement_comparison_incomplete")
     return result
+
+
+def _summary_quotes(obj: RetrievedObject) -> list[str]:
+    """The full sentences displayed by a validated conversation-summary claim."""
+    metadata = dict(obj.metadata)
+    if obj.kind != "claim" or metadata.get("qualification_reason") not in CONVERSATION_SUMMARY_REASONS:
+        return []
+    payload = optional_json(metadata.get("payload_json"))
+    spans = payload.get("evidence_spans", ()) if isinstance(payload, dict) else ()
+    return [span["quote"] for span in spans if type(span.get("quote")) is str and span["quote"]]
+
+
+def _decision_anchors(objects):
+    """Use only the displayed decision body and its verified cited source versions."""
+    anchors = []
+    for obj in objects:
+        if obj.kind != "claim" or obj.temporal_status != "current":
+            continue
+        payload = optional_json(dict(obj.metadata).get("payload_json"))
+        if not isinstance(payload, dict) or payload.get("kind") != "decision":
+            continue
+        refs = {
+            (p["source_ref"], p["source_revision"])
+            for p in payload.get("evidence_spans", ())
+            if isinstance(p, dict) and type(p.get("source_ref")) is str and type(p.get("source_revision")) is int
+        }
+        anchors.append((refs, obj.content))
+    return anchors
+
+
+def redundant_summary_keys(objects: list[RetrievedObject]) -> set[tuple[str, str, int]]:
+    """Omit excerpts repeated by displayed originals or same-source decisions.
+
+    A decision's stored evidence is not automatically displayed text. Require
+    every quoted sentence in its visible body; additional detail keeps a summary.
+    """
+    originals = [obj.content for obj in objects if obj.kind == "event"]
+    decisions = _decision_anchors(objects)
+    redundant = set()
+    for obj in objects:
+        if not _summary_quotes(obj):
+            continue
+        payload = optional_json(dict(obj.metadata).get("payload_json"))
+        if not isinstance(payload, dict):
+            continue
+        if all(
+            any(span["quote"] in raw for raw in originals)
+            or any(
+                (span["source_ref"], span["source_revision"]) in refs and span["quote"] in body
+                for refs, body in decisions
+            )
+            for span in payload["evidence_spans"]
+        ):
+            redundant.add((obj.kind, obj.ref, obj.revision))
+    return redundant
+
+
+def prioritize_summary_originals(ranked: list[Pair]) -> list[Pair]:
+    """Give visible originals a chance before their summary without discarding fallback."""
+    originals = [pair for pair in ranked if pair[1].kind == "event"]
+    before = {}
+    for candidate, obj in ranked:
+        quotes = _summary_quotes(obj)
+        if not quotes:
+            continue
+        witnesses = [next((pair for pair in originals if quote in pair[1].content), None) for quote in quotes]
+        if all(pair is not None for pair in witnesses):
+            before[candidate.key] = [pair for pair in witnesses if pair is not None]
+    return _ordered(ranked, before, set(), {})
+
+
+def has_conversation_summaries(ranked: list[Pair]) -> bool:
+    """Whether final packet selection must retain conversation-summary alternatives."""
+    return any(
+        dict(obj.metadata).get("qualification_reason") in CONVERSATION_SUMMARY_REASONS for _candidate, obj in ranked
+    )

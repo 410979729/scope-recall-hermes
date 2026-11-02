@@ -6,7 +6,8 @@ import sqlite3
 
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
-from scope_recall.adapters.hermes.installation import HermesIdentityError, _build_audience_scope_ids
+from scope_recall.adapters.hermes.installation import HermesIdentityError
+from scope_recall.adapters.installation import _build_audience_scope_ids
 
 
 def _row(chat_type: str, chat_id: str, scope_id: str) -> dict[str, object]:

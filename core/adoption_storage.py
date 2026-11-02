@@ -38,6 +38,27 @@ class PreparedAdoption:
     support: Any = None
 
 
+def _owner_bound(tx, owner, assistant):
+    """Use the host's shared ownership proof rather than deriving another principal identity."""
+    resolver = tx.context.owner_resolver
+    shared = tx.context.binding.installation_kind == "shared"
+    if resolver is None:
+        return not shared
+    if assistant is None:
+        return False
+    sources = (owner, assistant)
+    principals = [source.event.get("source_principal") for source in sources]
+    if shared and any(
+        p is None or p.get("kind") != kind for p, kind in zip(principals, ("human", "assistant"), strict=True)
+    ):
+        return False
+    memo = {}
+    identities = [
+        resolver(source.entry_id, principal, memo) for source, principal in zip(sources, principals, strict=True)
+    ]
+    return identities[0] is not None and identities[0] == identities[1]
+
+
 def adoption_context(tx, owner):
     """Find the preceding assistant occurrence in this session and audience.
 
@@ -64,12 +85,16 @@ def adoption_context(tx, owner):
         (row["event_id"], owner.ref),
     ).fetchone()[0]
     assistant = tx.source(row["event_id"], revision)
+    if not _owner_bound(tx, owner, assistant):
+        return None
     parts = fragments(assistant.event["content"]) if assistant is not None else ()
     return AdoptionContext(owner, assistant, parts, row["event_id"], revision)
 
 
 def source_reason(tx, snapshot):
     """Reject missing, superseded, held, muted or incomplete source versions."""
+    if not _owner_bound(tx, snapshot.confirmation, snapshot.assistant):
+        return "owner_unbound"
     for source in (snapshot.confirmation, snapshot.assistant):
         if source is None:
             return "source_missing"
@@ -287,3 +312,16 @@ def adopted_source(tx, claim_ref, claim_revision):
         return tuple(row) if row is not None else None
 
     return tx.remembered(("adopted_source", claim_ref, claim_revision), load)
+
+
+def is_adopted_assistant(tx, ref, revision):
+    """Whether a raw assistant parent is represented by a bound adoption's selected slices."""
+    return (
+        tx._check()
+        .execute(
+            "SELECT 1 FROM adoption_relations WHERE assistant_ref=? AND assistant_revision=? AND state='bound' LIMIT 1",
+            (ref, revision),
+        )
+        .fetchone()
+        is not None
+    )

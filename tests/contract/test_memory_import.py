@@ -385,7 +385,8 @@ def test_import_receipt_explains_private_removal(store):
     public = dict(source="mem0", source_id="TEST-account", count=1, items=[_public_item(item)])
     plan = {**public, "preview_id": digest(public), "_records": (item,)}
     result = apply_import(app, ctx, plan, preview_id=plan["preview_id"], scope_id="TEST-scope")
-    assert result["gaps"] == {"private_content_omitted": 1}
+    assert result["gaps"] == {"private_content_omitted": 1, "private_spans_removed:1": 1}
+    assert "hidden-canary" not in json.dumps(result)
 
 
 def test_shared_store_owner_import_uses_registered_management_entry(tmp_path, monkeypatch, capsys):

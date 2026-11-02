@@ -1,4 +1,4 @@
-"""CLI entry for the six-tool Codex MCP stdio server.
+"""CLI entry for a host-bound MCP stdio service.
 
 ``--config`` with ``--workspace`` serves a local Codex installation's mapped
 project; ``--home`` with ``--host`` serves a client attached to a shared store,
@@ -15,6 +15,7 @@ from pathlib import Path
 from ...runtime.worker_entry import host_process_credential_environment
 from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
 from .mcp_server import build_server
+from .stdio_lifetime import run_stdio
 
 
 def _absolute(value: str, field: str) -> Path:
@@ -92,37 +93,11 @@ def main(argv: list[str] | None = None) -> int:
             workspace=workspace,
             trusted_runtime_config_path=str(runtime_config) if runtime_config is not None else None,
         )
-        # The client runs this server for as long as it is open: its prompt hooks, each a process of their own, have
-        # their recall answered here, warm (``local_endpoint``).  An override of the runtime config is this server's.
-        # A client that keeps a resident recall server instead (WorkBuddy, which runs this one only with a
-        # conversation's process) has it started and kept from here while this runs (``keep_resident``), and this
-        # server answers no hook: the resident process owns the warmed vector connections. Which of the two is
-        # decided once, here: a changed ``resident_recall_minutes``
-        # reaches this side when the client starts this server again.
-        endpoint = keeping = None
         if isinstance(config, SharedClientConfig) and runtime_config is None:
-            from .local_endpoint import keep_resident, resident_minutes, serve
+            from .local_endpoint import request_recall
 
-            env_file = _absolute(args.env_file, "env-file") if args.env_file else None
-            if resident_minutes(config.home, config.host) > 0:
-                keeping = keep_resident(config.home, config.host, env_file=env_file)
-            else:
-                endpoint = serve(
-                    config.home,
-                    config.host,
-                    env_file=env_file,
-                    runtime_config=config.runtime_config_path,
-                    credentials=(lambda: host_process_credential_environment(config.runtime_config_path, env_file))
-                    if env_file is not None
-                    else None,
-                )
-        try:
-            server.server.run(transport="stdio")
-        finally:
-            if endpoint is not None:
-                endpoint.stop()
-            if keeping is not None:
-                keeping.set()
+            request_recall(config.home, config.host)
+        run_stdio(server.server)
     except (CodexConfigError, ValueError) as exc:
         raise SystemExit(str(exc)) from None
     return 0

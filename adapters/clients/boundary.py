@@ -7,17 +7,50 @@ import re
 from typing import Any
 
 from scope_recall.contracts import ContractError, SourceEvent, utc_timestamp
+from scope_recall.core.capture_filters import without_private
+
+from ..host_profiles import (
+    HOSTS,
+)
+from ..host_profiles import (
+    claude_code_person_text as claude_code_person_text,
+)
+from ..host_profiles import (
+    is_codex_suggestions_prompt as is_codex_suggestions_prompt,
+)
+from ..host_profiles import (
+    is_codex_suggestions_reply as is_codex_suggestions_reply,
+)
+from ..host_profiles import (
+    is_task_notification as is_task_notification,
+)
+from ..host_profiles import (
+    is_workbuddy_agent_run as is_workbuddy_agent_run,
+)
+from ..host_profiles import (
+    is_workbuddy_notice as is_workbuddy_notice,
+)
+from ..host_profiles import (
+    workbuddy_person_text as workbuddy_person_text,
+)
+from ..host_profiles import (
+    workbuddy_record_words as workbuddy_record_words,
+)
 
 _SCOPE_RECALL_TOOL = re.compile(r"(?:^|__)(?:scope[-_]?recall)", re.IGNORECASE)
 _MAX_TOOL_CHARS = 65536
-#: What a hook with nothing to add writes to stdout, by client.  WorkBuddy puts a prompt hook's whole stdout in front
-#: of the prompt unless it carries ``additionalContext`` (its ``executeUserPromptSubmitHooks``), so "{}" would stand
-#: before every prompt with nothing recalled; for it an empty answer is nothing at all.
-EMPTY_ANSWER = {"codex": "{}", "claude-code": "{}", "workbuddy": "", "dsh": "{}"}
-#: Turn identifiers use the host-specific fields below.  Claude Code uses ``prompt_id``, while Codex uses
-#: ``turn_id``.  Claude Code tool output is not captured, avoiding large volumes of tool traffic and the embedding
-#: work those captures would generate.
-TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id", "workbuddy": "generation_id", "dsh": "turn_id"}
+EMPTY_ANSWER = {host: profile.empty_answer for host, profile in HOSTS.items()}
+TURN_FIELD = {host: profile.turn_field for host, profile in HOSTS.items()}
+
+
+def filter_capture_reply(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Filter native spool text locally; None identifies an ordinary hook event."""
+    if payload.get("hook_event_name") != "FilterCapture":
+        return None
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return {}
+    return {"text": without_private(without_lone_surrogates(text))[0]}
 
 
 def host_source_key(
@@ -56,27 +89,6 @@ def _serialize_tool_value(value: object) -> tuple[str, bool]:
     return encoded[:_MAX_TOOL_CHARS], len(encoded) > _MAX_TOOL_CHARS
 
 
-#: How Claude Code opens the prompt it hands the model when a background task finishes.  The session
-#: record marks such an entry ``origin.kind: task-notification``, never the owner's; the prompt hook sees
-#: only the text.
-TASK_NOTIFICATION_PREFIX = "<task-notification>"
-
-
-def is_task_notification(prompt: str) -> bool:
-    """Whether a prompt is Claude Code's notice that a background task finished, not the owner's words."""
-    return prompt.lstrip().startswith(TASK_NOTIFICATION_PREFIX)
-
-
-#: A reminder Claude's desktop app puts in the person's message, addressed to the model (a session started without a
-#: project folder, and others): a text block of its own, or ahead of what was typed in one string.  Such a block opens
-#: a line; the person's own words about one, inside a line, stay theirs.  The blank lines after one go with it.  The
-#: opening tag is matched within its line, and its end found by a plain search, so a text of many unclosed openings
-#: costs one pass, not one pass per opening.
-_CLAUDE_CODE_REMINDER_OPEN = re.compile(r"^[ \t]*<system-reminder\b[^>\n]*>", re.MULTILINE)
-_CLAUDE_CODE_REMINDER_CLOSE = "</system-reminder>"
-_BLANK_LINES = re.compile(r"(?:[ \t]*\r?\n)*")
-
-
 #: Where a prompt's payload carries since when the host's model still holds the session's own turns
 #: (``transcript.context_since``) to a recall that runs where the session record cannot be opened: the entry's resident
 #: server, or the server of a client on another machine.  Only this package's own hook and client write it.
@@ -93,125 +105,6 @@ def in_context_since(payload: dict[str, Any]) -> str | None:
         return utc_timestamp(value)
     except ContractError:
         return None
-
-
-def claude_code_person_text(text: str) -> str:
-    """The person's own words in a Claude Code prompt or session-record message: without the ``<system-reminder>``
-    blocks the app put in it, or the text as it came when it holds none.  Complete reminder blocks are excluded from
-    the evidence used to derive the person's claims.  A block that never closes, and what follows it, stay."""
-    kept: list[str] = []
-    position = 0
-    while (opening := _CLAUDE_CODE_REMINDER_OPEN.search(text, position)) is not None:
-        closing = text.find(_CLAUDE_CODE_REMINDER_CLOSE, opening.end())
-        if closing < 0:
-            break
-        kept.append(text[position : opening.start()])
-        position = closing + len(_CLAUDE_CODE_REMINDER_CLOSE)
-        blank = _BLANK_LINES.match(text, position)
-        position = blank.end() if blank is not None else position
-    if not kept:
-        return text
-    kept.append(text[position:])
-    return "".join(kept).strip()
-
-
-#: How WorkBuddy opens the message it hands its model, and so its prompt hook, when a Stop hook or a goal asks the
-#: turn to go on (its record marks the message ``providerData.isMeta``).
-WORKBUDDY_FEEDBACK_PREFIX = "Stop hook feedback:"
-
-
-def is_workbuddy_notice(prompt: str) -> bool:
-    """Whether a WorkBuddy prompt is WorkBuddy's own: a background task's notice, or a request to go on."""
-    return is_task_notification(prompt) or prompt.lstrip().startswith(WORKBUDDY_FEEDBACK_PREFIX)
-
-
-#: What WorkBuddy wraps around the person's words in a message: its reminders, and the block that holds what was typed.
-#: Its prompt hook strips both itself (as of 5.3.14); its session record keeps them.
-_WORKBUDDY_REMINDER = re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>\s*", re.DOTALL)
-_WORKBUDDY_QUERY = re.compile(r"<user_query>(.*?)</user_query>", re.DOTALL)
-#: A subagent's record is ``<session>/subagents/agent-*.jsonl``; its hooks name that record's id as ``agent_id``.
-_WORKBUDDY_SUBAGENT_RECORD = re.compile(r"[\\/]subagents[\\/]")
-
-
-def workbuddy_person_text(text: str) -> str:
-    """The person's own words in a WorkBuddy prompt or record message: the last ``<user_query>`` block once its
-    ``<system-reminder>`` blocks are removed, or, without such a block, the whole text without them."""
-    cleaned = _WORKBUDDY_REMINDER.sub("", text)
-    queries = _WORKBUDDY_QUERY.findall(cleaned)
-    return (queries[-1] if queries else cleaned).strip()
-
-
-def workbuddy_record_words(text: str) -> str:
-    """The person's own words in a user message of WorkBuddy's session record: every ``<user_query>`` block once its
-    ``<system-reminder>`` blocks are removed, or nothing when it has none.
-
-    WorkBuddy keeps what the person sent inside such a block, and merges messages sent while a turn ran into one
-    message with a block each (its prompt hook is handed the last only).  A user message without one is WorkBuddy's
-    own: a local command or a shell command and their output, a teammate's report, a slash command's expansion."""
-    queries = (query.strip() for query in _WORKBUDDY_QUERY.findall(_WORKBUDDY_REMINDER.sub("", text)))
-    return "\n".join(query for query in queries if query)
-
-
-def is_workbuddy_agent_run(payload: dict[str, Any]) -> bool:
-    """Whether a WorkBuddy hook comes from one of its subagents rather than the session the person types into.
-
-    A subagent's record id starts with ``agent-`` and its record lies in a ``subagents`` folder.  ``agent_type`` alone
-    says nothing of the kind: WorkBuddy sets it to whichever agent runs the person's own session, on every turn after
-    the first, and ``agent_id`` also names the record of a session loaded from a record named otherwise."""
-    agent_id, record = payload.get("agent_id"), payload.get("transcript_path")
-    return (type(agent_id) is str and agent_id.strip().startswith("agent-")) or (
-        type(record) is str and _WORKBUDDY_SUBAGENT_RECORD.search(record) is not None
-    )
-
-
-#: How Codex opens the prompt it sends through the same hook as a message to ask the model what the owner might do
-#: next.  The owner never wrote it: stored as theirs it put 11,000 to 15,000 characters of Codex's instructions
-#: among their messages, claims were drawn from it as if they had said them, and its recall failed on its length.
-_CODEX_SUGGESTIONS_PROMPT = re.compile(r"\bhyperpersonali[sz]ed\s+suggestions?\b", re.IGNORECASE)
-_CODEX_SUGGESTIONS_HEADINGS = re.compile(
-    r"^#{1,2}[ \t]*(?:overview|rules|examples|bad examples|response format)[ \t]*$", re.IGNORECASE | re.MULTILINE
-)
-#: How the desktop app opens the shorter request it sends after each turn for one suggested next message: a frame in
-#: which Codex itself says the user did not write it.  Stored as the owner's, it would add Codex's instructions to
-#: their messages after every turn, and its answer would come back in recall.
-_CODEX_SUGGESTED_MESSAGE_PROMPT = re.compile(
-    r"This is an app-generated request for a suggested next user message\.\s+The user did not write this message\.",
-    re.IGNORECASE,
-)
-
-
-def is_codex_suggestions_prompt(prompt: str) -> bool:
-    """Whether a prompt is Codex asking the model for suggestions, not the owner's words.
-
-    Codex asks in two ways, each told by its own frame rather than by one phrase.  The request for one suggested next
-    message opens with the two sentences in which Codex says the user did not write it.  The request for several
-    suggestions opens with a heading, names its "hyperpersonalized suggestions" in its first lines, runs to
-    11,000-15,000 characters and carries at least three of its own headings (Overview, Rules, Examples, Bad examples,
-    Response format).  The owner's words about either, even long ones, stay theirs unless they open with that frame.
-    """
-    text = prompt.lstrip()
-    if _CODEX_SUGGESTED_MESSAGE_PROMPT.match(text) is not None:
-        return True
-    if not text.startswith("#") or len(text) < 8000 or _CODEX_SUGGESTIONS_PROMPT.search(text[:600]) is None:
-        return False
-    return len({heading.strip("# \t").lower() for heading in _CODEX_SUGGESTIONS_HEADINGS.findall(text)}) >= 3
-
-
-def is_codex_suggestions_reply(message: str) -> bool:
-    """Whether a reply is the model's answer to such a request: a JSON object holding only a list of suggestions, or
-    only the one suggested message."""
-    text = message.strip()
-    if not text.startswith("{") or len(text) > _MAX_TOOL_CHARS:
-        return False
-    try:
-        value = json.loads(text)
-    except (ValueError, RecursionError):
-        return False
-    if not isinstance(value, dict) or len(value) != 1:
-        return False
-    if "suggestions" in value:
-        return isinstance(value["suggestions"], list)
-    return isinstance(value.get("suggestion"), str)
 
 
 def user_prompt_source_event(
@@ -424,7 +317,7 @@ def authorized_attachment_refs(payload: dict[str, Any]) -> tuple[list[str], tupl
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
-def without_lone_surrogates(value):
+def without_lone_surrogates(value: Any) -> Any:
     """``value`` with every lone surrogate in its strings replaced by U+FFFD, the character that stands for one.
 
     It walks the value with a stack of its own: walked by calling itself, a payload nested deeper than the
@@ -449,3 +342,9 @@ def without_lone_surrogates(value):
             else:
                 target.append(item)
     return top
+
+
+def visible_recall_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Copy a recall request with private spans removed before any process or embedding boundary."""
+    prompt = payload.get("prompt")
+    return {**payload, "prompt": without_private(prompt)[0]} if type(prompt) is str else dict(payload)

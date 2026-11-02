@@ -7,7 +7,14 @@ import json
 from ..contracts import ContractError
 from .adoption_storage import adoption_context
 from .worker_adoption import advance_adoption, publish_adoption
-from .worker_outcomes import budget_left, finalize_work, hold_for_private_mode, model_failure, stale_result
+from .worker_outcomes import (
+    budget_left,
+    defer_model_pass,
+    finalize_work,
+    hold_for_private_mode,
+    model_failure,
+    stale_result,
+)
 
 
 def schedule_adoptions(tx, source_refs, *, now):
@@ -74,10 +81,10 @@ def process_adoption(storage, clock, context, item, checkpoint, model, *, starte
             raise ContractError("SOURCE_MISSING", "adoption_source")
         if model is None or getattr(model, "judge", None) is None:
             raise ContractError("STORAGE_UNAVAILABLE", "model_unavailable")
-        if state["stage"] != "publish" and getattr(model, "remaining_calls", None) == 0:
-            with storage.write(context, remaining_seconds=remaining()) as tx:
-                tx.work.defer_without_attempt(*item.lease, now=clock.utc_now(), error_code="pass_call_limit", seconds=0)
-            return "deferred", "pass_call_limit", "pending"
+        if state["stage"] != "publish":
+            deferred = defer_model_pass(storage, clock, context, item, model, started=started, budget=budget)
+            if deferred is not None:
+                return deferred
         next_state, result = advance_adoption(
             storage, context, snapshot, state, model.judge, clock=clock, remaining_seconds=remaining()
         )

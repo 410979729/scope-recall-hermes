@@ -488,6 +488,49 @@ def _plugin_rules(spool, value):
     (spool / "private-rules.json").write_text(json.dumps({"private_rules": value}), encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("TEST before <private>hidden<private>nested</private>tail</private> after", "TEST before  after"),
+        ("TEST before <private>unfinished", "TEST before "),
+        ("TEST visible", "TEST visible"),
+        (None, None),
+    ],
+)
+def test_native_spool_filter_is_local_without_transport_or_store(text, expected):
+    answer = remote_client.run_hook({}, json.dumps({"hook_event_name": "FilterCapture", "text": text}).encode())
+    assert answer == ({} if expected is None else {"text": expected})
+
+
+@pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")
+def test_plugin_filters_inline_private_spans_before_spooling(remote, tmp_path):
+    root, _server_home, client, _bodies, _records = remote
+    home, rows = _installed(client, tmp_path)
+    config = rows["scope-recall"]["config"]
+    spool = tmp_path / "TEST-inline-private-spool"
+    _plugin_rules(spool, False)
+    result = _plugin(
+        home,
+        {
+            **config,
+            "spool": str(spool),
+            "prompt": (
+                "TEST visible before <private>TEST hidden inner <private>"
+                "TEST nested</private> tail</private> visible after"
+            ),
+        },
+    )
+    assert "TEST hidden inner" not in "".join(result["diskSnapshots"])
+    assert "TEST nested" not in "".join(result["diskSnapshots"])
+    assert " tail" not in "".join(result["diskSnapshots"])
+    assert any("visible before" in row[4] and "visible after" in row[4] for row in _rows(root))
+    assert result["spool"] == []
+    sent = json.dumps(_bodies)
+    assert "FilterCapture" not in sent
+    assert "TEST hidden inner" not in sent
+    assert "TEST nested" not in sent
+
+
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")
 @pytest.mark.parametrize("cached", [False, None], ids=["stored-false", "fresh"])
 def test_plugin_without_known_rules_appends_without_check_spawns(remote, tmp_path, monkeypatch, cached):

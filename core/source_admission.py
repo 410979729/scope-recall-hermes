@@ -3,10 +3,15 @@
 import json
 
 from .admission import AdmissionDecision, decide, store_decision
+from .summary_storage import note_source
 
 
-def admit_source(tx, clock, ref, revision, policy=None, *, schedule=True):
-    """Restore projections independently of the source's preserved scheduling decision."""
+def admit_source(tx, clock, ref, revision, policy=None, *, schedule=True, new_activity=False):
+    """Restore eligible projections without changing a preserved scheduling decision.
+
+    Only a newly inserted capture version sets new_activity. Replay and safety
+    repair preserve the recorded activity and a completed summary's end signal.
+    """
     source = tx.source(ref, revision)
     if source is None:
         return None
@@ -17,6 +22,14 @@ def admit_source(tx, clock, ref, revision, policy=None, *, schedule=True):
         for kind in sorted(decision.work_types if decision is not None else ()):
             tx.sources.enqueue_source(ref, revision, work_type=kind, available_at=clock.utc_now())
         tx.episodes.attach(source, clock.utc_now())
+        # A capture is activity; replay, review release and scan repair only
+        # restore existing history. They must not reopen a completed session.
+        note_source(
+            tx,
+            source,
+            now=clock.utc_now() if new_activity else source.event["recorded_at"],
+            historical=not new_activity,
+        )
     return decision
 
 

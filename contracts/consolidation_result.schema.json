@@ -249,6 +249,11 @@
             },
             "default": [],
             "description": "Verbatim names in this fact evidence that identify its subject. Similar names and ungrounded translations are excluded."
+          },
+          "importance": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
           }
         },
         "required": [

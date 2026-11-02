@@ -23,7 +23,9 @@ from .failure_policy import (
     capacity_backoff_seconds,
     failure_category,
 )
+from .importance import backfill_importance
 from .storage import SQLiteStorage
+from .summary_storage import queue_summaries
 from .work_storage import MAX_RECOVERY_PAGE
 from .worker_candidates import process_candidate_evaluation
 from .worker_consolidation import (
@@ -113,6 +115,7 @@ class WorkerConfig:
     #: Work types whose provider is on hold (runtime/model_budget.py): not
     #: claimed at all this pass, so no item is leased only to be parked.
     held_work_types: frozenset[str] = frozenset()
+    summary_capable: bool = False
 
     def __post_init__(self) -> None:
         if type(self.owner_id) is not str or not self.owner_id:
@@ -143,6 +146,8 @@ class WorkerConfig:
             value = getattr(self, name)
             if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value <= 0):
                 raise ValueError(f"{name} must be positive")
+        if type(self.summary_capable) is not bool:
+            raise ValueError("summary_capable")
         if type(self.held_work_types) is not frozenset or not self.held_work_types <= _HOLDABLE_WORK_TYPES:
             raise ValueError("held_work_types")
 
@@ -347,6 +352,7 @@ def _recover_failed_work(
             stale = tx.candidates.stale_pending(now=clock.utc_now(), limit=STALE_PENDING_PAGE)
     with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         recovery_page = min(MAX_RECOVERY_PAGE, config.max_items)
+        backfill_importance(tx, limit=128)
         recovered = tx.work.recover_invalid_derivations(
             now=clock.utc_now(), allowed_work_types=allowed, limit=recovery_page
         )
@@ -354,6 +360,7 @@ def _recover_failed_work(
         tx.claims.close_unplaceable_updates(limit=64)
         if "consolidate" in allowed:
             if callable(getattr(entity_model, "judge", None)):
+                queue_summaries(tx, now=clock.utc_now(), limit=128, enabled=config.summary_capable)
                 queue_entity_backfill(tx, now=clock.utc_now(), limit=min(8, config.max_items))
             recovered += tx.work.recover_oversized_consolidations(
                 now=clock.utc_now(), formatter=consolidation_messages, limit=min(8, config.max_items)
@@ -556,7 +563,7 @@ def drain_worker(
         "rebuild_projection": partial(
             process_rebuild_projection,
             model=consolidation if "consolidate" in allowed else None,
-            admission_policy=config.admission_policy,
+            config=config,
         ),
         "purge": partial(process_purge, purge=purge),
     }

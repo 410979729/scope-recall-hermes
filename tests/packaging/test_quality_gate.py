@@ -317,6 +317,8 @@ def test_an_import_from_a_higher_layer_is_one_but_from_an_entry_or_as_a_named_la
     # instance's import of the Hermes check is named, but made at the top, where every worker start pays for it.  The
     # named lazy import closes no cycle with the client check importing the runtime: that is the import itself.
     assert quality.import_problems(tmp_path, files) == [
+        "client imports Hermes: adapters/clients/authorization.py reaches adapters/hermes/__init__.py",
+        "client imports Hermes: adapters/clients/authorization.py reaches adapters/hermes/authorization.py",
         "upward import: adapters/codex/helper.py:1 imports maintenance/install.py",
         "upward import: core/x.py:2 imports runtime/y.py",
         "upward import: core/x.py:3 imports runtime/y.py through __init__.py",

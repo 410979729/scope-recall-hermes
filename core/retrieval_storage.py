@@ -43,6 +43,7 @@ from .retrieval import (
     SearchContext,
 )
 from .retrieval_hydration import RetrievalHydration, source_key
+from .summary_storage import summarized_rows
 from .visibility import OBJECT_KINDS
 
 _EXACT_REF = re.compile(r"(?:event|claim|episode|artifact|reference)-[A-Za-z0-9._/-]+@\d+")
@@ -704,6 +705,7 @@ class RetrievalStorage(RetrievalHydration):
         trusted = context.trusted_context
         scopes = tuple(sorted(trusted.allowed_scope_ids))
         entries = f"AND e.entry_id IN ({_marks(scope.entry_ids)})" if scope.entry_ids else ""
+        sessions = f"AND e.session_id IN ({_marks(scope.session_ids)})" if scope.session_ids else ""
         current = (
             ""
             if context.mode in {"history", "as_of"}
@@ -719,7 +721,7 @@ class RetrievalStorage(RetrievalHydration):
                 .execute(
                     f"""SELECT e.event_id,e.source_revision,e.role,length(e.content) AS size,
                            CASE WHEN length(e.content)<=? THEN e.content END AS short FROM source_events e
-                    WHERE e.scope_id IN ({_marks(scopes)}) AND e.occurred_at>=? AND e.occurred_at<? {entries}
+                    WHERE e.scope_id IN ({_marks(scopes)}) AND e.occurred_at>=? AND e.occurred_at<? {entries} {sessions}
                       AND e.role IN ('user','assistant')
                       AND (e.origin IN ('human_direct','assistant_visible') OR (e.origin='imported'
                            AND e.import_provenance_sha256 IS NOT NULL
@@ -736,6 +738,7 @@ class RetrievalStorage(RetrievalHydration):
                         start,
                         end,
                         *scope.entry_ids,
+                        *scope.session_ids,
                         trusted.project_id,
                         trusted.branch_id,
                         *((context.as_of,) if as_of else ()),
@@ -744,17 +747,15 @@ class RetrievalStorage(RetrievalHydration):
                 )
                 .fetchall()
             )
-            rows = [
-                row
-                for row in rows
-                if source_key(row["event_id"], row["source_revision"]) not in excluded
-                and (row["short"] is None or says_something(row["short"]))
-            ]
+            rows = [row for row in rows if source_key(row["event_id"], row["source_revision"]) not in excluded]
+            rows = summarized_rows(tx, context, rows, limit=limit)
+            rows = [row for row in rows if row["short"] is None or says_something(row["short"])]
             # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler
             # never slices content), and on the coding clients' days most messages are: offered first, they would be
             # dropped and other days' short items delivered instead.
             days.append(
                 [
+                    [row for row in rows if row["role"] == "summary"],
                     [row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS],
@@ -772,7 +773,13 @@ class RetrievalStorage(RetrievalHydration):
             picks.append(day)
         chosen = [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
         return tuple(
-            CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index)
+            CandidateRef(
+                row["candidate_kind"] if "candidate_kind" in row.keys() else "event",
+                row["event_id"],
+                row["source_revision"],
+                "scoped",
+                rank=index,
+            )
             for index, row in enumerate(chosen[:limit], 1)
         )
 

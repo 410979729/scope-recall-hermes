@@ -217,11 +217,16 @@ def _same(left: object, right: object) -> bool:
 
 
 def credits(
-    item: dict, gold: tuple[str, ...], key_of: Mapping[str, str], frames: Mapping[str, tuple[Frame, ...]]
+    item: dict,
+    gold: tuple[str, ...],
+    key_of: Mapping[str, str],
+    frames: Mapping[str, tuple[Frame, ...]],
 ) -> frozenset[str]:
     """The gold messages (parts of an answer) a delivered item gives: the message itself, or a claim drawn from it
     that asserts one of the ``frames`` that message states.  A claim citing the message with another value, a denial
     or a quotation of it gives none."""
+    if item.get("qualification_reason") == "Other-session matches" and item.get("basis") == "derived_summary":
+        return frozenset()
     if item["kind"] == "event":
         return frozenset({key_of.get(item["ref"])} & set(gold))
     payload = optional_json(item["content"]) if item["kind"] in {"claim", "procedure"} else None
@@ -319,7 +324,6 @@ class BenchStore:
         self.entries = {entry.id: entry for entry in world.entries}
         self.key_of: dict[str, str] = {}
         self.scope_of = {message.key: message.scope for message in world.messages}
-        self.text_of = {message.key: message.text for message in world.messages}
         self.frames = {message.key: self._frames(message) for message in world.messages}
         self.claim_scopes: dict[str, str | None] = {}
         with self.core.storage.write(self.worker) as tx:
