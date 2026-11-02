@@ -88,6 +88,10 @@ def test_pending_claim_backfill_reports_the_schema_gap_until_upgrade_finishes(ap
 
 def test_subject_projection_upgrades_an_existing_body_index(app):
     """The preceding schema's complete body cursor must restart for subject markers."""
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    from tests.contract.test_claim_lexical_index import search
+
     core, ctx = app
     source = capture(core, ctx, "TEST-upgrade theme amber.")
     ref = accept(core, ctx, draft(source, "amber", subject="TEST-upgrade", predicate="theme")).items[0].ref
@@ -105,3 +109,6 @@ def test_subject_projection_upgrades_an_existing_body_index(app):
             == 1
         )
         assert not lexical_index.claim_backfill_pending(tx._check())
+        assert [
+            item.ref for item in RetrievalStorage().claims(tx, search(core, ctx, "TEST-upgrade theme amber"), limit=6)
+        ] == [ref]

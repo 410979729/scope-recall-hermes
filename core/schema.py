@@ -164,19 +164,27 @@ CLAIM_SUBJECT_STATEMENTS = (
 )
 
 # A rank certificate is derived from one immutable statement, not a second
-# version selector. Any truth edit invalidates it before a writer can refresh it.
+# version selector. Semantic edits invalidate it; derived processing flags do not
+# affect the selected statement or its rank. The partial truth index also keeps
+# multi-version subjects searchable independently of the current head's words.
 CLAIM_RANK_STATEMENTS = (
     """CREATE TABLE claim_lexical_heads (
         claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id) ON DELETE CASCADE,
         is_simple INTEGER NOT NULL CHECK(is_simple IN (0,1)), recorded TEXT NOT NULL
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX claim_lexical_rank ON claim_lexical_heads(is_simple,claim_id)",
+    "CREATE INDEX claim_lexical_versions ON claim_versions(claim_id) WHERE revision>1",
     *(
         f"""CREATE TRIGGER claim_lexical_{operation.lower()} AFTER {operation} ON claim_versions BEGIN
         UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id={source}.claim_id;
     END"""
-        for operation, source in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD"))
+        for operation, source in (("INSERT", "NEW"), ("DELETE", "OLD"))
     ),
+    """CREATE TRIGGER claim_lexical_update AFTER UPDATE OF
+        claim_id,revision,payload_json,state,basis,qualification_reason,valid_from,valid_to,
+        recorded_from,recorded_to,replaces_revision,conflict_revisions_json ON claim_versions BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id IN (OLD.claim_id,NEW.claim_id);
+    END""",
     """CREATE TRIGGER claim_lexical_head AFTER UPDATE OF current_revision,subject,predicate,kind ON claims BEGIN
         UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id=NEW.claim_id;
     END""",

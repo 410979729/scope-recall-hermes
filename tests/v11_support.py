@@ -164,6 +164,7 @@ _SCHEMA_STEPS = {
             "DROP TRIGGER claim_lexical_delete",
             "DROP TRIGGER claim_lexical_head",
             "DROP TABLE claim_lexical_heads",
+            "DROP INDEX claim_lexical_versions",
             "DROP INDEX claim_lexical_subject",
             "ALTER TABLE claim_lexical_postings DROP COLUMN subject_terms",
         ),

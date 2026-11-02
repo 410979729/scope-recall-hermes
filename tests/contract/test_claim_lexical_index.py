@@ -500,3 +500,148 @@ def test_long_queries_retain_subject_terms_for_final_scoring(app, monkeypatch):
         actual = RetrievalStorage().claims(tx, context, limit=6)
         assert actual == _ideal_claims(tx, context, 6, monkeypatch)
         assert [item.ref for item in actual] == ["claim-TEST-long-query"]
+
+
+def test_replayed_absence_cannot_take_a_readable_facts_rank_slot(app, monkeypatch):
+    """A restored absence is excluded before exact nomination consumes its result limit."""
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core import lexical_index
+    from scope_recall.core.restore import (
+        InstallationMaintenance,
+        begin_restore,
+        export_deletion_ledger,
+        ledger_digest,
+        replay_deletion_ledger,
+    )
+
+    core, ctx = app
+    blocked, readable = "claim-TEST-absence-a", "claim-TEST-absence-b"
+    _synthetic_claims(core, ctx, [(blocked, "alpha", "beta", "cat"), (readable, "alpha", "beta", "plain")])
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for ref in (blocked, readable):
+            conn.execute("UPDATE claim_versions SET valid_from=NULL WHERE claim_id=?", (ref,))
+            lexical_index.index_claim(conn, ref)
+        conn.execute(
+            "INSERT INTO restored_absence_blocks VALUES ('claim',?,?,?,?,?,?)",
+            (blocked, "TEST-scope", ctx.project_id, ctx.branch_id, "a" * 64, "governance_body_missing_from_snapshot"),
+        )
+    authority = InstallationMaintenance(
+        TrustedContext(ctx.binding, "TEST-restore", ctx.binding.scope_ids, "host_generated")
+    )
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    with core.storage._transaction(authority.context, writable=True, remaining_seconds=10, restoring=True) as tx:
+        tx._check(write=True).execute("DELETE FROM restored_absence_blocks")
+    replay_deletion_ledger(core.storage, authority, ledger)
+    context = search(core, ctx, "alpha beta cat")
+    with core.storage.read(ctx) as tx:
+        assert tx.claims.versions(blocked) == ()
+        ideal = _ideal_claims(tx, context, 1, monkeypatch)
+        actual = RetrievalStorage().claims(tx, context, limit=1)
+    assert [item.ref for item in ideal] == [readable]
+    assert actual == ideal
+
+
+def _normalized_subject_history(core, ctx, future):
+    """Append a normalized successor to a synthetic legacy slot through the real writer."""
+    from scope_recall.contracts import TrustedSourcePrincipal
+    from scope_recall.core.claims import Qualification
+
+    ctx = replace(ctx, source_principal=TrustedSourcePrincipal("human", "verified", "principal:human:TEST"))
+    prefix = "项目【TEST-project】"
+    source = capture(core, ctx, prefix + "alpha beta使用amber。")
+    proposal = draft(source, "amber", subject=prefix + "alpha beta", predicate="使用")
+    qualification = Qualification("active", "direct_report", "synthetic first-hand assertion")
+    with core.storage.write(ctx) as tx:
+        old = tx.claims.append("TEST-scope", proposal, qualification, recorded_at="2026-09-01T12:00:00Z")
+    source = capture(core, ctx, prefix + "alpha beta使用cobalt。", when="2026-09-02T12:00:00Z")
+    proposal = draft(
+        source,
+        "cobalt",
+        subject="alpha beta",
+        predicate="使用",
+        conditions=[prefix],
+        valid_from="2026-09-10T12:00:00Z" if future else "2026-09-03T12:00:00Z",
+    )
+    with core.storage.write(ctx) as tx:
+        new = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            qualification,
+            recorded_at="2026-09-02T12:00:00Z",
+            previous=tx.claims.version(old.ref, 1),
+        )
+    assert new.ref == old.ref and new.revision == 2
+    return old.ref
+
+
+@pytest.mark.parametrize("case", ["as_of", "future", "old_subject_only"])
+def test_normalized_slot_versions_are_scored_on_the_selected_subject(app, monkeypatch, case):
+    """Historical or still-effective legacy subjects survive a differently named current head."""
+    core, ctx = app
+    ref = _normalized_subject_history(core, ctx, case != "as_of")
+    query = "项目 TEST-project" if case == "old_subject_only" else "项目 TEST-project 使用"
+    context = search(core, ctx, query, "as_of" if case == "as_of" else "current")
+    if case == "as_of":
+        context = replace(context, as_of="2026-09-01T13:00:00Z")
+    with core.storage.read(ctx) as tx:
+        ideal = _ideal_claims(tx, context, 1, monkeypatch)
+        actual = RetrievalStorage().claims(tx, context, limit=1)
+    assert [(item.ref, item.revision) for item in ideal] == [(ref, 1)]
+    assert actual == ideal
+    if case == "as_of":
+        after = replace(search(core, ctx, "alpha beta 使用", "as_of"), as_of="2026-09-04T12:00:00Z")
+        with core.storage.read(ctx) as tx:
+            ideal = _ideal_claims(tx, after, 1, monkeypatch)
+            actual = RetrievalStorage().claims(tx, after, limit=1)
+        assert [(item.ref, item.revision) for item in ideal] == [(ref, 2)]
+        assert actual == ideal
+
+
+def test_entity_completion_keeps_exact_rank_and_bounded_version_prefetch(app, monkeypatch):
+    """Real entity jobs change processing state without invalidating an otherwise exact rank."""
+    from scope_recall.core.claims import Qualification
+
+    from tests.contract.test_entity_resolution import RecordedModel, drain_entities
+
+    core, ctx = app
+    refs = []
+    for index in range(6):
+        source = capture(core, ctx, f"alpha beta tag{index} cat.")
+        proposal = draft(
+            source,
+            "cat",
+            subject="alpha beta",
+            predicate=f"tag{index}",
+            kind="fact",
+            statement_kind="assertion",
+            valid_from=None,
+        )
+        with core.storage.write(ctx) as tx:
+            refs.append(
+                tx.claims.append(
+                    "TEST-scope",
+                    proposal,
+                    Qualification("active", "direct_report", "synthetic"),
+                    recorded_at="2026-09-01T12:00:00Z",
+                ).ref
+            )
+    receipt = drain_entities(core, ctx, RecordedModel(False))
+    assert receipt.failed == 0
+    with core.storage.read(ctx) as tx:
+        conn = tx._check()
+        assert conn.execute("SELECT count(*) FROM claim_versions WHERE entity_resolved=1").fetchone()[0] == 6
+        simple = conn.execute("SELECT count(*) FROM claim_lexical_heads WHERE is_simple=1").fetchone()[0]
+        fetched = []
+        native = type(tx.claims).prefetch_versions
+
+        def tracked(self, selected):
+            selected = tuple(selected)
+            fetched.extend(selected)
+            return native(self, selected)
+
+        monkeypatch.setattr(type(tx.claims), "prefetch_versions", tracked)
+        actual = RetrievalStorage().claims(tx, search(core, ctx, "alpha beta cat"), limit=1)
+    assert actual
+    assert (simple, len(fetched)) == (6, 1)

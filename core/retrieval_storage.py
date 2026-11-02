@@ -187,7 +187,9 @@ def _claim_visibility(context: SearchContext) -> tuple[str, tuple]:
         f"""c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 {automatic} AND c.kind!='alias'
             AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
             AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
-                AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block}))""",
+                AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block}))
+            AND NOT EXISTS(SELECT 1 FROM restored_absence_blocks a
+                WHERE a.object_kind='claim' AND a.object_ref=c.claim_id)""",
         (*scopes, trusted.project_id, trusted.branch_id),
     )
 
@@ -226,23 +228,25 @@ def _claim_coverage(terms: tuple[int, ...], ref: str) -> str:
     )
 
 
-def _subject_claim_rows(tx, context, terms, *, complex_only=False) -> list:
-    """All subject-qualified refs, using postings before audience and head lookups."""
+def _subject_claim_rows(tx, context, terms, *, simple: bool) -> list:
+    """Probe subject postings; only certified heads can use current-head coverage."""
+    if not terms:
+        return []
     visibility, parameters = _claim_visibility(context)
     ids = ",".join(map(str, terms))
-    eligible = "AND h.is_simple=0" if complex_only else ""
+    coverage = "HAVING COUNT(*)*2>=MAX(p.subject_terms)" if simple else ""
     return (
         tx._check()
         .execute(
             f"""WITH subjects AS MATERIALIZED (
             SELECT p.claim_id FROM claim_lexical_postings p INDEXED BY claim_lexical_subject
             WHERE p.term_id IN ({ids}) AND p.subject_terms>0 GROUP BY p.claim_id
-            HAVING COUNT(*)*2>=MAX(p.subject_terms))
+            {coverage})
             SELECT c.claim_id,(SELECT COUNT(*) FROM claim_lexical_postings q
                 WHERE q.claim_id=c.claim_id AND q.term_id IN ({ids})) AS hits
             FROM subjects s CROSS JOIN claim_lexical_heads h ON h.claim_id=s.claim_id
             CROSS JOIN claims c ON c.claim_id=s.claim_id
-            WHERE {visibility} {eligible} ORDER BY hits DESC,c.claim_id""",
+            WHERE {visibility} AND h.is_simple={int(simple)} ORDER BY hits DESC,c.claim_id""",
             parameters,
         )
         .fetchall()
@@ -250,29 +254,25 @@ def _subject_claim_rows(tx, context, terms, *, complex_only=False) -> list:
 
 
 def _complex_claim_rows(tx, context, terms) -> list:
-    """Choose the cheaper indexed driver; neither estimate excludes a fact."""
+    """Keep all possible selected subjects without applying current-head coverage.
+
+    A single version must share a subject term to answer. Multiple versions can
+    have different subjects, so their small truth index bypasses the current
+    postings entirely, even when no query term occurs in the indexed head.
+    """
     conn = tx._check()
-    count = conn.execute(
-        "SELECT COUNT(*) FROM (SELECT 1 FROM claim_lexical_heads WHERE is_simple=0 LIMIT 1024)"
-    ).fetchone()[0]
-    if not count:
-        return []
-    ids = ",".join(map(str, terms))
-    subjects = conn.execute(
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM claim_lexical_postings INDEXED BY claim_lexical_subject "
-        f"WHERE subject_terms>0 AND term_id IN ({ids}) LIMIT 1024)"
-    ).fetchone()[0]
-    if count >= subjects:
-        return _subject_claim_rows(tx, context, terms, complex_only=True)
+    rows = {row["claim_id"]: row for row in _subject_claim_rows(tx, context, terms, simple=False)}
     visibility, parameters = _claim_visibility(context)
-    return conn.execute(
-        f"""SELECT c.claim_id,(SELECT COUNT(*) FROM claim_lexical_postings q
-            WHERE q.claim_id=c.claim_id AND q.term_id IN ({ids})) AS hits
-            FROM claim_lexical_heads h CROSS JOIN claims c ON c.claim_id=h.claim_id
-            WHERE h.is_simple=0 AND {visibility} AND {_claim_coverage(terms, "c.claim_id")}>=0.5
-            ORDER BY hits DESC,c.claim_id""",
+    versions = conn.execute(
+        f"""SELECT DISTINCT c.claim_id,0 AS hits
+            FROM claim_versions v INDEXED BY claim_lexical_versions
+            CROSS JOIN claims c ON c.claim_id=v.claim_id
+            WHERE v.revision>1 AND {visibility}""",
         parameters,
     ).fetchall()
+    for row in versions:
+        rows.setdefault(row["claim_id"], row)
+    return list(rows.values())
 
 
 def _simple_claim_subset(tx, context, terms, subset, selected, limit) -> list:
@@ -351,15 +351,14 @@ def _claim_rows(tx, context: SearchContext, needles: tuple[str, ...], limit: int
     completely known; every other version still uses the ordinary selector.
     """
     present = _claim_term_counts(tx._check(), needles)
-    if not present:
-        return []
     terms = tuple(term for term, _ in present)
-    if limit < 0 or context.mode == "as_of":
-        return _subject_claim_rows(tx, context, terms)
-    rows = [
-        *_complex_claim_rows(tx, context, terms),
-        *_simple_claim_rows(tx, context, present, 1 if len(needles) == 1 else 2, limit),
-    ]
+    rows = _complex_claim_rows(tx, context, terms)
+    if present and context.mode != "as_of":
+        rows.extend(
+            _subject_claim_rows(tx, context, terms, simple=True)
+            if limit < 0
+            else _simple_claim_rows(tx, context, present, 1 if len(needles) == 1 else 2, limit)
+        )
     return sorted(rows, key=lambda row: (-row["hits"], row["claim_id"]))
 
 

@@ -4,7 +4,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
-Facts use current-head lexical postings in the shared term dictionary. Writes, imports, restore and deletion maintain those postings transactionally; aliases are excluded. Initialization upgrades existing stores with resumable bounded backfill pages and retains the pre-upgrade snapshot for rollback. Recall completes pending backfill before admitting an indexed read.
+Facts use current-head lexical postings in the shared term dictionary. Writes, imports, restore and deletion maintain those postings transactionally; aliases are excluded. Nomination applies restored-absence ledgers before result limits, retains historical subjects across slot normalization, and keeps exact ranking after entity processing. Initialization upgrades existing stores with resumable bounded backfill pages and retains the pre-upgrade snapshot for rollback. Recall completes pending backfill before admitting an indexed read.
 
 Recall reserves time for compilation and fresh SQLite release checks, with a candidate-scaled default and additional allowance when hydration is slow. Slow optional channels leave ready evidence available as a partial packet with cutoff gaps; unverified items and expired release fences still return no evidence. Existing recall diagnostics expose stage timings. No storage migration or configuration change is required.
 
