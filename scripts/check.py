@@ -171,6 +171,7 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_docker_distribution.py",
         "tests/contract/test_setup_workload.py",
         "tests/contract/test_adoption.py",
         "tests/contract/test_adoption_merge.py",
@@ -282,6 +283,8 @@ SUITES = {
         "tests/recall_bench/test_recall_bench.py",
     ],
     "native": [
+        "tests/storage_native/test_docker_lock.py",
+        "tests/storage_native/test_docker_setup.py",
         "tests/storage_native/test_sqlite_vector_native.py",
         "tests/contract/test_lance_embed_fence.py",
         "tests/contract/test_retained_lock_deadline.py",

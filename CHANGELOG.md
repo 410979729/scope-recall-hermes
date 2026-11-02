@@ -4,6 +4,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+The shared store can run in a Linux container with host networking and remote client entries.
+
 Budget recommendations include measured summary and adoption processing.
 
 Setup now detects local hosts, previews and confirms a complete installation, preserves existing stores and grants,
