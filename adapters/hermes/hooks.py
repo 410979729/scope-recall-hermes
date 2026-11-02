@@ -7,20 +7,17 @@ import logging
 import threading
 import time
 import weakref
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
+from ..host_profiles import HOSTS
 
 _log = logging.getLogger(__name__)
 
-_SUPPORTED_HOOKS = ("pre_llm_call", "api_request_error", "post_tool_call", "post_llm_call")
-_OBSERVERS = {
-    "pre_llm_call": "observe_pre_llm",
-    "api_request_error": "observe_api_request_error",
-    "post_tool_call": "observe_post_tool_call",
-    "post_llm_call": "observe_post_llm_call",
-}
-#: Hermes' default ``plugins.hook_callback_timeout``.  Past it Hermes 0.21.5 abandons the call and skips the callback
-#: for 60 s; this dispatcher is one callback per hook for every session of the gateway, so every session's hook is
-#: skipped.
+_OBSERVERS = dict(HOSTS["hermes"].hook_observers)
+_SUPPORTED_HOOKS = tuple(_OBSERVERS)
+#: Fallback callback allowance when the host SDK cannot supply its configured timeout. Each session lock waits for
+#: a bounded share so a busy session cannot stall unrelated callbacks.
 _HOST_HOOK_TIMEOUT_S = 30.0
 #: The longest a hook waits for its own session, at most a third of the host's timeout.
 _SESSION_WAIT_CAP_S = 10.0
@@ -46,7 +43,7 @@ def _unregister_adapter_instance(adapter: Any) -> None:
 
 
 def _active_adapter(kwargs: dict[str, Any]) -> Any | None:
-    session_id = str(kwargs.get("session_id") or "").strip()
+    session_id = str(kwargs.get(HOSTS["hermes"].session_field) or "").strip()
     if not session_id:
         return None
     platform = str(kwargs.get("platform") or "").strip().lower()

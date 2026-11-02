@@ -40,11 +40,15 @@ import hashlib
 import json
 import math
 import os
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
+from ...contracts import ContractError
+from ...core.capture_filters import without_private
+from ...core.private import normalize_project_path
+from ..host_profiles import HOSTS, HostProfile
 from .boundary import is_task_notification, without_lone_surrogates, workbuddy_record_words
 
 #: How much of the record one read goes through.  A long session's first read spans several turns.
@@ -62,6 +66,7 @@ class Said:
     text: str
     occurred_at: str
     prompt_id: str | None = None
+    cwd: str | None = None
 
 
 def _human(origin: object) -> bool:
@@ -89,7 +94,7 @@ def _stamp(value: object) -> str | None:
         return None
     if moment.tzinfo is None:
         return None
-    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def said(row: object) -> Said | None:
@@ -158,6 +163,63 @@ def _prompt_id(row: dict) -> str | None:
     return prompt_id.strip()
 
 
+def codex_said(row: object) -> Said | None:
+    """Read only visible response-item messages from a Codex rollout.
+
+    event_msg repeats those messages and is deliberately ignored. Developer instructions, reasoning and function
+    calls are not visible speaker evidence. The byte offset supplies an identity where the rollout omits one.
+    """
+    from ..host_profiles import host_prompt, is_codex_suggestions_reply
+
+    if not isinstance(row, dict) or row.get("type") != "response_item":
+        return None
+    payload = row.get("payload")
+    stamp = _stamp(row.get("timestamp"))
+    if not isinstance(payload, dict) or payload.get("type") != "message" or stamp is None:
+        return None
+    role = payload.get("role")
+    if role not in ("user", "assistant"):
+        return None
+    if role == "assistant" and payload.get("channel") not in (None, "final", "commentary"):
+        return None
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return None
+    text = "\n".join(
+        block["text"]
+        for block in blocks
+        if isinstance(block, dict)
+        and block.get("type") in ("input_text", "output_text")
+        and type(block.get("text")) is str
+    )
+    if not text.strip() or (role == "user" and host_prompt("codex", text)):
+        return None
+    if role == "assistant" and is_codex_suggestions_reply(text):
+        return None
+    entry = payload.get("id") or row.get("id")
+    if type(entry) is not str or not entry.strip() or len(entry) > 100:
+        entry = "rollout:" + hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+    return Said(entry, role, without_lone_surrogates(text), stamp)
+
+
+def codex_record_path(value: object, session_id: str) -> Path | None:
+    """Accept an absolute rollout only when its own session metadata agrees with the hook."""
+    if type(value) is not str:
+        return None
+    path = Path(value)
+    if not path.is_absolute() or not path.is_file() or path.suffix != ".jsonl":
+        return None
+    try:
+        with path.open("rb") as stream:
+            row = json.loads(stream.readline(65537))
+        payload = row.get("payload", {})
+        if row.get("type") == "session_meta" and payload.get("id") == session_id:
+            return path
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
 def _milliseconds(value: object) -> str | None:
     """A WorkBuddy record's moment, milliseconds since the epoch (an ISO time is taken as well)."""
     if type(value) is str:
@@ -165,7 +227,7 @@ def _milliseconds(value: object) -> str | None:
     if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
         return None
     try:
-        moment = datetime.fromtimestamp(value / 1000, timezone.utc)
+        moment = datetime.fromtimestamp(value / 1000, UTC)
     except (OverflowError, OSError, ValueError):
         return None
     return moment.isoformat().replace("+00:00", "Z")
@@ -231,9 +293,7 @@ def workbuddy_said(row: object) -> Said | None:
     if not text.strip() or (role == "user" and is_task_notification(text)):
         return None
     if role == "assistant" and _error_words(text, _workbuddy_error(provider)):
-        # An error WorkBuddy showed in place of the model's reply (not signed in, a model or network failure): the
-        # message carries that error and its words are the error's.  The model said nothing (WorkBuddy's agent
-        # 2.147.0, not signed in, writes its notice as the reply).
+        # An application error notice can occupy the reply field. Its status text does not attest an assistant message.
         return None
     text = without_lone_surrogates(text)
     try:
@@ -304,6 +364,25 @@ def _dsh_said(row: object) -> Said | None:
     return Said(entry_id.strip(), role, without_lone_surrogates(text), occurred_at)
 
 
+def workbuddy_session(path: Path) -> str | None:
+    """Read the first message's attested session ID under a byte limit; filenames do not attest identity."""
+    try:
+        with path.open("rb") as stream:
+            consumed = 0
+            while consumed < READ_BYTES:
+                line = stream.readline(65537)
+                if not line or len(line) > 65536:
+                    return None
+                consumed += len(line)
+                row = json.loads(line)
+                if isinstance(row, dict) and row.get("type") == "message":
+                    session = row.get("sessionId")
+                    return session if type(session) is str and session.strip() and len(session) <= 240 else None
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def workbuddy_projects() -> Path:
     """Where WorkBuddy keeps its session records, one folder per workspace: ``projects`` in the configuration folder
     its CLI takes from ``CODEBUDDY_CONFIG_DIR``, which a hook inherits; ``~/.workbuddy`` when that names none."""
@@ -354,9 +433,10 @@ def said_to_wire(entry: Said) -> dict[str, object]:
     return {
         "entry_id": entry.entry_id,
         "role": entry.role,
-        "text": entry.text,
+        "text": without_private(entry.text)[0],
         "occurred_at": entry.occurred_at,
         "prompt_id": entry.prompt_id,
+        **({"cwd": entry.cwd} if entry.cwd is not None else {}),
     }
 
 
@@ -388,7 +468,9 @@ def said_from_wire(value: object) -> Said | None:
             prompt_id.encode("utf-8")
     except UnicodeEncodeError:
         return None
-    return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
+    directory = value.get("cwd")
+    directory = directory if type(directory) is str and 0 < len(directory) <= 8192 else None
+    return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None, directory)
 
 
 #: The 16 MiB tail bounds per-prompt I/O while leaving room for records after the latest compaction; if a larger
@@ -455,15 +537,61 @@ def record_path(value: object, session_id: str) -> Path | None:
     return path
 
 
-def read(
-    path: Path, offset: int, *, limit: int = READ_BYTES, rows: Callable[[object], Said | None] = said
-) -> list[tuple[int, Said | None]]:
-    """The complete lines after ``offset``, each with the offset just past it and what it shows being said
-    (``rows``: ``said`` for the claude-code host's record, ``workbuddy_said`` for WorkBuddy's).
+PARSERS = {"claude-code": said, "workbuddy": workbuddy_said, "codex": codex_said}
 
-    A last line without its newline is still being written and waits for the next read.
+
+class RecordPage(list[tuple[int, Said | None]]):
+    """A bounded page and the directory attested at each context-change offset.
+
+    Directory checkpoints describe source provenance, never grants. Keeping context-only lines lets a later page
+    continue an interrupted turn without treating the host home or the next turn's directory as the original one.
     """
-    lines: list[tuple[int, Said | None]] = []
+
+    def __init__(self, offset: int, directory: str | None) -> None:
+        super().__init__()
+        self.directories: list[tuple[int, str | None]] = [(offset, directory)]
+
+    def directory_at(self, offset: int) -> str | None:
+        """Return the last attested directory at or before the acknowledged byte offset."""
+        return next((value for end, value in reversed(self.directories) if end <= offset), None)
+
+    def observe_directory(self, end: int, row: object, profile: HostProfile | None, *, visible: bool) -> None:
+        """Interpret only the host-declared context records or visible message fields."""
+        if profile is None or not isinstance(row, dict):
+            return
+        if profile.record_directory_events is not None:
+            kind = row.get("type")
+            if type(kind) is not str or kind not in profile.record_directory_events:
+                return
+        elif not visible:
+            return
+        value: object = row
+        for key in profile.record_directory:
+            if not isinstance(value, dict) or key not in value:
+                return
+            value = value[key]
+        try:
+            directory = normalize_project_path(value, require_identity=True) if type(value) is str else None
+        except ContractError:
+            directory = None
+        self.directories.append((end, directory))
+
+
+def read(
+    path: Path,
+    offset: int,
+    *,
+    limit: int = READ_BYTES,
+    rows: Callable[[object], Said | None] = said,
+    directory: str | None = None,
+    session_id: str | None = None,
+) -> RecordPage:
+    """Read complete lines under a byte budget, carrying host-attested directory changes through the page.
+
+    A final line without its newline is still being written. Its offset and context wait for the next read.
+    """
+    lines = RecordPage(offset, directory)
+    profile = next((HOSTS[host] for host, parser in PARSERS.items() if parser is rows), None)
     with path.open("rb") as handle:
         handle.seek(offset)
         position = offset
@@ -475,9 +603,22 @@ def read(
             try:
                 row = json.loads(line)
             except (ValueError, RecursionError):
-                # A line nested past what the parser takes would fail every later Stop of the session.
                 row = None
-            lines.append((position, rows(row)))
+            if (
+                rows is workbuddy_said
+                and session_id is not None
+                and isinstance(row, dict)
+                and row.get("type") == "message"
+                and row.get("sessionId") != session_id
+            ):
+                raise ValueError("record_session_mismatch")
+            entry = rows(row)
+            lines.observe_directory(position, row, profile, visible=entry is not None)
+            if entry is not None:
+                entry = replace(entry, cwd=lines.directory_at(position))
+                if rows is codex_said and entry.entry_id.startswith("rollout:"):
+                    entry = replace(entry, entry_id=f"rollout:{position}")
+            lines.append((position, entry))
     return lines
 
 
@@ -505,14 +646,38 @@ class Cursor:
         except (OSError, ValueError, KeyError, TypeError):
             return 0
 
-    def save(self, offset: int) -> None:
+    def directory(self) -> str | None:
+        """Return cached provenance only while the saved byte offset still belongs to this record."""
+        if self.load() <= 0:
+            return None
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8")).get("directory")
+            return value if type(value) is str and Path(value).is_absolute() else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def save(self, offset: int, *, directory: str | None = None) -> None:
         """Keep ``offset`` for the next read; a cursor that cannot be written only costs a longer next read."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             pending = self.path.with_name(f"{self.path.stem}.{os.getpid()}.tmp")
             pending.write_text(
-                json.dumps({"offset": offset, "head": _head(self.record, min(offset, _HEAD_BYTES))}), encoding="utf-8"
+                json.dumps(
+                    {"offset": offset, "head": _head(self.record, min(offset, _HEAD_BYTES)), "directory": directory}
+                ),
+                encoding="utf-8",
             )
             os.replace(pending, self.path)
         except OSError:
+            pass
+
+    def save_state(self, **fields: object) -> None:
+        """Keep the capture inbox's logical outcome beside the disposable offset, without source content."""
+        try:
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
+            saved.update(fields)
+            pending = self.path.with_name(f"{self.path.stem}.{os.getpid()}.tmp")
+            pending.write_text(json.dumps(saved), encoding="utf-8")
+            os.replace(pending, self.path)
+        except (OSError, ValueError):
             pass

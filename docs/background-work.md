@@ -80,6 +80,41 @@ These are logical states encoded by row presence and last_error_code, not anothe
 Deferred stamps whose timestamp is malformed or implausibly far in the future are due immediately. Give-up
 counts survive release changes. A conflict is rekeyed from the content fingerprint, never by widening authority.
 
+Session records are also durable capture ledgers. A worker reads bounded pages from attached Claude Code, Codex and
+WorkBuddy homes and from a local Codex installation's registered record or native session directory. It records only
+offsets and failure codes beside the home; content remains in the host's record until normal capture accepts it.
+Unchanged completed files cost no store read. Installation time bounds automatic recovery; importing earlier history
+is a separate owner operation. dsh retains unacknowledged messages in its existing plugin spool. Incomplete or deferred pages request a later
+worker pass. Completed ledgers rely on ordinary worker autostart and host end hooks for discovery; they create no
+perpetual polling task. A library-wide checkpoint retains the next scan position across files and entries. A budget
+cut returns `pending_scan` and requests another worker pass; it does not complete an unvisited record or consume a
+failure attempt. Partial files retain their byte cursor and yield to later files and entries, including when a file
+ends in an incomplete line or continues growing. A scan retains its revisit requirement across budget cuts until
+a full sweep resolves all unfinished files; per-file retry timestamps still prevent early retry.
+
+Local capture authorization has an immutable timestamp separate from configuration saves. An older installation
+uses its verified, bound installation receipt's write time, or its entry's first recorded capture when no receipt
+exists. Without either evidence, automatic replay stops. Reinstalling an existing store preserves that time; creating
+a fresh store starts a new capture lifetime and resets its scan position. Authorization and rotation checkpoints
+bind to the immutable database identity, which survives file replacement and schema upgrades. Existing databases
+receive an identity without an inferred creation time. The installer preserves old receipt evidence before writing
+a replacement receipt. A valid JSON grant with an invalid time stops replay; doctor reports the reason. Re-running
+the trusted installer authorizes only future capture, while restoring a trusted grant requires a backup of the same
+database. WorkBuddy message records attest their session through
+`sessionId`; filenames may identify a different storage agent and cannot grant a session identity. Every replayed
+message must agree with that session before its page reaches capture.
+
+Ledger checkpoints use the inbox's `deferral`, `replayable` and `given_up` rules and delay limits. The worker receipt
+and doctor expose aggregate `transcript_replay` outcomes. `retry-failures --apply` reopens given-up and denied
+checkpoints; `--include-terminal` additionally permits an explicit retry after invalid input is repaired. Recovery
+checks current entry grants, original occurrence times, deletion fences and private history again. Inline private
+spans are removed through the same capture filter, including nested or unfinished spans.
+
+While ordinary storage refuses an upgrade, a metadata-only privacy snapshot may still recognize the unchanged private
+interval contract. It checks the recorded and header schemas, installation identity, location and scopes, exact table
+and index declarations, and restore fences. It cannot read sources or write data. An unknown privacy format still
+refuses a local copy.
+
 ## Hermes capture replay
 
 | State | Next states | Next action and lease expiry | Wake after capability recovery | Retry limit | Terminal |

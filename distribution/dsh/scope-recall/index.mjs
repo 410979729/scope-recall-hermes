@@ -92,12 +92,26 @@ export function apply(ctx, raw) {
 
   const ownFile = (sessionId) => join(cfg.spool, `${String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_')}.${process.pid}.jsonl`)
 
+  const hasInlinePrivate = (entry) => typeof entry.text === 'string' && /<\/?private\s*>/i.test(entry.text)
+
   // Group by the directory that owns each event; adopting an older file must
   // obtain the same decision as a new message before copying any plaintext.
   const eligible = async (sessionId, entries, fresh = false) => {
-    if (!privateRules()) return { permitted: entries, unchecked: [] }
-    const groups = new Map()
+    // Only the shared capture filter interprets tags. Tagged text must pass that
+    // local transform before any durable copy; an unavailable helper fails closed.
+    const filtered = []
+    const rejected = []
     for (const entry of entries) {
+      if (hasInlinePrivate(entry)) {
+        const result = await runHook({ hook_event_name: 'FilterCapture', text: entry.text }, cfg.storeTimeoutMs)
+        if (!result.ok || typeof result.answer?.text !== 'string') { rejected.push(entry); continue }
+        entry.text = result.answer.text
+      }
+      filtered.push(entry)
+    }
+    if (!privateRules()) return { permitted: filtered, unchecked: rejected }
+    const groups = new Map()
+    for (const entry of filtered) {
       const cwd = entry.cwd ?? process.cwd()
       if (!groups.has(cwd)) groups.set(cwd, [])
       groups.get(cwd).push(entry)
@@ -139,7 +153,7 @@ export function apply(ctx, raw) {
     }
     // Ordinary messages reach disk in the event callback. Private metadata checks
     // batch handed-off writes, retaining order without one interpreter per event.
-    if (!privateRules() && !pendingKeeps.has(sessionId)) {
+    if (!privateRules() && !hasInlinePrivate(entry) && !pendingKeeps.has(sessionId)) {
       append(entry)
       return Promise.resolve()
     }

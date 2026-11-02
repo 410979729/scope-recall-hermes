@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1118
+SCHEMA_VERSION = 1119
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -416,7 +416,8 @@ STATEMENTS = (
         memory_epoch INTEGER NOT NULL DEFAULT 0 CHECK(memory_epoch>=0),
         config_version INTEGER NOT NULL DEFAULT 1 CHECK(config_version>=1),
         test_mode INTEGER NOT NULL CHECK(test_mode IN (0,1)),
-        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared'))
+        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared')),
+        database_id TEXT NOT NULL DEFAULT '', database_created_at TEXT
     ) STRICT""",
         """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
         MANAGEMENT_STATEMENT,
@@ -913,3 +914,13 @@ def upgrade_1117(connection):
     )
     connection.execute("UPDATE instance_meta SET schema_version=1118 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1118")
+
+
+def upgrade_1118(connection) -> None:
+    """Give an existing database a stable lifetime identity without inventing its creation time."""
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_id TEXT NOT NULL DEFAULT ''")
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_created_at TEXT")
+    connection.execute(
+        "UPDATE instance_meta SET database_id=lower(hex(randomblob(16))),schema_version=1119 WHERE singleton=1"
+    )
+    connection.execute("PRAGMA user_version=1119")

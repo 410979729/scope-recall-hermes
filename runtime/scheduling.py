@@ -317,6 +317,13 @@ def _wake_plan(config, now, candidates, pending, blocked, failed) -> WakePlan:
     """Choose one wake from queue work and independent local maintenance."""
     from .vector_upkeep import next_vector_wake
 
+    ledger = (
+        read_worker_metadata(worker_metadata_path(config, "transcript-replay.json"))
+        if isinstance(config.binding.data_directory, Path)
+        else {}
+    )
+    if type(ledger.get("next_at")) in (int, float):
+        candidates.append((datetime.fromtimestamp(ledger["next_at"], UTC), "transcript_replay"))
     vector_wake = next_vector_wake(config, now)
     if vector_wake is not None:
         candidates.append(vector_wake)
