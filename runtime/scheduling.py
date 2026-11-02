@@ -20,6 +20,7 @@ from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, repla
 from ..core.installation_copy import copy_task_name, installation_copy_id
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
+from .auxiliary import summary_budget_enabled
 from .backup_upkeep import BACKUP_JOB_SECONDS, next_backup_wake
 from .model_budget import provider_holds
 from .worker_entry import (
@@ -190,6 +191,31 @@ def _control_stamp(config, field: str) -> datetime | None:
         return None
 
 
+def _consolidation_candidates(tx, capable, now, base, params, scheduled, legacy_schedule, auxiliary):
+    """Wake bounded source repair and ended-summary discovery through the existing model cooldown."""
+    if "consolidate" not in capable:
+        return []
+    from ..core.summary_storage import next_summary_due
+
+    result = []
+    summary_due = next_summary_due(tx, now=_stamp(now)) if summary_budget_enabled(auxiliary) else None
+    if summary_due is not None:
+        result.append(scheduled("consolidate", max(_utc(summary_due), now), "summary_due"))
+    # Offset-zero failures each receive one inspection; checked sources no longer wake this repair.
+    legacy = (
+        tx._check()
+        .execute(
+            f"SELECT 1 FROM work_items WHERE {base} AND work_type='consolidate' AND state='failed' "
+            "AND last_error_code='INPUT_INVALID' AND consolidation_offset=0 LIMIT 1",
+            params,
+        )
+        .fetchone()
+    )
+    if legacy is not None:
+        result.append(legacy_schedule(now, "legacy_source_repair"))
+    return result
+
+
 def next_wake(config, *, now: datetime | None = None, unavailable_until=None) -> WakePlan:
     """Read only generic work fields under the same partition as claim_next.
 
@@ -291,19 +317,18 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 due += timedelta(milliseconds=1)  # release_stale uses strict <.
             reason = "lease_expiry" if row["state"] == "leased" else "work_available"
             candidates.append(scheduled(row["work_type"], due, reason))
-        # Schema 1106 gives each legacy offset-zero failure one inspection.
-        # Core marks BOTH repaired and non-repairable candidates, so even a
-        # page with recovered=0 makes bounded progress and cannot hide the next
-        # page. Never revive a checked failure or a failed later chunk here.
-        if "consolidate" in capable:
-            legacy = conn.execute(
-                f"""SELECT 1 FROM work_items WHERE {base}
-                AND work_type='consolidate' AND state='failed'
-                AND last_error_code='INPUT_INVALID' AND consolidation_offset=0 LIMIT 1""",
+        candidates.extend(
+            _consolidation_candidates(
+                tx,
+                capable,
+                now,
+                base,
                 params,
-            ).fetchone()
-            if legacy is not None:
-                candidates.append(cooled(*budgeted(now, "legacy_source_repair"), unavailable_until.get("consolidate")))
+                scheduled,
+                lambda due, reason: cooled(*budgeted(due, reason), unavailable_until.get("consolidate")),
+                config.auxiliary,
+            )
+        )
         if config.max_auto_recoveries:
             for row in _auto_recovery_rows(conn, base, params, config):
                 if row["work_type"] not in capable or row["work_type"] not in AUTO_RECOVERABLE_WORK_TYPES:

@@ -1,0 +1,8 @@
+[
+  {
+    "input": "Remember: TEST-owner prefers Spanish.",
+    "expected": {
+      "importance": 5
+    }
+  }
+]

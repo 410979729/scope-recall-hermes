@@ -33,6 +33,20 @@ SQLite release checks, so slow optional channels can leave a partial packet with
 their cutoff reason. Unverified items never ship. The thresholds and diagnostic counts are described
 in [the recall configuration](docs/configuration.md#vector_threshold).
 
+Current and automatic recall preserve the ordinary complete items and can
+append a neutral list when remaining matching records span at least three
+sessions. Each session contributes its highest-ranked remaining visible
+record. The list does not assert that records describe the same event or
+count how often something occurred. Every row labels its excerpt, full text
+length, source time and versioned reference; use inspect to expand the source.
+At most twelve rows share at most 1024 budget units and one quarter of the
+packet budget, using only space left after the complete items. Rows that do
+not fit are omitted without displacing full evidence. Visibility, privacy,
+suppression, current versions and retelling checks apply before publication.
+Historical reads keep their ordinary items. Existing packet fields and the
+shared host renderer carry the list; no migration or configuration change is
+required.
+
 **Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)
 provides reproducible development and held-out splits for retrieval, answerability,
 scope isolation, packet size and latency. It uses proposed claims and a word-hashing

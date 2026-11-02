@@ -86,6 +86,9 @@ class ClaimVersion:
     replaces_revision: int | None
     conflict_revisions: tuple[int, ...]
     suppressed: bool = False
+    importance: int = 3
+    pinned: bool = False
+    base_importance: int = 3
 
 
 def canonical_time(value: str | None) -> str | None:

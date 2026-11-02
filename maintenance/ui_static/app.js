@@ -103,11 +103,13 @@ async function loadQuarantine(more) {
   if (!more) $("quarantine-items").replaceChildren();
   for (const item of data.items) {
     const row = node("article", undefined, $("quarantine-items"));
-    node("p", item.ref + " · " + item.revision + " · " + item.state, row);
+    node("p", item.ref + " · " + item.revision + " · " + (item.category === "adoption" ? t("adoptionReview") : item.state), row);
     node("pre", item.content, row);
     node("pre", JSON.stringify(item.rules, null, 2), row);
-    const release = node("button", t("releaseQuarantine"), row);
-    release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
+    if (item.category !== "adoption") {
+      const release = node("button", t("releaseQuarantine"), row);
+      release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
+    }
     const remove = node("button", t("forget"), row);
     remove.addEventListener("click", () => run(() => preview({action: "forget", ref: item.ref, expected_revision: item.revision})));
   }
@@ -191,6 +193,11 @@ async function detail(ref, revision) {
   display("detail-data", selected);
   $("detail").hidden = false;
   $("correction").hidden = selected.kind !== "claim";
+  $("importance").hidden = selected.kind !== "claim";
+  if (selected.kind === "claim") {
+    $("importance").elements.importance.value = selected.value.base_importance;
+    $("importance").elements.pinned.checked = selected.value.pinned;
+  }
   if (selected.kind === "claim") {
     $("correction").elements.value.value = selected.value.payload.value_text || "";
     $("correction").elements.retract.checked = false;
@@ -244,6 +251,10 @@ for (const button of document.querySelectorAll("[data-action]")) button.addEvent
 $("correction").addEventListener("submit", (event) => {
   event.preventDefault();
   run(() => preview({action: "revise", ref: selected.ref, expected_revision: selected.revision, value: $("correction").elements.value.value, retract: $("correction").elements.retract.checked}));
+});
+$("importance").addEventListener("submit", (event) => {
+  event.preventDefault();
+  run(() => preview({action: "importance", ref: selected.ref, expected_revision: selected.revision, importance: Number($("importance").elements.importance.value), pinned: $("importance").elements.pinned.checked}));
 });
 $("private-form").addEventListener("submit", (event) => { event.preventDefault(); run(() => preview(privateArguments("private-on"))); });
 $("private-off").addEventListener("click", () => run(() => preview(privateArguments("private-off"))));

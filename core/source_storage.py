@@ -14,6 +14,7 @@ from ..contracts import (
     import_source_fingerprint,
 )
 from . import lexical_index
+from .adoption_storage import invalidate_adoptions
 from .delete_storage import canonical, group_digest, purged_group_key
 from .events import (
     indexed_terms,
@@ -456,6 +457,7 @@ class Sources:
                 "UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?", (ref, revision)
             )
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
+        invalidate_adoptions(conn, ref, revision)
         return SourceWrite("inserted", ref, revision)
 
     def index_source(self, ref: str, revision: int) -> None:

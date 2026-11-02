@@ -10,6 +10,8 @@ from itertools import islice
 from typing import Protocol
 
 from ..contracts import ContractError, utc_timestamp
+from . import private
+from .adoption_storage import adopted_source
 from .auto_recall import automatic_recall_skip_reason
 from .background_context import background_candidates, current_task_candidate
 from .claim_storage import parse_source_ref
@@ -32,6 +34,7 @@ from .recall_needs import (
     statement_text,
     unmet_needs,
 )
+from .recall_overflow import visible_query_pairs
 from .recall_policy import (
     RecallPolicy,
     asks_without_answering,
@@ -40,7 +43,7 @@ from .recall_policy import (
     rrf_score,
     same_message,
 )
-from .recall_restatement import prefer_originals
+from .recall_restatement import has_conversation_summaries, prefer_originals
 from .recall_scope import asks_what_held_before, asks_what_was_said, query_scope, query_time
 from .retrieval import (
     CandidateRef,
@@ -56,6 +59,22 @@ from .retrieval import (
 from .retrieval_hydration import replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import note_embedding_failure, vector_failure_label
+
+
+def _excluded_relation_source(tx, context, seed, candidate):
+    """Keep held prompts and unselected assistant alternatives out of automatic evidence expansion.
+
+    The adopted decision already contains its selected content and references.
+    Explicit source reads retain the complete assistant reply for inspection.
+    """
+    if candidate.kind != "event":
+        return False
+    return f"{candidate.ref}@{candidate.revision}" in context.current_source_refs or (
+        context.automatic_injection
+        and seed.kind == "claim"
+        and adopted_source(tx, seed.ref, seed.revision) == (candidate.ref, candidate.revision)
+    )
+
 
 #: Claims offered per round.  A packet holds at most 30 items and a default one
 #: six; a claim that answers competes for those slots on rank, so a deep pool
@@ -767,10 +786,7 @@ class RetrievalPipeline:
                             return stopped("relation_bound_reached")
                         continue
                     seen.add(candidate.key)
-                    if (
-                        candidate.kind == "event"
-                        and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs
-                    ):
+                    if _excluded_relation_source(tx, context, seed, candidate):
                         continue
                     aside = _Aside()
                     admitted = self._hydrate_admit(tx, candidate, context, aside=aside) is not None
@@ -989,9 +1005,13 @@ class RetrievalPipeline:
                         tx, working, hydrated, gaps, echoes=tuple(aside.echoes), held=tuple(aside.held)
                     )
                 with timings.measure("select"):
-                    ranked, query_items = self._select(tx, working, hydrated, gaps)
+                    ranked, query_items, overflow = self._select(tx, working, hydrated, gaps)
                 question = self._admission_query(working)
-                return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question)
+                return replace(
+                    self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question),
+                    overflow_candidates=overflow,
+                    overflow_policy_revision=private.rule_revision(tx) if overflow else None,
+                )
         except ContractError as exc:
             if exc.code == "DEADLINE_EXCEEDED":
                 return _empty_result(working, "deadline_exceeded")
@@ -1009,6 +1029,8 @@ class RetrievalPipeline:
         """
         scope = None
         try:
+            from .summary_storage import previous_conversation_scope
+
             if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
                 entries = getattr(getattr(tx, "registry", None), "entries", None)
                 names = (
@@ -1019,6 +1041,8 @@ class RetrievalPipeline:
                 scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
                 if scope is not None and not asks_what_was_said(scope.rest):
                     scope = None
+            if scope is None:
+                scope = previous_conversation_scope(tx, working.query, now=working.now)
         except Exception as exc:
             gaps.append(f"scope_unreadable:{type(exc).__name__}")
             scope = None
@@ -1257,7 +1281,22 @@ class RetrievalPipeline:
         ordered = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_select")
-        ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)
+        ordered = visible_query_pairs(
+            tx,
+            withhold_secret_items(ordered, gaps, content=lambda pair: pair[1]),
+            working,
+            now=getattr(self.clock, "utc_now", lambda: working.now)(),
+        )
+        pool = distinct.filtered(ordered)
+        defer_budget = working.packet_selection and has_conversation_summaries(pool)
+        # A summary cannot be discarded until the original survives the packet's
+        # full envelope and schema limits. Keep a bounded pool for that compiler,
+        # which owns final selection and can refill slots released by duplicates.
+        ranked = (
+            withhold_secret_items(pool, gaps, content=lambda pair: pair[1])[: working.limits.candidate_pool]
+            if defer_budget
+            else self._apply_budget(pool, working.limits, gaps, context=working)
+        )
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):
@@ -1282,9 +1321,18 @@ class RetrievalPipeline:
                 and not (working.in_context_since is not None and _in_context(tx, pair[1], working))
             )
             note_truncation(gaps, "packet_slots", considered=working.limits.max_items, available=len(ranked))
-            ranked = ranked[: working.limits.max_items]
+            if not defer_budget:
+                ranked = ranked[: working.limits.max_items]
         note_duplicates(gaps, distinct.collapsed)
-        return ranked, query_items
+        # Content equality saves full-item slots, but cannot establish that
+        # independent sessions describe the same event. Only the proven
+        # restatement filter above removes sources from the neutral index.
+        overflow = tuple(
+            candidate
+            for candidate, obj in ordered
+            if obj.kind in {"event", "claim"} and candidate.source not in {"background", "exact_ref"}
+        )
+        return ranked, query_items, overflow
 
     @staticmethod
     def _result(

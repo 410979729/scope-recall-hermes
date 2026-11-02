@@ -9,7 +9,8 @@ window.UI_STRINGS = {
     "export": "Export",
     "backup": "Backup status",
     "quarantine": "Held content",
-    "quarantineHint": "These sources are excluded from memory and automated processing. Review their words and matched rules before releasing them.",
+    "adoptionReview": "Adoption needs confirmation",
+    "quarantineHint": "Held sources are excluded from memory and automated processing. Review their words and matched rules before releasing them. Unbound proposal adoptions are listed for confirmation.",
     "releaseQuarantine": "Review release",
     "refresh": "Refresh",
     "query": "Words to find",
@@ -81,7 +82,10 @@ window.UI_STRINGS = {
     "ready": "Ready",
     "STORE_UNAVAILABLE": "The store is busy or unavailable. Try again.",
     "INTERNAL_ERROR": "The request could not be completed. Try again.",
-    "private_rules_preview": "Private rules changed. Create a new preview."
+    "private_rules_preview": "Private rules changed. Create a new preview.",
+    "importanceLabel": "Importance (1–5)",
+    "pinLabel": "Pin (fixed at 5)",
+    "saveImportance": "Save importance"
   },
   "zh": {
     "local": "在这台电脑上管理自己的记忆",
@@ -92,7 +96,8 @@ window.UI_STRINGS = {
     "export": "导出",
     "backup": "备份状态",
     "quarantine": "隔离内容",
-    "quarantineHint": "这些来源不会参与召回和后台提炼。请检查正文和命中规则后，再决定是否解除隔离。",
+    "adoptionReview": "方案采纳待确认",
+    "quarantineHint": "隔离来源不会参与召回和后台提炼。请检查正文和命中规则后，再决定是否解除隔离。未绑定的方案采纳关系也会列在这里，请重新明确采用的内容。",
     "releaseQuarantine": "审阅并解除隔离",
     "refresh": "刷新",
     "query": "查找原文",
@@ -164,6 +169,9 @@ window.UI_STRINGS = {
     "ready": "就绪",
     "STORE_UNAVAILABLE": "记忆库忙碌或暂时无法访问，请重试。",
     "INTERNAL_ERROR": "请求未能完成，请重试。",
-    "private_rules_preview": "私人规则已变化，请重新预览。"
+    "private_rules_preview": "私人规则已变化，请重新预览。",
+    "importanceLabel": "重要度（1–5）",
+    "pinLabel": "置顶（固定为 5）",
+    "saveImportance": "保存重要度"
   }
 };

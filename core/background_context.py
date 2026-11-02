@@ -130,7 +130,8 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
                              AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
               AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)
             GROUP BY c.claim_id,c.current_revision
-            ORDER BY hits DESC,v.recorded_from DESC,c.claim_id LIMIT ?""",
+            ORDER BY c.pinned DESC,CASE WHEN c.pinned=1 THEN 5 ELSE c.importance END DESC,
+                       hits DESC,v.recorded_from DESC,c.claim_id LIMIT ?""",
             (
                 *terms,
                 *params,
@@ -147,7 +148,8 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
     stable = conn.execute(
         f"""SELECT c.claim_id,c.current_revision {common}
         AND c.project_id IS NULL AND json_array_length(v.payload_json,'$.conditions')=0
-        ORDER BY CASE c.kind WHEN 'constraint' THEN 0 ELSE 1 END,
+        ORDER BY c.pinned DESC,CASE WHEN c.pinned=1 THEN 5 ELSE c.importance END DESC,
+                   CASE c.kind WHEN 'constraint' THEN 0 ELSE 1 END,
                  v.recorded_from DESC,c.claim_id LIMIT ?""",
         (*params, PROFILE_WINDOW + 1),
     ).fetchall()

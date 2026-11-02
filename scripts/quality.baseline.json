@@ -62,7 +62,7 @@
    "reportGeneralTypeIssues": 1
   },
   "core/consolidate.py": {
-   "reportArgumentType": 2,
+   "reportArgumentType": 1,
    "reportGeneralTypeIssues": 2
   },
   "core/consolidation_chunks.py": {
@@ -97,9 +97,6 @@
   "core/recall_needs.py": {
    "reportGeneralTypeIssues": 1,
    "reportOperatorIssue": 1
-  },
-  "core/recall_packet.py": {
-   "reportGeneralTypeIssues": 1
   },
   "core/requalify.py": {
    "reportArgumentType": 3
@@ -405,11 +402,11 @@
   },
   "core/claim_storage.py": {
    "C901": {
-    "Claims.append": 20
+    "Claims.append": 18
    },
-   "E501": 12,
+   "E501": 10,
    "PLR0912": {
-    "Claims.append": 20
+    "Claims.append": 18
    }
   },
   "core/composition.py": {
@@ -510,8 +507,7 @@
    "BLE001": 2,
    "PLR0911": {
     "RecallPacketCompiler._fence": 9
-   },
-   "UP035": 1
+   }
   },
   "core/recall_policy.py": {
    "UP017": 1,
@@ -617,10 +613,7 @@
    }
   },
   "core/worker_consolidation.py": {
-   "BLE001": 1,
-   "PLR0911": {
-    "process_consolidate": 9
-   }
+   "BLE001": 1
   },
   "core/worker_outcomes.py": {
    "E501": 3,
@@ -662,8 +655,7 @@
    "E501": 1,
    "PLR0915": {
     "check_storage": 62
-   },
-   "UP017": 7
+   }
   },
   "maintenance/install.py": {
    "BLE001": 1,
@@ -759,7 +751,7 @@
     "_imported": 18
    },
    "PLR0915": {
-    "_import_rows": 99
+    "_import_rows": 97
    },
    "UP017": 1,
    "UP035": 1
@@ -813,15 +805,15 @@
   },
   "runtime/scheduling.py": {
    "C901": {
-    "next_wake": 25,
+    "next_wake": 23,
     "supervise": 23
    },
    "PLR0912": {
-    "next_wake": 21,
+    "next_wake": 19,
     "supervise": 23
    },
    "PLR0915": {
-    "next_wake": 74,
+    "next_wake": 71,
     "supervise": 83
    }
   },
