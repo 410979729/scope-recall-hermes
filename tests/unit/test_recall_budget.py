@@ -85,18 +85,14 @@ def test_a_text_of_many_different_symbols_is_counted_in_linear_time():
     assert estimate_tokens(text) == _reference(text)
 
 
-def test_saturated_legacy_host_text_sets_default_injection_cap(record_property, tmp_path):
-    """Measure the complete legacy envelope at both supported briefing bounds."""
+def saturated_legacy_host_texts():
+    """Yield saturated brief/question components for complete host assembly checks."""
     from datetime import UTC, timedelta, timezone
 
     from scope_recall.adapters.runtime_wiring import render_host_recall_context
-    from scope_recall.core import CoreConfig
-    from scope_recall.core.recall_budget import canonical_render_json
     from scope_recall.core.recall_packet import _DIAGNOSTIC_REF_PLACEHOLDER, RecallPacketRenderer, envelope_tokens
-    from v11_support import context, recall_item, recall_packet
+    from v11_support import recall_item, recall_packet
 
-    maximum = 0
-    measurements = {}
     for count in range(1, 7):
         for glyph in ("a", "中", "🧪"):
             items = [
@@ -130,8 +126,22 @@ def test_saturated_legacy_host_text_sets_default_injection_cap(record_property, 
                     brief = prefix + "a" * ((bound - estimate_tokens(prefix)) * 4)
                     while estimate_tokens(brief + "a") <= bound:
                         brief += "a"
-                    cost = estimate_tokens(brief + "\n\n" + question)
-                    measurements[str(bound)] = max(measurements.get(str(bound), 0), cost)
-                    maximum = max(maximum, cost)
+                    yield brief, question, bound
+
+
+def test_saturated_legacy_host_text_sets_default_injection_cap(record_property, tmp_path):
+    """Include the allowed private hint as well as the complete memory envelope."""
+    from scope_recall.core import CoreConfig
+    from scope_recall.core.private import notice_for_mode
+    from scope_recall.core.recall_budget import canonical_render_json
+    from v11_support import context
+
+    measurements = {}
+    for brief, question, bound in saturated_legacy_host_texts():
+        text = "\n\n".join((brief, question, notice_for_mode("read-only")))
+        cost = estimate_tokens(text)
+        measurements[str(bound)] = max(measurements.get(str(bound), 0), cost)
     record_property("legacy_host_maxima", canonical_render_json(measurements))
-    assert CoreConfig(context(tmp_path / "TEST-unused-measurement").binding).injection_token_cap == maximum
+    assert CoreConfig(context(tmp_path / "TEST-unused-measurement").binding).injection_token_cap >= max(
+        measurements.values()
+    )

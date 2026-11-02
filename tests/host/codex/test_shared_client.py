@@ -5587,3 +5587,99 @@ def test_question_returns_without_delivery_mark_when_writer_is_busy(store):
         if holder is not None:
             holder.communicate(input="release\n", timeout=30)
         hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "workbuddy", "dsh", "hermes"])
+def test_default_cap_covers_complete_host_assembly_with_private_hint(
+    store, tmp_path, monkeypatch, record_property, host
+):
+    from types import SimpleNamespace
+
+    from scope_recall.core.recall_budget import DEFAULT_INJECTION_TOKEN_CAP, estimate_tokens
+    from v11_support import recall_packet
+
+    from tests.unit.test_recall_budget import saturated_legacy_host_texts
+
+    brief_text, question, _bound = max(
+        saturated_legacy_host_texts(), key=lambda parts: estimate_tokens(parts[0] + "\n\n" + parts[1])
+    )
+    root, homes, _client, scope = store
+    provider = None
+    hook = None
+    if host == "hermes":
+        provider = _hermes(homes["agent3"])
+        core = provider._require_core()
+        monkeypatch.setattr(
+            "scope_recall.adapters.hermes.prefetch.render_host_recall_context", lambda *a, **k: question
+        )
+    else:
+        home = tmp_path / f"TEST-assembled-{host}"
+        attach_shared_record(
+            root,
+            client_entry_record(
+                host=host,
+                home=home,
+                entry_id=f"test-{host}",
+                display_name="TEST reader",
+                attached_at=NOW,
+                allowed_scope_ids=[scope],
+                writable_scope_ids=[scope],
+                capture_scope_id=scope,
+            ),
+            now=NOW,
+        )
+        hook = CodexHookHandler.from_home(str(home), host)
+        hook._prompt_budget = 6
+        monkeypatch.setattr(hook, "ensure_runtime", lambda *a, **k: None)
+        monkeypatch.setattr(hook, "launch_worker", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "scope_recall.adapters.clients.prompt_recall.render_host_recall_context", lambda *a, **k: question
+        )
+        core = hook.core
+    captured = []
+
+    def brief(*args, **kwargs):
+        return dict(text=brief_text, items=[], tokens=estimate_tokens(brief_text), elapsed_ms=0, _epoch=0)
+
+    def final(context, text, *, brief=None, **kwargs):
+        captured.append(text)
+        prepared = brief or dict(text="", tokens=0, elapsed_ms=0)
+        prepared["_injection"] = dict(
+            text=text,
+            tokens=estimate_tokens(text),
+            session_tokens=0,
+            injection_token_cap=DEFAULT_INJECTION_TOKEN_CAP,
+            session_token_cap=None,
+            reason=None,
+        )
+        return prepared
+
+    monkeypatch.setattr(core, "private_mode", lambda *a, **k: "read-only")
+    monkeypatch.setattr(core, "session_brief", brief)
+    monkeypatch.setattr(core, "recall_packet", lambda *a, **k: recall_packet())
+    monkeypatch.setattr(
+        core,
+        "prepare_recall_render",
+        lambda *a, **k: SimpleNamespace(canonical_text="TEST-rendered", context={}, render_ref="TEST-render"),
+    )
+    monkeypatch.setattr(core, "prepare_session_injection", final)
+    monkeypatch.setattr(core, "confirm_session_brief", lambda *a, **k: "brief_delivered")
+    try:
+        if provider:
+            provider.prefetch("TEST question")
+        else:
+            if host in {"claude-code", "codex"}:
+                hook.handle_payload(
+                    dict(hook_event_name="SessionStart", session_id="TEST-full-host", cwd="C:/TEST/work")
+                )
+            payload = _prompt("TEST question", session="TEST-full-host")
+            hook.handle_payload(dict(payload, turn_id="TEST-turn"))
+        assert any("read-only" in text for text in captured)
+        measured = max(estimate_tokens(text) for text in captured)
+        record_property("complete_host_tokens", f"{host}:{measured}")
+        assert DEFAULT_INJECTION_TOKEN_CAP >= measured
+    finally:
+        if provider:
+            provider.shutdown()
+        if hook:
+            hook.close()

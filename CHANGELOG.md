@@ -16,6 +16,9 @@ resetting session usage on compaction. Confirmed question recall joins briefing 
 bounded correction or reference-only withdrawal notices for previously delivered items, including after the session
 budget is exhausted; unconfirmed notices retry on the next interaction. Hook receipts expose usage and ceilings.
 The additive store upgrade preserves existing delivery marks and its rollback snapshot.
+Full private mode discards prepared memory bodies before release. Withdrawn originals receive reference-only notices;
+independent fact corrections from one original keep separate acknowledgements. The default injection ceiling includes
+complete host assembly and the read-only private hint.
 
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.

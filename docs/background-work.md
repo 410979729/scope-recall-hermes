@@ -238,7 +238,7 @@ session does not automatically receive an already delivered briefing item again.
 question-recall counts separate and stores references rather than copying source content.
 
 Automatic host injection uses `injection_token_cap` for the complete rendered text, including guidance, and
-`session_token_cap` for the combined briefing and question-recall usage since compaction. The defaults are 12603
+`session_token_cap` for the combined briefing and question-recall usage since compaction. The defaults are 12654
 estimated tokens per response and no session ceiling (`null`). The per-response default preserves the saturated
 legacy output even with the largest supported briefing. These are tokenizer-independent estimates, not provider
 billing counts. Zero disables ordinary injection; compaction clears the accumulated usage.

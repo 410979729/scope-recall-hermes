@@ -14,8 +14,8 @@ import unicodedata
 from collections import Counter
 
 # Complete saturated host output, including the largest supported briefing,
-# entry guidance and localized timestamps. Uses the same estimator as release.
-DEFAULT_INJECTION_TOKEN_CAP = 12603
+# entry guidance, private hints and localized timestamps. Uses the same estimator as release.
+DEFAULT_INJECTION_TOKEN_CAP = 12654
 
 
 def release_reserve_seconds(

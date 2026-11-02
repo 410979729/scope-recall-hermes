@@ -13,10 +13,8 @@ import sqlite3
 from ..contracts import utc_timestamp
 from . import lineage, private
 from . import session_brief as briefing
-from .claim_storage import parse_source_ref
 from .recall_budget import canonical_render_json, estimate_tokens
-from .retrieval import CandidateRef, SearchContext, SearchLimits
-from .retrieval_hydration import RetrievalHydration
+from .retrieval import SearchContext, SearchLimits
 from .secret_patterns import contains_secret_like_text
 from .writer_lease import TruthWriterBusyError
 
@@ -34,11 +32,11 @@ def _usage(tx, context):
         .execute(
             "SELECT brief_tokens+recall_tokens,compacted_seq FROM session_brief_sessions "
             "WHERE entry_id=? AND session_id=?",
-            (briefing._entry(context), context.session_id),
+            (briefing.session_entry(context), context.session_id),
         )
         .fetchone()
     )
-    return row[0] if row and row[1] >= briefing._compaction_cutoff(tx, context) else 0
+    return row[0] if row and row[1] >= briefing.compaction_cutoff(tx, context) else 0
 
 
 def _search(clock, context):
@@ -54,17 +52,9 @@ def _search(clock, context):
     )
 
 
-def _current(tx, search, kind, ref, revision):
-    kind = "claim" if kind == "procedure" else kind
-    obj = RetrievalHydration().hydrate(tx, CandidateRef(kind, ref, revision, "background"), search)
-    if obj is None or dict(obj.metadata).get("replaced_by"):
-        return None
-    intervals = private.active_intervals(tx, search.now)
-    for cited in obj.evidence_refs:
-        source = tx.source(*parse_source_ref(cited))
-        if source is None or private.source_blocked(intervals, source):
-            return None
-    return obj
+def _current(tx, search, kind, ref, revision, batch=None):
+    obj = briefing.visible_object(tx, search, kind, ref, revision, batch=batch)
+    return None if obj is not None and dict(obj.metadata).get("replaced_by") else obj
 
 
 def _head(tx, kind, ref):
@@ -79,41 +69,21 @@ def _head(tx, kind, ref):
     return row[0] if row else None
 
 
-def _replacement(tx, search, row):
-    kind, ref, revision = row["object_kind"], row["object_ref"], row["revision"]
-    if kind == "event":
-        # A delivered original can state a corrected fact even when its own
-        # immutable source revision is unchanged. Follow the shared lineage.
-        supported = lineage.supported_claims(tx._check(), ((ref, revision),)).get((ref, revision), ())
-        for claim_ref, claim_revision in supported:
-            head = _head(tx, "claim", claim_ref)
-            if head and head != claim_revision:
-                return _current(tx, search, "claim", claim_ref, head)
-        source = tx.source(ref, revision)
-        if source is None:
-            return None
-        head = (
-            tx._check()
-            .execute(
-                "SELECT max(source_revision) FROM source_events WHERE source_group_key="
-                "(SELECT source_group_key FROM source_events WHERE event_id=? AND source_revision=?)",
-                (ref, revision),
-            )
-            .fetchone()[0]
-        )
-    else:
-        head = _head(tx, kind, ref)
-    return _current(tx, search, kind, ref, head) if head else None
+def _markers(row):
+    value = row["notice_marker"]
+    if not value:
+        return {}
+    # Older delivery rows have one digest. Preserve its acknowledgement while
+    # allowing each fact supported by a source to advance independently.
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return {"legacy": value}
+    return parsed if isinstance(parsed, dict) else {"legacy": value}
 
 
-def _notice(tx, search, row, reveal):
+def _make_notice(tx, row, key, replacement):
     kind, ref, revision = row["object_kind"], row["object_ref"], row["revision"]
-    current = _current(tx, search, kind, ref, revision)
-    if reveal and current is not None and (kind != "event" or current.temporal_status == "current"):
-        return None
-    replacement = _replacement(tx, search, row) if reveal else None
-    # Only the current value is eligible for release. A blocked dependency,
-    # privacy rule or tombstone produces a reference-only withdrawal.
     value = None
     if replacement is not None and replacement.temporal_status == "current":
         if replacement.kind in {"claim", "procedure"}:
@@ -123,17 +93,18 @@ def _notice(tx, search, row, reveal):
             value = replacement.content
     if value and contains_secret_like_text(value):
         value = None
-    marker = hashlib.sha256(
-        canonical_render_json(
-            [replacement.ref, replacement.revision, value]
-            if value and replacement is not None
-            else [kind, ref, "withdrawn"]
-        ).encode()
-    ).hexdigest()
-    if marker == row["notice_marker"]:
+    identity = (
+        [replacement.ref, replacement.revision, value]
+        if value and replacement
+        else [kind, ref, "withdrawn"]
+        if key == "object" or kind == "claim"
+        else [kind, ref, key, "withdrawn"]
+    )
+    marker = hashlib.sha256(canonical_render_json(identity).encode()).hexdigest()
+    saved = _markers(row)
+    if marker in (saved.get(key), saved.get("legacy")):
         return None
-    prefix = f"{ref}@{revision}: "
-    text = prefix + (f"corrected; current value: {value}" if value else "withdrawn; do not rely on it.")
+    text = f"{ref}@{revision}: " + (f"corrected; current value: {value}" if value else "withdrawn; do not rely on it.")
     return {
         "kind": kind,
         "ref": ref,
@@ -141,48 +112,135 @@ def _notice(tx, search, row, reveal):
         "marker": marker,
         "corrected": bool(value),
         "text": text,
-        "targets": [(kind, ref, revision)],
+        "targets": [(kind, ref, revision, key)],
     }
 
 
-def _notices(tx, search, limit):
-    rows = (
+def _event_changes(tx, search, row, batch, keys=None):
+    ref, revision = row["object_ref"], row["revision"]
+    supported = lineage.supported_claims(tx._check(), ((ref, revision),)).get((ref, revision), ())
+    # One original may support several independent facts. No first replacement
+    # can stand in for the others, even when the original remains current.
+    baselines = {}
+    for claim_ref, baseline in supported:
+        baselines[claim_ref] = max(baseline, baselines.get(claim_ref, 0))
+    for claim_ref, baseline in sorted(baselines.items()):
+        key = f"claim:{claim_ref}@{baseline}"
+        if keys is not None and key not in keys:
+            continue
+        head = _head(tx, "claim", claim_ref)
+        replacement = _current(tx, search, "claim", claim_ref, head, batch) if head else None
+        if head != baseline or replacement is None:
+            yield key, replacement
+    if keys is not None and "object" not in keys:
+        return
+    head = (
+        tx._check()
+        .execute(
+            "SELECT max(source_revision) FROM source_events WHERE source_group_key="
+            "(SELECT source_group_key FROM source_events WHERE event_id=? AND source_revision=?)",
+            (ref, revision),
+        )
+        .fetchone()[0]
+    )
+    if head and head != revision:
+        yield "object", _current(tx, search, "event", ref, head, batch)
+
+
+def _row_notices(tx, search, row, batch, reveal, keys=None):
+    kind, ref, revision = row["object_kind"], row["object_ref"], row["revision"]
+    original = briefing.visible_object(tx, search, kind, ref, revision, history=True, batch=batch)
+    if not reveal or original is None:
+        changes = [("object", None)]
+    elif kind == "event":
+        changes = _event_changes(tx, search, row, batch, keys)
+    else:
+        current = _current(tx, search, kind, ref, revision, batch)
+        if current is not None and current.temporal_status == "current":
+            return
+        head = _head(tx, kind, ref)
+        changes = [
+            (
+                f"claim:{ref}@{revision}" if kind == "claim" else "object",
+                _current(tx, search, kind, ref, head, batch) if head else None,
+            )
+        ]
+    for key, replacement in changes:
+        notice = _make_notice(tx, row, key, replacement)
+        if notice is not None:
+            yield notice
+
+
+def _delivery_rows(tx, context):
+    return (
         tx._check()
         .execute(
             "SELECT i.* FROM session_brief_injections i WHERE entry_id=? AND session_id=? "
             "AND delivery_compacted_seq>=? AND revision=(SELECT max(j.revision) "
             "FROM session_brief_injections j WHERE j.entry_id=i.entry_id AND j.session_id=i.session_id "
             "AND j.object_kind=i.object_kind AND j.object_ref=i.object_ref) ORDER BY delivered_at,object_ref",
-            (
-                briefing._entry(search.trusted_context),
-                search.trusted_context.session_id,
-                briefing._compaction_cutoff(tx, search.trusted_context),
-            ),
+            (briefing.session_entry(context), context.session_id, briefing.compaction_cutoff(tx, context)),
         )
         .fetchall()
     )
+
+
+def _select_notices(candidates, limit):
     selected = []
-    reveal = private.recall_state(tx, search.trusted_context, search.now)[0] != "full"
-    for row in rows:
-        notice = _notice(tx, search, row, reveal)
-        if notice is None:
-            continue
+    for notice in candidates:
         duplicate = next((saved for saved in selected if saved["marker"] == notice["marker"]), None)
         if duplicate is not None:
             duplicate["targets"].extend(notice["targets"])
             continue
         if len(selected) == NOTICE_ITEM_CAP:
             continue
-        # Truncate only new values, retaining the complete old reference. The
-        # notice still directs a reader to the current object via that ref.
         prefix = f"{notice['ref']}@{notice['revision']}: "
         while _tokens("\n".join(["Memory updates:", *(n["text"] for n in selected), notice["text"]])) > limit:
             if len(notice["text"]) <= len(prefix) + 48:
                 break
-            notice["text"] = notice["text"][:-17] + "…"
+            notice["text"] = notice["text"][:-17] + "\u2026"
         if _tokens("\n".join(["Memory updates:", *(n["text"] for n in selected), notice["text"]])) <= limit:
             selected.append(notice)
     return selected
+
+
+def _notices(tx, search, limit, *, batch=None, reveal=None):
+    batch = briefing.visibility_batch(tx, search) if batch is None else batch
+    if reveal is None:
+        reveal = private.recall_state(tx, search.trusted_context, search.now)[0] != "full"
+    rows = _delivery_rows(tx, search.trusted_context)
+    candidates = (notice for row in rows for notice in _row_notices(tx, search, row, batch, reveal))
+    return _select_notices(candidates, limit)
+
+
+def _notices_valid(tx, search, brief, batch, reveal):
+    injection = brief["_injection"]
+    wanted = {}
+    for notice in injection["notices"]:
+        for kind, ref, revision, key in notice["targets"]:
+            wanted.setdefault((kind, ref, revision), set()).add(key)
+    loaded = {}
+    for notice in injection["notices"]:
+        for kind, ref, revision, key in notice["targets"]:
+            pair = kind, ref, revision
+            if pair not in loaded:
+                row = (
+                    tx._check()
+                    .execute(
+                        "SELECT * FROM session_brief_injections WHERE entry_id=? AND session_id=? "
+                        "AND object_kind=? AND object_ref=? AND revision=?",
+                        (briefing.session_entry(search.trusted_context), search.trusted_context.session_id, *pair),
+                    )
+                    .fetchone()
+                )
+                candidates = [] if row is None else list(_row_notices(tx, search, row, batch, reveal, wanted[pair]))
+                loaded[pair] = row, candidates
+            row, candidates = loaded[pair]
+            if row is None or notice["marker"] in (_markers(row).get(key), _markers(row).get("legacy")):
+                return False
+            if not any(n["marker"] == notice["marker"] and (*pair, key) in n["targets"] for n in candidates):
+                return False
+    return True
 
 
 def _question(text):
@@ -203,15 +261,15 @@ def _refresh_brief(brief):
     brief["tokens"] = _tokens(brief["text"])
 
 
-def _item_live(tx, search, item):
-    obj = _current(tx, search, item["kind"], item["ref"], item["revision"])
+def _item_live(tx, search, item, batch=None):
+    obj = _current(tx, search, item["kind"], item["ref"], item["revision"], batch)
     return obj is not None and obj.temporal_status == item["temporal_status"]
 
 
-def _fit(text, brief, limit, tx, search):
+def _fit(text, brief, limit, tx, search, batch):
     line, payload = _question(text)
     items = payload["items"] if payload else []
-    kept = [item for item in items if _item_live(tx, search, item)]
+    kept = [item for item in items if _item_live(tx, search, item, batch)]
     original = list(items)
     reason = None
     if kept != items:
@@ -267,12 +325,20 @@ def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
         mode, marker = private.recall_state(tx, context, search.now)
         brief.setdefault("_epoch", tx.memory_epoch())
         brief.setdefault("_privacy_marker", marker)
-        brief.setdefault("_compaction_cutoff", briefing._compaction_cutoff(tx, context))
+        brief.setdefault("_compaction_cutoff", briefing.compaction_cutoff(tx, context))
         brief.setdefault("_deliver", False)
         brief.setdefault("_compact", False)
         brief.setdefault("_lines", [])
         brief.setdefault("_log_allowed", mode is None)
-        notices = _notices(tx, search, min(NOTICE_TOKEN_CAP, core.config.injection_token_cap))
+        batch = briefing.visibility_batch(tx, search)
+        # Compaction discards the old context and its notice targets together.
+        notices = (
+            []
+            if brief["_compact"]
+            else _notices(
+                tx, search, min(NOTICE_TOKEN_CAP, core.config.injection_token_cap), batch=batch, reveal=mode != "full"
+            )
+        )
         notice_text = "\n".join(["Memory updates:", *(n["text"] for n in notices)]) if notices else ""
         left = None if core.config.session_token_cap is None else max(0, core.config.session_token_cap - used)
         limit = core.config.injection_token_cap - _tokens(notice_text) - (1 if notice_text else 0)
@@ -280,9 +346,10 @@ def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
         if left is not None:
             limit = min(limit, left)
         if mode == "full":
-            text = "" if _question(text)[1] else text
-            brief.update(text="", items=[], tokens=0, _lines=[])
-        ordinary, items, reason = _fit(text, brief, max(0, limit), tx, search)
+            brief["_discarded"] = bool(brief["text"] or _question(text)[1])
+            text = private.notice_for_mode("full") or ""
+            brief.update(text="", items=[], tokens=0, _lines=[], _deliver=False)
+        ordinary, items, reason = _fit(text, brief, max(0, limit), tx, search, batch)
         output = "\n\n".join(part for part in (notice_text, ordinary) if part)
         brief["_injection"] = {
             "text": output,
@@ -300,50 +367,73 @@ def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
 
 
 def _valid(tx, clock, context, brief):
-    if not briefing._still_valid(tx, clock, context, brief):
+    if not briefing.validate_prepared(tx, clock, context, brief):
         return False
     injection = brief["_injection"]
     search = _search(clock, context)
     mode, _marker = private.recall_state(tx, context, search.now, after=brief["_privacy_marker"])
-    if mode == "full" and (injection["items"] or brief["text"] or any(n["corrected"] for n in injection["notices"])):
-        return False
+    if mode == "full":
+        notices = (
+            "\n".join(["Memory updates:", *(n["text"] for n in injection["notices"])]) if injection["notices"] else ""
+        )
+        allowed = "\n\n".join(part for part in (notices, private.notice_for_mode("full")) if part)
+        if any(n["corrected"] for n in injection["notices"]) or injection["text"] not in ("", notices, allowed):
+            return False
     # A concurrent delivery may consume the remaining session budget. It must
     # invalidate this response rather than charge two packets against one slot.
     cap = injection["session_token_cap"]
     if cap is not None and injection["ordinary_tokens"] > max(0, cap - _usage(tx, context)):
         return False
+    batch = briefing.visibility_batch(tx, search)
     for item in injection["items"]:
-        if not _item_live(tx, search, item):
+        if not _item_live(tx, search, item, batch):
             return False
-    current = _notices(tx, search, min(NOTICE_TOKEN_CAP, injection["injection_token_cap"]))
-    return all(notice in current for notice in injection["notices"])
+    return _notices_valid(tx, search, brief, batch, mode != "full")
 
 
 def _record(tx, clock, context, brief):
     injection = brief["_injection"]
     now = utc_timestamp(clock.utc_now())
     if brief["_compact"] and context.compaction_seq is None:
-        briefing._reset(tx, context)
-    briefing._apply_compaction(tx, context)
-    cutoff = briefing._compaction_cutoff(tx, context)
+        briefing.clear_session(tx, context)
+    briefing.apply_compaction(tx, context)
+    cutoff = briefing.compaction_cutoff(tx, context)
     brief["_confirmed_seq"] = cutoff
     if brief["_deliver"]:
-        briefing._mark_delivered(tx, context, brief["items"], now, cutoff)
-        briefing._record_brief(tx, context, brief["tokens"], brief["elapsed_ms"], now, cutoff)
-    briefing._mark_delivered(tx, context, injection["items"], now, cutoff, "question")
+        briefing.mark_delivered(tx, context, brief["items"], now, cutoff)
+        briefing.record_brief_usage(tx, context, brief["tokens"], brief["elapsed_ms"], now, cutoff)
+    briefing.mark_delivered(tx, context, injection["items"], now, cutoff, "question")
+    acknowledgements = {}
     for notice in injection["notices"]:
-        tx._check(write=True).executemany(
-            "UPDATE session_brief_injections SET notice_marker=? WHERE entry_id=? AND session_id=? "
-            "AND object_kind=? AND object_ref=? AND revision<=?",
-            [(notice["marker"], briefing._entry(context), context.session_id, *target) for target in notice["targets"]],
-        )
+        for kind, ref, revision, key in notice["targets"]:
+            pair = kind, ref, revision
+            if pair not in acknowledgements:
+                row = (
+                    tx._check()
+                    .execute(
+                        "SELECT notice_marker FROM session_brief_injections WHERE entry_id=? AND session_id=? "
+                        "AND object_kind=? AND object_ref=? AND revision=?",
+                        (briefing.session_entry(context), context.session_id, *pair),
+                    )
+                    .fetchone()
+                )
+                acknowledgements[pair] = _markers(row)
+            acknowledgements[pair][key] = notice["marker"]
+    tx._check(write=True).executemany(
+        "UPDATE session_brief_injections SET notice_marker=? WHERE entry_id=? AND session_id=? "
+        "AND object_kind=? AND object_ref=? AND revision=?",
+        [
+            (canonical_render_json(markers), briefing.session_entry(context), context.session_id, *pair)
+            for pair, markers in acknowledgements.items()
+        ],
+    )
     tokens = injection["tokens"] - (brief["tokens"] if brief["_deliver"] else 0)
     tx._check(write=True).execute(
         "INSERT INTO session_brief_sessions(entry_id,session_id,started,recall_tokens,recall_elapsed_ms) "
         "VALUES(?,?,0,?,?) "
         "ON CONFLICT(entry_id,session_id) DO UPDATE SET recall_tokens=recall_tokens+excluded.recall_tokens, "
         "recall_elapsed_ms=recall_elapsed_ms+excluded.recall_elapsed_ms",
-        (briefing._entry(context), context.session_id, max(0, tokens), injection.get("elapsed_ms", 0)),
+        (briefing.session_entry(context), context.session_id, max(0, tokens), injection.get("elapsed_ms", 0)),
     )
     injection["session_tokens"] = _usage(tx, context)
 
@@ -380,4 +470,4 @@ def confirm(storage, clock, context, brief, *, remaining_seconds=None):
         )
     except Exception:  # noqa: BLE001 - no partial accounting or unsafe release on storage failure.
         return "brief_safety_unconfirmed"
-    return "brief_delivered"
+    return "injection_delivered" if brief.get("_discarded") else "brief_delivered"
