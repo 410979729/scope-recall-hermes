@@ -251,6 +251,7 @@ SUITES = {
         "tests/contract/test_storage_growth.py",
     ],
     "retrieval": [
+        "tests/contract/test_claim_lexical_index.py",
         "tests/public_bench/test_public_bench.py",
         "tests/contract/test_retrieval_pipeline.py",
         "tests/contract/test_recall_restatement.py",
@@ -321,6 +322,7 @@ SUITES = {
         "tests/host/codex/test_resident_recall.py",
     ],
     "migration": [
+        "tests/migration/test_claim_index_upgrade.py",
         "tests/migration/test_entity_upgrade.py",
         "tests/migration/test_migration_drills.py",
         "tests/migration/test_upgrade_coordinator.py",

@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING
 
 from ..contracts import ClaimProposal, ContractError
-from . import lineage
+from . import lexical_index, lineage
 from .claim_normalization import PROJECT_TAG, normalize_frame
 from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
 from .delete_storage import canonical
@@ -696,6 +696,7 @@ class Claims:
                 "UPDATE claims SET current_revision=?,slot_key=?,subject=?,predicate=? WHERE claim_id=?",
                 (revision, slot_key, proposal["subject"], proposal["predicate"], ref),
             )
+        lexical_index.index_claim(conn, ref)
         for span in proposal["evidence_spans"]:
             source = self._tx.source(span["source_ref"], span["source_revision"])
             # Three different findings, each with its own name, so a diagnostic

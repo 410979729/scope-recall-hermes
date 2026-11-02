@@ -18,6 +18,7 @@ from ..contracts import (
     InstanceBinding,
     TrustedContext,
 )
+from . import lexical_index
 from .deadline import remaining_seconds as request_remaining_seconds
 from .delete_storage import Deletions, watch_mirrored_tombstones
 from .failure_policy import failure_kind
@@ -44,6 +45,8 @@ from .schema import (
     upgrade_1113,
     upgrade_1114,
     upgrade_1115,
+    upgrade_1116,
+    upgrade_1117,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -72,6 +75,8 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1113,
             upgrade_1114,
             upgrade_1115,
+            upgrade_1116,
+            upgrade_1117,
         ),
         strict=True,
     )
@@ -527,6 +532,20 @@ def _initialization_left(deadline: float | None) -> float | None:
     return None if deadline is None else max(0.0, deadline - time.monotonic())
 
 
+def _finish_claim_index(conn: sqlite3.Connection, deadline: float | None) -> None:
+    """Commit bounded index pages under initialization admission; an interrupted page is repeatable."""
+    while lexical_index.claim_backfill_pending(conn):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_deadline_exceeded")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            lexical_index.backfill_claim_page(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+
 #: Requested memory-map size.  Operations open separate connections, so they do not share SQLite's page cache.
 #: Mapped reads use the system's file cache.  SQLite maps no more than the file holds or its build supports;
 #: remaining pages use ordinary reads, and writes are unchanged.  An I/O error on a mapped page ends the process,
@@ -867,6 +886,7 @@ class SQLiteStorage:
             if status is None:
                 status = self._initial_status(conn)
             conn.commit()
+            _finish_claim_index(conn, deadline)
             with suppress(sqlite3.Error):
                 conn.execute("PRAGMA busy_timeout=0")
                 _ensure_wal(conn)
@@ -958,7 +978,9 @@ class SQLiteStorage:
             # the lock timeout does not limit a worker's upgrade budget.
             upgrade_budget = self._remaining_budget(remaining_seconds, started)
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            upgrade = self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            upgrade = (
+                self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            ) or self._claim_index_pending(conn, restoring, version)
             if upgrade:
                 fits = upgrade_fits(_store_bytes(conn), upgrade_budget)
             elif writable and version == SCHEMA_VERSION:
@@ -1018,6 +1040,13 @@ class SQLiteStorage:
             self._close(conn, original)
         if mirror:
             self._after_commit_deletions()
+
+    def _claim_index_pending(self, conn, restoring: bool, version: int) -> bool:
+        """Keep partially backfilled stores behind initialization admission, including after interruption."""
+        pending = not restoring and version == SCHEMA_VERSION and lexical_index.claim_backfill_pending(conn)
+        if pending and not self.upgrade_on_open:
+            self._defer_upgrade()
+        return pending
 
     def _after_commit_deletions(self) -> None:
         """Try bounded mirroring after lease cleanup; I/O errors leave durable catch-up."""

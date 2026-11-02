@@ -585,6 +585,8 @@ def _brought_in(conn, src, names: _Names, *, payload: dict[str, Any], root: Path
 
             screen_imported_sources(tx, names, now)
             copied["counts"]["denials_settled"] = settle_brought_denials(tx, brought, now=now)
+            for ref in brought:
+                lexical_index.index_claim(conn, ref)
         finally:
             tx._finish()
     return copied

@@ -213,14 +213,15 @@ def screen_sources(tx, sources, now, *, remaining_seconds=SCAN_SECONDS):
     return eligible
 
 
-def blocked_refs(tx, kind, refs) -> frozenset[str]:
-    """Return held groups and their dependent objects through the common visibility gate."""
-    wanted = tuple(dict.fromkeys(refs))
-    if not wanted:
-        return frozenset()
-    rows = tx._check().execute(
-        f"""WITH RECURSIVE lineage(root,kind,ref) AS (
-            SELECT value,?,value FROM json_each(?) WHERE EXISTS (
+def held_roots_sql(seed: str) -> str:
+    """SQL returning held root refs from a trusted SELECT of (root, kind, ref).
+
+    Both bounded collection queries and hydrated reads use this dependency
+    walk. The seed owns its parameters; callers never supply user text as SQL.
+    An empty hold set skips the walk independently of corpus size.
+    """
+    return f"""WITH RECURSIVE lineage(root,kind,ref) AS (
+            SELECT * FROM ({seed}) WHERE EXISTS (
                 SELECT 1 FROM source_safety WHERE state!='released')
             UNION
             SELECT l.root,d.dependency_kind,d.dependency_ref FROM lineage l JOIN object_dependencies d
@@ -230,7 +231,16 @@ def blocked_refs(tx, kind, refs) -> frozenset[str]:
         SELECT DISTINCT l.root FROM lineage l JOIN source_events e ON l.kind='event' AND e.event_id=l.ref
         JOIN source_events h ON {GROUP_MATCH}
         JOIN source_safety s ON s.source_ref=h.event_id AND s.source_revision=h.source_revision
-        WHERE s.state!='released' AND h.read_blocked=0""",
+        WHERE s.state!='released' AND h.read_blocked=0"""
+
+
+def blocked_refs(tx, kind, refs) -> frozenset[str]:
+    """Return held groups and their dependent objects through the common visibility gate."""
+    wanted = tuple(dict.fromkeys(refs))
+    if not wanted:
+        return frozenset()
+    rows = tx._check().execute(
+        held_roots_sql("SELECT value,?,value FROM json_each(?)"),
         (kind, json.dumps(wanted)),
     )
     return frozenset(row[0] for row in rows)

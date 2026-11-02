@@ -571,8 +571,8 @@ def test_P08_lexical_pool_applies_read_policy_before_limit(app, mode, field, mar
 @pytest.mark.parametrize("mode", ["auto", "current", "method", "history", "as_of"])
 @pytest.mark.parametrize("field", ["suppressed", "read_blocked"])
 @pytest.mark.parametrize("marker", ["both", "row", "block"])
-def test_P08_claim_pool_applies_read_policy_before_limit(app, monkeypatch, mode, field, marker):
-    """Both marker locations protect the bounded claim scan, and unmuting restores automatic reads."""
+def test_P08_claim_pool_applies_read_policy_before_limit(app, mode, field, marker):
+    """Both marker locations apply before the final result limit; unmuting restores automatic reads."""
     from scope_recall.core import retrieval_storage
 
     from tests.contract.test_claims import accept, draft
@@ -601,7 +601,6 @@ def test_P08_claim_pool_applies_read_policy_before_limit(app, monkeypatch, mode,
     authorize(core, ctx, hidden, mode=action)
     core.forget(ctx, request(hidden, mode=action), remaining_seconds=10)
     _keep_candidate_marker(core, ctx, hidden, kind="claim", field=field, marker=marker)
-    monkeypatch.setattr(retrieval_storage, "_CLAIM_SCAN_LIMIT", 1)
     reader = replace(ctx, session_id="TEST-p08-suppressed-claims-reader")
 
     search = SearchContext.from_request(

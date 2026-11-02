@@ -21,16 +21,16 @@ def test_screening_steps_publish_only_their_own_schema(tmp_path):
     downgrade_store(core.storage.path, 1113)
     with closing(sqlite3.connect(core.storage.path)) as db:
         db.row_factory = sqlite3.Row
-        for version in (1113, 1114, 1115):
+        for version in range(1113, SCHEMA_VERSION):
             SCHEMA_MIGRATIONS[version](db)
             assert db.execute("PRAGMA user_version").fetchone()[0] == version + 1
             assert db.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == version + 1
             assert bool(db.execute("SELECT name FROM sqlite_master WHERE name='source_scan_progress'").fetchone()) == (
-                version == 1115
+                version >= 1115
             )
 
 
-@pytest.mark.parametrize("version", range(1105, 1114))
+@pytest.mark.parametrize("version", range(1105, SCHEMA_VERSION))
 def test_supported_store_keeps_truth_and_seeds_rules_with_snapshot(tmp_path, version):
     ctx = context(tmp_path / "TEST-upgrade")
     core = MemoryCore(CoreConfig(ctx.binding))
