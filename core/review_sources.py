@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import Any
 
 from ..contracts import ContractError
 from . import private
@@ -15,7 +16,7 @@ from .claims import Qualification, evidence_refs
 from .management_query import partition
 from .mutate import health_apply_facts, health_fact_pair, health_restore_fact, management_claims_private
 from .reflection_validity import reviewable_observation
-from .review_policy import PENDING, digest
+from .review_policy import PENDING, digest, owner_publication
 from .secret_patterns import structure_contains_secret_like_text
 
 QUERIES = {
@@ -76,6 +77,10 @@ def claim_snapshot(tx, clock, key, *, writable=False):
     if management_claims_private(view, clock, (version,)):
         raise ContractError("ACCESS_DENIED", "private_mode")
     native = dict(state=version.state, basis=version.basis, reason=version.reason)
+    if version.payload["kind"] == "alias":
+        from .entity_names import review_control_state
+
+        native["entity_controls"] = review_control_state(view, version.ref)
     if kind == "observation":
         row = (
             view._check()
@@ -93,7 +98,17 @@ def claim_snapshot(tx, clock, key, *, writable=False):
         time=version.recorded_from,
         scope=version.scope_id,
     )
-    return view, native, dict(heads=heads, latest=latest), item
+    fence: dict[str, Any] = dict(heads=heads, latest=latest)
+    if version.payload["kind"] == "decision":
+        fence["adoption_bindings"] = [
+            dict(row)
+            for row in view._check().execute(
+                "SELECT confirmation_ref,confirmation_revision,claim_ref,claim_revision,state,selection_json,reason "
+                "FROM adoption_relations WHERE claim_ref=?",
+                (ref,),
+            )
+        ]
+    return view, native, fence, item
 
 
 def source_snapshot(tx, clock, key, *, writable=False):
@@ -218,14 +233,37 @@ def decide_fact(tx, clock, key, decision, selection):
         raise ContractError("VERSION_CONFLICT", "review_state")
     if structure_contains_secret_like_text(head.payload):
         raise ContractError("INPUT_INVALID", "plaintext_secret_rejected")
-    result = {}
+    result: dict[str, Any] = {}
     if decision == "approve":
         history = tx.claims.versions(ref)
         held = select_effective(history, clock.utc_now())
         if denial_verdict(head.payload, held, tx.claims.roots(evidence_refs(head.payload)), history)[0]:
             raise ContractError("DERIVATION_INVALID", "denial_not_a_value")
         current = tx.claims.version(ref, head.current_revision)
-        saved = tx.claims.append(
+        saved = publish_reviewed_claim(tx, clock, head, current)
+        result = dict(heads={ref: saved.revision}, before_heads={ref: current.revision})
+        from .adoption_dedup import approve_deferred_adoption
+
+        deferred = approve_deferred_adoption(tx, head, saved, now=clock.utc_now())
+        result["heads"].update(deferred.get("heads", {}))
+        result["before_heads"].update(deferred.get("before_heads", {}))
+        if deferred.get("adoption_bindings"):
+            result["adoption_bindings"] = deferred["adoption_bindings"]
+    tx._check(write=True).execute(
+        "UPDATE claim_versions SET qualification_reason=? WHERE claim_id=? AND revision=?",
+        ("owner_review_approved" if decision == "approve" else "owner_review_rejected", ref, revision),
+    )
+    return result
+
+
+def publish_reviewed_claim(tx, clock, head, current):
+    """Preserve entity authority when approving an alias; other facts use owner review."""
+    if head.payload["kind"] == "alias" and head.payload["predicate"].startswith("entity_identity:"):
+        from .entity_resolution import approve_entity_alias
+
+        return approve_entity_alias(tx, clock, head, current)
+    with owner_publication():
+        return tx.claims.append(
             head.scope_id,
             head.payload,
             Qualification("active", "direct_report", "local_user_management"),
@@ -233,12 +271,6 @@ def decide_fact(tx, clock, key, decision, selection):
             expected_revision=current.revision,
             recorded_at=clock.utc_now(),
         )
-        result = dict(heads={ref: saved.revision}, before_heads={ref: current.revision})
-    tx._check(write=True).execute(
-        "UPDATE claim_versions SET qualification_reason=? WHERE claim_id=? AND revision=?",
-        ("owner_review_approved" if decision == "approve" else "owner_review_rejected", ref, revision),
-    )
-    return result
 
 
 def decide_observation(tx, clock, key, decision, selection):
@@ -427,6 +459,10 @@ def restore_native(tx, clock, key, before, effects):
             original = replace(original, state="retracted", reason="owner_review_undo")
         saved = health_restore_fact(view, clock, original, head)
         restored[ref] = saved.revision
+    if before.get("entity_controls"):
+        from .entity_names import restore_review_controls
+
+        restore_review_controls(tx, before["entity_controls"])
     if kind == "fact":
         tx._check(write=True).execute(
             "UPDATE claim_versions SET qualification_reason=? WHERE claim_id=? AND revision=?",
@@ -447,6 +483,9 @@ def restore_native(tx, clock, key, before, effects):
             + " WHERE confirmation_ref=? AND confirmation_revision=?",
             (*[before[name] for name in fields], key[1], key[2]),
         )
+    from .adoption_dedup import restore_reviewed_adoptions
+
+    restore_reviewed_adoptions(tx, effects.get("adoption_bindings", ()), now=clock.utc_now())
     return restored
 
 

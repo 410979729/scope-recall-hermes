@@ -13,6 +13,7 @@ from .claims import Qualification, evidence_refs, valid_at
 from .entity_names import checked
 from .evidence_support import SupportVerdict
 from .language_resources import prompt_text
+from .review_policy import PENDING, held_proposal, owner_publication, publication_qualification
 from .semantic_proposals import support_messages
 
 
@@ -112,6 +113,8 @@ def publish_entity_merge(tx, source, target, decision: SupportVerdict, *, now: s
     )
     history = tx.claims.slot(source.scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
+    if held_proposal(tx, proposal, source.scope_id, history) is not None:
+        return None
     if only_unmerged and previous is not None:
         raise ContractError("VERSION_CONFLICT", "entity_alias")
     # Explicit withdrawals are durable; endpoint revisions may refresh a live proof.
@@ -133,12 +136,16 @@ def publish_entity_merge(tx, source, target, decision: SupportVerdict, *, now: s
         )
         checked(tx, tx.claims.version(proof[0], proof[1]), name, target, previous)
         return None
+    qualification = publication_qualification(
+        tx, source.scope_id, Qualification("active", "derived_summary", "entity_identity_supported"), previous, proposal
+    )
     saved = tx.claims.append(
         source.scope_id,
         proposal,
-        Qualification("active", "derived_summary", "entity_identity_supported"),
+        qualification,
         recorded_at=now,
         previous=previous,
+        advance_head=previous is None or qualification.reason != PENDING,
     )
     material = json.dumps([source.payload, target.payload, decision.__dict__], sort_keys=True, ensure_ascii=False)
     tx._check(write=True).execute(
@@ -154,6 +161,47 @@ def publish_entity_merge(tx, source, target, decision: SupportVerdict, *, now: s
         ),
     )
     checked(tx, source, name, target, saved)
+    return saved
+
+
+def copy_entity_proof(tx, original, saved):
+    """Carry an existing entity proof to an owner-approved or restored version."""
+    tx._check(write=True).execute(
+        "INSERT INTO entity_alias_proofs SELECT ?,?,source_ref,source_revision,target_ref,target_revision,"
+        "judgement_sha256 "
+        "FROM entity_alias_proofs WHERE alias_ref=? AND alias_revision=?",
+        (saved.ref, saved.revision, original.ref, original.revision),
+    )
+
+
+def approve_entity_alias(tx, clock, pending, current):
+    """Approve only the exact still-live entity judgement and migrate its proof."""
+    proof = (
+        tx._check()
+        .execute(
+            "SELECT source_ref,source_revision,target_ref,target_revision FROM entity_alias_proofs "
+            "WHERE alias_ref=? AND alias_revision=?",
+            (pending.ref, pending.revision),
+        )
+        .fetchone()
+    )
+    if proof is None:
+        raise ContractError("VERSION_CONFLICT", "entity_proof")
+    source, _ = live_entity(tx, proof[0], proof[1], clock.utc_now())
+    target, _ = live_entity(tx, proof[2], proof[3], clock.utc_now())
+    if not entity_alias_proof(tx, pending, target, clock.utc_now()):
+        raise ContractError("VERSION_CONFLICT", "entity_proof")
+    with owner_publication():
+        saved = tx.claims.append(
+            pending.scope_id,
+            pending.payload,
+            Qualification("active", pending.basis, "entity_identity_supported"),
+            previous=current,
+            expected_revision=current.revision,
+            recorded_at=clock.utc_now(),
+        )
+    copy_entity_proof(tx, pending, saved)
+    checked(tx, source, pending.payload["alias"]["name"], target, saved)
     return saved
 
 

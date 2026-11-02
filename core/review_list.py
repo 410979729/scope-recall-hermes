@@ -13,9 +13,9 @@ from .review_sources import DECISIONS, QUERIES, list_native, restore_native, sna
 SOURCES = (*QUERIES, "health")
 
 
-def version_token(tx, clock, key, effects=None):
+def version_token(tx, key, state, effects=None):
     """Fence native metadata, current heads, appended history and previous decisions."""
-    _, native, fence, _ = snapshot(tx, clock, key)
+    _, native, fence, _ = state
     row = (
         tx._check()
         .execute(
@@ -40,8 +40,8 @@ def version_token(tx, clock, key, effects=None):
     return digest([native, fence, row[0], related])
 
 
-def _item(tx, clock, key, data):
-    return dict(key=key, source=key[0], version=version_token(tx, clock, key), **data)
+def _item(tx, key, state):
+    return dict(key=key, source=key[0], version=version_token(tx, key, state), **state[3])
 
 
 def _cursor(cursor, source):
@@ -73,7 +73,7 @@ def reviews(api, *, source=None, limit=30, cursor=None):
             return dict(items=items + page["items"], next_cursor=page["next_cursor"])
         with api.core.storage.read(context) as tx:
             rows, last, complete = list_native(tx, api.core.clock, current, after, limit - len(items))
-            items.extend(_item(tx, api.core.clock, key, item) for key, _, _, _, item in rows)
+            items.extend(_item(tx, key, (view, native, fence, item)) for key, view, native, fence, item in rows)
         if not complete:
             return dict(items=items, next_cursor=json.dumps([current, last]))
         if source is not None:
@@ -92,8 +92,8 @@ def _health_reviews(api, context, after, limit) -> dict[str, Any]:
                 if health_decided(tx, key):
                     continue
                 try:
-                    _, _, _, data = snapshot(tx, api.core.clock, key)
-                    items.append(_item(tx, api.core.clock, key, dict(data, category=category)))
+                    state = snapshot(tx, api.core.clock, key)
+                    items.append(_item(tx, key, (*state[:3], dict(state[3], category=category))))
                 except ContractError:
                     continue
     cursor = page["next_cursor"]
@@ -112,8 +112,9 @@ def decide(api, key, decision, *, expected_version, selection=None):
         raise ContractError("INPUT_INVALID", "review_decision")
     context = api._context()
     with api.core.storage.write(context, remaining_seconds=10) as tx:
-        view, native, _, _ = snapshot(tx, api.core.clock, key, writable=True)
-        if version_token(tx, api.core.clock, key) != expected_version:
+        state = snapshot(tx, api.core.clock, key, writable=True)
+        view, native, _, _ = state
+        if version_token(tx, key, state) != expected_version:
             raise ContractError("VERSION_CONFLICT", "expected_version")
         if key[0] == "health" and health_decided(tx, key):
             raise ContractError("VERSION_CONFLICT", "review_state")
@@ -127,7 +128,8 @@ def decide(api, key, decision, *, expected_version, selection=None):
                 or ("health_fact_merge" if key[1] == "duplicates" else "health_fact_choose"),
                 effects["health_targets"],
             )
-        _, after_native, after_fence, _ = snapshot(tx, api.core.clock, key)
+        after_state = snapshot(tx, api.core.clock, key)
+        _, after_native, after_fence, _ = after_state
         payload = dict(
             key=key,
             key_hash=digest(key),
@@ -137,7 +139,7 @@ def decide(api, key, decision, *, expected_version, selection=None):
             after=digest([after_native, after_fence]),
         )
         api._audit(tx, action, "review_decide", payload)
-        return dict(action_id=action, version=version_token(tx, api.core.clock, key, effects), decision=decision)
+        return dict(action_id=action, version=version_token(tx, key, after_state, effects), decision=decision)
 
 
 def undo(api, action_id, *, expected_version):
@@ -163,13 +165,14 @@ def undo(api, action_id, *, expected_version):
             )
             .fetchone()
         )
+        state = snapshot(tx, api.core.clock, key, writable=True)
         if (
             last[0] != action_id
             or last[1] != "review_decide"
-            or version_token(tx, api.core.clock, key, effects) != expected_version
+            or version_token(tx, key, state, effects) != expected_version
         ):
             raise ContractError("VERSION_CONFLICT", "expected_version")
-        view, native, fence, _ = snapshot(tx, api.core.clock, key, writable=True)
+        view, native, fence, _ = state
         if digest([native, fence]) != payload["after"] or not effects_current(tx, effects):
             raise ContractError("VERSION_CONFLICT", "review_effects")
         restored = restore_native(view, api.core.clock, key, payload["before"], effects)
@@ -216,8 +219,9 @@ def actions(api, *, limit=30, before=None):
             if last[0] != row["action_id"]:
                 continue
             try:
-                token = version_token(tx, api.core.clock, key, payload["effects"])
-                _, native, fence, _ = snapshot(tx, api.core.clock, key)
+                state = snapshot(tx, api.core.clock, key)
+                token = version_token(tx, key, state, payload["effects"])
+                _, native, fence, _ = state
                 if digest([native, fence]) != payload["after"] or not effects_current(tx, payload["effects"]):
                     continue
             except ContractError:

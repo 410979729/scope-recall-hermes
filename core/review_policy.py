@@ -2,13 +2,32 @@
 
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 
 from ..contracts import ContractError
+from .claims import persisted_claim_payload
 
 PENDING = "owner_review_required"
 PENDING_OBSERVATION = "owner_review_observation"
 REVIEW_REASONS = frozenset({PENDING_OBSERVATION, PENDING, "owner_review_approved", "owner_review_rejected"})
+
+_OWNER_PUBLICATION = ContextVar("owner_review_publication", default=False)
+
+
+@contextmanager
+def owner_publication():
+    """Publish a version-checked owner decision without treating it as extraction.
+
+    Only trusted management writers use this scope. It changes no permission,
+    evidence or expected-version checks in the underlying claim repository.
+    """
+    token = _OWNER_PUBLICATION.set(True)
+    try:
+        yield
+    finally:
+        _OWNER_PUBLICATION.reset(token)
 
 
 def digest(value):
@@ -43,8 +62,9 @@ def set_policy(tx, clock, scope_id, enabled, expected_version):
 
 def held_proposal(tx, proposal, scope_id, history):
     """Keep exact held/rejected replays held even after the policy is disabled."""
+    payload = persisted_claim_payload(proposal)
     for version in reversed(history):
-        if version.reason in REVIEW_REASONS and version.payload == proposal:
+        if version.reason in REVIEW_REASONS and version.payload == payload:
             return version
     return None
 
@@ -70,8 +90,10 @@ def health_decided(tx, key):
 
 def publication_qualification(tx, scope_id, qualification, previous, proposal, *, source_view=False):
     """Keep alternate automatic promotion paths behind the same owner gate."""
-    if source_view:
+    if source_view or _OWNER_PUBLICATION.get():
         return qualification
+    if qualification.state == "active" and proposal["kind"] == "alias" and policy(tx, scope_id)["enabled"]:
+        return replace(qualification, state="proposed", reason=PENDING)
     if qualification.state == "active" and proposal["kind"] == "observation":
         if qualification.reason == "grounded_observation" and (
             policy(tx, scope_id)["enabled"] or previous is not None and previous.reason == PENDING_OBSERVATION

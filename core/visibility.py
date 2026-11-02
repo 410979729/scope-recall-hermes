@@ -9,6 +9,8 @@ from ..contracts import ContractError
 from .claims import select_effective
 from .delete_storage import retraction_after
 from .injection_guard import blocked_refs
+from .restore import validate_owner_context
+from .review_policy import REVIEW_REASONS
 
 OBJECT_KINDS = ("event", "claim", "episode", "artifact", "reference")
 #: Intention states that automatic exits never surface as current.
@@ -102,17 +104,14 @@ def allowed_refs(tx, kind: str, refs, *, automatic: bool = False) -> frozenset[s
     return admitted
 
 
-def _released_event(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool):
+def _released_event(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool, owner_review=False):
     item = tx.source(ref.ref, ref.revision)
     if not history:
         tx.claims.require_live_source(ref.ref, ref.revision)
     return item
 
 
-def _released_claim(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool):
-    from .reflection_validity import reflection_historical, reflection_live
-    from .summary_validity import is_conversation_summary, summary_live
-
+def _released_claim(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool, owner_review=False):
     versions = tx.claims.versions(ref.ref)
     if history:
         item = next((version for version in versions if version.revision == ref.revision), None)
@@ -120,19 +119,31 @@ def _released_claim(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool
         item = select_effective(versions, clock.utc_now())
     if item is not None and item.revision != ref.revision:
         raise ContractError("VERSION_CONFLICT")
-    if item is not None and is_conversation_summary(item) and not summary_live(tx, item.ref, item.revision):
-        raise ContractError("SOURCE_MISSING", "summary_dependencies")
     if item is not None:
-        historical = history and (item.revision != item.current_revision or item.state == "superseded")
-        visible = reflection_historical(tx, item) if historical else reflection_live(tx, item)
-        if not visible:
-            raise ContractError("SOURCE_MISSING", "observation_dependencies")
+        check_claim_release(tx, item, history=history, owner_review=owner_review)
     if automatic and item is not None and item.payload.get("intention", {}).get("state") in CLOSED_INTENTION_STATES:
         raise ContractError("SOURCE_MISSING")
     return item
 
 
-def _released_versioned(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool):
+def check_claim_release(tx, item, *, history, owner_review):
+    """Keep owner-held versions behind the final release boundary in every mode."""
+    from .reflection_validity import reflection_historical, reflection_live, reviewable_observation
+    from .summary_validity import is_conversation_summary, summary_live
+
+    if item.reason in REVIEW_REASONS and not owner_review:
+        raise ContractError("SOURCE_MISSING", "owner_review_required")
+    if is_conversation_summary(item) and not summary_live(tx, item.ref, item.revision):
+        raise ContractError("SOURCE_MISSING", "summary_dependencies")
+    historical = history and (item.revision != item.current_revision or item.state == "superseded")
+    visible = reflection_historical(tx, item) if historical else reflection_live(tx, item)
+    if owner_review and item.reason in REVIEW_REASONS and not historical:
+        visible = reviewable_observation(tx, item)
+    if not visible:
+        raise ContractError("SOURCE_MISSING", "observation_dependencies")
+
+
+def _released_versioned(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool, owner_review=False):
     repository = {"episode": tx.episodes, "artifact": tx.artifacts, "reference": tx.references}[ref.kind]
     item = repository.get(ref.ref, ref.revision if history else None)
     if item is not None and item.revision != ref.revision:
@@ -165,11 +176,14 @@ def release_objects(
     expected_epoch: int,
     automatic: bool = True,
     history: bool = False,
+    owner_authority=None,
 ) -> tuple:
     """Return freshly loaded SQLite objects; never echo cached/vector text.
 
     The successful read transaction is the last authority-release boundary.
     Already delivered host text is outside a local transaction's control.
+    Held versions require a bound local owner capability and a nonautomatic
+    read; source and deletion fences still apply to that exception.
     """
     if (
         type(refs) is not tuple
@@ -179,6 +193,10 @@ def release_objects(
         or expected_epoch < 0
     ):
         raise ContractError("INPUT_INVALID", "release_request")
+    owner_review = False
+    if owner_authority is not None:
+        validate_owner_context(storage, owner_authority, context)
+        owner_review = not automatic
     with storage.read(context) as tx:
         if epoch_retracted(tx, context, expected_epoch):
             raise ContractError("VERSION_CONFLICT", "memory_epoch")
@@ -187,7 +205,7 @@ def release_objects(
             if not allowed(tx, ref.kind, ref.ref, automatic=automatic):
                 raise ContractError("SOURCE_MISSING")
             load = _RELEASE.get(ref.kind, _released_versioned)
-            item = load(tx, clock, ref, automatic=automatic, history=history)
+            item = load(tx, clock, ref, automatic=automatic, history=history, owner_review=owner_review)
             if item is None or (automatic and item.suppressed):
                 raise ContractError("SOURCE_MISSING")
             result.append(item)

@@ -155,7 +155,8 @@ def publish_adoption(tx, adoption, *, now):
     )
     from .adoption_dedup import retire_duplicates
 
-    retire_duplicates(tx, adoption, item.ref, now=now)
+    if item.state == "active":
+        retire_duplicates(tx, adoption, item.ref, now=now)
     from .session_brief import rebuild_scope
 
     rebuild_scope(tx, adoption.snapshot.confirmation.scope_id, now)

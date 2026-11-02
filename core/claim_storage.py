@@ -9,7 +9,15 @@ from typing import TYPE_CHECKING
 from ..contracts import ClaimProposal, ContractError
 from . import lexical_index, lineage
 from .claim_normalization import PROJECT_TAG, normalize_frame
-from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
+from .claims import (
+    ClaimVersion,
+    Qualification,
+    RootEvidence,
+    canonical_time,
+    claim_slot,
+    evidence_refs,
+    persisted_claim_payload,
+)
 from .delete_storage import canonical
 from .importance import record_importance
 from .review_policy import publication_qualification
@@ -748,7 +756,7 @@ class Claims:
             (
                 ref,
                 revision,
-                canonical({key: value for key, value in proposal.items() if key != "importance"}),
+                canonical(persisted_claim_payload(proposal)),
                 qualification.state,
                 qualification.basis,
                 qualification.reason,

@@ -91,6 +91,11 @@ class ClaimVersion:
     base_importance: int = 3
 
 
+def persisted_claim_payload(proposal):
+    """Keep salience metadata outside the version payload and replay identity."""
+    return {key: value for key, value in proposal.items() if key != "importance"}
+
+
 def canonical_time(value: str | None) -> str | None:
     return None if value is None else utc_timestamp(value)
 

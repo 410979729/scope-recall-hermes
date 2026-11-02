@@ -140,7 +140,10 @@ Review before publication is a per-scope switch, disabled by default. Enter a
 scope on the Review page to read or change its versioned setting. New extractions
 in an enabled scope wait for approval without replacing existing facts. Recall,
 explicit lookups, session briefs and current-fact exports withhold the held facts;
-original messages remain searchable. Turning the switch off leaves existing
+original messages remain searchable. Automatic entity aliases wait for the same
+review, and approving an adoption retires matching older decisions only at that
+point. Undo restores those decisions together with the reviewed item. Turning
+the switch off leaves existing
 pending items waiting. Rejected records remain in history.
 
 An ambiguous adoption requires the owner's selected fragment IDs. Approval resumes

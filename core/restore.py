@@ -73,6 +73,14 @@ def maintenance_context(storage, authority):
     return context
 
 
+def validate_owner_context(storage, authority, context):
+    """Require the bound owner capability while permitting its selected partition."""
+    owner = maintenance_context(storage, authority)
+    if replace(context, project_id=owner.project_id, branch_id=owner.branch_id) != owner:
+        raise ContractError("ACCESS_DENIED", "owner_authority")
+    return owner
+
+
 def ledger_digest(ledger) -> str:
     return hashlib.sha256(canonical(ledger).encode()).hexdigest()
 

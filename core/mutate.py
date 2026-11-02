@@ -48,7 +48,7 @@ from .evidence_quote import resolve_evidence_quotes, same_evidence
 from .evidence_support import positioned, support_verdict
 from .reflection_revision import revise_observation
 from .reflection_validity import reflection_live
-from .review_policy import PENDING, REVIEW_REASONS, held_proposal, policy
+from .review_policy import PENDING, REVIEW_REASONS, held_proposal, owner_publication, policy
 from .secret_patterns import structure_contains_secret_like_text
 from .semantic_proposals import merge_candidates
 from .source_qualification import (
@@ -103,7 +103,8 @@ def merge_entity_from_management(tx, clock, source_ref, source_revision, target_
     if management_claims_private(tx, clock, versions):
         raise ContractError("ACCESS_DENIED", "private_mode")
     verdict = SupportVerdict("", "supported", target.ref, target.revision, "duplicate")
-    result = publish_entity_merge(tx, source, target, verdict, now=clock.utc_now(), name=name, only_unmerged=True)
+    with owner_publication():
+        result = publish_entity_merge(tx, source, target, verdict, now=clock.utc_now(), name=name, only_unmerged=True)
     if result is None:
         raise ContractError("VERSION_CONFLICT", "entity_alias")
     return result
@@ -200,14 +201,19 @@ def health_apply_facts(tx, clock, first, second, *, merge):
 
 def health_restore_fact(tx, clock, original, head):
     """Append the pre-decision state without rewriting either reference's history."""
-    saved = tx.claims.append(
-        original.scope_id,
-        original.payload,
-        Qualification(original.state, original.basis, original.reason),
-        recorded_at=clock.utc_now(),
-        previous=head,
-        expected_revision=head.revision,
-    )
+    with owner_publication():
+        saved = tx.claims.append(
+            original.scope_id,
+            original.payload,
+            Qualification(original.state, original.basis, original.reason),
+            recorded_at=clock.utc_now(),
+            previous=head,
+            expected_revision=head.revision,
+        )
+    if original.payload["kind"] == "alias":
+        from .entity_resolution import copy_entity_proof
+
+        copy_entity_proof(tx, original, saved)
     if original.payload["kind"] == "observation":
         row = (
             tx._check()
