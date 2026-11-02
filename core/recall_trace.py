@@ -7,6 +7,7 @@ The ContextVar isolates concurrent hooks without carrying authority.
 
 from __future__ import annotations
 
+import json
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
@@ -82,38 +83,47 @@ def note_removed(before, after, reason):
             note_candidate(candidate, reason)
 
 
-def snapshot(tx, context):
-    """Count scoped processing state in the retrieval snapshot, without source bodies."""
+def snapshot(_tx, context):
+    """Read bounded published counters; queue scans and liveness probes stay off recall."""
     trace = CURRENT_TRACE.get()
     if trace is None or not trace.enabled:
         return
     trusted = context.trusted_context
-    scopes = sorted(trusted.allowed_scope_ids)
-    row = (
-        tx._check()
-        .execute(
-            "SELECT count(*),coalesce(sum(state='leased'),0),"
-            "coalesce(sum(last_error_code LIKE '%budget_exhausted' OR last_error_code LIKE '%budget_unavailable'),0) "
-            f"FROM work_items WHERE state IN ('pending','leased') AND scope_id IN ({','.join('?' for _ in scopes)}) "
-            "AND (project_id IS NULL OR project_id=?) AND (branch_id IS NULL OR branch_id=?)",
-            (*scopes, trusted.project_id, trusted.branch_id),
-        )
-        .fetchone()
-    )
-    trace.background = dict(
-        pending=row[0],
-        leased=row[1],
-        budget_paused=bool(row[2]),
-        worker_running=True if row[1] else None,
-        observed_at=context.now,
-    )
-    refs = [ref for ref in context.current_source_refs if tx.source(*_source_pair(ref)) is not None]
+    trace.background = {"worker_running": None, "snapshot_state": "unavailable"}
+    try:
+        path = trusted.binding.data_directory / "runtime-worker-status.json"
+        with path.open("rb") as stream:
+            raw = stream.read(65537)
+        value = json.loads(raw) if len(raw) <= 65536 else {}
+        state = value.get("recall_state", {})
+        groups = state.get("groups")
+        if value.get("installation_id") == trusted.binding.installation_id and isinstance(groups, list):
+            if len(groups) > 256 or state.get("truncated") is not False:
+                raise ValueError("unbounded recall snapshot")
+            matched = [
+                row
+                for row in groups
+                if row["scope_id"] in trusted.allowed_scope_ids
+                and row["project_id"] in (None, trusted.project_id)
+                and row["branch_id"] in (None, trusted.branch_id)
+            ]
+            if any(
+                type(row[key]) is not int or not 0 <= row[key] < 2**63
+                for row in matched
+                for key in ("pending", "leased", "paused")
+            ):
+                raise ValueError("invalid recall snapshot")
+            trace.background.update(
+                pending=sum(row["pending"] for row in matched),
+                leased=sum(row["leased"] for row in matched),
+                budget_paused=any(row["paused"] for row in matched),
+                observed_at=utc_timestamp(state["observed_at"]),
+                snapshot_state="published",
+            )
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, ContractError):
+        pass
+    refs = list(context.current_source_refs)
     trace.capture = dict(state="persisted" if refs else "not_captured", refs=refs)
-
-
-def _source_pair(ref):
-    name, revision = ref.rsplit("@", 1)
-    return name, int(revision)
 
 
 def logged_recall(method):
@@ -145,7 +155,10 @@ def logged_recall(method):
 def _error_visible(core, trace):
     """Recheck interrupted attempts; unreadable privacy state never permits logging."""
     try:
-        return core._recall_private_state(trace.context.trusted_context, after=trace.private_marker)[0] is None
+        return (
+            core._recall_private_state(trace.context.trusted_context, after=trace.private_marker, logging=True)[0]
+            is None
+        )
     except Exception:  # noqa: BLE001 - privacy is fail-closed even when the truth store fails.
         return False
 

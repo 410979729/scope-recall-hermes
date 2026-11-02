@@ -6,7 +6,6 @@ for correlating capture, retrieval, and delivery phases within one installation.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -123,6 +122,10 @@ class RecallDiagnostics:
         """Drain for inspection or orderly shutdown; never called by recall."""
         return self.writer.flush(timeout)
 
+    def close(self, timeout: float = 1.0) -> bool:
+        """Stop the diagnostic writer without accepting later submissions."""
+        return self.writer.close(timeout)
+
     def get(self, ref: str | None) -> RecallDiagnosticRecord | None:
         """Read a diagnostic ref, including compiler metrics staged in this attempt."""
         trace = CURRENT_TRACE.get()
@@ -196,11 +199,7 @@ def attempt_record(trace, result: dict | RetrievalResult) -> dict:
     # payloads can also contain references, so only their fixed names persist.
     for name in ("retrieval_gaps", "compile_gaps"):
         metrics[name] = tuple(dict.fromkeys(gap.split(":", 1)[0] for gap in metrics.get(name, ())))
-    query = (
-        dict(refs=list(trace.capture["refs"]))
-        if trace.capture["refs"]
-        else dict(length=len(context.query), sha256=hashlib.sha256(context.query.encode("utf-8")).hexdigest())
-    )
+    query = dict(refs=list(trace.capture["refs"])) if trace.capture["refs"] else dict(length=len(context.query))
     return dict(
         metrics,
         ref=trace.ref,

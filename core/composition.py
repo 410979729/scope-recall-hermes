@@ -252,14 +252,21 @@ class MemoryCore:
                 return "unavailable"
             raise
 
-    def _recall_private_state(self, context: TrustedContext, *, after: int | None = None):
+    def _recall_private_state(self, context: TrustedContext, *, after: int | None = None, logging: bool = False):
         """Read a fresh decision and rule marker at recall entry or release."""
         now = utc_timestamp(self.clock.utc_now())
         policy_context = (
             context if context.allowed_scope_ids else replace(context, allowed_scope_ids=context.binding.scope_ids)
         )
         with self.storage.read(policy_context, remaining_seconds=self.config.write_timeout_seconds) as tx:
-            return private.recall_state(tx, context, now, after=after)
+            state = private.recall_state(tx, context, now, after=after, logging=logging)
+            trace = CURRENT_TRACE.get()
+            # The ordinary release read also fences diagnostic publication.
+            # With no newly opened rule, its marker avoids a second lookup.
+            if not logging and trace is not None and trace.enabled and after is not None and state[1] > after:
+                if private.rules_changed(tx, context, after=after, modes=private.MODES)[0]:
+                    trace.enabled = False
+            return state
 
     def _recall_entry(self, search_context):
         """Share one entry snapshot between private policy and query identity."""

@@ -46,6 +46,8 @@ def rejection_reason(tx, candidate, context):
         return "muted"
     if candidate.ref in blocked_refs(tx, candidate.kind, (candidate.ref,)):
         return "quarantine"
+    if _private_candidate(tx, candidate, context):
+        return "private"
     if candidate.kind == "claim":
         version = (
             tx._check()
@@ -58,6 +60,38 @@ def rejection_reason(tx, candidate, context):
         if version is not None and version[0] is not None and version[0] <= context.now:
             return "expired"
     return "stale"
+
+
+def _private_candidate(tx, candidate, context):
+    """Classify source privacy with the same policy used for live content exits."""
+    intervals = private.active_intervals(tx, context.now)
+    if private.source_blocked(intervals, None):
+        return True
+    if intervals:
+        if candidate.kind == "event":
+            sources = (
+                tx._check()
+                .execute(
+                    "SELECT session_id,project_root,extra_json FROM source_events "
+                    "WHERE event_id=? AND source_revision=?",
+                    (candidate.ref, candidate.revision),
+                )
+                .fetchall()
+            )
+        else:
+            sources = (
+                tx._check()
+                .execute(
+                    "SELECT e.session_id,e.project_root,e.extra_json FROM evidence_links l JOIN source_events e "
+                    "ON e.event_id=l.source_ref AND e.source_revision=l.source_revision "
+                    "WHERE l.object_kind=? AND l.object_ref=? AND l.object_revision=?",
+                    candidate.key,
+                )
+                .fetchall()
+            )
+        if any(private.source_blocked(intervals, source) for source in sources):
+            return True
+    return False
 
 
 def _reference(tx, reader, context, item):

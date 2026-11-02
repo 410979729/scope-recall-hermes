@@ -824,6 +824,7 @@ class RuntimeInstance:
             self._vector_port = None
             self._default_embed = None
             self._default_purge = None
+        self.core.recall_diagnostics.close(timeout=1.0)
         seen: set[int] = set()
         for resource in reversed(resources):
             if id(resource) not in seen:

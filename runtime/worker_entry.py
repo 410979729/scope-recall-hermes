@@ -32,6 +32,7 @@ from .backup_upkeep import BACKUP_JOB_SECONDS, backup_if_due, record_backup_job_
 from .instance import build_runtime_instance
 from .instance_config import RuntimeInstanceConfig
 from .model_budget import pre_request_refusals, provider_refusals
+from .recall_log_state import queue_observation
 from .store_maintenance import STORE_UPGRADE_SECONDS, store_upgrade_pending
 from .validation import DAILY_COUNTER_MAX, strict_float, utc_now
 
@@ -328,6 +329,9 @@ def _persist_worker_status_unlocked(
         worker_pid=worker_pid if worker_pid is not None else os.getpid(),
         last_success_at=finished if int(payload.get("completed", 0)) > 0 else previous.get("last_success_at"),
     )
+    safe["recall_state"] = queue_observation(config.binding)
+    if len(json.dumps(safe).encode("utf-8")) > METADATA_LIMIT_BYTES:
+        safe["recall_state"].update(groups=[], truncated=True)
     write_worker_metadata(path, safe)
 
 

@@ -9,13 +9,14 @@ from ..core import CoreConfig, MemoryCore
 from ..core.management import MemoryManagement
 from ..core.recall_log_writer import read_health
 from ..core.restore import InstallationMaintenance
+from ..core.storage import SQLiteStorage
 from .doctor_report import record_check
 
 
 def check_recall_log(report, binding, *, request_id=None):
     """Report lossy writes and resolve one request without opening model ports."""
     path = binding.data_directory / "recall.sqlite3"
-    core = MemoryCore(CoreConfig(binding))
+    core = MemoryCore(CoreConfig(binding), storage=SQLiteStorage(binding, upgrade_on_open=False))
     core.recall_diagnostics.expire(core.clock.utc_now())
     core.recall_diagnostics.flush()
     health = read_health(path)

@@ -56,7 +56,7 @@ def test_private_attempts_leave_no_log(app, mode):
 def test_log_retention_reclaims_physical_pages(tmp_path):
     from scope_recall.core.recall_log_storage import LogPolicy, RecallLogStore
 
-    store = RecallLogStore(tmp_path / "recall.sqlite3", LogPolicy(retention_days=2, max_bytes=65536))
+    store = RecallLogStore(tmp_path / "recall.sqlite3", LogPolicy(retention_days=2, max_bytes=131072))
     for day in range(1, 7):
         for number in range(30):
             store.write(
@@ -72,7 +72,7 @@ def test_log_retention_reclaims_physical_pages(tmp_path):
     rows = store.list()
     assert rows
     assert min(row["timestamp"] for row in rows) >= "2026-09-05"
-    assert store.path.stat().st_size <= 65536
+    assert store.path.stat().st_size <= 131072
     assert len(rows) < 60
 
 
@@ -86,6 +86,14 @@ def test_backlog_and_budget_pause_explain_an_empty_attempt(app):
     capture(core, ctx, "TEST refinery color is amber.")
     with core.storage.write(ctx) as tx:
         tx._check(write=True).execute("UPDATE work_items SET last_error_code='budget_exhausted' WHERE state='pending'")
+    import json
+
+    from scope_recall.runtime.recall_log_state import queue_observation
+
+    (ctx.binding.data_directory / "runtime-worker-status.json").write_text(
+        json.dumps(dict(installation_id=ctx.binding.installation_id, recall_state=queue_observation(ctx.binding))),
+        encoding="utf-8",
+    )
     packet = core.recall_packet(ctx, recall_request(query="TEST absent astronomical instrument"))
     assert packet["items"] == []
     record = _latest(core, ctx)

@@ -4,6 +4,11 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
+Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.
+Worker-published counters replace queue scans during recall. The minimum diagnostic capacity is 128 KiB; existing
+logs retain their persisted policy, and changing it requires archiving the disposable log with its writers stopped.
+
 Host adapters share binding and route validation. Local linked worktrees inherit a registered project only after forward and reverse Git metadata agree. Workers recover missed visible messages from session records, including Codex rollouts, with idempotence and private-history checks; inline private spans are removed before capture and remote spooling. MCP input declarations retain omission and null semantics, and stdio services exit after input closure or launcher death. Existing attachment and hook commands remain valid.
 
 Facts use current-head lexical postings in the shared term dictionary. Writes, imports, restore and deletion maintain those postings transactionally; aliases are excluded. Nomination applies restored-absence ledgers and source-safety holds before result limits, retains historical subjects across slot normalization, and keeps exact ranking after entity processing. Initialization upgrades existing stores with resumable bounded backfill pages and retains the pre-upgrade snapshot for rollback. Recall completes pending backfill before admitting an indexed read.

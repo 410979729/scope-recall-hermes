@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Literal, Protocol, cast
 
 from ..contracts import ContractError, RecallItem, RecallPacket
+from . import recall_log_view
 from .background_context import is_background, mark_background
 from .entity_queries import fence_entity_query
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
@@ -449,7 +450,7 @@ class RecallPacketCompiler:
             return None
         fresh = self.storage_reader.hydrate(tx, candidate, context)
         if fresh is None:
-            note_candidate(candidate, "stale")
+            note_candidate(candidate, recall_log_view.rejection_reason(tx, candidate, context))
             gaps.append(f"stale_candidate:{candidate.ref}@{candidate.revision}")
             return None
         if (fresh.ref, fresh.revision) != (obj.ref, obj.revision):

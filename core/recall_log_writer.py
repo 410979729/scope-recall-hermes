@@ -27,6 +27,8 @@ class RecallLogWriter:
         self.queue: Queue = Queue(store.policy.queue_size)
         self.lock = threading.Lock()
         self.thread: threading.Thread | None = None
+        self.closed = False
+        self.stopping = threading.Event()
         self.dropped_full = 0
         self.write_failures = 0
         self.written = 0
@@ -35,11 +37,14 @@ class RecallLogWriter:
 
     def submit(self, record: dict) -> None:
         """Never wait for disk or queue capacity; failures are counted locally."""
-        try:
-            self.queue.put_nowait(record)
-        except Full:
-            self.dropped_full += 1
         with self.lock:
+            if self.closed:
+                self.write_failures += 1
+                return
+            try:
+                self.queue.put_nowait(record)
+            except Full:
+                self.dropped_full += 1
             if self.thread is None:
                 self.thread = threading.Thread(target=self._run, name="recall-log", daemon=True)
                 try:
@@ -49,7 +54,7 @@ class RecallLogWriter:
                     raise
 
     def _run(self):
-        while True:
+        while not (self.stopping.is_set() and self.queue.empty()):
             try:
                 record = self.queue.get(timeout=0.1)
             except Empty:
@@ -73,6 +78,33 @@ class RecallLogWriter:
                     self._persist_health()
                 finally:
                     self.queue.task_done()
+        with self.lock:
+            self.thread = None
+
+    def close(self, timeout: float = 1.0) -> bool:
+        """Stop ingress, drain within one deadline, then cancel and discard pending work.
+
+        False means an active operating-system operation has not returned yet;
+        SQL is interrupted and WAL recovery still protects committed records.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self.lock:
+            self.closed = True
+            thread = self.thread
+        reserve = min(0.1, max(0.0, timeout) / 4)
+        if not self.flush(max(0.0, deadline - time.monotonic() - reserve)):
+            self.store.cancel()
+            while True:
+                try:
+                    self.queue.get_nowait()
+                except Empty:
+                    break
+                self.write_failures += 1
+                self.queue.task_done()
+        self.stopping.set()
+        if thread is not None:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return thread is None or not thread.is_alive()
 
     def health(self) -> dict:
         """Counters for this writer; persisted receipts aggregate completed deltas."""
@@ -131,9 +163,10 @@ def read_health(path: Path) -> dict:
         return {}
 
 
-def _flush_writers():
+def _close_writers():
+    deadline = time.monotonic() + 1.0
     for writer in list(_WRITERS):
-        writer.flush(timeout=0.5)
+        writer.close(timeout=max(0.0, deadline - time.monotonic()))
 
 
-atexit.register(_flush_writers)
+atexit.register(_close_writers)

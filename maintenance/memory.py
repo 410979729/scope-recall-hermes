@@ -11,6 +11,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.management_query import MemoryFilter
 from scope_recall.core.restore import InstallationMaintenance
+from scope_recall.core.storage import SQLiteStorage
 
 from .restore import RestoreError, store_to_restore
 
@@ -31,7 +32,7 @@ def open_management(args, *, initialize: bool = True):
     )
     if not (binding.data_directory / "memory.sqlite3").is_file():
         raise ContractError("SOURCE_MISSING", "database")
-    core = MemoryCore(CoreConfig(binding))
+    core = MemoryCore(CoreConfig(binding), storage=SQLiteStorage(binding, upgrade_on_open=initialize))
     if initialize:
         core.initialize()
     context = TrustedContext(binding, "local-management", binding.scope_ids, "host_generated")

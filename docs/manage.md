@@ -26,8 +26,7 @@ The `inspect` tool accepts `recall-request:REQUEST` within the asking session an
 `recall-diag:` reference. The management page and local commands use the installation owner's capability.
 References are checked again against current scope, project, source versions, deletion, mute, privacy and
 injection holds. A reference that fails those checks has no content or action link. History does not copy
-conversation or fact text. A captured prompt is represented by its source references; otherwise only its length
-and SHA-256 are stored. Neither full nor read-only private mode records attempts.
+conversation or fact text. A captured prompt is represented by its source references; otherwise only its length is stored. Neither full nor read-only private mode records attempts.
 
 `recall.sqlite3` is a disposable sibling of `memory.sqlite3`, outside the truth schema and memory exports. The
 bounded asynchronous writer drops a record when its queue is full or the log cannot be written, while recall
@@ -35,10 +34,17 @@ continues. Doctor reports cumulative dropped and failed writes; a completely ful
 health receipt from being saved. A crash or expired retention can therefore leave a gap in diagnostic history.
 
 The UTC calendar retention defaults to 30 days, with a total log ceiling of 32 MiB and 128 queued attempts.
-Runtime settings `recall_log_days` (1?365), `recall_log_bytes` (65536?1073741824) and `recall_log_queue` (1?4096)
-change those limits. The database reserves 4096 bytes for its small health receipt and coordination files;
-auto-vacuum reclaims deleted pages. Writes and history/doctor access expire old days and remove the oldest
-records first when full. An installation with no running process performs expiry when next accessed.
+Runtime settings `recall_log_days` (1-365), `recall_log_bytes` (131072-1073741824) and `recall_log_queue` (1-4096)
+set the initial limits. Each log persists one shared retention and capacity policy; another process cannot replace
+it by writing with different settings. To change an existing log's policy, stop its writers, archive that disposable
+log and start a fresh one with the new settings; memory truth is unaffected. The minimum is 128 KiB because WAL,
+shared-memory blocks and health metadata count toward the ceiling. Explicit smaller settings must be increased.
+The database reserves a complete WAL image and shared-memory blocks, checkpoints before accepting a new batch,
+and drops a write when a reader prevents that checkpoint. A bounded shutdown stops new submissions, drains or
+discards the queue and interrupts active SQL; WAL recovery preserves a consistent database after process loss.
+Writes and history/doctor access expire old days and remove the oldest records first when full. An installation
+with no running process performs expiry when next accessed. An older log too large to leave the WAL reserve
+remains readable but refuses new writes; archiving that disposable log starts a fresh bounded stream.
 Known unbound host sessions use the same core log without entering retrieval. Blank input and source-fence
 refusals also receive records. Privacy metadata reads on these exits are capped at 50 ms; unreadable privacy
 state leaves no record. Adapters translate trusted identity metadata and keep no parallel log.
@@ -46,8 +52,11 @@ Existing stores need no truth migration or historical backfill: earlier unrecord
 
 An empty result distinguishes an unbound scope, no retrievable evidence, threshold rejection and delivery limits.
 Capture references and processing counts are diagnostic evidence: pending work or a paused budget does not
-by itself prove it caused a retrieval miss. Queue counts are sampled in the retrieval snapshot; the optional
-worker liveness probe is sampled by the writer and carries its own observation time.
+by itself prove it caused a retrieval miss. Queue counts come from the last bounded worker-published snapshot, including its observation time; recall never
+scans the work queue. Missing or malformed snapshots make those fields unavailable. A leased item does not prove
+that a worker is running: liveness remains unknown unless the runtime probe supplies an observation. The writer
+samples that probe outside the recall path. Doctor and command-line history never upgrade the truth store;
+an unfinished upgrade makes history temporarily unavailable.
 
 ## Browse and inspect
 
