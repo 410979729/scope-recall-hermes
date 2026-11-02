@@ -268,12 +268,18 @@ def test_incomplete_model_output_preserves_raw_fallback(app):
         )
 
 
-def test_large_source_is_covered_by_consecutive_summary_fragments(app):
+def test_large_source_prefix_is_processed_without_replacing_the_original(app):
     import json
 
+    from scope_recall.core.summary_storage import fully_quoted_sources
+
     class Excerpts:
+        def __init__(self):
+            self.pages = []
+
         def judge(self, messages, *, remaining_seconds):
             body = json.loads(messages[-1]["content"])
+            self.pages.append(body["sources"])
             return json.dumps(
                 dict(
                     sentences=[
@@ -289,14 +295,20 @@ def test_large_source_is_covered_by_consecutive_summary_fragments(app):
 
     core, ctx = app
     source = capture(core, ctx, "TEST-project keeps original evidence. " * 500)
-    result = build(core, ctx, Excerpts())
+    model = Excerpts()
+    result = build(core, ctx, model)
     assert result.failed == 0
+    assert model.pages[0][0]["content"] == source.event["content"][:1000] + (
+        f"（已截断，全文 {len(source.event['content'])} 字符）"
+    )
     with core.storage.read(ctx) as tx:
         group = tx._check().execute("SELECT * FROM summary_groups WHERE kind='session'").fetchone()
         assert group["covered_units"] == group["total_units"] == len(source.event["content"])
         parts = tx._check().execute("SELECT * FROM summary_parts ORDER BY ordinal").fetchall()
-        assert len(parts) > 1
+        assert len(parts) == 1
         assert all(summary_live(tx, p["claim_ref"], p["claim_revision"]) for p in parts)
+        versions = [tx.claims.version(p["claim_ref"], p["claim_revision"]) for p in parts]
+        assert not fully_quoted_sources(tx, versions, {(source.ref, source.revision)})
 
 
 def test_unrelated_tool_capture_does_not_strand_a_complete_session_summary(app):

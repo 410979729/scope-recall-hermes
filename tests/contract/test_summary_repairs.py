@@ -57,6 +57,101 @@ def rendered_conversation(core, ctx, query="昨天做了什么"):
     return packet, prepared.canonical_text or ""
 
 
+@pytest.mark.parametrize("role,limit", [("user", 1000), ("assistant", 600), ("tool", 300)])
+def test_summary_request_truncates_each_role_without_changing_original(app, role, limit):
+    from scope_recall.core.worker_summaries import summary_messages
+
+    core, ctx = app
+    origin = {"user": "human_direct", "assistant": "assistant_visible", "tool": "tool_observation"}[role]
+    text = "TEST-source. " + "x" * 1500
+    event = source_event(source_event_key="TEST-role-limit", role=role, origin=origin, content=text)
+    saved = core.record_event(replace(ctx, actor_origin=origin), event, scope_id="TEST-scope", remaining_seconds=10)
+    with core.storage.read(ctx) as tx:
+        original = tx.source(saved.event_refs[0].ref, 1)
+        record = json.loads(summary_messages((original,))[-1]["content"])["sources"][0]
+        assert record["content"] == text[:limit] + f"（已截断，全文 {len(text)} 字符）"
+        assert tx.source(original.ref, original.revision).event["content"] == text
+
+
+def test_long_completed_task_is_paged_and_keeps_unquoted_originals(app):
+    from scope_recall.core.summary_storage import fully_quoted_sources
+
+    core, ctx = app
+    task = replace(ctx, task_anchor="TEST-long-task")
+    capture(core, task, "Continue TEST-project and run checks.", when="2026-09-05T10:00:00Z")
+    assistants = []
+    for turn in range(30):
+        capture(core, task, f"TEST-checkpoint {turn}.", when="2026-09-05T10:00:00Z")
+        event = source_event(
+            source_event_key=f"TEST-long-assistant-{turn}",
+            role="assistant",
+            origin="assistant_visible",
+            content=f"TEST-result {turn}. " + "x" * 8000,
+            occurred_at="2026-09-05T10:00:00Z",
+        )
+        saved = core.record_event(
+            replace(task, actor_origin="assistant_visible"), event, scope_id="TEST-scope", remaining_seconds=10
+        )
+        assistants.append((saved.event_refs[0].ref, 1))
+    capture(core, task, "The task is completed.", when="2026-09-05T11:02:00Z")
+    model = FirstSentenceModel()
+    for _ in range(4):
+        result = build(core, task, model)
+        assert result.failed == 0
+        with core.storage.read(ctx) as tx:
+            group = tx._check().execute("SELECT state,failure FROM summary_groups WHERE kind='task'").fetchone()
+            if group and group[0] == "complete":
+                break
+    assert group[0] == "complete" and group[1] is None
+    assert len(model.pages) <= 16
+    with core.storage.read(ctx) as tx:
+        rows = tx._check().execute("SELECT claim_ref,claim_revision FROM summary_parts").fetchall()
+        versions = [tx.claims.version(*row) for row in rows]
+        assert not fully_quoted_sources(tx, versions, assistants)
+
+
+def test_task_page_accounts_for_recovery_hint_in_request_limit(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from scope_recall.core import worker_summaries
+
+    core, ctx = app
+    sources = [capture(core, ctx, f"TEST-item {i}. " + "x" * 850) for i in range(16)]
+    members = [dict(ref=s.ref, revision=s.revision, total=len(s.event["content"])) for s in sources]
+    group = dict(manifest_json=json.dumps(members))
+    episode = SimpleNamespace(ref="TEST-task", resume=dict(text="r" * 3000))
+    monkeypatch.setattr(
+        worker_summaries,
+        "unprocessed_ranges",
+        lambda tx, group: [(i, 0, member["total"]) for i, member in enumerate(members)],
+    )
+    monkeypatch.setattr(worker_summaries, "obsolete_ranges", lambda tx, members: {})
+    with core.storage.read(ctx) as tx:
+        page, coverage = worker_summaries._read_page(tx, group, episode)
+    assert len(page) < len(sources) and len(coverage) == len(page)
+    messages = worker_summaries.summary_messages(page, episode_ref=worker_summaries._task_hint(episode, page))
+    assert sum(len(message["content"].encode("utf-8")) for message in messages) <= 12000
+
+
+def test_truncated_assistant_stays_a_time_channel_candidate(app):
+    core, ctx = app
+    content = "TEST-project checks passed. " + "Additional detail " * 80
+    event = source_event(
+        source_event_key="TEST-long-visible-reply",
+        role="assistant",
+        origin="assistant_visible",
+        content=content,
+        occurred_at="2026-09-05T10:00:00Z",
+    )
+    saved = core.record_event(
+        replace(ctx, actor_origin="assistant_visible"), event, scope_id="TEST-scope", remaining_seconds=10
+    )
+    model = FirstSentenceModel()
+    assert build(core, ctx, model).failed == 0
+    assert len(model.pages[0][0]["content"]) < len(content)
+    assert any(item.ref == saved.event_refs[0].ref for item in scoped(core, ctx))
+
+
 @pytest.mark.parametrize(
     "content,excerpt",
     [

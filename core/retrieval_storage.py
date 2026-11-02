@@ -695,6 +695,7 @@ class RetrievalStorage(RetrievalHydration):
         The person's own messages and the replies they were shown, in the question's audience, from the named days
         (and entries), spread evenly across each day so it is seen whole rather than its last hour: the person's
         messages of a length a packet can deliver beside others first, then their longer ones, then the replies.
+        Longer replies follow the shorter candidates; the packet budget still decides what fits.
         A short message that says nothing ("继续", "好的，继续吧") is not offered.  The days share the slots evenly,
         a day with fewer messages handing the rest on, and take turns in the order offered, so the first-named day
         does not fill the packet.  Only lengths are read, and the text of short messages.
@@ -750,15 +751,15 @@ class RetrievalStorage(RetrievalHydration):
             rows = [row for row in rows if source_key(row["event_id"], row["source_revision"]) not in excluded]
             rows = summarized_rows(tx, context, rows, limit=limit)
             rows = [row for row in rows if row["short"] is None or says_something(row["short"])]
-            # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler
-            # never slices content), and on the coding clients' days most messages are: offered first, they would be
-            # dropped and other days' short items delivered instead.
+            # Longer messages follow shorter candidates because the compiler
+            # cannot slice them to fit an automatic packet.
             days.append(
                 [
                     [row for row in rows if row["role"] == "summary"],
                     [row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS],
+                    [row for row in rows if row["role"] == "assistant" and row["size"] > _SCOPED_ITEM_CHARS],
                 ]
             )
         picks = []

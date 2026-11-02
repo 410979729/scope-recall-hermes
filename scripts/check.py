@@ -179,6 +179,7 @@ SUITES = {
         "tests/contract/test_adoption_outline.py",
         "tests/contract/test_importance_summaries.py",
         "tests/contract/test_summary_repairs.py",
+        "tests/contract/test_summary_truncation_boundary.py",
         "tests/contract/test_summary_merge.py",
         "tests/contract/test_summary_transfer.py",
         "tests/contract/test_memory_import.py",

@@ -12,7 +12,7 @@ from pathlib import Path
 from scope_recall.core.language_resources import prompt_text
 from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.maintenance.setup_configuration import runtime_payload
-from scope_recall.maintenance.setup_workload import recommended_workload
+from scope_recall.maintenance.setup_workload import recommended_totals, recommended_workload
 from scope_recall.runtime import instance
 from scope_recall.runtime.auxiliary import build_auxiliary_runtime
 from scope_recall.runtime.instance import build_runtime_instance
@@ -20,6 +20,16 @@ from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from tests.contract.test_runtime_auxiliary import FakeTransport
 from tests.v11_support import context, recall_request, source_event
+
+
+def test_monthly_twenty_turn_recommendation_includes_inflight_reserves():
+    totals = recommended_totals(daily_turns=20, period="monthly")
+    assert totals["total_call_cap"] == 4411
+    assert totals["total_input_cap"] == 8761083
+    assert totals["total_output_cap"] == 303188
+    assert totals["inflight_input"] == 65536
+    assert totals["inflight_output"] == 8192
+    assert totals["cap_micro_usd"] == 0
 
 
 def summarize_requests(records):

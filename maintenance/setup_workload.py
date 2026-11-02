@@ -17,7 +17,7 @@ MEASURED_100 = {
     "extraction": (109, 534916, 10098),
     "entity_resolution": (9, 19109, 351),
     "embedding": (230, 72917, 0),
-    "session_summary": (127, 383742, 8664),
+    "session_summary": (16, 43119, 1078),
     "task_summary": (2, 3426, 132),
     "locate_adoption": (96, 48943, 1110),
     "describe_adoption": (6, 2508, 216),

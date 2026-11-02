@@ -4,7 +4,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
-Budget recommendations include measured summary and adoption processing.
+Summary requests bound each source by role and page completed tasks within the input limit. Unquoted long replies remain candidates for time-based recall. Budget recommendations include the measured summary and adoption processing.
 
 Setup now detects local hosts, previews and confirms a complete installation, preserves existing stores and grants,
 configures referenced model routes and budgets, and verifies capture, worker processing and cross-session recall

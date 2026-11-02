@@ -25,17 +25,25 @@ from .worker_outcomes import (
     work_result,
 )
 
+SUMMARY_SOURCE_LIMITS = {"user": 1000, "assistant": 600, "tool": 300}
+
 
 def summary_messages(sources, *, episode_ref=None):
     """Format bounded raw windows; task recovery is a hint, never authority for generated text."""
     records = []
     for source in sources:
         window = getattr(source, "consolidation_window", None)
+        content = source.event["content"]
+        limit = SUMMARY_SOURCE_LIMITS[source.event["role"]]
+        total = window.total if window else len(content)
+        if total > limit:
+            available = max(0, limit - (window.start if window else 0))
+            content = content[:available] + f"（已截断，全文 {total} 字符）"
         records.append(
             dict(
                 ref=source.ref,
                 revision=source.revision,
-                content=source.event["content"],
+                content=content,
                 role=source.event["role"],
                 start=window.start if window is not None else 0,
             )
@@ -50,7 +58,16 @@ def summary_messages(sources, *, episode_ref=None):
     return messages
 
 
-def _read_page(tx, group):
+def _task_hint(episode, sources):
+    """Include recovery context only when all its evidence is on this page."""
+    if episode is None:
+        return None
+    refs = {f"{source.ref}@{source.revision}" for source in sources}
+    resume = episode.resume if set(resume_evidence_refs(episode.resume)) <= refs else None
+    return dict(ref=episode.ref, resume=resume)
+
+
+def _read_page(tx, group, episode):
     """Prepare only unprocessed ranges, hiding whole sentences of obsolete facts."""
     members = json.loads(group["manifest_json"])
     blocked = obsolete_ranges(tx, members)
@@ -66,6 +83,11 @@ def _read_page(tx, group):
         for a, b in blocked.get((source.ref, source.revision), ()):
             left, right = sentence_bounds(content, a, b)
             mask[left:right] = " " * (right - left)
+        # Previously started generations can have gaps beyond the prefix. Mark
+        # those ranges traversed without sending a later part of the message.
+        limit = SUMMARY_SOURCE_LIMITS[source.event["role"]]
+        if start >= limit:
+            mask[start:end] = " " * (end - start)
         source = replace(source, event=dict(source.event, content="".join(mask)))
         if start or end != member["total"]:
             if sources:
@@ -73,13 +95,16 @@ def _read_page(tx, group):
             values: dict = dict(source.__dict__, event=dict(source.event, content=source.event["content"][start:end]))
             source = ChunkedSource(**values, consolidation_window=ConsolidationChunk(start, end, member["total"]))
         try:
-            summary_messages((*sources, source))
+            candidate = (*sources, source)
+            summary_messages(candidate, episode_ref=_task_hint(episode, candidate))
         except ContractError:
             if sources:
                 break
             source = tx.source(member["ref"], member["revision"])
             source = replace(source, event=dict(source.event, content="".join(mask)))
-            source, _chunk = source_chunk(source, start, formatter=summary_messages)
+            source, _chunk = source_chunk(
+                source, start, formatter=summary_messages, episode_ref=_task_hint(episode, (source,))
+            )
             assert _chunk is not None
             if _chunk.end > end:
                 source = replace(
@@ -151,15 +176,11 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
             group = _job(tx, item)
             if group is None:
                 return finish("obsolete", "SOURCE_MISSING")
-            sources, coverage = _read_page(tx, group)
+            episode = tx.episodes.get(group["subject_ref"]) if group["kind"] == "task" else None
+            sources, coverage = _read_page(tx, group, episode)
             originals = {(s.ref, s.revision): tx.source(s.ref, s.revision).event["content"] for s in sources}
             blocked = obsolete_ranges(tx, json.loads(group["manifest_json"]))
-            episode = tx.episodes.get(group["subject_ref"]) if group["kind"] == "task" else None
-            page_refs = {f"{s.ref}@{s.revision}" for s in sources}
-            resume = episode.resume if episode is not None else None
-            if not set(resume_evidence_refs(resume)) <= page_refs:
-                resume = None
-            task = dict(ref=episode.ref, resume=resume) if episode is not None else None
+            task = _task_hint(episode, sources)
         guard = partial(_outbound_blocked, storage, clock, context, sources, group)
         if guard():
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
@@ -174,6 +195,16 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
                 )
             value = json.loads(raw) if isinstance(raw, str) else raw
             sentences, spans = grounded_sentences(value, submitted, originals=originals, blocked=blocked)
+            # Whole-sentence expansion must not turn text beyond the displayed
+            # prefix into an excerpt that suppresses the unshown original.
+            limits = {(s.ref, s.revision): SUMMARY_SOURCE_LIMITS[s.event["role"]] for s in submitted}
+            accepted = [
+                (sentence, span)
+                for sentence, span in zip(sentences, spans, strict=True)
+                if span["end"] <= limits[(span["source_ref"], span["source_revision"])]
+            ]
+            sentences = [sentence for sentence, _span in accepted]
+            spans = [span for _sentence, span in accepted]
         return _publish_summary(
             storage,
             clock,
