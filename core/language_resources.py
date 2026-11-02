@@ -48,6 +48,7 @@ def prompt_text(name: str) -> str:
         "entity",
         "session_summary",
         "importance",
+        "reflection",
     }:
         raise ValueError("unknown prompt")
     return _resource_text(f"{name}.txt").rstrip("\r\n")
@@ -64,6 +65,7 @@ def model_consolidation_schema(*, candidate_kind: str | None = None) -> dict:
     schema = json.loads(
         (Path(__file__).resolve().parents[1] / "contracts/consolidation_result.schema.json").read_text(encoding="utf-8")
     )
+    schema["properties"]["claim_proposals"]["items"]["properties"]["kind"]["enum"].remove("observation")
     _omit_fields(schema, ("protocol_version", "source_refs"))
     for field in ("claim_proposals", "resume_proposals", "reference_proposals"):
         schema["required"].remove(field)

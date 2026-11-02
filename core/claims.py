@@ -1078,6 +1078,8 @@ def qualify(
     This rule retains unsupported interpretation as proposed. It neither invents
     dates nor converts the model's requested state into governance authority.
     """
+    if proposal["kind"] == "observation":
+        return Qualification("proposed", "derived_summary", "reflection_pending")
     normalized = positioned(proposal) and not _legacy
     if normalized and _support_state is None:
         verdict = support_verdict(proposal, roots)

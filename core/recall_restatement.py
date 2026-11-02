@@ -436,6 +436,28 @@ def _decision_anchors(objects):
     return anchors
 
 
+def redundant_observation_keys(objects):
+    """Drop an induction only when a cited visible original carries its complete statement.
+
+    The comparison is deliberately literal: a new frequency, condition or other
+    synthesis remains available instead of being mistaken for a duplicate quote.
+    """
+    redundant = set()
+    anchors = [obj for obj in objects if obj.origin == "human_direct"]
+    for obj in objects:
+        if obj.origin != "inductive_observation":
+            continue
+        payload = optional_json(dict(obj.metadata).get("payload_json"))
+        if not isinstance(payload, dict):
+            continue
+        text = payload.get("value_text", "")
+        if text and any(
+            set(obj.evidence_refs) & set(anchor.evidence_refs) and text in anchor.content for anchor in anchors
+        ):
+            redundant.add((obj.kind, obj.ref, obj.revision))
+    return redundant
+
+
 def redundant_summary_keys(objects: list[RetrievedObject]) -> set[tuple[str, str, int]]:
     """Omit excerpts repeated by displayed originals or same-source decisions.
 
@@ -444,7 +466,7 @@ def redundant_summary_keys(objects: list[RetrievedObject]) -> set[tuple[str, str
     """
     originals = [obj.content for obj in objects if obj.kind == "event"]
     decisions = _decision_anchors(objects)
-    redundant = set()
+    redundant = redundant_observation_keys(objects)
     for obj in objects:
         if not _summary_quotes(obj):
             continue
@@ -468,6 +490,15 @@ def prioritize_summary_originals(ranked: list[Pair]) -> list[Pair]:
     originals = [pair for pair in ranked if pair[1].kind == "event"]
     before = {}
     for candidate, obj in ranked:
+        if obj.origin == "inductive_observation":
+            witnesses = [
+                pair
+                for pair in ranked
+                if pair[1].origin == "human_direct" and set(pair[1].evidence_refs) & set(obj.evidence_refs)
+            ]
+            if witnesses:
+                before[candidate.key] = witnesses
+            continue
         quotes = _summary_quotes(obj)
         if not quotes:
             continue
@@ -480,5 +511,7 @@ def prioritize_summary_originals(ranked: list[Pair]) -> list[Pair]:
 def has_conversation_summaries(ranked: list[Pair]) -> bool:
     """Whether final packet selection must retain conversation-summary alternatives."""
     return any(
-        dict(obj.metadata).get("qualification_reason") in CONVERSATION_SUMMARY_REASONS for _candidate, obj in ranked
+        dict(obj.metadata).get("qualification_reason") in CONVERSATION_SUMMARY_REASONS
+        or obj.origin == "inductive_observation"
+        for _candidate, obj in ranked
     )

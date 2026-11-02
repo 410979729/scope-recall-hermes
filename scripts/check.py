@@ -170,6 +170,8 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_reflection.py",
+        "tests/contract/test_reflection_cost.py",
         "tests/contract/test_adoption.py",
         "tests/contract/test_adoption_merge.py",
         "tests/contract/test_adoption_revision.py",
@@ -342,6 +344,7 @@ SUITES = {
         "tests/host/codex/test_tool_schemas.py",
     ],
     "migration": [
+        "tests/migration/test_reflection_upgrade.py",
         "tests/migration/test_adoption_upgrade.py",
         "tests/migration/test_database_identity_upgrade.py",
         "tests/migration/test_importance_summary_upgrade.py",

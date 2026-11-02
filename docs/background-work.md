@@ -222,6 +222,34 @@ available. The dated-conversation channel checks every member, including tools, 
 Replacement eligibility considers only the user and assistant messages that this channel reads; other messages remain available. Previous-conversation questions resolve to the latest visible prior session,
 then use the same channel and fallback. Portable fact exports include importance and pinning and omit stale summaries.
 
-The store schema is 1122; supported layouts 1105 through 1121 upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+The store schema is 1123; supported layouts 1105 through 1122 upgrade along the same coordinated chain. The schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.
+
+
+## Cross-session observations
+
+When ordinary work is idle, the worker can consolidate first-hand events into an `observation` claim.
+A project partitions the input when available; otherwise the verified source principal does. Scope and branch
+remain separate. Eight new source events are required, from at least two sessions; a fact and its original
+message count only once. Each discovery page reads eight events and retains at most sixteen. Each batch can
+publish at most three observations. Source windows contain at most 512 characters each and the whole model
+input is bounded by 32,000 UTF-8 bytes. The original full text remains the evidence authority.
+
+Generation and independent evidence support use durable stages in the existing work queue and the existing
+auxiliary model ledger. They share the same explicit API or CLI subscription budget requirement as summaries.
+No model or no explicit budget produces no reflection requests. Private mode blocks outbound generation and
+support. CLI work shares the ordinary per-pass call allowance; completing a stage does not reset it.
+
+Every published body has passed independent support judgement and cites at least two source sessions. It is
+labelled as an induction, never an owner quotation. Observations cannot act as source roots, grant authority,
+resolve identities or revise ordinary facts. They do not enter the other-session overflow list. Visible original
+statements take precedence; an observation whose complete statement is already displayed is omitted.
+
+Read and final release recheck the input versions, hashes, related fact heads, scope, suppression and source safety.
+Corrections, withdrawals, deletion and safety holds make an observation unreadable before rebuilding. Direct owner
+facts in the same slot and later owner denials take precedence over the induction. The management review list
+shows unconfirmed observations; confirmation retains the derived basis and all original dependencies. The owner
+can edit or delete an observation through existing management and revision operations. Portable export includes
+only valid observation heads, with their source chains; imports without local dependency records rebuild the
+observations rather than treating the exported induction as owner authority.

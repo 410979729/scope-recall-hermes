@@ -84,7 +84,7 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
         db.commit()
     core.storage.initialize()
     with closing(sqlite3.connect(core.storage.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1122
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1123
         assert (
             db.execute("SELECT event_id,content,content_sha256 FROM source_events ORDER BY source_id").fetchall()
             == originals
@@ -115,4 +115,4 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
                 "SELECT pattern,enabled FROM injection_rules WHERE rule_id='TEST-merged-rule'"
             ).fetchone() == ("TEST protected", 0)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert SOURCE_SCHEMAS == frozenset(range(1109, 1123))
+    assert SOURCE_SCHEMAS == frozenset(range(1109, SCHEMA_VERSION + 1))

@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1122
+SCHEMA_VERSION = 1123
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -456,6 +456,21 @@ SUMMARY_STATEMENTS = (
     ) STRICT""",
 )
 
+REFLECTION_STATEMENTS = (
+    "CREATE TABLE reflection_cursors(audience TEXT PRIMARY KEY,position INTEGER NOT NULL DEFAULT 0) STRICT",
+    """CREATE TABLE reflection_groups(
+        group_key TEXT PRIMARY KEY,scope_id TEXT NOT NULL,project_id TEXT,branch_id TEXT,subject TEXT NOT NULL,
+        buffered_json TEXT NOT NULL DEFAULT '[]',job_ref TEXT,job_revision INTEGER,
+        manifest_json TEXT NOT NULL DEFAULT '[]',signature TEXT NOT NULL DEFAULT '',
+        proposals_json TEXT,next_proposal INTEGER NOT NULL DEFAULT 0) STRICT""",
+    "CREATE INDEX reflection_jobs ON reflection_groups(job_ref,job_revision)",
+    """CREATE TABLE observations(
+        claim_ref TEXT NOT NULL,claim_revision INTEGER NOT NULL,manifest_json TEXT NOT NULL,
+        signature TEXT NOT NULL,confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed IN (0,1)),
+        PRIMARY KEY(claim_ref,claim_revision)) STRICT""",
+)
+
+
 STATEMENTS = (
     (
         """CREATE TABLE instance_meta (
@@ -518,7 +533,8 @@ STATEMENTS = (
         scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
         project_id TEXT, branch_id TEXT,
         subject TEXT NOT NULL, predicate TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('fact','preference','constraint','decision','procedure','intention','alias')),
+        kind TEXT NOT NULL CHECK(kind IN (
+            'fact','preference','constraint','decision','procedure','intention','alias','observation')),
         slot_key TEXT NOT NULL UNIQUE, current_revision INTEGER NOT NULL CHECK(current_revision>=1),
         read_blocked INTEGER NOT NULL DEFAULT 0 CHECK(read_blocked IN (0,1)),
         suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)),
@@ -672,6 +688,7 @@ STATEMENTS = (
     + CLAIM_RANK_STATEMENTS
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
+    + REFLECTION_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
@@ -1011,3 +1028,49 @@ def upgrade_1121(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1122 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1122")
+
+
+def upgrade_1122(connection):
+    """Extend the claim kind constraint without losing rows or dependent projections.
+
+    The coordinator owns a verified rollback snapshot and the transaction. Deferred
+    foreign keys permit replacing the table; cascading projections are copied back
+    before commit. Existing indexes retain their exact definitions.
+    """
+    connection.execute("PRAGMA defer_foreign_keys=ON")
+    indexes = [
+        row[0]
+        for row in connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='claims' AND sql IS NOT NULL"
+        )
+    ]
+    cascades = []
+    for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        if any(
+            row[2] == "claims" and row[6] == "CASCADE"
+            for row in connection.execute(f'PRAGMA foreign_key_list("{table}")')
+        ):
+            cascades.append(table)
+            connection.execute(f'CREATE TEMP TABLE "reflection_save_{table}" AS SELECT * FROM "{table}"')
+    triggers = connection.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+    for name, _sql in triggers:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    definition = next(statement for statement in STATEMENTS if statement.startswith("CREATE TABLE claims ("))
+    connection.execute(definition.replace("CREATE TABLE claims (", "CREATE TABLE reflection_claims (", 1))
+    connection.execute("INSERT INTO reflection_claims SELECT * FROM claims")
+    connection.execute("DROP TABLE claims")
+    connection.execute("ALTER TABLE reflection_claims RENAME TO claims")
+    for statement in indexes:
+        connection.execute(statement)
+    for table in cascades:
+        connection.execute(f'INSERT INTO "{table}" SELECT * FROM "reflection_save_{table}"')
+        connection.execute(f'DROP TABLE "reflection_save_{table}"')
+    for _name, sql in triggers:
+        connection.execute(sql)
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise ValueError("claim_kind_foreign_keys")
+    connection.execute("PRAGMA defer_foreign_keys=OFF")
+    for statement in REFLECTION_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1123 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1123")

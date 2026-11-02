@@ -25,7 +25,8 @@
               "decision",
               "procedure",
               "intention",
-              "alias"
+              "alias",
+              "observation"
             ]
           },
           "subject": {
