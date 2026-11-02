@@ -37,58 +37,150 @@ def mark_path(config, kind: str, session_id: str) -> Path:
     return folder / hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
 
 
-def compaction_at(config, session_id: str) -> str | None:
-    """Read the host's pending compaction watermark, tolerating an unavailable mark."""
-    path = mark_path(config, "compactions", session_id)
-    values = []
+def _read_compaction(path: Path) -> dict | None:
     try:
-        candidates = (path, *path.parent.glob(path.name + ".*.pending"))
-        for candidate in candidates:
-            try:
-                values.append(utc_timestamp(candidate.read_text(encoding="utf-8")))
-            except (OSError, UnicodeError, ContractError):
-                continue
-    except OSError:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            isinstance(value, dict)
+            and (value.get("seq") is None or (type(value["seq"]) is int and 1 <= value["seq"] < 2**63))
+            and type(value.get("epoch")) is str
+            and 1 <= len(value["epoch"]) <= 64
+            and type(value.get("at")) is str
+        ):
+            value["at"] = utc_timestamp(value["at"])
+            value.setdefault("ordinal", value["seq"])
+            if type(value["ordinal"]) is int and 1 <= value["ordinal"] < 2**63:
+                return value
+    except (OSError, UnicodeError, ValueError, ContractError):
         pass
-    return max(values) if values else None
+    return None
 
 
-def _write_compaction(path: Path, at: str) -> None:
-    """Publish one complete mark without exposing a partial timestamp to readers."""
-    pending = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    pending.write_text(at, encoding="utf-8")
-    os.replace(pending, path)
+def _write_compaction(path: Path, value: dict) -> None:
+    """Publish a complete counter or pending mark atomically."""
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
+    os.replace(temporary, path)
 
 
-def mark_compaction(config, session_id: str, at: str) -> str | None:
-    """Atomically retain a compaction without waiting for the truth-database writer."""
+def compaction_marker(config, session_id: str) -> dict | None:
+    """Read the newest pending mark, materializing concurrent signals when possible."""
+    path = mark_path(config, "compactions", session_id)
+    counter = mark_path(config, "compaction-counters", session_id)
+    try:
+        with advisory_file_lock(path.with_name(path.name + ".lock"), timeout_seconds=0):
+            current = _read_compaction(path)
+            state = _read_compaction(counter)
+            for pending in sorted(path.parent.glob(path.name + ".*.pending")):
+                item = _read_compaction(pending)
+                if item is None:
+                    continue
+                state = {
+                    "epoch": state["epoch"] if state else item["epoch"],
+                    "seq": state["seq"] + 1 if state and state["seq"] is not None else None,
+                    "ordinal": (state["ordinal"] if state else 0) + 1,
+                    "at": item["at"],
+                }
+                counter.parent.mkdir(parents=True, exist_ok=True)
+                _write_compaction(counter, state)
+                _write_compaction(path, state)
+                pending.unlink(missing_ok=True)
+                current = state
+            return current
+    except (OSError, TimeoutError):
+        try:
+            marks = [_read_compaction(candidate) for candidate in (path, *path.parent.glob(path.name + ".*.pending"))]
+            return max((mark for mark in marks if mark), key=lambda mark: mark["ordinal"], default=None)
+        except OSError:
+            return None
+
+
+def compaction_at(config, session_id: str) -> str | None:
+    """Read the recorded time of the newest pending compaction."""
+    mark = compaction_marker(config, session_id)
+    return mark["at"] if mark else None
+
+
+def mark_compaction(config, session_id: str, at: str) -> int | None:
+    """Advance the client-owned session counter without waiting for the truth writer.
+
+    A lost counter has an unknown global base until the core returns its watermark;
+    the generation and local ordinal still make every pending signal distinct.
+    """
     try:
         at = utc_timestamp(at)
         path = mark_path(config, "compactions", session_id)
+        counter = mark_path(config, "compaction-counters", session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        counter.parent.mkdir(parents=True, exist_ok=True)
         try:
             with advisory_file_lock(path.with_name(path.name + ".lock"), timeout_seconds=0):
-                at = max(at, compaction_at(config, session_id) or at)
-                _write_compaction(path, at)
+                state = _read_compaction(counter)
+                mark = {
+                    "seq": state["seq"] + 1 if state and state["seq"] is not None else None,
+                    "epoch": state["epoch"] if state else uuid.uuid4().hex,
+                    "ordinal": (state["ordinal"] if state else 0) + 1,
+                    "at": at,
+                }
+                _write_compaction(counter, mark)
+                _write_compaction(path, mark)
+                return mark["ordinal"]
         except TimeoutError:
-            # Never wait for a concurrent acknowledgement: its cleanup must not erase this later event.
-            _write_compaction(path.with_name(f"{path.name}.{uuid.uuid4().hex}.pending"), at)
-        return at
+            state = _read_compaction(counter)
+            mark = {
+                "seq": state["seq"] + 1 if state and state["seq"] is not None else None,
+                "epoch": state["epoch"] if state else uuid.uuid4().hex,
+                "ordinal": (state["ordinal"] if state else 0) + 1,
+                "at": at,
+            }
+            _write_compaction(path.with_name(f"{path.name}.{uuid.uuid4().hex}.pending"), mark)
+            return mark["ordinal"]
     except (OSError, ContractError):
         return None
 
 
-def clear_compaction(config, session_id: str, at: str) -> None:
-    """Remove a confirmed watermark only when no newer mark is visible."""
+def rebase_compaction(config, session_id: str, epoch: str, ordinal: int, watermark: int) -> None:
+    """Restore the client counter from a verified server watermark without acknowledging delivery."""
+    if type(watermark) is not int or not 0 <= watermark < 2**63:
+        return
     path = mark_path(config, "compactions", session_id)
     try:
         with advisory_file_lock(path.with_name(path.name + ".lock"), timeout_seconds=0):
+            counter_path = mark_path(config, "compaction-counters", session_id)
+            counter = _read_compaction(counter_path)
+            if counter is None or counter["epoch"] != epoch:
+                return
+            base = max((counter["seq"] or counter["ordinal"]) - counter["ordinal"], watermark - ordinal)
+            counter["seq"] = base + counter["ordinal"]
+            _write_compaction(counter_path, counter)
             for candidate in (path, *path.parent.glob(path.name + ".*.pending")):
-                try:
-                    if utc_timestamp(candidate.read_text(encoding="utf-8")) <= at:
-                        candidate.unlink(missing_ok=True)
-                except (OSError, UnicodeError, ContractError):
-                    continue
+                value = _read_compaction(candidate)
+                if value is not None and value["epoch"] == epoch:
+                    value["seq"] = base + value["ordinal"]
+                    _write_compaction(candidate, value)
+    except (OSError, TimeoutError):
+        pass
+
+
+def clear_compaction(
+    config, session_id: str, acknowledged: int, epoch: str | None = None, watermark: int | None = None
+) -> None:
+    """Remove pending signals no newer than the confirmed client counter."""
+    path = mark_path(config, "compactions", session_id)
+    try:
+        with advisory_file_lock(path.with_name(path.name + ".lock"), timeout_seconds=0):
+            counter_path = mark_path(config, "compaction-counters", session_id)
+            counter = _read_compaction(counter_path)
+            if epoch is None:
+                epoch = counter["epoch"] if counter else None
+            if counter is not None and counter["epoch"] == epoch and type(watermark) is int and 0 <= watermark < 2**63:
+                base = max((counter["seq"] or counter["ordinal"]) - counter["ordinal"], watermark - acknowledged)
+                counter["seq"] = base + counter["ordinal"]
+                _write_compaction(counter_path, counter)
+            for candidate in (path, *path.parent.glob(path.name + ".*.pending")):
+                value = _read_compaction(candidate)
+                if value is not None and value["epoch"] == epoch and value["ordinal"] <= acknowledged:
+                    candidate.unlink(missing_ok=True)
     except (OSError, TimeoutError):
         pass
 

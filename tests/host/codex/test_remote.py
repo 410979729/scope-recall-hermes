@@ -180,7 +180,7 @@ def test_remote_compaction_mark_is_forwarded_until_server_confirms(tmp_path, mon
 
     def send(_config, body, _until):
         sent.append(body)
-        return {"result": {}, "compaction_ack": body.get("compacted_at") if acknowledge[0] else None}
+        return {"result": {}, "compaction_ack": body.get("compaction_seq") if acknowledge[0] else None}
 
     monkeypatch.setattr(remote_client, "_send_checked", send)
     start = {"hook_event_name": "SessionStart", "session_id": "TEST-remote-compact", "cwd": str(tmp_path)}
@@ -211,7 +211,7 @@ def test_remote_spool_replay_carries_pending_compaction(tmp_path, monkeypatch):
 
     monkeypatch.setattr(remote_client, "_post", post)
     assert remote_client.flush_spool(config) == 1
-    assert bodies[0]["compacted_at"] == stamp
+    assert bodies[0]["compaction_seq"] == stamp
 
 
 def test_remote_compaction_survives_client_clock_behind_server(served, tmp_path, monkeypatch):
@@ -2107,3 +2107,55 @@ def test_embedding_failure_phase_reaches_remote_hook_log(served, tmp_path, monke
     assert trace["vector_started"] == trace["vector_finished"] == trace["vector_packet"] == 0
     assert f'"embedding_failure_phase":"{phase}"' in caplog.text
     assert '"embedding_ms":17' in caplog.text
+
+
+def test_remote_compaction_survives_clock_rollback_and_lost_counter(served, tmp_path, monkeypatch):
+    from scope_recall.adapters.clients.session_marks import mark_path
+
+    from tests.host.codex.test_shared_client import _seed_shared_brief
+
+    root, homes, ports = served
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    claim = _seed_shared_brief((root, {}, homes["claude-code"], owner["capture_scope_id"]))
+    config = _client(tmp_path, "claude-code", ports["claude-code"])
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-remote-clock-back", "cwd": str(tmp_path)}
+    assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+    now = datetime.now(UTC)
+    monkeypatch.setattr(remote_client, "_now", lambda: now.isoformat())
+    assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+    monkeypatch.setattr(remote_client, "_now", lambda: (now - timedelta(seconds=1)).isoformat())
+    assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+    mark_path(config, "compaction-counters", start["session_id"]).unlink()
+    assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        assert (
+            db.execute(
+                "SELECT compacted_seq FROM session_brief_sessions WHERE session_id LIKE ?",
+                ("%:" + start["session_id"],),
+            ).fetchone()[0]
+            == 3
+        )
+    counter = mark_path(config, "compaction-counters", start["session_id"])
+    assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 3
+    from tests.host.codex.test_shared_client import _LEASE_HOLDER
+
+    counter.unlink()
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout.readline().strip() == "holding"
+        assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 4
+        question = {
+            **start,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "TEST-project ??",
+            "prompt_id": "TEST-rollback-prompt",
+            "turn_id": "TEST-rollback-turn",
+        }
+        answer = _hook(config, question)
+        assert claim.ref in answer.get("hookSpecificOutput", {}).get("additionalContext", "")
+    finally:
+        holder.communicate(input="release\n", timeout=30)
+    assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]

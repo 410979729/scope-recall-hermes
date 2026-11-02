@@ -180,7 +180,7 @@ class MemoryCore:
         )
         if not defer_confirmation and (deliver or compact) and "_epoch" in brief:
             brief["delivery_reason"] = self.confirm_session_brief(context, brief, remaining_seconds=remaining_seconds)
-            if brief["delivery_reason"] == "brief_invalidated":
+            if brief["delivery_reason"] in {"brief_invalidated", "brief_safety_unconfirmed"}:
                 brief.update(text="", items=[], tokens=0, elapsed_ms=0)
         return brief
 
@@ -189,7 +189,7 @@ class MemoryCore:
         from .session_brief import confirm
 
         reason = confirm(self.storage, self.clock, context, brief, remaining_seconds=remaining_seconds)
-        if brief.get("_deliver") and brief.get("items") and reason != "brief_invalidated":
+        if brief.get("_deliver") and brief.get("items") and reason in {"brief_delivered", "brief_delivery_unconfirmed"}:
             from .recall_trace import record_brief
 
             record_brief(self, context, brief, reason)
@@ -207,6 +207,12 @@ class MemoryCore:
         from .session_brief import remove_question_overlaps
 
         remove_question_overlaps(brief, question_text)
+
+    def session_compaction_watermark(self, context: TrustedContext) -> int:
+        """Read the last committed compaction sequence for this entry and session."""
+        from .session_brief import compaction_watermark
+
+        return compaction_watermark(self.storage, context)
 
     def reset_session_injections(self, context: TrustedContext, *, remaining_seconds=None) -> None:
         """Forget the current context's delivered references after host compaction."""

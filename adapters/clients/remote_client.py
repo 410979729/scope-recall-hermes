@@ -68,7 +68,7 @@ from .boundary import (
     is_workbuddy_agent_run,
     without_lone_surrogates,
 )
-from .session_marks import clear_compaction, compaction_at, mark_compaction
+from .session_marks import clear_compaction, compaction_marker, mark_compaction, rebase_compaction
 
 HOSTS = ("claude-code", "codex", "workbuddy", "dsh")
 #: Hosts whose Stop and SessionEnd send the lines of their own session record (``transcript``).
@@ -541,9 +541,9 @@ def _flush_item(config, item: Path, left: float) -> int | None:
     payload = kept.get("payload")
     session = payload.get("session_id") if isinstance(payload, dict) else None
     session = session if type(session) is str else None
-    compact = compaction_at(config, session) if session is not None else None
+    compact = compaction_marker(config, session) if session is not None else None
     if compact is not None:
-        kept["compacted_at"] = compact
+        kept.update(compacted_at=compact["at"], compaction_seq=compact["ordinal"], compaction_epoch=compact["epoch"])
     if _private_rules(config):
         state = _private_check(config, kept, min(left, 1.0))
         if state is None:
@@ -707,20 +707,24 @@ def _hook_input(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any]]:
 
 def _pending_compaction(
     config: dict[str, Any], payload: dict[str, Any], observed_at: str
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, dict | None]:
     """Record this client's compaction before transport and return its pending watermark."""
     session = payload.get("session_id")
     if config["host"] not in {"claude-code", "codex"} or type(session) is not str or not session.strip():
         return None, None
     if payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "compact":
         mark_compaction(config, session, observed_at)
-    return session, compaction_at(config, session)
+    return session, compaction_marker(config, session)
 
 
-def _ack_compaction(config, session: str | None, compact: str | None, answer: dict) -> None:
+def _ack_compaction(config, session: str | None, compact: dict | None, answer: dict) -> None:
     """Retire only the client mark the server confirmed."""
-    if compact is not None and session is not None and answer.get("compaction_ack") == compact:
-        clear_compaction(config, session, compact)
+    if compact is not None and session is not None:
+        watermark = answer.get("compaction_watermark")
+        if type(watermark) is int:
+            rebase_compaction(config, session, compact["epoch"], compact["ordinal"], watermark)
+        if answer.get("compaction_ack") == compact["ordinal"]:
+            clear_compaction(config, session, compact["ordinal"], compact["epoch"], watermark)
 
 
 def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
@@ -751,7 +755,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         payload = _with_context_since(payload)
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
     if compact is not None:
-        body["compacted_at"] = compact
+        body.update(compacted_at=compact["at"], compaction_seq=compact["ordinal"], compaction_epoch=compact["epoch"])
     cursor = None
     record_page = None
     if (

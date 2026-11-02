@@ -71,7 +71,12 @@ class Prefetch:
             generation = self._adapter._brief_compactions.get(effective_session, 0)
             compacted_at = self._adapter._brief_compaction_times.get(effective_session)
             if compacted_at is not None:
-                context = replace(context, compacted_at=compacted_at)
+                context = replace(
+                    context,
+                    compacted_at=compacted_at,
+                    compaction_seq=generation,
+                    compaction_epoch=self._adapter._brief_epoch,
+                )
             current_refs = tuple(self._adapter._current_source_refs)
             request = self._request(query, effective_session)
             core = self._adapter._require_core()
@@ -155,15 +160,18 @@ class Prefetch:
         with self._adapter._lock:
             if self._adapter._active_turn_id != turn:
                 return text
-            reason = core.confirm_session_brief(context, briefing, remaining_seconds=0.03)
-        if reason == "brief_invalidated":
+            try:
+                reason = core.confirm_session_brief(context, briefing, remaining_seconds=0.03)
+            except Exception:  # noqa: BLE001 - an unfinished safety check cannot release prepared text.
+                reason = "brief_safety_unconfirmed"
+        if reason in {"brief_invalidated", "brief_safety_unconfirmed"}:
             text = text.replace(briefing["text"], "", 1).strip() if briefing["text"] else text
         if reason == "brief_delivered" and briefing.get("_generation"):
             with self._adapter._lock:
                 if self._adapter._brief_compactions.get(session) == briefing["_generation"]:
                     del self._adapter._brief_compactions[session]
                     self._adapter._brief_compaction_times.pop(session, None)
-        if reason == "brief_delivery_unconfirmed":
+        if reason in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed"}:
             self._adapter._diagnostics.capability_gaps = (*self._adapter._diagnostics.capability_gaps, reason)
         return text
 

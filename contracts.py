@@ -737,6 +737,16 @@ def import_source_fingerprint(event: SourceEvent) -> str:
     ).hexdigest()
 
 
+def _validate_compaction(sequence: int | None, epoch: str | None) -> None:
+    """Validate a host-owned counter together with its client generation."""
+    if sequence is not None and (type(sequence) is not int or not 1 <= sequence < 2**63):
+        raise ContractError("IDENTITY_UNBOUND", "compaction_seq")
+    if epoch is not None and (type(epoch) is not str or not 1 <= len(epoch) <= 64):
+        raise ContractError("IDENTITY_UNBOUND", "compaction_epoch")
+    if (sequence is None) != (epoch is None):
+        raise ContractError("IDENTITY_UNBOUND", "compaction_pair")
+
+
 @dataclass(frozen=True)
 class TrustedContext:
     binding: InstanceBinding
@@ -763,6 +773,8 @@ class TrustedContext:
     project_identity: Literal["local", "remote", "unverified"] = "local"
     #: A host-owned compaction watermark for this session, never a scope grant.
     compacted_at: str | None = None
+    compaction_seq: int | None = None
+    compaction_epoch: str | None = None
     #: Host-owned entry-owner binding. A None principal asks for the reader's
     #: entry owner; a source principal must be checked against that entry's grants.
     #: The final argument is a memo owned by one pairing request, never by this context.
@@ -794,6 +806,7 @@ class TrustedContext:
         if self.project_identity not in ("local", "remote", "unverified"):
             raise ContractError("IDENTITY_UNBOUND", "project_identity")
         _optional_timestamp(self.compacted_at)
+        _validate_compaction(self.compaction_seq, self.compaction_epoch)
         if (
             type(self.recent_messages) is not tuple
             or len(self.recent_messages) > 8

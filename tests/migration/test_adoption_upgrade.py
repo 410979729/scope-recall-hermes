@@ -143,3 +143,56 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
             ).fetchone() == ("TEST protected", 0)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
     assert SOURCE_SCHEMAS == frozenset(range(1109, SCHEMA_VERSION + 1))
+
+
+def test_compaction_sequence_upgrade_preserves_marks_and_rolls_back(app, monkeypatch):
+    core, ctx = app
+    item = capture(core, ctx, "TEST compaction schema source")
+    downgrade_store(core.storage.path, 1125)
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        db.execute(
+            "INSERT INTO session_brief_sessions(entry_id,session_id,started,started_compacted_at,compacted_at) "
+            "VALUES(?,?,1,?,?)",
+            (ctx.binding.installation_id, ctx.session_id, "2026-09-06T12:00:00Z", "2026-09-06T12:00:00Z"),
+        )
+        db.execute(
+            "INSERT INTO session_brief_injections VALUES(?,?,?,?,?,?,?)",
+            (
+                ctx.binding.installation_id,
+                ctx.session_id,
+                "claim",
+                "TEST-claim",
+                1,
+                "2026-09-06T12:00:01Z",
+                "2026-09-06T12:00:00Z",
+            ),
+        )
+        db.commit()
+    step = storage.SCHEMA_MIGRATIONS[1125]
+
+    def fail(conn):
+        step(conn)
+        raise RuntimeError("TEST interrupted sequence migration")
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1125, fail)
+    with pytest.raises(RuntimeError, match="TEST interrupted"):
+        core.storage.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1125
+        assert (
+            db.execute("SELECT name FROM sqlite_master WHERE name='session_brief_compaction_epochs'").fetchone() is None
+        )
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1125, step)
+    core.storage.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1126
+        assert db.execute("SELECT compacted_seq,started_compacted_seq FROM session_brief_sessions").fetchone() == (1, 0)
+        assert db.execute("SELECT delivery_compacted_seq FROM session_brief_injections").fetchone() == (0,)
+        assert (
+            db.execute("SELECT content FROM source_events WHERE event_id=?", (item.ref,)).fetchone()[0]
+            == item.event["content"]
+        )
+    from scope_recall.core.session_brief import already_injected
+
+    with core.storage.read(ctx) as tx:
+        assert not already_injected(tx, "claim", "TEST-claim", 1)

@@ -157,6 +157,16 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1126: {
+        "tables": ("session_brief_compaction_epochs",),
+        "columns": (
+            ("session_brief_injections", "delivery_compacted_seq"),
+            ("session_brief_sessions", "started_compacted_seq"),
+            ("session_brief_sessions", "compacted_seq"),
+            ("session_brief_sessions", "compaction_epoch"),
+            ("session_brief_sessions", "compaction_local_seq"),
+        ),
+    },
     1125: {"tables": ("session_brief_injections", "session_brief_sessions", "session_briefs", "safety_retractions")},
     1124: {
         "tables": ("observation_conflicts", "reflection_daily_usage", "reflection_discovery", "reflection_rejections"),

@@ -1027,11 +1027,12 @@ def test_persisted_compaction_is_used_without_a_host_mark(app):
     drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
     reader = replace(writer, session_id="TEST-lost-compaction")
     assert item.ref in core.session_brief(reader, deliver=True)["text"]
-    compacted = replace(reader, compacted_at="2026-09-07T12:00:00Z")
+    compacted = replace(reader, compacted_at="2026-09-07T12:00:00Z", compaction_seq=1, compaction_epoch="TEST-epoch")
     assert core.sync_session_compaction(compacted)
     with core.storage.write(reader) as tx:
         tx._check(write=True).execute(
-            "INSERT INTO session_brief_injections VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO session_brief_injections(entry_id,session_id,object_kind,object_ref,revision,"
+            "delivered_at,delivery_compacted_at) VALUES(?,?,?,?,?,?,?)",
             (
                 reader.binding.installation_id,
                 reader.session_id,
@@ -1053,8 +1054,8 @@ def test_older_inflight_brief_cannot_confirm_after_newer_compaction(app):
     drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
     reader = replace(writer, session_id="TEST-overlapping-compaction")
     assert item.ref in core.session_brief(reader, deliver=True)["text"]
-    older = replace(reader, compacted_at="2026-09-07T12:00:00Z")
-    newer = replace(reader, compacted_at="2026-09-08T12:00:00Z")
+    older = replace(reader, compacted_at="2026-09-07T12:00:00Z", compaction_seq=1, compaction_epoch="TEST-epoch")
+    newer = replace(reader, compacted_at="2026-09-08T12:00:00Z", compaction_seq=2, compaction_epoch="TEST-epoch")
     earlier_brief = core.session_brief(older, deliver=True, compact=True, defer_confirmation=True)
     later_brief = core.session_brief(newer, deliver=True, compact=True, defer_confirmation=True)
     assert core.confirm_session_brief(newer, later_brief, remaining_seconds=1) == "brief_delivered"
@@ -1120,3 +1121,64 @@ def test_constraint_brief_keeps_its_category_in_recall_history(app):
     assert item.ref in core.session_brief(ctx, deliver=True)["text"]
     rows = [row for attempt in management.recalls(session=ctx.session_id)["items"] for row in attempt["items"]]
     assert any(row.get("ref") == item.ref and row["source_type"] == "constraint" for row in rows)
+
+
+def test_prepared_brief_with_expired_safety_budget_is_not_released(app):
+    core, ctx = app
+    item, source = initial(core, ctx, when=core.clock.now)
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx, deliver=True, defer_confirmation=True)
+    assert item.ref in brief["text"]
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) VALUES(?,?,?,?,?)",
+            (source.ref, source.revision, "quarantined", '["TEST-held"]', core.clock.now),
+        )
+    assert core.confirm_session_brief(ctx, brief, remaining_seconds=0) == "brief_safety_unconfirmed"
+
+
+def test_compaction_counter_advances_when_wall_clock_moves_back(tmp_path):
+    from scope_recall.adapters.clients.session_marks import clear_compaction, mark_compaction
+
+    config = {"state_dir": tmp_path / "TEST-client"}
+    first = mark_compaction(config, "TEST-session", "2026-09-06T12:00:00Z")
+    clear_compaction(config, "TEST-session", first)
+    second = mark_compaction(config, "TEST-session", "2026-09-06T11:59:59Z")
+    assert second > first
+
+
+def test_old_compaction_ack_cannot_clear_a_new_counter_epoch(tmp_path):
+    from scope_recall.adapters.clients.session_marks import (
+        clear_compaction,
+        compaction_marker,
+        mark_compaction,
+        mark_path,
+    )
+
+    config = {"state_dir": tmp_path / "TEST-client"}
+    session = "TEST-new-epoch"
+    mark_compaction(config, session, "2026-09-06T12:00:00Z")
+    old = compaction_marker(config, session)
+    mark_path(config, "compaction-counters", session).unlink()
+    mark_compaction(config, session, "2026-09-06T11:59:59Z")
+    new = compaction_marker(config, session)
+    assert new["epoch"] != old["epoch"]
+    clear_compaction(config, session, old["seq"], old["epoch"])
+    assert compaction_marker(config, session) == new
+
+
+def test_replayed_old_compaction_epoch_does_not_invalidate_new_delivery(app):
+    from scope_recall.core.session_brief import already_injected
+
+    core, writer = app
+    item, _source = initial(core, writer, when=core.clock.now)
+    drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    reader = replace(writer, session_id="TEST-epoch-replay")
+    first = replace(reader, compacted_at="2026-09-06T12:00:00Z", compaction_seq=1, compaction_epoch="TEST-first")
+    second = replace(reader, compacted_at="2026-09-06T11:59:59Z", compaction_seq=1, compaction_epoch="TEST-second")
+    assert item.ref in core.session_brief(first, deliver=True, compact=True)["text"]
+    assert item.ref in core.session_brief(second, deliver=True, compact=True)["text"]
+    assert core.sync_session_compaction(first)
+    with core.storage.read(reader) as tx:
+        assert already_injected(tx, "claim", item.ref, item.revision)
+    assert core.session_brief(first, deliver=True, compact=True)["text"] == ""

@@ -52,10 +52,11 @@ from .runtime_wiring import (
 )
 from .session_marks import (
     clear_compaction,
-    compaction_at,
+    compaction_marker,
     forget_turns,
     in_suggestions_thread,
     mark_compaction,
+    rebase_compaction,
 )
 
 _MAX_STDIN_BYTES = 65536
@@ -152,7 +153,10 @@ class CodexHookHandler:
         #: used for project-scoped private intervals only; it grants no scope.
         self._project_root: str | None = None
         self._compacted_at: str | None = None
-        self.compaction_ack: str | None = None
+        self._compaction_seq: int | None = None
+        self._compaction_epoch: str | None = None
+        self.compaction_ack: int | None = None
+        self.compaction_watermark: int | None = None
         self.remote_paths = False
         self.background_prompt_capture = False
         self.pending_capture: PendingCapture | None = None
@@ -285,7 +289,12 @@ class CodexHookHandler:
         )
         if self.remote_paths or getattr(self, "_project_identity", None) == "unverified":
             context = replace(context, project_identity=getattr(self, "_project_identity", "remote"))
-        return replace(context, compacted_at=self._compacted_at)
+        return replace(
+            context,
+            compacted_at=self._compacted_at,
+            compaction_seq=self._compaction_seq,
+            compaction_epoch=self._compaction_epoch,
+        )
 
     def ensure_runtime(self, audience=None, *, deadline: float | None = None) -> None:
         """Attach the vector and worker runtime only after Source persist, or for wakeup.
@@ -466,6 +475,8 @@ class CodexHookHandler:
         local_record: bool = True,
         error_reply: bool = False,
         compacted_at: str | None = None,
+        compaction_seq: int | None = None,
+        compaction_epoch: str | None = None,
     ) -> dict[str, Any]:
         payload = without_lone_surrogates(payload)
         # A client on another machine sends its record's lines, and its own judgement of the Stop's reply.
@@ -473,7 +484,10 @@ class CodexHookHandler:
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         self._pending_brief = None
         self._compacted_at = None
+        self._compaction_seq = None
+        self._compaction_epoch = None
         self.compaction_ack = None
+        self.compaction_watermark = None
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
         if event == "PrivateCheck":
@@ -490,10 +504,21 @@ class CodexHookHandler:
                     self._compacted_at = utc_timestamp(compacted_at)
                 except ContractError:
                     pass
+            if (
+                type(compaction_seq) is int
+                and 1 <= compaction_seq < 2**63
+                and type(compaction_epoch) is str
+                and 1 <= len(compaction_epoch) <= 64
+            ):
+                self._compaction_seq, self._compaction_epoch = compaction_seq, compaction_epoch
         elif self.host in {"claude-code", "codex"}:
             if event == "SessionStart" and payload.get("source") == "compact":
                 mark_compaction(self.config, session_id, self.clock.utc_now())
-            self._compacted_at = compaction_at(self.config, session_id)
+            marker = compaction_marker(self.config, session_id)
+            if marker is not None:
+                self._compacted_at = marker["at"]
+                self._compaction_seq = marker["ordinal"]
+                self._compaction_epoch = marker["epoch"]
         # The extended trusted budget is for the auto recall path and for a client's
         # read of its session record.  The other hooks keep their short processing cap.
         budget = (
@@ -606,7 +631,11 @@ class CodexHookHandler:
                 elapsed_ms=elapsed,
                 remaining_seconds=left,
             )
-            self.compaction_ack = self._compacted_at
+            if self._compaction_seq:
+                self.compaction_watermark = self.core.session_compaction_watermark(
+                    self.context(audience, session_id, "host_generated")
+                )
+                self.compaction_ack = self._compaction_seq
         except (ContractError, sqlite3.Error, OSError, ValueError, TruthWriterBusyError):
             self.diagnostics.session_statistics_failed = True
 
@@ -648,13 +677,16 @@ class CodexHookHandler:
         context, brief = pending
         try:
             reason = self.core.confirm_session_brief(context, brief, remaining_seconds=self.remaining(deadline))
-        except (ContractError, sqlite3.Error, OSError, ValueError):
-            reason = "brief_delivery_unconfirmed"
-        if reason == "brief_delivery_unconfirmed":
+        except Exception:  # noqa: BLE001 - an unfinished safety check cannot release the prepared background.
+            reason = "brief_safety_unconfirmed"
+        if reason in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed"}:
             self.note(reason)
+        if reason == "brief_delivery_unconfirmed" and brief.get("_log_checked"):
+            self.compaction_watermark = brief.get("_compaction_cutoff")
         if reason == "brief_delivered":
-            self.compaction_ack = context.compacted_at
-        if reason == "brief_invalidated" and brief["text"]:
+            self.compaction_ack = context.compaction_seq
+            self.compaction_watermark = brief.get("_confirmed_seq")
+        if reason in {"brief_invalidated", "brief_safety_unconfirmed"} and brief["text"]:
             output = result.get("hookSpecificOutput", {})
             text = output.get("additionalContext", "").replace(brief["text"], "", 1).strip()
             if not text:
@@ -665,20 +697,32 @@ class CodexHookHandler:
     def _finish_compaction(self, session_id: str, audience, deadline: float, result: dict) -> dict:
         """Retire only a watermark that the core committed in this request."""
         if (
-            self._compacted_at
+            self._compaction_seq
             and not self.compaction_ack
-            and self.diagnostics.last_reason != "brief_delivery_unconfirmed"
+            and self.diagnostics.last_reason not in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed"}
         ):
             left = min(0.03, self.remaining(deadline))
             if left > 0:
                 context = self.context(audience, session_id, "host_generated")
                 try:
                     if self.core.sync_session_compaction(context, remaining_seconds=left):
-                        self.compaction_ack = self._compacted_at
+                        self.compaction_watermark = self.core.session_compaction_watermark(context)
+                        self.compaction_ack = self._compaction_seq
                 except (ContractError, sqlite3.Error, OSError, ValueError, TruthWriterBusyError):
                     pass
+        if (
+            self._compaction_seq
+            and self._compaction_epoch
+            and self.compaction_watermark is not None
+            and not self.remote_paths
+        ):
+            rebase_compaction(
+                self.config, session_id, self._compaction_epoch, self._compaction_seq, self.compaction_watermark
+            )
         if self.compaction_ack and not self.remote_paths:
-            clear_compaction(self.config, session_id, self.compaction_ack)
+            clear_compaction(
+                self.config, session_id, self.compaction_ack, self._compaction_epoch, self.compaction_watermark
+            )
         return result
 
     def _session_started(self, session_id: str, audience, deadline: float, payload: dict[str, Any]) -> dict[str, Any]:

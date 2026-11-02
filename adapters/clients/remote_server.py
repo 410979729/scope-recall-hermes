@@ -437,6 +437,8 @@ def handle_request(
             local_record=False,
             error_reply=body.get("error_reply") is True,
             compacted_at=body.get("compacted_at"),
+            compaction_seq=body.get("compaction_seq"),
+            compaction_epoch=body.get("compaction_epoch"),
         )
     finally:
         closing = time.monotonic()
@@ -459,6 +461,7 @@ def handle_request(
         "private_rules": private_rules,
         "result": result,
         "compaction_ack": handler.compaction_ack,
+        "compaction_watermark": handler.compaction_watermark,
         "through": record.through if record is not None else None,
         "reason": handler.diagnostics.last_reason,
         "error": handler.diagnostics.capture_error_detail or handler.diagnostics.capture_error_type,

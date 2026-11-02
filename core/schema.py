@@ -5,7 +5,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1125
+SCHEMA_VERSION = 1126
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -141,12 +141,19 @@ SESSION_BRIEF_STATEMENTS = (
     """CREATE TABLE session_brief_injections (
         entry_id TEXT NOT NULL, session_id TEXT NOT NULL,
         object_kind TEXT NOT NULL, object_ref TEXT NOT NULL, revision INTEGER NOT NULL,
-        delivered_at TEXT NOT NULL, delivery_compacted_at TEXT,
+        delivered_at TEXT NOT NULL, delivery_compacted_at TEXT, delivery_compacted_seq INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(entry_id,session_id,object_kind,object_ref,revision)
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE session_brief_compaction_epochs (
+        entry_id TEXT NOT NULL, session_id TEXT NOT NULL, epoch TEXT NOT NULL,
+        base_seq INTEGER NOT NULL, local_seq INTEGER NOT NULL,
+        PRIMARY KEY(entry_id,session_id,epoch)
     ) STRICT, WITHOUT ROWID""",
     """CREATE TABLE session_brief_sessions (
         entry_id TEXT NOT NULL, session_id TEXT NOT NULL, started INTEGER NOT NULL CHECK(started IN (0,1)),
         started_at TEXT, started_compacted_at TEXT, compacted_at TEXT,
+        started_compacted_seq INTEGER NOT NULL DEFAULT 0, compacted_seq INTEGER NOT NULL DEFAULT 0,
+        compaction_epoch TEXT, compaction_local_seq INTEGER NOT NULL DEFAULT 0,
         brief_tokens INTEGER NOT NULL DEFAULT 0, brief_elapsed_ms INTEGER NOT NULL DEFAULT 0,
         recall_tokens INTEGER NOT NULL DEFAULT 0, recall_elapsed_ms INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(entry_id,session_id)
@@ -1140,6 +1147,39 @@ def upgrade_1123(connection):
 def upgrade_1124(connection):
     """Add the rebuildable briefing manifests and safety retractions."""
     for statement in SESSION_BRIEF_STATEMENTS:
+        if statement.startswith("CREATE TABLE session_brief_compaction_epochs"):
+            continue
+        statement = statement.replace(", delivery_compacted_seq INTEGER NOT NULL DEFAULT 0", "")
+        statement = statement.replace(
+            "started_compacted_seq INTEGER NOT NULL DEFAULT 0, compacted_seq INTEGER NOT NULL DEFAULT 0,\n"
+            "        compaction_epoch TEXT, compaction_local_seq INTEGER NOT NULL DEFAULT 0,\n        ",
+            "",
+        )
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1125 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1125")
+
+
+def upgrade_1125(connection):
+    """Preserve existing delivery marks while adding ordered compaction watermarks."""
+    for statement in (
+        "ALTER TABLE session_brief_injections ADD COLUMN delivery_compacted_seq INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE session_brief_sessions ADD COLUMN started_compacted_seq INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE session_brief_sessions ADD COLUMN compacted_seq INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE session_brief_sessions ADD COLUMN compaction_epoch TEXT",
+        "ALTER TABLE session_brief_sessions ADD COLUMN compaction_local_seq INTEGER NOT NULL DEFAULT 0",
+    ):
+        connection.execute(statement)
+    connection.execute(
+        next(
+            statement
+            for statement in SESSION_BRIEF_STATEMENTS
+            if statement.startswith("CREATE TABLE session_brief_compaction_epochs")
+        )
+    )
+    connection.execute("UPDATE session_brief_sessions SET compacted_seq=1 WHERE compacted_at IS NOT NULL")
+    # Legacy timestamps cannot establish a monotonic order after a clock rollback.
+    # Existing deliveries remain at sequence zero and are offered once after an old compaction.
+
+    connection.execute("UPDATE instance_meta SET schema_version=1126 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1126")
