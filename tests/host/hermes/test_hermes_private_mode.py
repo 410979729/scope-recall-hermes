@@ -421,6 +421,17 @@ def test_late_writer_does_not_resurrect_a_discarded_private_capture(adapter):
     assert key not in provider._retry.on_disk
 
 
+def test_full_private_prefetch_obeys_zero_injection_cap_and_refreshes_receipt(adapter):
+    provider, _clock = adapter
+    owner, _ctx = _owner(provider)
+    owner.private_on(target="global")
+    provider._core.config = replace(provider._core.config, injection_token_cap=0)
+    provider._diagnostics.injection_tokens = 999
+    assert not provider.prefetch("TEST private question")
+    assert provider.diagnostics.injection_tokens == 0
+    assert provider.diagnostics.injection_token_cap == 0
+
+
 def test_relayed_cli_route_cannot_toggle_owner_recording(adapter, monkeypatch):
     provider, _clock = adapter
     bound = provider._require_identity()
@@ -513,7 +524,34 @@ def test_owner_command_prefetch_does_not_deliver_brief_or_recall(adapter, monkey
 
     monkeypatch.setattr(provider._core, "session_brief", forbidden)
     monkeypatch.setattr(provider._core, "recall_packet", forbidden)
+    monkeypatch.setattr(provider._core, "prepare_session_injection", forbidden)
     provider.observe_pre_llm(session_id=ctx.session_id, turn_id="TEST-command", user_message="scope-recall pause")
     assert "recording mode" in provider.prefetch("scope-recall pause", session_id=ctx.session_id)
     assert owner.private_status(session=ctx.session_id)["mode"] == "full"
     assert not any("scope-recall pause" in text for text in _contents(provider, ctx))
+
+
+def test_prefetch_rechecks_pause_before_returning_private_fallback(adapter, monkeypatch):
+    provider, _clock = adapter
+    api, ctx = _owner(provider)
+    core = provider._require_core()
+    core.record_event(
+        replace(ctx, session_id="TEST-history"),
+        source_event(content="TEST observatory palette is blue.", source_event_key="TEST-fallback-history"),
+        scope_id=next(iter(ctx.allowed_scope_ids)),
+    )
+    api.private_on(target="session", session=ctx.session_id, mode="read-only")
+    checks = []
+
+    def current(*_args):
+        checks.append(1)
+        if len(checks) == 3:
+            api.set_entry_state("local", "paused", actor="TEST-owner")
+            return False
+        return True
+
+    monkeypatch.setattr(core, "recall_packet_current", current)
+    before = core.session_injection_stats(ctx)
+    assert not provider.prefetch("What is TEST observatory palette?")
+    assert len(checks) == 3
+    assert core.session_injection_stats(ctx) == before

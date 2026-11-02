@@ -68,10 +68,13 @@ def test_entry_pause_at_brief_confirmation_discards_all_prepared_memory(client, 
     _root, home, host = client
     hook = CodexHookHandler.from_home(str(home), host)
     try:
-        hook._pending_brief = (None, {"text": "TEST brief"})
+        binding = hook.core.storage.binding
+        context = TrustedContext(binding, "TEST-session", binding.scope_ids, "host_generated", entry_id="test-boundary")
+        hook._pending_brief = None
+        hook._injection_started = hook.clock.monotonic()
         monkeypatch.setattr(hook.core, "confirm_session_brief", lambda *_args, **_kwargs: "entry_state:paused")
         result = {"hookSpecificOutput": {"additionalContext": "TEST brief\nTEST recalled memory"}}
-        assert hook._confirm_brief(result, time.monotonic() + 10) == {}
+        assert hook._confirm_brief(result, time.monotonic() + 10, context) == {}
         assert hook.diagnostics.last_reason == "entry_state:paused"
     finally:
         hook.close()

@@ -5,7 +5,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1128
+SCHEMA_VERSION = 1129
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -169,6 +169,12 @@ SESSION_BRIEF_STATEMENTS = (
         recall_tokens INTEGER NOT NULL DEFAULT 0, recall_elapsed_ms INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(entry_id,session_id)
     ) STRICT, WITHOUT ROWID""",
+)
+
+INJECTION_DELIVERY_STATEMENTS = (
+    "ALTER TABLE session_brief_injections ADD COLUMN source TEXT NOT NULL DEFAULT 'brief' "
+    "CHECK(source IN ('brief','question'))",
+    "ALTER TABLE session_brief_injections ADD COLUMN notice_marker TEXT",
 )
 
 
@@ -770,6 +776,7 @@ STATEMENTS = (
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
     + SESSION_BRIEF_STATEMENTS
+    + INJECTION_DELIVERY_STATEMENTS
     + REFLECTION_STATEMENTS
     + REFLECTION_POLICY_STATEMENTS
     + ENTRY_CONTROL_STATEMENTS
@@ -1208,3 +1215,11 @@ def upgrade_1127(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1128 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1128")
+
+
+def upgrade_1128(connection):
+    """Retain existing delivery marks while adding their source and notice state."""
+    for statement in INJECTION_DELIVERY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1129 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1129")

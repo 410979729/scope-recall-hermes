@@ -359,6 +359,97 @@ def _seed_shared_brief(store):
     return claim
 
 
+def test_question_injection_records_what_the_host_received(store):
+    """A question result is recorded only after it has become host output."""
+    from dataclasses import replace
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _scope = store
+    hook = _hook(client)
+    hook.core.config = replace(hook.core.config, session_brief_enabled=False)
+    try:
+        output = hook.handle_payload(_prompt("TEST-project 配色是什么？", session="TEST-question-delivery"))
+        text = output.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert claim.ref in text
+        rows = _rows(
+            root,
+            "SELECT object_ref,source FROM session_brief_injections WHERE session_id LIKE '%TEST-question-delivery'",
+        )
+        assert (claim.ref, "question") in rows
+    finally:
+        hook.close()
+
+
+def test_injection_caps_apply_to_the_host_text_and_session(store):
+    """Both limits count rendered host text, including its guidance."""
+    from dataclasses import replace
+
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    hook.core.config = replace(
+        hook.core.config, session_brief_enabled=False, injection_token_cap=100, session_token_cap=100
+    )
+    try:
+        response = hook.handle_payload(_prompt("TEST-project 配色是什么？", session="TEST-budget"))
+        text = response.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert not text or estimate_tokens(text) <= 100
+        payload = _prompt("TEST-project 配色是什么？", session="TEST-budget", prompt_id="TEST-budget-next")
+        context = hook.context(hook.audience_of(payload), payload["session_id"], "human_direct")
+        hook.core.record_session_recall(context, tokens=100, elapsed_ms=0, remaining_seconds=1)
+        assert not hook.handle_payload(payload).get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert hook.diagnostics.last_reason == "session_injection_budget_exhausted"
+    finally:
+        hook.close()
+
+
+def test_injection_receipt_reports_actual_host_usage(store):
+    """The receipt reflects the delivered text, not the internal packet."""
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    try:
+        output = hook.handle_payload(_prompt("TEST-project 配色是什么？", session="TEST-usage"))
+        text = output["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.injection_tokens == estimate_tokens(text)
+        assert hook.diagnostics.session_tokens == estimate_tokens(text)
+        assert hook.diagnostics.injection_token_cap >= estimate_tokens(text)
+        assert hook.diagnostics.session_token_cap is None
+    finally:
+        hook.close()
+
+
+def test_briefed_correction_reaches_each_session_once(store):
+    """A new fact version alerts each session that saw the old version."""
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    claim = _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    try:
+        for session in ("TEST-notice-a", "TEST-notice-b"):
+            start = {"hook_event_name": "SessionStart", "session_id": session, "cwd": "C:/anywhere"}
+            assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        payload = _prompt("TEST-project 配色是什么？", session="TEST-notice-a")
+        context = hook.context(hook.audience_of(payload), payload["session_id"], "human_direct")
+        MemoryManagement(hook.core, InstallationMaintenance(context)).revise(
+            claim.ref, expected_revision=claim.revision, value="green"
+        )
+        for session in ("TEST-notice-a", "TEST-notice-b"):
+            response = hook.handle_payload(_prompt("继续", session=session, prompt_id="TEST-notice-1"))
+            text = response.get("hookSpecificOutput", {}).get("additionalContext", "")
+            assert claim.ref in text and "green" in text
+            response = hook.handle_payload(_prompt("继续", session=session, prompt_id="TEST-notice-2"))
+            assert claim.ref not in response.get("hookSpecificOutput", {}).get("additionalContext", "")
+    finally:
+        hook.close()
+
+
 @pytest.mark.parametrize("host", ["claude-code", "codex"])
 def test_session_brief_is_delivered_again_after_compaction(store, tmp_path, host, monkeypatch):
     """The actual hook returns a stored, source-backed decision at both starts."""
@@ -5388,3 +5479,214 @@ def test_hermes_failed_safety_confirmation_does_not_release_brief(store, monkeyp
         assert claim.ref in provider.prefetch("继续")
     finally:
         provider.shutdown()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "workbuddy", "dsh"])
+def test_question_delivery_and_correction_on_each_client(store, tmp_path, host):
+    from dataclasses import replace
+
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    claim = _seed_shared_brief(store)
+    root, _homes, _client, capture_scope = store
+    home = tmp_path / f"TEST-injection-{host}"
+    attach_shared_record(
+        root,
+        client_entry_record(
+            host=host,
+            home=home,
+            entry_id=f"test-{host}",
+            display_name="TEST reader",
+            attached_at=NOW,
+            allowed_scope_ids=[capture_scope],
+            writable_scope_ids=[capture_scope],
+            capture_scope_id=capture_scope,
+        ),
+        now=NOW,
+    )
+    hook = CodexHookHandler.from_home(str(home), host)
+    hook.core.config = replace(hook.core.config, session_brief_enabled=False)
+    payload = _prompt("TEST-project 配色是什么？", session="TEST-each-client")
+    payload["turn_id"] = "TEST-turn-1"
+    try:
+        response = hook.handle_payload(payload)
+        assert claim.ref in response["hookSpecificOutput"]["additionalContext"]
+        assert (claim.ref, "question") in _rows(
+            root, "SELECT object_ref,source FROM session_brief_injections WHERE source='question'"
+        )
+        context = hook.context(hook.audience_of(payload), payload["session_id"], "human_direct")
+        MemoryManagement(hook.core, InstallationMaintenance(context)).revise(
+            claim.ref, expected_revision=claim.revision, value="green"
+        )
+        hook.core.config = replace(hook.core.config, session_token_cap=0)
+        updated = hook.handle_payload(dict(payload, prompt="继续", prompt_id="TEST-next", turn_id="TEST-turn-2"))
+        text = updated["hookSpecificOutput"]["additionalContext"]
+        assert claim.ref in text and "green" in text and "蓝色" not in text
+        assert hook.diagnostics.last_reason == "session_injection_budget_exhausted"
+        repeated = hook.handle_payload(dict(payload, prompt="继续", prompt_id="TEST-again", turn_id="TEST-turn-3"))
+        assert claim.ref not in repeated.get("hookSpecificOutput", {}).get("additionalContext", "")
+    finally:
+        hook.close()
+
+
+def test_hermes_question_delivery_and_correction_with_exhausted_budget(store):
+    from dataclasses import replace
+
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.recall_budget import estimate_tokens
+    from scope_recall.core.restore import InstallationMaintenance
+
+    claim = _seed_shared_brief(store)
+    root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+        core.config = replace(core.config, session_brief_enabled=False)
+        assert claim.ref in provider.prefetch("TEST-project 配色是什么？")
+        assert (claim.ref, "question") in _rows(
+            root, "SELECT object_ref,source FROM session_brief_injections WHERE source='question'"
+        )
+        context = provider._require_identity().trusted_context(session_id="TEST-session-1")
+        MemoryManagement(core, InstallationMaintenance(context)).revise(claim.ref, expected_revision=1, value="green")
+        core.config = replace(core.config, session_token_cap=0)
+        text = provider.prefetch("继续")
+        assert claim.ref in text and "green" in text and "蓝色" not in text
+        assert provider.diagnostics.injection_tokens == estimate_tokens(text)
+        assert provider.diagnostics.session_token_cap == 0
+        assert claim.ref not in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_question_returns_without_delivery_mark_when_writer_is_busy(store):
+    from dataclasses import replace
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _scope = store
+    hook = _hook(client)
+    hook.core.config = replace(hook.core.config, session_brief_enabled=False)
+    # The configured prompt allowance leaves time after the bounded capture wait.
+    hook._prompt_budget = 6
+    holder = None
+    try:
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        response = hook.handle_payload(_prompt("TEST-project 配色", session="TEST-question-locked"))
+        assert claim.ref in response["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.delivery_reason == "injection_delivery_unconfirmed"
+        assert not _rows(
+            root, "SELECT object_ref FROM session_brief_injections WHERE session_id LIKE '%TEST-question-locked'"
+        )
+        holder.communicate(input="release\n", timeout=30)
+        holder = None
+        response = hook.handle_payload(
+            _prompt("TEST-project 配色", session="TEST-question-locked", prompt_id="TEST-retry")
+        )
+        assert claim.ref in response["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.delivery_reason == "brief_delivered"
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "workbuddy", "dsh", "hermes"])
+def test_default_cap_covers_complete_host_assembly_with_private_hint(
+    store, tmp_path, monkeypatch, record_property, host
+):
+    from types import SimpleNamespace
+
+    from scope_recall.core.recall_budget import DEFAULT_INJECTION_TOKEN_CAP, estimate_tokens
+    from v11_support import recall_packet
+
+    from tests.unit.test_recall_budget import saturated_legacy_host_texts
+
+    brief_text, question, _bound = max(
+        saturated_legacy_host_texts(), key=lambda parts: estimate_tokens(parts[0] + "\n\n" + parts[1])
+    )
+    root, homes, _client, scope = store
+    provider = None
+    hook = None
+    if host == "hermes":
+        provider = _hermes(homes["agent3"])
+        core = provider._require_core()
+        monkeypatch.setattr(
+            "scope_recall.adapters.hermes.prefetch.render_host_recall_context", lambda *a, **k: question
+        )
+    else:
+        home = tmp_path / f"TEST-assembled-{host}"
+        attach_shared_record(
+            root,
+            client_entry_record(
+                host=host,
+                home=home,
+                entry_id=f"test-{host}",
+                display_name="TEST reader",
+                attached_at=NOW,
+                allowed_scope_ids=[scope],
+                writable_scope_ids=[scope],
+                capture_scope_id=scope,
+            ),
+            now=NOW,
+        )
+        hook = CodexHookHandler.from_home(str(home), host)
+        hook._prompt_budget = 6
+        monkeypatch.setattr(hook, "ensure_runtime", lambda *a, **k: None)
+        monkeypatch.setattr(hook, "launch_worker", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "scope_recall.adapters.clients.prompt_recall.render_host_recall_context", lambda *a, **k: question
+        )
+        core = hook.core
+    captured = []
+
+    def brief(*args, **kwargs):
+        return dict(text=brief_text, items=[], tokens=estimate_tokens(brief_text), elapsed_ms=0, _epoch=0)
+
+    def final(context, text, *, brief=None, **kwargs):
+        captured.append(text)
+        prepared = brief or dict(text="", tokens=0, elapsed_ms=0)
+        prepared["_injection"] = dict(
+            text=text,
+            tokens=estimate_tokens(text),
+            session_tokens=0,
+            injection_token_cap=DEFAULT_INJECTION_TOKEN_CAP,
+            session_token_cap=None,
+            reason=None,
+        )
+        return prepared
+
+    monkeypatch.setattr(core, "private_mode", lambda *a, **k: "read-only")
+    monkeypatch.setattr(core, "session_brief", brief)
+    monkeypatch.setattr(core, "recall_packet", lambda *a, **k: recall_packet())
+    monkeypatch.setattr(core, "recall_packet_current", lambda *a, **k: True)
+    monkeypatch.setattr(
+        core,
+        "prepare_recall_render",
+        lambda *a, **k: SimpleNamespace(canonical_text="TEST-rendered", context={}, render_ref="TEST-render"),
+    )
+    monkeypatch.setattr(core, "prepare_session_injection", final)
+    monkeypatch.setattr(core, "confirm_session_brief", lambda *a, **k: "brief_delivered")
+    try:
+        if provider:
+            provider.prefetch("TEST question")
+        else:
+            if host in {"claude-code", "codex"}:
+                hook.handle_payload(
+                    dict(hook_event_name="SessionStart", session_id="TEST-full-host", cwd="C:/TEST/work")
+                )
+            payload = _prompt("TEST question", session="TEST-full-host")
+            hook.handle_payload(dict(payload, turn_id="TEST-turn"))
+        assert any("read-only" in text for text in captured)
+        assert any(question in text for text in captured)
+        assert any(brief_text in text for text in captured)
+        measured = max(estimate_tokens(text) for text in captured)
+        record_property("complete_host_tokens", f"{host}:{measured}")
+        assert DEFAULT_INJECTION_TOKEN_CAP >= measured
+    finally:
+        if provider:
+            provider.shutdown()
+        if hook:
+            hook.close()

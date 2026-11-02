@@ -250,7 +250,7 @@ def test_resume_query_reaches_recall_with_seeded_memory(handler, installed):
     from scope_recall.contracts import TrustedContext
 
     trusted = TrustedContext(core.config.binding, "TEST-session-1", config.scope_ids, "human_direct")
-    core.record_event(
+    seeded = core.record_event(
         trusted,
         source_event(content="TEST 白色偏好", source_event_key="resume-seed/1"),
         scope_id=config.audience_scopes["project"],
@@ -273,7 +273,15 @@ def test_resume_query_reaches_recall_with_seeded_memory(handler, installed):
                     "request_id": request["request_id"],
                     "status": "ok",
                     "memory_epoch": 1,
-                    "items": [recall_item(content="TEST 白色偏好")],
+                    "items": [
+                        recall_item(
+                            content="TEST 白色偏好",
+                            kind="event",
+                            ref=seeded.event_refs[0].ref,
+                            revision=1,
+                            evidence_refs=[f"{seeded.event_refs[0].ref}@1"],
+                        )
+                    ],
                     "gaps": [],
                     "diagnostic_ref": None,
                     "answerability": "supported",
@@ -519,7 +527,7 @@ def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installe
     from scope_recall.core.capture import CaptureReceipt
 
     trusted = TrustedContext(core.config.binding, "TEST-session-1", config.scope_ids, "human_direct")
-    core.record_event(
+    seeded = core.record_event(
         trusted,
         source_event(content="TEST 白色偏好", source_event_key="busy-seed/1"),
         scope_id=config.audience_scopes["project"],
@@ -546,7 +554,15 @@ def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installe
                     "request_id": request["request_id"],
                     "status": "ok",
                     "memory_epoch": 1,
-                    "items": [recall_item(content="TEST 白色偏好")],
+                    "items": [
+                        recall_item(
+                            content="TEST 白色偏好",
+                            kind="event",
+                            ref=seeded.event_refs[0].ref,
+                            revision=1,
+                            evidence_refs=[f"{seeded.event_refs[0].ref}@1"],
+                        )
+                    ],
                     "gaps": [],
                     "diagnostic_ref": None,
                     "answerability": "supported",
@@ -766,6 +782,24 @@ def test_live_hook_events_carry_witnessed_occurrence_time():
     assert lifecycle_event["time_precision"] == "instant"
 
 
+def test_hook_emits_injection_usage_receipt(capsys):
+    from scope_recall.adapters.clients.hook_answer import HookDiagnostics
+
+    diagnostics = HookDiagnostics(
+        last_event="UserPromptSubmit",
+        injection_tokens=17,
+        session_tokens=50,
+        injection_token_cap=100,
+        session_token_cap=500,
+        delivery_reason="brief_delivered",
+    )
+    emit_result({}, diagnostics=diagnostics)
+    line = next(line for line in capsys.readouterr().err.splitlines() if line.startswith("CODEX_INJECTION:"))
+    receipt = json.loads(line.split(":", 1)[1])
+    assert receipt["injection_tokens"] == 17 and receipt["session_tokens"] == 50
+    assert receipt["injection_token_cap"] == 100 and receipt["session_token_cap"] == 500
+
+
 def test_command_text_with_attachment_does_not_change_private_mode(handler, installed, monkeypatch):
     from scope_recall.contracts import TrustedContext
     from scope_recall.core.management import MemoryManagement
@@ -818,7 +852,7 @@ def test_owner_command_precedes_brief_recall_and_compaction(handler, monkeypatch
 
     monkeypatch.setattr(hook, "briefing", forbidden)
     monkeypatch.setattr(hook.core, "recall_packet", forbidden)
-    monkeypatch.setattr(hook, "_record_prompt_usage", forbidden)
+    monkeypatch.setattr(hook.core, "prepare_session_injection", forbidden)
     monkeypatch.setattr(hook, "_finish_compaction", forbidden)
     result = hook.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="scope-recall pause"))
     assert result["decision"] == "block"

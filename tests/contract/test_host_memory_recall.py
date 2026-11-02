@@ -63,7 +63,7 @@ def test_host_session_start_shares_brief_mark_and_does_not_move(app):
     from dataclasses import replace
     from datetime import datetime
 
-    from scope_recall.core.session_brief import _record_brief, observe_session_start, observed_session_start
+    from scope_recall.core.session_brief import observe_session_start, observed_session_start, record_brief_usage
 
     core, ctx = app
     ctx = replace(ctx, session_id="TEST-observed-start")
@@ -72,7 +72,7 @@ def test_host_session_start_shares_brief_mark_and_does_not_move(app):
     observe_session_start(core.storage, ctx, start, remaining_seconds=1)
     observe_session_start(core.storage, ctx, "2026-11-01T14:00:00Z", remaining_seconds=1)
     with core.storage.write(ctx) as tx:
-        _record_brief(tx, ctx, 1, 1, "2026-11-01T15:00:00+00:00", 0)
+        record_brief_usage(tx, ctx, 1, 1, "2026-11-01T15:00:00+00:00", 0)
         row = (
             tx._check()
             .execute("SELECT started,started_at FROM session_brief_sessions WHERE session_id=?", (ctx.session_id,))
@@ -86,12 +86,12 @@ def test_host_session_start_shares_brief_mark_and_does_not_move(app):
 def test_legacy_brief_time_does_not_attest_session_start(app):
     from dataclasses import replace
 
-    from scope_recall.core.session_brief import _record_brief, observe_session_start, observed_session_start
+    from scope_recall.core.session_brief import observe_session_start, observed_session_start, record_brief_usage
 
     core, ctx = app
     ctx = replace(ctx, session_id="TEST-legacy-brief")
     with core.storage.write(ctx) as tx:
-        _record_brief(tx, ctx, 1, 1, "2026-11-01T12:00:00+00:00", 0)
+        record_brief_usage(tx, ctx, 1, 1, "2026-11-01T12:00:00+00:00", 0)
     assert observed_session_start(core.storage, ctx, remaining_seconds=1) is None
     observe_session_start(core.storage, ctx, "2026-11-01T14:00:00Z", remaining_seconds=1)
     assert observed_session_start(core.storage, ctx, remaining_seconds=1) is None

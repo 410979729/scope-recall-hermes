@@ -145,7 +145,7 @@ def test_command_fence_upgrade_and_interrupted_rollback(app, monkeypatch):
     monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, migrate)
     core.initialize()
     with core.storage.read(ctx) as tx:
-        assert tx._check().execute("PRAGMA user_version").fetchone()[0] == 1128
+        assert tx._check().execute("PRAGMA user_version").fetchone()[0] == 1129
         assert tx._check().execute("SELECT count(*) FROM private_command_fences").fetchone()[0] == 0
 
 
@@ -178,7 +178,7 @@ def test_combined_upgrade_rolls_back_between_table_creations(app, monkeypatch):
     monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, migrate)
     core.initialize()
     with closing(sqlite3.connect(core.storage.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1128
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1129
         assert (
             len(
                 db.execute(

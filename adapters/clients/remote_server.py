@@ -518,6 +518,7 @@ def handle_request(
         "compaction_watermark": handler.compaction_watermark,
         "through": record.through if record is not None else None,
         "reason": handler.diagnostics.last_reason,
+        "injection": handler.diagnostics.injection_receipt(),
         "error": handler.diagnostics.capture_error_detail or handler.diagnostics.capture_error_type,
         "recall_error": handler.diagnostics.recall_error_detail,
         "recall_vector": handler.diagnostics.recall_vector_gap,

@@ -922,6 +922,8 @@ def build_runtime_instance(
             auto_recall_seconds=config.auto_recall_seconds,
             session_brief_enabled=config.session_brief_enabled,
             session_brief_tokens=config.session_brief_tokens,
+            injection_token_cap=config.injection_token_cap,
+            session_token_cap=config.session_token_cap,
             recall_log_policy=LogPolicy(config.recall_log_days, config.recall_log_bytes, config.recall_log_queue),
         ),
         storage=SQLiteStorage(config.binding),

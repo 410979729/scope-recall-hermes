@@ -299,9 +299,10 @@ __all__ = [
 MAX_REPLACEMENT_DEPTH = 32
 
 
-def resolve_replacement(tx, ref, instant=None):
+def resolve_replacement(tx, ref, instant=None, *, rules=None):
     """Follow current owner decisions to a visible live target, or return None if no target holds.
 
+    Rules supplied by a caller must belong to this transaction's snapshot.
     Each edge is pinned to the superseded head and reviewed target version. An undo advances
     the head, so the old edge ceases to apply. Cycles and chains over the bound fail closed.
     """
@@ -315,7 +316,7 @@ def resolve_replacement(tx, ref, instant=None):
     start = ref
     audience = None
     now = instant or datetime.now(UTC).isoformat()
-    rules = private.active_intervals(tx, now)
+    rules = private.active_intervals(tx, now) if rules is None else rules
     for _ in range(MAX_REPLACEMENT_DEPTH):
         if ref in visited:
             raise ContractError("DERIVATION_INVALID", "replacement_cycle")

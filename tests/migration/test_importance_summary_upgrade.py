@@ -11,7 +11,49 @@ from tests.contract.test_claims import app, initial
 from tests.v11_support import downgrade_store
 
 
-@pytest.mark.parametrize("version", range(1105, 1120))
+def test_injection_delivery_upgrade_preserves_existing_marks():
+    """Existing briefing deliveries remain identifiable after a schema upgrade."""
+    from scope_recall.core.schema import SESSION_BRIEF_STATEMENTS, upgrade_1128
+
+    with sqlite3.connect(":memory:") as db:
+        db.execute("CREATE TABLE instance_meta(singleton INTEGER PRIMARY KEY, schema_version INTEGER)")
+        db.execute("INSERT INTO instance_meta VALUES(1,1128)")
+        db.execute(SESSION_BRIEF_STATEMENTS[2])
+        db.execute(
+            "INSERT INTO session_brief_injections(entry_id,session_id,object_kind,object_ref,revision,delivered_at) "
+            "VALUES('TEST-entry','TEST-session','claim','TEST-ref',1,'2026-01-01')"
+        )
+        upgrade_1128(db)
+        assert db.execute("PRAGMA user_version").fetchone() == (1129,)
+        assert db.execute("SELECT object_ref,source FROM session_brief_injections").fetchall() == [
+            ("TEST-ref", "brief")
+        ]
+
+
+def test_injection_delivery_upgrade_rolls_back_on_failure(app, monkeypatch):
+    """An interrupted delivery schema upgrade leaves the old layout readable."""
+    from scope_recall.core import storage
+
+    core, ctx = app
+    initial(core, ctx)
+    downgrade_store(core.storage.path, 1128)
+    step = storage.SCHEMA_MIGRATIONS[1128]
+
+    def fail(db):
+        step(db)
+        raise RuntimeError("TEST interrupted delivery migration")
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1128, fail)
+    with pytest.raises(RuntimeError, match="TEST interrupted"):
+        core.initialize()
+    with sqlite3.connect(core.storage.path) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (1128,)
+        columns = {row[1] for row in db.execute("PRAGMA table_info(session_brief_injections)")}
+        assert "source" not in columns and "notice_marker" not in columns
+        assert db.execute("SELECT count(*) FROM claims").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("version", range(1105, 1129))
 def test_all_prior_schemas_upgrade_with_hashes_safety_index_and_defaults(app, version):
     core, ctx = app
     item, source = initial(core, ctx)
@@ -26,7 +68,7 @@ def test_all_prior_schemas_upgrade_with_hashes_safety_index_and_defaults(app, ve
                 "('TEST-summary-rule','instruction','regex','TEST protected','pending_review',0)"
             )
         db.commit()
-    assert core.initialize().schema_version == SCHEMA_VERSION == 1128
+    assert core.initialize().schema_version == SCHEMA_VERSION == 1129
     assert UPGRADE_CHAIN == tuple(range(1105, SCHEMA_VERSION))
     with closing(sqlite3.connect(core.storage.path)) as db:
         assert db.execute("SELECT event_id,content,content_sha256 FROM source_events").fetchall() == before

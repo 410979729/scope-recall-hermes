@@ -2159,3 +2159,25 @@ def test_remote_compaction_survives_clock_rollback_and_lost_counter(served, tmp_
     finally:
         holder.communicate(input="release\n", timeout=30)
     assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_remote_hook_receipt_reports_final_injection_usage(store):
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    from tests.host.codex.test_shared_client import _seed_shared_brief
+
+    root, homes = store
+    scope = read_shared_payload(root)["entries"][0]["audiences"][0]["capture_scope_id"]
+    _seed_shared_brief((root, {}, homes["claude-code"], scope))
+    remote_server.write_server_config(
+        homes["claude-code"], "claude-code", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
+    )
+    config = remote_server.load_server_config(homes["claude-code"], "claude-code")
+    answer = remote_server.handle_request(
+        config,
+        {"payload": {"hook_event_name": "SessionStart", "session_id": "TEST-usage-receipt", "cwd": "C:/TEST/work"}},
+    )
+    text = answer["result"]["hookSpecificOutput"]["additionalContext"]
+    assert answer["injection"]["injection_tokens"] == estimate_tokens(text)
+    assert answer["injection"]["session_tokens"] == estimate_tokens(text)
+    assert answer["injection"]["session_token_cap"] is None
