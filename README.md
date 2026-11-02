@@ -22,6 +22,7 @@ Use `scope-recall setup --configure-models` for guided routes and budget configu
 `--models <route-file.json>` for automation. Successful model checks report **完整记忆功能可用**
 (full memory features available). Model keys are environment references; setup never asks for a key value.
 [Installation](docs/install.md) covers shared stores, reruns, worker commands and verification boundaries.
+For a shared store on a Linux Docker host, see [Docker deployment](docs/docker.md).
 
 Automatic recall injects zero to six items that clear a lexical coverage or
 vector similarity floor. Background preferences and tasks accompany passing

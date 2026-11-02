@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from scope_recall.contracts import ContractError, Origin
+from scope_recall.contracts import Origin
 from scope_recall.core import private
 from scope_recall.core.capture_filters import without_private
 from scope_recall.core.secret_patterns import contains_secret_like_text
@@ -58,6 +58,9 @@ RUNTIME_ATTACH_MIN_S = 0.3
 #: Starting the bounded worker needs this much left: it writes the worker's config and starts a process, a few
 #: milliseconds on a machine that is not loaded.  The hook waits for it no longer than what it has left.
 WORKER_START_MIN_S = 0.1
+#: Leave the resident recall its one-second minimum when a prompt also needs a briefing.
+BRIEF_WAIT_S = 0.2
+BRIEF_RECALL_RESERVE_S = 1.0
 
 
 def _inline_gaps(payload):
@@ -75,21 +78,6 @@ class HookEvents:
 
     def __init__(self, hook: CodexHookHandler) -> None:
         self._hook = hook
-
-    def session_start(self, session_id: str, audience, deadline: float) -> bool:
-        context = self._hook.context(audience, session_id, "host_generated")
-        # The hook's core lets a write wait 2 s for the store's lock (``PROMPT_CAPTURE_TIMEOUT_S``), and a read given no
-        # time would wait as long: this one waits no longer than a capture does, and with no time left is not made.
-        wait = min(CAPTURE_TIMEOUT_S, self._hook.remaining(deadline))
-        if wait <= 0:
-            self._hook.note("deadline_exceeded")
-            return False
-        try:
-            self._hook.core.status(context, remaining_seconds=wait)
-        except ContractError as exc:
-            self._hook.note("deadline_exceeded" if exc.code == "DEADLINE_EXCEEDED" else "binding_unavailable")
-            return False
-        return True
 
     def session_end(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         reason = payload.get("reason")
@@ -127,7 +115,7 @@ class HookEvents:
         )
         return {}
 
-    def _recording_command(self, session_id, audience, payload):
+    def recording_command(self, session_id, audience, payload):
         """Apply only a source-attested complete command and return its receipt."""
         command = private.parse_recording_command(payload.get("prompt"))
         eligible = not self._hook.remote_paths or payload.get("scope_recall_direct_command") is True
@@ -167,9 +155,6 @@ class HookEvents:
         return None
 
     def prompt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        command_result = self._recording_command(session_id, audience, payload)
-        if command_result is not None:
-            return command_result
         taken = self._prompt_turn(session_id, payload)
         if taken is None:
             return {}
@@ -192,6 +177,10 @@ class HookEvents:
             event["artifact_refs"] = attachment_refs
         context = self._hook.context(audience, session_id, "human_direct")
         wait = min(PROMPT_CAPTURE_TIMEOUT_S, max(CAPTURE_TIMEOUT_S, self._hook.remaining(deadline) / 2))
+        if context.compaction_seq is not None:
+            # A pending compaction can coincide with the writer that blocked its confirmation; leave the
+            # read-only recall enough time to use the watermark while capture follows its ordinary retry path.
+            wait = min(wait, 0.1)
         current_refs, capture_gaps = self._hook.capture(
             context, audience, event, deadline=deadline, gaps=gaps, wait=wait
         )
@@ -223,6 +212,13 @@ class HookEvents:
             return {}
         if event is not None and not current_refs and not self._hook.call.queued:
             self._hook.note("capture_failed", gaps=capture_gaps)
+        # These hosts expose their first model-visible injection on the prompt
+        # hook; the core keeps the once-per-session decision across processes.
+        brief = ""
+        if self._hook.host in {"workbuddy", "dsh"} and self._hook.remaining(deadline) > (
+            BRIEF_RECALL_RESERVE_S + BRIEF_WAIT_S
+        ):
+            brief = self._hook.briefing(context, min(deadline, self._hook.clock.monotonic() + BRIEF_WAIT_S))
         # The turn is recalled whether or not its message was stored; skipping here would leave it without memory
         # whenever the store is busy, which is when a writer holds the lease.  A message that failed or still
         # waits in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
@@ -234,12 +230,26 @@ class HookEvents:
             payload = self._with_context_since(session_id, payload)
             since = in_context_since(payload)
         if vectors and self._hook.resident_recall is not None:
-            return self._hook.prompt_recall.answer(
+            result = self._hook.prompt_recall.answer(
                 payload, context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
             )
-        return self._hook.prompt_recall.own(
-            context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
-        )
+        else:
+            result = self._hook.prompt_recall.own(
+                context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
+            )
+        if brief and self._hook._pending_brief is not None:
+            prepared = self._hook._pending_brief[1]
+            question_text = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+            self._hook.core.remove_question_overlaps(prepared, question_text)
+            brief = prepared["text"]
+            self._hook.diagnostics.brief_tokens = prepared["tokens"]
+            self._hook.diagnostics.brief_items = tuple((item["ref"], item["revision"]) for item in prepared["items"])
+        if brief:
+            output = result.get("hookSpecificOutput", {})
+            prior = output.get("additionalContext", "")
+            text = f"{brief}\n\n{prior}" if prior else brief
+            return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+        return result
 
     def _with_context_since(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """The payload with since when Claude Code's model still holds this session's own turns

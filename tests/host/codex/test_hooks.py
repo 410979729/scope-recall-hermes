@@ -615,19 +615,19 @@ def test_source_keys_use_session_turn_and_public_event_ids():
 
 def test_a_session_start_s_read_of_the_store_waits_no_longer_than_a_capture(installed, project_root, monkeypatch):
     """A hook's core lets a write wait 2 s for the store's lock, as long as the owner's prompt may, and a read given
-    no time of its own would wait as long.  A session's start reads the store's standing for a capture's 1 s at most."""
+    no time of its own would wait as long. A session's start reads its prepared briefing for a capture's 1 s at most."""
     from scope_recall.adapters.clients.hook_events import CAPTURE_TIMEOUT_S
     from scope_recall.core import MemoryCore
 
     config, _core, _clock, _root = installed
     asked = []
-    status = MemoryCore.status
+    brief = MemoryCore.session_brief
 
     def timed(self, context, **kwargs):
         asked.append(kwargs.get("remaining_seconds"))
-        return status(self, context, **kwargs)
+        return brief(self, context, **kwargs)
 
-    monkeypatch.setattr(MemoryCore, "status", timed)
+    monkeypatch.setattr(MemoryCore, "session_brief", timed)
     monkeypatch.setattr(CodexHookHandler, "launch_worker", lambda *args, **kwargs: None)
     hook = CodexHookHandler.from_config_path(str(config.config_path))
     try:
@@ -796,3 +796,17 @@ def test_backfill_uses_core_record_event_with_prepared_metadata(handler, monkeyp
         5,
     )
     assert called and called[0].get("_prepared") is not None
+
+
+def test_owner_command_precedes_brief_recall_and_compaction(handler, monkeypatch):
+    hook, project_root, _config = handler
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("command reached briefing, recall, or compaction accounting")
+
+    monkeypatch.setattr(hook, "briefing", forbidden)
+    monkeypatch.setattr(hook.core, "recall_packet", forbidden)
+    monkeypatch.setattr(hook, "_record_prompt_usage", forbidden)
+    monkeypatch.setattr(hook, "_finish_compaction", forbidden)
+    result = hook.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="scope-recall pause"))
+    assert result["decision"] == "block"

@@ -17,20 +17,20 @@ def test_instruction_upgrade_and_interrupted_rollback(app, monkeypatch):
     from scope_recall.core.restore import InstallationMaintenance
 
     core, ctx = app
-    downgrade_store(core.storage.path, 1124)
-    migrate = storage.SCHEMA_MIGRATIONS[1124]
+    downgrade_store(core.storage.path, 1126)
+    migrate = storage.SCHEMA_MIGRATIONS[1126]
 
     def interrupted(db):
         migrate(db)
         raise RuntimeError("TEST interrupted instruction migration")
 
-    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1124, interrupted)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, interrupted)
     with pytest.raises(RuntimeError, match="TEST interrupted"):
         core.initialize()
     with closing(sqlite3.connect(core.storage.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1124
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1126
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='scope_memory_instructions'").fetchone() is None
-    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1124, migrate)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, migrate)
     core.initialize()
     owner = MemoryManagement(core, InstallationMaintenance(ctx))
     assert owner.set_memory_instruction("TEST-scope", "TEST decisions")["version"] == 1
@@ -129,21 +129,62 @@ def test_command_fence_upgrade_and_interrupted_rollback(app, monkeypatch):
     from scope_recall.core import storage
 
     core, ctx = app
-    downgrade_store(core.storage.path, 1125)
-    migrate = storage.SCHEMA_MIGRATIONS[1125]
+    downgrade_store(core.storage.path, 1126)
+    migrate = storage.SCHEMA_MIGRATIONS[1126]
 
     def interrupted(db):
         migrate(db)
         raise RuntimeError("TEST interrupted command fence")
 
-    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1125, interrupted)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, interrupted)
     with pytest.raises(RuntimeError, match="TEST interrupted"):
         core.initialize()
     with closing(sqlite3.connect(core.storage.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1125
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1126
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='private_command_fences'").fetchone()
-    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1125, migrate)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, migrate)
     core.initialize()
     with core.storage.read(ctx) as tx:
-        assert tx._check().execute("PRAGMA user_version").fetchone()[0] == 1126
+        assert tx._check().execute("PRAGMA user_version").fetchone()[0] == 1127
         assert tx._check().execute("SELECT count(*) FROM private_command_fences").fetchone()[0] == 0
+
+
+def test_combined_upgrade_rolls_back_between_table_creations(app, monkeypatch):
+    import pytest
+    from scope_recall.core import storage
+
+    core, _ctx = app
+    downgrade_store(core.storage.path, 1126)
+    migrate = storage.SCHEMA_MIGRATIONS[1126]
+
+    class InterruptSecondTable:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, statement, *args):
+            if statement.startswith("CREATE TABLE private_command_fences"):
+                raise RuntimeError("TEST interrupted between tables")
+            return self.connection.execute(statement, *args)
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, lambda db: migrate(InterruptSecondTable(db)))
+    with pytest.raises(RuntimeError, match="TEST interrupted"):
+        core.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1126
+        assert db.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == 1126
+        assert not db.execute(
+            "SELECT name FROM sqlite_master WHERE name IN ('scope_memory_instructions','private_command_fences')"
+        ).fetchall()
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1126, migrate)
+    core.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1127
+        assert (
+            len(
+                db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name IN ('scope_memory_instructions','private_command_fences')"
+                ).fetchall()
+            )
+            == 2
+        )

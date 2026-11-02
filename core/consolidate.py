@@ -447,6 +447,10 @@ def accept_consolidation(
             if item is not None:
                 items.append(Mutation(item.ref, item.revision, "applied", item.state))
         _complete_work(tx, work_fence, result, now=now)
+        if work_fence is not None:
+            from .session_brief import rebuild_scope
+
+            rebuild_scope(tx, scope_id, now)
         epoch = tx.status().memory_epoch
     return MutationReceipt(tuple(items), epoch)
 

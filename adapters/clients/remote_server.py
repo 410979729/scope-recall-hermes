@@ -412,7 +412,13 @@ def _handle_command_errors(handler, payload, record, body, direct_command):
     """Translate an atomically refused replay into the remote request error."""
     try:
         return handler.handle_payload(
-            payload, record=record, local_record=False, error_reply=body.get("error_reply") is True
+            payload,
+            record=record,
+            local_record=False,
+            error_reply=body.get("error_reply") is True,
+            compacted_at=body.get("compacted_at"),
+            compaction_seq=body.get("compaction_seq"),
+            compaction_epoch=body.get("compaction_epoch"),
         )
     except ContractError as exc:
         if direct_command and exc.field == "command_replay":
@@ -505,6 +511,8 @@ def handle_request(
     return {
         "private_rules": private_rules,
         "result": result,
+        "compaction_ack": handler.compaction_ack,
+        "compaction_watermark": handler.compaction_watermark,
         "through": record.through if record is not None else None,
         "reason": handler.diagnostics.last_reason,
         "error": handler.diagnostics.capture_error_detail or handler.diagnostics.capture_error_type,

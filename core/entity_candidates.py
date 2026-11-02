@@ -5,12 +5,13 @@ from __future__ import annotations
 from .claims import evidence_refs, valid_at
 
 
-def entity_candidates(tx, source, *, now: str, vector_hits=()):
+def entity_candidates(tx, source, *, now: str, vector_hits=(), name=None):
     """Return source-backed facts from the exact audience, nearest names first.
 
     Similarity only nominates candidates. Neither spelling nor a vector score
     authorizes a merge, including when two people have exactly the same name.
     """
+    name = source.payload["subject"] if name is None else name
     vector_refs = []
     for hit in vector_hits:
         if hit.kind == "claim":
@@ -27,10 +28,12 @@ def entity_candidates(tx, source, *, now: str, vector_hits=()):
     refs = tx.claims.merge_lookup(
         source.scope_id,
         kind="fact",
-        entity=(
-            source.payload["subject"],
-            tuple(vector_refs[:64]),
-            " ".join(span["quote"] for span in source.payload["evidence_spans"]),
+        options=dict(
+            entity=(
+                name,
+                tuple(vector_refs[:64]),
+                " ".join(span["quote"] for span in source.payload["evidence_spans"]),
+            )
         ),
     )
     source_row = tx._check().execute("SELECT rowid FROM claims WHERE claim_id=?", (source.ref,)).fetchone()[0]
@@ -42,7 +45,7 @@ def entity_candidates(tx, source, *, now: str, vector_hits=()):
             continue
         # One deterministic direction prevents concurrent passes from building cycles.
         target_row = tx._check().execute("SELECT rowid FROM claims WHERE claim_id=?", (head.ref,)).fetchone()[0]
-        if target_row >= source_row or head.payload["subject"] == source.payload["subject"]:
+        if target_row >= source_row or head.payload["subject"] == name:
             continue
         if not valid_at(head, now, historical=False) or head.payload.get("conditions"):
             continue

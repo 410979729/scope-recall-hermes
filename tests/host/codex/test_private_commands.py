@@ -316,3 +316,45 @@ def test_remote_command_fences_are_per_entry_and_session(served, tmp_path):
     with sqlite3.connect(root / "memory.sqlite3") as db:
         rows = db.execute("SELECT entry_id,session_id FROM private_command_fences").fetchall()
     assert len(rows) == 4 and len({row[0] for row in rows}) == 2
+
+
+def test_remote_command_does_not_consume_pending_compaction(monkeypatch, tmp_path):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("command touched pending compaction")
+
+    monkeypatch.setattr(remote_client, "_pending_compaction", forbidden)
+    monkeypatch.setattr(
+        remote_client,
+        "_ack_compaction",
+        lambda _config, session, compact, _answer: forbidden() if session is not None or compact is not None else None,
+    )
+    outgoing = []
+    monkeypatch.setattr(remote_client, "_post", lambda _config, body, _timeout: outgoing.append(body) or {"result": {}})
+    payload = {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-owner", "prompt": "scope-recall pause"}
+    remote_client.run_hook({"host": "codex", "state_dir": tmp_path}, json.dumps(payload).encode())
+    assert outgoing[0]["direct_owner_command"]
+    assert "compaction_seq" not in outgoing[0]
+
+
+def test_remote_command_preserves_compaction_for_next_ordinary_prompt(monkeypatch, tmp_path):
+    from scope_recall.adapters.clients.session_marks import compaction_marker, mark_compaction
+
+    config = _client(tmp_path, "codex", 12345)
+    session = "TEST-command-compaction"
+    mark_compaction(config, session, "2026-09-01T00:00:00Z")
+    marker = compaction_marker(config, session)
+    monkeypatch.setattr(remote_client, "_post", lambda *_args: {"result": {}})
+    command = {"hook_event_name": "UserPromptSubmit", "session_id": session, "prompt": "scope-recall pause"}
+    remote_client.run_hook(config, json.dumps(command).encode())
+    assert compaction_marker(config, session) == marker
+    sent = []
+
+    def send(_config, body, _until):
+        sent.append(body)
+        return {"result": {}, "compaction_ack": body["compaction_seq"]}
+
+    monkeypatch.setattr(remote_client, "_send_checked", send)
+    remote_client.run_hook(config, json.dumps({**command, "prompt": "TEST ordinary"}).encode())
+    assert sent[0]["compaction_seq"] == marker["ordinal"]
+    assert sent[0]["compaction_epoch"] == marker["epoch"]
+    assert compaction_marker(config, session) is None

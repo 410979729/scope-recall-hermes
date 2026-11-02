@@ -7,8 +7,10 @@ mint it; ordinary agent operations retain their captured-message authority.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict, replace
 from typing import Any
+from uuid import uuid4
 
 from ..contracts import ContractError
 from .delete_storage import OBJECT_TABLES, canonical
@@ -83,6 +85,60 @@ class MemoryManagement:
         from .recall_log_view import history
 
         return history(self.core, self._context(), session=session, request_id=request_id, before=before, limit=limit)
+
+    def health(self, *, limit=30, cursor=None, deadline_seconds=2.0):
+        """Compute one page of visible health candidates without persisting it."""
+        from .health import health_page
+
+        return health_page(self.core, self._context(), limit=limit, cursor=cursor, deadline_seconds=deadline_seconds)
+
+    def health_actions(self, *, limit=30, before=None):
+        """List recent reversible decisions whose targets remain visible and unchanged."""
+        from .mutate import management_claims_private
+
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 100
+            or (before is not None and (type(before) is not int or before < 1))
+        ):
+            raise ContractError("INPUT_INVALID", "limit_or_before")
+        context = self._context()
+        items = []
+        with self.core.storage.read(context) as tx:
+            rows = (
+                tx._check()
+                .execute(
+                    "SELECT rowid,action_id,action,targets_json,recorded_at FROM management_actions "
+                    "WHERE action IN ('health_entity_merge','health_fact_merge','health_fact_choose') AND rowid<? "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (before or 2**63 - 1, limit + 1),
+                )
+                .fetchall()
+            )
+            for row in rows[:limit]:
+                targets = json.loads(row["targets_json"])
+                try:
+                    location = self._location(tx, targets[0]["ref"])[1]
+                    view = partition(tx, context, location["project_id"], location["branch_id"])
+                    heads = [view.claims.version(item["ref"], item["revision"]) for item in targets]
+                    if any(
+                        head is None or head.current_revision != item["revision"] or head.suppressed
+                        for head, item in zip(heads, targets, strict=True)
+                    ):
+                        continue
+                    if management_claims_private(view, self.core.clock, heads):
+                        continue
+                except ContractError:
+                    continue
+                items.append(
+                    dict(
+                        action_id=row["action_id"],
+                        action=row["action"],
+                        recorded_at=row["recorded_at"],
+                        versions={item["ref"]: item["revision"] for item in targets},
+                    )
+                )
+        return dict(items=items, next_before=rows[limit - 1]["rowid"] if len(rows) > limit else None)
 
     def preview_quarantine_release(self, ref, *, expected_revision):
         """Return the owner-only content and hash required to authorize release."""
@@ -314,6 +370,126 @@ class MemoryManagement:
             "ON CONFLICT(action_id) DO NOTHING",
             (identity, action, canonical(targets), self.core.clock.utc_now(), tx.status().memory_epoch),
         )
+
+    def health_merge_entity(self, source_ref, source_revision, target_ref, target_revision, *, name=None):
+        """Apply an owner's entity decision with both reviewed fact versions."""
+        from .mutate import merge_entity_from_management
+
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            source_kind, source_row = self._location(tx, source_ref)
+            target_kind, target_row = self._location(tx, target_ref)
+            if source_kind != "claim" or target_kind != "claim":
+                raise ContractError("INPUT_INVALID", "claim_required")
+            audience = (source_row["scope_id"], source_row["project_id"], source_row["branch_id"])
+            if audience != (target_row["scope_id"], target_row["project_id"], target_row["branch_id"]):
+                raise ContractError("ACCESS_DENIED", "entity_audience")
+            view = partition(tx, context, audience[1], audience[2], writable=True)
+            alias = merge_entity_from_management(
+                view, self.core.clock, source_ref, source_revision, target_ref, target_revision, name=name
+            )
+            action = "management-" + uuid4().hex
+            targets = [dict(ref=alias.ref, revision=alias.revision)]
+            self._audit(tx, action, "health_entity_merge", targets)
+            return dict(action_id=action, ref=alias.ref, versions={alias.ref: alias.revision})
+
+    def _health_facts(self, first_ref, first_revision, second_ref, second_revision, *, merge):
+        from .mutate import health_apply_facts, health_fact_pair
+
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            first_kind, first_row = self._location(tx, first_ref)
+            second_kind, second_row = self._location(tx, second_ref)
+            audience = (first_row["scope_id"], first_row["project_id"], first_row["branch_id"])
+            if first_kind != "claim" or second_kind != "claim":
+                raise ContractError("INPUT_INVALID", "claim_required")
+            if audience != (second_row["scope_id"], second_row["project_id"], second_row["branch_id"]):
+                raise ContractError("ACCESS_DENIED", "fact_audience")
+            view = partition(tx, context, audience[1], audience[2], writable=True)
+            first, second = health_fact_pair(
+                view, self.core.clock, first_ref, first_revision, second_ref, second_revision
+            )
+            kept, replaced = health_apply_facts(view, self.core.clock, first, second, merge=merge)
+            targets = [
+                dict(ref=first.ref, before=first.revision, revision=kept.revision),
+                dict(
+                    ref=second.ref,
+                    before=second.revision,
+                    revision=replaced.revision,
+                    replacement_ref=kept.ref,
+                    replacement_revision=kept.revision,
+                ),
+            ]
+            action = "management-" + uuid4().hex
+            self._audit(tx, action, "health_fact_merge" if merge else "health_fact_choose", targets)
+            return dict(action_id=action, versions={item["ref"]: item["revision"] for item in targets})
+
+    def health_merge_facts(self, first_ref, first_revision, second_ref, second_revision):
+        """Merge a reviewed duplicate pair while retaining their separate histories."""
+        return self._health_facts(first_ref, first_revision, second_ref, second_revision, merge=True)
+
+    def health_choose_fact(self, first_ref, first_revision, second_ref, second_revision):
+        """Select the first of two reviewed, overlapping conflicting facts."""
+        return self._health_facts(first_ref, first_revision, second_ref, second_revision, merge=False)
+
+    def health_undo(self, action_id, versions):
+        """Withdraw an entity decision only while its reviewed alias is unchanged."""
+        from .mutate import management_claims_private
+
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            row = (
+                tx._check()
+                .execute("SELECT action,targets_json FROM management_actions WHERE action_id=?", (action_id,))
+                .fetchone()
+            )
+            if row is None or row["action"] not in {"health_entity_merge", "health_fact_merge", "health_fact_choose"}:
+                raise ContractError("SOURCE_MISSING", "health_action")
+            targets = json.loads(row["targets_json"])
+            expected = {item["ref"]: item["revision"] for item in targets}
+            if versions != expected:
+                raise ContractError("VERSION_CONFLICT", "expected_revision")
+            if row["action"] != "health_entity_merge":
+                return self._health_undo_facts(tx, context, targets)
+            ref, revision = next(iter(expected.items()))
+            _kind, location = self._location(tx, ref)
+            view = partition(tx, context, location["project_id"], location["branch_id"], writable=True)
+            head = view.claims.version(ref, revision)
+            if head is None or head.current_revision != revision:
+                raise ContractError("VERSION_CONFLICT", "expected_revision")
+            if management_claims_private(view, self.core.clock, (head,)):
+                raise ContractError("ACCESS_DENIED", "private_mode")
+            action, alias, source = correct(view, self.core.clock, ref, revision, None)
+            self._audit(tx, action, "health_entity_undo", [dict(ref=ref, revision=alias.revision, source_ref=source)])
+            return dict(action_id=action, ref=ref, versions={ref: alias.revision})
+
+    def _health_undo_facts(self, tx, context, targets):
+        from .mutate import health_restore_fact, management_claims_private
+
+        locations = [self._location(tx, item["ref"])[1] for item in targets]
+        first = locations[0]
+        view = partition(tx, context, first["project_id"], first["branch_id"], writable=True)
+        heads = [view.claims.version(item["ref"], item["revision"]) for item in targets]
+        if any(
+            head is None or head.current_revision != item["revision"] for head, item in zip(heads, targets, strict=True)
+        ):
+            raise ContractError("VERSION_CONFLICT", "expected_revision")
+        if management_claims_private(view, self.core.clock, heads):
+            raise ContractError("ACCESS_DENIED", "private_mode")
+        restored = {}
+        for head, item in zip(heads, targets, strict=True):
+            original = view.claims.version(item["ref"], item["before"])
+            if original is None:
+                raise ContractError("SOURCE_MISSING", "fact_history")
+            saved = (
+                health_restore_fact(view, self.core.clock, original, head)
+                if item["before"] != item["revision"]
+                else head
+            )
+            restored[head.ref] = saved.revision
+        action = "management-" + uuid4().hex
+        self._audit(tx, action, "health_fact_undo", [dict(ref=ref, revision=rev) for ref, rev in restored.items()])
+        return dict(action_id=action, versions=restored)
 
     def importance(self, ref, *, expected_revision, importance=None, pinned=None):
         """Change fact salience through the local owner's management capability."""

@@ -502,3 +502,18 @@ def test_inline_receipts_follow_their_own_turns_without_turn_ids(adapter):
     provider.observe_pre_llm(session_id="TEST-session-1", user_message=third)
     provider.on_turn_start(3, third, session_id="TEST-session-1")
     assert "private_spans_removed:" not in provider.prefetch(third, session_id="TEST-session-1")
+
+
+def test_owner_command_prefetch_does_not_deliver_brief_or_recall(adapter, monkeypatch):
+    provider, _clock = adapter
+    owner, ctx = _owner(provider)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("command requested a brief or recall")
+
+    monkeypatch.setattr(provider._core, "session_brief", forbidden)
+    monkeypatch.setattr(provider._core, "recall_packet", forbidden)
+    provider.observe_pre_llm(session_id=ctx.session_id, turn_id="TEST-command", user_message="scope-recall pause")
+    assert "recording mode" in provider.prefetch("scope-recall pause", session_id=ctx.session_id)
+    assert owner.private_status(session=ctx.session_id)["mode"] == "full"
+    assert not any("scope-recall pause" in text for text in _contents(provider, ctx))

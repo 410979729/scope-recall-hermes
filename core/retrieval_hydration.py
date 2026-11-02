@@ -467,6 +467,8 @@ class RetrievalHydration:
                 continue
             instead = holds_instead(versions, revision, context.now)
             if instead is None:
+                instead = lineage.resolve_replacement(tx, claim_ref, context.now)
+            if instead is None:
                 return None
             holding.append((stated, instead))
         return holding
@@ -486,6 +488,9 @@ class RetrievalHydration:
             or self._deliverable(tx, evidence, context) is None
         ):
             return ()
+        # An owner selection is recorded after both statements and resolves the conflict explicitly.
+        if instead.ref != stated.ref:
+            return evidence
         times = [said for pair in evidence if (cited := tx.source(*pair)) is not None and (said := _said(cited))]
         own = _said(source)
         starts = (canonical_time(instead.valid_from), canonical_time(stated.valid_from))

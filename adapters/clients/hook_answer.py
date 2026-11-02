@@ -35,6 +35,10 @@ _CAPTURE_ERROR_CODES = frozenset(
 class HookDiagnostics:
     last_event: str | None = None
     last_reason: str | None = None
+    brief_tokens: int = 0
+    brief_elapsed_ms: int = 0
+    brief_items: tuple[tuple[str, int], ...] = ()
+    session_statistics_failed: bool = False
     capability_gaps: tuple[str, ...] = ()
     capture_stage: str | None = None
     capture_disposition: str | None = None

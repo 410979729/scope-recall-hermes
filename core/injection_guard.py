@@ -9,6 +9,7 @@ import time
 from . import injection_policy
 from .injection_policy import SCAN_WINDOWS, ScanResult
 from .injection_policy import scan as scan
+from .retractions import record_safety_retraction
 from .source_records import stored_source
 
 # A ref changes when segment counts change. This identity remains stable across
@@ -137,6 +138,7 @@ def _group_verdict(tx, rows, remaining_seconds, policy, max_windows, *, expired=
 
 def _record_verdict(tx, rows, verdict, now, *, fresh=()):
     conn = tx._check(write=True)
+    new_holds = set()
     for row in rows:
         key = (row["event_id"], row["source_revision"])
         old = (
@@ -152,6 +154,8 @@ def _record_verdict(tx, rows, verdict, now, *, fresh=()):
             if old is not None:
                 conn.execute("DELETE FROM source_safety WHERE source_ref=? AND source_revision=?", key)
         else:
+            if old is None:
+                new_holds.add(row["scope_id"])
             conn.execute(
                 """INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at)
                 VALUES (?,?,?,?,?) ON CONFLICT(source_ref,source_revision) DO UPDATE
@@ -159,6 +163,7 @@ def _record_verdict(tx, rows, verdict, now, *, fresh=()):
                 WHERE source_safety.state NOT IN ('quarantined','released')""",
                 (*key, verdict.state, json.dumps(verdict.rules), now),
             )
+    record_safety_retraction(conn, new_holds)
 
 
 def _remove_held_projections(tx, rows, *, preserve_work_id=None):
@@ -243,6 +248,9 @@ def held_roots_sql(seed: str, *, states=False) -> str:
     walk. The seed owns its parameters; callers never supply user text as SQL.
     An empty hold set skips the walk independently of corpus size.
     """
+    # Start from the bounded dependency roots. The unary plus leaves equality
+    # unchanged while preventing the session index from replacing the group-key lookup.
+    group_match = GROUP_MATCH.replace("h.scope_id", "+h.scope_id").replace("h.session_id", "+h.session_id")
     return f"""WITH RECURSIVE lineage(root,kind,ref) AS (
             SELECT * FROM ({seed}) WHERE EXISTS (
                 SELECT 1 FROM source_safety WHERE state!='released')
@@ -251,11 +259,11 @@ def held_roots_sql(seed: str, *, states=False) -> str:
             ON d.object_kind=l.kind AND d.object_ref=l.ref UNION
             SELECT l.root,'event',e.source_ref FROM lineage l JOIN evidence_links e
             ON e.object_kind=l.kind AND e.object_ref=l.ref)
-        SELECT DISTINCT {"s.state" if states else "l.root"} FROM lineage l
-        JOIN source_events e ON l.kind='event' AND e.event_id=l.ref
-        JOIN source_events h ON {GROUP_MATCH}
-        JOIN source_safety s ON s.source_ref=h.event_id AND s.source_revision=h.source_revision
-        WHERE s.state!='released' AND h.read_blocked=0"""
+        SELECT DISTINCT {"s.state" if states else "l.root"} FROM lineage l CROSS JOIN source_events e
+        CROSS JOIN source_events h CROSS JOIN source_safety s
+        WHERE l.kind='event' AND e.event_id=l.ref AND {group_match}
+        AND s.source_ref=h.event_id AND s.source_revision=h.source_revision
+        AND s.state!='released' AND h.read_blocked=0"""
 
 
 def blocked_refs(tx, kind, refs) -> frozenset[str]:
@@ -263,7 +271,21 @@ def blocked_refs(tx, kind, refs) -> frozenset[str]:
     wanted = tuple(dict.fromkeys(refs))
     if not wanted:
         return frozenset()
-    rows = tx._check().execute(
+    conn = tx._check()
+    # A read transaction has a stable snapshot; a write transaction's
+    # ``remembered`` deliberately reloads after a hold changes in that transaction.
+    held = tx.remembered(
+        ("source_safety_has_holds",),
+        lambda: (
+            conn.execute(
+                "SELECT 1 FROM source_safety WHERE state IN ('quarantined','pending_review') LIMIT 1"
+            ).fetchone()
+            is not None
+        ),
+    )
+    if not held:
+        return frozenset()
+    rows = conn.execute(
         held_roots_sql("SELECT value,?,value FROM json_each(?)"),
         (kind, json.dumps(wanted)),
     )

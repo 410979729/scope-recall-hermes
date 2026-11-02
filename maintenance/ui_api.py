@@ -103,8 +103,8 @@ class UIApi:
     def read(self, route, data):
         """Dispatch a read without invoking any state-changing owner method."""
         api = self.management
-        if route in {"overview", "backup"}:
-            return getattr(self, route)()
+        if route in {"overview", "backup", "health", "health-actions"}:
+            return self._read_overview_or_health(route, data)
         if route in {"list", "search"}:
             return api.list(filters(data), limit=number(data, "limit", 30), cursor=text(data, "cursor"))
         if route == "detail":
@@ -130,6 +130,21 @@ class UIApi:
             return self._lookup(self.receipts, text(data, "id"))
         raise ContractError("INPUT_INVALID", "route")
 
+    def _read_overview_or_health(self, route, data):
+        """Dispatch the overview and health read-only routes."""
+        if route in {"overview", "backup"}:
+            return getattr(self, route)()
+        return self._read_health(route, data)
+
+    def _read_health(self, route, data):
+        """Read health findings or undoable action receipts."""
+        api = self.management
+        if route == "health":
+            return api.health(limit=number(data, "limit", 30), cursor=text(data, "cursor"))
+        if route == "health-actions":
+            return api.health_actions(limit=number(data, "limit", 30), before=number(data, "before"))
+        raise ContractError("INPUT_INVALID", "route")
+
     def _remember(self, collection, identity, value):
         collection[identity] = (time.monotonic(), value)
         while len(collection) > RETAINED_RESULTS:
@@ -144,8 +159,12 @@ class UIApi:
     def _plan(self, data):
         api = self.management
         action = text(data, "action")
-        if action == "instruction-set":
-            return dict(action=action, scope=text(data, "scope"), instruction=text(data, "instruction"))
+        if action == "instruction-set" or (action is not None and action.startswith("health-")):
+            return (
+                dict(action=action, scope=text(data, "scope"), instruction=text(data, "instruction"))
+                if action == "instruction-set"
+                else self._health_plan(data, action)
+            )
         if action in {"mute", "unmute", "forget"}:
             ref = text(data, "ref")
             revision = number(data, "expected_revision")
@@ -197,6 +216,27 @@ class UIApi:
             )
         raise ContractError("INPUT_INVALID", "action")
 
+    def _health_plan(self, data, action):
+        """Validate the reviewed health decision without disclosing hidden facts."""
+        if action in {"health-entity", "health-merge", "health-choose"}:
+            first, second = text(data, "first_ref"), text(data, "second_ref")
+            return dict(
+                action=action,
+                first_ref=first,
+                first_revision=number(data, "first_revision"),
+                second_ref=second,
+                second_revision=number(data, "second_revision"),
+                name=text(data, "name"),
+            )
+        if action == "health-undo":
+            versions = data.get("versions")
+            if not isinstance(versions, dict) or not all(
+                type(k) is str and type(v) is int and v > 0 for k, v in versions.items()
+            ):
+                raise ContractError("INPUT_INVALID", "versions")
+            return dict(action=action, action_id=text(data, "action_id"), versions=versions)
+        raise ContractError("INPUT_INVALID", "action")
+
     def preview(self, data):
         """Retain the exact displayed request; confirmation cannot substitute its payload."""
         with self.lock:
@@ -208,8 +248,12 @@ class UIApi:
     def _apply(self, plan):
         api = self.management
         action = plan["action"]
-        if action == "instruction-set":
-            return api.set_memory_instruction(plan["scope"], plan["instruction"])
+        if action == "instruction-set" or (action is not None and action.startswith("health-")):
+            return (
+                api.set_memory_instruction(plan["scope"], plan["instruction"])
+                if action == "instruction-set"
+                else self._health_apply(plan)
+            )
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
         if action == "release-quarantine":
@@ -231,6 +275,22 @@ class UIApi:
             return api.private_off(**plan["arguments"])
         with api.export_reader(MemoryFilter(**plan["filters"])) as reader:
             return write_export(reader, plan["out"], with_attachments=plan["with_attachments"])
+
+    def _health_apply(self, plan):
+        """Apply a reviewed health decision through the management boundary."""
+        api = self.management
+        action = plan["action"]
+        if action in {"health-entity", "health-merge", "health-choose"}:
+            fn = {
+                "health-entity": api.health_merge_entity,
+                "health-merge": api.health_merge_facts,
+                "health-choose": api.health_choose_fact,
+            }[action]
+            args = (plan["first_ref"], plan["first_revision"], plan["second_ref"], plan["second_revision"])
+            return fn(*args, name=plan["name"]) if action == "health-entity" else fn(*args)
+        if action == "health-undo":
+            return api.health_undo(plan["action_id"], plan["versions"])
+        raise ContractError("INPUT_INVALID", "action")
 
     def confirm(self, data):
         """Apply a single-use review after an explicit confirmation and retain its receipt."""

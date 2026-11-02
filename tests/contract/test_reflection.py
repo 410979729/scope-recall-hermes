@@ -545,3 +545,20 @@ def test_personal_observations_keep_distinct_verified_principals(app):
             for row in tx._check().execute("SELECT claim_ref,claim_revision FROM observations")
         }
     assert subjects == {"principal:human:TEST-one", "principal:human:TEST-two"}
+
+
+def test_reflection_observations_are_excluded_from_session_brief(app):
+    from scope_recall.core.session_brief import rebuild_scope
+
+    core, ctx = app
+    populate(core, ctx)
+    run(core, ctx, ReflectionModel())
+    item = observation(core, ctx)
+    assert item is not None
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+        manifest = json.loads(
+            tx._check().execute("SELECT items_json FROM session_briefs WHERE scope_id=?", ("TEST-scope",)).fetchone()[0]
+        )
+    assert all(entry["ref"] != item.ref for entry in manifest)
+    assert item.ref not in core.session_brief(ctx)["text"]

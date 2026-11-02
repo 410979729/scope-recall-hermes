@@ -89,6 +89,7 @@ packages = [
   "scope_recall.adapters.hermes",
   "scope_recall.core",
   "scope_recall.distribution",
+  "scope_recall.distribution.docker",
   "scope_recall.distribution.hermes",
   "scope_recall.maintenance",
   "scope_recall.runtime",
