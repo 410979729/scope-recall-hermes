@@ -283,7 +283,9 @@ def _write_months(package: _Package, reader: MemoryExport, counts: dict) -> None
 
 
 def _write_facts(package: _Package, reader: MemoryExport) -> int:
-    return _jsonl_artifact(package, "facts.jsonl", (claim.current for claim in reader.iter_claims()))
+    return _jsonl_artifact(
+        package, "facts.jsonl", (claim.current for claim in reader.iter_claims() if claim.current is not None)
+    )
 
 
 def _write_fact_history(package: _Package, reader: MemoryExport) -> int:
@@ -325,9 +327,13 @@ def _fact_body(record: dict, label: str) -> list[str]:
 
 def _fact_markdown(claim: ClaimExport) -> Iterator[str]:
     current = claim.current
-    yield f"## {_heading(current['subject'])} {_heading(current['predicate'])}\n\n"
-    yield "\n".join(_fact_body(current, "Current")) + "\n"
-    for record in claim.history:
+    history = iter(claim.history)
+    first = current if current is not None else next(history, None)
+    if first is None:
+        return
+    yield f"## {_heading(first['subject'])} {_heading(first['predicate'])}\n\n"
+    yield "\n".join(_fact_body(first, "Current" if current is not None else "Non-current version")) + "\n"
+    for record in history:
         yield "\n".join(_fact_body(record, "Non-current version")) + "\n"
 
 

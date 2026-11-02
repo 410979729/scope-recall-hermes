@@ -60,7 +60,7 @@ def _month(stamp: str) -> str:
 class ClaimExport:
     """One selected claim and a single-use stream of its non-current revisions."""
 
-    current: dict
+    current: dict | None
     history: Iterator[dict]
 
 
@@ -280,9 +280,11 @@ class MemoryExport:
             "recorded_at": utc_iso(source.event["recorded_at"]),
         }
 
-    def _claim_sources(self, view, version) -> list[dict] | None:
+    def _claim_sources(self, view, version, *, history=False) -> list[dict] | None:
         """Resolve one revision's evidence without retaining the claim's history."""
-        if not reflection_live(view, version):
+        from .reflection_validity import reflection_historical
+
+        if not (reflection_historical(view, version) if history else reflection_live(view, version)):
             return None
         if is_conversation_summary(version) and not summary_live(view, version.ref, version.revision):
             return None
@@ -311,7 +313,7 @@ class MemoryExport:
     def _claim_history(self, view, ref: str, current: int) -> Iterator[dict]:
         for version in self._claim_versions(view, ref):
             if version.revision != current:
-                sources = self._claim_sources(view, version)
+                sources = self._claim_sources(view, version, history=version.payload.get("kind") == "observation")
                 if sources is not None:
                     yield self._claim_record(version, "fact_history", sources)
 
@@ -370,6 +372,13 @@ class MemoryExport:
                 head = view.claims.version(ref, revision)
                 if head is None:
                     continue
+                if head.state == "superseded" and head.reason == "health_superseded":
+                    # The shared resolver enforces the same scope and visibility as recall.
+                    lineage.resolve_replacement(view, head.ref, self.core.clock.utc_now())
+                    if head.payload["kind"] == "observation":
+                        if self._claim_sources(view, head, history=True) is not None:
+                            yield ClaimExport(None, self._claim_history(view, ref, -1))
+                        continue
                 # Summary history contains pending and invalidated generations,
                 # not portable truth. Export only its currently valid snapshot;
                 # ordinary facts still require their full history to be visible.

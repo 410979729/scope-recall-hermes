@@ -23,6 +23,63 @@ from tests.v11_support import recall_item, source_event
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def test_exact_human_pause_and_resume_commands_are_not_captured(handler, installed, monkeypatch):
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    hook, project_root, config = handler
+    _, core, _clock, _ = installed
+    ctx = TrustedContext(core.storage.binding, "TEST-session-1", config.scope_ids, "human_direct")
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *args, **kwargs: None)
+    result = hook.handle_payload(_payload(project_root, "UserPromptSubmit", prompt=" scope-recall pause "))
+    assert result["decision"] == "block"
+    assert owner.private_status(session="TEST-session-1")["mode"] == "full"
+    hook.handle_payload(_payload(project_root, "UserPromptSubmit", turn="TEST-turn-2", prompt="TEST hidden"))
+    result = hook.handle_payload(
+        _payload(project_root, "UserPromptSubmit", turn="TEST-turn-3", prompt="scope-recall resume")
+    )
+    assert result["decision"] == "block"
+    assert owner.private_status(session="TEST-session-1")["mode"] == "none"
+    hook.handle_payload(_payload(project_root, "UserPromptSubmit", turn="TEST-turn-4", prompt="TEST after resume"))
+    with core.storage.read(ctx) as tx:
+        contents = [row[0] for row in tx._check().execute("SELECT content FROM source_events")]
+    assert "TEST after resume" in contents
+    assert all("scope-recall pause" not in text and "scope-recall resume" not in text for text in contents)
+    assert "TEST hidden" not in contents
+
+
+def test_non_command_text_and_other_session_do_not_change_private_mode(handler, installed, monkeypatch):
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    hook, project_root, config = handler
+    _, core, _clock, _ = installed
+    ctx = TrustedContext(core.storage.binding, "TEST-session-1", config.scope_ids, "human_direct")
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *args, **kwargs: None)
+    hook.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="TEST says scope-recall pause inside"))
+    hook.handle_payload(_payload(project_root, "Stop", turn="TEST-turn-2", last_assistant_message="scope-recall pause"))
+    hook.handle_payload(
+        _payload(project_root, "PostToolUse", turn="TEST-turn-3", tool_name="TEST", tool_response="scope-recall pause")
+    )
+    assert owner.private_status(session="TEST-session-1")["mode"] == "none"
+    hook.handle_payload(_payload(project_root, "UserPromptSubmit", turn="TEST-turn-4", prompt="scope-recall pause"))
+    assert owner.private_status(session="TEST-session-1")["mode"] == "full"
+    assert owner.private_status(session="TEST-other-session")["mode"] == "none"
+
+
+def test_hook_receipt_reports_inline_private_count(handler, monkeypatch):
+    hook, project_root, _config = handler
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *args, **kwargs: None)
+    payload = _payload(project_root, "UserPromptSubmit", prompt="TEST visible <private>TEST secret</private> end")
+    answer = hook.handle_bytes(json.dumps(payload).encode())
+    assert "1" in answer["systemMessage"]
+    assert "TEST secret" not in json.dumps(answer)
+
+
 def _payload(handler_root: Path, event: str, session: str = "TEST-session-1", turn: str = "TEST-turn-1", **fields):
     payload = {
         "hook_event_name": event,
@@ -207,26 +264,32 @@ def test_resume_query_reaches_recall_with_seeded_memory(handler, installed):
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
             assert request["query"] == "继续 TEST 项目"
             assert request["mode"] == "auto"
-            return {
-                "protocol_version": "1.1",
-                "request_id": request["request_id"],
-                "status": "ok",
-                "memory_epoch": 1,
-                "items": [
-                    recall_item(
-                        content="TEST 白色偏好",
-                        kind="event",
-                        ref=seeded.event_refs[0].ref,
-                        revision=1,
-                        evidence_refs=[f"{seeded.event_refs[0].ref}@1"],
-                    )
-                ],
-                "gaps": [],
-                "diagnostic_ref": None,
-                "answerability": "supported",
-                "coverage": "partial",
-                "unmet_needs": [],
-            }
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_source_refs, deadline_seconds=deadline_seconds
+            )
+            packet.update(
+                {
+                    "protocol_version": "1.1",
+                    "request_id": request["request_id"],
+                    "status": "ok",
+                    "memory_epoch": 1,
+                    "items": [
+                        recall_item(
+                            content="TEST 白色偏好",
+                            kind="event",
+                            ref=seeded.event_refs[0].ref,
+                            revision=1,
+                            evidence_refs=[f"{seeded.event_refs[0].ref}@1"],
+                        )
+                    ],
+                    "gaps": [],
+                    "diagnostic_ref": None,
+                    "answerability": "supported",
+                    "coverage": "partial",
+                    "unmet_needs": [],
+                }
+            )
+            return packet
 
     packet_handler = CodexHookHandler(config, core=PacketCore(), clock=installed[2])
     result = packet_handler.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="继续 TEST 项目"))
@@ -482,26 +545,32 @@ def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installe
 
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
             fences.append(current_source_refs)
-            return {
-                "protocol_version": "1.1",
-                "request_id": request["request_id"],
-                "status": "ok",
-                "memory_epoch": 1,
-                "items": [
-                    recall_item(
-                        content="TEST 白色偏好",
-                        kind="event",
-                        ref=seeded.event_refs[0].ref,
-                        revision=1,
-                        evidence_refs=[f"{seeded.event_refs[0].ref}@1"],
-                    )
-                ],
-                "gaps": [],
-                "diagnostic_ref": None,
-                "answerability": "supported",
-                "coverage": "partial",
-                "unmet_needs": [],
-            }
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_source_refs, deadline_seconds=deadline_seconds
+            )
+            packet.update(
+                {
+                    "protocol_version": "1.1",
+                    "request_id": request["request_id"],
+                    "status": "ok",
+                    "memory_epoch": 1,
+                    "items": [
+                        recall_item(
+                            content="TEST 白色偏好",
+                            kind="event",
+                            ref=seeded.event_refs[0].ref,
+                            revision=1,
+                            evidence_refs=[f"{seeded.event_refs[0].ref}@1"],
+                        )
+                    ],
+                    "gaps": [],
+                    "diagnostic_ref": None,
+                    "answerability": "supported",
+                    "coverage": "partial",
+                    "unmet_needs": [],
+                }
+            )
+            return packet
 
     busy = CodexHookHandler(config, core=BusyCore(), clock=clock)
     result = busy.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="继续 TEST 项目"))
@@ -729,3 +798,61 @@ def test_hook_emits_injection_usage_receipt(capsys):
     receipt = json.loads(line.split(":", 1)[1])
     assert receipt["injection_tokens"] == 17 and receipt["session_tokens"] == 50
     assert receipt["injection_token_cap"] == 100 and receipt["session_token_cap"] == 500
+
+
+def test_command_text_with_attachment_does_not_change_private_mode(handler, installed, monkeypatch):
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    hook, project_root, config = handler
+    _, core, _clock, _ = installed
+    ctx = TrustedContext(core.storage.binding, "TEST-session-1", config.scope_ids, "human_direct")
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *args, **kwargs: None)
+    hook.handle_payload(
+        _payload(
+            project_root, "UserPromptSubmit", prompt="scope-recall pause", attachments=[{"filename": "TEST-file.txt"}]
+        )
+    )
+    assert owner.private_status(session="TEST-session-1")["mode"] == "none"
+
+
+def test_backfill_uses_core_record_event_with_prepared_metadata(handler, monkeypatch):
+    hook, project_root, _config = handler
+    payload = _payload(project_root, "Stop")
+    audience = hook.audience_of(payload)
+    context = hook.context(audience, "TEST-session-1", "human_direct")
+    called = []
+    original = hook.core.record_event
+
+    def record(*args, **kwargs):
+        called.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(hook.core, "record_event", record)
+    event = source_event(content="TEST public", source_event_key="TEST-prepared-backfill", origin="human_direct")
+    hook._capture_event(
+        context,
+        audience,
+        event,
+        hook._hook_deadline(5),
+        ("private_spans_removed:1", "private_content_omitted"),
+        False,
+        5,
+    )
+    assert called and called[0].get("_prepared") is not None
+
+
+def test_owner_command_precedes_brief_recall_and_compaction(handler, monkeypatch):
+    hook, project_root, _config = handler
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("command reached briefing, recall, or compaction accounting")
+
+    monkeypatch.setattr(hook, "briefing", forbidden)
+    monkeypatch.setattr(hook.core, "recall_packet", forbidden)
+    monkeypatch.setattr(hook.core, "prepare_session_injection", forbidden)
+    monkeypatch.setattr(hook, "_finish_compaction", forbidden)
+    result = hook.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="scope-recall pause"))
+    assert result["decision"] == "block"

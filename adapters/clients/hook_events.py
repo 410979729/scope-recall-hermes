@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import Origin
+from scope_recall.core import private
 from scope_recall.core.capture_filters import without_private
 from scope_recall.core.secret_patterns import contains_secret_like_text
 
@@ -29,6 +30,7 @@ from .boundary import (
     user_prompt_source_event,
     workbuddy_person_text,
 )
+from .hook_answer import command_block
 from .session_marks import (
     close_turn,
     in_suggestions_thread,
@@ -59,6 +61,16 @@ WORKER_START_MIN_S = 0.1
 #: Leave the resident recall its one-second minimum when a prompt also needs a briefing.
 BRIEF_WAIT_S = 0.2
 BRIEF_RECALL_RESERVE_S = 1.0
+
+
+def _inline_gaps(payload):
+    """Retain a remote filter's bounded omission count without its removed text."""
+    removed = payload.get("scope_recall_private_spans_removed", 0)
+    return (
+        (f"private_spans_removed:{removed}", "private_content_omitted")
+        if type(removed) is int and 0 < removed <= 1000000
+        else ()
+    )
 
 
 class HookEvents:
@@ -103,11 +115,51 @@ class HookEvents:
         )
         return {}
 
+    def recording_command(self, session_id, audience, payload):
+        """Apply only a source-attested complete command and return its receipt."""
+        command = private.parse_recording_command(payload.get("prompt"))
+        eligible = not self._hook.remote_paths or payload.get("scope_recall_direct_command") is True
+        if command and self._hook.remote_paths and not eligible and not _inline_gaps(payload):
+            return command_block(self._hook.host, "Scope Recall remote command unavailable.")
+        if self._hook.host == "dsh" and payload.get("scope_recall_command_eligible") is False:
+            eligible = False
+        if command and eligible and payload.get("attachments") in (None, []):
+            context = self._hook.context(audience, session_id, "human_direct")
+            if self._hook.remote_paths:
+                private.apply_remote_command(
+                    self._hook.core.storage,
+                    self._hook.core.clock,
+                    context,
+                    command=command,
+                    command_id=payload.get("scope_recall_command_id"),
+                    observed_at=payload.get("scope_recall_command_observed_at"),
+                )
+            elif command == "pause":
+                private.open_interval(
+                    self._hook.core.storage,
+                    self._hook.core.clock,
+                    context,
+                    target="session",
+                    session=context.session_id,
+                )
+            else:
+                private.close_interval(
+                    self._hook.core.storage,
+                    self._hook.core.clock,
+                    context,
+                    target="session",
+                    session=context.session_id,
+                )
+            mode = self._hook.core.private_mode(context) or "none"
+            return command_block(self._hook.host, f"Scope Recall recording mode: {mode}.")
+        return None
+
     def prompt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         taken = self._prompt_turn(session_id, payload)
         if taken is None:
             return {}
         turn_id, prompt, gaps = taken
+        gaps = (*gaps, *_inline_gaps(payload))
         attachment_refs, attachment_gaps = authorized_attachment_refs(payload)
         gaps = (*gaps, *attachment_gaps)
         if attachment_gaps:
@@ -147,7 +199,14 @@ class HookEvents:
         vectors = (
             (
                 self._hook.call.captured
-                or (event is not None and (mode == "read-only" or not self._hook.diagnostics.capture_refused))
+                or (
+                    event is not None
+                    and (
+                        mode == "read-only"
+                        or self._hook.diagnostics.capture_error_code == "ENTRY_STATE"
+                        or not self._hook.diagnostics.capture_refused
+                    )
+                )
             )
             and not contains_secret_like_text(prompt)
             and self._hook.remaining(deadline) >= RUNTIME_ATTACH_MIN_S
@@ -316,6 +375,9 @@ class HookEvents:
             recorded_at=self._hook.clock.utc_now(),
             occurred_at=line.occurred_at if line is not None else None,
         )
+        gaps = (*gaps, *_inline_gaps(payload))
+        if event is not None and _inline_gaps(payload):
+            event["capture_state"] = "partial"
         context = self._hook.context(audience, session_id, "assistant_visible")
         self._hook.capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
         return {}
@@ -358,6 +420,9 @@ class HookEvents:
             tool_response=payload.get("tool_response"),
             recorded_at=self._hook.clock.utc_now(),
         )
+        gaps = (*gaps, *_inline_gaps(payload))
+        if event is not None and _inline_gaps(payload):
+            event["capture_state"] = "partial"
         if tool_gaps:
             self._hook.note("tool_payload_gap", gaps=tool_gaps)
         context = self._hook.context(audience, session_id, cast(Origin, origin))

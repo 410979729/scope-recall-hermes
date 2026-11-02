@@ -5657,6 +5657,7 @@ def test_default_cap_covers_complete_host_assembly_with_private_hint(
     monkeypatch.setattr(core, "private_mode", lambda *a, **k: "read-only")
     monkeypatch.setattr(core, "session_brief", brief)
     monkeypatch.setattr(core, "recall_packet", lambda *a, **k: recall_packet())
+    monkeypatch.setattr(core, "recall_packet_current", lambda *a, **k: True)
     monkeypatch.setattr(
         core,
         "prepare_recall_render",
@@ -5675,6 +5676,8 @@ def test_default_cap_covers_complete_host_assembly_with_private_hint(
             payload = _prompt("TEST question", session="TEST-full-host")
             hook.handle_payload(dict(payload, turn_id="TEST-turn"))
         assert any("read-only" in text for text in captured)
+        assert any(question in text for text in captured)
+        assert any(brief_text in text for text in captured)
         measured = max(estimate_tokens(text) for text in captured)
         record_property("complete_host_tokens", f"{host}:{measured}")
         assert DEFAULT_INJECTION_TOKEN_CAP >= measured

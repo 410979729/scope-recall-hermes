@@ -40,9 +40,6 @@
    "reportArgumentType": 2,
    "reportOptionalOperand": 1
   },
-  "adapters/hermes/capture.py": {
-   "reportArgumentType": 1
-  },
   "adapters/hermes/tool_surface.py": {
    "reportAttributeAccessIssue": 15
   },

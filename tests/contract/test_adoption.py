@@ -68,6 +68,20 @@ def publish(core, ctx, adoption):
         return publish_adoption(tx, adoption, now=core.clock.utc_now())
 
 
+def test_paused_entry_rejects_direct_adoption_publication(app):
+    from scope_recall.contracts import ContractError
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    assistant(core, ctx)
+    confirmation = capture(core, ctx, "好，就用方案二")
+    rows, _ = prepared(core, ctx, confirmation)
+    MemoryManagement(core, InstallationMaintenance(ctx)).set_entry_state("local", "paused", actor="TEST-owner")
+    with pytest.raises(ContractError, match="entry_paused"):
+        publish(core, ctx, rows[0])
+
+
 def test_adopted_decision_in_brief_names_owner_adoption(app):
     core, ctx = app
     assistant(core, ctx)
@@ -417,6 +431,60 @@ def test_option_titles_on_consecutive_lines_have_separate_fragments(app):
     rows, _ = prepared(core, ctx, owner)
     assert rows[0].reason is None
     assert publish(core, ctx, rows[0]).state == "active"
+
+
+def test_adoption_checkpoint_cannot_publish_after_pause_and_resume(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.core.worker import build_consolidation_model
+
+    from tests.contract.test_adoption_revision import Port
+
+    core, ctx = app
+    assistant(core, ctx)
+    confirmation = capture(core, ctx, "好，就用方案二。TEST-project 数据库 PostgreSQL。")
+    for _ in range(10):
+        core.drain_worker(
+            ctx,
+            consolidation=build_consolidation_model(Port(confirmation, one_call=True, selection=True)),
+            max_items=1,
+            remaining_seconds=20,
+        )
+        with core.storage.read(ctx) as tx:
+            row = (
+                tx._check()
+                .execute("SELECT payload_json FROM adoption_processing WHERE confirmation_ref=?", (confirmation.ref,))
+                .fetchone()
+            )
+            if row and json.loads(row[0])["stage"] == "publish":
+                before = tx._check().execute("SELECT count(*) FROM adoption_relations").fetchone()[0]
+                break
+    else:
+        pytest.fail("publish checkpoint not reached")
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    owner.set_entry_state("local", "normal", actor="TEST-owner")
+    core.drain_worker(
+        ctx,
+        consolidation=build_consolidation_model(Port(confirmation, selection=True)),
+        max_items=1,
+        remaining_seconds=20,
+    )
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM adoption_relations").fetchone()[0] == before
+
+    for _ in range(8):
+        core.drain_worker(
+            ctx,
+            consolidation=build_consolidation_model(Port(confirmation, one_call=True, selection=True)),
+            max_items=1,
+            remaining_seconds=20,
+        )
+        with core.storage.read(ctx) as tx:
+            if tx._check().execute("SELECT count(*) FROM adoption_relations").fetchone()[0] > before:
+                break
+    else:
+        pytest.fail("adoption was not prepared again after the entry resumed")
 
 
 def test_adopted_brief_keeps_its_category_in_recall_history(app):

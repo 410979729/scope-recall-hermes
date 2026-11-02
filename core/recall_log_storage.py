@@ -95,13 +95,18 @@ class RecallLogStore:
             "max_bytes INTEGER,watermark TEXT)"
         )
         columns = {row[1] for row in conn.execute("PRAGMA table_info(retention)")}
-        for name, kind in (("max_bytes", "INTEGER"), ("watermark", "TEXT")):
+        for name, kind in (
+            ("max_bytes", "INTEGER"),
+            ("watermark", "TEXT"),
+            ("health_since", "TEXT"),
+            ("capacity_loss_at", "TEXT"),
+        ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE retention ADD COLUMN {name} {kind}")
         conn.execute("CREATE INDEX IF NOT EXISTS attempts_session ON attempts(installation_id,session_id,sequence)")
         conn.execute("CREATE INDEX IF NOT EXISTS attempts_request ON attempts(installation_id,request_id)")
         conn.execute(
-            "INSERT OR IGNORE INTO retention VALUES(1,?,?,NULL)",
+            "INSERT OR IGNORE INTO retention(singleton,days,max_bytes,watermark) VALUES(1,?,?,NULL)",
             (self.policy.retention_days, self.policy.max_bytes),
         )
         conn.execute("UPDATE retention SET max_bytes=? WHERE max_bytes IS NULL", (self.policy.max_bytes,))
@@ -157,11 +162,12 @@ class RecallLogStore:
         with self._transaction(writing=True) as (conn, days, watermark, page_size, limit):
             latest = conn.execute("SELECT max(timestamp) FROM attempts").fetchone()[0]
             today = max(record["timestamp"], latest or record["timestamp"], watermark or record["timestamp"])
+            conn.execute("UPDATE retention SET health_since=coalesce(health_since,?)", (today,))
             self._expire(conn, today, days)
             if record["timestamp"] < cutoff(today, days):
                 return
             needed = (len(raw.encode("utf-8")) + page_size - 1) // page_size + 3
-            self._make_room(conn, needed, limit)
+            self._make_room(conn, needed, limit, today)
             conn.execute(
                 "INSERT OR REPLACE INTO attempts(ref,timestamp,installation_id,session_id,request_id,payload) "
                 "VALUES (?,?,?,?,?,?)",
@@ -179,10 +185,10 @@ class RecallLogStore:
             return
         with self._transaction(writing=False) as (conn, days, watermark, _page_size, limit):
             self._expire(conn, max(timestamp, watermark or timestamp), days)
-            self._make_room(conn, 0, limit)
+            self._make_room(conn, 0, limit, max(timestamp, watermark or timestamp))
 
     @staticmethod
-    def _make_room(conn, needed, limit):
+    def _make_room(conn, needed, limit, timestamp):
         while (
             conn.execute("PRAGMA page_count").fetchone()[0]
             - conn.execute("PRAGMA freelist_count").fetchone()[0]
@@ -197,9 +203,19 @@ class RecallLogStore:
                 "(SELECT sequence FROM attempts ORDER BY timestamp,sequence LIMIT ?)",
                 (max(1, count // 4),),
             )
+            conn.execute("UPDATE retention SET capacity_loss_at=?", (timestamp,))
 
     def list(
-        self, *, installation_id=None, session_id=None, request_id=None, ref=None, before=None, limit=30, now=None
+        self,
+        *,
+        installation_id=None,
+        session_id=None,
+        request_id=None,
+        ref=None,
+        entry_id=None,
+        before=None,
+        limit=30,
+        now=None,
     ):
         """Read one bounded newest-first page; missing logs are an empty history."""
         if not self.path.exists():
@@ -214,6 +230,9 @@ class RecallLogStore:
             if value is not None:
                 clauses.append(f"{name}=?")
                 values.append(value)
+        if entry_id is not None:
+            clauses.append("json_extract(payload,'$.entry_id')=?")
+            values.append(entry_id)
         if before is not None:
             clauses.append("sequence<?")
             values.append(before)

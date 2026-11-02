@@ -281,7 +281,7 @@ class Claims:
         conditions=None,
         alias_name=None,
         instant=None,
-        entity=None,
+        options=None,
     ) -> tuple[str, ...]:
         """Find bounded normalized slot/alias matches after filtering the complete authorized scope.
 
@@ -290,6 +290,9 @@ class Claims:
         """
         from .fact_identity import normalize_fact_component
 
+        options = options or {}
+        entity = options.get("entity")
+        after, limit = options.get("after"), options.get("limit", 16)
         if entity is not None:
             return self._entity_lookup(scope_id, *entity)
         self._tx._scope(scope_id)
@@ -311,6 +314,9 @@ class Claims:
             "AND (b.read_blocked=1 OR b.suppressed=1))",
         ]
         params = [scope_id, ctx.project_id, ctx.branch_id, "alias" if alias_name is not None else kind]
+        if after is not None:
+            filters.append("c.claim_id>?")
+            params.append(after)
         if alias_name is not None:
             instant = canonical_time(instant)
             if instant is None:
@@ -340,8 +346,8 @@ class Claims:
                 "SELECT c.claim_id FROM claims c JOIN claim_versions v "
                 "ON v.claim_id=c.claim_id AND v.revision=c.current_revision WHERE "
                 + " AND ".join(filters)
-                + " ORDER BY c.claim_id LIMIT 16",
-                params,
+                + " ORDER BY c.claim_id LIMIT ?",
+                [*params, limit],
             )
         )
 

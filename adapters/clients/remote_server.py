@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..._version import __version__
+from ...contracts import ContractError
 from ...core.private import calibrated_event_time
 from ...runtime.remote_clock import private_metadata
 from ...runtime.worker_entry import host_process_credential_environment
@@ -48,7 +49,7 @@ from .handler import CodexHookHandler, SystemHookClock
 from .identity import resolve_runtime_audience, trusted_context
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
 from .record_reader import RecordLines
-from .remote_client import eligible_body
+from .remote_client import direct_owner_command, eligible_body
 
 CONFIG_NAME = "remote-server.json"
 LOG_NAME = "remote-server.log"
@@ -380,6 +381,51 @@ def private_check(config: RemoteServerConfig, body: dict[str, Any]) -> dict[str,
     return {**result, "clock": clock}
 
 
+def _command_payload(config, body):
+    """Validate command provenance and freshness before stripping client-only paths."""
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        raise RemoteServerError("payload must be the hook's object")
+    # Half of a broken emoji (a lone surrogate) is stored as U+FFFD, as a hook here stores it; it would fail the size
+    # check below, and the client would be told to keep the request for good.
+    payload = without_lone_surrogates(payload)
+    direct_command = direct_owner_command({**body, "payload": payload}, config.host)
+    if body.get("direct_owner_command") is True and not direct_command:
+        raise RemoteServerError("invalid command source")
+    if direct_command:
+        observed = _observed_at(body.get("observed_at"))
+        if observed is None or abs((_now() - observed).total_seconds()) > 60:
+            raise RemoteServerError("command observation expired")
+        command_id = body.get("command_id")
+        if type(command_id) is not str or not command_id.strip() or len(command_id) > 128:
+            raise RemoteServerError("invalid command id")
+        payload["scope_recall_direct_command"] = True
+        payload["scope_recall_command_id"] = command_id
+        payload["scope_recall_command_observed_at"] = body["observed_at"]
+        body = {**body, "payload": payload}
+    else:
+        payload.pop("scope_recall_direct_command", None)
+    return payload, body, direct_command
+
+
+def _handle_command_errors(handler, payload, record, body, direct_command):
+    """Translate an atomically refused replay into the remote request error."""
+    try:
+        return handler.handle_payload(
+            payload,
+            record=record,
+            local_record=False,
+            error_reply=body.get("error_reply") is True,
+            compacted_at=body.get("compacted_at"),
+            compaction_seq=body.get("compaction_seq"),
+            compaction_epoch=body.get("compaction_epoch"),
+        )
+    except ContractError as exc:
+        if direct_command and exc.field == "command_replay":
+            raise RemoteServerError("command replay") from exc
+        raise
+
+
 def handle_request(
     config: RemoteServerConfig,
     body: dict[str, Any],
@@ -391,17 +437,19 @@ def handle_request(
     asked of ``recaller`` (the server's ``local_endpoint.KeptRecaller``), whose vector store and embedding worker
     stay open between prompts, while this request's handler stores the prompt and recalls itself only if that has
     not answered in time (``handler._resident_answer``)."""
-    payload = body.get("payload")
-    if not isinstance(payload, dict):
-        raise RemoteServerError("payload must be the hook's object")
-    # Half of a broken emoji (a lone surrogate) is stored as U+FFFD, as a hook here stores it; it would fail the size
-    # check below, and the client would be told to keep the request for good.
-    payload = without_lone_surrogates(payload)
+    payload, body, direct_command = _command_payload(config, body)
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise RemoteServerError("payload too large")
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
-    payload = {key: value for key, value in payload.items() if key != "transcript_path"}
-    body, refused, private_rules = _checked_body(config, {**body, "payload": payload})
+    if not direct_command:
+        payload = {key: value for key, value in payload.items() if key != "transcript_path"}
+    if direct_command:
+        checked = private_check(
+            config, dict(session_id=payload.get("session_id"), project=payload.get("cwd"), times=[])
+        )
+        body, refused, private_rules = {**body, "payload": payload}, False, checked["private_rules"]
+    else:
+        body, refused, private_rules = _checked_body(config, {**body, "payload": payload})
     payload = body["payload"]
     if refused:
         record = RecordLines.from_dsh(payload) if config.host == "dsh" else record_from_wire(body.get("record"))
@@ -421,7 +469,7 @@ def handle_request(
     handler = CodexHookHandler.from_home(
         str(config.home),
         config.host,
-        event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
+        event_clock=_ObservedClock(observed_at) if observed_at is not None and not direct_command else None,
         remote_paths=True,
         hook_started_at=started if started is not None else time.monotonic(),
     )
@@ -431,22 +479,25 @@ def handle_request(
     if recaller is not None and payload.get("hook_event_name") == "UserPromptSubmit":
         asked = handler.resident_recall = _Asked(recaller)
     try:
-        result = handler.handle_payload(
-            payload,
-            record=record,
-            local_record=False,
-            error_reply=body.get("error_reply") is True,
-            compacted_at=body.get("compacted_at"),
-            compaction_seq=body.get("compaction_seq"),
-            compaction_epoch=body.get("compaction_epoch"),
-        )
+        result = _handle_command_errors(handler, payload, record, body, direct_command)
     finally:
         closing = time.monotonic()
         handler.close()
     handler.finish_prompt_capture()
     closed = round((time.monotonic() - closing) * 1000)
+    notice = handler.diagnostics.private_notice()
+    if notice:
+        previous = result.get("systemMessage")
+        result = {
+            **result,
+            "systemMessage": f"{previous}\n{notice}" if isinstance(previous, str) and previous else notice,
+        }
+    if direct_command:
+        private_rules = True
     if config.host == "dsh":
         result = {**result, "private_rules": private_rules}
+        if handler.diagnostics.private_spans_removed:
+            result["private_spans_removed"] = handler.diagnostics.private_spans_removed
     # What the request's handler decided of the answer (slow, late, without_vectors, failed) comes first; an answer
     # still on its way when the handler was done is its slow or late.
     warm = None if asked is None else handler.resident_outcome or asked.outcome
@@ -457,6 +508,9 @@ def handle_request(
     # the rest is its recall.
     # ``error``: the capture's code, or the class of what failed it when it was no contract error (a store that is
     # locked or broken), which the log would otherwise not name.
+    state_gaps = [
+        gap for gap in handler.diagnostics.capability_gaps if gap in {"entry_state:read-only", "entry_state:paused"}
+    ]
     return {
         "private_rules": private_rules,
         "result": result,
@@ -472,10 +526,12 @@ def handle_request(
         "retry": not handler.diagnostics.capture_settled,
         "capture_disposition": handler.diagnostics.capture_disposition,
         "capture_durability": handler.diagnostics.capture_durability,
+        **({"capture_gaps": state_gaps} if state_gaps else {}),
         "warm": warm,
         "build_ms": built,
         "capture_ms": handler.diagnostics.capture_total_ms,
         "masked_secret_count": handler.diagnostics.masked_secret_count,
+        "private_spans_removed": handler.diagnostics.private_spans_removed,
         "attach_ms": handler.diagnostics.runtime_attach_ms,
         "close_ms": closed,
     }

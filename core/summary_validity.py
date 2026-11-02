@@ -6,6 +6,8 @@ import hashlib
 import json
 
 from ..contracts import ContractError
+from . import lineage
+from .claims import statement_key
 from .episodes import source_origin
 
 CONVERSATION_SUMMARY_REASONS = ("summary_pending", "grounded_session_summary", "grounded_task_summary")
@@ -61,18 +63,27 @@ def obsolete_ranges(tx, members):
     for start in range(0, len(members), 128):
         page = members[start : start + 128]
         rows = tx._check().execute(
-            "SELECT DISTINCT l.source_ref,l.source_revision,v.payload_json FROM evidence_links l "
+            "SELECT DISTINCT l.source_ref,l.source_revision,v.payload_json,h.payload_json,h.state,"
+            "h.qualification_reason,c.claim_id FROM evidence_links l "
             "JOIN claims c ON c.claim_id=l.object_ref JOIN claim_versions v ON v.claim_id=c.claim_id "
             "AND v.revision=l.object_revision JOIN claim_versions h ON h.claim_id=c.claim_id "
             "AND h.revision=c.current_revision WHERE l.object_kind='claim' "
             "AND ((v.revision!=c.current_revision AND v.payload_json!=h.payload_json) "
             "OR h.state IN ('retracted','superseded')) "
+            "AND json_extract(v.payload_json,'$.kind')!='observation' "
             "AND v.qualification_reason NOT IN (?,?,?,?,?,?) AND (l.source_ref,l.source_revision) IN ("
             + ",".join("(?,?)" for _ in page)
             + ")",
             [*DEPENDENCY_EXCLUDED_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
         )
         for row in rows:
+            previous, current = json.loads(row[2]), json.loads(row[3])
+            if row[4] == "superseded" and row[5] == "health_superseded":
+                target = lineage.resolve_replacement(tx, row[6])
+                if target is not None and statement_key(previous) == statement_key(target.payload):
+                    continue
+            elif row[4] != "retracted" and statement_key(previous) == statement_key(current):
+                continue
             key = (row[0], row[1])
             spans = [
                 span
@@ -87,8 +98,8 @@ def obsolete_ranges(tx, members):
 
 
 def group_signature(tx, members):
-    """Bind raw versions and all facts derived from them, including later corrections."""
-    facts = []
+    """Bind members to the assertions they support, independent of evidence-only revisions."""
+    facts = set()
     for start in range(0, len(members), 128):
         page = members[start : start + 128]
         if not page:
@@ -96,19 +107,24 @@ def group_signature(tx, members):
         rows = (
             tx._check()
             .execute(
-                "SELECT DISTINCT c.claim_id,c.current_revision,c.read_blocked,c.suppressed,v.state "
-                "FROM evidence_links l "
-                "JOIN claims c ON c.claim_id=l.object_ref JOIN claim_versions v "
+                "SELECT DISTINCT c.claim_id,c.read_blocked,c.suppressed,v.state,v.qualification_reason,v.payload_json "
+                "FROM evidence_links l JOIN claims c ON c.claim_id=l.object_ref JOIN claim_versions v "
                 "ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
-                "WHERE l.object_kind='claim' AND v.qualification_reason NOT IN (?,?,?,?,?,?) "
-                "AND (l.source_ref,l.source_revision) IN (" + ",".join("(?,?)" for _ in page) + ") ORDER BY c.claim_id",
+                "WHERE l.object_kind='claim' AND json_extract(v.payload_json,'$.kind')!='observation' "
+                "AND v.qualification_reason NOT IN (?,?,?,?,?,?) "
+                "AND (l.source_ref,l.source_revision) IN (" + ",".join("(?,?)" for _ in page) + ")",
                 [*DEPENDENCY_EXCLUDED_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
             )
             .fetchall()
         )
-        facts.extend(tuple(row) for row in rows)
+        for ref, blocked, suppressed, state, reason, payload in rows:
+            if state == "superseded" and reason == "health_superseded":
+                target = lineage.resolve_replacement(tx, ref)
+                if target is not None:
+                    state, payload = target.state, json.dumps(target.payload)
+            facts.add((statement_key(json.loads(payload)), blocked, suppressed, state))
     excluded = [(ref, rev, spans) for (ref, rev), spans in sorted(obsolete_ranges(tx, members).items())]
-    body = json.dumps(["whole_sentences", members, sorted(set(facts)), excluded], sort_keys=True, separators=(",", ":"))
+    body = json.dumps(["whole_sentences", members, sorted(facts), excluded], sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode()).hexdigest()
 
 
@@ -180,10 +196,10 @@ def summary_live(tx, ref, revision, *, query_scope=None, excluded=()):
     head = tx.claims.version(ref, revision)
     if head is None or head.current_revision != revision or head.state != "active" or not ended:
         return False
-    current = tx.remembered(
-        ("summary_signature", row["group_key"], row["generation"]), lambda: group_signature(tx, group_members(tx, row))
-    )
-    if current != row["signature"] or current != row["dependencies_json"]:
+    if row["signature"] != row["dependencies_json"] or not tx.remembered(
+        ("summary_signature_match", row["group_key"], row["generation"]),
+        lambda: group_signature(tx, group_members(tx, row)) == row["signature"],
+    ):
         return False
     try:
         coverage = json.loads(row["coverage_json"])

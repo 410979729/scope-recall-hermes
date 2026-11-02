@@ -4,6 +4,14 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Entry controls record owner changes and apply read-only or paused states to individual entries. Paused entry work is rechecked at dispatch and publication, and stale recall packets are discarded.
+
+
+Remote recording commands now retain their source metadata and reject replay in the same transaction as the session rule.
+Hermes reports inline private omissions through its prefetch receipt.
+
+Scope owners can version per-scope extraction instructions from management; instructions only narrow later extraction.
+Recording can be paused or resumed for the current session with direct owner commands, and capture receipts count removed inline private spans.
 The shared store can run in a Linux container with host networking and remote client entries.
 
 Session start can deliver a bounded, source-checked briefing of unfinished tasks, recent decisions and important
@@ -19,6 +27,8 @@ The additive store upgrade preserves existing delivery marks and its rollback sn
 Full private mode discards prepared memory bodies before release. Withdrawn originals receive reference-only notices;
 independent fact corrections from one original keep separate acknowledgements. The default injection ceiling includes
 complete host assembly and the read-only private hint.
+Paused entries defer delivery and accounting, including correction notices. Reviewed fact replacements notify the
+current retained value; evidence-only merges do not repeat an acknowledged correction.
 
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.

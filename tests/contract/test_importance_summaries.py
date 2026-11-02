@@ -866,6 +866,50 @@ def test_importance_cli_uses_the_owner_management_boundary(app):
     assert value["importance"] == 2 and value["pinned"] is False
 
 
+def test_summary_waits_while_source_entry_is_paused(app):
+    core, ctx = app
+    capture(core, ctx, "TEST paused session summary source.")
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+
+    class CountingSummary(SummaryModel):
+        calls = 0
+
+        def judge(self, messages, *, remaining_seconds):
+            self.calls += 1
+            return super().judge(messages, remaining_seconds=remaining_seconds)
+
+    model = CountingSummary()
+    build(core, ctx, model)
+    assert model.calls == 0
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM summary_parts WHERE coverage_json != '[]'").fetchone()[0] == 0
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )
+
+
+def test_summary_discards_result_when_entry_was_paused_during_call(app):
+    core, ctx = app
+    capture(core, ctx, "TEST session summary state transition.")
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+
+    class TransitionSummary(SummaryModel):
+        def judge(self, messages, *, remaining_seconds):
+            owner.set_entry_state("local", "paused", actor="TEST-owner")
+            owner.set_entry_state("local", "normal", actor="TEST-owner")
+            return super().judge(messages, remaining_seconds=remaining_seconds)
+
+    build(core, ctx, TransitionSummary())
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM summary_parts WHERE coverage_json != '[]'").fetchone()[0] == 0
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )
+
+
 def test_brief_fact_does_not_hide_unshown_source_details(app):
     from v11_support import recall_request
 
@@ -1207,6 +1251,15 @@ def test_replayed_old_compaction_epoch_does_not_invalidate_new_delivery(app):
     assert core.session_brief(first, deliver=True, compact=True)["text"] == ""
 
 
+def _render_delivery_packet(core, ctx, packet):
+    """Keep the real core's entry fence while choosing synthetic delivery contents."""
+    from v11_support import recall_request
+
+    registered = core.recall_packet(ctx, recall_request(query="TEST-project"))
+    registered.update(packet)
+    return core.prepare_recall_render(ctx, registered)
+
+
 def _question_text(core, ctx, request_id="TEST-delivery"):
     from scope_recall.adapters.runtime_wiring import render_host_recall_context
     from v11_support import recall_request
@@ -1332,7 +1385,7 @@ def _separate_delivery_claims(core, ctx, count):
         source = capture(core, ctx, f"TEST-project-{n} 配色选蓝色。")
         claims.append(accept(core, ctx, draft(source, subject=f"TEST-project-{n}")).items[0])
     packet = recall_packet(items=[recall_item(ref=item.ref, revision=item.revision) for item in claims])
-    rendered = core.prepare_recall_render(ctx, packet)
+    rendered = _render_delivery_packet(core, ctx, packet)
     pending = core.prepare_session_injection(ctx, render_host_recall_context(rendered.canonical_text))
     assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
     return claims
@@ -1404,7 +1457,7 @@ def test_source_and_fact_share_one_correction_notice(app):
             ),
         ]
     )
-    rendered = core.prepare_recall_render(ctx, packet)
+    rendered = _render_delivery_packet(core, ctx, packet)
     first = core.prepare_session_injection(ctx, render_host_recall_context(rendered.canonical_text))
     assert core.confirm_session_brief(ctx, first, remaining_seconds=1) == "brief_delivered"
     owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
@@ -1456,7 +1509,7 @@ def _deliver_source_only(core, ctx, source):
             )
         ]
     )
-    rendered = core.prepare_recall_render(ctx, packet)
+    rendered = _render_delivery_packet(core, ctx, packet)
     pending = core.prepare_session_injection(ctx, render_host_recall_context(rendered.canonical_text))
     assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
 
@@ -1608,28 +1661,6 @@ def test_one_source_defers_each_unconfirmed_fact_beyond_notice_limit(app):
     assert not core.prepare_session_injection(reader, "")["_injection"]["notices"]
 
 
-@pytest.mark.parametrize("change", ["correct", "suppress"])
-def test_legacy_single_digest_acknowledgement_remains_readable(app, change):
-    core, ctx = app
-    item, _ = initial(core, ctx)
-    _deliver_question(core, ctx)
-    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
-    if change == "correct":
-        owner.revise(item.ref, expected_revision=1, value="green")
-    else:
-        owner.apply(owner.preview([item.ref], mode="suppress"))
-    pending = core.prepare_session_injection(ctx, "")
-    with core.storage.write(ctx) as tx:
-        for notice in pending["_injection"]["notices"]:
-            for kind, ref, revision, _key in notice["targets"]:
-                tx._check(write=True).execute(
-                    "UPDATE session_brief_injections SET notice_marker=? "
-                    "WHERE object_kind=? AND object_ref=? AND revision=?",
-                    (notice["marker"], kind, ref, revision),
-                )
-    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
-
-
 def test_confirmation_does_not_rehydrate_acknowledged_sibling_facts(app, monkeypatch):
     from scope_recall.core import session_injection
 
@@ -1653,3 +1684,160 @@ def test_confirmation_does_not_rehydrate_acknowledged_sibling_facts(app, monkeyp
     monkeypatch.setattr(session_injection, "_current", observe)
     assert core.confirm_session_brief(reader, second, remaining_seconds=1) == "brief_delivered"
     assert claims[0].ref not in reads
+
+
+def test_inline_private_source_is_filtered_before_brief_preparation(app):
+    from scope_recall.core.claims import Qualification
+
+    core, ctx = app
+    source = capture(
+        core,
+        ctx,
+        "TEST-project \u914d\u8272 \u84dd\u8272\u3002 <private>TEST-brief-hidden</private>",
+        when="2026-09-05T12:00:00Z",
+    )
+    with core.storage.write(ctx) as tx:
+        item = tx.claims.append(
+            "TEST-scope",
+            draft(source, "\u84dd\u8272"),
+            Qualification("active", "direct_report", "synthetic"),
+            recorded_at=core.clock.utc_now(),
+        )
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx)
+    assert item.ref in brief["text"] and "\u84dd\u8272" in brief["text"]
+    assert "TEST-brief-hidden" not in json.dumps(brief)
+    with core.storage.read(ctx) as tx:
+        saved = tx._check().execute("SELECT items_json FROM session_briefs").fetchall()
+    assert "TEST-brief-hidden" not in str(saved)
+
+
+@pytest.mark.parametrize("change", ["merge", "choose", "evidence"])
+@pytest.mark.parametrize("delivered", ["claim", "event"])
+def test_health_decisions_notify_replaced_facts_but_not_evidence(app, change, delivered):
+    from scope_recall.core.session_brief import mark_delivered
+
+    from tests.contract.test_memory_health import separate_fact
+
+    core, ctx = app
+    first = separate_fact(core, ctx, "TEST-Object", "blue")
+    second = separate_fact(core, ctx, "test-object", "red" if change == "choose" else "blue")
+    old = first if change == "evidence" else second
+    span = old.payload["evidence_spans"][0]
+    item = (
+        dict(kind="claim", ref=old.ref, revision=old.revision)
+        if delivered == "claim"
+        else dict(kind="event", ref=span["source_ref"], revision=span["source_revision"])
+    )
+    with core.storage.write(ctx) as tx:
+        mark_delivered(tx, ctx, [item], core.clock.utc_now(), 0, "question")
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    if change == "choose":
+        api.health_choose_fact(first.ref, first.revision, second.ref, second.revision)
+    else:
+        api.health_merge_facts(first.ref, first.revision, second.ref, second.revision)
+    pending = core.prepare_session_injection(ctx, "")
+    notices = pending["_injection"]["notices"]
+    if change == "evidence":
+        assert not notices
+    else:
+        assert len(notices) == 1 and notices[0]["corrected"]
+        assert "blue" in notices[0]["text"] and item["ref"] in notices[0]["text"]
+        assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+        assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+
+
+def test_paused_entry_defers_notices_and_usage_until_resumed(app):
+    core, ctx = app
+    item, _source = initial(core, ctx)
+    _deliver_question(core, ctx)
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    before = core.session_injection_stats(ctx)
+    api.set_entry_state("local", "paused", actor="TEST-owner")
+    api.revise(item.ref, expected_revision=1, value="green")
+    pending = core.prepare_session_injection(ctx, "TEST ordinary body")
+    assert not pending["_injection"]["text"]
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "entry_state:paused"
+    assert core.session_injection_stats(ctx) == before
+    api.set_entry_state("local", "normal", actor="TEST-owner")
+    resumed = core.prepare_session_injection(ctx, "")
+    assert "green" in resumed["_injection"]["text"]
+    assert core.confirm_session_brief(ctx, resumed, remaining_seconds=1) == "brief_delivered"
+
+
+def test_entry_pause_after_injection_preparation_prevents_accounting(app):
+    core, ctx = app
+    initial(core, ctx)
+    pending = core.prepare_session_injection(ctx, _question_text(core, ctx))
+    before = core.session_injection_stats(ctx)
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    api.set_entry_state("local", "paused", actor="TEST-owner")
+    api.set_entry_state("local", "normal", actor="TEST-owner")
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "entry_state:paused"
+    assert core.session_injection_stats(ctx) == before
+
+
+def test_acknowledged_correction_does_not_repeat_after_evidence_merge(app):
+    from scope_recall.core.session_brief import mark_delivered
+
+    from tests.contract.test_memory_health import separate_fact
+
+    core, ctx = app
+    first = separate_fact(core, ctx, "TEST-Object", "blue")
+    with core.storage.write(ctx) as tx:
+        mark_delivered(tx, ctx, [dict(kind="claim", ref=first.ref, revision=1)], core.clock.utc_now(), 0, "question")
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    revised = api.revise(first.ref, expected_revision=1, value="green")
+    pending = core.prepare_session_injection(ctx, "")
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    second = separate_fact(
+        core,
+        ctx,
+        "test-object",
+        "green",
+        valid_from=core.current_claim(ctx, first.ref).valid_from,
+        valid_to=core.current_claim(ctx, first.ref).valid_to,
+    )
+    api.health_merge_facts(first.ref, revised["item"]["revision"], second.ref, second.revision)
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+
+
+def test_paused_entry_does_not_commit_pending_compaction(app):
+    core, ctx = app
+    initial(core, ctx)
+    _deliver_question(core, ctx)
+    before = core.session_injection_stats(ctx)
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    api.set_entry_state("local", "paused", actor="TEST-owner")
+    compact = replace(ctx, compaction_seq=1, compaction_epoch="TEST-epoch", compacted_at=core.clock.utc_now())
+    assert not core.sync_session_compaction(compact)
+    assert core.session_injection_stats(ctx) == before
+
+
+def test_distinct_health_replacements_keep_separate_old_references(app):
+    from scope_recall.core.session_brief import mark_delivered
+
+    from tests.contract.test_memory_health import separate_fact
+
+    core, ctx = app
+    kept = separate_fact(core, ctx, "TEST-Object", "blue")
+    dropped = [separate_fact(core, ctx, name, "blue") for name in ("test-object", "Test-object")]
+    with core.storage.write(ctx) as tx:
+        mark_delivered(
+            tx,
+            ctx,
+            [dict(kind="claim", ref=item.ref, revision=1) for item in dropped],
+            core.clock.utc_now(),
+            0,
+            "question",
+        )
+    api = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    revision = kept.revision
+    for item in dropped:
+        receipt = api.health_merge_facts(kept.ref, revision, item.ref, item.revision)
+        revision = receipt["versions"][kept.ref]
+    pending = core.prepare_session_injection(ctx, "")
+    assert len(pending["_injection"]["notices"]) == 2
+    assert all(item.ref in pending["_injection"]["text"] for item in dropped)
+    assert core.confirm_session_brief(ctx, pending, remaining_seconds=1) == "brief_delivered"
+    assert not core.prepare_session_injection(ctx, "")["_injection"]["notices"]

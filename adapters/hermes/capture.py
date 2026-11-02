@@ -16,11 +16,11 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
 from scope_recall.contracts import ContractError, SourceEvent, TrustedContext
-from scope_recall.core import MemoryCore
+from scope_recall.core import MemoryCore, private
 from scope_recall.core.capture import CaptureReceipt
-from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text
+from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text, without_private
 from scope_recall.core.deadline import fits
-from scope_recall.core.events import prepare_capture
+from scope_recall.core.events import prepare_capture, stored_content_digest
 from scope_recall.core.failure_policy import capture_retryable
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
@@ -58,24 +58,6 @@ def _may_pass(outcome: CaptureReceipt | Exception | None) -> bool:
     if isinstance(outcome, Exception):
         return True
     return outcome is not None and outcome.disposition not in {"rejected", "conflict", "cancelled"}
-
-
-def _same_stored_content(stored_event: dict, content: object) -> bool:
-    """Whether a capture repeats what is already stored under its key.
-
-    Storage keeps the admitted text, not the host's raw text, and splits a long
-    one into segments whose first holds the prefix, so the comparison runs on
-    the same admitted form.
-    """
-    if type(content) is not str:
-        return False
-    admitted = sanitize_source_capture_text(redact_secret_text(content)[0])
-    stored = stored_event.get("content")
-    if type(stored) is not str:
-        return False
-    if "segment" in stored_event:
-        return admitted[: len(stored)] == stored
-    return admitted == stored
 
 
 @dataclass(frozen=True)
@@ -133,6 +115,14 @@ class CaptureWriter:
         """Record one host event: the receipt, or None when nothing was written (said in the diagnostics and the
         log).  ``release``: the caller holds the adapter's lock exactly once, and the store I/O runs without it."""
         adapter = self._adapter
+        if (
+            context.actor_origin == "human_direct"
+            and isinstance(event, dict)
+            and private.parse_recording_command(event.get("content"))
+            and not event.get("artifact_refs")
+            and not gaps
+        ):
+            return None
         if event is None:
             if gaps:
                 adapter._merge_gaps(gaps)
@@ -145,6 +135,7 @@ class CaptureWriter:
             self.record_failure(identity, "capability_gap")
             adapter._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return None
+        turn_key = (context.session_id, adapter._active_turn_id)
         started = time.monotonic()
         snapshot = self._snapshot(context, event, identity, gaps, scope_id, bound)
         retry = adapter._retry.captures
@@ -153,6 +144,14 @@ class CaptureWriter:
         receipt = self._store(context, store_event, identity, scope_id, host_scope, remaining_seconds, started, release)
         if isinstance(receipt, CaptureReceipt):
             adapter._diagnostics.masked_secret_count += receipt.masked_secret_count
+            if context.actor_origin == "human_direct":
+                for gap in receipt.gaps:
+                    if gap.startswith("private_spans_removed:"):
+                        count = gap.removeprefix("private_spans_removed:")
+                        if count.isascii() and count.isdecimal():
+                            adapter._private_span_receipts[turn_key] = int(count)
+                            if len(adapter._private_span_receipts) > 128:
+                                del adapter._private_span_receipts[next(iter(adapter._private_span_receipts))]
         if release and not adapter._initialized:
             return self._closed_meanwhile(identity, receipt, replay, snapshot)
         if isinstance(receipt, Exception):
@@ -356,7 +355,7 @@ class CaptureWriter:
         again, so a different message can arrive under an old key.  Storage re-keys that one, and it must keep its
         own time.
         """
-        previous = self._adapter._require_core().source_by_event_key(
+        previous = self._adapter._require_core()._source_replay_metadata(
             context,
             identity[0],
             identity[1],
@@ -364,15 +363,19 @@ class CaptureWriter:
         )
         if (
             previous is not None
-            and previous.scope_id == scope_id
-            and previous.session_id == context.session_id
-            and previous.project_id == context.project_id
-            and previous.branch_id == context.branch_id
-            and _same_stored_content(previous.event, event.get("content"))
+            and previous["scope_id"] == scope_id
+            and previous["session_id"] == context.session_id
+            and previous["project_id"] == context.project_id
+            and previous["branch_id"] == context.branch_id
+            and type(event.get("content")) is str
+            and stored_content_digest(
+                sanitize_source_capture_text(redact_secret_text(without_private(event["content"])[0])[0])
+            )
+            == previous["content_sha256"]
         ):
             for field in ("occurred_at", "recorded_at", "time_precision"):
-                if field in previous.event:
-                    event[field] = previous.event[field]
+                if field in previous["event"]:
+                    event[field] = previous["event"][field]
 
     def _closed_meanwhile(self, identity, outcome: CaptureReceipt | Exception, replay: bool, snapshot):
         """A shutdown stopped waiting for this write and closed the session meanwhile.  The write itself may well
@@ -430,7 +433,7 @@ class CaptureWriter:
             adapter._ledger.confirm(identity)
             if replay:
                 _log.info("scope-recall: queued on retry: %s", label(identity))
-        adapter._merge_gaps(gaps, ("capture_gap:durable_ingress_pending",))
+        adapter._merge_gaps(gaps, receipt.gaps, ("capture_gap:durable_ingress_pending",))
         adapter._binding.wake_worker(context=context)
         return receipt
 
@@ -440,7 +443,7 @@ class CaptureWriter:
         else:
             self._adapter._retry.done(identity)
         self.record_failure(identity, receipt.error_code or receipt.disposition, replay=replay)
-        self._adapter._merge_gaps(gaps, (f"capture_gap:{receipt.disposition}",))
+        self._adapter._merge_gaps(gaps, receipt.gaps, (f"capture_gap:{receipt.disposition}",))
         return receipt
 
     def _stored(self, context, identity, receipt, gaps, replay: bool):
@@ -453,8 +456,8 @@ class CaptureWriter:
                 _log.info("scope-recall: stored on retry: %s", label(identity))
         if context.session_id == adapter._require_identity().stored_session_id():
             self._fence(receipt)
-        if gaps:
-            adapter._merge_gaps(gaps)
+        if gaps or receipt.gaps:
+            adapter._merge_gaps(gaps, receipt.gaps)
         adapter._binding.wake_worker(context=context)
         return receipt
 

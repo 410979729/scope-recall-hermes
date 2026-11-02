@@ -5,7 +5,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1126
+SCHEMA_VERSION = 1129
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -73,6 +73,17 @@ PRIVATE_INTERVALS_STATEMENT = """CREATE TABLE private_intervals (
     ),
     CHECK(ends_at IS NULL OR starts_at <= ends_at)
 ) STRICT"""
+
+# The latest accepted remote owner command fences replay per entry and session.
+# Its timestamp and random identifier are metadata, never conversation text.
+PRIVATE_COMMAND_FENCES_STATEMENT = """CREATE TABLE private_command_fences (
+    entry_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(entry_id,session_id)
+) STRICT, WITHOUT ROWID"""
+
 PRIVATE_TARGET_INDEX = (
     "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at,starts_at)"
 )
@@ -185,6 +196,19 @@ ENTRIES_STATEMENT = """CREATE TABLE entries (
         host TEXT NOT NULL CHECK(length(host) BETWEEN 1 AND 32),
         first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
     ) STRICT"""
+ENTRY_CONTROL_STATEMENTS = (
+    """CREATE TABLE entry_controls (
+        entry_id TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('normal','read-only','paused')),
+        version INTEGER NOT NULL CHECK(version >= 1)
+    ) STRICT""",
+    """CREATE TABLE entry_control_history (
+        entry_id TEXT NOT NULL, version INTEGER NOT NULL,
+        from_state TEXT NOT NULL, to_state TEXT NOT NULL,
+        actor TEXT NOT NULL, account_id TEXT NOT NULL, changed_at TEXT NOT NULL,
+        PRIMARY KEY(entry_id, version)
+    ) STRICT, WITHOUT ROWID""",
+)
 #: The scope authorization a migrated source was admitted under.  The 2.0
 #: conversion wrote the same 600-byte record into every source's extra_json
 #: (97 distinct payloads across 167,000 sources, 102 MB, in one store).  It is
@@ -755,9 +779,21 @@ STATEMENTS = (
     + INJECTION_DELIVERY_STATEMENTS
     + REFLECTION_STATEMENTS
     + REFLECTION_POLICY_STATEMENTS
+    + ENTRY_CONTROL_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
-    + (RESTORED_SUPPRESSION_STATEMENT,)
+    + (
+        RESTORED_SUPPRESSION_STATEMENT,
+        PRIVATE_COMMAND_FENCES_STATEMENT,
+        """CREATE TABLE scope_memory_instructions (
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version >= 1),
+        text TEXT NOT NULL CHECK(length(text) <= 2000),
+        changed_at TEXT NOT NULL,
+        changed_by TEXT NOT NULL CHECK(changed_by = 'local_user_management'),
+        PRIMARY KEY(scope_id,version)
+    ) STRICT, WITHOUT ROWID""",
+    )
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
 
@@ -1160,8 +1196,30 @@ def upgrade_1124(connection):
 
 
 def upgrade_1125(connection):
+    """Fence writers that cannot interpret reviewed cross-reference replacements."""
+    connection.execute("UPDATE instance_meta SET schema_version=1126 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1126")
+
+
+def upgrade_1126(connection):
+    """Add versioned instructions and replay fences together under the upgrade transaction."""
+    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_memory_instructions")))
+    connection.execute(PRIVATE_COMMAND_FENCES_STATEMENT)
+    connection.execute("UPDATE instance_meta SET schema_version=1127 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1127")
+
+
+def upgrade_1127(connection):
+    """Add durable entry controls without changing existing entry grants."""
+    for statement in ENTRY_CONTROL_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1128 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1128")
+
+
+def upgrade_1128(connection):
     """Retain existing delivery marks while adding their source and notice state."""
     for statement in INJECTION_DELIVERY_STATEMENTS:
         connection.execute(statement)
-    connection.execute("UPDATE instance_meta SET schema_version=1126 WHERE singleton=1")
-    connection.execute("PRAGMA user_version=1126")
+    connection.execute("UPDATE instance_meta SET schema_version=1129 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1129")

@@ -13,6 +13,8 @@ import sqlite3
 from ..contracts import utc_timestamp
 from . import lineage, private
 from . import session_brief as briefing
+from .claims import statement_key
+from .entry_control import context_fence
 from .recall_budget import canonical_render_json, estimate_tokens
 from .retrieval import SearchContext, SearchLimits
 from .secret_patterns import contains_secret_like_text
@@ -73,13 +75,7 @@ def _markers(row):
     value = row["notice_marker"]
     if not value:
         return {}
-    # Older delivery rows have one digest. Preserve its acknowledgement while
-    # allowing each fact supported by a source to advance independently.
-    try:
-        parsed = json.loads(value)
-    except ValueError:
-        return {"legacy": value}
-    return parsed if isinstance(parsed, dict) else {"legacy": value}
+    return json.loads(value)
 
 
 def _make_notice(tx, row, key, replacement):
@@ -93,8 +89,11 @@ def _make_notice(tx, row, key, replacement):
             value = replacement.content
     if value and contains_secret_like_text(value):
         value = None
+    # A new evidence revision must not replay an acknowledged assertion change.
     identity = (
-        [replacement.ref, replacement.revision, value]
+        [key.rsplit("@", 1)[0], replacement.ref, statement_key(claim.payload)]
+        if value and replacement and replacement.kind in {"claim", "procedure"} and claim
+        else [replacement.ref, replacement.revision, value]
         if value and replacement
         else [kind, ref, "withdrawn"]
         if key == "object" or kind == "claim"
@@ -102,7 +101,7 @@ def _make_notice(tx, row, key, replacement):
     )
     marker = hashlib.sha256(canonical_render_json(identity).encode()).hexdigest()
     saved = _markers(row)
-    if marker in (saved.get(key), saved.get("legacy")):
+    if marker == saved.get(key):
         return None
     text = f"{ref}@{revision}: " + (f"corrected; current value: {value}" if value else "withdrawn; do not rely on it.")
     return {
@@ -114,6 +113,28 @@ def _make_notice(tx, row, key, replacement):
         "text": text,
         "targets": [(kind, ref, revision, key)],
     }
+
+
+def _claim_change(tx, search, ref, revision, batch):
+    """Resolve reviewed replacements; evidence alone does not change an assertion."""
+    head = _head(tx, "claim", ref)
+    version = tx.claims.version(ref, head) if head else None
+    target = (
+        lineage.resolve_replacement(tx, ref, search.now, rules=batch["intervals"])
+        if version and version.state == "superseded" and version.reason == "health_superseded"
+        else None
+    )
+    replacement = (
+        _current(tx, search, "claim", target.ref, target.revision, batch)
+        if target
+        else (_current(tx, search, "claim", ref, head, batch) if head else None)
+    )
+    if replacement is None:
+        return True, None
+    saved = tx.claims.version(ref, revision)
+    current = tx.claims.version(replacement.ref, replacement.revision)
+    changed = replacement.ref != ref or saved is None or statement_key(saved.payload) != statement_key(current.payload)
+    return changed, replacement
 
 
 def _event_changes(tx, search, row, batch, keys=None):
@@ -128,9 +149,8 @@ def _event_changes(tx, search, row, batch, keys=None):
         key = f"claim:{claim_ref}@{baseline}"
         if keys is not None and key not in keys:
             continue
-        head = _head(tx, "claim", claim_ref)
-        replacement = _current(tx, search, "claim", claim_ref, head, batch) if head else None
-        if head != baseline or replacement is None:
+        changed, replacement = _claim_change(tx, search, claim_ref, baseline, batch)
+        if changed:
             yield key, replacement
     if keys is not None and "object" not in keys:
         return
@@ -154,17 +174,17 @@ def _row_notices(tx, search, row, batch, reveal, keys=None):
         changes = [("object", None)]
     elif kind == "event":
         changes = _event_changes(tx, search, row, batch, keys)
+    elif kind == "claim":
+        changed, replacement = _claim_change(tx, search, ref, revision, batch)
+        if not changed:
+            return
+        changes = [(f"claim:{ref}@{revision}", replacement)]
     else:
         current = _current(tx, search, kind, ref, revision, batch)
         if current is not None and current.temporal_status == "current":
             return
         head = _head(tx, kind, ref)
-        changes = [
-            (
-                f"claim:{ref}@{revision}" if kind == "claim" else "object",
-                _current(tx, search, kind, ref, head, batch) if head else None,
-            )
-        ]
+        changes = [("object", _current(tx, search, kind, ref, head, batch) if head else None)]
     for key, replacement in changes:
         notice = _make_notice(tx, row, key, replacement)
         if notice is not None:
@@ -236,7 +256,7 @@ def _notices_valid(tx, search, brief, batch, reveal):
                 candidates = [] if row is None else list(_row_notices(tx, search, row, batch, reveal, wanted[pair]))
                 loaded[pair] = row, candidates
             row, candidates = loaded[pair]
-            if row is None or notice["marker"] in (_markers(row).get(key), _markers(row).get("legacy")):
+            if row is None or notice["marker"] == _markers(row).get(key):
                 return False
             if not any(n["marker"] == notice["marker"] and (*pair, key) in n["targets"] for n in candidates):
                 return False
@@ -304,7 +324,7 @@ def _fit(text, brief, limit, tx, search, batch):
     return rendered, kept, reason
 
 
-def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
+def prepare(core, context, text, *, brief=None, entry_fence=None, remaining_seconds=0.2):
     """Read and fit complete host text, retaining only references actually included."""
     if brief is None or "_epoch" not in brief:
         generation = brief.get("_generation") if brief else None
@@ -322,7 +342,9 @@ def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
     with core.storage.read(context, remaining_seconds=remaining_seconds) as tx:
         search = _search(core.clock, context)
         used = _usage(tx, context)
-        mode, marker = private.recall_state(tx, context, search.now)
+        brief["_entry_fence"] = context_fence(tx, context) if entry_fence is None else entry_fence
+        paused = briefing.entry_invalid(tx, context, brief["_entry_fence"])
+        mode, marker = (None, 0) if paused else private.recall_state(tx, context, search.now)
         brief.setdefault("_epoch", tx.memory_epoch())
         brief.setdefault("_privacy_marker", marker)
         brief.setdefault("_compaction_cutoff", briefing.compaction_cutoff(tx, context))
@@ -330,11 +352,11 @@ def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
         brief.setdefault("_compact", False)
         brief.setdefault("_lines", [])
         brief.setdefault("_log_allowed", mode is None)
-        batch = briefing.visibility_batch(tx, search)
+        batch = None if paused else briefing.visibility_batch(tx, search)
         # Compaction discards the old context and its notice targets together.
         notices = (
             []
-            if brief["_compact"]
+            if paused or brief["_compact"]
             else _notices(
                 tx, search, min(NOTICE_TOKEN_CAP, core.config.injection_token_cap), batch=batch, reveal=mode != "full"
             )
@@ -345,7 +367,10 @@ def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
         exhausted = left is not None and left <= 0
         if left is not None:
             limit = min(limit, left)
-        if mode == "full":
+        if paused:
+            text = ""
+            brief.update(text="", items=[], tokens=0, _lines=[], _deliver=False)
+        elif mode == "full":
             brief["_discarded"] = bool(brief["text"] or _question(text)[1])
             text = private.notice_for_mode("full") or ""
             brief.update(text="", items=[], tokens=0, _lines=[], _deliver=False)
@@ -359,7 +384,7 @@ def prepare(core, context, text, *, brief=None, remaining_seconds=0.2):
             "session_tokens": used,
             "injection_token_cap": core.config.injection_token_cap,
             "session_token_cap": core.config.session_token_cap,
-            "reason": "session_injection_budget_exhausted" if exhausted else reason,
+            "reason": "entry_state:paused" if paused else "session_injection_budget_exhausted" if exhausted else reason,
             "ordinary_tokens": _tokens(ordinary),
             "session_before": used,
         }
@@ -438,15 +463,22 @@ def _record(tx, clock, context, brief):
     injection["session_tokens"] = _usage(tx, context)
 
 
-def confirm(storage, clock, context, brief, *, remaining_seconds=None):
+def _release_refusal(tx, clock, context, brief, entry_fence):
+    """Apply entry authority before content and accounting checks in each snapshot."""
+    if briefing.entry_invalid(tx, context, entry_fence):
+        return "entry_state:paused"
+    return None if _valid(tx, clock, context, brief) else "brief_invalidated"
+
+
+def confirm(storage, clock, context, brief, *, entry_fence, remaining_seconds=None):
     """Fence release first; a busy writer returns safe text without delivery marks."""
     if remaining_seconds is not None and remaining_seconds <= 0:
         return "brief_safety_unconfirmed"
     started = clock.monotonic()
     try:
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            if not _valid(tx, clock, context, brief):
-                return "brief_invalidated"
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+                return refusal
     except Exception:  # noqa: BLE001 - unfinished safety checks cannot release content.
         return "brief_safety_unconfirmed"
     left = 0.03 if remaining_seconds is None else min(0.03, remaining_seconds - (clock.monotonic() - started))
@@ -456,8 +488,8 @@ def confirm(storage, clock, context, brief, *, remaining_seconds=None):
     try:
         with storage.write(context, remaining_seconds=max(0, left)) as tx:
             entered = True
-            if not _valid(tx, clock, context, brief):
-                return "brief_invalidated"
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+                return refusal
             validated = True
             _record(tx, clock, context, brief)
     except (TruthWriterBusyError, sqlite3.OperationalError):

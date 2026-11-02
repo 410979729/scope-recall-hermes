@@ -311,6 +311,10 @@ def test_codex_explicit_mcp_tool_uses_five_second_ceiling(tmp_path):
                 "unmet_needs": [],
             }
 
+        def release_recall_packet(self, context, packet, *, original=None):
+            assert not packet["items"]
+            return packet
+
         def status(self, context):
             return SimpleNamespace(memory_epoch=0)
 

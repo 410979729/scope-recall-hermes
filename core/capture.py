@@ -11,6 +11,7 @@ from ..contracts import ContractError, SourceEvent, TrustedContext, decode_paylo
 from . import private
 from .admission import AdmissionPolicy, decision_marker
 from .candidate_lifecycle import CandidateSourceTrigger
+from .entry_control import capture_refusal
 from .events import prepare_capture
 from .injection_guard import screen_sources
 from .source_admission import admit_source, observe_admitted
@@ -199,6 +200,22 @@ def record_event(
                     "unchanged",
                     "unchanged",
                     error_code="ACCESS_DENIED",
+                    masked_secret_count=prepared.masked_secret_count,
+                )
+            reason = capture_refusal(
+                tx, context, after_version=prepared.entry_version if _inbox_token is not None else None
+            )
+            if reason is not None:
+                if _inbox_token is not None:
+                    tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (_inbox_token,))
+                return CaptureReceipt(
+                    "rejected",
+                    (),
+                    "not_persisted",
+                    "not_indexed",
+                    "not_scheduled",
+                    (*prepared.gaps, reason),
+                    "ENTRY_STATE",
                     masked_secret_count=prepared.masked_secret_count,
                 )
             # The event's own occurrence time decides, not the moment this write runs:

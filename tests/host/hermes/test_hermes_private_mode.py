@@ -27,6 +27,19 @@ def _contents(provider, ctx):
         return [row[0] for row in tx._check().execute("SELECT content FROM source_events")]
 
 
+def test_cli_owner_pause_and_resume_are_not_captured(adapter):
+    provider, clock = adapter
+    owner, ctx = _owner(provider)
+    provider.observe_pre_llm(session_id=ctx.session_id, turn_id="TEST-pause", user_message="scope-recall pause")
+    assert owner.private_status(session=ctx.session_id)["mode"] == "full"
+    provider.sync_turn("scope-recall pause", "TEST response", session_id=ctx.session_id)
+    clock.now = "2026-09-06T13:00:00Z"
+    provider.observe_pre_llm(session_id=ctx.session_id, turn_id="TEST-resume", user_message="scope-recall resume")
+    assert owner.private_status(session=ctx.session_id)["mode"] == "none"
+    provider.sync_turn("scope-recall resume", "TEST response", session_id=ctx.session_id)
+    assert not any("scope-recall pause" in text or "scope-recall resume" in text for text in _contents(provider, ctx))
+
+
 def test_masked_retry_keeps_safe_context_count_and_gaps_through_disk_and_inbox(adapter, monkeypatch):
     provider, clock = adapter
     bound = provider._require_identity()
@@ -118,6 +131,38 @@ def test_new_capture_does_not_inherit_another_messages_mask_count_or_gaps(adapte
     assert receipt.durability == "persisted" and receipt.masked_secret_count == 1
     source = provider._core.source(ctx, receipt.event_refs[0].ref, 1)
     assert source.capture_gaps == ("secret_values_masked",)
+
+
+def test_repeated_inline_private_capture_keeps_first_observation_time(adapter, monkeypatch):
+    provider, clock = adapter
+    bound = provider._require_identity()
+    ctx = bound.trusted_context()
+    key = ("TEST-inline-private-repeat", 1)
+    original = source_event(
+        source_event_key=key[0],
+        origin=ctx.actor_origin,
+        content="TEST public <private>TEST hidden text</private> ending",
+        occurred_at=clock.now,
+        recorded_at=clock.now,
+    )
+    with provider._lock:
+        first = provider._writer.write(ctx, original, identity=key, gaps=(), scope_id=bound.local_scope_id)
+    assert first.durability == "persisted"
+    assert "private_spans_removed:1" in first.gaps
+    clock.now = "2026-09-06T13:00:00Z"
+    replay = {**original, "occurred_at": clock.now, "recorded_at": clock.now}
+    observed = []
+    record = provider._core.record_host_event
+
+    def capture_event(context, event, **kwargs):
+        observed.append(dict(event))
+        return record(context, event, **kwargs)
+
+    monkeypatch.setattr(provider._core, "record_host_event", capture_event)
+    with provider._lock:
+        second = provider._writer.write(ctx, replay, identity=key, gaps=(), scope_id=bound.local_scope_id)
+    assert second.disposition == "duplicate"
+    assert observed[0]["occurred_at"] == original["occurred_at"]
 
 
 @pytest.mark.parametrize("mode", ["full", "read-only"])
@@ -385,3 +430,128 @@ def test_full_private_prefetch_obeys_zero_injection_cap_and_refreshes_receipt(ad
     assert not provider.prefetch("TEST private question")
     assert provider.diagnostics.injection_tokens == 0
     assert provider.diagnostics.injection_token_cap == 0
+
+
+def test_relayed_cli_route_cannot_toggle_owner_recording(adapter, monkeypatch):
+    provider, _clock = adapter
+    bound = provider._require_identity()
+    provider._identity = replace(bound, scope=replace(bound.scope, gateway_session_key="TEST-relayed"))
+    opened = []
+    monkeypatch.setattr(
+        "scope_recall.adapters.hermes.turn_capture.private.open_interval", lambda *a, **k: opened.append(1)
+    )
+    provider.observe_pre_llm(session_id=bound.session_id, turn_id="TEST-relay", user_message="scope-recall pause")
+    assert not opened
+
+
+@pytest.mark.parametrize("kind", ["stored", "queued", "empty"])
+def test_inline_omission_count_reaches_prefetch_receipt(adapter, monkeypatch, kind):
+    from scope_recall.core.capture import CaptureReceipt
+
+    provider, _clock = adapter
+    original = provider._writer._store
+    outcomes = []
+
+    def store(*args, **kwargs):
+        outcome = (
+            CaptureReceipt("inserted", (), "queued", "pending", "pending", gaps=("private_spans_removed:1",))
+            if kind == "queued"
+            else original(*args, **kwargs)
+        )
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(provider._writer, "_store", store)
+    message = "<private>TEST hidden</private>" if kind == "empty" else "TEST public <private>TEST hidden</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-notice", user_message=message)
+    assert (
+        outcomes
+        and outcomes[0].durability == {"stored": "persisted", "queued": "queued", "empty": "not_persisted"}[kind]
+    )
+    if kind == "empty":
+        assert outcomes[0].disposition == "rejected"
+    text = provider.prefetch(message, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in text
+    assert "TEST hidden" not in text
+
+
+def test_inline_receipt_survives_tool_diagnostics_and_repeated_input(adapter):
+    provider, _clock = adapter
+    message = "TEST public <private>TEST hidden</private>"
+    for _ in range(2):
+        provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn", user_message=message)
+    provider.observe_post_tool_call(
+        session_id="TEST-session-1",
+        turn_id="TEST-turn",
+        tool_call_id="TEST-tool",
+        tool_name="TEST-tool",
+        result="TEST output",
+    )
+    text = provider.prefetch(message, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in text and "private_spans_removed:2" not in text
+
+
+def test_inline_receipt_survives_turn_start_without_supplied_turn_id(adapter):
+    provider, _clock = adapter
+    message = "TEST public <private>TEST hidden</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=message)
+    provider.on_turn_start(1, message, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in provider.prefetch(message, session_id="TEST-session-1")
+
+
+def test_inline_receipts_follow_their_own_turns_without_turn_ids(adapter):
+    provider, _clock = adapter
+    first = "TEST one <private>TEST hidden one</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=first)
+    provider.on_turn_start(1, first, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in provider.prefetch(first, session_id="TEST-session-1")
+    second = "TEST two <private>TEST hidden two</private> <private>TEST hidden three</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=second)
+    provider.on_turn_start(2, second, session_id="TEST-session-1")
+    assert "private_spans_removed:2" in provider.prefetch(second, session_id="TEST-session-1")
+    third = "TEST ordinary next turn"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=third)
+    provider.on_turn_start(3, third, session_id="TEST-session-1")
+    assert "private_spans_removed:" not in provider.prefetch(third, session_id="TEST-session-1")
+
+
+def test_owner_command_prefetch_does_not_deliver_brief_or_recall(adapter, monkeypatch):
+    provider, _clock = adapter
+    owner, ctx = _owner(provider)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("command requested a brief or recall")
+
+    monkeypatch.setattr(provider._core, "session_brief", forbidden)
+    monkeypatch.setattr(provider._core, "recall_packet", forbidden)
+    monkeypatch.setattr(provider._core, "prepare_session_injection", forbidden)
+    provider.observe_pre_llm(session_id=ctx.session_id, turn_id="TEST-command", user_message="scope-recall pause")
+    assert "recording mode" in provider.prefetch("scope-recall pause", session_id=ctx.session_id)
+    assert owner.private_status(session=ctx.session_id)["mode"] == "full"
+    assert not any("scope-recall pause" in text for text in _contents(provider, ctx))
+
+
+def test_prefetch_rechecks_pause_before_returning_private_fallback(adapter, monkeypatch):
+    provider, _clock = adapter
+    api, ctx = _owner(provider)
+    core = provider._require_core()
+    core.record_event(
+        replace(ctx, session_id="TEST-history"),
+        source_event(content="TEST observatory palette is blue.", source_event_key="TEST-fallback-history"),
+        scope_id=next(iter(ctx.allowed_scope_ids)),
+    )
+    api.private_on(target="session", session=ctx.session_id, mode="read-only")
+    checks = []
+
+    def current(*_args):
+        checks.append(1)
+        if len(checks) == 3:
+            api.set_entry_state("local", "paused", actor="TEST-owner")
+            return False
+        return True
+
+    monkeypatch.setattr(core, "recall_packet_current", current)
+    before = core.session_injection_stats(ctx)
+    assert not provider.prefetch("What is TEST observatory palette?")
+    assert len(checks) == 3
+    assert core.session_injection_stats(ctx) == before

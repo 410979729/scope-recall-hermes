@@ -252,7 +252,11 @@ tokens, reserved before ordinary content, and remain eligible after the session 
 notice remains eligible on the next interaction. Hook receipts expose the response usage, committed session usage,
 both ceilings and delivery outcome. An unconfirmed receipt cannot establish a committed cumulative count.
 
-The store schema is 1126. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+Owner recording commands return before injection or accounting. Paused entries release no background, recalled
+content or correction notices, and retain undelivered notices for resumption. Reviewed fact replacements use the
+current retained value; adding evidence without changing the statement does not send another correction notice.
+
+The store schema is 1129. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.
 
