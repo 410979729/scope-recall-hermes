@@ -61,6 +61,9 @@ Credentials are environment variable references. Never put their values in a rou
 | <a id="supervisor_seconds"></a>`supervisor_seconds` | `float` | `21600.0` |
 | <a id="supervisor_max_drains"></a>`supervisor_max_drains` | `int` | `256` |
 | <a id="storage_budget_bytes"></a>`storage_budget_bytes` | `int` | `0` |
+| <a id="recall_log_days"></a>`recall_log_days` | `int` | `30` |
+| <a id="recall_log_bytes"></a>`recall_log_bytes` | `int` | `33554432` |
+| <a id="recall_log_queue"></a>`recall_log_queue` | `int` | `128` |
 | <a id="resident_recall_minutes"></a>`resident_recall_minutes` | `int &#124; None` | `null` |
 
 ## InstanceBinding

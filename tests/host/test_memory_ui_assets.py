@@ -209,3 +209,33 @@ def test_user_guide_covers_startup_pages_and_local_access():
         "**Backup status**",
     ):
         assert instruction in guide
+
+
+def test_recall_history_renders_reasons_and_only_available_action_links():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    script = (
+        DOM_HARNESS
+        + r"""
+const assert = require('assert/strict');
+vm.runInThisContext(`recallRows = [{timestamp: '2026-09-06', request_id: 'TEST-attempt', entry_id: 'TEST-entry',
+ session_id: 'TEST-session', scope_bound: true, reasons: ['threshold'], background: {pending: 4},
+ capture: {state: 'persisted'}, items: [
+  {ref: 'event-visible', revision: 1, rank: 1, reason: 'delivered', readable: true, channels: {lexical: {rank: 1}}},
+  {ref: 'event-unavailable', reason: 'deleted', readable: false}
+ ]}]; renderRecalls();`);
+const text = document.getElementById('recall-items').textContent;
+assert(text.includes('TEST-attempt'));
+assert(text.includes('event-visible@1'));
+assert(!text.includes('event-unavailable'));
+assert(text.includes(window.UI_STRINGS.zh.reason_threshold));
+assert(/[\u4e00-\u9fff]/.test(window.UI_STRINGS.zh.reason_threshold));
+vm.runInThisContext("language = 'en'; translate();");
+assert(document.getElementById('recall-items').textContent.includes('Below the relevance threshold'));
+console.log(JSON.stringify({recalls: true, visibility: true, bilingual: true}));
+"""
+    )
+    completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"recalls": True, "visibility": True, "bilingual": True}

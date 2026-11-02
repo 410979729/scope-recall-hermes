@@ -46,6 +46,8 @@ from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmatio
 from .corroboration import CORROBORATED_REASON, corroboration_promotes
 from .evidence_quote import resolve_evidence_quotes, same_evidence
 from .evidence_support import positioned, support_verdict
+from .reflection_revision import revise_observation
+from .reflection_validity import reflection_live
 from .secret_patterns import structure_contains_secret_like_text
 from .semantic_proposals import merge_candidates
 from .source_qualification import (
@@ -539,6 +541,9 @@ def _revision_authority(tx, head, request) -> _Authority:
             raise ContractError("ACCESS_DENIED", "retraction_not_authorized")
         if _NO_FAST_PATH.search(raw) or RELATIVE_SCOPE.search(raw):
             raise ContractError("ACCESS_DENIED", "conditional_retraction_not_authorized")
+    elif head.payload["kind"] == "observation" and new_value == {"confirmed": True}:
+        if not is_confirmation(raw):
+            raise ContractError("ACCESS_DENIED", "confirmation_not_authorized")
     elif not _CORRECTION.search(raw):
         raise ContractError("ACCESS_DENIED", "correction_not_authorized")
     if not _names_target(raw, head, first_person_target):
@@ -668,6 +673,11 @@ def _revise_in_transaction(tx, clock, request) -> Mutation:
     head = _revision_head(tx, request)
     authority = _revision_authority(tx, head, request)
     changes = request["new_value"]
+    if head.payload["kind"] == "observation":
+        saved = revise_observation(tx, clock, head, changes, authority.source)
+        return Mutation(
+            saved.ref, saved.revision, "retracted" if saved.state == "retracted" else "revised", saved.state
+        )
     if isinstance(changes, dict) and changes and set(changes) <= {"importance", "pinned"}:
         from .importance import require_importance_statement, set_importance
 
@@ -713,6 +723,11 @@ def revise_from_management(tx, clock, request, source) -> Mutation:
     head = _revision_head(tx, request)
     if request["conditions"] != head.payload["conditions"]:
         raise ContractError("INPUT_INVALID", "management_conditions")
+    if head.payload["kind"] == "observation":
+        saved = revise_observation(tx, clock, head, request["new_value"], source)
+        return Mutation(
+            saved.ref, saved.revision, "retracted" if saved.state == "retracted" else "revised", saved.state
+        )
     retraction = request["new_value"] is None
     updated = _revised_payload(head, request, retraction)
     updated["evidence_spans"] = [
@@ -903,6 +918,7 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
         for v in heads
         if v is not None
         and v.state == "proposed"
+        and v.payload["kind"] != "observation"
         and v.scope_id == source.scope_id
         and (v.project_id, v.branch_id) == (source.project_id, source.branch_id)
     ]
@@ -942,6 +958,7 @@ def current_claim(
     storage, clock, context: TrustedContext, ref: str, *, as_of: str | None = None, known_at: str | None = None
 ) -> ClaimVersion | None:
     with storage.read(context) as tx:
-        return select_effective(
+        version = select_effective(
             tx.claims.versions(ref), as_of or clock.utc_now(), as_of=as_of is not None, known_at=known_at
         )
+        return version if version is None or reflection_live(tx, version) else None

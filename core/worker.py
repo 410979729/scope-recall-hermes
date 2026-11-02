@@ -24,6 +24,7 @@ from .failure_policy import (
     failure_category,
 )
 from .importance import backfill_importance
+from .reflection_storage import queue_reflections
 from .session_brief import rebuild_scope
 from .storage import SQLiteStorage
 from .summary_storage import queue_summaries
@@ -117,6 +118,7 @@ class WorkerConfig:
     #: claimed at all this pass, so no item is leased only to be parked.
     held_work_types: frozenset[str] = frozenset()
     summary_capable: bool = False
+    reflection_capable: bool = False
 
     def __post_init__(self) -> None:
         if type(self.owner_id) is not str or not self.owner_id:
@@ -147,8 +149,8 @@ class WorkerConfig:
             value = getattr(self, name)
             if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value <= 0):
                 raise ValueError(f"{name} must be positive")
-        if type(self.summary_capable) is not bool:
-            raise ValueError("summary_capable")
+        if type(self.summary_capable) is not bool or type(self.reflection_capable) is not bool:
+            raise ValueError("derived_model_capability")
         if type(self.held_work_types) is not frozenset or not self.held_work_types <= _HOLDABLE_WORK_TYPES:
             raise ValueError("held_work_types")
 
@@ -538,6 +540,28 @@ def _refresh_briefs(storage, clock, context, started, budget):
             rebuild_scope(tx, scope_id, clock.utc_now())
 
 
+def _claim_idle(storage, clock, context, config, allowed, fresh_lane, started, budget):
+    """Discover one reflection group only after the ordinary queue has no available work."""
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        claim = partial(
+            tx.work.claim_next,
+            config.owner_id,
+            clock.utc_now(),
+            lease_seconds=config.lease_seconds,
+            limit=1,
+            allowed_work_types=allowed,
+            fresh_lane=fresh_lane,
+        )
+        from .reflection_conflicts import advance_conflicts
+
+        advance_conflicts(tx)
+        items = claim()
+        if not items and config.reflection_capable and "consolidate" in allowed:
+            if queue_reflections(tx, now=clock.utc_now(), enabled=True):
+                items = claim()
+        return items
+
+
 def drain_worker(
     storage: SQLiteStorage,
     clock,
@@ -594,15 +618,7 @@ def drain_worker(
         # however busy the chat is.  A default runtime pass (120 s, 45 s
         # requests) fits two model requests, so each such pass reaches the lane.
         claimed_at = clock.monotonic()
-        with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
-            claimed = tx.work.claim_next(
-                config.owner_id,
-                clock.utc_now(),
-                lease_seconds=config.lease_seconds,
-                limit=1,
-                allowed_work_types=allowed,
-                fresh_lane=len(receipts) % 2 == 1,
-            )
+        claimed = _claim_idle(storage, clock, context, config, allowed, len(receipts) % 2 == 1, started, budget)
         if not claimed:
             break
         item = claimed[0]

@@ -7,14 +7,14 @@ import sqlite3
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from scope_recall.contracts import ContractError, RecallRequest
+from scope_recall.contracts import ContractError, RecallRequest, TrustedContext
 from scope_recall.core.private import notice_for_mode
 from scope_recall.core.recall_budget import estimate_tokens
+from scope_recall.core.recall_trace import record_refusal, record_unbound_attempt
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 from scope_recall.core.writer_lease import TruthWriterBusyError
 
 from ..runtime_wiring import render_host_recall_context
-from .gating import automatic_recall_skip_reason
 from .tool_surface import display_zone
 
 if TYPE_CHECKING:
@@ -47,10 +47,24 @@ class Prefetch:
             effective_session = self._adapter._effective_session_id(session_id)
             if not identity.runtime_audience.allowed_scope_ids:
                 self._adapter._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
+                context = TrustedContext(
+                    identity.binding,
+                    identity.stored_session_id(effective_session),
+                    frozenset(),
+                    "human_direct",
+                    entry_id=identity.entry_id,
+                )
+                record_unbound_attempt(self._adapter._require_core(), context, query)
                 return ""
             if self._adapter._current_source_refs_overflow:
                 # The overflow already reported its gap; an unfenced recall could
                 # inject this turn's own sources back as memory.
+                record_refusal(
+                    self._adapter._require_core(),
+                    identity.trusted_context(session_id=effective_session),
+                    query,
+                    "source_ref_limit",
+                )
                 return ""
             recent = (self._adapter._current_task_message,) if self._adapter._current_task_message else ()
             context = identity.trusted_context(session_id=effective_session, recent_messages=recent)
@@ -72,11 +86,8 @@ class Prefetch:
         started = core.clock.monotonic()
         briefing = self._brief(core, context, generation)
         brief = briefing["text"]
-        reason = automatic_recall_skip_reason(query)
-        if reason is not None:
-            with self._adapter._lock:
-                if self._adapter._active_turn_id == turn:
-                    self._adapter._diagnostics.last_prefetch_skip_reason = reason
+        if type(query) is not str or not query.strip():
+            record_refusal(core, context, query, "blank_prompt")
             text = "\n\n".join(part for part in (brief, notice) if part)
             self._record_usage(core, context, text, briefing, started, turn)
             return self._confirm(core, context, effective_session, turn, briefing, text)

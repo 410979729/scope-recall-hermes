@@ -9,13 +9,19 @@ from typing import Any
 from ..runtime.embedding_models import EMBED_RESERVE_FLOOR
 from ..runtime.model_budget import default_budget_policy
 
-# One hundred user/assistant exchanges with long code answers, ten grounded
-# fact proposals, real worker processing and one explicit query per exchange.
+# One hundred user/assistant exchanges across four idle-ended sessions, with a
+# completed task, six adoptions and one explicit query per exchange. Importance
+# is returned in extraction and adoption descriptions, with no separate call.
 # Tokens count request message contents, using the runtime's token estimator.
 MEASURED_100 = {
-    "extraction": (110, 535736, 10369),
-    "entity_resolution": (9, 18740, 351),
-    "embedding": (220, 79174, 0),
+    "extraction": (109, 534916, 10098),
+    "entity_resolution": (9, 19109, 351),
+    "embedding": (230, 72917, 0),
+    "session_summary": (16, 43119, 1078),
+    "task_summary": (2, 3426, 132),
+    "locate_adoption": (96, 48943, 1110),
+    "describe_adoption": (6, 2508, 216),
+    "adoption_support": (6, 4678, 234),
 }
 # Each recorded suite contains twenty-four cases. These are server usage totals,
 # not reservation sizes. Aggregate usage cannot establish a stage-specific tokenizer ratio.
@@ -51,18 +57,6 @@ def recommended_workload() -> list[dict[str, Any]]:
                     "of estimated request tokens "
                     "and a six-suite server-usage mean floor."
                 ),
-            )
-        )
-    for task in ("summary_importance", "adoption"):
-        rows.append(
-            dict(
-                task=task,
-                calls=None,
-                input_tokens=None,
-                output_tokens=None,
-                calibrated_input_tokens=None,
-                calibrated_output_tokens=None,
-                basis="No installed task measurement.",
             )
         )
     return rows

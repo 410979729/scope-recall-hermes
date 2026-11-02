@@ -14,7 +14,7 @@ from .failure_policy import failure_category
 from .language_resources import prompt_text
 
 
-def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1.0, adoption=False):
+def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1.0, adoption=False, observation=False):
     """Check cheap literal support first; ask only for normalized, positioned evidence.
 
     Missing or undecided model capability produces a candidate. Provider failures
@@ -50,7 +50,7 @@ def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1
         eligible = candidate_map.get(id(proposal), candidates if not candidate_map else ())
         fingerprint = support_fingerprint(proposal, contents)
         literal = qualify(proposal, roots, _legacy=True).state == "active"
-        if not adoption and literal and (not eligible or judge is None):
+        if not adoption and not observation and literal and (not eligible or judge is None):
             verdicts.append(SupportVerdict(fingerprint, "supported"))
             continue
         if judge is None or failure_code is not None or time.monotonic() >= deadline:
@@ -59,7 +59,7 @@ def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1
         try:
             private.require_outbound()
             raw = judge(
-                support_messages(proposal, sources, eligible, adoption=adoption),
+                support_messages(proposal, sources, eligible, adoption=adoption, observation=observation),
                 remaining_seconds=max(0.001, deadline - time.monotonic()),
             )
         except (RuntimeError, OSError) as exc:
@@ -189,7 +189,7 @@ def prepare_publication(storage, context, value, sources, judge, *, remaining_se
         )
 
 
-def support_messages(proposal, sources, candidates=(), *, adoption=False):
+def support_messages(proposal, sources, candidates=(), *, adoption=False, observation=False):
     """Format a judgement using already authorized source windows and merge candidates."""
     identities = {}
     safe_proposal = dict(proposal, subject=model_subject(proposal["subject"], sources, identities=identities))
@@ -212,8 +212,19 @@ def support_messages(proposal, sources, candidates=(), *, adoption=False):
         if adoption
         else ""
     )
+    observation_rule = (
+        " This is an inductive observation, not a quotation or authorization. Judge its complete body, "
+        "subject and qualifications against every cited session. Require a useful recurring pattern or "
+        "cross-session synthesis supported by at least two different sessions. Contradictions, stronger "
+        "quantifiers and invented habits are unsupported. Only action new is allowed."
+        if observation
+        else ""
+    )
     messages = [
-        {"role": "system", "content": prompt_text("support") + " " + prompt_text("merge") + adoption_rule},
+        {
+            "role": "system",
+            "content": prompt_text("support") + " " + prompt_text("merge") + adoption_rule + observation_rule,
+        },
         {
             "role": "user",
             "content": json.dumps(

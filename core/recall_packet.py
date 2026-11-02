@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Literal, Protocol, cast
 
 from ..contracts import ContractError, RecallItem, RecallPacket
+from . import recall_log_view
 from .background_context import is_background, mark_background
 from .entity_queries import fence_entity_query
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
@@ -38,6 +39,7 @@ from .recall_restatement import (
     recheck_restatement,
     redundant_summary_keys,
 )
+from .recall_trace import note_candidate
 from .resume_compaction import (
     compact_episode_variants,
     next_step_provenance_supported,
@@ -411,12 +413,29 @@ class RecallPacketCompiler:
         if draft.items and self._remaining_ms(context) == 0:
             draft.expire()
         packet = self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
+        self._note_selection(verified, packet)
         extended = append_overflow(
             storage, replace(context, limits=limits), result, packet, self.storage_reader, self._clock
         )
         if extended is not packet:
             self._record_extension(packet, extended, started, context)
         return extended
+
+    @staticmethod
+    def _note_selection(verified, packet):
+        """Explain only final fitted bodies; exploratory packings cannot omit derived content."""
+        selected = {(item["ref"], item["revision"]): item for item in packet["items"]}
+        displayed = [
+            replace(obj, content=selected[(obj.ref, obj.revision)]["content"])
+            for _candidate, obj in verified
+            if (obj.ref, obj.revision) in selected
+        ]
+        summaries = [obj for _candidate, obj in verified if obj.kind == "claim"]
+        covered = redundant_summary_keys([*displayed, *summaries])
+        for candidate, obj in verified:
+            if (obj.ref, obj.revision) not in selected:
+                reason = "restatement" if obj.origin == "inductive_observation" else "summary_covered"
+                note_candidate(candidate, reason if candidate.key in covered else "budget", obj=obj)
 
     def _record_extension(self, packet, extended, started, context):
         """Keep the diagnostic aligned with the bytes actually delivered."""
@@ -457,8 +476,10 @@ class RecallPacketCompiler:
                 return None
         fresh = self.storage_reader.hydrate(tx, candidate, context)
         if fresh is None:
+            note_candidate(candidate, recall_log_view.rejection_reason(tx, candidate, context))
             gaps.append(f"stale_candidate:{candidate.ref}@{candidate.revision}")
             return None
+        note_candidate(candidate, obj=fresh)
         if (fresh.ref, fresh.revision) != (obj.ref, obj.revision):
             gaps.append(f"revision_changed:{obj.ref}@{obj.revision}")
             return None
@@ -675,7 +696,7 @@ class RecallPacketCompiler:
         """Re-check the exact final envelope; returns whether the diagnostic ref fits.
 
         Preference order at the cap: keep everything; withhold only the optional
-        diagnostic lookup ref (the process-local record itself stays); repack
+        diagnostic lookup ref (the persistent record itself stays); repack
         one retained episode into fewer complete fields; finally drop the
         lowest-ranked complete unit.  Content, qualifiers and evidence are never
         sliced.
@@ -723,7 +744,7 @@ class RecallPacketCompiler:
         measured = canonical_render_json(packet)
         diagnostic_ref = None
         if self.diagnostics is not None:
-            # The process-local record is always written; only the public
+            # Compilation stages metrics in the outer attempt. Only the public
             # lookup ref is optional when it would displace answer evidence.
             context = draft.context
             diagnostic_ref = self.diagnostics.record(

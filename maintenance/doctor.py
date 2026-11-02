@@ -894,6 +894,7 @@ def run_doctor(
     host: str,
     instance_root: Path | str,
     python_executable: Path | str | None = None,
+    recall_request_id: str | None = None,
     project_root: Path | str | None = None,
 ) -> DoctorReport:
     if host not in ("hermes", "codex", "claude-code", "workbuddy", "dsh"):
@@ -902,6 +903,7 @@ def run_doctor(
     python = Path(python_executable) if python_executable is not None else None
     # Imported here: both read sibling packages (runtime budgets, the Codex adapter's config), and
     # importing them with the module would make ``maintenance`` unimportable as a top-level package.
+    from .doctor_recall import check_recall_log
     from .setup_projects import project_suggestions
     from .setup_workload import recommended_workload
 
@@ -928,6 +930,7 @@ def run_doctor(
     _check_vector_threshold(report, binding, data_directory)
 
     readable = check_storage(report, binding, data_directory)
+    check_recall_log(report, binding, request_id=recall_request_id)
     config = _runtime_config(data_directory)
     entry_config = _entry_runtime_config(instance, data_directory)
     _check_hermes_runtime(report, instance, entry_config)

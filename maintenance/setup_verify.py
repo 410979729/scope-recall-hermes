@@ -13,6 +13,7 @@ from pathlib import Path
 from ..adapters.clients import CodexHookHandler
 from ..adapters.hermes.audiences import LOCAL_USER_ID
 from ..adapters.hermes.provider import ScopeRecallHermesAdapter
+from ..core.recall_log_writer import close_writers
 from ..runtime.instance import build_runtime_instance
 from ..runtime.instance_config import RuntimeInstanceConfig
 from ..runtime.worker_entry import credential_environment, run_worker
@@ -65,6 +66,10 @@ def _hermes(home: Path, session: str, prompt: str, *, capture: bool):
 
 def _clean_owned_check(root: Path) -> None:
     """Remove only enumerated files in this call's new directory, without recursive deletion."""
+    # Host shutdown can detach its runtime. Retire only this probe's diagnostics
+    # before enumerating files so a late WAL or health receipt cannot race removal.
+    if not close_writers(root):
+        raise OSError("verification diagnostics still active; directory retained")
     paths = list(root.rglob("*"))
     if any(path.is_symlink() for path in paths):
         raise ValueError("verification directory contains a link; retain it for inspection")

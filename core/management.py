@@ -39,6 +39,12 @@ class MemoryManagement:
         """Read a bounded held-content page with the installation owner capability."""
         return review_page(self.core.storage, self.authority, limit=limit, before=before)
 
+    def recalls(self, *, session=None, request_id=None, before=None, limit=30):
+        """Read recall attempts by session or request, retaining current visibility fences."""
+        from .recall_log_view import history
+
+        return history(self.core, self._context(), session=session, request_id=request_id, before=before, limit=limit)
+
     def preview_quarantine_release(self, ref, *, expected_revision):
         """Return the owner-only content and hash required to authorize release."""
         return preview_release(self.core, self.authority, ref, expected_revision)

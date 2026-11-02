@@ -55,18 +55,18 @@ def test_failed_adoption_schema_step_rolls_back_without_publishing_new_format(ap
 def test_failed_session_brief_schema_step_rolls_back(app, monkeypatch):
     core, ctx = app
     source = capture(core, ctx, "TEST briefing migration preserves this source.")
-    downgrade_store(core.storage.path, 1122)
-    step = storage.SCHEMA_MIGRATIONS[1122]
+    downgrade_store(core.storage.path, 1124)
+    step = storage.SCHEMA_MIGRATIONS[1124]
 
     def fail(conn):
         step(conn)
         raise RuntimeError("TEST interrupted briefing migration")
 
-    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1122, fail)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1124, fail)
     with pytest.raises(RuntimeError, match="TEST interrupted"):
         core.storage.initialize()
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1122
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1124
         assert conn.execute("SELECT name FROM sqlite_master WHERE name='session_briefs'").fetchone() is None
         assert conn.execute("SELECT name FROM sqlite_master WHERE name='safety_retractions'").fetchone() is None
         assert (
@@ -75,7 +75,7 @@ def test_failed_session_brief_schema_step_rolls_back(app, monkeypatch):
         )
 
 
-@pytest.mark.parametrize("version", range(1105, 1123))
+@pytest.mark.parametrize("version", range(1105, 1125))
 def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version):
     from scope_recall.maintenance.shared_import import SOURCE_SCHEMAS
 

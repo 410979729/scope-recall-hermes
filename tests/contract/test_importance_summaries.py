@@ -259,6 +259,11 @@ def test_brief_limits_unfinished_task_resumes(app):
     tasks = [row for row in core.session_brief(ctx)["items"] if row["kind"] == "task"]
     assert len(tasks) == 3
     assert {row["ref"] for row in tasks} <= set(episodes)
+    core.session_brief(ctx, deliver=True)
+    owner = replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)
+    attempts = MemoryManagement(core, InstallationMaintenance(owner)).recalls(session=ctx.session_id)["items"]
+    logged = [row for attempt in attempts for row in attempt["items"]]
+    assert {row.get("ref") for row in logged if row.get("source_type") == "task"} == {row["ref"] for row in tasks}
     finished = replace(ctx, session_id="TEST-task-session-0", task_anchor="TEST-task-0")
     capture(core, finished, "TEST-project task 0 is completed.", when=core.clock.now)
     drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief", max_items=1), remaining_seconds=30)
@@ -526,12 +531,18 @@ def test_incomplete_model_output_preserves_raw_fallback(app):
         )
 
 
-def test_large_source_is_covered_by_consecutive_summary_fragments(app):
+def test_large_source_prefix_is_processed_without_replacing_the_original(app):
     import json
 
+    from scope_recall.core.summary_storage import fully_quoted_sources
+
     class Excerpts:
+        def __init__(self):
+            self.pages = []
+
         def judge(self, messages, *, remaining_seconds):
             body = json.loads(messages[-1]["content"])
+            self.pages.append(body["sources"])
             return json.dumps(
                 dict(
                     sentences=[
@@ -547,14 +558,20 @@ def test_large_source_is_covered_by_consecutive_summary_fragments(app):
 
     core, ctx = app
     source = capture(core, ctx, "TEST-project keeps original evidence. " * 500)
-    result = build(core, ctx, Excerpts())
+    model = Excerpts()
+    result = build(core, ctx, model)
     assert result.failed == 0
+    assert model.pages[0][0]["content"] == source.event["content"][:1000] + (
+        f"（已截断，全文 {len(source.event['content'])} 字符）"
+    )
     with core.storage.read(ctx) as tx:
         group = tx._check().execute("SELECT * FROM summary_groups WHERE kind='session'").fetchone()
         assert group["covered_units"] == group["total_units"] == len(source.event["content"])
         parts = tx._check().execute("SELECT * FROM summary_parts ORDER BY ordinal").fetchall()
-        assert len(parts) > 1
+        assert len(parts) == 1
         assert all(summary_live(tx, p["claim_ref"], p["claim_revision"]) for p in parts)
+        versions = [tx.claims.version(p["claim_ref"], p["claim_revision"]) for p in parts]
+        assert not fully_quoted_sources(tx, versions, {(source.ref, source.revision)})
 
 
 def test_unrelated_tool_capture_does_not_strand_a_complete_session_summary(app):
@@ -1042,3 +1059,64 @@ def test_older_inflight_brief_cannot_confirm_after_newer_compaction(app):
     later_brief = core.session_brief(newer, deliver=True, compact=True, defer_confirmation=True)
     assert core.confirm_session_brief(newer, later_brief, remaining_seconds=1) == "brief_delivered"
     assert core.confirm_session_brief(older, earlier_brief, remaining_seconds=1) == "brief_invalidated"
+
+
+def test_brief_delivery_is_visible_in_recall_history(app):
+    core, ctx = app
+    item, _source = initial(core, ctx, when=core.clock.now)
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx, deliver=True)
+    assert item.ref in brief["text"]
+    owner = replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)
+    history = MemoryManagement(core, InstallationMaintenance(owner)).recalls(session=ctx.session_id)
+    rows = [row for attempt in history["items"] for row in attempt["items"] if row.get("ref") == item.ref]
+    assert any(
+        "session_brief" in row["channels"] and row["reason"] == "delivered" and row["source_type"] == "decision"
+        for row in rows
+    )
+
+
+def test_brief_unconfirmed_is_recorded_without_claiming_delivery(app):
+    from concurrent.futures import ThreadPoolExecutor
+
+    core, ctx = app
+    item, _source = initial(core, ctx, when=core.clock.now)
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with core.storage.write(ctx):
+            brief = executor.submit(core.session_brief, ctx, deliver=True, remaining_seconds=2).result(timeout=1)
+    assert brief["delivery_reason"] == "brief_delivery_unconfirmed"
+    owner = replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)
+    history = MemoryManagement(core, InstallationMaintenance(owner)).recalls(session=ctx.session_id)
+    rows = [row for attempt in history["items"] for row in attempt["items"] if row.get("ref") == item.ref]
+    assert any("session_brief" in row["channels"] and row["reason"] == "brief_delivery_unconfirmed" for row in rows)
+
+
+@pytest.mark.parametrize("close", [False, True])
+def test_brief_diagnostic_respects_private_interval_opened_after_preparation(app, close):
+    from scope_recall.core import private
+
+    core, ctx = app
+    initial(core, ctx, when=core.clock.now)
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx, deliver=True, defer_confirmation=True)
+    private.open_interval(core.storage, core.clock, ctx, target="session", session=ctx.session_id, mode="read-only")
+    if close:
+        private.close_interval(core.storage, core.clock, ctx, target="session", session=ctx.session_id)
+    core.confirm_session_brief(ctx, brief)
+    core.recall_diagnostics.flush()
+    assert not core.recall_diagnostics.store.list(session_id=ctx.session_id)
+
+
+def test_constraint_brief_keeps_its_category_in_recall_history(app):
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project constraint stay offline.", when=core.clock.now)
+    proposal = draft(source, "stay offline", kind="constraint", predicate="network", statement_kind="assertion")
+    item = accept(core, ctx, proposal).items[0]
+    owner = replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)
+    management = MemoryManagement(core, InstallationMaintenance(owner))
+    management.importance(item.ref, expected_revision=item.revision, importance=4, pinned=False)
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    assert item.ref in core.session_brief(ctx, deliver=True)["text"]
+    rows = [row for attempt in management.recalls(session=ctx.session_id)["items"] for row in attempt["items"]]
+    assert any(row.get("ref") == item.ref and row["source_type"] == "constraint" for row in rows)

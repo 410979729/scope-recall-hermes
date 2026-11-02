@@ -92,7 +92,7 @@ def _project_claim(tx, version, *, now, advance_head):
     if not advance_head:
         return
     conn = tx._check(write=True)
-    if is_conversation_summary(version):
+    if is_conversation_summary(version) or version.payload["kind"] == "observation":
         conn.execute("UPDATE claims SET entity_indexed=1 WHERE claim_id=?", (version.ref,))
         conn.execute(
             "UPDATE claim_versions SET entity_resolved=1 WHERE claim_id=? AND revision=?",

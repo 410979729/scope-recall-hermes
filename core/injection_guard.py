@@ -241,7 +241,7 @@ def screen_sources(tx, sources, now, *, remaining_seconds=None):
     return eligible
 
 
-def held_roots_sql(seed: str) -> str:
+def held_roots_sql(seed: str, *, states=False) -> str:
     """SQL returning held root refs from a trusted SELECT of (root, kind, ref).
 
     Both bounded collection queries and hydrated reads use this dependency
@@ -259,7 +259,7 @@ def held_roots_sql(seed: str) -> str:
             ON d.object_kind=l.kind AND d.object_ref=l.ref UNION
             SELECT l.root,'event',e.source_ref FROM lineage l JOIN evidence_links e
             ON e.object_kind=l.kind AND e.object_ref=l.ref)
-        SELECT DISTINCT l.root FROM lineage l CROSS JOIN source_events e
+        SELECT DISTINCT {"s.state" if states else "l.root"} FROM lineage l CROSS JOIN source_events e
         CROSS JOIN source_events h CROSS JOIN source_safety s
         WHERE l.kind='event' AND e.event_id=l.ref AND {group_match}
         AND s.source_ref=h.event_id AND s.source_revision=h.source_revision
@@ -290,6 +290,19 @@ def blocked_refs(tx, kind, refs) -> frozenset[str]:
         (kind, json.dumps(wanted)),
     )
     return frozenset(row[0] for row in rows)
+
+
+def held_state(tx, kind, ref):
+    """Return the strongest persisted hold through the same dependency walk as visibility."""
+    row = (
+        tx._check()
+        .execute(
+            held_roots_sql("SELECT ?,?,?", states=True) + " ORDER BY s.state DESC LIMIT 1",
+            (ref, kind, ref),
+        )
+        .fetchone()
+    )
+    return row[0] if row is not None else None
 
 
 def notice(tx, ref, revision=None):

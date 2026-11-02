@@ -255,3 +255,45 @@ def _bind_context(core: MemoryCore, initialize_kwargs, *, session_id: str):
 def _seed_capture(core: MemoryCore, ctx):
     event = source_event(content="TEST 项目使用白色。", source_event_key="TEST-prefetch/1")
     core.record_event(ctx, event, scope_id=next(iter(ctx.allowed_scope_ids)), remaining_seconds=5)
+
+
+def test_trivial_prefetch_leaves_one_explained_attempt(adapter):
+    provider, _clock = adapter
+    assert provider.prefetch("/help") == ""
+    assert provider._core.recall_diagnostics.flush()
+    records = provider._core.recall_diagnostics.store.list()
+    assert len(records) == 1
+    assert "prompt_skipped" in records[0]["reasons"]
+
+
+def test_unbound_prefetch_is_logged_but_private_unbound_is_not(adapter):
+    from dataclasses import replace
+
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    provider, _clock = adapter
+    identity = provider._identity
+    provider._identity = replace(
+        identity, runtime_audience=replace(identity.runtime_audience, allowed_scope_ids=frozenset())
+    )
+    assert provider.prefetch("TEST telescope compass material") == ""
+    core = provider._core
+    assert core.recall_diagnostics.flush()
+    assert "scope_unbound" in core.recall_diagnostics.store.list()[0]["reasons"]
+    context = TrustedContext(identity.binding, "TEST-owner", identity.binding.scope_ids, "host_generated")
+    MemoryManagement(core, InstallationMaintenance(context)).private_on(target="global")
+    assert provider.prefetch("TEST private telescope") == ""
+    assert core.recall_diagnostics.flush()
+    assert len(core.recall_diagnostics.store.list()) == 1
+
+
+def test_blank_prefetch_remains_empty_and_has_a_record(adapter):
+    provider, _clock = adapter
+    assert provider.prefetch("") == ""
+    assert provider._core.recall_diagnostics.flush()
+    rows = provider._core.recall_diagnostics.store.list()
+    assert len(rows) == 1
+    assert rows[0]["query"]["length"] == 0
+    assert "prompt_skipped" in rows[0]["reasons"]

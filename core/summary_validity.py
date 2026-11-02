@@ -9,6 +9,12 @@ from ..contracts import ContractError
 from .episodes import source_origin
 
 CONVERSATION_SUMMARY_REASONS = ("summary_pending", "grounded_session_summary", "grounded_task_summary")
+DEPENDENCY_EXCLUDED_REASONS = (
+    *CONVERSATION_SUMMARY_REASONS,
+    "reflection_pending",
+    "grounded_observation",
+    "confirmed_observation",
+)
 
 
 def is_conversation_summary(version):
@@ -61,10 +67,10 @@ def obsolete_ranges(tx, members):
             "AND h.revision=c.current_revision WHERE l.object_kind='claim' "
             "AND ((v.revision!=c.current_revision AND v.payload_json!=h.payload_json) "
             "OR h.state IN ('retracted','superseded')) "
-            "AND v.qualification_reason NOT IN (?,?,?) AND (l.source_ref,l.source_revision) IN ("
+            "AND v.qualification_reason NOT IN (?,?,?,?,?,?) AND (l.source_ref,l.source_revision) IN ("
             + ",".join("(?,?)" for _ in page)
             + ")",
-            [*CONVERSATION_SUMMARY_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
+            [*DEPENDENCY_EXCLUDED_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
         )
         for row in rows:
             key = (row[0], row[1])
@@ -94,9 +100,9 @@ def group_signature(tx, members):
                 "FROM evidence_links l "
                 "JOIN claims c ON c.claim_id=l.object_ref JOIN claim_versions v "
                 "ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
-                "WHERE l.object_kind='claim' AND v.qualification_reason NOT IN (?,?,?) "
+                "WHERE l.object_kind='claim' AND v.qualification_reason NOT IN (?,?,?,?,?,?) "
                 "AND (l.source_ref,l.source_revision) IN (" + ",".join("(?,?)" for _ in page) + ") ORDER BY c.claim_id",
-                [*CONVERSATION_SUMMARY_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
+                [*DEPENDENCY_EXCLUDED_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
             )
             .fetchall()
         )

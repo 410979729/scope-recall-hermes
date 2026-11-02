@@ -1,5 +1,6 @@
 """Bounded Hermes MemoryProvider adapter over the host-independent core."""
 
+from .gating import is_trivial_prompt
 from .identity import HermesIdentityError, bind_hermes_identity
 from .installation import (
     build_archive_scope_id,
@@ -15,6 +16,7 @@ __all__ = [
     "build_archive_scope_id",
     "install_hermes_scope_recall",
     "is_archive_scope",
+    "is_trivial_prompt",
     "load_installation_manifest",
     "register_adapter",
 ]

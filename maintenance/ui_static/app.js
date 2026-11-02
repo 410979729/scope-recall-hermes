@@ -17,6 +17,10 @@ let lastPrivate = null;
 let browseItems = [];
 let lastScan = null;
 let quarantineBefore = null;
+let recallBefore = null;
+let recallFilters = {};
+let recallRows = [];
+let recallIdentity = 0;
 const t = (key) => window.UI_STRINGS[language][key] || key;
 
 // Stored values enter only text nodes. No memory field is interpreted as markup.
@@ -94,19 +98,58 @@ async function loadPage(page) {
   }
   if (page === "overview") overview(await request("overview"));
   if (page === "browse") await browse(false);
+  if (page === "recalls") await loadRecalls(false);
   if (page === "quarantine") await loadQuarantine(false);
   if (page === "private") privateState(await request("private"));
   if (page === "backup") backup(await request("backup"));
+}
+async function loadRecalls(more) {
+  if (!more) { recallFilters = formValues("recall-filters"); recallBefore = null; recallRows = []; recallIdentity += 1; }
+  const identity = recallIdentity;
+  const data = await request("recalls", {...recallFilters, ...(more && recallBefore ? {before: recallBefore} : {})});
+  if (identity !== recallIdentity) return;
+  recallRows.push(...data.items);
+  recallBefore = data.next_before;
+  renderRecalls();
+}
+function renderRecalls() {
+  $("recall-items").replaceChildren();
+  for (const record of recallRows) {
+    const row = node("article", undefined, $("recall-items"));
+    node("h3", record.timestamp + " · " + record.request_id, row);
+    node("p", record.entry_id + " · " + record.session_id + " · " + t(record.scope_bound ? "scopeBound" : "scopeUnbound"), row);
+    node("p", record.reasons.map(reason => t("reason_" + reason)).join(" · ") || t("injected"), row);
+    node("p", t("pending") + ": " + (record.background.pending ?? "—") + " · " + t("captureState") + ": " + t(record.capture.state), row);
+    for (const item of record.items) {
+      const entry = node("div", undefined, row);
+      node("p", (item.rank ? "#" + item.rank + " · " : "") + t("reason_" + item.reason), entry);
+      if (item.readable) {
+        if (["session_summary", "task_summary", "adopted_decision", "observation"].includes(item.source_type)) node("p", t("source_" + item.source_type), entry);
+        const open = node("button", t("show") + " " + item.ref + "@" + item.revision, entry);
+        open.addEventListener("click", () => run(async () => { await loadPage("browse"); await detail(item.ref); }));
+        const scores = node("details", undefined, entry);
+        node("summary", t("ranking"), scores);
+        node("pre", JSON.stringify({fusion_score: item.fusion_score, channels: item.channels}, null, 2), scores);
+      } else node("p", item.historical && item.ref ? item.ref + "@" + item.revision + " · " + t("historicalReference") : t("unavailableReference"), entry);
+    }
+  }
+  if (!recallRows.length) node("p", t("empty"), $("recall-items"));
+  $("recall-next").disabled = recallBefore === null;
 }
 async function loadQuarantine(more) {
   const data = await request("quarantine", more && quarantineBefore ? {before: quarantineBefore} : {});
   if (!more) $("quarantine-items").replaceChildren();
   for (const item of data.items) {
     const row = node("article", undefined, $("quarantine-items"));
-    node("p", item.ref + " · " + item.revision + " · " + (item.category === "adoption" ? t("adoptionReview") : item.state), row);
+    node("p", item.ref + " · " + item.revision + " · " + (item.category === "adoption" ? t("adoptionReview") : item.category === "observation" ? t("observationReview") : item.state), row);
     node("pre", item.content, row);
     node("pre", JSON.stringify(item.rules, null, 2), row);
-    if (item.category !== "adoption") {
+    if (item.category === "observation") {
+      const confirm = node("button", t("confirmObservation"), row);
+      confirm.addEventListener("click", () => run(() => preview({action: "revise", ref: item.ref, expected_revision: item.revision, value: item.content})));
+      const inspect = node("button", t("claim"), row);
+      inspect.addEventListener("click", () => run(() => detail(item.ref)));
+    } else if (item.category !== "adoption") {
       const release = node("button", t("releaseQuarantine"), row);
       release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
     }
@@ -235,6 +278,7 @@ function translate() {
   if (lastBackup) backup(lastBackup);
   if (lastPrivate) privateState(lastPrivate);
   if (lastScan) renderBrowse();
+  if (recallRows.length) renderRecalls();
   if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
 }
 $("language").addEventListener("change", () => { language = $("language").value; translate(); });
@@ -280,5 +324,7 @@ $("confirm").addEventListener("click", () => run(async () => {
   if (currentPage === "private") privateState(await request("private"));
   $("receipt").scrollIntoView({block: "start"});
 }));
+$("recall-filters").addEventListener("submit", (event) => { event.preventDefault(); run(() => loadRecalls(false)); });
+$("recall-next").addEventListener("click", () => run(() => loadRecalls(true)));
 translate();
 run(() => loadPage("overview"));

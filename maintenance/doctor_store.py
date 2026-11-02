@@ -425,6 +425,14 @@ def _derived_progress(report, transaction, binding):
     """Read content-free backfill status beside the existing entity diagnosis."""
     _entity_resolution_check(report, transaction, binding)
     conn = transaction._check()
+    from scope_recall.core.reflection_policy import reflection_usage
+
+    report.reflections = dict(
+        daily=reflection_usage(transaction, now=datetime.now(UTC).isoformat()),
+        historical_pages_pending=conn.execute(
+            "SELECT count(*) FROM reflection_discovery WHERE next_at IS NOT NULL"
+        ).fetchone()[0],
+    )
     report.summaries = dict(conn.execute("SELECT state,count(*) FROM summary_groups GROUP BY state"))
     report.summaries["importance_pending"] = conn.execute(
         "SELECT count(*) FROM claims WHERE importance_assigned=0"

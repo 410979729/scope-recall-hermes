@@ -26,7 +26,7 @@ def test_all_prior_schemas_upgrade_with_hashes_safety_index_and_defaults(app, ve
                 "('TEST-summary-rule','instruction','regex','TEST protected','pending_review',0)"
             )
         db.commit()
-    assert core.initialize().schema_version == SCHEMA_VERSION == 1123
+    assert core.initialize().schema_version == SCHEMA_VERSION == 1125
     assert UPGRADE_CHAIN == tuple(range(1105, SCHEMA_VERSION))
     with closing(sqlite3.connect(core.storage.path)) as db:
         assert db.execute("SELECT event_id,content,content_sha256 FROM source_events").fetchall() == before

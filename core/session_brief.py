@@ -405,6 +405,8 @@ def read(
         "elapsed_ms": max(0, round((clock.monotonic() - started) * 1000)),
         "_epoch": epoch,
         "_privacy_marker": marker,
+        "_log_allowed": mode is None,
+        "_log_checked": False,
         "_compaction_cutoff": compaction,
         "_lines": lines,
         "_compact": compact,
@@ -421,6 +423,12 @@ def _still_valid(tx, clock, context, brief) -> bool:
     """Recheck selected lines if truth or privacy changed after preparation."""
     now = utc_timestamp(clock.utc_now())
     mode, marker = private.recall_state(tx, context, now, after=brief["_privacy_marker"])
+    if mode is not None or (
+        marker != brief["_privacy_marker"]
+        and private.rules_changed(tx, context, after=brief["_privacy_marker"], modes=private.MODES)[0]
+    ):
+        brief["_log_allowed"] = False
+    brief["_log_checked"] = True
     cutoff = _compaction_cutoff(tx, context)
     if cutoff is not None and (brief["_compaction_cutoff"] is None or cutoff > brief["_compaction_cutoff"]):
         return False

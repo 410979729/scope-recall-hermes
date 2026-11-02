@@ -56,6 +56,8 @@ WATCHDOG_SECONDS_PER_FILE = 20
 #: 300 s.
 HEAVY_FILE_SECONDS = {
     "tests/recall_bench/test_recall_bench.py": 600,
+    # A hundred complete worker turns include adoption probes and metered local model substitutes.
+    "tests/contract/test_setup_workload.py": 600,
     "tests/contract/test_memory_export.py": 300,
     "tests/host/codex/test_shared_client.py": 300,
     "tests/host/codex/test_dsh_remote.py": 300,
@@ -171,6 +173,9 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_reflection.py",
+        "tests/contract/test_reflection_repairs.py",
+        "tests/contract/test_reflection_cost.py",
         "tests/contract/test_setup_workload.py",
         "tests/contract/test_adoption.py",
         "tests/contract/test_adoption_merge.py",
@@ -179,6 +184,7 @@ SUITES = {
         "tests/contract/test_adoption_outline.py",
         "tests/contract/test_importance_summaries.py",
         "tests/contract/test_summary_repairs.py",
+        "tests/contract/test_summary_truncation_boundary.py",
         "tests/contract/test_summary_merge.py",
         "tests/contract/test_summary_transfer.py",
         "tests/contract/test_memory_import.py",
@@ -197,6 +203,10 @@ SUITES = {
         "tests/contract/test_memory_admin.py",
         "tests/contract/test_memory_cli.py",
         "tests/contract/test_memory_ui_api.py",
+        "tests/contract/test_recall_log.py",
+        "tests/contract/test_recall_log_fences.py",
+        "tests/contract/test_recall_log_merge.py",
+        "tests/contract/test_recall_log_observations.py",
         "tests/contract/test_memory_export.py",
         "tests/contract/test_private_mode.py",
         "tests/contract/test_fragment_quote_recovery.py",
@@ -300,6 +310,8 @@ SUITES = {
         "tests/host/hermes/test_capture_retry_properties.py",
         "tests/host/hermes/test_upgrade_capture.py",
         "tests/host/test_memory_ui.py",
+        "tests/host/test_recall_log.py",
+        "tests/host/test_recall_log_recovery.py",
         "tests/host/test_memory_ui_http.py",
         "tests/host/test_memory_ui_assets.py",
         "tests/host/codex/test_client_private_mode.py",
@@ -345,6 +357,7 @@ SUITES = {
         "tests/host/codex/test_tool_schemas.py",
     ],
     "migration": [
+        "tests/migration/test_reflection_upgrade.py",
         "tests/migration/test_adoption_upgrade.py",
         "tests/migration/test_database_identity_upgrade.py",
         "tests/migration/test_importance_summary_upgrade.py",

@@ -115,3 +115,10 @@ A busy or unavailable store returns a clear error so you can retry. Other
 request failures use fixed messages without revealing stored content. Malformed
 requests receive the same browser protections as ordinary responses. Language
 changes also update labels on browse results already on the page.
+
+
+**Recall history** filters attempts by session and request ID. Each row shows delivered references, excerpt rows,
+ranking signals, processing counts and reasons for an empty packet. Private attempts are excluded. Open an
+available item to correct, mute or delete it with the same preview and confirmation as **Browse and search**.
+Deleted, held, private, stale or unauthorized references have no action link. See [Recall history](manage.md#recall-history)
+for retention settings and command-line lookup.

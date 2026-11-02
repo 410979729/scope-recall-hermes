@@ -15,6 +15,7 @@ from . import private
 from .delete_storage import purge_finished, purge_work_parts
 from .failure_policy import BUDGET_PAUSE_ERRORS, CAPACITY_REFUSALS
 from .file_lock import advisory_file_lock
+from .reflection_storage import reflection_job
 from .retained_artifacts import RetainedBlob, erase_retained
 from .source_records import StoredSource
 from .worker_entities import defer_held_entity, needs_entity_projection, process_entity_projection
@@ -32,6 +33,7 @@ from .worker_outcomes import (
     stale_result,
     work_result,
 )
+from .worker_reflection import process_reflection
 from .worker_summaries import is_summary_job, process_summary
 
 if TYPE_CHECKING:
@@ -572,13 +574,16 @@ def process_rebuild_projection(
             return deferred
     with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         summary = is_summary_job(tx, item)
-    if summary:
-        return process_summary(
+        reflection = reflection_job(tx, item)
+    if reflection is not None or summary:
+        process = process_reflection if reflection is not None else process_summary
+        capable = config is None or (config.reflection_capable if reflection is not None else config.summary_capable)
+        return process(
             storage,
             clock,
             context,
             item,
-            model=model if config is None or config.summary_capable else None,
+            model=model if capable else None,
             started=started,
             budget=budget,
         )

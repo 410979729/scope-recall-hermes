@@ -26,6 +26,7 @@ from .claim_storage import parse_source_ref
 from .claims import canonical_time, dated_after, holds_instead, select_effective, select_proposal, states_a_value
 from .episodes import source_origin
 from .recall_policy import applicability, in_time_window, parse_time
+from .reflection_validity import reflection_live
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, RetrievedObject, SearchContext
 from .summary_validity import is_conversation_summary, summary_live, summary_origin
@@ -493,7 +494,11 @@ class RetrievalHydration:
     def _hydrate_claim(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         versions = tx.claims.versions(candidate.ref)
         version = next((item for item in versions if item.revision == candidate.revision), None)
-        if version is None or (context.mode == "auto" and version.suppressed):
+        if (
+            version is None
+            or (context.mode == "auto" and version.suppressed)
+            or not reflection_live(tx, version, query_scope=context.scope, excluded=context.current_source_refs)
+        ):
             return None
         if is_conversation_summary(version) and not summary_live(
             tx, version.ref, version.revision, query_scope=context.scope, excluded=context.current_source_refs
@@ -542,6 +547,8 @@ class RetrievalHydration:
         origin = next((item for item in origins if item == "human_direct"), origins[0] if origins else "origin_unknown")
         if is_conversation_summary(version):
             origin = summary_origin(tx, version.ref, version.revision)
+        if payload.get("kind") == "observation":
+            origin = "inductive_observation"
         # A proposal its candidate's first judgement has not yet reached, as against one the evaluator ruled on,
         # one asleep or one blocked (``candidate_tables.awaits_first_judgement``).
         awaited = version.state == "proposed" and _awaits_judgement(tx, candidate.ref, candidate.revision)
@@ -563,7 +570,9 @@ class RetrievalHydration:
             candidate.ref,
             candidate.revision,
             "procedure" if payload.get("kind") == "procedure" else "claim",
-            _claim_statement_content(version),
+            ("Inductive observation (not the owner's words): " + payload["value_text"])
+            if payload.get("kind") == "observation"
+            else _claim_statement_content(version),
             origin,
             _claim_status(version, current_effective),
             applicability(context, version.project_id, version.branch_id),
