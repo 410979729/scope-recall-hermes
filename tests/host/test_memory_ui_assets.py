@@ -283,3 +283,36 @@ const assert = require('assert/strict');
     completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"groups": 3, "actions": True}
+
+
+def test_handoff_page_renders_external_text_and_reviews_cancellation():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    script = (
+        DOM_HARNESS
+        + r"""
+const assert = require('assert/strict');
+(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  global.fetch = async () => ({ok: true, json: async () => ({data: {
+    items: [{ref: 'handoff:TEST', revision: 1, state: 'pending', safety_state: 'quarantined',
+      resume: {next_step: '<img onerror="global.executed=true">'}}], next_before: 12
+  }})});
+  await loadHandoffs(false);
+  const rows = document.getElementById('handoff-items');
+  assert.ok(rows.textContent.includes('<img onerror='));
+  assert.ok(rows.textContent.includes('handoff:TEST'));
+  assert.ok(!global.executed);
+  assert.equal(document.getElementById('handoff-next').disabled, false);
+  vm.runInThisContext("preview = async data => { global.operation = data; };");
+  rows.children[0].children.at(-1).click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(global.operation, {action: 'handoff-cancel', ref: 'handoff:TEST', expected_revision: 1});
+  console.log(JSON.stringify({handoffs: true, literal: true, review: true}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"handoffs": True, "literal": True, "review": True}

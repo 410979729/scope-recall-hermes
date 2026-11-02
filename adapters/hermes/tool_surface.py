@@ -12,6 +12,8 @@ from datetime import tzinfo
 from typing import Any, Dict, List
 
 from scope_recall.contracts import ContractError, validate_model_request
+from scope_recall.core.handoff import execute as execute_handoff
+from scope_recall.core.handoff import tool_schemas as handoff_schemas
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import fence_trace_epoch, trace_tool_schema
 
@@ -183,7 +185,9 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     },
 )
 #: Every schema by tool name; the strict boundary reads allowed/required from here.
-_SCHEMAS: dict[str, dict[str, Any]] = {schema["name"]: schema for schema in (*_TOOL_SCHEMAS, trace_tool_schema())}
+_SCHEMAS: dict[str, dict[str, Any]] = {
+    schema["name"]: schema for schema in (*_TOOL_SCHEMAS, trace_tool_schema(), *handoff_schemas())
+}
 TOOL_NAMES = frozenset(_SCHEMAS)
 
 
@@ -434,7 +438,25 @@ class HermesToolSurface:
         }
         return self._reply(body["request_id"], result)
 
+    def _handle_handoff(self: Any, args, action):
+        """Bind agent reports to the provider entry, retaining subagent write restrictions."""
+        body = self._tool_body(args, "handoff_" + action)
+        identity = self._require_identity()
+        if action != "list" and identity.read_only:
+            raise ContractError("ACCESS_DENIED", "read_only")
+        context = identity.trusted_context(mutation=action != "list")
+        payload = (
+            body["report"]
+            if action == "write"
+            else {k: v for k, v in body.items() if k not in {"protocol_version", "request_id"}}
+        )
+        return self._reply(body["request_id"], execute_handoff(self._require_core(), context, action, payload))
+
     _HANDLERS = {
+        "handoff_write": lambda self, args: self._handle_handoff(args, "write"),
+        "handoff_list": lambda self, args: self._handle_handoff(args, "list"),
+        "handoff_accept": lambda self, args: self._handle_handoff(args, "accept"),
+        "handoff_cancel": lambda self, args: self._handle_handoff(args, "cancel"),
         "recall": _handle_recall,
         "inspect": _handle_inspect,
         "profile": _handle_profile,
@@ -466,4 +488,4 @@ class HermesToolSurface:
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         # Hermes retains the returned schema objects; return fresh objects so
         # host-side mutation cannot alter the adapter's contract for later runs.
-        return [*json.loads(json.dumps(_TOOL_SCHEMAS, ensure_ascii=False)), trace_tool_schema()]
+        return [*json.loads(json.dumps(_TOOL_SCHEMAS, ensure_ascii=False)), trace_tool_schema(), *handoff_schemas()]

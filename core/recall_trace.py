@@ -220,7 +220,9 @@ def record_brief(core, context: TrustedContext, brief: dict, reason: str) -> Non
         trace.capture = {"state": "not_applicable", "refs": []}
         delivered = []
         for rank, (item, line) in enumerate(zip(brief["items"], brief["_lines"], strict=True), 1):
-            kind = "episode" if item["kind"] == "task" else "claim"
+            if item["kind"] == "handoff":
+                item = dict(item, ref=item["task_ref"], revision=item["task_revision"])
+            kind = "episode" if item["kind"] in {"task", "handoff"} else "claim"
             # The first rendered column is generated from the current kind and adoption state.
             label = line.split(" | ", 1)[0]
             source_type = "adopted_decision" if label == "decision (owner adopted assistant proposal)" else label

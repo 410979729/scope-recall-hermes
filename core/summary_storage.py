@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from ..contracts import ContractError
 from . import private
 from .claims import canonical_time
+from .handoff import close_drafts
 from .language_resources import language_rules
 from .recall_scope import QueryScope
 from .summary_parts import queue_summary_part, reuse_completed_parts
@@ -103,6 +104,7 @@ def close_session(tx, session_id, *, now):
     """Record an explicit end signal for this bound session; new capture reopens it."""
     if session_id != tx.context.session_id:
         raise ContractError("ACCESS_DENIED", "session")
+    close_drafts(tx, session_id, now)
     tx._check(write=True).execute(
         "UPDATE summary_groups SET closed=1 WHERE kind='session' AND subject_ref=? AND scope_id IN ("
         + ",".join("?" for _ in tx.context.allowed_scope_ids)

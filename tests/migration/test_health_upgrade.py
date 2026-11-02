@@ -15,7 +15,7 @@ def test_health_upgrade_stamps_the_next_schema_without_changing_facts():
         conn.execute("INSERT INTO facts VALUES('TEST-synthetic')")
         conn.execute("PRAGMA user_version=1125")
         schema.upgrade_1125(conn)
-        assert schema.SCHEMA_VERSION == 1126
+        assert schema.SCHEMA_VERSION == 1127
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1126
         assert conn.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == 1126
         assert conn.execute("SELECT value FROM facts").fetchone()[0] == "TEST-synthetic"

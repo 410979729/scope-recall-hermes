@@ -635,7 +635,21 @@ def test_mcp_inspect_resolves_old_episode_by_explicit_ref(tmp_path: Path) -> Non
 #: Registration order in ``adapters/clients/mcp_server.py``; ``trace`` registers
 #: between ``profile`` and ``entity`` and is hardened with the rest at the
 #: ``extra="forbid"`` pass, so it belongs to the frozen public surface.
-_MCP_PUBLIC_TOOLS = ("recall", "inspect", "profile", "trace", "entity", "propose_memory", "revise", "forget", "status")
+_MCP_PUBLIC_TOOLS = (
+    "recall",
+    "inspect",
+    "profile",
+    "trace",
+    "entity",
+    "propose_memory",
+    "revise",
+    "forget",
+    "status",
+    "handoff_write",
+    "handoff_list",
+    "handoff_accept",
+    "handoff_cancel",
+)
 
 
 def _assert_candidate_mcp_server_import() -> None:

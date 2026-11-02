@@ -173,6 +173,7 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_handoff.py",
         "tests/contract/test_reflection.py",
         "tests/contract/test_reflection_repairs.py",
         "tests/contract/test_reflection_cost.py",
@@ -343,6 +344,7 @@ SUITES = {
         "tests/host/codex/test_hooks.py",
         "tests/host/codex/test_hook_budgets.py",
         "tests/host/codex/test_lifecycle_worker_wakeup.py",
+        "tests/host/codex/test_handoff_tools.py",
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
@@ -362,6 +364,7 @@ SUITES = {
         "tests/host/codex/test_tool_schemas.py",
     ],
     "migration": [
+        "tests/migration/test_handoff_upgrade.py",
         "tests/migration/test_health_upgrade.py",
         "tests/migration/test_reflection_upgrade.py",
         "tests/migration/test_adoption_upgrade.py",

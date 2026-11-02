@@ -773,9 +773,17 @@ def test_only_a_client_that_names_its_conversation_is_offered_the_tools_that_cha
     offered = [tool.name for tool in server.server._tool_manager.list_tools()]
     if host == "codex":
         writes = ["propose_memory", "revise", "forget"]
-        assert offered == [*READ_TOOLS[:5], *writes, "status"]
+        assert offered == [
+            *READ_TOOLS[:5],
+            *writes,
+            "status",
+            "handoff_write",
+            "handoff_list",
+            "handoff_accept",
+            "handoff_cancel",
+        ]
     else:
-        assert offered == READ_TOOLS
+        assert offered == [*READ_TOOLS, "handoff_write", "handoff_list", "handoff_accept", "handoff_cancel"]
 
 
 # -- the session record ------------------------------------------------------

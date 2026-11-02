@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from ..contracts import ContractError, utc_timestamp
-from . import lineage, private
+from . import handoff, lineage, private
 from .claim_storage import parse_source_ref
 from .claims import statement_key
 from .recall_budget import estimate_tokens
@@ -43,6 +43,7 @@ def _dependencies(conn, items):
 def rebuild_scope(tx, scope_id: str, now: str) -> bool:
     """Replace one scope's manifest when the selected object versions or their rank change."""
     conn = tx._check(write=True)
+    handoff.expire_pending(tx, scope_id, now)
     cutoff = (datetime.fromisoformat(utc_timestamp(now)) - timedelta(days=14)).isoformat()
     tasks = conn.execute(
         "SELECT e.episode_id,e.current_revision,v.recorded_at FROM episodes e "
@@ -358,7 +359,7 @@ def _safe_line(tx, search, item, intervals, hydration):
 
 
 def _mark_delivered(tx, context, items, now: str, cutoff: int) -> None:
-    pairs = [("claim", item["ref"], item["revision"]) for item in items if item["kind"] != "task"]
+    pairs = [("claim", item["ref"], item["revision"]) for item in items if item["kind"] in {"decision", "preference"}]
     tx._check(write=True).executemany(
         "INSERT INTO session_brief_injections(entry_id,session_id,object_kind,object_ref,revision,delivered_at,"
         "delivery_compacted_at,delivery_compacted_seq) VALUES(?,?,?,?,?,?,?,?) "
@@ -389,6 +390,7 @@ def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
                 continue
             lines.append(line)
             items.append({"kind": kind, "ref": candidate.ref, "revision": candidate.revision})
+    handoff.append_brief(tx, search.now, items, lines, _HEADING, token_limit)
     return items, lines
 
 
@@ -411,7 +413,7 @@ def remove_question_overlaps(brief: dict, question_text: str) -> None:
     kept = [
         (item, line)
         for item, line in zip(brief["items"], brief["_lines"], strict=True)
-        if item["kind"] == "task" or item["ref"] not in question_text
+        if item["kind"] in {"task", "handoff"} or item["ref"] not in question_text
     ]
     brief["items"] = [item for item, _line in kept]
     brief["_lines"] = [line for _item, line in kept]
@@ -501,12 +503,16 @@ def _still_valid(tx, clock, context, brief) -> bool:
         return False
     if (mode == "full" and brief["text"]) or (brief["_deliver"] and not brief["_compact"] and _started(tx, context)):
         return False
+    if not handoff.brief_valid(tx, now, brief["items"], brief["_lines"]):
+        return False
     if tx.memory_epoch() == brief["_epoch"] and marker == brief["_privacy_marker"]:
         return True
     search = SearchContext("session briefing", "auto", None, (), SearchLimits(), clock.monotonic() + 5, now, context)
     manifest = {(item["kind"], item["ref"]): item for item in _manifest(tx, context)}
     intervals, hydration = private.active_intervals(tx, now), RetrievalHydration()
     for item, line in zip(brief["items"], brief["_lines"], strict=True):
+        if item["kind"] == "handoff":
+            continue
         saved = manifest.get((item["kind"], item["ref"]))
         found = _safe_line(tx, search, saved, intervals, hydration) if saved else None
         if found is None or found[2] != line:

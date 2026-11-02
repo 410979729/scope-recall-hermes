@@ -1,6 +1,7 @@
 "use strict";
 window.UI_STRINGS = {
   "en": {
+    "handoffs": "Handoffs", "accepted": "Accepted", "cancelled": "Cancelled", "expired": "Expired",
     "health": "Memory health",
     "health_duplicateGroup": "Possible duplicates",
     "health_entities": "Possible duplicate entities",
@@ -155,6 +156,7 @@ window.UI_STRINGS = {
     "saveImportance": "Save importance"
   },
   "zh": {
+    "handoffs": "交接", "accepted": "已接", "cancelled": "取消", "expired": "过期",
     "health": "记忆体检",
     "health_duplicateGroup": "可能重复",
     "health_entities": "可能重复的实体",

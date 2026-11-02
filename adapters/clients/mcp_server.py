@@ -25,6 +25,8 @@ from mcp.types import ToolAnnotations
 from pydantic import Field, StrictInt, StrictStr
 from scope_recall.contracts import ContractError, Origin, SourceEvent, TrustedContext, validate_model_request
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.handoff import execute as execute_handoff
+from scope_recall.core.handoff import tool_schemas as handoff_schemas
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import TRACE_GUIDANCE, fence_trace_epoch
 
@@ -120,6 +122,18 @@ _TOOLS: tuple[tuple[str, str, ToolAnnotations], ...] = (
         ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False),
     ),
     ("status", "Read bounded Core status and adapter capability gaps. Protocol version 1.1.", _READ_ONLY),
+    *(
+        (
+            schema["name"],
+            schema["description"],
+            _READ_ONLY
+            if schema["name"] == "handoff_list"
+            else ToolAnnotations(
+                read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+            ),
+        )
+        for schema in handoff_schemas()
+    ),
 )
 
 
@@ -334,6 +348,74 @@ class CodexMCPServer:
         return envelope(call_id, result, origin=OUTPUT_ORIGIN, capability_gaps=self._capability_gaps(ctx))
 
     # -- tools (method name == MCP tool name, see _TOOLS) ----------------
+
+    def _handoff(self, ctx, action, protocol_version, payload, request_id):
+        body, call_id = self._request(protocol_version=protocol_version, request_id=request_id)
+        del body
+        if action != "list" and isinstance(self.config, SharedClientConfig) and not self.audience.writable_scope_ids:
+            raise ContractError("ACCESS_DENIED", "writable_scope")
+        context = trusted_context(
+            self.config,
+            self.audience,
+            session_id=self.session_id,
+            actor_origin="assistant_visible",
+            mutation=action != "list",
+            project_root=str(self.workspace),
+        )
+        result = execute_handoff(self.core, context, action, payload)
+        return envelope(call_id, result, origin=OUTPUT_ORIGIN)
+
+    def handoff_write(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        report: Annotated[
+            dict[str, Any], Field(json_schema_extra=handoff_schemas()[0]["parameters"]["properties"]["report"])
+        ],
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """Write an agent report or confirm this entry's versioned draft."""
+        return self._handoff(ctx, "write", protocol_version, report, request_id)
+
+    def handoff_list(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        include_closed: bool = False,
+        limit: StrictInt = 30,
+        before: StrictInt | None = None,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """List pending reports, with explicit safety and confirmation labels."""
+        return self._handoff(
+            ctx, "list", protocol_version, dict(include_closed=include_closed, limit=limit, before=before), request_id
+        )
+
+    def handoff_accept(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        ref: StrictStr,
+        expected_revision: StrictInt,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """Claim one pending handoff for this authenticated entry."""
+        return self._handoff(
+            ctx, "accept", protocol_version, dict(ref=ref, expected_revision=expected_revision), request_id
+        )
+
+    def handoff_cancel(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        ref: StrictStr,
+        expected_revision: StrictInt,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """Cancel one report written by this authenticated entry."""
+        return self._handoff(
+            ctx, "cancel", protocol_version, dict(ref=ref, expected_revision=expected_revision), request_id
+        )
 
     def recall(
         self,

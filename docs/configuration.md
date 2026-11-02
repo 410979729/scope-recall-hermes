@@ -200,3 +200,68 @@ Nested objects use the definitions above: binding → InstanceBinding; auxiliary
 budget → BudgetPolicy; pricing values → ModelPricing; subscription_budget → SubscriptionBudgetPolicy.
 In model_token_caps each model maps to an object with input and output integers or null; both keys are stated.
 Embedding descriptor fields may be omitted together to select the built-in space.
+
+
+## Task handoffs
+
+`handoff_write`, `handoff_list`, `handoff_accept` and `handoff_cancel` are available
+on the Codex, Claude Code, WorkBuddy and dsh MCP servers and the Hermes provider.
+They use the authenticated entry's read and write scopes. Handoffs are agent
+reports attached to task episodes; they do not become facts or consolidation input.
+
+To write a report, pass `protocol_version: "1.1"` and a `report` object:
+
+```json
+{
+  "task_ref": "episode-reference",
+  "progress": "Layout is ready",
+  "changed_files": ["src/layout.py"],
+  "uncommitted_files": ["src/layout.py"],
+  "next_step": "Check the narrow viewport",
+  "owner_decisions": [],
+  "evidence_refs": ["source-reference@1"],
+  "session_label": "sender-conversation-label",
+  "ttl_days": 7
+}
+```
+
+Use a visible task episode and current source references belonging to it. File
+paths and progress are reports; the server does not read those files or verify
+Git status. `session_label` is optional and always labelled `unverified`; it never
+authorizes a write or identifies a unique handoff. A store-generated reference
+identifies each report. A trusted project id, or a host-supplied normalized working
+directory when project ids are absent, confines delivery to the same project.
+An unverified or missing project directory cannot authorize a directory-based report.
+
+`ttl_days` accepts integers from 1 to 365 and defaults to 7. `handoff_list` returns
+at most 30 records by default, up to 100 with `limit`; continue with `next_before`
+as `before`. Set `include_closed: true` to include accepted, cancelled and expired
+records. Every record includes its confirmation and safety state. Explicit reads
+label held reports; they never release a held source's text.
+
+Pass `ref` and `expected_revision` to accept or cancel. Only one entry can accept;
+a second attempt reports `already_accepted` and the receiving entry. A stale version
+is refused. Cancellation belongs to the sending entry or the local installation
+owner through the management page. The owner page uses the existing preview and
+confirmation operation. Reports keep their lifecycle audit in SQLite.
+
+At session end, existing task resumes produce unconfirmed drafts. A resume
+published after its session end also produces a draft. The sending entry confirms
+one through `handoff_write` with `report: {"draft_ref": "handoff-reference",
+"expected_revision": 1}`. Confirmation publishes the exact stored snapshot;
+changed evidence requires a new report. No additional model call is made.
+
+The session briefing includes at most three confirmed pending handoffs within
+`session_brief_tokens`. Each appears as escaped JSON labelled as an external
+agent report. Accepted, cancelled, expired, quarantined and pending-review reports
+are excluded. Lifecycle, expiry, source visibility and injection policy are checked
+again before delivery. Reads apply expiry immediately; the existing briefing
+worker records expiry transitions in bounded writes. Turning off
+`session_brief_enabled` also turns off automatic handoff delivery. No host memory
+file needs to be edited.
+
+The automatic schema upgrade preserves existing facts and keeps the upgrade
+coordinator's rollback snapshot. To return to an older release, restore its
+pre-upgrade snapshot using the documented restore workflow; older code does not
+write the newer schema. Handoffs are local coordination records and are not
+included in the portable memory interchange format.

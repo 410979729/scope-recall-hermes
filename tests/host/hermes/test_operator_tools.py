@@ -77,6 +77,10 @@ def test_operator_tools_expose_frozen_names_and_strict_boundary(adapter):
         "forget",
         "status",
         "trace",
+        "handoff_write",
+        "handoff_list",
+        "handoff_accept",
+        "handoff_cancel",
     ]
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
 
@@ -518,3 +522,18 @@ def test_every_tool_declaration_is_one_gemini_accepts(adapter):
     for name, schema in schemas.items():
         assert _refused_by_gemini(schema["parameters"]) == [], name
     assert schemas["revise"]["parameters"]["properties"]["new_value"] == {"type": ["string", "object", "null"]}
+
+
+def test_handoff_provider_uses_existing_tool_dispatch(adapter):
+    provider, _clock = adapter
+    reply = json.loads(provider.handle_tool_call("handoff_list", {"protocol_version": "1.1"}))
+    assert reply["result"]["items"] == []
+    assert {"handoff_write", "handoff_list", "handoff_accept", "handoff_cancel"} <= {
+        s["name"] for s in provider.get_tool_schemas()
+    }
+    refused = json.loads(
+        provider.handle_tool_call(
+            "handoff_accept", {"protocol_version": "1.1", "ref": "TEST-missing", "expected_revision": True}
+        )
+    )
+    assert refused["error"]["code"] == "INPUT_INVALID"
