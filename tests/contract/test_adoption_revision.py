@@ -114,7 +114,7 @@ def test_long_locator_uses_previews_and_keeps_full_selected_evidence(app):
     def judge(messages, **kwargs):
         body = json.loads(messages[-1]["content"])
         calls.append(body)
-        assert body["fragments"][1]["preview"] is True
+        assert body["outline"] is True
         assert body["fragments"][1]["full_length"] > len(body["fragments"][1]["text"])
         return json.dumps(selected("partial"), ensure_ascii=False)
 

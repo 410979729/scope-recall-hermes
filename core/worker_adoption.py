@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from ..contracts import ContractError
@@ -36,8 +37,10 @@ def advance_adoption(storage, context, snapshot, state, judge, *, clock, remaini
     if private.outbound_blocked(storage, clock, context, sources=sources):
         raise ContractError("ACCESS_DENIED", "private_mode")
     if stage == "locate":
-        raw = judge(adoption_messages(snapshot.confirmation, snapshot.fragments), remaining_seconds=remaining_seconds)
-        selection = decode_selection(raw, snapshot.fragments)
+        locator = adoption_messages(snapshot.confirmation, snapshot.fragments)
+        raw = judge(locator, remaining_seconds=remaining_seconds)
+        # A model cannot select an omitted id even if it guesses its original number.
+        selection = decode_selection(raw, json.loads(locator[-1]["content"])["fragments"])
         if selection is None:
             return dict(stage="done"), None
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:

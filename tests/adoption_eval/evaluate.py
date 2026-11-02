@@ -71,9 +71,11 @@ def evaluate(case, config, stopped, *, endpoint):
         )
         return content
 
-    raw = call(adoption_messages(owner, parts), "locate")
+    locator = adoption_messages(owner, parts)
+    material = json.loads(locator[-1]["content"])
+    raw = call(locator, "locate")
     try:
-        selection = decode_selection(raw, parts)
+        selection = decode_selection(raw, material["fragments"])
     except (ContractError, ValueError, TypeError) as exc:
         return dict(
             id=case["id"],
@@ -112,6 +114,8 @@ def evaluate(case, config, stopped, *, endpoint):
         selection=selection,
         calls=records,
         support=verdict,
+        locator_outline=material["outline"],
+        locator_omitted_fragments=material["omitted_fragments"],
     )
 
 
@@ -122,19 +126,21 @@ def main():
     parser.add_argument("--approved-endpoint", required=True, type=str)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--concurrency", type=int, choices=range(1, 3), default=1)
+    parser.add_argument("--corpus", choices=("short", "long"), default="short")
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))["chat"]
     if config["endpoint"] != args.approved_endpoint:
         parser.error("route is outside the approved endpoint")
     if args.output.exists():
         parser.error("output must be a fresh path")
-    cases_path = ROOT / "fixtures/adoption/cases.json"
+    cases_path = ROOT / "fixtures/adoption" / ("cases-long.json" if args.corpus == "long" else "cases.json")
     cases = json.loads(cases_path.read_text(encoding="utf-8"))
     if len(cases) != 24 or sum(c["adopted"] for c in cases) != 12:
         parser.error("expected the fixed 12 positive and 12 negative corpus")
     stopped = threading.Event()
     result = dict(
         complete=False,
+        corpus=args.corpus,
         corpus_sha256=hashlib.sha256(cases_path.read_bytes()).hexdigest(),
         endpoint=args.approved_endpoint,
         model=config["model"],

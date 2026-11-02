@@ -140,3 +140,4 @@ def test_hundred_turn_cost_and_ordinary_decision_survival(app, with_adoptions, r
     assert kept == len(ordinary)
     assert result["retries"] == 2
     assert len(extra) == 102 + 2 * len(choices)
+    assert result["added_input_tokens"] / result["turns"] < 700

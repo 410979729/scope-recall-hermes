@@ -173,6 +173,7 @@ SUITES = {
         "tests/contract/test_adoption.py",
         "tests/contract/test_adoption_revision.py",
         "tests/contract/test_adoption_cost.py",
+        "tests/contract/test_adoption_outline.py",
         "tests/contract/test_memory_import.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",
