@@ -163,6 +163,9 @@ class SearchContext:
     entity_fence: tuple[tuple[str, int], ...] = ()
     #: A literal miss is frozen too: downstream stages must use this entry snapshot.
     entity_names_resolved: bool = False
+    #: Only the packet compiler can finish summary/original selection against
+    #: the full envelope. Direct retrieval keeps its ordinary result limits.
+    packet_selection: bool = False
 
     @property
     def automatic_injection(self) -> bool:

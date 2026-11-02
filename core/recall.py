@@ -11,6 +11,7 @@ from typing import Protocol
 
 from ..contracts import ContractError, utc_timestamp
 from . import private
+from .adoption_storage import adopted_source
 from .auto_recall import automatic_recall_skip_reason
 from .background_context import background_candidates, current_task_candidate
 from .claim_storage import parse_source_ref
@@ -42,7 +43,7 @@ from .recall_policy import (
     rrf_score,
     same_message,
 )
-from .recall_restatement import prefer_originals
+from .recall_restatement import has_conversation_summaries, prefer_originals
 from .recall_scope import asks_what_held_before, asks_what_was_said, query_scope, query_time
 from .retrieval import (
     CandidateRef,
@@ -58,6 +59,22 @@ from .retrieval import (
 from .retrieval_hydration import replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import note_embedding_failure, vector_failure_label
+
+
+def _excluded_relation_source(tx, context, seed, candidate):
+    """Keep held prompts and unselected assistant alternatives out of automatic evidence expansion.
+
+    The adopted decision already contains its selected content and references.
+    Explicit source reads retain the complete assistant reply for inspection.
+    """
+    if candidate.kind != "event":
+        return False
+    return f"{candidate.ref}@{candidate.revision}" in context.current_source_refs or (
+        context.automatic_injection
+        and seed.kind == "claim"
+        and adopted_source(tx, seed.ref, seed.revision) == (candidate.ref, candidate.revision)
+    )
+
 
 #: Claims offered per round.  A packet holds at most 30 items and a default one
 #: six; a claim that answers competes for those slots on rank, so a deep pool
@@ -769,10 +786,7 @@ class RetrievalPipeline:
                             return stopped("relation_bound_reached")
                         continue
                     seen.add(candidate.key)
-                    if (
-                        candidate.kind == "event"
-                        and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs
-                    ):
+                    if _excluded_relation_source(tx, context, seed, candidate):
                         continue
                     aside = _Aside()
                     admitted = self._hydrate_admit(tx, candidate, context, aside=aside) is not None
@@ -1015,6 +1029,8 @@ class RetrievalPipeline:
         """
         scope = None
         try:
+            from .summary_storage import previous_conversation_scope
+
             if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
                 entries = getattr(getattr(tx, "registry", None), "entries", None)
                 names = (
@@ -1025,6 +1041,8 @@ class RetrievalPipeline:
                 scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
                 if scope is not None and not asks_what_was_said(scope.rest):
                     scope = None
+            if scope is None:
+                scope = previous_conversation_scope(tx, working.query, now=working.now)
         except Exception as exc:
             gaps.append(f"scope_unreadable:{type(exc).__name__}")
             scope = None
@@ -1270,8 +1288,16 @@ class RetrievalPipeline:
             now=getattr(self.clock, "utc_now", lambda: working.now)(),
         )
         pool = distinct.filtered(ordered)
-        ranked = self._apply_budget(pool, working.limits, gaps, context=working)
-        query_items = tuple(obj for _, obj in ranked)
+        defer_budget = working.packet_selection and has_conversation_summaries(pool)
+        # A summary cannot be discarded until the original survives the packet's
+        # full envelope and schema limits. Keep a bounded pool for that compiler,
+        # which owns final selection and can refill slots released by duplicates.
+        ranked = (
+            withhold_secret_items(pool, gaps, content=lambda pair: pair[1])[: working.limits.candidate_pool]
+            if defer_budget
+            else self._apply_budget(pool, working.limits, gaps, context=working)
+        )
+        query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):
                 # Nothing that fits answered (as when the only hit that fits is a message the model still holds): one
@@ -1295,7 +1321,8 @@ class RetrievalPipeline:
                 and not (working.in_context_since is not None and _in_context(tx, pair[1], working))
             )
             note_truncation(gaps, "packet_slots", considered=working.limits.max_items, available=len(ranked))
-            ranked = ranked[: working.limits.max_items]
+            if not defer_budget:
+                ranked = ranked[: working.limits.max_items]
         note_duplicates(gaps, distinct.collapsed)
         # Content equality saves full-item slots, but cannot establish that
         # independent sessions describe the same event. Only the proven

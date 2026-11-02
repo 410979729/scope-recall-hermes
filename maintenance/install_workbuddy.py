@@ -7,9 +7,9 @@ command hooks from ``hooks`` in ``settings.json`` in its own home (``~/.workbudd
 own: the desktop app starts it with ``--strict-mcp-config`` and only its connector proxy, which serves the user's
 servers listed in ``mcp.json`` there, each once the user has approved it in WorkBuddy.  (``.mcp.json`` beside it is
 the app's own record of that proxy, and nothing reads another server from it.)  So the target of this install is that
-home, which WorkBuddy shares: no file there is the installer's own.  The install adds or updates its own entries in
-those two files, keeps every other key, hook and server, and copies a file into the install's backups before changing
-it; uninstall takes out its own entries only.
+home, which WorkBuddy shares: its configuration stays host-owned; the memory skill is installer-owned. The install
+adds or updates its own entries in those two files, keeps every other key, hook and server, and backs up each file
+before changing it; uninstall takes out its own entries only.
 
 On Windows WorkBuddy runs a hook command through Git Bash (``bash -c``; elsewhere through ``$SHELL -c``), so every
 path in the command is a double-quoted forward-slash path.  A hook's ``timeout`` is in seconds, and a prompt hook that
@@ -23,8 +23,9 @@ import copy
 import json
 import os
 import shlex
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from . import install_client
 from .install_client import (  # noqa: F401 -- install.py calls these on every host's module
@@ -39,7 +40,7 @@ from .install_client import (  # noqa: F401 -- install.py calls these on every h
     validate_local_platforms,
     validate_owner_logins,
 )
-from .install_common import InstallError, InstallPlan, like_original, read_host_file
+from .install_common import SKILLS, InstallError, InstallPlan, like_original, read_host_file
 
 HOST = "workbuddy"
 SETTINGS_FILENAME = "settings.json"
@@ -92,8 +93,12 @@ def host_config_files(target_plugin_dir: Path) -> tuple[Path, ...]:
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
-    """No file is this installer's own: everything it writes is merged into WorkBuddy's files."""
-    return {}
+    """Keep the discoverable memory skill in the receipt; host settings are merged separately."""
+    return {
+        plan.target_plugin_dir / "skills" / "scope-recall-memory" / "SKILL.md": SKILLS["scope-recall-memory"].read_text(
+            encoding="utf-8"
+        )
+    }
 
 
 # -- the hook command and the server ----------------------------------------------------------------------------

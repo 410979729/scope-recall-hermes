@@ -11,6 +11,7 @@ from dataclasses import replace
 
 from ..contracts import RecallPacket
 from . import private
+from .adoption_storage import is_adopted_assistant
 from .claim_storage import parse_source_ref
 from .model_content import withhold_secret_items
 from .recall_budget import canonical_render_json, estimate_tokens
@@ -18,6 +19,7 @@ from .recall_items import packet_item
 from .recall_policy import meaningful_query_terms
 from .recall_restatement import prefer_originals
 from .retrieval import MAX_PACKET_ITEMS, SearchContext
+from .summary_validity import CONVERSATION_SUMMARY_REASONS
 
 LABEL = "Other-session matches"
 MAX_ROWS = 12
@@ -49,6 +51,8 @@ def _session(source):
 def _qualified(obj):
     return (
         obj.kind in {"event", "claim"}
+        and dict(obj.metadata).get("qualification_reason")
+        not in (*CONVERSATION_SUMMARY_REASONS, "owner_adopted_assistant_proposal")
         and obj.temporal_status == "current"
         and not {"restatement_of", "replaced_by", "recall_echo"}.intersection(dict(obj.metadata))
     )
@@ -71,6 +75,8 @@ def _representatives(tx, reader, result, context, packet, clock):
         if not _qualified(obj):
             continue
         for source in readable_sources(tx, obj, policy):
+            if source.event["origin"] == "assistant_visible" and is_adopted_assistant(tx, source.ref, source.revision):
+                continue
             ref = f"{source.ref}@{source.revision}"
             if ref not in roots:
                 roots[ref] = replace(candidate, kind="event", ref=source.ref, revision=source.revision)

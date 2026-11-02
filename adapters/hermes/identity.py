@@ -22,6 +22,7 @@ from scope_recall.contracts import (
 )
 
 from ...core.private import normalize_project_path
+from ...runtime.remote_clock import stored_session_id as session_identity
 from ...runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from ..host_identity import HermesRuntimeScope, RuntimeAudience, entry_owner, principal_ref, resolve_runtime_audience
 from ..host_identity import context_ref as _context_ref
@@ -219,7 +220,7 @@ class HermesIdentity:
         dispatches its hooks by its own id (``hooks._active_adapter``).
         """
         active = self.session_id if session_id is None else session_id
-        return f"{self.entry_id}:{active}" if self.entry_id is not None else active
+        return session_identity(active, entry_id=self.entry_id)
 
     def trusted_context(
         self,

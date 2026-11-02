@@ -110,6 +110,8 @@ def _released_event(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool
 
 
 def _released_claim(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool):
+    from .summary_validity import is_conversation_summary, summary_live
+
     versions = tx.claims.versions(ref.ref)
     if history:
         item = next((version for version in versions if version.revision == ref.revision), None)
@@ -117,6 +119,8 @@ def _released_claim(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool
         item = select_effective(versions, clock.utc_now())
     if item is not None and item.revision != ref.revision:
         raise ContractError("VERSION_CONFLICT")
+    if item is not None and is_conversation_summary(item) and not summary_live(tx, item.ref, item.revision):
+        raise ContractError("SOURCE_MISSING", "summary_dependencies")
     if automatic and item is not None and item.payload.get("intention", {}).get("state") in CLOSED_INTENTION_STATES:
         raise ContractError("SOURCE_MISSING")
     return item

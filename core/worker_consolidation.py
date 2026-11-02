@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from ..contracts import ContractError, decode_payload, utc_instant, validate_payload
 from . import private
+from .adoption_work import adoption_checkpoint, process_adoption
 from .candidate_lifecycle import candidate_model_subject
 from .consolidate import (
     ConsolidationWorkFence,
@@ -480,13 +481,24 @@ def process_consolidate(
     started: float,
     budget: float,
 ) -> tuple[str, str | None, str]:
-    finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         feedback = tx.work.derivation_feedback(item.work_id)
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             state = tx.work.read_state(item.work_id) or "stale"
             return "stale", "authority_revoked" if state == "obsolete" else None, state
-        read = _read_batch(tx, item, clock)
+        checkpoint = adoption_checkpoint(tx, item.work_id)
+        read = _read_batch(tx, item, clock) if checkpoint is None else None
+    if checkpoint is not None:
+        return process_adoption(storage, clock, context, item, checkpoint, model, started=started, budget=budget)
+    return _process_ordinary(
+        storage, clock, context, item, (read, feedback), model=model, started=started, budget=budget
+    )
+
+
+def _process_ordinary(storage, clock, context, item, prepared, *, model, started, budget):
+    """Run ordinary consolidation independently of any pending adoption stage."""
+    read, feedback = prepared
+    finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     # Do not open a write transaction while the read transaction above is
     # still active.  SQLite's reader lock otherwise turns an obsolete source
     # into a spurious "database is locked" failure.
@@ -576,9 +588,19 @@ def process_consolidate(
             )
     except ContractError as exc:
         return _accept_refused(finish, exc)
+    return _consolidation_outcome(
+        storage, context, item, verdicts, chunk, remaining_seconds=budget_left(started, clock, budget)
+    )
+
+
+def _consolidation_outcome(storage, context, item, verdicts, chunk, *, remaining_seconds):
+    """Reflect the durable row when ordinary work handed off to adoption stages."""
     support_failure = next((v.failure_code for v in verdicts if v.failure_code), None)
     if chunk is not None and not chunk.final:
         return "deferred", support_failure, "pending"
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        if tx.work.read_state(item.work_id) == "pending":
+            return "deferred", support_failure, "pending"
     disposition = "deferred" if support_failure and failure_category(support_failure) == "capability" else "completed"
     return disposition, support_failure, "done"
 
@@ -588,15 +610,30 @@ def build_consolidation_model(port) -> ConsolidationModel | None:
         return None
 
     class Adapter:
-        def judge(self, messages, *, remaining_seconds=1.0):
+        def __init__(self):
+            self._used = 0
+
+        @property
+        def remaining_calls(self):
+            """Expose a pass allowance without renewing or replacing the model port."""
+            if hasattr(port, "remaining_calls"):
+                return port.remaining_calls
+            limit = getattr(port, "max_calls_per_pass", None)
+            return max(0, limit - self._used) if limit is not None else None
+
+        def _call(self, messages, remaining_seconds):
+            self._used += 1
             return port.propose(messages, remaining_seconds=remaining_seconds)
+
+        def judge(self, messages, *, remaining_seconds=1.0):
+            return self._call(messages, remaining_seconds)
 
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
             messages = consolidation_messages(sources, episode_ref=episode_ref, validation_feedback=validation_feedback)
-            return port.propose(messages, remaining_seconds=remaining_seconds)
+            return self._call(messages, remaining_seconds)
 
         def evaluate_candidate(self, candidate, sources, *, remaining_seconds=1.0, validation_feedback=None):
             messages = candidate_evaluation_messages(candidate, sources, validation_feedback=validation_feedback)
-            return port.propose(messages, remaining_seconds=remaining_seconds)
+            return self._call(messages, remaining_seconds)
 
     return Adapter()

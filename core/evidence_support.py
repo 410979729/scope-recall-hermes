@@ -54,6 +54,11 @@ def using_support(verdicts):
 def support_verdict(proposal, roots) -> SupportVerdict | None:
     """Read only a receipt matching this proposal and these live source versions."""
     contents = {(root.ref, root.revision): root.content for root in roots}
+    return support_for_contents(proposal, contents)
+
+
+def support_for_contents(proposal, contents) -> SupportVerdict | None:
+    """Match a receipt when dependent assistant slices accompany a human root."""
     fingerprint = support_fingerprint(proposal, contents)
     return next((verdict for verdict in _VERDICTS.get() if verdict.fingerprint == fingerprint), None)
 

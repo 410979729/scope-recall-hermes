@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from ..contracts import ContractError
 from . import lexical_index, lineage
+from .adoption_storage import purge_adoptions
 from .claims import canonical_time
 from .inbox_rules import deleted_forms, deleted_text, holds, taking_a_new_key
 from .schema import OBJECT_TABLES
@@ -630,6 +631,7 @@ class Deletions:
                 conn.execute("UPDATE reference_versions SET payload_json='{}' WHERE reference_id=?", (ref,))
             else:
                 raise ContractError("DERIVATION_INVALID", "unresolved_purge_kind")
+            purge_adoptions(conn, kind, ref)
             lineage.purge_quotes(conn, kind, ref)
         layers = receipt["layers"]
         layers["sqlite_active"] = "removed"

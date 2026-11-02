@@ -274,6 +274,7 @@ class QueryScope:
     windows: tuple[tuple[str, str], ...]
     entry_ids: tuple[str, ...]
     rest: str
+    session_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

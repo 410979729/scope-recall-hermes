@@ -1,28 +1,27 @@
 # Scope Recall
 
-Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, and for Codex, Claude Code, WorkBuddy and DeepSeek Harness (dsh), which share one adapter of hooks and an MCP server (the MCP tools need the optional `codex` extra; dsh runs the hooks through a plugin). The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
+This checkout is `4.0.0.dev0`. Local, source-backed memory shared by Claude Code, Codex, Hermes, WorkBuddy and DeepSeek Harness.
+SQLite keeps the original conversations; model-derived facts and vectors remain traceable and rebuildable.
 
-This checkout is `4.0.0.dev0`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
-store as an entry, what the owner tells one of them another can recall, and each memory says
-which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that is not
-attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
-are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
-[GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later to `3.17.0` is
-`pip install -U`, `apply-install` and a host restart; the first store open adds the local management audit and private-interval tables. Back up
-before upgrading and follow the [management migration and rollback guide](docs/manage.md#migration-and-rollback).
-On a shared store in
-the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
-([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order through the snapshot-backed upgrade coordinator;
-an earlier release cannot open the upgraded store. Section 9 of the
-[3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
-migration procedure for a 2.0.1 memory database.
-Facts are drawn from accumulated evidence rather than judged one sentence on
-sight; only the owner's explicit correction or confirmation changes a fact as it
-is captured. SQLite is the only fact authority; host adapters share the same
-contracts.
+## Quick start
 
-Host messages, linked worktree identity, transcript recovery and MCP lifetime are described in
-[Host capture and identity](docs/host-integration.md).
+1. In the Python environment you want the hooks to use, run `python -m pip install -U "hermes-scope-recall[codex]"`.
+2. Run `scope-recall setup`. Review the detected hosts, store, scopes, zero model budget and worker plan, then confirm.
+3. Start a new host session. Approve the plugin hooks or MCP server when the host asks.
+
+| Host | Setup and host-specific approval |
+|---|---|
+| Claude Code | [Setup](docs/install/claude-code.md) |
+| Codex | [Setup and hook review](docs/install/codex.md) |
+| Hermes | [Setup and local identity](docs/install/hermes.md) |
+| WorkBuddy | [Setup and MCP approval](docs/install/workbuddy.md) |
+| DeepSeek Harness | [Setup and plugin check](docs/install/dsh.md) |
+
+Without model routes or budget, setup reports **原文检索可用** (original-text search available).
+Use `scope-recall setup --configure-models` for guided routes and budget configuration, or
+`--models <route-file.json>` for automation. Successful model checks report **完整记忆功能可用**
+(full memory features available). Model keys are environment references; setup never asks for a key value.
+[Installation](docs/install.md) covers shared stores, reruns, worker commands and verification boundaries.
 
 Automatic recall injects zero to six items that clear a lexical coverage or
 vector similarity floor. Background preferences and tasks accompany passing
@@ -88,79 +87,11 @@ identity follows junctions and symbolic links on the owning machine; recalls and
 requests check again before release. [The private-mode guide](docs/private-mode.md) lists every host path, injection notice,
 migration and what is stored or sent in each mode.
 
-## For agents: install or upgrade on the user's behalf
+## Install or upgrade with an assistant
 
-Users only need to ask "install Scope Recall" or "帮我升级一下 scoperecall".
-Start with `scope-recall setup --host <hermes-or-codex> --home <actual-instance-home>`.
-New users go directly to installation; only detected legacy databases go through
-[the agent migration workflow](maintenance/AGENT_WORKFLOW.md). The installed
-`scope-recall-setup` skill makes this routing discoverable in Hermes and Codex.
-A second installed skill, `scope-recall-memory`, which Claude Code gets too, is for the owner's everyday questions:
-what is remembered about me, did I say it or was it worked out, does it still hold, and
-what correcting, muting or deleting one memory does before it is done. Claude Code, WorkBuddy and dsh only read
-memory through their tools; the change is made in Codex or a Hermes chat on the same store.
-Perform path discovery, backup, audience binding, migration, indexing and host
-checks yourself; do not ask the user to execute commands or govern old memories.
-
-## Install
-
-Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md). Claude Code
-installs only as an entry of a shared store, and Codex can join one too:
-[docs/shared-store.md](docs/shared-store.md). WorkBuddy runs the same hooks and MCP server, also
-only as an entry; its installer adds them to WorkBuddy's own `settings.json` and `mcp.json`
-([docs/install.md](docs/install.md), section 12). dsh (DeepSeek Harness) runs them through a plugin
-the installer writes and names in dsh's home patch, also only as an entry, with dsh's upload of its
-session logs switched off ([docs/install.md](docs/install.md), section 13).
-
-The package is `hermes-scope-recall` on PyPI. Install it into the host's isolated Python environment:
-
-```text
-python -m pip install -U "hermes-scope-recall[vectors]"
-python -m pip install -U "hermes-scope-recall[vectors,codex]"
-```
-
-The second command adds the MCP SDK for Codex, Claude Code, WorkBuddy and dsh.
-Raw float32 embeddings live in a separate SQLite companion. NumPy scans worker-maintained
-mapped arrays, using approved normalized prefixes to select global candidates and the original
-full vectors for every returned cosine score. The global candidate target is 1024; numerical
-blocks use at most four threads and never more than the physical core count. Final result
-scores are checked against SQLite. Non-finite scan scores or a score mismatch quarantine
-the generation and select an exact raw scan. Workers also audit published page checksums
-in bounded batches. Missing derived files use the same raw scan.
-The `vectors` extra remains accepted for installation compatibility and adds no packages.
-`doctor` reports the selected engine and index/import watermarks. Android's PyPI packages do not
-supply NumPy wheels; without a runtime-provided NumPy, recall remains lexical.
-
-The same wheel and sdist are attached to each
-[GitHub release](https://github.com/410979729/scope-recall-hermes/releases/latest)
-alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
-(`python -m pip install "<path-to-wheel>[vectors]"`). To build it yourself from this checkout instead:
-
-```text
-python -m build --wheel
-```
-
-Upgrading from 2.0.x is not an in-place upgrade. Read section 9 of the
-[3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) before you start; your old database needs a
-one-time offline migration and there are two errors people commonly hit.
-
-The two console names `scope-recall` and `hermes-scope-recall` invoke the same v3 maintenance CLI. They are aliases for the current CLI only; neither is a compatibility promise for an older command set.
-
-Use explicit absolute paths for installation planning. Hermes `--agent-id` must match the host active profile (`get_active_profile_name()`, commonly `default` on an isolated home). Hermes default `--agent-workspace` is `hermes` to match the host memory-provider init contract; pass the same value on plan and apply if you override it. Codex does not accept `--agent-workspace`.
-
-If you talk to Hermes through the Desktop app or `hermes --tui` rather than the CLI, add `--local-platform desktop` (or `tui`) to both commands. Those surfaces name no user unless a dashboard login exists, and a session that names no user is refused everywhere but the CLI until the installer approves the surface; where Hermes's gateway runs those conversations over its local session transport, it names the account the gateway runs as, which binds as the owner on an approved surface and binds nothing on another. [docs/install.md](docs/install.md) says what the approval does and does not cover. If you reach the host through a dashboard login instead (`hermes serve` with `dashboard.basic_auth`, the Desktop app on another machine), the session is that login: approve it as yours with `--owner-login desktop=basic:<name>`. A Hermes with its package
-manager (Hermes Desktop, and gateways on a Hermes that has one) builds the Python environment it runs plugins in, and
-builds it again on updates: pass it `--target-plugin-dir <home>\plugins\scope-recall`, where Hermes finds the plugin
-and the core it declares, vector dependencies included, then let Hermes sync that environment and restart it
-(sections 1 and 4 of [docs/install.md](docs/install.md)).
-
-```text
-scope-recall plan-install --host hermes --target-plugin-dir <absolute-plugin-dir> --instance-root <absolute-instance-root> --project-root <absolute-project-root> --agent-id <agent-id> --python <absolute-python>
-scope-recall apply-install --host hermes --target-plugin-dir <absolute-plugin-dir> --instance-root <absolute-instance-root> --project-root <absolute-project-root> --agent-id <agent-id> --python <absolute-python>
-scope-recall doctor --host hermes --instance-root <absolute-instance-root> --python <absolute-python>
-```
-
-Codex uses the same commands with `--host codex`, plus `--env-file <absolute-file>` so the Codex-launched MCP server and hooks can read the credential names the runtime config declares (Codex does not pass them in the environment). The installer writes only its own wrapper and installation records and preserves foreign host files. Its receipt records host registration and applicable hook trust as pending at installation time; use doctor and actual host loading to verify the current state. Uninstall keeps Core data by default; explicit purge is bounded to verified installation-owned data and refuses uncertain ownership or active writers.
+Run `scope-recall setup --dry-run --plan-json` to inspect the complete plan, then
+`scope-recall setup --yes` after the owner has approved it. Existing installations reuse their store and grants.
+Legacy conversion and live process coordination use the [migration workflow](maintenance/AGENT_WORKFLOW.md).
 
 ## Uninstall (default: retain memory)
 
@@ -212,8 +143,7 @@ and disaster recovery restore to fresh destinations are in [docs/backup-restore.
 
 Users ask their agent to upgrade. The bundled `scope-recall-setup` skill routes
 fresh installs directly to installation and existing Core databases to ordinary
-updates. Only legacy SQLite uses a durable migration job. The agent reads
-`scope-recall setup --workflow` and performs discovery, verified audience mapping,
+updates. Only legacy SQLite uses a durable migration job. The operator follows the [migration workflow](maintenance/AGENT_WORKFLOW.md) for verified audience mapping,
 backup, conversion, indexing and actual host checks. See
 [the agent upgrade guide](docs/upgrade-guide.zh-CN.md).
 

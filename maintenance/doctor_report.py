@@ -40,6 +40,7 @@ class DoctorReport:
     #: Model answers cut off at the output limit in the last hour.
     recent_output_truncations: int = 0
     memory_import: dict[str, Any] = field(default_factory=dict)
+    summaries: dict[str, Any] = field(default_factory=dict)
     capture_inbox: int = 0
     capture_inbox_blocked: int = 0
     #: Of those, rows a replay gave up after its tries (``retry-failures --apply`` returns them to it).
@@ -93,6 +94,8 @@ class DoctorReport:
     #: For a home attached to a shared store: the store's root, and this home's
     #: entry.  Everything else in the report is then the shared store's.
     shared_store: dict[str, str] = field(default_factory=dict)
+    model_workload_per_100_turns: list[dict[str, Any]] = field(default_factory=list)
+    project_copy_suggestions: list[dict[str, str]] = field(default_factory=list)
     capability_gaps: list[str] = field(default_factory=list)
     checks: list[dict[str, str]] = field(default_factory=list)
 

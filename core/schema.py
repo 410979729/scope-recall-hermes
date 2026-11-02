@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1119
+SCHEMA_VERSION = 1122
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -101,6 +101,32 @@ WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
         consolidation_offset INTEGER NOT NULL DEFAULT 0 CHECK(consolidation_offset>=0),
         UNIQUE(work_type,subject_ref,subject_revision)
     ) STRICT"""
+
+ADOPTION_STATEMENTS = (
+    """CREATE TABLE adoption_relations (
+        confirmation_ref TEXT NOT NULL, confirmation_revision INTEGER NOT NULL,
+        assistant_ref TEXT NOT NULL, assistant_revision INTEGER NOT NULL,
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id), project_id TEXT, branch_id TEXT,
+        scope TEXT, selection_json TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('bound','pending_review')),
+        reason TEXT, proposal_sha256 TEXT, claim_ref TEXT, claim_revision INTEGER, recorded_at TEXT NOT NULL,
+        PRIMARY KEY(confirmation_ref,confirmation_revision)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX adoption_assistant ON adoption_relations(assistant_ref,assistant_revision)",
+    "CREATE INDEX adoption_claim ON adoption_relations(claim_ref,claim_revision)",
+    "CREATE INDEX adoption_proposal ON adoption_relations(proposal_sha256) WHERE state='bound'",
+)
+
+
+ADOPTION_PROCESSING_STATEMENTS = (
+    """CREATE TABLE adoption_processing (
+        work_id INTEGER PRIMARY KEY REFERENCES work_items(work_id) ON DELETE CASCADE,
+        confirmation_ref TEXT NOT NULL, confirmation_revision INTEGER NOT NULL,
+        assistant_ref TEXT NOT NULL, assistant_revision INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+    ) STRICT""",
+    "CREATE INDEX adoption_processing_sources ON adoption_processing(assistant_ref,confirmation_ref)",
+)
+
 
 #: Tool-output vectors the retention window expired (``runtime/vector_retention.py``).
 #: The source stays; the row says its vector is gone on purpose, so nothing
@@ -407,6 +433,29 @@ ENTITY_STATEMENTS = (
     END""",
 )
 
+SUMMARY_STATEMENTS = (
+    "CREATE INDEX importance_backfill ON claims(claim_id) WHERE importance_assigned=0",
+    """CREATE TABLE summary_groups (
+        group_key TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('session','task')),
+        subject_ref TEXT NOT NULL, scope_id TEXT NOT NULL, project_id TEXT, branch_id TEXT,
+        entry_id TEXT NOT NULL, last_activity TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0,
+        generation INTEGER NOT NULL DEFAULT 0, manifest_json TEXT NOT NULL DEFAULT '[]',
+        state TEXT NOT NULL DEFAULT 'waiting', covered_units INTEGER NOT NULL DEFAULT 0,
+        total_units INTEGER NOT NULL DEFAULT 0, next_offset INTEGER NOT NULL DEFAULT 0,
+        signature TEXT NOT NULL DEFAULT '', failure TEXT
+    ) STRICT""",
+    "CREATE INDEX summary_due ON summary_groups(state,last_activity,group_key)",
+    """CREATE TABLE summary_parts (
+        group_key TEXT NOT NULL REFERENCES summary_groups(group_key), generation INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL, claim_ref TEXT NOT NULL, claim_revision INTEGER NOT NULL,
+        coverage_json TEXT NOT NULL, dependencies_json TEXT NOT NULL,
+        PRIMARY KEY(group_key,generation,ordinal), UNIQUE(claim_ref,claim_revision)
+    ) STRICT""",
+    """CREATE TABLE summary_backfill (
+        audience TEXT PRIMARY KEY NOT NULL, position INTEGER NOT NULL DEFAULT 0
+    ) STRICT""",
+)
+
 STATEMENTS = (
     (
         """CREATE TABLE instance_meta (
@@ -474,6 +523,10 @@ STATEMENTS = (
         read_blocked INTEGER NOT NULL DEFAULT 0 CHECK(read_blocked IN (0,1)),
         suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)),
         entity_indexed INTEGER NOT NULL DEFAULT 0 CHECK(entity_indexed IN (0,1)),
+        importance INTEGER NOT NULL DEFAULT 3 CHECK(importance BETWEEN 1 AND 5),
+        pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+        importance_assigned INTEGER NOT NULL DEFAULT 0 CHECK(importance_assigned IN (0,1)),
+        importance_owner INTEGER NOT NULL DEFAULT 0 CHECK(importance_owner IN (0,1)),
         FOREIGN KEY(claim_id,current_revision) REFERENCES claim_versions(claim_id,revision) DEFERRABLE INITIALLY DEFERRED
     ) STRICT""",
         "CREATE INDEX claim_scope_subject ON claims(scope_id,subject,predicate,project_id,branch_id)",
@@ -615,7 +668,10 @@ STATEMENTS = (
     + RECOVERY_STATEMENTS
     + CANDIDATE_STATEMENTS
     + ENTITY_STATEMENTS
+    + SUMMARY_STATEMENTS
     + CLAIM_RANK_STATEMENTS
+    + ADOPTION_STATEMENTS
+    + ADOPTION_PROCESSING_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
@@ -924,3 +980,34 @@ def upgrade_1118(connection) -> None:
         "UPDATE instance_meta SET database_id=lower(hex(randomblob(16))),schema_version=1119 WHERE singleton=1"
     )
     connection.execute("PRAGMA user_version=1119")
+
+
+def upgrade_1119(connection):
+    """Add salience defaults and rebuildable summary bookkeeping without model work."""
+    for column, definition in (
+        ("importance", "INTEGER NOT NULL DEFAULT 3 CHECK(importance BETWEEN 1 AND 5)"),
+        ("pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))"),
+        ("importance_assigned", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_assigned IN (0,1))"),
+        ("importance_owner", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_owner IN (0,1))"),
+    ):
+        connection.execute(f"ALTER TABLE claims ADD COLUMN {column} {definition}")
+    for statement in SUMMARY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1120 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1120")
+
+
+def upgrade_1120(connection):
+    """Install owner adoption bindings; the upgrade coordinator keeps the rollback snapshot."""
+    for statement in ADOPTION_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1121 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1121")
+
+
+def upgrade_1121(connection):
+    """Install resumable adoption work; ordinary consolidation data remains authoritative."""
+    for statement in ADOPTION_PROCESSING_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1122 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1122")

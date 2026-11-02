@@ -60,6 +60,7 @@ def parser():
         "show",
         "history",
         "revise",
+        "importance",
         "mute",
         "unmute",
         "forget",
@@ -82,8 +83,14 @@ def parser():
             command.add_argument("--cursor")
         if action == "search":
             command.add_argument("query", help="literal substring, without a model or network request")
-        if action in {"show", "history", "revise"}:
+        if action in {"show", "history", "revise", "importance"}:
             command.add_argument("ref")
+        if action == "importance":
+            command.add_argument("--expected-revision", type=int, required=True)
+            command.add_argument("--score", type=int, choices=range(1, 6))
+            pin = command.add_mutually_exclusive_group()
+            pin.add_argument("--pin", dest="pinned", action="store_true", default=None)
+            pin.add_argument("--unpin", dest="pinned", action="store_false")
         if action == "show":
             command.add_argument("--revision", type=int)
         if action == "history":
@@ -128,6 +135,10 @@ def execute(api, args):
     if args.action in {"list", "search"}:
         filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
         return api.list(filters, limit=args.limit, cursor=args.cursor)
+    if args.action == "importance":
+        return api.importance(
+            args.ref, expected_revision=args.expected_revision, importance=args.score, pinned=args.pinned
+        )
     if args.action == "show":
         return api.show(args.ref, revision=args.revision)
     if args.action == "history":

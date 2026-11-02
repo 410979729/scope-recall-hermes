@@ -26,9 +26,13 @@ def review_page(storage, authority, *, limit=30, before=None):
             tx._check()
             .execute(
                 """SELECT e.source_id,e.event_id,e.source_revision,e.scope_id,e.project_id,e.branch_id,e.content,
-                s.state,s.rules_json FROM source_safety s JOIN source_events e
-                ON e.event_id=s.source_ref AND e.source_revision=s.source_revision
-                WHERE s.state!='released' AND e.source_id<? ORDER BY e.source_id DESC LIMIT ?""",
+                s.state,s.rules_json,s.category FROM (
+                    SELECT source_ref,source_revision,state,rules_json,'quarantine' AS category
+                    FROM source_safety WHERE state!='released'
+                    UNION ALL SELECT confirmation_ref,confirmation_revision,state,json_array(reason),'adoption'
+                    FROM adoption_relations WHERE state='pending_review'
+                ) s JOIN source_events e ON e.event_id=s.source_ref AND e.source_revision=s.source_revision
+                WHERE e.source_id<? ORDER BY e.source_id DESC LIMIT ?""",
                 (before if before is not None else 2**63 - 1, limit + 1),
             )
             .fetchall()
@@ -36,12 +40,20 @@ def review_page(storage, authority, *, limit=30, before=None):
         items = []
         for row in rows[:limit]:
             view = tx.with_context(replace(context, project_id=row["project_id"], branch_id=row["branch_id"]))
-            held = notice(view, row["event_id"], row["source_revision"])
+            adoption = row["category"] == "adoption"
+            held = (
+                dict(state=row["state"], rules=json.loads(row["rules_json"]))
+                if adoption and view.source(row["event_id"], row["source_revision"]) is not None
+                else notice(view, row["event_id"], row["source_revision"])
+                if not adoption
+                else None
+            )
             if held is not None:
                 items.append(
                     dict(
                         ref=row["event_id"],
                         revision=row["source_revision"],
+                        category=row["category"],
                         scope=row["scope_id"],
                         content=row["content"],
                         **{k: held[k] for k in ("state", "rules")},

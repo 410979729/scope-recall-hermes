@@ -62,7 +62,7 @@
    "reportGeneralTypeIssues": 1
   },
   "core/consolidate.py": {
-   "reportArgumentType": 2,
+   "reportArgumentType": 1,
    "reportGeneralTypeIssues": 2
   },
   "core/consolidation_chunks.py": {
@@ -402,11 +402,11 @@
   },
   "core/claim_storage.py": {
    "C901": {
-    "Claims.append": 20
+    "Claims.append": 18
    },
-   "E501": 12,
+   "E501": 10,
    "PLR0912": {
-    "Claims.append": 20
+    "Claims.append": 18
    }
   },
   "core/composition.py": {
@@ -613,10 +613,7 @@
    }
   },
   "core/worker_consolidation.py": {
-   "BLE001": 1,
-   "PLR0911": {
-    "process_consolidate": 9
-   }
+   "BLE001": 1
   },
   "core/worker_outcomes.py": {
    "E501": 3,
@@ -658,26 +655,20 @@
    "E501": 1,
    "PLR0915": {
     "check_storage": 62
-   },
-   "UP017": 7
+   }
   },
   "maintenance/install.py": {
    "BLE001": 1,
    "C901": {
-    "apply_install": 17,
-    "plan_install": 19
+    "apply_install": 17
    },
    "E501": 1,
    "PLR0912": {
     "apply_install": 17,
-    "plan_install": 20,
     "plan_uninstall": 16
    },
    "PLR0913": {
     "plan_install": 11
-   },
-   "PLR0915": {
-    "plan_install": 61
    }
   },
   "maintenance/install_receipt.py": {
@@ -685,9 +676,6 @@
   },
   "maintenance/install_remote.py": {
    "UP017": 1
-  },
-  "maintenance/install_workbuddy.py": {
-   "UP035": 1
   },
   "maintenance/legacy_catalog.py": {
    "E501": 14
@@ -763,7 +751,7 @@
     "_imported": 18
    },
    "PLR0915": {
-    "_import_rows": 99
+    "_import_rows": 97
    },
    "UP017": 1,
    "UP035": 1
@@ -817,15 +805,15 @@
   },
   "runtime/scheduling.py": {
    "C901": {
-    "next_wake": 25,
+    "next_wake": 23,
     "supervise": 23
    },
    "PLR0912": {
-    "next_wake": 21,
+    "next_wake": 19,
     "supervise": 23
    },
    "PLR0915": {
-    "next_wake": 74,
+    "next_wake": 71,
     "supervise": 83
    }
   },
@@ -1071,7 +1059,7 @@
   },
   "tests/packaging/test_shared_cli.py": {
    "PLR0915": {
-    "test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own": 82
+    "test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own": 69
    }
   },
   "tests/storage_native/test_vector_compaction.py": {
