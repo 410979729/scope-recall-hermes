@@ -27,6 +27,8 @@ class PreparedCapture:
     private_revision: int | None = None
     #: Merged replacement spans across the original envelope, counted once before segmentation.
     masked_secret_count: int = 0
+    #: Entry policy version captured with durable ingress, not host-supplied metadata.
+    entry_version: int | None = None
 
 
 def capture_contains_secret(value: object) -> bool:

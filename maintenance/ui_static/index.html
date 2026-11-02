@@ -13,9 +13,10 @@
   <header><div><h1>Scope Recall</h1><p data-i18n="local"></p></div>
     <label><span data-i18n="language"></span><select id="language"><option value="en">English</option><option value="zh">中文</option></select></label>
   </header>
-  <nav aria-label="Pages"><button data-page="overview" data-i18n="overview"></button><button data-page="browse" data-i18n="browse"></button><button data-page="health" data-i18n="health"></button><button data-page="recalls" data-i18n="recalls"></button><button data-page="quarantine" data-i18n="quarantine"></button><button data-page="private" data-i18n="private"></button><button data-page="export" data-i18n="export"></button><button data-page="backup" data-i18n="backup"></button></nav>
+  <nav aria-label="Pages"><button data-page="entries" data-i18n="entries"></button><button data-page="overview" data-i18n="overview"></button><button data-page="browse" data-i18n="browse"></button><button data-page="health" data-i18n="health"></button><button data-page="recalls" data-i18n="recalls"></button><button data-page="quarantine" data-i18n="quarantine"></button><button data-page="private" data-i18n="private"></button><button data-page="export" data-i18n="export"></button><button data-page="backup" data-i18n="backup"></button></nav>
   <p id="status" role="status" aria-live="polite"></p>
   <main>
+    <section id="entries" class="page" hidden><h2 data-i18n="entries"></h2><div id="entry-items"></div></section>
     <section id="overview" class="page"><h2 data-i18n="overview"></h2><button id="refresh-overview" data-i18n="refresh"></button><div id="overview-data" class="cards"></div></section>
     <section id="browse" class="page" hidden><h2 data-i18n="browse"></h2>
       <form id="filters" class="grid">
@@ -49,7 +50,7 @@
     </section>
     <section id="export" class="page" hidden><h2 data-i18n="export"></h2><p data-i18n="exportHint"></p><form id="export-form"><label><span data-i18n="destination"></span><input name="out" required></label><label class="check"><input name="with_attachments" type="checkbox"><span data-i18n="attachments"></span></label><button type="submit" data-i18n="preview"></button></form></section>
     <section id="backup" class="page" hidden><h2 data-i18n="backup"></h2><button id="refresh-backup" data-i18n="refresh"></button><div id="backup-data"></div></section>
-    <section id="review" hidden><h2 data-i18n="preview"></h2><p data-i18n="reviewHint"></p><div id="preview-data"></div><button id="confirm" data-i18n="confirm" class="danger"></button><button id="cancel" data-i18n="cancel"></button></section>
+    <section id="review" hidden><h2 data-i18n="preview"></h2><p id="review-hint" data-i18n="reviewHint"></p><div id="preview-data"></div><button id="confirm" data-i18n="confirm" class="danger"></button><button id="cancel" data-i18n="cancel"></button></section>
     <section id="receipt" hidden><h2 data-i18n="receipt"></h2><div id="receipt-data"></div></section>
   </main>
 </body>

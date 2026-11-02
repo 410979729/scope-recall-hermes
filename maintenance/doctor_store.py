@@ -439,6 +439,16 @@ def _derived_progress(report, transaction, binding):
     ).fetchone()[0]
 
 
+def _entry_and_derived_progress(report, transaction, binding):
+    """Read each entry's control once alongside the other store diagnostics."""
+    from scope_recall.core.entry_control import state_for
+
+    keys = transaction.registry.entries() if binding.installation_kind == "shared" else {"local": {}}
+    controls = ((key, state_for(transaction, transaction.context, entry_id=key)) for key in keys)
+    report.entries = [dict(id=key, state=state, version=version) for key, (state, version) in controls]
+    _derived_progress(report, transaction, binding)
+
+
 def _private_status(report, transaction):
     """Expose active interval metadata without reading private content."""
     moment = datetime.now(UTC)
@@ -475,7 +485,7 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            _derived_progress(report, transaction, binding)
+            _entry_and_derived_progress(report, transaction, binding)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(

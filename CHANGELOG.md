@@ -4,6 +4,9 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Entry controls record owner changes and apply read-only or paused states to individual entries. Paused entry work is rechecked at dispatch and publication, and stale recall packets are discarded.
+
+
 Remote recording commands now retain their source metadata and reject replay in the same transaction as the session rule.
 Hermes reports inline private omissions through its prefetch receipt.
 

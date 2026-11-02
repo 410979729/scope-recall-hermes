@@ -10,6 +10,7 @@ from ..contracts import ContractError
 from . import private
 from .consolidation_chunks import ChunkedSource, ConsolidationChunk, source_chunk
 from .consolidation_summary import grounded_sentences
+from .entry_control import entry_fence, paused_since, sources_paused
 from .language_resources import prompt_text
 from .resume_compaction import resume_evidence_refs
 from .source_qualification import sentence_bounds
@@ -19,6 +20,7 @@ from .worker_outcomes import (
     budget_left,
     defer_model_pass,
     finalize_work,
+    hold_for_entry_state,
     hold_for_private_mode,
     model_failure,
     stale_result,
@@ -187,6 +189,8 @@ def _outbound_blocked(storage, clock, context, sources, group):
     with storage.read(context, remaining_seconds=1.0) as tx:
         if group["signature"] != group_signature(tx, group_members(tx, group)):
             raise ContractError("VERSION_CONFLICT", "summary_sources")
+        if sources_paused(tx, sources):
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
         for previous in sources:
             source = tx.source(previous.ref, previous.revision)
             tx.claims.require_live_source(previous.ref, previous.revision)
@@ -219,9 +223,12 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
             sources, coverage, task, hint_omitted = _read_page(tx, group, episode)
             originals = {(s.ref, s.revision): tx.source(s.ref, s.revision).event["content"] for s in sources}
             blocked = obsolete_ranges(tx, json.loads(group["manifest_json"]))
+            entries = entry_fence(tx, sources)
+        entry_paused = any(state == "paused" for state, _version in entries.values())
         guard = partial(_outbound_blocked, storage, clock, context, sources, group)
-        if guard():
-            return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
+        if entry_paused or guard():
+            hold = hold_for_entry_state if entry_paused else hold_for_private_mode
+            return hold(storage, clock, context, item, started=started, budget=budget)
         submitted = tuple(source for source in sources if source.event["content"].strip())
         sentences, spans = [], []
         if submitted:
@@ -254,11 +261,13 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
             clock,
             context,
             item,
-            (group, coverage, sentences, spans, hint_omitted and bool(submitted)),
+            (group, coverage, sentences, spans, hint_omitted and bool(submitted), entries),
             started=started,
             budget=budget,
         )
     except (ContractError, ValueError, TypeError) as exc:
+        if getattr(exc, "field", None) == "entry_state:paused":
+            return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
         with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
                 return stale_result(tx, item)
@@ -277,10 +286,15 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
 
 def _publish_summary(storage, clock, context, item, prepared, *, started, budget):
     """Publish a grounded page and its next job in one fenced transaction."""
-    group, coverage, sentences, spans, hint_omitted = prepared
+    group, coverage, sentences, spans, hint_omitted, entries = prepared
     with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             return stale_result(tx, item)
+        if paused_since(tx, entries):
+            return work_result(
+                tx.work.defer_without_attempt(*item.lease, now=clock.utc_now(), error_code="entry_paused", seconds=60),
+                error_code="entry_paused",
+            )
         current = _job(tx, item)
         if current is None or current["signature"] != group_signature(tx, group_members(tx, current)):
             return work_result(tx.work.mark_obsolete(*item.lease, now=clock.utc_now()))

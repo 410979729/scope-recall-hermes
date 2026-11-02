@@ -27,6 +27,7 @@ from .capture import CaptureReceipt, record_event
 from .capture_filters import redact_secret_text
 from .deadline import fits
 from .delete_storage import canonical
+from .entry_control import capture_refusal, state_for
 from .events import PreparedCapture, prepare_capture, segment_key
 from .failure_policy import INGRESS_PASSING_ERRORS
 from .inbox_rules import (
@@ -147,6 +148,14 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     ).hexdigest()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         conn = tx._check(write=True)
+        reason = capture_refusal(tx, context)
+        if reason is not None:
+            return None, replace(prepared, gaps=(*prepared.gaps, reason), rejection="ENTRY_STATE")
+        entry_version = state_for(tx, context)[1]
+        body["entry_state_version"] = entry_version
+        encoded = canonical(body)
+        if len(encoded.encode("utf-8")) > 2097152:
+            raise ContractError("INPUT_INVALID", "ingress_item_budget")
         # Before the inbox row: a private capture must not leave its words in
         # durable ingress either, where a worker's later replay would meet them.
         intervals = private.matching_intervals(tx, context, events=prepared.events)
@@ -191,6 +200,7 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
                 gaps=tuple(previous["gaps"]),
                 masked_secret_count=previous.get("masked_secret_count", 0),
                 private_revision=None,
+                entry_version=previous.get("entry_state_version", 0),
             )
         count, size = conn.execute(
             "SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM capture_inbox"
@@ -201,7 +211,7 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
             "INSERT INTO capture_inbox(token,scope_id,project_id,branch_id,created_at,payload_json) VALUES (?,?,?,?,?,?)",
             (token, scope_id, context.project_id, context.branch_id, clock.utc_now(), encoded),
         )
-    return token, prepared
+    return token, replace(prepared, entry_version=entry_version)
 
 
 class PendingCapture:
@@ -349,6 +359,8 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
                 pass
             return replace(receipt, durability="queued") if receipt.disposition == "conflict" else receipt
         if receipt.durability == "persisted":
+            return receipt
+        if receipt.error_code == "ENTRY_STATE":
             return receipt
         code = receipt.error_code or "STORAGE_UNAVAILABLE"
     except ContractError as exc:
@@ -704,7 +716,12 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
     count = body.get("masked_secret_count", 0)
     if type(count) is not int or count < 0:
         raise ContractError("INPUT_INVALID", "masked_secret_count")
-    return original, PreparedCapture(tuple(events), tuple(body["gaps"]), masked_secret_count=count)
+    entry_version = body.get("entry_state_version", 0)
+    if type(entry_version) is not int or entry_version < 0:
+        raise ContractError("INPUT_INVALID", "entry_state_version")
+    return original, PreparedCapture(
+        tuple(events), tuple(body["gaps"]), masked_secret_count=count, entry_version=entry_version
+    )
 
 
 def _utc(clock) -> datetime:

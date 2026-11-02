@@ -199,7 +199,14 @@ class HookEvents:
         vectors = (
             (
                 self._hook.call.captured
-                or (event is not None and (mode == "read-only" or not self._hook.diagnostics.capture_refused))
+                or (
+                    event is not None
+                    and (
+                        mode == "read-only"
+                        or self._hook.diagnostics.capture_error_code == "ENTRY_STATE"
+                        or not self._hook.diagnostics.capture_refused
+                    )
+                )
             )
             and not contains_secret_like_text(prompt)
             and self._hook.remaining(deadline) >= RUNTIME_ATTACH_MIN_S

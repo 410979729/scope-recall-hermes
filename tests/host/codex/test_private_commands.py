@@ -358,3 +358,34 @@ def test_remote_command_preserves_compaction_for_next_ordinary_prompt(monkeypatc
     assert sent[0]["compaction_seq"] == marker["ordinal"]
     assert sent[0]["compaction_epoch"] == marker["epoch"]
     assert compaction_marker(config, session) is None
+
+
+def test_paused_entry_owner_commands_and_private_mode_are_independent(served, tmp_path):
+    root, homes, ports = served
+    client = _client(tmp_path, "codex", ports["codex"])
+    config = load_shared_client(homes["codex"], "codex")
+    binding = config.to_binding()
+    core = MemoryCore(CoreConfig(binding))
+    context = TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated")
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    owner.set_entry_state(config.entry_id, "paused", actor="TEST-owner")
+    session = "TEST-paused-owner-command"
+    payload = dict(
+        hook_event_name="UserPromptSubmit",
+        session_id=session,
+        turn_id="TEST-command",
+        prompt_id="TEST-command",
+        cwd=str(tmp_path),
+        prompt="scope-recall pause",
+    )
+    response = _hook(client, payload)
+    assert response["decision"] == "block"
+    assert owner.private_status(session=stored_session_id(config, session))["mode"] == "full"
+    assert owner.entry(config.entry_id)["state"] == "paused"
+    assert all("scope-recall pause" not in row[2] for row in _rows(root, config.entry_id))
+    resumed = _hook(
+        client, {**payload, "turn_id": "TEST-resume", "prompt_id": "TEST-resume", "prompt": "scope-recall resume"}
+    )
+    assert resumed["decision"] == "block"
+    assert owner.private_status(session=stored_session_id(config, session))["mode"] == "none"
+    assert owner.entry(config.entry_id)["state"] == "paused"

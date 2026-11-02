@@ -264,18 +264,24 @@ def test_resume_query_reaches_recall_with_seeded_memory(handler, installed):
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
             assert request["query"] == "继续 TEST 项目"
             assert request["mode"] == "auto"
-            return {
-                "protocol_version": "1.1",
-                "request_id": request["request_id"],
-                "status": "ok",
-                "memory_epoch": 1,
-                "items": [recall_item(content="TEST 白色偏好")],
-                "gaps": [],
-                "diagnostic_ref": None,
-                "answerability": "supported",
-                "coverage": "partial",
-                "unmet_needs": [],
-            }
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_source_refs, deadline_seconds=deadline_seconds
+            )
+            packet.update(
+                {
+                    "protocol_version": "1.1",
+                    "request_id": request["request_id"],
+                    "status": "ok",
+                    "memory_epoch": 1,
+                    "items": [recall_item(content="TEST 白色偏好")],
+                    "gaps": [],
+                    "diagnostic_ref": None,
+                    "answerability": "supported",
+                    "coverage": "partial",
+                    "unmet_needs": [],
+                }
+            )
+            return packet
 
     packet_handler = CodexHookHandler(config, core=PacketCore(), clock=installed[2])
     result = packet_handler.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="继续 TEST 项目"))
@@ -531,18 +537,24 @@ def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installe
 
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
             fences.append(current_source_refs)
-            return {
-                "protocol_version": "1.1",
-                "request_id": request["request_id"],
-                "status": "ok",
-                "memory_epoch": 1,
-                "items": [recall_item(content="TEST 白色偏好")],
-                "gaps": [],
-                "diagnostic_ref": None,
-                "answerability": "supported",
-                "coverage": "partial",
-                "unmet_needs": [],
-            }
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_source_refs, deadline_seconds=deadline_seconds
+            )
+            packet.update(
+                {
+                    "protocol_version": "1.1",
+                    "request_id": request["request_id"],
+                    "status": "ok",
+                    "memory_epoch": 1,
+                    "items": [recall_item(content="TEST 白色偏好")],
+                    "gaps": [],
+                    "diagnostic_ref": None,
+                    "answerability": "supported",
+                    "coverage": "partial",
+                    "unmet_needs": [],
+                }
+            )
+            return packet
 
     busy = CodexHookHandler(config, core=BusyCore(), clock=clock)
     result = busy.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="继续 TEST 项目"))

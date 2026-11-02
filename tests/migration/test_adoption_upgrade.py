@@ -116,7 +116,7 @@ def test_health_step_rollback_preserves_briefing_schema(app, monkeypatch):
         )
 
 
-@pytest.mark.parametrize("version", range(1105, 1127))
+@pytest.mark.parametrize("version", range(1105, 1128))
 def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version):
     from scope_recall.maintenance.shared_import import SOURCE_SCHEMAS
 
@@ -157,6 +157,8 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
         assert tables >= {
             "adoption_relations",
             "adoption_processing",
+            "entry_controls",
+            "entry_control_history",
             "scope_memory_instructions",
             "private_command_fences",
             "session_briefs",
@@ -187,3 +189,48 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
             ).fetchone() == ("TEST protected", 0)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
     assert SOURCE_SCHEMAS == frozenset(range(1109, SCHEMA_VERSION + 1))
+
+
+def test_entry_state_schema_upgrade_and_rollback_snapshot(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST entry upgrade keeps the source.")
+    downgrade_store(core.storage.path, 1127)
+    receipt = {}
+    core.storage.initialize(receipt=receipt)
+    assert (receipt["schema_before"], receipt["schema_after"], receipt["snapshot_verified"]) == (1127, 1128, True)
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    assert owner.entry("local")["state"] == "normal"
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    assert owner.entry("local")["history"][0]["actor"] == "TEST-owner"
+    with closing(sqlite3.connect(receipt["backup"])) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1127
+        assert (
+            db.execute("SELECT content FROM source_events WHERE event_id=?", (source.ref,)).fetchone()[0]
+            == source.event["content"]
+        )
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='entry_controls'").fetchone() is None
+
+
+def test_failed_entry_state_upgrade_rolls_back_schema(app, monkeypatch):
+    core, ctx = app
+    source = capture(core, ctx, "TEST entry upgrade failure keeps truth.")
+    downgrade_store(core.storage.path, 1127)
+    step = storage.SCHEMA_MIGRATIONS[1127]
+
+    def fail(conn):
+        step(conn)
+        raise RuntimeError("TEST entry upgrade failed")
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1127, fail)
+    with pytest.raises(RuntimeError, match="TEST entry upgrade failed"):
+        core.storage.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1127
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='entry_controls'").fetchone() is None
+        assert (
+            db.execute("SELECT content FROM source_events WHERE event_id=?", (source.ref,)).fetchone()[0]
+            == source.event["content"]
+        )

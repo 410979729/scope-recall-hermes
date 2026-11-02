@@ -11,6 +11,7 @@ from ..contracts import ContractError, utc_timestamp
 from . import lineage, private
 from .claim_storage import parse_source_ref
 from .claims import statement_key
+from .entry_control import context_fence, entry_changed
 from .recall_budget import estimate_tokens
 from .retrieval import CandidateRef, SearchContext, SearchLimits
 from .retrieval_hydration import RetrievalHydration
@@ -436,6 +437,9 @@ def read(
     empty = {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
     search = SearchContext("session briefing", "auto", None, (), SearchLimits(), started + 5, now, context)
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        entry = context_fence(tx, context)
+        if entry_changed(tx, entry):
+            return {**empty, "delivery_reason": "entry_state:paused"}
         mode, marker = private.recall_state(tx, context, now)
         if compact and context.compaction_seq is not None:
             row = (
@@ -471,6 +475,7 @@ def read(
         "tokens": tokens,
         "elapsed_ms": max(0, round((clock.monotonic() - started) * 1000)),
         "_epoch": epoch,
+        "_entry_fence": entry,
         "_privacy_marker": marker,
         "_log_allowed": mode is None,
         "_log_checked": False,
@@ -480,8 +485,10 @@ def read(
         "_deliver": deliver and mode != "full",
     }
     if not defer_confirmation and (deliver or compact):
-        result["delivery_reason"] = confirm(storage, clock, context, result, remaining_seconds=remaining_seconds)
-        if result["delivery_reason"] in {"brief_invalidated", "brief_safety_unconfirmed"}:
+        result["delivery_reason"] = confirm(
+            storage, clock, context, result, entry_fence=entry, remaining_seconds=remaining_seconds
+        )
+        if result["delivery_reason"] in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"}:
             result.update(empty)
     return result
 
@@ -514,19 +521,33 @@ def _still_valid(tx, clock, context, brief) -> bool:
     return True
 
 
-def confirm(storage, clock, context, brief: dict, *, remaining_seconds: float | None = None) -> str:
-    """Recheck release safety before attempting bounded delivery accounting."""
+def _entry_invalid(tx, context, fence):
+    """Reject a briefing prepared for a changed or different entry."""
+    return set(fence) != set(context_fence(tx, context)) or entry_changed(tx, fence)
+
+
+def _release_refusal(tx, clock, context, brief, fence):
+    """Name the first failed entry, retraction or briefing authority fence."""
     from .retractions import retraction_after
 
+    if _entry_invalid(tx, context, fence):
+        return "entry_state:paused"
+    if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
+        tx, clock, context, brief
+    ):
+        return "brief_invalidated"
+    return None
+
+
+def confirm(storage, clock, context, brief: dict, *, entry_fence, remaining_seconds: float | None = None) -> str:
+    """Recheck release safety before attempting bounded delivery accounting."""
     if remaining_seconds is not None and remaining_seconds <= 0:
         return "brief_safety_unconfirmed"
     started = clock.monotonic()
     try:
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
-                tx, clock, context, brief
-            ):
-                return "brief_invalidated"
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+                return refusal
     except Exception:  # noqa: BLE001 - an unfinished safety check must not release prepared text.
         return "brief_safety_unconfirmed"
     left = None if remaining_seconds is None else remaining_seconds - (clock.monotonic() - started)
@@ -537,10 +558,8 @@ def confirm(storage, clock, context, brief: dict, *, remaining_seconds: float | 
     try:
         with storage.write(context, remaining_seconds=wait) as tx:
             entered = True
-            if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
-                tx, clock, context, brief
-            ):
-                return "brief_invalidated"
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+                return refusal
             validated = True
             if brief["_compact"] and context.compaction_seq is None:
                 _reset(tx, context)

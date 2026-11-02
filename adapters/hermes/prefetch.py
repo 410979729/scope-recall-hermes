@@ -132,6 +132,10 @@ class Prefetch:
             self._record_usage(core, context, text, briefing, started, turn)
             return self._confirm(core, context, effective_session, turn, briefing, text)
         preparation = core.prepare_recall_render(context, packet)
+        current = getattr(core, "recall_packet_current", None)
+        if packet.get("items") and callable(current) and not current(context, packet):
+            packet = core.recall_packet(context, request, current_source_refs=current_refs, zone=display_zone())
+            preparation = core.prepare_recall_render(context, packet)
         with self._adapter._lock:
             if self._adapter._active_turn_id == turn:
                 # A turn begun meanwhile, after Hermes gave up on this call, keeps its own state.
@@ -147,6 +151,9 @@ class Prefetch:
             entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
             zone=display_zone(),
         )
+        if packet.get("items") and callable(current) and not current(context, packet):
+            return notice
+
         if brief:
             core.remove_question_overlaps(briefing, rendered)
             brief = briefing["text"]
@@ -169,6 +176,11 @@ class Prefetch:
                 )
             except (ContractError, sqlite3.Error, OSError, ValueError):
                 return empty
+            if brief.get("delivery_reason") == "entry_state:paused":
+                self._adapter._diagnostics.capability_gaps = (
+                    *self._adapter._diagnostics.capability_gaps,
+                    "entry_state:paused",
+                )
             brief["_generation"] = generation
             return brief
         finally:
@@ -180,11 +192,14 @@ class Prefetch:
             return text
         with self._adapter._lock:
             if self._adapter._active_turn_id != turn:
-                return text
+                return text.replace(briefing["text"], "", 1).strip() if briefing["text"] else text
             try:
                 reason = core.confirm_session_brief(context, briefing, remaining_seconds=0.03)
             except Exception:  # noqa: BLE001 - an unfinished safety check cannot release prepared text.
                 reason = "brief_safety_unconfirmed"
+        if reason == "entry_state:paused":
+            self._adapter._diagnostics.capability_gaps = (*self._adapter._diagnostics.capability_gaps, reason)
+            return ""
         if reason in {"brief_invalidated", "brief_safety_unconfirmed"}:
             text = text.replace(briefing["text"], "", 1).strip() if briefing["text"] else text
         if reason == "brief_delivered" and briefing.get("_generation"):

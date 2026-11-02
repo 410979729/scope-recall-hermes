@@ -17,6 +17,7 @@ from .candidate_tables import UNRESOLVED_SUBJECT_REASON
 from .claim_normalization import normalize_frame
 from .claims import evidence_refs
 from .consolidate import candidate_evidence_sources
+from .entry_control import paused_since, sources_paused
 from .evidence_question import evidence_text, rooted_verdict
 from .evidence_support import SupportVerdict, positioned, support_fingerprint, using_support
 from .failure_policy import BUDGET_PAUSE_ERRORS
@@ -152,6 +153,10 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
     """Record the model's verdict on a candidate, in the transaction that re-checked the lease: obsolete when the
     candidate, its evidence or anything it was judged on changed during the call; else the claim the verdict
     supports, if any, applied and the evaluation completed."""
+    if paused_since(tx, dependencies.entries or {}):
+        return work_result(
+            tx.candidates.defer_entry(evaluation.evaluation_id, item, now=now), error_code="entry_paused"
+        )
     current = tx.candidates.evaluation(evaluation.evaluation_id)
     if current is None:
         mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
@@ -269,17 +274,18 @@ def process_candidate_evaluation(
         else:
             evidence_sources = live
             dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=evidence_sources)
-            # A question a rule already answers needs no model call; see
-            # core/evidence_question.py.  Recorded like a verdict, with
-            # no attempt spent, so the at-most-once fence is untouched.
-            settled = tx.candidates.settle_without_model(
-                evaluation,
-                item,
-                evidence_sources,
-                now=clock.utc_now(),
-            )
+            # Defer paused evidence without spending an attempt; deterministic
+            # answers likewise settle before the model attempt is recorded.
+            if sources_paused(tx, evidence_sources):
+                settled = tx.work.defer_without_attempt(
+                    *item.lease, now=clock.utc_now(), error_code="entry_paused", seconds=60
+                )
+                settled_code = "entry_paused"
+            else:
+                settled = tx.candidates.settle_without_model(evaluation, item, evidence_sources, now=clock.utc_now())
+                settled_code = None
             if settled is not None:
-                return work_result(settled)
+                return work_result(settled, error_code=settled_code)
             if evaluation.model_attempted_at is None:
                 began = tx.candidates.begin_model_attempt(
                     evaluation.evaluation_id,
@@ -295,10 +301,29 @@ def process_candidate_evaluation(
             if invalid_reason is not None
             else fail(code="candidate_attempt_interrupted")
         )
+    assert dependencies is not None
     try:
         repair = {"validation_feedback": feedback} if feedback is not None else {}
-        if private.outbound_blocked(storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)):
-            return fail(code="private_mode", budget_pause=True)
+        blocked = private.outbound_blocked(
+            storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)
+        )
+        with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+            interrupted = paused_since(tx, dependencies.entries or {})
+        if blocked or interrupted:
+            return (
+                fail(code="private_mode", budget_pause=True)
+                if blocked
+                else _candidate_verdict(
+                    storage,
+                    clock,
+                    context,
+                    item,
+                    code="entry_paused",
+                    started=started,
+                    budget=budget,
+                    mutate=lambda tx, now: tx.candidates.defer_entry(evaluation.evaluation_id, item, now=now),
+                )
+            )
         with private.using_outbound_check(
             lambda: private.outbound_blocked(
                 storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)

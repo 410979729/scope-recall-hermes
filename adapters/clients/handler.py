@@ -675,6 +675,8 @@ class CodexHookHandler:
         except (ContractError, sqlite3.Error, OSError, ValueError):
             self.note("brief_unavailable")
             return ""
+        if brief.get("delivery_reason") == "entry_state:paused":
+            self.note("entry_state:paused")
         self.diagnostics.brief_tokens = brief["tokens"]
         self.diagnostics.brief_elapsed_ms = brief.get("elapsed_ms", 0)
         self.diagnostics.brief_items = tuple((item["ref"], item["revision"]) for item in brief["items"])
@@ -692,14 +694,16 @@ class CodexHookHandler:
             reason = self.core.confirm_session_brief(context, brief, remaining_seconds=self.remaining(deadline))
         except Exception:  # noqa: BLE001 - an unfinished safety check cannot release the prepared background.
             reason = "brief_safety_unconfirmed"
-        if reason in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed"}:
+        if reason in {"brief_delivery_unconfirmed", "brief_safety_unconfirmed", "entry_state:paused"}:
             self.note(reason)
+        if reason == "entry_state:paused":
+            return {}
         if reason == "brief_delivery_unconfirmed" and brief.get("_log_checked"):
             self.compaction_watermark = brief.get("_compaction_cutoff")
         if reason == "brief_delivered":
             self.compaction_ack = context.compaction_seq
             self.compaction_watermark = brief.get("_confirmed_seq")
-        if reason in {"brief_invalidated", "brief_safety_unconfirmed"} and brief["text"]:
+        if reason in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"} and brief["text"]:
             output = result.get("hookSpecificOutput", {})
             text = output.get("additionalContext", "").replace(brief["text"], "", 1).strip()
             if not text:
@@ -934,7 +938,7 @@ class CodexHookHandler:
             self.note("private_mode", gaps=gaps)
             return (), gaps
         if receipt.durability != "persisted":
-            gaps = (*gaps, f"capture_gap:{receipt.disposition}")
+            gaps = (*gaps, *receipt.gaps, f"capture_gap:{receipt.disposition}")
             self.note("capture_unavailable", gaps=gaps)
             return (), gaps
         self.call.persisted = True

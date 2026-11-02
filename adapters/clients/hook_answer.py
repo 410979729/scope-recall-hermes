@@ -27,6 +27,7 @@ _CAPTURE_ERROR_CODES = frozenset(
         "SECRET_DETECTED",
         "PRIVATE_MODE",
         "PRIVATE_MODE_UNVERIFIED",
+        "ENTRY_STATE",
     }
 )
 

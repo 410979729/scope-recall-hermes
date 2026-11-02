@@ -1,6 +1,23 @@
 "use strict";
 window.UI_STRINGS = {
   "en": {
+    "entries": "Entries",
+    "entry_normal": "Normal",
+    "entry_restore": "Restore",
+    "entry_read-only": "Read-only",
+    "entry_paused": "Paused",
+    "entryActivity": "Last activity",
+    "entryVersion": "Version",
+    "entryWrites": "Recent writes",
+    "entryReads": "Recent reads",
+    "entryHistory": "State history",
+    "entryActor": "Declared actor",
+    "entryAccount": "Operating system account",
+    "entryReadScopes": "Readable scopes",
+    "entryWriteScopes": "Writable scopes",
+    "notRecorded": "Not recorded",
+
+
     "memoryInstruction": "Memory instruction",
     "instructionHint": "Choose what future extraction should remember for this scope. Maximum 2,000 characters.",
     "health": "Memory health",
@@ -157,6 +174,23 @@ window.UI_STRINGS = {
     "saveImportance": "Save importance"
   },
   "zh": {
+    "entries": "入口",
+    "entry_normal": "正常",
+    "entry_restore": "恢复",
+    "entry_read-only": "只读",
+    "entry_paused": "暂停",
+    "entryActivity": "最近活动",
+    "entryVersion": "版本",
+    "entryWrites": "最近写入",
+    "entryReads": "最近读取",
+    "entryHistory": "状态记录",
+    "entryActor": "\u58f0\u660e\u7684\u64cd\u4f5c\u8005",
+    "entryAccount": "\u64cd\u4f5c\u7cfb\u7edf\u8d26\u6237",
+    "entryReadScopes": "可读范围",
+    "entryWriteScopes": "可写范围",
+    "notRecorded": "未记录",
+
+
     "memoryInstruction": "记忆说明",
     "instructionHint": "指定此范围今后提炼时记什么，最多 2,000 个字符。",
     "health": "记忆体检",

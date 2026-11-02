@@ -409,6 +409,7 @@ class CollectionPage:
     next_cursor: PageCursor | None
     coverage: str
     memory_epoch: int
+    gaps: tuple[str, ...] = ()
 
 
 #: How long after a person's message its turn's replies may come, and how many are followed.
