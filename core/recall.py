@@ -11,6 +11,7 @@ from typing import Protocol
 
 from ..contracts import ContractError, utc_timestamp
 from . import private
+from .adoption_storage import adopted_source
 from .auto_recall import automatic_recall_skip_reason
 from .background_context import background_candidates, current_task_candidate
 from .claim_storage import parse_source_ref
@@ -58,6 +59,22 @@ from .retrieval import (
 from .retrieval_hydration import replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import note_embedding_failure, vector_failure_label
+
+
+def _excluded_relation_source(tx, context, seed, candidate):
+    """Keep held prompts and unselected assistant alternatives out of automatic evidence expansion.
+
+    The adopted decision already contains its selected content and references.
+    Explicit source reads retain the complete assistant reply for inspection.
+    """
+    if candidate.kind != "event":
+        return False
+    return f"{candidate.ref}@{candidate.revision}" in context.current_source_refs or (
+        context.automatic_injection
+        and seed.kind == "claim"
+        and adopted_source(tx, seed.ref, seed.revision) == (candidate.ref, candidate.revision)
+    )
+
 
 #: Claims offered per round.  A packet holds at most 30 items and a default one
 #: six; a claim that answers competes for those slots on rank, so a deep pool
@@ -769,10 +786,7 @@ class RetrievalPipeline:
                             return stopped("relation_bound_reached")
                         continue
                     seen.add(candidate.key)
-                    if (
-                        candidate.kind == "event"
-                        and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs
-                    ):
+                    if _excluded_relation_source(tx, context, seed, candidate):
                         continue
                     aside = _Aside()
                     admitted = self._hydrate_admit(tx, candidate, context, aside=aside) is not None

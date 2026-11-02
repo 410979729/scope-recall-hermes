@@ -157,6 +157,8 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1122: {"tables": ("adoption_processing",)},
+    1121: {"tables": ("adoption_relations",)},
     1120: {
         "indexes": ("importance_backfill", "summary_due"),
         "tables": ("summary_parts", "summary_groups", "summary_backfill"),

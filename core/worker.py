@@ -487,8 +487,17 @@ def _finish_embedding_failure(storage, clock, context, group, failure, started, 
 
 
 def _port_refused(disposition: str, error_code) -> bool:
-    """Whether the port refused an item before any attempt (budget, credentials)."""
-    return disposition == "deferred" and failure_category(error_code) == "capability"
+    """Whether an allowance or capability refusal ends this port's current pass."""
+    return disposition == "deferred" and (
+        failure_category(error_code) == "capability" or error_code == "pass_call_limit"
+    )
+
+
+def _paused_types(work_type, error_code):
+    """A spent pass allowance resumes next pass without a provider capability hold."""
+    if error_code == "pass_call_limit":
+        return ()
+    return {"rebuild_projection": ("rebuild_projection", "consolidate")}.get(work_type, (work_type,))
 
 
 def _rate_limited(error_code) -> bool:
@@ -684,9 +693,7 @@ def drain_worker(
             # instead of starting the next pass at once for the next item:
             # without an embedding credential, a store would otherwise park one
             # waiting item every few seconds.
-            paused.extend(
-                {"rebuild_projection": ("rebuild_projection", "consolidate")}.get(item.work_type, (item.work_type,))
-            )
+            paused.extend(_paused_types(item.work_type, error_code))
         if _rate_limited(error_code):
             # A provider that just answered 429 will answer 429 to the next item
             # too.  Each item backing off on its own is no backoff at all.

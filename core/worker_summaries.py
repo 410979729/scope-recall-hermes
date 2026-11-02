@@ -15,7 +15,15 @@ from .resume_compaction import resume_evidence_refs
 from .source_qualification import sentence_bounds
 from .summary_parts import queue_summary_part, store_excerpt_claim, unprocessed_ranges, update_progress
 from .summary_validity import group_members, group_signature, obsolete_ranges
-from .worker_outcomes import budget_left, finalize_work, hold_for_private_mode, model_failure, stale_result, work_result
+from .worker_outcomes import (
+    budget_left,
+    defer_model_pass,
+    finalize_work,
+    hold_for_private_mode,
+    model_failure,
+    stale_result,
+    work_result,
+)
 
 
 def summary_messages(sources, *, episode_ref=None):
@@ -125,9 +133,19 @@ def _outbound_blocked(storage, clock, context, sources, group):
 
 def process_summary(storage, clock, context, item, *, model, started, budget):
     """Generate one page outside SQLite, then commit only under unchanged sources and work lease."""
-    finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     if not callable(getattr(model, "judge", None)):
-        return finish("retry", "model_unavailable")
+        return finalize_work(
+            storage, clock, context, item, "retry", "model_unavailable", started=started, budget=budget
+        )
+    deferred = defer_model_pass(storage, clock, context, item, model, started=started, budget=budget)
+    if deferred is not None:
+        return deferred
+    return _process_summary_page(storage, clock, context, item, model=model, started=started, budget=budget)
+
+
+def _process_summary_page(storage, clock, context, item, *, model, started, budget):
+    """Read, generate and publish one page after the pass allowance has been checked."""
+    finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     try:
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             group = _job(tx, item)

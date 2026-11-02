@@ -80,6 +80,23 @@ def hold_for_private_mode(
         )
 
 
+def defer_model_pass(storage, clock, context, item, model, *, started, budget):
+    """Release work for the next pass when its shared model port has no calls left.
+
+    A spent pass allowance is separate from account or provider budget failure:
+    it refunds the lease attempt without placing the work on a long budget hold.
+    """
+    if getattr(model, "remaining_calls", None) != 0:
+        return None
+    if budget_left(started, clock, budget) <= 0:
+        return deadline_result(storage, context, item)
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        return work_result(
+            tx.work.defer_without_attempt(*item.lease, now=clock.utc_now(), error_code="pass_call_limit", seconds=0),
+            error_code="pass_call_limit",
+        )
+
+
 def mark_obsolete(tx, item, now: str) -> tuple[str, str | None, str]:
     return work_result(tx.work.mark_obsolete(*item.lease, now=now), error_code="authority_revoked")
 

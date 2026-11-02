@@ -222,6 +222,6 @@ available. The dated-conversation channel checks every member, including tools, 
 Replacement eligibility considers only the user and assistant messages that this channel reads; other messages remain available. Previous-conversation questions resolve to the latest visible prior session,
 then use the same channel and fallback. Portable fact exports include importance and pinning and omit stale summaries.
 
-The store schema is 1120; supported layouts 1105 through 1119 upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+The store schema is 1122; supported layouts 1105 through 1121 upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.

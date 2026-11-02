@@ -682,6 +682,12 @@ class CodexCliConsolidationAdapter:
         self._lock = threading.Lock()
         self.last_diagnostics: dict = {}
 
+    @property
+    def remaining_calls(self):
+        """Report the existing pass allowance without allocating a new CLI adapter."""
+        with self._lock:
+            return max(0, 1 - self._calls)
+
     def for_pass(self):
         """A fresh local allowance; durable daily accounting is never reset."""
         adapter = type(self)(self.route, ledger=self.ledger)

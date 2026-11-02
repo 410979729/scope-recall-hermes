@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1120
+SCHEMA_VERSION = 1122
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -101,6 +101,32 @@ WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
         consolidation_offset INTEGER NOT NULL DEFAULT 0 CHECK(consolidation_offset>=0),
         UNIQUE(work_type,subject_ref,subject_revision)
     ) STRICT"""
+
+ADOPTION_STATEMENTS = (
+    """CREATE TABLE adoption_relations (
+        confirmation_ref TEXT NOT NULL, confirmation_revision INTEGER NOT NULL,
+        assistant_ref TEXT NOT NULL, assistant_revision INTEGER NOT NULL,
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id), project_id TEXT, branch_id TEXT,
+        scope TEXT, selection_json TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('bound','pending_review')),
+        reason TEXT, proposal_sha256 TEXT, claim_ref TEXT, claim_revision INTEGER, recorded_at TEXT NOT NULL,
+        PRIMARY KEY(confirmation_ref,confirmation_revision)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX adoption_assistant ON adoption_relations(assistant_ref,assistant_revision)",
+    "CREATE INDEX adoption_claim ON adoption_relations(claim_ref,claim_revision)",
+    "CREATE INDEX adoption_proposal ON adoption_relations(proposal_sha256) WHERE state='bound'",
+)
+
+
+ADOPTION_PROCESSING_STATEMENTS = (
+    """CREATE TABLE adoption_processing (
+        work_id INTEGER PRIMARY KEY REFERENCES work_items(work_id) ON DELETE CASCADE,
+        confirmation_ref TEXT NOT NULL, confirmation_revision INTEGER NOT NULL,
+        assistant_ref TEXT NOT NULL, assistant_revision INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+    ) STRICT""",
+    "CREATE INDEX adoption_processing_sources ON adoption_processing(assistant_ref,confirmation_ref)",
+)
+
 
 #: Tool-output vectors the retention window expired (``runtime/vector_retention.py``).
 #: The source stays; the row says its vector is gone on purpose, so nothing
@@ -644,6 +670,8 @@ STATEMENTS = (
     + ENTITY_STATEMENTS
     + SUMMARY_STATEMENTS
     + CLAIM_RANK_STATEMENTS
+    + ADOPTION_STATEMENTS
+    + ADOPTION_PROCESSING_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
@@ -967,3 +995,19 @@ def upgrade_1119(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1120 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1120")
+
+
+def upgrade_1120(connection):
+    """Install owner adoption bindings; the upgrade coordinator keeps the rollback snapshot."""
+    for statement in ADOPTION_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1121 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1121")
+
+
+def upgrade_1121(connection):
+    """Install resumable adoption work; ordinary consolidation data remains authoritative."""
+    for statement in ADOPTION_PROCESSING_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1122 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1122")

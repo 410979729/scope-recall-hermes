@@ -418,19 +418,49 @@ def _summary_quotes(obj: RetrievedObject) -> list[str]:
     return [span["quote"] for span in spans if type(span.get("quote")) is str and span["quote"]]
 
 
-def redundant_summary_keys(objects: list[RetrievedObject]) -> set[tuple[str, str, int]]:
-    """Summaries whose every sentence already appears in a displayed event body.
+def _decision_anchors(objects):
+    """Use only the displayed decision body and its verified cited source versions."""
+    anchors = []
+    for obj in objects:
+        if obj.kind != "claim" or obj.temporal_status != "current":
+            continue
+        payload = optional_json(dict(obj.metadata).get("payload_json"))
+        if not isinstance(payload, dict) or payload.get("kind") != "decision":
+            continue
+        refs = {
+            (p["source_ref"], p["source_revision"])
+            for p in payload.get("evidence_spans", ())
+            if isinstance(p, dict) and type(p.get("source_ref")) is str and type(p.get("source_revision")) is int
+        }
+        anchors.append((refs, obj.content))
+    return anchors
 
-    Compare hydrated display bodies, not stored sources: a clipped original
-    cannot replace an excerpt it no longer shows. Partial overlap preserves
-    the whole summary, including its evidence and role labels.
+
+def redundant_summary_keys(objects: list[RetrievedObject]) -> set[tuple[str, str, int]]:
+    """Omit excerpts repeated by displayed originals or same-source decisions.
+
+    A decision's stored evidence is not automatically displayed text. Require
+    every quoted sentence in its visible body; additional detail keeps a summary.
     """
     originals = [obj.content for obj in objects if obj.kind == "event"]
-    return {
-        (obj.kind, obj.ref, obj.revision)
-        for obj in objects
-        if (quotes := _summary_quotes(obj)) and all(any(quote in raw for raw in originals) for quote in quotes)
-    }
+    decisions = _decision_anchors(objects)
+    redundant = set()
+    for obj in objects:
+        if not _summary_quotes(obj):
+            continue
+        payload = optional_json(dict(obj.metadata).get("payload_json"))
+        if not isinstance(payload, dict):
+            continue
+        if all(
+            any(span["quote"] in raw for raw in originals)
+            or any(
+                (span["source_ref"], span["source_revision"]) in refs and span["quote"] in body
+                for refs, body in decisions
+            )
+            for span in payload["evidence_spans"]
+        ):
+            redundant.add((obj.kind, obj.ref, obj.revision))
+    return redundant
 
 
 def prioritize_summary_originals(ranked: list[Pair]) -> list[Pair]:

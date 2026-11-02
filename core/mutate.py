@@ -18,6 +18,7 @@ from ..contracts import (
     validate_proposal_references,
     verified_human_principal_ref,
 )
+from .adoption_storage import adoption_qualification
 from .aliases import validate_alias_source, validate_alias_target
 from .candidate_lifecycle import SELF_SUBJECTS
 from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
@@ -278,6 +279,8 @@ def _qualify_incoming(
     tx, proposal: ClaimProposal, roots, scope_id, now, subject_already_bound
 ) -> tuple[ClaimProposal, Qualification, bool]:
     """Bind source identity, classify support and revalidate any prepared slot decision."""
+    if adoption_qualification(tx, proposal):
+        return proposal, Qualification("active", "direct_report", "owner_adopted_assistant_proposal"), False
     submitted = proposal
     verdict = support_verdict(proposal, roots) if positioned(proposal) else None
     support_state = verdict.state if verdict else None

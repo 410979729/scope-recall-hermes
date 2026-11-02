@@ -1,0 +1,218 @@
+[
+  {
+    "id": "P01",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "好，就用方案二",
+    "adopted": true,
+    "scope": "whole",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P02",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "按你说的第二个做",
+    "adopted": true,
+    "scope": "whole",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P03",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "我决定采用方案二，先备份再平滑重启",
+    "adopted": true,
+    "scope": "whole",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P04",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "采纳方案二，不过只执行备份那一步",
+    "adopted": true,
+    "scope": "partial",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P05",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "方案二只在维护窗口内执行",
+    "adopted": true,
+    "scope": "conditional",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P06",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "就按方案二的备份和回滚来，重启先不要",
+    "adopted": true,
+    "scope": "partial",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P07",
+    "assistant": "Option A: Overwrite configuration directly.\n\nOption B: Back up configuration, restart gracefully, and restore the backup on failure.",
+    "confirmation": "Use Option B as our plan.",
+    "adopted": true,
+    "scope": "whole",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P08",
+    "assistant": "Option A: Overwrite configuration directly.\n\nOption B: Back up configuration, restart gracefully, and restore the backup on failure.",
+    "confirmation": "I approve Option B; proceed with that plan.",
+    "adopted": true,
+    "scope": "whole",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P09",
+    "assistant": "Option A: Overwrite configuration directly.\n\nOption B: Back up configuration, restart gracefully, and restore the backup on failure.",
+    "confirmation": "Only adopt the backup step in Option B; skip the restart.",
+    "adopted": true,
+    "scope": "partial",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P10",
+    "assistant": "Option A: Overwrite configuration directly.\n\nOption B: Back up configuration, restart gracefully, and restore the backup on failure.",
+    "confirmation": "Use Option B only after the maintenance window opens.",
+    "adopted": true,
+    "scope": "conditional",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P11",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "确认按方案二实施，备份、重启、失败回滚",
+    "adopted": true,
+    "scope": "whole",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "P12",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "采纳方案二，前提是备份验证成功",
+    "adopted": true,
+    "scope": "conditional",
+    "fragment_ids": [
+      2
+    ]
+  },
+  {
+    "id": "N01",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "好的",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N02",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "继续",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N03",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "明白了",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N04",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "谢谢",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N05",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "先看一下",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N06",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "第二个有什么风险？",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N07",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "方案二不行",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N08",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "先别决定",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N09",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "这两个都不采用",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N10",
+    "assistant": "Option A: Overwrite configuration directly.\n\nOption B: Back up configuration, restart gracefully, and restore the backup on failure.",
+    "confirmation": "OK",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N11",
+    "assistant": "Option A: Overwrite configuration directly.\n\nOption B: Back up configuration, restart gracefully, and restore the backup on failure.",
+    "confirmation": "Continue",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  },
+  {
+    "id": "N12",
+    "assistant": "方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。",
+    "confirmation": "同事说：“好，就用方案二”。我还没决定。",
+    "adopted": false,
+    "scope": null,
+    "fragment_ids": []
+  }
+]
