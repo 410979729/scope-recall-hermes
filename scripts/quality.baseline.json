@@ -98,9 +98,6 @@
    "reportGeneralTypeIssues": 1,
    "reportOperatorIssue": 1
   },
-  "core/recall_packet.py": {
-   "reportGeneralTypeIssues": 1
-  },
   "core/requalify.py": {
    "reportArgumentType": 3
   },
@@ -510,8 +507,7 @@
    "BLE001": 2,
    "PLR0911": {
     "RecallPacketCompiler._fence": 9
-   },
-   "UP035": 1
+   }
   },
   "core/recall_policy.py": {
    "UP017": 1,
