@@ -5,9 +5,9 @@ searches, hydrates independently, or re-determines truth.  Release-time
 rechecks go through the existing read boundary within the original deadline.
 
 ``compile`` reads top-down: release (verify, then fence) -> order -> admit ->
-fit -> finalize.  Everything the public packet is computed from lives in one
-:class:`_Draft`; :func:`assemble_packet` is the one place that knows the
-status, answerability and coverage vocabulary.
+fit -> finalize -> optional excerpts. Full evidence lives in :class:`_Draft`;
+:func:`assemble_packet` owns status, answerability and coverage. Excerpts use
+only the finalized packet's spare room and do not revise its verdict.
 """
 
 from __future__ import annotations
@@ -19,19 +19,19 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Literal, Protocol, cast
 
 from ..contracts import ContractError, RecallItem, RecallPacket
 from .background_context import is_background, mark_background
 from .entity_queries import fence_entity_query
-from .recall_aggregation import aggregation_candidates, recheck_aggregation
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics, RecallTimings
 from .recall_items import PacketKind as PacketKind
 from .recall_items import packet_item as packet_item
 from .recall_items import packet_kind as packet_kind
 from .recall_needs import asks_to_resume, unmet_needs
+from .recall_overflow import append_overflow
 from .recall_restatement import recheck_restatement
 from .resume_compaction import (
     compact_episode_variants,
@@ -406,7 +406,29 @@ class RecallPacketCompiler:
             draft.objects = [draft.objects[index] for index in keep]
         if draft.items and self._remaining_ms(context) == 0:
             draft.expire()
-        return self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
+        packet = self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
+        extended = append_overflow(
+            storage, replace(context, limits=limits), result, packet, self.storage_reader, self._clock
+        )
+        if extended is not packet:
+            self._record_extension(packet, extended, started, context)
+        return extended
+
+    def _record_extension(self, packet, extended, started, context):
+        """Keep the diagnostic aligned with the bytes actually delivered."""
+        record = self.diagnostics.get(packet.get("diagnostic_ref")) if self.diagnostics is not None else None
+        if record is not None and self.diagnostics is not None:
+            metrics = asdict(record)
+            metrics.pop("ref")
+            measured = canonical_render_json(extended)
+            metrics.update(
+                items_delivered=len(extended["items"]),
+                rendered_bytes=len(measured.encode("utf-8")),
+                estimated_tokens=estimate_tokens(measured),
+                elapsed_ms=int((self._clock.monotonic() - started) * 1000),
+                deadline_remaining_ms=self._remaining_ms(context),
+            )
+            extended["diagnostic_ref"] = self.diagnostics.record(**metrics)
 
     # -- release --------------------------------------------------------------
 
@@ -424,18 +446,7 @@ class RecallPacketCompiler:
         if self._remaining_ms(context) == 0:
             gaps.append("deadline_exceeded_release")
             return None
-        fresh = (
-            recheck_aggregation(
-                tx,
-                context,
-                candidate,
-                obj,
-                self.storage_reader,
-                now=getattr(self._clock, "utc_now", lambda: context.now)(),
-            )
-            if "aggregation_members" in dict(obj.metadata)
-            else self.storage_reader.hydrate(tx, candidate, context)
-        )
+        fresh = self.storage_reader.hydrate(tx, candidate, context)
         if fresh is None:
             gaps.append(f"stale_candidate:{candidate.ref}@{candidate.revision}")
             return None
@@ -458,7 +469,7 @@ class RecallPacketCompiler:
         if prefetch is not None and self._remaining_ms(context) > 0:
             prefetch(
                 tx,
-                tuple(member for candidate, obj in pairs for member in aggregation_candidates(candidate, obj)),
+                tuple(candidate for candidate, _obj in pairs),
                 context,
             )
 

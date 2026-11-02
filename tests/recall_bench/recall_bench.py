@@ -45,7 +45,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -217,41 +216,17 @@ def _same(left: object, right: object) -> bool:
     return norm(left) == norm(right)
 
 
-def _summary_credits(item, gold, key_of, texts):
-    """Credit only a listed source whose complete original is visible in its cited row.
-
-    A citation by itself, a different row's quote and a clipped message do not
-    prove the answer. The item still passes the ordinary scope checks outside
-    this scorer, including every source in its evidence array.
-    """
-    if texts is None:
-        return frozenset()
-    content = item["content"]
-    rows = list(re.finditer(r"(?m)^- [^\n]+? \[([^\n]+)\] ", content))
-    evidence = set(item["evidence_refs"])
-    credited = set()
-    for index, row in enumerate(rows):
-        end = rows[index + 1].start() if index + 1 < len(rows) else len(content)
-        visible = content[row.end() : end]
-        for ref in row.group(1).split(", "):
-            key = key_of.get(ref.rsplit("@", 1)[0])
-            if ref in evidence and key in gold and texts.get(key) and texts[key] in visible:
-                credited.add(key)
-    return frozenset(credited)
-
-
 def credits(
     item: dict,
     gold: tuple[str, ...],
     key_of: Mapping[str, str],
     frames: Mapping[str, tuple[Frame, ...]],
-    texts: Mapping[str, str] | None = None,
 ) -> frozenset[str]:
     """The gold messages (parts of an answer) a delivered item gives: the message itself, or a claim drawn from it
     that asserts one of the ``frames`` that message states.  A claim citing the message with another value, a denial
     or a quotation of it gives none."""
-    if item.get("qualification_reason") == "Cross-session evidence" and item.get("basis") == "derived_summary":
-        return _summary_credits(item, gold, key_of, texts)
+    if item.get("qualification_reason") == "Other-session matches" and item.get("basis") == "derived_summary":
+        return frozenset()
     if item["kind"] == "event":
         return frozenset({key_of.get(item["ref"])} & set(gold))
     payload = optional_json(item["content"]) if item["kind"] in {"claim", "procedure"} else None
@@ -349,7 +324,6 @@ class BenchStore:
         self.entries = {entry.id: entry for entry in world.entries}
         self.key_of: dict[str, str] = {}
         self.scope_of = {message.key: message.scope for message in world.messages}
-        self.text_of = {message.key: message.text for message in world.messages}
         self.frames = {message.key: self._frames(message) for message in world.messages}
         self.claim_scopes: dict[str, str | None] = {}
         with self.core.storage.write(self.worker) as tx:
@@ -461,7 +435,7 @@ class BenchStore:
         kinds = ("claim" if item["kind"] == "procedure" else item["kind"] for item in items)
         return Answer(
             packet,
-            tuple(credits(item, question.gold, self.key_of, self.frames, self.text_of) for item in items),
+            tuple(credits(item, question.gold, self.key_of, self.frames) for item in items),
             tuple(self._carried(item) for item in items),
             tuple(self._scope(item) for item in items),
             tuple(found.get((kind, item["ref"], item["revision"])) for kind, item in zip(kinds, items, strict=True)),

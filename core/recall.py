@@ -10,6 +10,7 @@ from itertools import islice
 from typing import Protocol
 
 from ..contracts import ContractError, utc_timestamp
+from . import private
 from .auto_recall import automatic_recall_skip_reason
 from .background_context import background_candidates, current_task_candidate
 from .claim_storage import parse_source_ref
@@ -20,7 +21,6 @@ from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
 from .model_content import withhold_secret_items
 from .owner_view import OwnerView, owner_names, owner_view
-from .recall_aggregation import aggregate_evidence, aggregation_candidates
 from .recall_budget import estimate_tokens, event_admission_order, release_reserve_seconds
 from .recall_diagnostics import RecallTimings
 from .recall_needs import (
@@ -33,6 +33,7 @@ from .recall_needs import (
     statement_text,
     unmet_needs,
 )
+from .recall_overflow import visible_query_pairs
 from .recall_policy import (
     RecallPolicy,
     asks_without_answering,
@@ -990,9 +991,13 @@ class RetrievalPipeline:
                         tx, working, hydrated, gaps, echoes=tuple(aside.echoes), held=tuple(aside.held)
                     )
                 with timings.measure("select"):
-                    ranked, query_items = self._select(tx, working, hydrated, gaps)
+                    ranked, query_items, overflow = self._select(tx, working, hydrated, gaps)
                 question = self._admission_query(working)
-                return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question)
+                return replace(
+                    self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question),
+                    overflow_candidates=overflow,
+                    overflow_policy_revision=private.rule_revision(tx) if overflow else None,
+                )
         except ContractError as exc:
             if exc.code == "DEADLINE_EXCEEDED":
                 return _empty_result(working, "deadline_exceeded")
@@ -1258,26 +1263,15 @@ class RetrievalPipeline:
         ordered = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_select")
-        query_objects = {candidate.key: obj for candidate, obj in ordered}
-        protected = self._apply_budget(DistinctContent().filtered(ordered), working.limits)
-        ordered = aggregate_evidence(
+        ordered = visible_query_pairs(
             tx,
             withhold_secret_items(ordered, gaps, content=lambda pair: pair[1]),
             working,
-            clock=self.clock.monotonic,
-            gaps=gaps,
-            protected=protected,
             now=getattr(self.clock, "utc_now", lambda: working.now)(),
         )
-        ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)
-        # A view changes packing, not the facts used to judge whether the
-        # question is answered. Captions must not turn a missing value into
-        # support merely by repeating the question's vocabulary.
-        query_items = tuple(
-            query_objects.get(member.key, obj)
-            for candidate, obj in ranked
-            for member in aggregation_candidates(candidate, obj)
-        )
+        pool = distinct.filtered(ordered)
+        ranked = self._apply_budget(pool, working.limits, gaps, context=working)
+        query_items = tuple(obj for _, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):
                 # Nothing that fits answered (as when the only hit that fits is a message the model still holds): one
@@ -1303,7 +1297,15 @@ class RetrievalPipeline:
             note_truncation(gaps, "packet_slots", considered=working.limits.max_items, available=len(ranked))
             ranked = ranked[: working.limits.max_items]
         note_duplicates(gaps, distinct.collapsed)
-        return ranked, query_items
+        # Content equality saves full-item slots, but cannot establish that
+        # independent sessions describe the same event. Only the proven
+        # restatement filter above removes sources from the neutral index.
+        overflow = tuple(
+            candidate
+            for candidate, obj in ordered
+            if obj.kind in {"event", "claim"} and candidate.source not in {"background", "exact_ref"}
+        )
+        return ranked, query_items, overflow
 
     @staticmethod
     def _result(

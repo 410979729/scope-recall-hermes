@@ -247,7 +247,7 @@ SUITES = {
         "tests/public_bench/test_public_bench.py",
         "tests/contract/test_retrieval_pipeline.py",
         "tests/contract/test_recall_restatement.py",
-        "tests/contract/test_recall_aggregation.py",
+        "tests/contract/test_recall_overflow.py",
         "tests/contract/test_evidence_followup.py",
         "tests/contract/test_recall_admission.py",
         "tests/contract/test_auto_recall_gate.py",

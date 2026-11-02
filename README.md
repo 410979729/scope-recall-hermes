@@ -31,19 +31,19 @@ SQLite release checks, so slow optional channels can leave a partial packet with
 their cutoff reason. Unverified items never ship. The thresholds and diagnostic counts are described
 in [the recall configuration](docs/configuration.md#vector_threshold).
 
-Current and automatic recall can fold related first-hand evidence from at
-least three sessions into one packet item. Normalized facts share a subject
-and predicate; raw messages share query anchors and common content terms.
-Groups retain one verified speaker and an exact scope, project and branch.
-Each item shows the number of visible evidence records, their time range,
-verbatim source windows and versioned references. These are matching records
-from the bounded search, not a lifetime occurrence count. At most twelve
-records are listed per group; all grouped items together use at most 2048
-budget units and half the requested packet budget. The remaining slots and
-budget remain available to other evidence. Truncation is labelled, and every
-member is checked again before release. Historical reads keep separate items.
-The existing packet fields and shared host renderer carry the view; no store
-migration or configuration change is required.
+Current and automatic recall preserve the ordinary complete items and can
+append a neutral list when remaining matching records span at least three
+sessions. Each session contributes its highest-ranked remaining visible
+record. The list does not assert that records describe the same event or
+count how often something occurred. Every row labels its excerpt, full text
+length, source time and versioned reference; use inspect to expand the source.
+At most twelve rows share at most 1024 budget units and one quarter of the
+packet budget, using only space left after the complete items. Rows that do
+not fit are omitted without displacing full evidence. Visibility, privacy,
+suppression, current versions and retelling checks apply before publication.
+Historical reads keep their ordinary items. Existing packet fields and the
+shared host renderer carry the list; no migration or configuration change is
+required.
 
 **Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)
 provides reproducible development and held-out splits for retrieval, answerability,

@@ -344,28 +344,13 @@ def _scored(bench, world) -> dict:
 
 
 @pytest.mark.parametrize("kind", ["event", "claim"])
-@pytest.mark.parametrize(
-    "variant", ["visible", "citation_only", "wrong_quote", "wrong_row_ref", "missing_evidence", "partial"]
-)
-def test_summary_credit_requires_a_cited_original_visible_in_its_row(bench, kind, variant):
-    text = "Orchard staging database port is 6543."
-    item = {
-        "kind": kind,
-        "ref": "event-other",
-        "basis": "derived_summary",
-        "qualification_reason": "Cross-session evidence",
-        "evidence_refs": ["event-gold@1"],
-        "content": "Cross-session evidence: 3 records.\n- 2026-09-01 [event-gold@1] " + text,
-    }
-    if variant == "citation_only":
-        item["content"] = "Cross-session evidence: event-gold@1"
-    elif variant == "wrong_quote":
-        item["content"] = item["content"].replace(text, "Another source says port 7012.")
-    elif variant == "wrong_row_ref":
-        item["content"] = item["content"].replace("[event-gold@1]", "[event-other@1]")
-    elif variant == "missing_evidence":
-        item["evidence_refs"] = []
-    elif variant == "partial":
-        item["content"] = item["content"].replace(text, text[:10] + "...")
-    result = bench.credits(item, (GOLD,), {"event-gold": GOLD}, {}, {GOLD: text})
-    assert result == (frozenset({GOLD}) if variant == "visible" else frozenset())
+def test_overflow_refs_do_not_count_as_complete_answers(bench, kind):
+    item = dict(
+        kind=kind,
+        ref="event-gold",
+        basis="derived_summary",
+        qualification_reason="Other-session matches",
+        evidence_refs=["event-gold@1"],
+        content="Excerpt: Orchard staging database port is 6543.",
+    )
+    assert bench.credits(item, (GOLD,), {"event-gold": GOLD}, {}) == frozenset()
