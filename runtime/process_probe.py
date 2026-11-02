@@ -136,4 +136,68 @@ def is_same_process(pid: int, start_token: str | None) -> bool:
     return state.start_token == start_token
 
 
-__all__ = ["ProcessState", "probe_process", "is_same_process"]
+__all__ = ["ProcessState", "probe_process", "is_same_process", "launching_process"]
+
+
+def launching_process() -> ProcessState:
+    """The launcher above a Windows virtual-environment redirector, or the ordinary direct parent.
+
+    A redirector waits for its Python child, so watching it alone would outlive the host that launched the service.
+    Skip only the executable of this environment; a Python host using the base interpreter remains the owner.
+    """
+    import sys
+
+    parent = os.getppid()
+    executable = os.path.normcase(os.path.abspath(sys.executable))
+    base = os.path.normcase(os.path.abspath(getattr(sys, "_base_executable", sys.executable)))
+    if os.name == "nt" and executable != base:
+        parent = _above_redirector(parent, executable)
+    return probe_process(parent)
+
+
+def _above_redirector(parent: int, executable: str) -> int:
+    """Query one parent image and its parent id without reading command lines or signalling a process."""
+    import sys
+
+    if sys.platform != "win32":
+        return parent
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_void_p) for name in ("reserved", "peb", "reserved1", "reserved2", "pid", "parent")]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    native = ctypes.WinDLL("ntdll")
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    native.NtQueryInformationProcess.argtypes = [
+        wintypes.HANDLE,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+    ]
+    handle = kernel.OpenProcess(_QUERY_LIMITED, False, parent)
+    if not handle:
+        return parent
+    try:
+        image = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(image))
+        if not kernel.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(length)):
+            return parent
+        if os.path.normcase(os.path.abspath(image.value)) != executable:
+            return parent
+        info = Basic()
+        if native.NtQueryInformationProcess(handle, 0, ctypes.byref(info), ctypes.sizeof(info), None) == 0:
+            return int(info.parent or parent)
+        return parent
+    finally:
+        kernel.CloseHandle(handle)

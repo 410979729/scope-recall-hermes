@@ -29,7 +29,7 @@ keeping everything else in them and a copy of each file it changes under the sta
     python -m scope_recall.adapters.codex.remote_client --config <client.json>        (the hook itself)
     python -m scope_recall.adapters.codex.remote_client flush --config <client.json>  (started by a hook)
 
-``client.json`` holds ``url`` (the server, e.g. ``http://100.64.0.10:18765``), ``host`` (``claude-code``,
+``client.json`` holds ``url`` (the server, e.g. ``https://memory.example``), ``host`` (``claude-code``,
 ``codex``, ``workbuddy`` or ``dsh``), ``token_file`` and ``state_dir``, all absolute.  dsh's native plugin sends
 its record inside the payload and retains unacknowledged messages itself; it does not use the Codex spool.
 The token never leaves this machine except in the requests' ``Authorization`` header.
@@ -49,10 +49,11 @@ import sys
 import time
 import urllib.parse
 from contextlib import ExitStack
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from scope_recall.core.capture_filters import without_private
 from scope_recall.core.file_lock import advisory_file_lock
 from scope_recall.core.private import normalize_project_path, notice_for_mode
 
@@ -60,11 +61,17 @@ from ...contracts import ContractError
 from ...runtime.remote_clock import event_times as _private_times
 from ...runtime.remote_clock import private_metadata
 from . import transcript
-from .boundary import EMPTY_ANSWER, IN_CONTEXT_FIELD, is_workbuddy_agent_run, without_lone_surrogates
+from .boundary import (
+    EMPTY_ANSWER,
+    IN_CONTEXT_FIELD,
+    filter_capture_reply,
+    is_workbuddy_agent_run,
+    without_lone_surrogates,
+)
 
 HOSTS = ("claude-code", "codex", "workbuddy", "dsh")
 #: Hosts whose Stop and SessionEnd send the lines of their own session record (``transcript``).
-_RECORD_HOSTS = frozenset({"claude-code", "workbuddy"})
+_RECORD_HOSTS = frozenset({"claude-code", "workbuddy", "codex"})
 #: How long the client's host waits for each hook (the plugin's hooks.json): the local installers' ceilings
 #: (``maintenance/install_claude_code.py``, ``maintenance/install_codex.py``), for the events forwarded.  A hook
 #: answers as soon as the server does; the server's work is bounded by the entry's budget.  WorkBuddy's hooks are
@@ -135,7 +142,7 @@ def load_client_config(path: Path) -> dict[str, Any]:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _log(config: dict[str, Any], line: str) -> None:
@@ -579,7 +586,9 @@ def _start_flush(config: dict[str, Any]) -> None:
 # -- the hook ----------------------------------------------------------------
 
 
-def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], "transcript.Cursor"] | None:
+def _record_part(
+    config: dict[str, Any], payload: dict[str, Any]
+) -> tuple[dict[str, Any], transcript.Cursor, transcript.RecordPage] | None:
     """What this Stop sends of the session record, and the cursor to move on success."""
     session_id = payload.get("session_id")
     if type(session_id) is not str or not session_id.strip():
@@ -590,7 +599,11 @@ def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[
             payload.get("transcript_path"), session_id.strip(), record_id=payload.get("agent_id")
         )
         if workbuddy
-        else transcript.record_path(payload.get("transcript_path"), session_id.strip())
+        else (
+            transcript.codex_record_path(payload.get("transcript_path"), session_id.strip())
+            if config["host"] == "codex"
+            else transcript.record_path(payload.get("transcript_path"), session_id.strip())
+        )
     )
     if record is None:
         return None
@@ -598,7 +611,11 @@ def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[
     start = cursor.load()
     try:
         lines = transcript.read(
-            record, start, limit=RECORD_READ_BYTES, rows=transcript.workbuddy_said if workbuddy else transcript.said
+            record,
+            start,
+            limit=RECORD_READ_BYTES,
+            rows=transcript.PARSERS[config["host"]],
+            directory=cursor.directory(),
         )
     except OSError:
         return None
@@ -607,7 +624,7 @@ def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[
     wire = [[end, transcript.said_to_wire(said)] for end, said in lines if said is not None]
     if not wire or wire[-1][0] != lines[-1][0]:
         wire.append([lines[-1][0], None])
-    return {"start": start, "lines": wire}, cursor
+    return {"start": start, "lines": wire}, cursor, lines
 
 
 def _error_reply(payload: dict[str, Any]) -> bool:
@@ -637,17 +654,54 @@ def _with_context_since(payload: dict[str, Any]) -> dict[str, Any]:
     return kept if since is None else {**kept, IN_CONTEXT_FIELD: since}
 
 
-def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
-    started = time.monotonic() if started is None else started
+def _visible_value(value: Any) -> Any:
+    """Apply the shared inline filter to nested capturable text, never to identity fields."""
+    if isinstance(value, str):
+        return without_private(value)[0]
+    if isinstance(value, list):
+        return [_visible_value(item) for item in value]
+    if isinstance(value, dict):
+        return {_visible_value(key): _visible_value(item) for key, item in value.items()}
+    return value
+
+
+def _visible_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip inline private text before the same envelope reaches transport or durable spool."""
+    result = dict(payload)
+    for field in ("prompt", "last_assistant_message", "tool_input", "tool_response"):
+        if field in result:
+            result[field] = _visible_value(result[field])
+    if isinstance(result.get("record"), list):
+        result["record"] = [
+            dict(row, text=without_private(row["text"])[0])
+            if isinstance(row, dict) and isinstance(row.get("text"), str)
+            else row
+            for row in result["record"]
+        ]
+    return result
+
+
+def _hook_input(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Decode one event and resolve local text filtering before any transport access."""
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError):
-        return {}
+        return None, {}
     if not isinstance(payload, dict):
-        return {}
-    # Half of a broken emoji (a lone surrogate, which JavaScript writes) cannot be sent as UTF-8: the request would fail
-    # and the turn have no recall.  It is sent, kept and stored as U+FFFD, as a hook here stores it.
+        return None, {}
+    # JavaScript can emit lone surrogates; replacement keeps JSON text valid UTF-8.
     payload = cast(dict[str, Any], without_lone_surrogates(payload))
+    filtered = filter_capture_reply(payload)
+    if filtered is not None:
+        return None, filtered
+    return _visible_payload(payload), {}
+
+
+def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
+    started = time.monotonic() if started is None else started
+    payload, local = _hook_input(raw)
+    if payload is None:
+        return local
     event = payload.get("hook_event_name")
     cwd = payload.get("cwd")
     if isinstance(cwd, str):
@@ -670,6 +724,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         payload = _with_context_since(payload)
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
     cursor = None
+    record_page = None
     if (
         host in _RECORD_HOSTS
         and event in ("Stop", "SessionEnd")
@@ -677,7 +732,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     ):
         part = _record_part(config, payload)
         if part is not None:
-            body["record"], cursor = part
+            body["record"], cursor, record_page = part
         if host == "workbuddy" and event == "Stop" and _error_reply(payload):
             # The record is here, not on the server: this side says whether the reply is an error WorkBuddy showed.
             body["error_reply"] = True
@@ -689,7 +744,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         return {}
     through = answer.get("through")
     if cursor is not None and type(through) is int and through > body["record"]["start"]:
-        cursor.save(through)
+        cursor.save(through, directory=record_page.directory_at(through) if record_page is not None else None)
     if host == "codex" and any(_spool_dir(config).glob("*.json")):
         _start_flush(config)
     result = answer.get("result")

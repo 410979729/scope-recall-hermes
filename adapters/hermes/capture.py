@@ -9,6 +9,9 @@ import json
 import logging
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
@@ -25,6 +28,8 @@ from .boundary import SourceIdentity
 from .identity import HermesIdentity, HermesRuntimeScope, host_scope_payload, trusted_source_context
 
 if TYPE_CHECKING:
+    from scope_recall.core.private import CaptureGuard
+
     from .provider import ScopeRecallHermesAdapter
 
 #: The adapter's log name, the provider module's, which this module logs under as well: a host writes it into each
@@ -94,6 +99,23 @@ class CaptureWriter:
 
     def __init__(self, adapter: ScopeRecallHermesAdapter) -> None:
         self._adapter = adapter
+        self._capture_guard: ContextVar[CaptureGuard | Exception | None] = ContextVar(
+            "capture_privacy_guard", default=None
+        )
+
+    @contextmanager
+    def using_capture_guard(self, guard) -> Iterator[None]:
+        """Reuse one policy snapshot within this task's batch, including failed writes.
+
+        Captures release the adapter lock during I/O. Context-local ownership prevents
+        another hook or forced retry from borrowing or replacing the batch's snapshot.
+        Authoritative writes still check current rules inside their own transaction.
+        """
+        token = self._capture_guard.set(guard)
+        try:
+            yield
+        finally:
+            self._capture_guard.reset(token)
 
     def write(
         self,
@@ -156,6 +178,8 @@ class CaptureWriter:
 
         Test doubles without persistent ingress may omit the optional read.
         """
+        if guard is None:
+            guard = self._capture_guard.get()
         if isinstance(guard, Exception):
             return "unknown"
         check = getattr(self._adapter._require_core(), "private_capture_blocked", None)

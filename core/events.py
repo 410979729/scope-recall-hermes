@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ..contracts import ContractError, SourceEvent, TrustedContext, decode_payload, validate_capture
-from .capture_filters import redact_secret_text, sanitize_source_capture_text
+from .capture_filters import redact_secret_text, sanitize_source_capture_text, without_private
 from .secret_patterns import REDACTED_SECRET, contains_secret_like_text
 
 MAX_SEGMENT_CHARS = 65536
@@ -114,6 +114,7 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
     content = raw.get("content")
     if type(content) is not str:
         raise ContractError("INPUT_INVALID", "content")
+    content, private_count = without_private(content)
     # Validate the envelope before splitting a bounded long host message. The
     # original content is never repaired or supplied to a model to pass schema.
     checked = validate_capture({**raw, "content": ""}, _principal_context(raw, context))
@@ -130,6 +131,8 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
     content = raw["content"]
     filtered = sanitize_source_capture_text(content)
     gaps = ("transport_payload_omitted",) if filtered != content else ()
+    if private_count:
+        gaps = (*gaps, f"private_spans_removed:{private_count}")
     if masked_secret_count:
         gaps = (*gaps, "secret_values_masked")
     if not filtered.strip() and not raw.get("artifact_refs") and raw["capture_state"] == "complete":
@@ -165,6 +168,7 @@ def segment_key(group_key: str, index: int) -> str:
 
 def _stored_segments(content: str) -> tuple[str, ...]:
     """The texts a capture of ``content`` stores: masked, sanitized and split the way ``prepare_capture`` does."""
+    content, _private_count = without_private(content)
     masked, _count = redact_secret_text(content)
     return capture_text_segments(sanitize_source_capture_text(masked))
 
@@ -183,7 +187,7 @@ CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _IDENTIFIER = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
 _FILENAME = re.compile(r"(?<![\w-])[\w-]+(?:\.[\w-]+)+", re.UNICODE)
 #: A dotted release version with a pre-release or build suffix, after
-#: normalization: 3.1.0rc28, v3.1.0-rc28, 3.1.0.dev2, 2.0.1-beta3, 1.10.2a1.
+#: Normalize semver prerelease and development spellings before matching.
 _VERSION_SUFFIX = re.compile(r"(?<![a-z0-9])v?[0-9]+(?:\.[0-9]+)+[._-]?([a-z]+[0-9]+)(?![a-z0-9])")
 
 

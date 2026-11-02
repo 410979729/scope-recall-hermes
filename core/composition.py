@@ -14,6 +14,7 @@ from ..contracts import (
     InstanceBinding,
     SourceEvent,
     TrustedContext,
+    decode_payload,
     utc_timestamp,
     validate_model_request,
     validate_payload,
@@ -257,16 +258,18 @@ class MemoryCore:
 
         The caller uses this before keeping a failed capture on disk.  The same
         check runs again at the authoritative write, so a rule opened between the
-        two cannot be bypassed.
+        two cannot be bypassed. A batch guard reads only occurrence metadata from
+        the caller's already validated capture; it does not mask or split its text again.
         """
+        if guard is not None:
+            event = decode_payload(dict(value) if isinstance(value, dict) else value)
+            return guard.blocked(context, (event,))
         from .events import prepare_capture
 
         prepared = prepare_capture(value, context)
         if prepared.rejection:
             return False
-        if guard is not None:
-            return guard.blocked(context, prepared.events)
-        with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        with self.storage.capture_privacy(context, remaining_seconds=remaining_seconds) as tx:
             return (
                 private.capture_mode(private.matching_intervals(tx, context, events=prepared.events), prepared.events)
                 is not None
@@ -274,12 +277,12 @@ class MemoryCore:
 
     def private_capture_guard(self, context: TrustedContext, *, observations=(), remaining_seconds: float = 1.0):
         """Read one metadata snapshot for a hook's bounded retry or deferral batch."""
-        with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        with self.storage.capture_privacy(context, remaining_seconds=remaining_seconds) as tx:
             return private.CaptureGuard.read(tx, observations)
 
     def private_rules_exist(self, context: TrustedContext) -> bool:
         """Return only whether the entry's store has active or closed private intervals."""
-        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+        with self.storage.capture_privacy(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
             return private.has_rules(tx)
 
     def private_check(
@@ -305,7 +308,7 @@ class MemoryCore:
         else:
             raise ContractError("INPUT_INVALID", "times")
         now = utc_timestamp(self.clock.utc_now())
-        with self.storage.read(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
+        with self.storage.capture_privacy(context, remaining_seconds=self.config.write_timeout_seconds) as tx:
             private_rules = private.has_rules(tx)
             events = [dict(occurred_at=now, recorded_at=now), *[dict(moment, recorded_at=now) for moment in moments]]
             intervals = private.matching_intervals(tx, context, events=events)

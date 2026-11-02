@@ -1,207 +1,50 @@
-"""Exact Hermes audience declarations, read/write grants and retained registration.
+"""Hermes import surface for shared installation bindings."""
 
-Empty route fields match only empty route fields. Scope IDs are opaque: validate
-without rewriting their bytes or interpreting legacy length-prefixed tokens.
-"""
-
-from __future__ import annotations
-
-from typing import Any, Sequence
-
-
-def normalize_owner_principals(values: object) -> tuple[dict[str, str], ...]:
-    """Accept explicit owner aliases only; never infer ownership from routes."""
-    if not isinstance(values, (list, tuple)) or not values:
-        raise HermesIdentityError("owner_principals must be a nonempty explicit sequence")
-    result = []
-    seen = set()
-    for value in values:
-        if not isinstance(value, dict) or set(value) != {"platform", "user_id"}:
-            raise HermesIdentityError("owner_principals require only platform and user_id")
-        for text in value.values():
-            if type(text) is not str or not text or text != text.strip() or len(text) > 240 or text in {"*", "unknown"}:
-                raise HermesIdentityError("invalid exact owner principal")
-        key = (value["platform"], value["user_id"])
-        if key in seen:
-            raise HermesIdentityError("duplicate owner principal")
-        seen.add(key)
-        result.append(dict(value))
-    return tuple(result)
-
-
-class HermesIdentityError(RuntimeError):
-    """Raised when documented host identity is missing or conflicts."""
-
-
-#: The principal of a session the host names no user for: the CLI's, and an
-#: approved local surface's.  A conversation the gateway's local session
-#: transport runs for the gateway's own account is bound under it too
-#: (``identity.host_account_principal``).
-LOCAL_USER_ID = "local"
-
-#: Host surfaces a person types into on the machine the host runs on, where the
-#: host sends no ``user_id`` unless a dashboard login exists: the Desktop chat
-#: panel and ``hermes --tui`` (``tui_gateway/server.py`` resolves the platform to
-#: one of the two and passes the login, or nothing), or, where the gateway runs
-#: their conversations, the account it runs as.  Neither binds a scope until the
-#: installer approves the surface for one installation, because only the owner
-#: knows whether everyone who can reach that surface without logging in is the
-#: owner.  A login there is a principal of its own, approved
-#: apart (``normalize_owner_logins``).  ``cron`` is deliberately not here: nobody is
-#: speaking in a scheduled run, a job can be created from any chat, and its
-#: prompt would be captured as the owner's own words.
-LOCAL_PLATFORMS = frozenset({"desktop", "tui"})
-
-
-def normalize_local_platforms(values: object) -> tuple[str, ...]:
-    """The local surfaces an installer asks to approve, each a known one, once."""
-    if not isinstance(values, (list, tuple)):
-        raise HermesIdentityError("local_platforms must be an explicit sequence")
-    result: list[str] = []
-    for value in values:
-        if type(value) is not str or value not in LOCAL_PLATFORMS:
-            raise HermesIdentityError(f"local platform must be one of {sorted(LOCAL_PLATFORMS)}")
-        if value not in result:
-            result.append(value)
-    return tuple(result)
-
-
-def normalize_owner_logins(values: object) -> tuple[tuple[str, str], ...]:
-    """Dashboard logins an installer approves as the owner's own, each on one local surface: ``desktop=basic:nameone``.
-
-    The host passes a login there as the session's ``user_id`` (``<provider>:<user>``) and names no
-    chat.  Approving one is the owner principal ``(platform, login)``, as approving the surface for a
-    session that names nobody is ``(platform, "local")``.
-    """
-    if not isinstance(values, (list, tuple)):
-        raise HermesIdentityError("owner logins must be an explicit sequence")
-    result: list[tuple[str, str]] = []
-    for value in values:
-        platform, _sep, login = value.partition("=") if type(value) is str else ("", "", "")
-        if (
-            platform not in LOCAL_PLATFORMS
-            or not login
-            or login != login.strip()
-            or len(login) > 240
-            or login.casefold() in {LOCAL_USER_ID, "*", "unknown"}
-        ):
-            raise HermesIdentityError(
-                f"an owner login is <platform>=<login>, the platform one of {sorted(LOCAL_PLATFORMS)} and the "
-                "login exactly as the host sends it, such as desktop=basic:nameone"
-            )
-        if (platform, login) not in result:
-            result.append((platform, login))
-    return tuple(result)
-
-
-def approved_local_platforms(owner_principals: Sequence[dict[str, str]]) -> frozenset[str]:
-    """The local surfaces this installation's owner approved.
-
-    The approval is the owner principal ``(platform, "local")`` itself, the same
-    shape the CLI's has, so a manifest needs no new field and an older package
-    still reads it.
-    """
-    return frozenset(
-        item["platform"]
-        for item in owner_principals
-        if item["user_id"] == LOCAL_USER_ID and item["platform"] in LOCAL_PLATFORMS
-    )
-
-
-EXACT_FIELDS = (
-    "platform",
-    "user_id",
-    "chat_type",
-    "chat_id",
-    "thread_id",
-    "gateway_session_key",
-    "agent_workspace",
+from ..audiences import (
+    _EMPTY_ROUTE_FIELDS as _EMPTY_ROUTE_FIELDS,
 )
-_EMPTY_ROUTE_FIELDS = frozenset({"chat_type", "chat_id", "thread_id", "gateway_session_key"})
-
-
-def is_archive_scope(scope_id: str) -> bool:
-    """Recognize namespaces that can never receive runtime grants."""
-    return str(scope_id).startswith(("archive|", "archive:", "__audit:", "__quarantine:"))
-
-
-def _scope_ids(values: object, *, field: str) -> tuple[str, ...]:
-    if not isinstance(values, (list, tuple)):
-        raise HermesIdentityError(f"{field} must be an explicit scope sequence")
-    result: list[str] = []
-    for value in values:
-        if type(value) is not str or not value.strip() or value == "*" or len(value) > 240:
-            raise HermesIdentityError(f"{field} contains an invalid scope ID")
-        if value in result or is_archive_scope(value):
-            raise HermesIdentityError(f"{field} contains duplicate or archive-only scope IDs")
-        result.append(value)
-    return tuple(result)
-
-
-def normalize_retained_scope_ids(values: object) -> frozenset[str]:
-    """Validate non-runtime original scopes without changing their identifiers."""
-    return frozenset(_scope_ids(values, field="retained_scope_ids"))
-
-
-def audience_entry(
-    *,
-    platform: str,
-    user_id: str,
-    chat_type: str,
-    chat_id: str,
-    thread_id: str,
-    gateway_session_key: str,
-    agent_workspace: str,
-    allowed_scope_ids: Sequence[str],
-    writable_scope_ids: Sequence[str],
-    capture_scope_id: str,
-    kind: str,
-) -> dict[str, Any]:
-    """Build an exact declaration; capture must belong to its writable subset."""
-    fields = dict(
-        platform=platform,
-        user_id=user_id,
-        chat_type=chat_type,
-        chat_id=chat_id,
-        thread_id=thread_id,
-        gateway_session_key=gateway_session_key,
-        agent_workspace=agent_workspace,
-    )
-    for key, value in fields.items():
-        if (
-            type(value) is not str
-            or len(value) > 240
-            or (key not in _EMPTY_ROUTE_FIELDS and not value.strip())
-            or value.strip().lower() == "unknown"
-        ):
-            raise HermesIdentityError(f"audiences.{key} must be an explicit exact string")
-    fields = {key: value.strip() for key, value in fields.items()}
-    if type(kind) is not str or not kind.strip() or len(kind) > 240:
-        raise HermesIdentityError("audiences.kind is required")
-    if kind == "owner_private" and fields["chat_type"] not in {"cli", "private", "direct", "dm"}:
-        raise HermesIdentityError("owner_private audience must be an explicit private or CLI chat")
-    allowed = _scope_ids(allowed_scope_ids, field="allowed_scope_ids")
-    writable = _scope_ids(writable_scope_ids, field="writable_scope_ids")
-    if not allowed or not set(writable) <= set(allowed):
-        raise HermesIdentityError("writable_scope_ids must be a subset of nonempty allowed_scope_ids")
-    if type(capture_scope_id) is not str or (capture_scope_id not in writable if writable else capture_scope_id != ""):
-        raise HermesIdentityError("capture_scope_id must be writable, or empty for a read-only audience")
-    return {
-        **fields,
-        "allowed_scope_ids": list(allowed),
-        "writable_scope_ids": list(writable),
-        "capture_scope_id": capture_scope_id,
-        "kind": kind.strip(),
-    }
-
-
-def normalize_audience_entry(value: object) -> dict[str, Any]:
-    """Reject pre-upgrade or incomplete rows rather than inferring new grants."""
-    required = {*EXACT_FIELDS, "allowed_scope_ids", "writable_scope_ids", "capture_scope_id"}
-    if not isinstance(value, dict) or not required <= value.keys():
-        raise HermesIdentityError("audience mapping incomplete; explicit v3 upgrade required")
-    if value.keys() - (required | {"kind"}):
-        raise HermesIdentityError("unsupported audience fields")
-    if not isinstance(value["allowed_scope_ids"], list) or not isinstance(value["writable_scope_ids"], list):
-        raise HermesIdentityError("audience read/write scope sets must be explicit lists")
-    return audience_entry(**{key: value[key] for key in required}, kind=value.get("kind", "conversation"))
+from ..audiences import (
+    EXACT_FIELDS as EXACT_FIELDS,
+)
+from ..audiences import (
+    LOCAL_PLATFORMS as LOCAL_PLATFORMS,
+)
+from ..audiences import (
+    LOCAL_USER_ID as LOCAL_USER_ID,
+)
+from ..audiences import (
+    Any as Any,
+)
+from ..audiences import (
+    HermesIdentityError as HermesIdentityError,
+)
+from ..audiences import (
+    Sequence as Sequence,
+)
+from ..audiences import (
+    _scope_ids as _scope_ids,
+)
+from ..audiences import (
+    approved_local_platforms as approved_local_platforms,
+)
+from ..audiences import (
+    audience_entry as audience_entry,
+)
+from ..audiences import (
+    is_archive_scope as is_archive_scope,
+)
+from ..audiences import (
+    normalize_audience_entry as normalize_audience_entry,
+)
+from ..audiences import (
+    normalize_local_platforms as normalize_local_platforms,
+)
+from ..audiences import (
+    normalize_owner_logins as normalize_owner_logins,
+)
+from ..audiences import (
+    normalize_owner_principals as normalize_owner_principals,
+)
+from ..audiences import (
+    normalize_retained_scope_ids as normalize_retained_scope_ids,
+)

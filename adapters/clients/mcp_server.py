@@ -28,6 +28,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import TRACE_GUIDANCE, fence_trace_epoch
 
+from ..host_profiles import HOSTS
 from ..runtime_wiring import FORGET_GUIDANCE, READ_VIEW_BUDGET_GUIDANCE, RECALL_CONTEXT_GUIDANCE, REVISE_GUIDANCE
 from ..tool_common import (
     FENCED_ENTITY,
@@ -48,6 +49,7 @@ from ..tool_common import (
 from .config import CodexInstallationConfig, SharedClientConfig
 from .identity import CodexRuntimeAudience, resolve_runtime_audience, trusted_context
 from .runtime_wiring import TrustedHostRuntime, attach_trusted_host_runtime
+from .tool_schema import host_schema
 
 OUTPUT_ORIGIN = "memory_reinjection"
 RECOMMENDED_EXPLICIT_BUDGET_TOKENS = 4096
@@ -61,7 +63,7 @@ _RECALL_BUDGET_GUIDANCE = (
 )
 _BUDGET_CAP_GAPS = ("budget_token_cap", "budget_packet_cap")
 #: The request metadata a client binds a tool call to its conversation with.
-_THREAD_META = {"codex": "threadId"}
+_THREAD_META = {host: profile.thread_meta for host, profile in HOSTS.items() if profile.thread_meta}
 #: The tools that change the store.  Core takes one only on the word of the person's latest message in the same
 #: conversation, so they are served only to a client that names its conversation on every call (``_THREAD_META``).
 _MUTATIONS = frozenset({"propose_memory", "revise", "forget"})
@@ -246,9 +248,11 @@ class CodexMCPServer:
             # identity, path, scope, and host-session fields, so tighten the
             # generated model and the advertised JSON Schema.
             tool = self.server._tool_manager.get_tool(name)
+            assert tool is not None
             tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
             tool.fn_metadata.arg_model.model_rebuild(force=True)
             tool.parameters["additionalProperties"] = False
+            tool.parameters = host_schema(tool.parameters)
 
     # -- trusted binding -------------------------------------------------
 

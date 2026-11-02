@@ -15,6 +15,31 @@ from .secret_patterns import (
     secret_redaction_spans,
 )
 
+
+def without_private(text: str) -> tuple[str, int]:
+    """Remove inline private spans before any durable or outbound use.
+
+    Nested spans stay private until the matching close. An unfinished span hides the remaining text, so a partial
+    transcript line cannot release it on replay. The count is metadata only and never includes hidden content.
+    """
+    kept, position, depth, count = [], 0, 0, 0
+    for tag in re.finditer(r"</?private>", text):
+        if depth == 0:
+            kept.append(text[position : tag.start()])
+        if tag.group() == "<private>":
+            if depth == 0:
+                count += 1
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            kept.append(tag.group())
+        position = tag.end()
+    if depth == 0:
+        kept.append(text[position:])
+    return "".join(kept), count
+
+
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Windows drive paths first so `C:/Users/...` is fully redacted before the
     # POSIX `/Users/...` fallback can leave a `C:` fragment behind.

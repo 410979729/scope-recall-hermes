@@ -9,22 +9,24 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
-from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
-from scope_recall.adapters.hermes.identity import HermesRuntimeScope, RuntimeAudience, resolve_runtime_audience
-from scope_recall.adapters.hermes.installation import HermesIdentityError, InstallationManifest, bounded_text
-from scope_recall.adapters.hermes.shared_entries import (
+from scope_recall.adapters.audiences import LOCAL_USER_ID
+from scope_recall.adapters.host_identity import HermesRuntimeScope, RuntimeAudience, resolve_runtime_audience
+from scope_recall.adapters.installation import HermesIdentityError, InstallationManifest, bounded_text
+from scope_recall.adapters.shared_entries import (
     CLIENT_HOSTS,
     attachment_path,
     read_attachment,
+    read_shared_payload,
     shared_entry_manifest,
 )
-from scope_recall.contracts import InstanceBinding
+from scope_recall.contracts import ContractError, InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 
@@ -302,3 +304,22 @@ def install_codex_scope_recall(
     core = MemoryCore(CoreConfig(binding), clock=clock)
     core.initialize()
     return config, core
+
+
+def shared_clients(binding):
+    """Yield attached local clients whose current store identity and grants fit this worker binding."""
+    for entry in read_shared_payload(binding.data_directory)["entries"]:
+        if entry.get("host") not in CLIENT_HOSTS:
+            continue
+        try:
+            config = load_shared_client(Path(entry["home"]), entry["host"])
+            if (
+                config.installation_id == binding.installation_id
+                and config.agent_id == binding.agent_id
+                and config.data_directory == binding.data_directory
+                and config.test_mode == binding.test_mode
+                and config.scope_ids <= binding.scope_ids
+            ):
+                yield config, entry["attached_at"]
+        except (ContractError, OSError, RuntimeError, ValueError):
+            continue

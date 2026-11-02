@@ -80,6 +80,25 @@ These are logical states encoded by row presence and last_error_code, not anothe
 Deferred stamps whose timestamp is malformed or implausibly far in the future are due immediately. Give-up
 counts survive release changes. A conflict is rekeyed from the content fingerprint, never by widening authority.
 
+Session records are also durable capture ledgers. A worker reads bounded pages from attached Claude Code, Codex and
+WorkBuddy homes and from a local Codex installation's registered record or native session directory. It records only
+offsets and failure codes beside the home; content remains in the host's record until normal capture accepts it.
+Unchanged completed files cost no store read. Installation time bounds automatic recovery; importing earlier history
+is a separate owner operation. dsh retains unacknowledged messages in its existing plugin spool. Incomplete or deferred pages request a later
+worker pass. Completed ledgers rely on ordinary worker autostart and host end hooks for discovery; they create no
+perpetual polling task.
+
+Ledger checkpoints use the inbox's `deferral`, `replayable` and `given_up` rules and delay limits. The worker receipt
+and doctor expose aggregate `transcript_replay` outcomes. `retry-failures --apply` reopens given-up and denied
+checkpoints; `--include-terminal` additionally permits an explicit retry after invalid input is repaired. Recovery
+checks current entry grants, original occurrence times, deletion fences and private history again. Inline private
+spans are removed through the same capture filter, including nested or unfinished spans.
+
+While ordinary storage refuses an upgrade, a metadata-only privacy snapshot may still recognize the unchanged private
+interval contract. It checks the recorded and header schemas, installation identity, location and scopes, exact table
+and index declarations, and restore fences. It cannot read sources or write data. An unknown privacy format still
+refuses a local copy.
+
 ## Hermes capture replay
 
 | State | Next states | Next action and lease expiry | Wake after capability recovery | Retry limit | Terminal |

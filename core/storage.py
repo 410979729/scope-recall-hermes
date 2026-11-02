@@ -6,9 +6,10 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -27,6 +28,8 @@ from .registry_storage import Registry
 from .restore import restore_pending
 from .schema import (
     APPLICATION_ID,
+    PRIVATE_INTERVALS_STATEMENT,
+    PRIVATE_TARGET_INDEX,
     SCHEMA_VERSION,
     STATEMENTS,
     UPGRADE_CHAIN,
@@ -68,6 +71,22 @@ SCHEMA_MIGRATIONS = dict(
         strict=True,
     )
 )
+
+
+def _privacy_read_authorizer(action: int, table: str | None, *_rest: object) -> int:
+    """Restrict a privacy snapshot to interval metadata without exposing source rows."""
+    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ and table != "private_intervals" else sqlite3.SQLITE_OK
+
+
+def _check_privacy_contract(conn: sqlite3.Connection) -> None:
+    """Require the canonical privacy schema, including case-sensitive stored literal values."""
+    for name, expected in (
+        ("private_intervals", PRIVATE_INTERVALS_STATEMENT),
+        ("private_target", PRIVATE_TARGET_INDEX),
+    ):
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()
+        if row is None or " ".join(row[0].split()) != " ".join(expected.split()):
+            raise ContractError("SCHEMA_UNSUPPORTED", "privacy_contract")
 
 
 def _directory(path: Path) -> str:
@@ -999,6 +1018,50 @@ class SQLiteStorage:
 
     def write(self, context: TrustedContext, *, remaining_seconds: float | None = None):
         return self._transaction(context, writable=True, remaining_seconds=remaining_seconds)
+
+    @contextmanager
+    def capture_privacy(self, context: TrustedContext, *, remaining_seconds: float = 1.0):
+        """Read only the recognized privacy contract while ordinary storage is refusing an upgrade.
+
+        The header and recorded schema must agree, as must identity, location, scopes and installation kind. An
+        exact privacy table and index contract are required; an unknown format never authorizes a local copy.
+        Restore fences remain active. No general source read or write is exposed by this transaction.
+        """
+        deadline = time.monotonic() + remaining_seconds
+        with ExitStack() as opened:
+            try:
+                ordinary = opened.enter_context(self.read(context, remaining_seconds=remaining_seconds))
+            except ContractError as exc:
+                if exc.code != "SCHEMA_UNSUPPORTED":
+                    raise
+            else:
+                _check_privacy_contract(ordinary._check())
+                ordinary._check().set_authorizer(_privacy_read_authorizer)
+                yield ordinary
+                return
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        self._context_check(context)
+        conn = self._open("ro", remaining_seconds, coordinating=True)
+        tx = Transaction(conn, context, writable=False)
+        try:
+            conn.execute("BEGIN")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            self.verify(conn, expected_schema=version)
+            _check_privacy_contract(conn)
+            if restore_pending(self.binding.data_directory):
+                raise ContractError("RESTORE_UNVERIFIED")
+            conn.set_authorizer(_privacy_read_authorizer)
+            yield tx
+        finally:
+            original = sys.exception()
+            tx._finish()
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            finally:
+                self._close(conn, original)
 
     def read(self, context: TrustedContext, *, remaining_seconds: float | None = None):
         return self._transaction(context, writable=False, remaining_seconds=remaining_seconds)
