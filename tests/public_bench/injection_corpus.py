@@ -24,7 +24,12 @@ def main():
     core.initialize()
     results = []
     with core.storage.read(ctx) as tx:
-        for name in ("injection_corpus.json", "injection_legacy_cases.json"):
+        for name in (
+            "injection_corpus.json",
+            "injection_legacy_cases.json",
+            "injection_commands.json",
+            "injection_documents.json",
+        ):
             cases = json.loads((Path(__file__).parents[1] / "data" / name).read_text("utf-8"))
             for case in cases:
                 event = source_event(

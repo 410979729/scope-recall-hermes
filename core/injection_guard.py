@@ -203,8 +203,9 @@ def screen_sources(tx, sources, now, *, remaining_seconds=SCAN_SECONDS):
             save_checkpoint(tx, rows, verdict.progress, policy, now)
         elif pending:
             tx._check(write=True).execute(
-                "DELETE FROM source_scan_progress WHERE source_ref IN (SELECT value FROM json_each(?))",
-                (json.dumps([row["event_id"] for row in rows]),),
+                "DELETE FROM source_scan_progress WHERE source_revision=? "
+                "AND source_ref IN (SELECT value FROM json_each(?))",
+                (source.revision, json.dumps([row["event_id"] for row in rows])),
             )
         for row in rows:
             if row["event_id"] not in held and (row["event_id"], row["source_revision"]) in inserted | pending:

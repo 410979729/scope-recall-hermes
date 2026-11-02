@@ -878,3 +878,41 @@ def test_import_catalogue_is_complete_before_identity_judgement(root, entries):
             assert resolved.subject == target.payload["subject"]
     finally:
         provider.shutdown()
+
+
+def test_import_entity_task_waits_for_technical_source_scan(root, entries):
+    from scope_recall.core import CoreConfig, MemoryCore
+
+    from tests.contract.test_claims import Clock
+    from tests.contract.test_injection_merged import entity_hold_roundtrip
+
+    agent3, _ = entries
+    scope = _scope(agent3)
+    text = "TEST-Aster category person."
+    core, ctx, sources, old = _old_store(agent3, scope, text)
+    with core.storage.write(ctx) as tx:
+        version = tx.claims.append(
+            scope,
+            dict(
+                kind="fact",
+                subject="TEST-Aster",
+                predicate="category",
+                value_text="person",
+                conditions=[],
+                statement_kind="assertion",
+                valid_from=None,
+                valid_to=None,
+                evidence_spans=[dict(source_ref=sources[0].ref, source_revision=1, quote=text)],
+            ),
+            Qualification("active", "direct_report", "explicit_scoped_source"),
+            recorded_at=core.clock.utc_now(),
+        )
+    assert import_entry(root=root, entry_id="agent3", source=old)["status"] == "imported"
+    identity = bind_hermes_identity("TEST-import-hold", **_kwargs(agent3))
+    ctx = identity.trusted_context()
+    shared = MemoryCore(CoreConfig(ctx.binding), clock=Clock())
+    with shared.storage.read(ctx) as tx:
+        ref = version.ref
+        imported = tx.claims.version(ref, 1)
+    assert imported is not None
+    entity_hold_roundtrip(shared, ctx, imported, replay=False)

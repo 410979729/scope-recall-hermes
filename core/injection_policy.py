@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shlex
 import time
 import unicodedata
 from bisect import bisect_left, bisect_right
@@ -18,34 +17,30 @@ from collections import deque
 from dataclasses import dataclass
 from functools import lru_cache
 
+from .injection_commands import command_candidate, command_spans
 from .injection_schema import DEFAULT_RULES
 
 STRIDE = 2048
 MARGIN = 2048
-COMPILER_VERSION = "bounded-quoted-review-2"
+COMPILER_VERSION = "bounded-structured-payload-3"
 SCAN_SECONDS = 0.1
+_SIMPLE_FOLD = re.compile(r"[\x00-\x7f\u4e00-\u9fff\uff01-\uff5e]*")
+_WIDE_ASCII = str.maketrans({cp: cp - 0xFEE0 for cp in range(0xFF01, 0xFF5F)})
 _FLAGS = tuple(
     "\U0001f3f4" + "".join(chr(0xE0000 + ord(c)) for c in code) + "\U000e007f" for code in ("gbeng", "gbsct", "gbwls")
 )
 _CONTROLS = re.compile(
     r"[\u00ad\u034f\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000e0000-\U000e007f]"
 )
+_PROSE_BOUNDARY = re.compile(
+    r"[.!?。！？][ \t]*\r?\n|\r?\n[ \t]*\r?\n|"
+    r"</?(?:address|article|aside|blockquote|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|"
+    r"h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\b"
+)
 _JOIN = re.compile(r"[A-Za-z\u4e00-\u9fff][\u200c\u200d]|[\u200c\u200d][A-Za-z\u4e00-\u9fff]")
 _QUOTE_TOKEN = re.compile("[\"'“”‘’`＂＇｀]")
 _QUOTE_FOLD = {"＂": '"', "＇": "'", "｀": "`"}
 _QUOTE_CLOSE = {'"': '"', "'": "'", "“": "”", "‘": "’", "`": "`"}
-_BODY = (
-    "--data",
-    "--data-raw",
-    "--data-binary",
-    "--data-urlencode",
-    "--post-data",
-    "--post-file",
-    "-d",
-    "-F",
-    "--form",
-    "--form-string",
-)
 
 
 @dataclass(frozen=True)
@@ -242,28 +237,19 @@ def _quoted_discussion(text, start, end, quotes):
     return index >= 0 and quotes[index][0] < start and end < quotes[index][1]
 
 
-def _command_spans(text, slots, span):
-    for start, _end in _literal_positions(text, slots[0], ignore_case=True):
-        command = text[start : start + span].replace("\\\n", " ").split("\n", 1)[0]
-        try:
-            words = shlex.split(command)
-        except ValueError:
-            words = command.split()
-        for index, word in enumerate(words):
-            flag, separator, value = word.partition("=")
-            if flag in _BODY:
-                value = value if separator else words[index + 1] if index + 1 < len(words) else ""
-            elif word.startswith(("-d", "-F")) and len(word) > 2:
-                value = word[2:]
-            else:
-                continue
-            if flag == "--form-string" and "$" not in value:
-                continue
-            if ("$" in value or "@" in value or flag == "--post-file") and any(
-                token in value.casefold() for token in slots[1]
-            ):
-                yield start, start + len(command)
-                break
+def _structured_span(name, text, start, end):
+    """Keep attributes inside their tag, comments inside their comment and prose within one block.
+
+    The policy's span still caps every match. HTML block delimiters and paragraph
+    boundaries cannot join unrelated prose into a transfer instruction.
+    """
+    if name == "hidden_instruction":
+        terminator = "-->" if text.startswith("<!--", start) else ">"
+        boundary = text.find(terminator, start + (4 if terminator == "-->" else 1))
+        return boundary < 0 or end <= boundary + len(terminator)
+    if name.startswith("exfiltration_link_"):
+        return _PROSE_BOUNDARY.search(text, start, end) is None
+    return True
 
 
 def _hits(rule, raw, text, discussion, owned, folded_owned, quotes):
@@ -280,18 +266,20 @@ def _hits(rule, raw, text, discussion, owned, folded_owned, quotes):
         return any(owned[0] <= m.start() < owned[1] for m in _CONTROLS.finditer(raw))
     slots, span = pattern
     if matcher == "command":
-        if not _literal_positions(text, slots[0]):
+        if not command_candidate(text, slots[0]):
             return False
         command_text = unicodedata.normalize("NFKC", raw)
         spans = (
             (len(command_text[:a].casefold()), len(command_text[:b].casefold()))
-            for a, b in _command_spans(command_text, slots, span)
+            for a, b in command_spans(command_text, slots, span)
         )
     else:
         spans = _token_spans(text, slots, span)
     quoted = False
     for start, end in spans:
         if not folded_owned[0] <= start < folded_owned[1]:
+            continue
+        if not _structured_span(_name, text, start, end):
             continue
         if discussion and _quoted_discussion(text, start, end, quotes):
             quoted = True
@@ -309,6 +297,10 @@ def _window(value, offset):
     start = max(0, offset - MARGIN)
     raw = value[start : offset + STRIDE + MARGIN]
     owned = (offset - start, min(len(raw), offset - start + STRIDE))
+    # These characters neither compose across boundaries nor expand when folded.
+    # Their one-to-one mapping keeps raw ownership coordinates exact.
+    if not raw.isascii() and _SIMPLE_FOLD.fullmatch(raw) is not None:
+        return raw, raw.translate(_WIDE_ASCII).casefold(), owned, owned
     text = unicodedata.normalize("NFKC", raw).casefold()
     folded_owned = (
         owned if raw.isascii() else tuple(len(unicodedata.normalize("NFKC", raw[:end]).casefold()) for end in owned)

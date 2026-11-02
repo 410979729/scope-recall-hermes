@@ -6,6 +6,7 @@ physical cores. Initialization and warmup are excluded; OS caches are unchanged.
 
 import argparse
 import ctypes
+import hashlib
 import inspect
 import json
 import math
@@ -77,7 +78,17 @@ def worker(root):
     seed_truth(lab, 1000)
     scenes = ScenarioStore(root / "hooks")
     capture_timing.install()
-    print(json.dumps(dict(ready=True, module=inspect.getfile(capture), schema=SCHEMA_VERSION)), flush=True)
+    package = Path(inspect.getfile(capture)).resolve().parents[1]
+    digest = hashlib.sha256()
+    for source in sorted(package.rglob("*.py")):
+        digest.update(source.relative_to(package).as_posix().encode())
+        digest.update(b"\0" + source.read_bytes() + b"\0")
+    print(
+        json.dumps(
+            dict(ready=True, module=inspect.getfile(capture), schema=SCHEMA_VERSION, source_sha256=digest.hexdigest())
+        ),
+        flush=True,
+    )
     for index, line in enumerate(sys.stdin):
         command = json.loads(line)
         if command.get("quit"):
@@ -102,11 +113,25 @@ def worker(root):
             scenes.hook("codex", prompt, session=session)
         elapsed = (time.perf_counter() - start) * 1000
         capture_timing.ACTIVE = None
+        captured, diagnostics = True, None
         if command["operation"] == "hook":
             stored = scenes.rows("content=? AND role='user' AND entry_id='codex'", (prompt,))
-            assert len(stored) == 1 and stored[0]["content"] == prompt
+            captured = len(stored) == 1 and stored[0]["content"] == prompt
+            if not captured:
+                diagnostics = {
+                    name: getattr(scenes.hooks["codex"].diagnostics, name, None)
+                    for name in ("capture_error_code", "capture_durability", "capture_disposition", "capture_stage")
+                }
         print(
-            json.dumps(dict(elapsed_ms=elapsed, components=trace.result() if trace else None, affinity=affinity)),
+            json.dumps(
+                dict(
+                    elapsed_ms=elapsed,
+                    components=trace.result() if trace else None,
+                    affinity=affinity,
+                    captured=captured,
+                    diagnostics=diagnostics,
+                )
+            ),
             flush=True,
         )
 
@@ -208,14 +233,33 @@ def main():
             workload=dict(sources=1000, claims=100, embeddings=0),
             rotation="sample index modulo two; serial AB/BA",
             model_calls=False,
+            capture_failures=[
+                dict(
+                    operation=row["operation"],
+                    cores=row["cores"],
+                    index=row["index"],
+                    profile=row["profile"],
+                    build=label,
+                    diagnostics=row[label]["diagnostics"],
+                )
+                for row in result["samples"]
+                for label in ("before", "after")
+                if not row[label]["captured"]
+            ],
         )
         (args.output / "results.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        if result["capture_failures"]:
+            raise RuntimeError("Hook capture failures retained in results.json")
     finally:
         for child in children.values():
             if child.poll() is None:
-                child.stdin.write('{"quit":true}\n')
-                child.stdin.flush()
-                child.wait(timeout=30)
+                with suppress(OSError):
+                    child.stdin.write('{"quit":true}\n')
+                    child.stdin.flush()
+            with suppress(OSError):
+                child.stdin.close()
+        for child in children.values():
+            child.wait(timeout=30)
         for error in errors:
             error.close()
 

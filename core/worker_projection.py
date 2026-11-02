@@ -17,7 +17,7 @@ from .failure_policy import BUDGET_PAUSE_ERRORS, CAPACITY_REFUSALS
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
 from .source_records import StoredSource
-from .worker_entities import needs_entity_projection, process_entity_projection
+from .worker_entities import defer_held_entity, needs_entity_projection, process_entity_projection
 from .worker_outcomes import (
     budget_left,
     deadline_result,
@@ -548,6 +548,10 @@ def process_rebuild_projection(
     )
     if screening is not None:
         return screening
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        deferred = defer_held_entity(tx, item, clock.utc_now())
+        if deferred is not None:
+            return deferred
     if callable(getattr(model, "judge", None)):
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             entity = needs_entity_projection(tx, item)
