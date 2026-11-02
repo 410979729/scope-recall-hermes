@@ -370,7 +370,7 @@ def _mark_delivered(tx, context, items, now: str, cutoff: int) -> None:
     )
 
 
-def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
+def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool, clock):
     """Render at most the per-kind limits, never a partial line."""
     limits = {"task": 3, "decision": 5, "preference": 8}
     items, lines = [], []
@@ -390,7 +390,9 @@ def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
                 continue
             lines.append(line)
             items.append({"kind": kind, "ref": candidate.ref, "revision": candidate.revision})
-    handoff.append_brief(tx, search.now, items, lines, _HEADING, token_limit)
+    handoff.append_brief(
+        tx, search.now, items, lines, _HEADING, token_limit, deadline=search.deadline, monotonic=clock.monotonic
+    )
     return items, lines
 
 
@@ -436,7 +438,16 @@ def read(
     started = clock.monotonic()
     now = utc_timestamp(clock.utc_now())
     empty = {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
-    search = SearchContext("session briefing", "auto", None, (), SearchLimits(), started + 5, now, context)
+    search = SearchContext(
+        "session briefing",
+        "auto",
+        None,
+        (),
+        SearchLimits(),
+        started + (5 if remaining_seconds is None else min(5, max(0, remaining_seconds))),
+        now,
+        context,
+    )
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         mode, marker = private.recall_state(tx, context, now)
         if compact and context.compaction_seq is not None:
@@ -461,6 +472,7 @@ def read(
                 private.active_intervals(tx, now),
                 token_limit,
                 deliver and not compact,
+                clock,
             )
         )
         epoch = tx.memory_epoch()
@@ -488,7 +500,7 @@ def read(
     return result
 
 
-def _still_valid(tx, clock, context, brief) -> bool:
+def _still_valid(tx, clock, context, brief, *, deadline=None) -> bool:
     """Recheck selected lines if truth or privacy changed after preparation."""
     now = utc_timestamp(clock.utc_now())
     mode, marker = private.recall_state(tx, context, now, after=brief["_privacy_marker"])
@@ -503,7 +515,7 @@ def _still_valid(tx, clock, context, brief) -> bool:
         return False
     if (mode == "full" and brief["text"]) or (brief["_deliver"] and not brief["_compact"] and _started(tx, context)):
         return False
-    if not handoff.brief_valid(tx, now, brief["items"], brief["_lines"]):
+    if not handoff.brief_valid(tx, now, brief["items"], brief["_lines"], deadline=deadline, monotonic=clock.monotonic):
         return False
     if tx.memory_epoch() == brief["_epoch"] and marker == brief["_privacy_marker"]:
         return True
@@ -527,10 +539,11 @@ def confirm(storage, clock, context, brief: dict, *, remaining_seconds: float | 
     if remaining_seconds is not None and remaining_seconds <= 0:
         return "brief_safety_unconfirmed"
     started = clock.monotonic()
+    deadline = started + (5 if remaining_seconds is None else remaining_seconds)
     try:
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:
             if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
-                tx, clock, context, brief
+                tx, clock, context, brief, deadline=deadline
             ):
                 return "brief_invalidated"
     except Exception:  # noqa: BLE001 - an unfinished safety check must not release prepared text.
@@ -544,7 +557,7 @@ def confirm(storage, clock, context, brief: dict, *, remaining_seconds: float | 
         with storage.write(context, remaining_seconds=wait) as tx:
             entered = True
             if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
-                tx, clock, context, brief
+                tx, clock, context, brief, deadline=deadline
             ):
                 return "brief_invalidated"
             validated = True

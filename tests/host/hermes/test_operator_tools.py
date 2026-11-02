@@ -537,3 +537,33 @@ def test_handoff_provider_uses_existing_tool_dispatch(adapter):
         )
     )
     assert refused["error"]["code"] == "INPUT_INVALID"
+
+
+def test_handoff_provider_records_the_bound_host_session(adapter, tmp_path, monkeypatch):
+    provider, _clock = adapter
+    identity = provider._identity
+    monkeypatch.setattr(type(identity), "_agent_workspace_path", lambda self: str(tmp_path))
+    context = identity.trusted_context()
+    core = provider._core
+    source = core.record_event(
+        context,
+        _payload("TEST layout task", key="TEST-handoff-session"),
+        scope_id=identity.local_scope_id,
+        remaining_seconds=5,
+    ).event_refs[0]
+    task = core.episodes(context)[0]
+    result = json.loads(
+        provider.handle_tool_call(
+            "handoff_write",
+            dict(
+                protocol_version="1.1",
+                report=dict(
+                    task_ref=task.ref,
+                    progress="TEST ready",
+                    evidence_refs=[source.ref + "@1"],
+                    session_label="TEST-label",
+                ),
+            ),
+        )
+    )
+    assert result["result"]["sender_session"] == context.session_id

@@ -354,15 +354,20 @@ class CodexMCPServer:
         del body
         if action != "list" and isinstance(self.config, SharedClientConfig) and not self.audience.writable_scope_ids:
             raise ContractError("ACCESS_DENIED", "writable_scope")
+        try:
+            thread_id = self._thread_id(ctx)
+        except ValueError:
+            # Direct SDK calls have no request context; only host metadata attests a conversation.
+            thread_id = None
         context = trusted_context(
             self.config,
             self.audience,
-            session_id=self.session_id,
+            session_id=thread_id or self.session_id,
             actor_origin="assistant_visible",
             mutation=action != "list",
             project_root=str(self.workspace),
         )
-        result = execute_handoff(self.core, context, action, payload)
+        result = execute_handoff(self.core, context, action, payload, session_known=thread_id is not None)
         return envelope(call_id, result, origin=OUTPUT_ORIGIN)
 
     def handoff_write(

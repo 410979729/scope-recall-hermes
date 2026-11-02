@@ -87,6 +87,7 @@ def test_real_mcp_call_transfers_between_authenticated_entries(store, tmp_path):
         result = await sender.server.call_tool("handoff_write", args)
         assert not result.is_error, result
         item = result.structured_content["result"]
+        assert item["sender_session"] is None
         listed = await receiver.server.call_tool("handoff_list", dict(protocol_version="1.1"))
         assert listed.structured_content["result"]["items"][0]["ref"] == item["ref"]
         accepted = await receiver.server.call_tool(
@@ -109,3 +110,35 @@ def test_client_write_permissions_still_apply(store):
     server.audience = replace(server.audience, writable_scope_ids=frozenset())
     with pytest.raises(ContractError, match="ACCESS_DENIED"):
         server.handoff_cancel(SimpleNamespace(request_context=SimpleNamespace(meta={})), "1.1", "TEST-ref", 1)
+
+
+def test_mcp_session_provenance_uses_only_reserved_host_metadata(store, tmp_path):
+    from scope_recall.adapters.host_profiles import HOSTS
+
+    _root, _homes, client, scope = store
+    config = replace(load_shared_client(client, "claude-code"), host="codex")
+    core = MemoryCore(CoreConfig(config.to_binding()), clock=Clock())
+    core.initialize()
+    server = build_server(config, workspace=tmp_path, core=core)
+    session = "11111111-1111-4111-8111-111111111111"
+    context = trusted_context(config, server.audience, session_id=session, project_root=str(tmp_path))
+    source = core.record_event(
+        context,
+        source_event(source_event_key="TEST-host-meta", content="TEST layout"),
+        scope_id=scope,
+        remaining_seconds=5,
+    ).event_refs[0]
+    task = core.episodes(context)[0]
+    request = SimpleNamespace(request_context=SimpleNamespace(meta={HOSTS["codex"].thread_meta: session}))
+    result = server.handoff_write(
+        request,
+        "1.1",
+        dict(
+            task_ref=task.ref,
+            progress="TEST ready",
+            evidence_refs=[source.ref + "@1"],
+            session_label="TEST-forged-label",
+        ),
+    )
+    assert result["result"]["sender_session"] == context.session_id
+    assert result["result"]["session_label"] == "TEST-forged-label"

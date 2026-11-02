@@ -228,7 +228,7 @@ To write a report, pass `protocol_version: "1.1"` and a `report` object:
 Use a visible task episode and current source references belonging to it. File
 paths and progress are reports; the server does not read those files or verify
 Git status. `session_label` is optional and always labelled `unverified`; it never
-authorizes a write or identifies a unique handoff. A store-generated reference
+authorizes a write or identifies a unique handoff. The separate `sender_session` comes only from host-bound context, such as Hermes identity, hook or remote ingress context, captured session-end metadata, or reserved MCP thread metadata. Without that attestation it is null, and report-body privacy uses project and store rules rather than the display label. A store-generated reference
 identifies each report. A trusted project id, or a host-supplied normalized working
 directory when project ids are absent, confines delivery to the same project.
 An unverified or missing project directory cannot authorize a directory-based report.

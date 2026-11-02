@@ -1,6 +1,6 @@
 """SQLite task-report tables, separate from facts and extraction work."""
 
-STATEMENTS = (
+LEGACY_STATEMENTS = (
     """CREATE TABLE handoffs (
         handoff_id TEXT PRIMARY KEY NOT NULL, task_ref TEXT NOT NULL REFERENCES episodes(episode_id),
         task_revision INTEGER NOT NULL, scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
@@ -18,4 +18,21 @@ STATEMENTS = (
         action TEXT NOT NULL, actor_entry TEXT NOT NULL, recorded_at TEXT NOT NULL,
         PRIMARY KEY(handoff_id,revision)
     ) STRICT, WITHOUT ROWID""",
+)
+
+
+PROVENANCE_COLUMNS = (
+    ("sender_session", "TEXT"),
+    ("sender_project_root", "TEXT"),
+    (
+        "sender_project_identity",
+        "TEXT NOT NULL DEFAULT 'local' CHECK(sender_project_identity IN ('local','remote','unverified'))",
+    ),
+)
+STATEMENTS = (
+    LEGACY_STATEMENTS[0].replace(
+        "session_label TEXT,",
+        ", ".join(name + " " + definition for name, definition in PROVENANCE_COLUMNS) + ", session_label TEXT,",
+    ),
+    *LEGACY_STATEMENTS[1:],
 )

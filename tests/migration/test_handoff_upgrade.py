@@ -7,6 +7,8 @@ import pytest
 from scope_recall.core import storage
 from scope_recall.core.schema import SCHEMA_VERSION
 from test_claims import app, initial
+from test_handoff import app as handoff_app
+from test_handoff import prepare, write
 from v11_support import downgrade_store
 
 
@@ -59,3 +61,39 @@ def test_interrupted_handoff_upgrade_rolls_back(app, monkeypatch):
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1126
         assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='handoffs'").fetchone()
         assert conn.execute("SELECT 1 FROM claims WHERE claim_id=?", (claim.ref,)).fetchone()
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_session_provenance_upgrade_preserves_existing_report(handoff_app, monkeypatch, interrupted):
+    core, sender, _source, payload = prepare(handoff_app)
+    saved = write(core, sender, payload)
+    with core.storage.read(sender) as tx:
+        before = (
+            tx._check().execute("SELECT resume_json FROM handoffs WHERE handoff_id=?", (saved["ref"],)).fetchone()[0]
+        )
+    downgrade_store(core.storage.path, 1127)
+    if interrupted:
+        step = storage.SCHEMA_MIGRATIONS[1127]
+
+        def fail(conn):
+            step(conn)
+            raise RuntimeError("TEST interrupted provenance upgrade")
+
+        monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1127, fail)
+        with pytest.raises(RuntimeError, match="TEST interrupted provenance"):
+            core.storage.initialize()
+    else:
+        core.storage.initialize()
+        core.storage.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        assert (
+            conn.execute("SELECT resume_json FROM handoffs WHERE handoff_id=?", (saved["ref"],)).fetchone()[0] == before
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(handoffs)")}
+        assert ("sender_session" in columns) is not interrupted
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (1127 if interrupted else SCHEMA_VERSION)
+        if not interrupted:
+            assert (
+                conn.execute("SELECT sender_session FROM handoffs WHERE handoff_id=?", (saved["ref"],)).fetchone()[0]
+                is None
+            )
