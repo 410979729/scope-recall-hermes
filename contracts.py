@@ -5,8 +5,9 @@ import json
 import math
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast, get_args
@@ -753,10 +754,19 @@ class TrustedContext:
     #: Remote directories were resolved on their owner; an unverifiable identity
     #: remains explicit across retries instead of being resolved on another machine.
     project_identity: Literal["local", "remote", "unverified"] = "local"
+    #: Host-owned entry-owner binding. A None principal asks for the reader's
+    #: entry owner; a source principal must be checked against that entry's grants.
+    #: The final argument is a memo owned by one pairing request, never by this context.
+    #: Runtime-only, never serialized or accepted from a capture/query payload.
+    owner_resolver: Callable[[str, SourcePrincipal | None, dict], str | None] | None = dataclass_field(
+        default=None, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):
             raise ContractError("IDENTITY_UNBOUND")
+        if self.owner_resolver is not None and not callable(self.owner_resolver):
+            raise ContractError("IDENTITY_UNBOUND", "owner_resolver")
         if self.entry_id is not None and (type(self.entry_id) is not str or not ENTRY_ID.fullmatch(self.entry_id)):
             raise ContractError("IDENTITY_UNBOUND", "entry_id")
         if type(self.session_id) is not str or not self.session_id.strip() or len(self.session_id) > 240:

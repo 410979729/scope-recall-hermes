@@ -173,6 +173,33 @@ def test_oversized_fallback_checks_deadline_between_withheld_candidates(app, mon
     assert kept == [] and len(scanned) == 1 and "deadline_exceeded" in gaps
 
 
+def restatement_owner(entry, principal, memo):
+    """Synthetic entry-owner attestation, separate from each source's speaker kind."""
+    if entry not in {"entry-a", "entry-b", "entry-c"}:
+        return None
+    if principal is None:
+        return "TEST-installation-owner"
+    if principal.get("resolution") != "verified":
+        return None
+    if (principal.get("kind"), principal.get("principal_ref")) in {
+        ("human", "principal:human:TEST-owner"),
+        ("assistant", "principal:assistant:TEST-" + entry),
+    }:
+        return "TEST-installation-owner"
+    return None
+
+
+def restatement_assistant(context):
+    """The entry's normal assistant actor, without impersonating the owner."""
+    return replace(
+        context,
+        actor_origin="assistant_visible",
+        source_principal=TrustedSourcePrincipal(
+            "assistant", "verified", "principal:assistant:TEST-" + context.entry_id
+        ),
+    )
+
+
 @pytest.fixture
 def restatement_store(tmp_path):
     """Three independent sessions and entries share one isolated truth store."""
@@ -182,6 +209,7 @@ def restatement_store(tmp_path):
         project_id="TEST-project",
         branch_id="TEST-main",
         source_principal=TrustedSourcePrincipal("human", "verified", "principal:human:TEST-owner"),
+        owner_resolver=restatement_owner,
     )
     core = MemoryCore(CoreConfig(binding), clock=Clock())
     core.initialize()
@@ -200,7 +228,7 @@ def _restatement_packet(store, mode, original, echo, *, linked=False, fact=False
     source = capture(core, a, original) if original else None
     claim = accept(core, a, draft(source, "蓝色", predicate="配色")).items[0] if fact else None
     refs = [f"{(claim or source).ref}@1"] if linked and source else []
-    actor = replace(b, actor_origin="assistant_visible")
+    actor = restatement_assistant(b)
     saved = core.record_event(
         actor,
         source_event(
@@ -281,7 +309,7 @@ def test_correction_precedes_restatement_of_the_old_value(restatement_store, mod
     original = capture(core, a, "TEST-project 配色使用蓝色，图标和背景统一采用同一种蓝色。")
     claim = accept(core, a, draft(original, "蓝色", predicate="配色")).items[0]
     saved = core.record_event(
-        replace(b, actor_origin="assistant_visible"),
+        restatement_assistant(b),
         source_event(
             source_event_key="TEST-old-echo",
             content="你之前说过：" + original.event["content"],
@@ -308,7 +336,7 @@ def test_historical_reads_keep_the_restatement(restatement_store, mode):
     core, (a, b, c) = restatement_store
     original = capture(core, a, "TEST-project 配色使用蓝色，图标和背景统一采用同一种蓝色。")
     saved = core.record_event(
-        replace(b, actor_origin="assistant_visible"),
+        restatement_assistant(b),
         source_event(
             source_event_key="TEST-history-echo",
             content="你之前说过：" + original.event["content"],

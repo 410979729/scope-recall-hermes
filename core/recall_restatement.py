@@ -6,12 +6,12 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 
-from ..contracts import ContractError, verified_human_principal_ref
+from ..contracts import ContractError
 from . import lineage
 from .claim_storage import parse_source_ref
 from .claims import canonical_time
 from .deadline import RequestDeadline
-from .events import lexical_sequence, lexical_terms
+from .events import lexical_terms
 from .recall_needs import statement_text
 from .retrieval import CandidateRef, RetrievedObject, optional_json
 from .retrieval_hydration import RetrievalHydration, replacements
@@ -33,19 +33,19 @@ class _Expired(Exception):
 
 @dataclass(frozen=True)
 class _Text:
-    """Ordered complete-content tokens and bounded terms for candidate preselection."""
+    """Whitespace-normalized body and bounded terms for candidate preselection."""
 
-    words: tuple[str, ...]
+    body: str
     terms: frozenset[str]
     complete: bool
 
 
 @dataclass(frozen=True)
 class _Provenance:
-    """Audience and person proofs read through the scoped source/version interfaces."""
+    """Audience and installation-owner proofs for scoped sources and fact versions."""
 
     audience: tuple[str, str | None, str | None]
-    people: frozenset[str]
+    owners: frozenset[str]
     bound: bool
     entries: frozenset[str]
 
@@ -113,7 +113,7 @@ def _roots(tx, obj: RetrievedObject, check=None, *, automatic=False) -> set[str]
     return found
 
 
-def _provenance(tx, pair: Pair, check) -> _Provenance | None:
+def _provenance(tx, pair: Pair, check, owner) -> _Provenance | None:
     candidate, obj = pair
     node = _visible_node(tx, f"{candidate.ref}@{candidate.revision}")
     if node is None:
@@ -126,11 +126,14 @@ def _provenance(tx, pair: Pair, check) -> _Provenance | None:
                 sources.append(source)
     if not sources or (not isinstance(node, StoredSource) and len(sources) != len(obj.evidence_refs)):
         return None
-    people = [verified_human_principal_ref(source.event.get("source_principal")) for source in sources]
+    kind = "human" if obj.origin == "human_direct" else "assistant"
+    if any(source.event.get("source_principal", {}).get("kind") != kind for source in sources):
+        return None
+    owners = [owner(source.entry_id, source.event.get("source_principal")) for source in sources]
     return _Provenance(
         (node.scope_id, node.project_id, node.branch_id),
-        frozenset(person for person in people if person is not None),
-        all(person is not None for person in people),
+        frozenset(person for person in owners if person is not None),
+        all(person is not None for person in owners),
         frozenset(source.entry_id for source in sources),
     )
 
@@ -144,43 +147,28 @@ def _later(first: RetrievedObject, echo: RetrievedObject) -> bool:
     return bool(a and b and a > b)
 
 
-def _contains(words: tuple[str, ...], run: tuple[str, ...], check) -> bool:
-    """Match a whole consecutive token sequence in linear time, preserving repetition."""
-    if not run or len(run) > len(words):
-        return False
-    if words == run:
-        return True
-    prefix = [0] * len(run)
-    matched = 0
-    for index in range(1, len(run)):
-        if index % 256 == 0:
-            check()
-        while matched and run[index] != run[matched]:
-            matched = prefix[matched - 1]
-        matched += run[index] == run[matched]
-        prefix[index] = matched
-    matched = 0
-    for index, word in enumerate(words):
-        if index % 256 == 0:
-            check()
-        while matched and word != run[matched]:
-            matched = prefix[matched - 1]
-        matched += word == run[matched]
-        if matched == len(run):
-            return True
-    return False
-
-
 def mark_restatement(obj: RetrievedObject, refs: tuple[str, ...], *, incomplete=False) -> RetrievedObject:
     """Keep attribution in existing public provenance fields and internal release proofs."""
+    # The existing packet field is bounded; never publish a truncated source identity.
+    entry = next(iter(sorted(_entries(obj))), "")
+    qualification = dict(obj.metadata).get("qualification_reason")
+    suffix = f"; {qualification}" if qualification else ""
+    descriptions = [f"{entry} retelling of {ref}{suffix}" for ref in refs] + [
+        f"Retelling of {ref}{suffix}" for ref in refs
+    ]
+    reason = next((description for description in descriptions if len(description) <= 120), None)
+    if reason is None:
+        return obj
     metadata = tuple(
-        (key, value) for key, value in obj.metadata if key not in {"restatement_of", "restatement_comparison"}
+        (key, value)
+        for key, value in obj.metadata
+        if key not in {"restatement_of", "restatement_comparison", "restatement_qualification"}
     )
     return replace(
         obj,
         basis="derived_summary",
         metadata=metadata
-        + (("restatement_of", json.dumps(refs)),)
+        + (("restatement_of", json.dumps(refs)), ("restatement_qualification", reason))
         + ((("restatement_comparison", "incomplete"),) if incomplete else ()),
     )
 
@@ -210,13 +198,37 @@ class _Pool:
         self.deadline = RequestDeadline.within(context.deadline, budget_seconds=PAIRING_SECONDS, clock=clock)
         self.by_key = {pair[0].key: pair for pair in ranked}
         self.texts: dict[str, _Text] = {}
+        self.owners: dict[tuple[str, str, str], str | None] = {}
+        self.owner_snapshot: dict = {}
         self.roots: dict[tuple[str, str, int], set[str]] = {}
         self.characters = COMPARISON_TOTAL_CHARACTERS
         self.incomplete = False
+        self.before, self.omitted, self.labelled = {}, set(), {}
 
     def check(self) -> None:
         if self.deadline.exhausted():
             raise _Expired
+
+    def owner(self, entry, principal) -> str | None:
+        """Resolve a speaker through the host's owner binding, cached only in this pool."""
+        resolve = self.context.trusted_context.owner_resolver
+        if not entry or resolve is None:
+            return None
+        if principal is not None and principal.get("resolution") != "verified":
+            return None
+        # A read belongs to its attested entry owner, independently of the read's
+        # actor kind. Stored sources always supply their own checked speaker.
+        key = (
+            (entry, "entry_owner", "")
+            if principal is None
+            else (entry, principal.get("kind"), principal.get("principal_ref"))
+        )
+        if key not in self.owners:
+            self.check()
+            value = resolve(entry, None if principal is None else dict(principal), self.owner_snapshot)
+            self.owners[key] = value if isinstance(value, str) and value else None
+            self.check()
+        return self.owners[key]
 
     def text(self, obj: RetrievedObject) -> _Text:
         self.check()
@@ -226,7 +238,7 @@ class _Pool:
             complete = len(obj.content) <= limit and len(statement) <= limit
             self.characters -= min(limit, len(obj.content))
             self.texts[obj.content] = _Text(
-                lexical_sequence(body), frozenset(lexical_terms(statement[:limit])), complete
+                " ".join(body.split()), frozenset(lexical_terms(statement[:limit])), complete
             )
             self.incomplete |= not complete
         self.check()
@@ -269,12 +281,12 @@ class _Pool:
         linked = False
         strong = shared >= 3 and shared >= 0.8 * min(len(original.text.terms), len(terms))
         later = _later(original.pair[1], echo[1])
-        if later or original.proof.audience != proof.audience or not proof.bound or not strong:
+        if later or original.proof.audience != proof.audience or not strong:
             linked = bool(self.lineage(original.pair) & self.lineage(echo))
         corrected = later and self.corrected(original.pair, echo)
         if later and not corrected:
             return False
-        if original.proof.audience != proof.audience or not proof.bound:
+        if original.proof.audience != proof.audience:
             if not (linked or corrected):
                 return False
         return strong or linked or corrected
@@ -286,8 +298,8 @@ class _Pool:
             candidate, obj = pair
             if obj.origin != "human_direct" or not _entries(obj):
                 continue
-            proof = _provenance(self.tx, pair, self.check)
-            if proof is None or not proof.bound or proof.people != {reader}:
+            proof = _provenance(self.tx, pair, self.check, self.owner)
+            if proof is None or not proof.bound or proof.owners != {reader}:
                 continue
             targets = tuple(self.by_key[key] for key in replacements(obj) if key in self.by_key)
             if obj.temporal_status != "historical" or dict(obj.metadata).get("state") == "proposed":
@@ -312,14 +324,13 @@ class _Pool:
                 if at % 128 == 0:
                     self.check()
                 postings[term].append(index)
-        before, omitted, labelled = {}, set(), {}
         for echo in self.ranked:
             self.check()
             candidate, obj = echo
             if obj.origin != "assistant_visible" or candidate.source == "exact_ref" or not _entries(obj):
                 continue
-            proof = _provenance(self.tx, echo, self.check)
-            if proof is None or proof.people - {reader}:
+            proof = _provenance(self.tx, echo, self.check, self.owner)
+            if proof is None or not proof.bound or proof.owners != {reader}:
                 continue
             text = self.text(obj)
             counts = self.candidates(text.terms, postings)
@@ -332,16 +343,22 @@ class _Pool:
                     continue
                 if not self.compatible(original, echo, proof, shared, text.terms):
                     continue
-                before[candidate.key] = original.targets
                 complete = original.text.complete and text.complete
-                if complete and _contains(original.text.words, text.words, self.check):
-                    omitted.add(candidate.key)
-                else:
-                    labelled[candidate.key] = mark_restatement(
-                        obj, original.pair[1].evidence_refs, incomplete=not complete
-                    )
+                labelled = mark_restatement(obj, original.pair[1].evidence_refs, incomplete=not complete)
+                if labelled is obj:
+                    continue
+                self.check()
+                # Publish a relation only after all its reads and comparisons finish.
+                self.before[candidate.key] = original.targets
+                self.labelled[candidate.key] = labelled
+                if complete and original.text.body == text.body:
+                    self.omitted.add(candidate.key)
                 break
-        return _ordered(self.ranked, before, omitted, labelled)
+        return self.result()
+
+    def result(self, *, retain_all=False) -> list[Pair]:
+        """Completed relations survive a cutoff; an interrupted pass never removes content."""
+        return _ordered(self.ranked, self.before, set() if retain_all else self.omitted, self.labelled)
 
 
 def _ordered(ranked, before, omitted, labelled) -> list[Pair]:
@@ -363,21 +380,28 @@ def _ordered(ranked, before, omitted, labelled) -> list[Pair]:
 def prefer_originals(tx, ranked: list[Pair], context, *, clock=None, gaps=None) -> list[Pair]:
     """Apply scoped first-hand priority, retaining uncertain or incompletely compared content.
 
-    Missing person proofs and expired optional pairing preserve the original pool.
-    Only complete consecutive token containment permits removing a restatement.
+    Missing owner proofs preserve the original pool. A cutoff keeps completed pairs
+    and every body. Only complete body equality after whitespace normalization permits omission.
     """
-    principal = context.trusted_context.source_principal
-    reader = verified_human_principal_ref(principal.to_payload()) if principal is not None else None
-    if context.mode not in {"auto", "current"} or reader is None or not any(_entries(obj) for _, obj in ranked):
+    if context.mode not in {"auto", "current"}:
+        return ranked
+    origins = {obj.origin for _, obj in ranked if _entries(obj)}
+    if not {"human_direct", "assistant_visible"} <= origins:
+        return ranked
+    trusted = context.trusted_context
+    if trusted.owner_resolver is None:
         return ranked
     pool = _Pool(tx, ranked, context, clock)
     try:
+        reader = pool.owner(trusted.entry_id, None)
+        if reader is None:
+            return ranked
         result = pool.select(reader)
         pool.check()
     except _Expired:
         if gaps is not None:
             gaps.append("restatement_pairing_incomplete")
-        return ranked
+        return pool.result(retain_all=True)
     if pool.incomplete and gaps is not None:
         gaps.append("restatement_comparison_incomplete")
     return result

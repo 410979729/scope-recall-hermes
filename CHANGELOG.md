@@ -4,7 +4,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
-Current and automatic recall prefer matching first-hand evidence when the reader's verified person identity, source identity and audience agree. Cross-audience pairing needs readable evidence links. A retelling is omitted only when its complete ordered content occurs in the first-hand statement; uncertain or bounded comparisons retain it. Retellings use the existing assistant origin, derived-summary basis and entry labels, without adding a packet field for consumers that cannot negotiate one. No migration or configuration change is required.
+Current and automatic recall prefer matching first-hand evidence when trusted bindings agree on the reader's owner and both source entries' owner and audience. Cross-audience pairing needs readable evidence links. A retelling is omitted only when its complete body equals the first-hand statement after whitespace normalization; uncertain or bounded comparisons retain it. Retellings use the existing assistant origin, derived-summary basis and entry labels, with the verified original reference in the existing qualification field, without adding a packet field. No migration or configuration change is required.
 
 Recall reserves time for compilation and fresh SQLite release checks, with a candidate-scaled default and additional allowance when hydration is slow. Slow optional channels leave ready evidence available as a partial packet with cutoff gaps; unverified items and expired release fences still return no evidence. Existing recall diagnostics expose stage timings. No storage migration or configuration change is required.
 

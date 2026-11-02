@@ -152,8 +152,9 @@ def packet_item(obj: RetrievedObject, *, content: dict | None = None) -> RecallI
     # tell a lead from a retired truth, since both look "historical".
     if metadata.get("state") in _CLAIM_STATES:
         item["claim_state"] = metadata["state"]
-        if metadata.get("qualification_reason"):
-            item["qualification_reason"] = str(metadata["qualification_reason"])[:120]
+    reason = metadata.get("restatement_qualification") or metadata.get("qualification_reason")
+    if reason:
+        item["qualification_reason"] = str(reason)[:120]
     contexts = bounded_source_contexts(optional_json(metadata.get("source_contexts")))
     if contexts:
         item["source_contexts"] = contexts
@@ -797,6 +798,9 @@ class RecallPacketRenderer:
                         {"source_contexts": [dict(context) for context in item["source_contexts"]]}
                         if "source_contexts" in item
                         else {}
+                    ),
+                    **(
+                        {"qualification_reason": item["qualification_reason"]} if "qualification_reason" in item else {}
                     ),
                     **({"occurred_at": item["occurred_at"]} if "occurred_at" in item else {}),
                     **({"entries": [dict(label) for label in item["entries"]]} if "entries" in item else {}),

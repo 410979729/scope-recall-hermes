@@ -10,11 +10,12 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Mapping
 
 from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
-from scope_recall.adapters.hermes.identity import host_scope_payload, principal_ref
+from scope_recall.adapters.hermes.identity import entry_owner, host_scope_payload, principal_ref
 from scope_recall.contracts import ContractError, Origin, TrustedContext, TrustedSourcePrincipal
 from scope_recall.core.private import normalize_project_path
 from scope_recall.runtime.remote_clock import stored_session_id as session_identity
@@ -172,6 +173,7 @@ def trusted_context(
         task_anchor=anchor,
         source_principal=_source_principal(config, actor_origin),
         entry_id=config.entry_id if shared else None,
+        owner_resolver=partial(entry_owner, config.to_binding()) if shared else None,
         project_root=project_root_of(project_root, resolve_links=False)
         or project_root_of(audience.matched_project_root),
     )
