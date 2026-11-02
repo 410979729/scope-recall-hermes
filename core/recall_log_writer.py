@@ -163,10 +163,14 @@ def read_health(path: Path) -> dict:
         return {}
 
 
-def _close_writers():
-    deadline = time.monotonic() + 1.0
+def close_writers(directory: Path | None = None, *, timeout: float = 1.0) -> bool:
+    """Retire diagnostics within one budget, optionally only inside an owned disposable directory."""
+    deadline = time.monotonic() + timeout
+    closed = True
     for writer in list(_WRITERS):
-        writer.close(timeout=max(0.0, deadline - time.monotonic()))
+        if directory is None or writer.store.path.is_relative_to(directory):
+            closed = writer.close(timeout=max(0.0, deadline - time.monotonic())) and closed
+    return closed
 
 
-atexit.register(_close_writers)
+atexit.register(close_writers)

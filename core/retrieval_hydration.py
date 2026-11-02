@@ -28,6 +28,7 @@ from .episodes import source_origin
 from .recall_policy import applicability, in_time_window, parse_time
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, RetrievedObject, SearchContext
+from .summary_validity import is_conversation_summary, summary_live, summary_origin
 from .visibility import CLOSED_INTENTION_STATES, allowed, allowed_refs
 
 #: Modes in which a delivered source must still be live, not merely visible.
@@ -275,6 +276,8 @@ def _claim_content(version) -> str:
 
 
 def _claim_statement_content(version) -> str:
+    if is_conversation_summary(version):
+        return version.payload["value_text"]
     """What a reader is shown for a claim: its payload without the quoted spans.
 
     The spans are verbatim evidence, and a tool-derived claim quotes escaped
@@ -492,6 +495,10 @@ class RetrievalHydration:
         version = next((item for item in versions if item.revision == candidate.revision), None)
         if version is None or (context.mode == "auto" and version.suppressed):
             return None
+        if is_conversation_summary(version) and not summary_live(
+            tx, version.ref, version.revision, query_scope=context.scope, excluded=context.current_source_refs
+        ):
+            return None
         instant = context.as_of or context.now
         effective = select_effective(versions, instant, as_of=context.mode == "as_of")
         admitted_proposal = False
@@ -533,6 +540,8 @@ class RetrievalHydration:
                 origins.append(source.event["origin"])
                 witnessed.append(tx.sources.witnessed_at(source))
         origin = next((item for item in origins if item == "human_direct"), origins[0] if origins else "origin_unknown")
+        if is_conversation_summary(version):
+            origin = summary_origin(tx, version.ref, version.revision)
         # A proposal its candidate's first judgement has not yet reached, as against one the evaluator ruled on,
         # one asleep or one blocked (``candidate_tables.awaits_first_judgement``).
         awaited = version.state == "proposed" and _awaits_judgement(tx, candidate.ref, candidate.revision)

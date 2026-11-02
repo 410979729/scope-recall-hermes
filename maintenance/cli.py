@@ -57,6 +57,12 @@ def _interpreter(value: str | None, field: str) -> Path | None:
 # Sub-commands with their own parser: the first token routes to them before the
 # maintenance parser runs, and the stubs registered below only make ``--help``
 # list them.  Their modules load on demand to keep the common commands quick.
+def _setup(argv: list[str]) -> int:
+    from .setup import main
+
+    return main(argv[1:])
+
+
 def _upgrade_cli(argv: list[str]) -> int:
     from .upgrade_cli import main
 
@@ -124,7 +130,7 @@ _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
         "turn private full or read-only capture and recall on or off for a session, project or the whole store",
         _private,
     ),
-    "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
+    "setup": ("discover, plan, confirm and configure local memory", _setup),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
     "package-upgrade": ("offline wheel replacement after stopping all target writers", _package_upgrade),
     "autostart": (
@@ -435,6 +441,7 @@ def _add_doctor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--python")
     parser.add_argument("--recall-request-id")
+    parser.add_argument("--project-root")
 
 
 def _doctor(args: argparse.Namespace) -> int:
@@ -443,6 +450,7 @@ def _doctor(args: argparse.Namespace) -> int:
         instance_root=_path(args.instance_root, "instance_root"),
         python_executable=_interpreter(args.python, "python"),
         recall_request_id=getattr(args, "recall_request_id", None),
+        project_root=_optional_path(args.project_root, "project_root"),
     )
     _emit(report.to_dict())
     return 0 if report.status == "ok" else 1

@@ -1754,3 +1754,18 @@ def test_the_split_the_worker_computed_reaches_the_file_that_is_polled():
     assert '"terminal_failed_work"' in source, "the allowlist drops it before anyone reads it"
     payload_source = inspect.getsource(worker_entry)
     assert "terminal_failed_work=terminal_failed" in payload_source
+
+
+def test_credential_file_only_needs_variables_of_routes_that_use_credentials(tmp_path):
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.worker_entry import credential_environment
+
+    file = tmp_path / "TEST-environment"
+    file.write_text("TEST_EMBED_ENV=synthetic\nTEST_UNRELATED=ignored\n", encoding="utf-8")
+    config = SimpleNamespace(
+        auxiliary=SimpleNamespace(
+            embedding=SimpleNamespace(credential_env="TEST_EMBED_ENV"), consolidation=SimpleNamespace(kind="codex_cli")
+        )
+    )
+    assert credential_environment(config, str(file)) == {"TEST_EMBED_ENV": "synthetic"}

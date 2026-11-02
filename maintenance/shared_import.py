@@ -59,6 +59,7 @@ from ..core.events import indexed_terms, withheld_tool_output
 from ..core.requalify import settle_brought_denials
 from ..core.schema import SCHEMA_VERSION
 from ..core.storage import Transaction
+from ..core.summary_validity import CONVERSATION_SUMMARY_REASONS
 from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
 from ..runtime.running_code import live_records
@@ -224,6 +225,38 @@ def _import_blocks(conn, src, names, left_out, epoch):
     return counts
 
 
+def _summary_claims(src):
+    """Identify only current derived summaries, not owner-authored replacement facts."""
+    return {
+        row[0]
+        for row in src.execute(
+            "SELECT c.claim_id FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id "
+            "AND v.revision=c.current_revision WHERE v.qualification_reason IN (?,?,?)",
+            CONVERSATION_SUMMARY_REASONS,
+        )
+    }
+
+
+def _claim_exclusions(conn, src):
+    """Retain real fact metadata but rebuild summaries against renamed evidence.
+
+    Source, session and entry identities change during a shared import. Old
+    summary signatures and processed ranges cannot authorize the renamed graph.
+    """
+    summaries = _summary_claims(src)
+    left_out, skipped = set(summaries), []
+    for claim in _rows(src, "SELECT * FROM claims"):
+        if claim["claim_id"] in summaries:
+            continue
+        held = conn.execute(
+            "SELECT claim_id FROM claims WHERE slot_key=? OR claim_id=?", (claim["slot_key"], claim["claim_id"])
+        ).fetchone()
+        if held is not None:
+            left_out.add(claim["claim_id"])
+            skipped.append({"claim_id": claim["claim_id"], "kept": held[0], "kind": claim["kind"]})
+    return left_out, skipped, summaries
+
+
 def _import_rows(conn, src, names: _Names, *, store_installation: str, store_scopes: frozenset[str], now: str) -> dict:
     counts: dict[str, int] = {}
     source_meta = src.execute("SELECT installation_id FROM instance_meta").fetchone()
@@ -273,15 +306,8 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         lambda r: {**r, "event_id": names.event(r["event_id"]), "authorization_id": auth[r["authorization_id"]]},
     )
 
-    skipped: list[dict[str, str]] = []
-    left_out: set[str] = set()
-    for claim in _rows(src, "SELECT * FROM claims"):
-        held = conn.execute(
-            "SELECT claim_id FROM claims WHERE slot_key=? OR claim_id=?", (claim["slot_key"], claim["claim_id"])
-        ).fetchone()
-        if held is not None:
-            left_out.add(claim["claim_id"])
-            skipped.append({"claim_id": claim["claim_id"], "kept": held[0], "kind": claim["kind"]})
+    left_out, skipped, summaries = _claim_exclusions(conn, src)
+    counts["summary_claims_omitted"] = len(summaries)
     counts["claims"] = _copy(
         conn, src, "claims", lambda r: None if r["claim_id"] in left_out else {**r, "entity_indexed": 0}
     )
@@ -296,7 +322,7 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
             else {**r, "payload_json": names.text(r["payload_json"]), "entity_resolved": 0}
         ),
     )
-    counts["claims_left_out"] = len(left_out)
+    counts["claims_left_out"] = len(skipped)
 
     sequence_offset = conn.execute("SELECT coalesce(max(sequence),0) FROM episode_events").fetchone()[0]
     renamed_episodes = 0
@@ -353,16 +379,17 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         }
 
     counts["evidence_links"] = _copy(conn, src, "evidence_links", linked)
-    counts["object_dependencies"] = _copy(
-        conn,
-        src,
-        "object_dependencies",
-        lambda r: {
-            **r,
-            "object_ref": names.ref(r["object_kind"], r["object_ref"]),
-            "dependency_ref": names.ref(r["dependency_kind"], r["dependency_ref"]),
-        },
-    )
+
+    def dependency(row):
+        if any(row[kind + "_kind"] == "claim" and row[kind + "_ref"] in summaries for kind in ("object", "dependency")):
+            return None
+        return {
+            **row,
+            "object_ref": names.ref(row["object_kind"], row["object_ref"]),
+            "dependency_ref": names.ref(row["dependency_kind"], row["dependency_ref"]),
+        }
+
+    counts["object_dependencies"] = _copy(conn, src, "object_dependencies", dependency)
     counts["unresolved_updates"] = _copy(
         conn,
         src,
@@ -571,7 +598,7 @@ def _brought_in(conn, src, names: _Names, *, payload: dict[str, Any], root: Path
         store_scopes=frozenset(payload["scope_ids"]),
         now=now,
     )
-    left_out = {item["claim_id"] for item in copied["claims_left_out"]}
+    left_out = {item["claim_id"] for item in copied["claims_left_out"]} | _summary_claims(src)
     brought = [row[0] for row in src.execute("SELECT claim_id FROM claims") if row[0] not in left_out]
     copied["counts"]["denials_settled"] = 0
     if names.known:

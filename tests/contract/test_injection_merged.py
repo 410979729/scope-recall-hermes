@@ -38,7 +38,7 @@ def test_normal_long_documents_respect_structure(guarded, case):
     assert verdict.state == "clear", verdict.rules
 
 
-def test_replay_clears_only_its_revision_and_other_revision_resumes(guarded):
+def test_explicit_rescan_clears_only_its_revision_and_other_revision_resumes(guarded):
     core, ctx = guarded
     first = source_event(source_event_key="TEST-two-revisions", content="TEST old blue paint")
     second = dict(first, source_revision=2, content="TEST new blue paint")
@@ -46,7 +46,12 @@ def test_replay_clears_only_its_revision_and_other_revision_resumes(guarded):
     new, _, _, _ = store(core, ctx, second, seconds=0)
     with core.storage.read(ctx) as tx:
         assert tx._check().execute("SELECT count(*) FROM source_scan_progress").fetchone()[0] == 2
-    store(core, ctx, second)
+    from scope_recall.core.injection_guard import screen_sources
+
+    with core.storage.write(ctx) as tx:
+        screen_sources(
+            tx, [replace(r, disposition="duplicate") for r in new], core.clock.utc_now(), remaining_seconds=10
+        )
     with core.storage.read(ctx) as tx:
         assert [
             tuple(row) for row in tx._check().execute("SELECT source_ref,source_revision FROM source_scan_progress")
@@ -69,7 +74,7 @@ def test_replay_clears_only_its_revision_and_other_revision_resumes(guarded):
     assert core.search_sources(ctx, "blue paint")
 
 
-def entity_hold_roundtrip(core, ctx, version, *, replay=True, model=True):
+def entity_hold_roundtrip(core, ctx, version, *, model=True):
     """A held dependency pauses its existing lease and keeps diagnostic progress honest."""
     with core.storage.write(ctx) as tx:
         tx._check(write=True).execute("UPDATE work_items SET state='done'")
@@ -89,28 +94,14 @@ def entity_hold_roundtrip(core, ctx, version, *, replay=True, model=True):
             )
             .fetchone()
         )
-        from scope_recall.core.source_records import stored_source
-
-        event = stored_source(row, 1).event
-        replay_ctx = replace(
-            ctx, session_id=row["session_id"], project_id=row["project_id"], branch_id=row["branch_id"]
-        )
 
     def rescan(seconds=1):
-        from scope_recall.core.capture import _store_events
-        from scope_recall.core.events import prepare_capture
+        from scope_recall.core.injection_guard import screen_sources
+        from scope_recall.core.source_records import SourceWrite
 
-        if not replay:
-            from scope_recall.core.injection_guard import screen_sources
-            from scope_recall.core.source_records import SourceWrite
-
-            with core.storage.write(ctx, remaining_seconds=10) as tx:
-                return screen_sources(
-                    tx, [SourceWrite("duplicate", row["event_id"], 1)], core.clock.utc_now(), remaining_seconds=seconds
-                )
-        with core.storage.write(replay_ctx, remaining_seconds=10) as tx:
-            return _store_events(
-                tx, core.clock, prepare_capture(event, replay_ctx), version.scope_id, None, lambda: seconds
+        with core.storage.write(ctx, remaining_seconds=10) as tx:
+            return screen_sources(
+                tx, [SourceWrite("duplicate", row["event_id"], 1)], core.clock.utc_now(), remaining_seconds=seconds
             )
 
     rescan(0)

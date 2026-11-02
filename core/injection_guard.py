@@ -7,7 +7,7 @@ import json
 import time
 
 from . import injection_policy
-from .injection_policy import SCAN_SECONDS, ScanResult
+from .injection_policy import SCAN_WINDOWS, ScanResult
 from .injection_policy import scan as scan
 from .source_records import stored_source
 
@@ -48,7 +48,8 @@ def save_checkpoint(tx, rows, cursor, policy, now):
         "SELECT * FROM source_scan_progress WHERE source_ref=? AND source_revision=?",
         (anchor["event_id"], anchor["source_revision"]),
     ).fetchone()
-    if old is not None and old["input_sha256"] == digest and old["policy_sha256"] == policy.fingerprint:
+    fingerprint = policy.fingerprint if policy is not None else ""
+    if old is not None and old["input_sha256"] == digest and old["policy_sha256"] == fingerprint:
         previous = json.loads(old["cursor_json"])
         if (previous.get("value", 0), previous.get("offset", 0)) > (cursor.get("value", 0), cursor.get("offset", 0)):
             cursor = previous
@@ -56,7 +57,7 @@ def save_checkpoint(tx, rows, cursor, policy, now):
         """INSERT INTO source_scan_progress VALUES (?,?,?,?,?)
         ON CONFLICT(source_ref,source_revision) DO UPDATE SET input_sha256=excluded.input_sha256,
         policy_sha256=excluded.policy_sha256,cursor_json=excluded.cursor_json""",
-        (anchor["event_id"], anchor["source_revision"], digest, policy.fingerprint, json.dumps(cursor)),
+        (anchor["event_id"], anchor["source_revision"], digest, fingerprint, json.dumps(cursor)),
     )
     conn.execute(
         """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
@@ -73,9 +74,22 @@ def save_checkpoint(tx, rows, cursor, policy, now):
     )
 
 
-def _scan_events(tx, events, remaining_seconds, policy):
+def record_scan_deadline(tx, rows, verdict, now):
+    """Keep content-free fallback counts in the continuation job's retained history."""
+    if "scan_time_budget" in verdict.rules:
+        tx._check(write=True).execute(
+            "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,recorded_at) "
+            "SELECT work_id,lease_token,'source_scan','scan_time_budget',? FROM work_items "
+            "WHERE work_type='rebuild_projection' AND subject_ref=? AND subject_revision=?",
+            (now, rows[0]["event_id"], rows[0]["source_revision"]),
+        )
+
+
+def _scan_events(tx, events, remaining_seconds, policy, max_windows):
     """Join body boundaries once, then check every part's own metadata under one budget."""
-    return injection_policy.scan_events(tx, events, remaining_seconds=remaining_seconds, policy=policy)
+    return injection_policy.scan_events(
+        tx, events, remaining_seconds=remaining_seconds, policy=policy, max_windows=max_windows
+    )
 
 
 def complete_events(rows):
@@ -105,17 +119,19 @@ def evidence_verdict(tx, events, verdict):
     if verdict.state == "clear":
         evidence = tuple(ref.rsplit("@", 1)[0] for event in events for ref in event.get("evidence_refs", ()))
         if blocked_refs(tx, "event", evidence):
-            return ScanResult("pending_review", ("held_evidence",))
+            return ScanResult("pending_review", ("held_evidence",), windows=verdict.windows)
     return verdict
 
 
-def _group_verdict(tx, rows, remaining_seconds, policy):
+def _group_verdict(tx, rows, remaining_seconds, policy, max_windows, *, expired=False):
     events = complete_events(rows)
     if events is None:
         return ScanResult("pending_review", ("incomplete_scan_group",))
+    if expired:
+        return ScanResult("pending_review", ("scan_time_budget",), {})
     if policy is None:
         return ScanResult("pending_review", ("invalid_scan_policy",))
-    verdict = _scan_events(tx, events, remaining_seconds, policy)
+    verdict = _scan_events(tx, events, remaining_seconds, policy, max_windows)
     return evidence_verdict(tx, events, verdict)
 
 
@@ -162,20 +178,24 @@ def _remove_held_projections(tx, rows, *, preserve_work_id=None):
             )
 
 
-def screen_sources(tx, sources, now, *, remaining_seconds=SCAN_SECONDS):
+def screen_sources(tx, sources, now, *, remaining_seconds=None):
     """Rescan complete database groups and return versions ready for first admission.
 
     All pieces are written first. Pending pieces from a previous delivery are
     scanned and admitted in this same transaction when their final piece arrives.
     Existing quarantine and owner release decisions are never overwritten.
     """
-    deadline = time.perf_counter() + min(SCAN_SECONDS, max(0, remaining_seconds))
+    deadline = None if remaining_seconds is None else time.perf_counter() + max(0, remaining_seconds)
+    expired = False
     try:
-        policy = injection_policy.load_policy(tx._check())
+        policy = injection_policy.load_policy(tx._check(), deadline)
+    except TimeoutError:
+        policy, expired = None, True
     except (ValueError, TypeError, KeyError, RecursionError):
         policy = None
     seen, eligible = set(), []
     inserted = {(s.ref, s.revision) for s in sources if s.disposition == "inserted"}
+    windows = SCAN_WINDOWS
     for source in sources:
         if (source.ref, source.revision) in seen:
             continue
@@ -194,13 +214,16 @@ def screen_sources(tx, sources, now, *, remaining_seconds=SCAN_SECONDS):
                 )
             }
         )
-        verdict = _group_verdict(tx, rows, max(0, deadline - time.perf_counter()), policy)
+        left = None if deadline is None else max(0, deadline - time.perf_counter())
+        verdict = _group_verdict(tx, rows, left, policy, windows, expired=expired)
+        windows -= verdict.windows
         _record_verdict(tx, rows, verdict, now, fresh=inserted)
         held = blocked_refs(tx, "event", (row["event_id"] for row in rows))
         if held:
             _remove_held_projections(tx, group_rows(tx, source.ref))
-        if verdict.progress is not None and verdict.state == "pending_review":
+        if verdict.progress is not None:
             save_checkpoint(tx, rows, verdict.progress, policy, now)
+            record_scan_deadline(tx, rows, verdict, now)
         elif pending:
             tx._check(write=True).execute(
                 "DELETE FROM source_scan_progress WHERE source_revision=? "
@@ -213,7 +236,7 @@ def screen_sources(tx, sources, now, *, remaining_seconds=SCAN_SECONDS):
     return eligible
 
 
-def held_roots_sql(seed: str) -> str:
+def held_roots_sql(seed: str, *, states=False) -> str:
     """SQL returning held root refs from a trusted SELECT of (root, kind, ref).
 
     Both bounded collection queries and hydrated reads use this dependency
@@ -228,7 +251,8 @@ def held_roots_sql(seed: str) -> str:
             ON d.object_kind=l.kind AND d.object_ref=l.ref UNION
             SELECT l.root,'event',e.source_ref FROM lineage l JOIN evidence_links e
             ON e.object_kind=l.kind AND e.object_ref=l.ref)
-        SELECT DISTINCT l.root FROM lineage l JOIN source_events e ON l.kind='event' AND e.event_id=l.ref
+        SELECT DISTINCT {"s.state" if states else "l.root"} FROM lineage l
+        JOIN source_events e ON l.kind='event' AND e.event_id=l.ref
         JOIN source_events h ON {GROUP_MATCH}
         JOIN source_safety s ON s.source_ref=h.event_id AND s.source_revision=h.source_revision
         WHERE s.state!='released' AND h.read_blocked=0"""
@@ -244,6 +268,19 @@ def blocked_refs(tx, kind, refs) -> frozenset[str]:
         (kind, json.dumps(wanted)),
     )
     return frozenset(row[0] for row in rows)
+
+
+def held_state(tx, kind, ref):
+    """Return the strongest persisted hold through the same dependency walk as visibility."""
+    row = (
+        tx._check()
+        .execute(
+            held_roots_sql("SELECT ?,?,?", states=True) + " ORDER BY s.state DESC LIMIT 1",
+            (ref, kind, ref),
+        )
+        .fetchone()
+    )
+    return row[0] if row is not None else None
 
 
 def notice(tx, ref, revision=None):

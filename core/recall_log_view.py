@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from ..contracts import ContractError
 from . import private
-from .injection_guard import blocked_refs
+from .injection_guard import held_state
 from .model_content import withhold_secret_items
 from .retrieval import CandidateRef, SearchContext, SearchLimits
 from .retrieval_storage import RetrievalStorage
@@ -44,8 +44,9 @@ def rejection_reason(tx, candidate, context):
         return "deleted"
     if row[4]:
         return "muted"
-    if candidate.ref in blocked_refs(tx, candidate.kind, (candidate.ref,)):
-        return "quarantine"
+    state = held_state(tx, candidate.kind, candidate.ref)
+    if state is not None:
+        return "pending_review" if state == "pending_review" else "quarantine"
     if _private_candidate(tx, candidate, context):
         return "private"
     if candidate.kind == "claim":

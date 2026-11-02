@@ -14,7 +14,7 @@ from .failure_policy import failure_category
 from .language_resources import prompt_text
 
 
-def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1.0):
+def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1.0, adoption=False):
     """Check cheap literal support first; ask only for normalized, positioned evidence.
 
     Missing or undecided model capability produces a candidate. Provider failures
@@ -50,7 +50,7 @@ def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1
         eligible = candidate_map.get(id(proposal), candidates if not candidate_map else ())
         fingerprint = support_fingerprint(proposal, contents)
         literal = qualify(proposal, roots, _legacy=True).state == "active"
-        if literal and (not eligible or judge is None):
+        if not adoption and literal and (not eligible or judge is None):
             verdicts.append(SupportVerdict(fingerprint, "supported"))
             continue
         if judge is None or failure_code is not None or time.monotonic() >= deadline:
@@ -59,7 +59,8 @@ def prepare_support(value, sources, judge, *, candidates=(), remaining_seconds=1
         try:
             private.require_outbound()
             raw = judge(
-                support_messages(proposal, sources, eligible), remaining_seconds=max(0.001, deadline - time.monotonic())
+                support_messages(proposal, sources, eligible, adoption=adoption),
+                remaining_seconds=max(0.001, deadline - time.monotonic()),
             )
         except (RuntimeError, OSError) as exc:
             failure_code = _support_failure_code(exc)
@@ -188,7 +189,7 @@ def prepare_publication(storage, context, value, sources, judge, *, remaining_se
         )
 
 
-def support_messages(proposal, sources, candidates=()):
+def support_messages(proposal, sources, candidates=(), *, adoption=False):
     """Format a judgement using already authorized source windows and merge candidates."""
     identities = {}
     safe_proposal = dict(proposal, subject=model_subject(proposal["subject"], sources, identities=identities))
@@ -201,15 +202,37 @@ def support_messages(proposal, sources, candidates=()):
         )
         for item in candidates
     ]
+    adoption_rule = (
+        (
+            " The human explicitly adopted only the selected assistant slices. Judge the resulting decision, "
+            "not the truth of assistant claims. Require all owner exclusions and prerequisites to remain. "
+            "Adoption supports an intention only: completed actions or successful execution are unsupported. "
+            "The attribution prefix is code-owned metadata, not additional evidence."
+        )
+        if adoption
+        else ""
+    )
     messages = [
-        {"role": "system", "content": prompt_text("support") + " " + prompt_text("merge")},
+        {"role": "system", "content": prompt_text("support") + " " + prompt_text("merge") + adoption_rule},
         {
             "role": "user",
             "content": json.dumps(
                 {
                     "proposal": safe_proposal,
                     "sources": [
-                        {"source_ref": s.ref, "source_revision": s.revision, "content": _support_window(proposal, s)}
+                        {
+                            "source_ref": s.ref,
+                            "source_revision": s.revision,
+                            "content": (
+                                "\n".join(
+                                    span["quote"]
+                                    for span in proposal["evidence_spans"]
+                                    if (span["source_ref"], span["source_revision"]) == (s.ref, s.revision)
+                                )
+                                if adoption
+                                else _support_window(proposal, s)
+                            ),
+                        }
                         for s in sources
                     ],
                     "candidates": safe_candidates,

@@ -638,6 +638,7 @@ class MemoryCore:
             # Before the vector channel, so a full interval makes no query embedding
             # request and reaches no provider.
             return self._private_recall_packet(search_context)
+        search_context = replace(search_context, packet_selection=True)
         result = self.recall_pipeline.search(search_context)
         compiler = self.recall_packet_compiler
         # Keep the compiler on the pipeline's current read boundary.  Tests

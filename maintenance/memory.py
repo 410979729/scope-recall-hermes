@@ -61,6 +61,7 @@ def parser():
         "show",
         "history",
         "revise",
+        "importance",
         "mute",
         "unmute",
         "forget",
@@ -88,12 +89,16 @@ def parser():
             command.add_argument("--cursor")
         if action == "search":
             command.add_argument("query", help="literal substring, without a model or network request")
-        if action in {"show", "history", "revise"}:
+        if action in {"show", "history", "revise", "importance"}:
             command.add_argument("ref")
-        if action == "show":
-            command.add_argument("--revision", type=int)
-        if action == "history":
-            command.add_argument("--before", type=int)
+        if action == "importance":
+            command.add_argument("--expected-revision", type=int, required=True)
+            command.add_argument("--score", type=int, choices=range(1, 6))
+            pin = command.add_mutually_exclusive_group()
+            pin.add_argument("--pin", dest="pinned", action="store_true", default=None)
+            pin.add_argument("--unpin", dest="pinned", action="store_false")
+        if action in {"show", "history"}:
+            command.add_argument("--revision" if action == "show" else "--before", type=int)
         if action == "revise":
             command.add_argument("--expected-revision", type=int, required=True)
             value = command.add_mutually_exclusive_group(required=True)
@@ -127,15 +132,24 @@ def _preview(api, args):
     return dict(preview=plan, applied=True, result=api.apply(plan))
 
 
-def execute(api, args):
-    """Translate one parsed command to the same methods used by the local UI."""
+def _inventory(api, args):
+    """Translate bounded inventory reads, including history and diagnostic metadata."""
     if args.action == "recalls":
         return api.recalls(session=args.session, request_id=args.request_id, before=args.before, limit=args.limit)
     if args.action == "secrets":
         return api.secrets()
-    if args.action in {"list", "search"}:
-        filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
-        return api.list(filters, limit=args.limit, cursor=args.cursor)
+    filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
+    return api.list(filters, limit=args.limit, cursor=args.cursor)
+
+
+def execute(api, args):
+    """Translate one parsed command to the same methods used by the local UI."""
+    if args.action in {"recalls", "secrets", "list", "search"}:
+        return _inventory(api, args)
+    if args.action == "importance":
+        return api.importance(
+            args.ref, expected_revision=args.expected_revision, importance=args.score, pinned=args.pinned
+        )
     if args.action == "show":
         return api.show(args.ref, revision=args.revision)
     if args.action == "history":

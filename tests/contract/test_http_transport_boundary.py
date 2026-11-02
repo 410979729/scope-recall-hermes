@@ -114,18 +114,24 @@ def test_parent_worker_timeout_kills_owned_process(tmp_path, monkeypatch) -> Non
     timeout_worker = tmp_path / "timeout_worker.py"
     _write_worker(
         timeout_worker,
-        "import pathlib, sys, time\n"
+        "import pathlib, sys, threading\n"
         "sys.stdin.buffer.read()\n"
-        "time.sleep(2.0)\n"
+        "threading.Event().wait()\n"
         f"pathlib.Path({str(marker)!r}).write_text('completed')\n",
     )
-    started = time.perf_counter()
+    processes = []
+    popen = models.subprocess.Popen
+
+    def owned(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(models.subprocess, "Popen", owned)
     with pytest.raises(models.AuxiliaryModelError) as exc:
         _post(monkeypatch, timeout_worker, timeout=0.15)
-    elapsed = time.perf_counter() - started
     assert exc.value.error_type == "timeout"
-    assert elapsed < 1.5
-    time.sleep(0.1)
+    assert processes and all(process.poll() is not None for process in processes)
     assert not marker.exists()
 
 

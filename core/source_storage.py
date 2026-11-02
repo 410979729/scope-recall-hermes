@@ -14,6 +14,7 @@ from ..contracts import (
     import_source_fingerprint,
 )
 from . import lexical_index
+from .adoption_storage import invalidate_adoptions
 from .delete_storage import canonical, group_digest, purged_group_key
 from .events import (
     indexed_terms,
@@ -358,14 +359,11 @@ class Sources:
             raise ContractError("IDENTITY_UNBOUND", "entry_required")
         if not shared and self._tx.context.entry_id is not None:
             raise ContractError("IDENTITY_UNBOUND", "entry_unexpected")
-        # The same statement records the entry's activity and proves it attached:
-        # an entry the store never registered has no row to update.
+        # Validate attachment before accepting input. A replay must not update
+        # entry activity or any other durable state.
         if (
             shared
-            and conn.execute(
-                "UPDATE entries SET last_seen=? WHERE entry_id=?", (persisted_at, self._tx.context.entry_id)
-            ).rowcount
-            != 1
+            and conn.execute("SELECT 1 FROM entries WHERE entry_id=?", (self._tx.context.entry_id,)).fetchone() is None
         ):
             raise ContractError("IDENTITY_UNBOUND", "entry_unregistered")
         event = self._admitted_source(event)
@@ -399,6 +397,8 @@ class Sources:
         group_policy = self._check_source_group(conn, group_key, scope_id, revision, segment_total)
         if self._existing_revision(conn, ref, scope_id, revision, fingerprint):
             return SourceWrite("duplicate", ref, revision)
+        if shared:
+            conn.execute("UPDATE entries SET last_seen=? WHERE entry_id=?", (persisted_at, self._tx.context.entry_id))
         columns = (
             "source_event_key",
             "origin",
@@ -456,6 +456,7 @@ class Sources:
                 "UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?", (ref, revision)
             )
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
+        invalidate_adoptions(conn, ref, revision)
         return SourceWrite("inserted", ref, revision)
 
     def index_source(self, ref: str, revision: int) -> None:

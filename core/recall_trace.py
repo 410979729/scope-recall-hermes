@@ -50,7 +50,7 @@ class RecallTrace:
     capture: dict = field(default_factory=lambda: {"state": "not_captured", "refs": []})
 
 
-def note_candidate(candidate, reason=None):
+def note_candidate(candidate, reason=None, *, obj=None):
     """Retain the last decision and all observed channel ranks for one version."""
     trace = CURRENT_TRACE.get()
     if trace is None or not trace.enabled:
@@ -68,6 +68,13 @@ def note_candidate(candidate, reason=None):
         vector=candidate.vector_score,
     )
     item["fusion_score"] = candidate.fusion_score
+    item.setdefault("source_type", candidate.kind)
+    if obj is not None:
+        item["source_type"] = {
+            "grounded_session_summary": "session_summary",
+            "grounded_task_summary": "task_summary",
+            "owner_adopted_assistant_proposal": "adopted_decision",
+        }.get(dict(obj.metadata).get("qualification_reason", ""), candidate.kind)
     if reason is not None:
         item["reason"] = reason
 

@@ -5,6 +5,33 @@ from __future__ import annotations
 import re
 import unicodedata
 
+#: Where a message's sentences part: after a closing mark, or after a full stop before a space, so that a version or
+#: a domain name (3.11, beat.example.app) stays whole.  A semicolon parts none: a supposition's consequence often
+#: follows one ("Suppose we shard it; the host would then be ...").
+SENTENCE_BREAK = re.compile(r"(?<=[。！？!?\n])|(?<=\.)(?=\s)")
+
+
+def sentence_bounds(content, start, end):
+    """Return the complete sentence or consecutive sentences containing a positioned excerpt.
+
+    Commas and semicolons keep their conditions with the consequence. Whitespace
+    is trimmed without changing any character inside the resulting source span.
+    """
+    left, right = 0, len(content)
+    for boundary in SENTENCE_BREAK.finditer(content):
+        point = boundary.start()
+        if point <= start:
+            left = point
+        elif point >= end:
+            right = point
+            break
+    while left < right and content[left].isspace():
+        left += 1
+    while right > left and content[right - 1].isspace():
+        right -= 1
+    return left, right
+
+
 AUTHORITY_QUESTION = re.compile(
     r"[?？]|是否|能否|可否|要不要|是不是|吗(?:[。.!，,;；\s]|$)|\b(?:whether|is it|(?:can|could|would|should)\s+(?:I|we|you))\b",
     re.I,

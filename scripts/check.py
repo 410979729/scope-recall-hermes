@@ -56,6 +56,8 @@ WATCHDOG_SECONDS_PER_FILE = 20
 #: 300 s.
 HEAVY_FILE_SECONDS = {
     "tests/recall_bench/test_recall_bench.py": 600,
+    # A hundred complete worker turns include adoption probes and metered local model substitutes.
+    "tests/contract/test_setup_workload.py": 600,
     "tests/contract/test_memory_export.py": 300,
     "tests/host/codex/test_shared_client.py": 300,
     "tests/host/codex/test_dsh_remote.py": 300,
@@ -159,6 +161,7 @@ SCRIPT_GATE_TESTS = [
 GIT_TESTS = ["tests/integration/test_guard_git.py"]
 SUITES = {
     "unit": [
+        "tests/unit/test_setup_discovery.py",
         "tests/unit/test_trusted_context.py",
         "tests/unit/test_check_runner.py",
         "tests/unit/test_secret_patterns.py",
@@ -170,6 +173,16 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_setup_workload.py",
+        "tests/contract/test_adoption.py",
+        "tests/contract/test_adoption_merge.py",
+        "tests/contract/test_adoption_revision.py",
+        "tests/contract/test_adoption_cost.py",
+        "tests/contract/test_adoption_outline.py",
+        "tests/contract/test_importance_summaries.py",
+        "tests/contract/test_summary_repairs.py",
+        "tests/contract/test_summary_merge.py",
+        "tests/contract/test_summary_transfer.py",
         "tests/contract/test_memory_import.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",
@@ -188,6 +201,7 @@ SUITES = {
         "tests/contract/test_memory_ui_api.py",
         "tests/contract/test_recall_log.py",
         "tests/contract/test_recall_log_fences.py",
+        "tests/contract/test_recall_log_merge.py",
         "tests/contract/test_memory_export.py",
         "tests/contract/test_private_mode.py",
         "tests/contract/test_fragment_quote_recovery.py",
@@ -322,6 +336,7 @@ SUITES = {
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
+        "tests/host/codex/test_setup_entries.py",
         "tests/host/codex/test_clients_only_store.py",
         "tests/host/codex/test_remote.py",
         "tests/host/codex/test_dsh_remote.py",
@@ -330,13 +345,16 @@ SUITES = {
         "tests/host/codex/test_ledger_recovery_boundaries.py",
         "tests/host/codex/test_ledger_lifetime.py",
         "tests/host/codex/test_merged_host_boundaries.py",
+        "tests/host/codex/test_adoption_hosts.py",
         "tests/host/codex/test_recall_privacy_boundary.py",
         "tests/host/codex/test_project_worktrees.py",
         "tests/host/codex/test_stdio_lifetime.py",
         "tests/host/codex/test_tool_schemas.py",
     ],
     "migration": [
+        "tests/migration/test_adoption_upgrade.py",
         "tests/migration/test_database_identity_upgrade.py",
+        "tests/migration/test_importance_summary_upgrade.py",
         "tests/migration/test_claim_index_upgrade.py",
         "tests/migration/test_entity_upgrade.py",
         "tests/migration/test_migration_drills.py",
@@ -345,6 +363,8 @@ SUITES = {
         "tests/migration/test_upgrade_policy.py",
     ],
     "packaging": [
+        "tests/packaging/test_setup.py",
+        "tests/packaging/test_setup_repairs.py",
         "tests/packaging/test_clean_v11_wheel.py",
         "tests/packaging/test_package_upgrade.py",
         "tests/packaging/test_install_v11.py",

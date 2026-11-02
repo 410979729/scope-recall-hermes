@@ -86,6 +86,7 @@ class CodexCliRouteConfig:
     model: str = MODEL
     kind: str = "codex_cli"
     subscription_budget: SubscriptionBudgetPolicy = SubscriptionBudgetPolicy()
+    subscription_budget_explicit: bool = False
 
     def __post_init__(self):
         if self.model != MODEL or self.kind != "codex_cli":
@@ -104,6 +105,7 @@ class CodexCliRouteConfig:
             model=raw.get("model", MODEL),
             kind=raw.get("kind", "codex_cli"),
             subscription_budget=SubscriptionBudgetPolicy.from_mapping(raw.get("subscription_budget")),
+            subscription_budget_explicit=bool(raw.get("subscription_budget")),
         )
 
 
@@ -679,6 +681,12 @@ class CodexCliConsolidationAdapter:
         self._calls = 0
         self._lock = threading.Lock()
         self.last_diagnostics: dict = {}
+
+    @property
+    def remaining_calls(self):
+        """Report the existing pass allowance without allocating a new CLI adapter."""
+        with self._lock:
+            return max(0, 1 - self._calls)
 
     def for_pass(self):
         """A fresh local allowance; durable daily accounting is never reset."""

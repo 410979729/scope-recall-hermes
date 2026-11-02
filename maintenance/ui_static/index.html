@@ -29,7 +29,8 @@
       <p data-i18n="sessionHint"></p><p id="scan"></p><div id="items"></div><button id="next" data-i18n="next" disabled></button>
       <article id="detail" hidden><h2 data-i18n="detail"></h2><div id="detail-data"></div><h3 data-i18n="sources"></h3><div id="sources"></div><h3 data-i18n="history"></h3><div id="history-data"></div><button id="history-next" data-i18n="next" disabled></button>
         <form id="correction"><label><span data-i18n="newValue"></span><textarea name="value" rows="3"></textarea></label><label class="check"><input name="retract" type="checkbox"><span data-i18n="retract"></span></label><button type="submit" data-i18n="revise"></button></form>
-        <div id="item-actions" class="actions"><button data-action="mute" data-i18n="mute"></button><button data-action="unmute" data-i18n="unmute"></button><button data-action="forget" data-i18n="forget" class="danger"></button></div>
+        <form id="importance"><label><span data-i18n="importanceLabel"></span><input name="importance" type="number" min="1" max="5" required></label><label class="check"><input name="pinned" type="checkbox"><span data-i18n="pinLabel"></span></label><button type="submit" data-i18n="saveImportance"></button></form>
+          <div id="item-actions" class="actions"><button data-action="mute" data-i18n="mute"></button><button data-action="unmute" data-i18n="unmute"></button><button data-action="forget" data-i18n="forget" class="danger"></button></div>
       </article>
     </section>
     <section id="recalls" class="page" hidden><h2 data-i18n="recalls"></h2>

@@ -27,6 +27,7 @@ from .recall_policy import (
 )
 from .retrieval import STALE_RESUME_GAPS, RetrievedObject, SearchContext, optional_json
 from .source_qualification import FENCE, UNASSERTED_CONTEXT, unquoted
+from .source_qualification import SENTENCE_BREAK as _SENTENCE_BREAK
 
 COMPARE_MARKERS = ("比较", "对比", "差异", "哪个更", "compare", "versus", " vs ")
 WHY_MARKERS = ("为什么", "为何", "原因", "why", "reason")
@@ -250,10 +251,6 @@ _CALENDAR = frozenset(
     "jan feb mar apr jun jul aug sep sept oct nov dec "
     "monday tuesday wednesday thursday friday saturday sunday mon tue tues wed thu thur thurs fri sat sun".split()
 )
-#: Where a message's sentences part: after a closing mark, or after a full stop before a space, so that a version or
-#: a domain name (3.11, beat.example.app) stays whole.  A semicolon parts none: a supposition's consequence often
-#: follows one ("Suppose we shard it; the host would then be ...").
-_SENTENCE_BREAK = re.compile(r"(?<=[。！？!?\n])|(?<=\.)(?=\s)")
 #: The most things a question the rule judges names: one, or two it compares.  More, in a prompt as short as a
 #: question, make a list, and its answer need not name every one.
 _QUESTION_NAMES = 2

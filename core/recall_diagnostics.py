@@ -166,7 +166,7 @@ def attempt_record(trace, result: dict | RetrievalResult) -> dict:
     items = []
     candidates = dict(trace.candidates)
     for key in selected:
-        candidates.setdefault(key, dict(kind=key[0], ref=key[1], revision=key[2], channels={}))
+        candidates.setdefault(key, dict(kind=key[0], ref=key[1], revision=key[2], source_type=key[0], channels={}))
     scores = (
         {candidate.key: candidate.fusion_score for candidate in result.candidates}
         if not isinstance(result, dict)

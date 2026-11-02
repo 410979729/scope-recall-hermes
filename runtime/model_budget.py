@@ -16,7 +16,7 @@ from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
-from typing import Mapping
+from typing import Mapping, TypedDict
 from weakref import finalize
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -58,6 +58,13 @@ def _await_ledger_lock(deadline: float | None) -> None:
 
 def _is_locked(exc: sqlite3.OperationalError) -> bool:
     return "locked" in str(exc).lower()
+
+
+class ModelTokenCapInput(TypedDict):
+    """JSON token caps name both sides; null explicitly means no cap on that side."""
+
+    input: int | None
+    output: int | None
 
 
 @dataclass(frozen=True)

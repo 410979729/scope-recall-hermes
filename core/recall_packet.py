@@ -33,7 +33,12 @@ from .recall_items import packet_item as packet_item
 from .recall_items import packet_kind as packet_kind
 from .recall_needs import asks_to_resume, unmet_needs
 from .recall_overflow import append_overflow
-from .recall_restatement import recheck_restatement
+from .recall_restatement import (
+    has_conversation_summaries,
+    prioritize_summary_originals,
+    recheck_restatement,
+    redundant_summary_keys,
+)
 from .recall_trace import note_candidate
 from .resume_compaction import (
     compact_episode_variants,
@@ -394,8 +399,7 @@ class RecallPacketCompiler:
         with timings.measure("fence"):
             verified = self._fence(storage, draft, verified)
         draft.result = replace(result, diagnostics=(*result.diagnostics, *timings.snapshot()))
-        self._admit(draft, self._ordered(context, verified, limits), limits)
-        include_diagnostic_ref = self._fit(draft, limits)
+        draft, include_diagnostic_ref = self._select(draft, self._ordered(context, verified, limits), limits)
         if context.mode == "auto" and not any(not is_background(obj) for obj in draft.objects):
             # Background depends on evidence that actually ships. A grounded
             # resume task can stand alone because it answers the resume request.
@@ -409,12 +413,28 @@ class RecallPacketCompiler:
         if draft.items and self._remaining_ms(context) == 0:
             draft.expire()
         packet = self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
+        self._note_selection(verified, packet)
         extended = append_overflow(
             storage, replace(context, limits=limits), result, packet, self.storage_reader, self._clock
         )
         if extended is not packet:
             self._record_extension(packet, extended, started, context)
         return extended
+
+    @staticmethod
+    def _note_selection(verified, packet):
+        """Explain only final fitted bodies; exploratory packings cannot omit a summary."""
+        selected = {(item["ref"], item["revision"]): item for item in packet["items"]}
+        displayed = [
+            replace(obj, content=selected[(obj.ref, obj.revision)]["content"])
+            for _candidate, obj in verified
+            if (obj.ref, obj.revision) in selected
+        ]
+        summaries = [obj for _candidate, obj in verified if obj.kind == "claim"]
+        covered = redundant_summary_keys([*displayed, *summaries])
+        for candidate, obj in verified:
+            if (obj.ref, obj.revision) not in selected:
+                note_candidate(candidate, "summary_covered" if candidate.key in covered else "budget", obj=obj)
 
     def _record_extension(self, packet, extended, started, context):
         """Keep the diagnostic aligned with the bytes actually delivered."""
@@ -453,6 +473,7 @@ class RecallPacketCompiler:
             note_candidate(candidate, recall_log_view.rejection_reason(tx, candidate, context))
             gaps.append(f"stale_candidate:{candidate.ref}@{candidate.revision}")
             return None
+        note_candidate(candidate, obj=fresh)
         if (fresh.ref, fresh.revision) != (obj.ref, obj.revision):
             gaps.append(f"revision_changed:{obj.ref}@{obj.revision}")
             return None
@@ -543,6 +564,68 @@ class RecallPacketCompiler:
         verified.sort(key=lambda pair: pair[0].source == "background")
         return verified
 
+    def _pack(self, base: _Draft, verified: list[Pair], limits: SearchLimits) -> tuple[_Draft, bool]:
+        """Try an ordering with the existing schema, admission and envelope checks."""
+        draft = replace(base, items=[], objects=[], gaps=list(base.gaps), unmet_needs=list(base.unmet_needs))
+        self._admit(draft, verified, limits)
+        return draft, self._fit(draft, limits)
+
+    @staticmethod
+    def _represents(previous: list[RetrievedObject], shown: list[RetrievedObject]) -> bool:
+        """Every retained object still ships, or its summary is fully displayed by originals."""
+        present = {(obj.kind, obj.ref, obj.revision) for obj in shown}
+        present.update(redundant_summary_keys([*shown, *(obj for obj in previous if obj.kind == "claim")]))
+        return all((obj.kind, obj.ref, obj.revision) in present for obj in previous)
+
+    @staticmethod
+    def _displayed(draft: _Draft) -> list[RetrievedObject]:
+        """Bind comparisons to the actual item bodies, including compacted displays."""
+        return [replace(obj, content=item["content"]) for item, obj in zip(draft.items, draft.objects, strict=True)]
+
+    def _select(self, base: _Draft, verified: list[Pair], limits: SearchLimits) -> tuple[_Draft, bool]:
+        """Prefer originals only when their complete fitted packet preserves the ordinary answer."""
+        ordinary = self._pack(base, verified, limits)
+        if has_conversation_summaries(verified) and self._remaining_ms(base.context) > 0:
+            trial = self._deduplicate(
+                base, verified, limits, self._pack(base, prioritize_summary_originals(verified), limits)
+            )
+            if self._represents(ordinary[0].objects, self._displayed(trial[0])):
+                return trial
+        return self._deduplicate(base, verified, limits, ordinary)
+
+    def _deduplicate(
+        self, base: _Draft, verified: list[Pair], limits: SearchLimits, packed: tuple[_Draft, bool]
+    ) -> tuple[_Draft, bool]:
+        """Omit covered summaries and refill without losing fitted evidence.
+
+        Rejected summaries whose entire text is already displayed also consume
+        no budget or rejection diagnostics. Each pass excludes a new summary,
+        so the bounded candidate pool bounds the number of admission passes.
+        """
+        draft, diagnostic = packed
+        omitted = set()
+        summaries = [obj for _candidate, obj in verified if obj.kind == "claim"]
+        while True:
+            duplicates = redundant_summary_keys([*self._displayed(draft), *summaries]) - omitted
+            if not duplicates:
+                return draft, diagnostic
+            omitted.update(duplicates)
+            keep = [
+                index for index, obj in enumerate(draft.objects) if (obj.kind, obj.ref, obj.revision) not in duplicates
+            ]
+            draft.items = [draft.items[index] for index in keep]
+            draft.objects = [draft.objects[index] for index in keep]
+            if self._remaining_ms(base.context) == 0:
+                return draft, diagnostic
+            retained = {(obj.kind, obj.ref, obj.revision) for obj in draft.objects}
+            choices = [pair for pair in verified if pair[0].key not in omitted]
+            choices.sort(key=lambda pair: (pair[1].kind, pair[1].ref, pair[1].revision) not in retained)
+            refill, refill_diagnostic = self._pack(base, choices, limits)
+            previous = [*draft.objects, *(obj for obj in summaries if (obj.kind, obj.ref, obj.revision) in omitted)]
+            if not self._represents(previous, self._displayed(refill)):
+                return draft, diagnostic
+            draft, diagnostic = refill, refill_diagnostic
+
     def _fits(
         self,
         draft: _Draft,
@@ -574,7 +657,6 @@ class RecallPacketCompiler:
             rejected_needs.extend(needs)
 
         for _candidate, obj in verified:
-            note_candidate(_candidate, "budget")
             expandable = f"expandable:{obj.ref}@{obj.revision}"
             if len(draft.items) >= limits.max_items:
                 reject(obj, "budget_item_cap")

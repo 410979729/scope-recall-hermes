@@ -22,7 +22,7 @@ Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际�
 
 ## 旧版迁移的执行边界
 
-操作指引由 `scope-recall setup --workflow` 输出，并包含以下步骤：
+普通安装和配置使用 `scope-recall setup`；需要处理旧格式和运行中宿主时，按 [迁移与宿主协调指引](../maintenance/AGENT_WORKFLOW.md) 执行以下步骤：
 
 1. 查明实际运行环境、数据路径、服务控制方式和旧版权限配置。
 2. 在独立目标中准备安装清单。保留可验证的账户、私聊、群聊和项目权限。

@@ -47,6 +47,10 @@ and English otherwise. The language selector switches between both languages.
   Each confirmed action displays its receipt. Deletion uses the existing
   deletion and background purge process; a receipt can still show pending work.
 - **Held content** lists source text with the rules that quarantined it or left it pending review.
+  Capture screens up to 128 windows shared by message bodies and metadata (2048 owned characters per window).
+  Larger messages resume on the local background queue. The caller's remaining deadline is the wall-clock fallback;
+  doctor reports its retained occurrence count as `injection_scan_deadlines`. Replaying a captured message preserves
+  its verdict and continuation; it does not request a new review.
   These sources are excluded from search, recall, summaries and background extraction. Ordinary explicit
   inspection returns only their state and rule names. Choose Review release, inspect the source revision,
   then confirm to restore normal admission. Delete uses the existing reviewed deletion flow and does

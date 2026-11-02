@@ -4,7 +4,8 @@ as it is read."""
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import MISSING, dataclass, fields
+from dataclasses import MISSING, dataclass, fields, is_dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -288,3 +289,25 @@ class RuntimeInstanceConfig:
             project_id=self.project_id,
             branch_id=self.branch_id,
         )
+
+
+def configuration_value(value: Any) -> Any:
+    """Encode validated runtime definitions in the JSON shapes their readers accept."""
+    if is_dataclass(value) and not isinstance(value, type):
+        out = {item.name: configuration_value(getattr(value, item.name)) for item in fields(value)}
+        # The ledger stores cap sides as tuples; its input contract names both
+        # sides explicitly, including null for an uncapped side.
+        if "model_token_caps" in out:
+            out["model_token_caps"] = {
+                model: dict(input=sides[0], output=sides[1]) for model, sides in out["model_token_caps"].items()
+            }
+        return out
+    if isinstance(value, Mapping):
+        return {key: configuration_value(member) for key, member in value.items()}
+    if isinstance(value, (frozenset, set)):
+        return [configuration_value(member) for member in sorted(value)]
+    if isinstance(value, (tuple, list)):
+        return [configuration_value(member) for member in value]
+    if isinstance(value, (Path, Decimal)):
+        return str(value)
+    return value

@@ -13,7 +13,6 @@ from .legacy_episode_membership import MembershipProjectionError
 from .legacy_v2_compat import LegacyCompatibilityError
 from .migrate_v2 import MigrationError
 from .migration_records import constraint_failure
-from .onboarding import inspect_installation, workflow_text
 from .upgrade import (
     prepare_upgrade,
     queue_upgrade_index,
@@ -44,23 +43,12 @@ def _reason(exc: BaseException) -> str:
 
 
 def main(argv=None):
+    if argv and argv[0] == "setup":
+        from .setup import main as setup_main
+
+        return setup_main(argv[1:])
     parser = argparse.ArgumentParser(prog="scope-recall")
     sub = parser.add_subparsers(dest="command", required=True)
-    setup = sub.add_parser(
-        "setup",
-        help="agent-only discovery: choose fresh install, current update or legacy migration",
-    )
-    setup.add_argument("--home")
-    setup.add_argument(
-        "--database",
-        help="actual database selected by host configuration, if nonstandard",
-    )
-    setup.add_argument("--host", choices=("hermes", "codex"), default="hermes")
-    setup.add_argument(
-        "--workflow",
-        action="store_true",
-        help="print the bundled agent-operated workflow",
-    )
     migrate = sub.add_parser("migrate", help="resumable migration using the existing legacy converter")
     stages = migrate.add_subparsers(dest="stage", required=True)
     prepare = stages.add_parser("prepare")
@@ -81,14 +69,7 @@ def main(argv=None):
         stage.add_argument("--job", required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "setup":
-            if args.workflow:
-                print(workflow_text())
-                return 0
-            if not args.home:
-                parser.error("setup requires --home or --workflow")
-            result = inspect_installation(args.home, host=args.host, database=args.database)
-        elif args.stage == "prepare":
+        if args.stage == "prepare":
             mapping = None
             if args.scope_map:
                 mapping = json.loads(Path(args.scope_map).read_text(encoding="utf-8"))

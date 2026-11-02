@@ -25,7 +25,12 @@ scope-recall doctor --host codex --instance-root /path/to/home --recall-request-
 The `inspect` tool accepts `recall-request:REQUEST` within the asking session and entry, or the packet's
 `recall-diag:` reference. The management page and local commands use the installation owner's capability.
 References are checked again against current scope, project, source versions, deletion, mute, privacy and
-injection holds. A reference that fails those checks has no content or action link. History does not copy
+injection holds. A reference that fails those checks has no content or action link. Each item keeps its object kind and retrieval-channel ranks. `source_type` additionally distinguishes
+`session_summary`, `task_summary` and `adopted_decision` from ordinary claims. `summary_covered` means the
+summary was omitted because the final packet already displays its quotes in originals or a same-source decision;
+exploratory packet fits do not create that reason. `pending_review` distinguishes incomplete injection screening
+from `quarantine`, and overflow rows retain the original source reference, revision and retrieval channel.
+History does not copy
 conversation or fact text. A captured prompt is represented by its source references; otherwise only its length is stored. Neither full nor read-only private mode records attempts.
 
 `recall.sqlite3` is a disposable sibling of `memory.sqlite3`, outside the truth schema and memory exports. The
@@ -201,7 +206,7 @@ files are outside that active-content receipt.
 
 ## Migration and rollback
 
-The first open of a supported older store migrates it transactionally to schema 1119. The added tables contain local
+The first open of a supported older store migrates it transactionally to schema 1122. The added tables contain local
 management action identities, actor, action, target versions, timestamp and memory epoch, content-free suppression
 constraints for records that can arrive after a restore, and private intervals that hold only target, session or
 project path, mode and UTC boundaries. Entity judgement receipts, source-screening policies, holds and resumable scan

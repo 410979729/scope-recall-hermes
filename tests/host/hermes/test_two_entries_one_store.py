@@ -915,4 +915,4 @@ def test_import_entity_task_waits_for_technical_source_scan(root, entries):
         ref = version.ref
         imported = tx.claims.version(ref, 1)
     assert imported is not None
-    entity_hold_roundtrip(shared, ctx, imported, replay=False)
+    entity_hold_roundtrip(shared, ctx, imported)

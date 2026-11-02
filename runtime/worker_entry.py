@@ -63,7 +63,7 @@ def credential_environment(config, env_file):
     names = {
         route.credential_env
         for route in (getattr(config.auxiliary, "embedding", None), getattr(config.auxiliary, "consolidation", None))
-        if route is not None
+        if route is not None and hasattr(route, "credential_env")
     }
     if not env_file or not names:
         return {}

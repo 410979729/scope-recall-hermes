@@ -10,7 +10,7 @@ import os
 import sqlite3
 import time
 from contextlib import closing, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,7 @@ def _seconds_since(stamp: Any) -> float | None:
         return None
     try:
         seen = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - seen).total_seconds()
+        return (datetime.now(UTC) - seen).total_seconds()
     except (ValueError, TypeError):
         return None
 
@@ -301,7 +301,7 @@ def _capture_queue_checks(report: DoctorReport, binding, conn) -> None:
     """Distinguish scheduled captures, command-recoverable failures and stopped input without reading payloads."""
     _injection_checks(report, conn)
     codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
-    moment = datetime.now(timezone.utc)
+    moment = datetime.now(UTC)
     report.capture_inbox = len(codes)
     report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
     report.capture_inbox_given_up = sum(given_up(code) for code in codes)
@@ -393,13 +393,17 @@ def _injection_checks(report, conn):
     )
     report.injection_quarantined = safety.get("quarantined", 0)
     report.injection_pending_review = safety.get("pending_review", 0)
+    report.injection_scan_deadlines = conn.execute(
+        "SELECT count(*) FROM work_error_details WHERE stage='source_scan' AND error_code='scan_time_budget'"
+    ).fetchone()[0]
     if report.injection_pending_review:
         report.capability_gaps.append("injection_review_pending")
     record_check(
         report,
         "injection_safety",
         "held" if report.injection_quarantined + report.injection_pending_review else "clear",
-        f"quarantined={report.injection_quarantined}; pending_review={report.injection_pending_review}",
+        f"quarantined={report.injection_quarantined}; pending_review={report.injection_pending_review}; "
+        f"scan_deadlines={report.injection_scan_deadlines}",
     )
 
 
@@ -415,6 +419,16 @@ def _entity_resolution_check(report, tx, binding):
         "waiting" if progress["pending"] else "ok",
         f"{progress['completed']}/{progress['total']} statements checked; {progress['pending']} pending",
     )
+
+
+def _derived_progress(report, transaction, binding):
+    """Read content-free backfill status beside the existing entity diagnosis."""
+    _entity_resolution_check(report, transaction, binding)
+    conn = transaction._check()
+    report.summaries = dict(conn.execute("SELECT state,count(*) FROM summary_groups GROUP BY state"))
+    report.summaries["importance_pending"] = conn.execute(
+        "SELECT count(*) FROM claims WHERE importance_assigned=0"
+    ).fetchone()[0]
 
 
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
@@ -440,14 +454,14 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            _entity_resolution_check(report, transaction, binding)
+            _derived_progress(report, transaction, binding)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(
                     "SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16"
                 )
             ]
-            moment = datetime.now(timezone.utc)
+            moment = datetime.now(UTC)
             hour_ago = (moment - timedelta(hours=1)).isoformat()
             growth = conn.execute(
                 "SELECT sum(persisted_at>=?),sum(persisted_at>=?) FROM source_events",
@@ -465,12 +479,10 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
             # Debouncing raises pending_evaluation on purpose, so split that
             # number: waiting inside the quiet window is health, waiting past it
             # with no sweep having run is not.
-            report.candidate_settling = transaction.candidates.settling_summary(
-                now=datetime.now(timezone.utc).isoformat()
-            )
+            report.candidate_settling = transaction.candidates.settling_summary(now=datetime.now(UTC).isoformat())
             report.embedding_respace = transaction.work.respace_run()
             report.embedding_health = transaction.work.embed_queue()
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=UNREACHED_HOURS)).isoformat()
+            cutoff = (datetime.now(UTC) - timedelta(hours=UNREACHED_HOURS)).isoformat()
             report.unreached = [
                 *transaction.work.due_unreached(before=cutoff),
                 *transaction.candidates.settled_unreached(before=cutoff),
@@ -608,7 +620,7 @@ def check_embedding_health(report: DoctorReport, config) -> None:
     hold = provider_holds(auxiliary).get("embed")
     if hold is not None:
         health["held_model"], until = hold
-        health["held_until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
+        health["held_until"] = datetime.fromtimestamp(until, UTC).isoformat()
     calls = embedding_calls(auxiliary)
     if calls is not None:
         health["last_day"] = calls
@@ -655,7 +667,7 @@ def check_unreached(report: DoctorReport, config) -> None:
 
     capable = capable_work_types(config) if config is not None else {"purge", "rebuild_projection"}
     if config is not None:
-        capable -= set(provider_holds(config.auxiliary, now=datetime.now(timezone.utc).timestamp()))
+        capable -= set(provider_holds(config.auxiliary, now=datetime.now(UTC).timestamp()))
     partitions: dict[tuple, dict[str, Any]] = {}
     for row in report.unreached:
         if "work_type" in row and row["work_type"] not in capable:
