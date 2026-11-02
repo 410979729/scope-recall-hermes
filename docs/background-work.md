@@ -237,7 +237,7 @@ DeepSeek Harness receive it on their first prompt; their current adapters expose
 session does not automatically receive an already delivered briefing item again. Session usage keeps briefing and
 question-recall counts separate and stores references rather than copying source content.
 
-The store schema is 1126. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+The store schema is 1125. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.
 
