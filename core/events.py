@@ -108,7 +108,9 @@ def capture_text_segments(text: str) -> tuple[str, ...]:
     return tuple(parts) or ("",)
 
 
-def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedContext) -> PreparedCapture:
+def prepare_capture(
+    value: SourceEvent | dict | str | bytes, context: TrustedContext, *, private_content_omitted: bool = False
+) -> PreparedCapture:
     """Validate identity, mask stored text once, then sanitize transport and split bounded source segments."""
     raw = decode_payload(dict(value) if isinstance(value, dict) else value)
     content = raw.get("content")
@@ -133,6 +135,9 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
     gaps = ("transport_payload_omitted",) if filtered != content else ()
     if private_count:
         gaps = (*gaps, f"private_spans_removed:{private_count}")
+
+    if private_count or private_content_omitted:
+        gaps = (*gaps, "private_content_omitted")
     if masked_secret_count:
         gaps = (*gaps, "secret_values_masked")
     if not filtered.strip() and not raw.get("artifact_refs") and raw["capture_state"] == "complete":

@@ -157,7 +157,58 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
-    1113: {"columns": (("instance_meta", "database_id"), ("instance_meta", "database_created_at"))},
+    1119: {"columns": (("instance_meta", "database_id"), ("instance_meta", "database_created_at"))},
+    1118: {
+        "before": (
+            "DROP TRIGGER claim_lexical_insert",
+            "DROP TRIGGER claim_lexical_update",
+            "DROP TRIGGER claim_lexical_delete",
+            "DROP TRIGGER claim_lexical_head",
+            "DROP TABLE claim_lexical_heads",
+            "DROP INDEX claim_lexical_versions",
+            "DROP INDEX claim_lexical_subject",
+            "ALTER TABLE claim_lexical_postings DROP COLUMN subject_terms",
+        ),
+    },
+    1117: {
+        "before": ("DELETE FROM candidate_scan_cursors WHERE cursor_name='claim_lexical'",),
+        "tables": ("claim_lexical_postings",),
+    },
+    1116: {"tables": ("source_scan_progress",)},
+    1115: {},
+    1114: {"tables": ("source_safety", "injection_rules")},
+    1113: {
+        "before": tuple(
+            f"DROP TRIGGER {name}"
+            for name in (
+                "entity_alias_version",
+                "entity_alias_head",
+                "entity_name_index",
+                "entity_name_reindex",
+                "entity_name_unindex",
+                "entity_name_orphan",
+                "entity_name_pending",
+                "entity_name_changed",
+                "entity_name_deleted",
+                "entity_source_changed",
+            )
+        ),
+        "indexes": (
+            "entity_unresolved",
+            "entity_alias_scope",
+            "entity_subject_lookup",
+            "entity_subject_presence",
+            "entity_index_pending",
+        ),
+        "tables": (
+            "entity_name_search",
+            "entity_name_mentions",
+            "entity_names",
+            "entity_alias_labels",
+            "entity_alias_proofs",
+        ),
+        "columns": (("claim_versions", "entity_resolved"), ("claims", "entity_indexed")),
+    },
     1112: {"tables": ("private_intervals",), "columns": (("source_events", "project_root"),)},
     1111: {
         "before": tuple(f"DROP TRIGGER {name}" for name, _sql in SUPPRESSION_TRIGGERS),

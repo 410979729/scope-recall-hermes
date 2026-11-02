@@ -211,6 +211,7 @@ def run_case(
             "admission_failures": admissions,
             "backend_state": state,
             "retrieval": retrieval,
+            "vector_threshold": getattr(lab, "vector_threshold", None),
             "packet": packet,
             "answer": answer,
             "judge_correct": verdict,

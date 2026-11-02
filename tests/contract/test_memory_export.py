@@ -412,6 +412,19 @@ def test_unknown_segment_total_keeps_its_gap_and_matches_schema(app, tmp_path):
         capture_state="partial",
         segment={"group_key": "TEST-unknown", "index": 0, "total": None, "truncated": False},
     )
+    api = owner(core, ctx)
+    held = api.quarantine()["items"]
+    assert len(held) == 1 and held[0]["state"] == "pending_review"
+    blocked = tmp_path / "TEST-held-export"
+    export(api, blocked)
+    assert validated(files_of(blocked), "sources.jsonl", "source") == []
+    api.release_quarantine(
+        held[0]["ref"],
+        expected_revision=held[0]["revision"],
+        content_sha256=api.preview_quarantine_release(held[0]["ref"], expected_revision=held[0]["revision"])[
+            "content_sha256"
+        ],
+    )
     out = tmp_path / "TEST-unknown-total-export"
     export(owner(core, ctx), out)
     files = files_of(out)
@@ -430,7 +443,9 @@ def history_store(tmp_path, name, count):
         conn = tx._check()
         conn.execute(
             """WITH RECURSIVE numbers(n) AS (VALUES(2) UNION ALL SELECT n+1 FROM numbers WHERE n<?)
-            INSERT INTO claim_versions
+            INSERT INTO claim_versions(claim_id,revision,payload_json,state,basis,qualification_reason,
+                                       valid_from,valid_to,recorded_from,recorded_to,
+                                       replaces_revision,conflict_revisions_json)
             SELECT v.claim_id,n,v.payload_json,v.state,v.basis,v.qualification_reason,
                    v.valid_from,v.valid_to,v.recorded_from,v.recorded_to,NULL,v.conflict_revisions_json
             FROM numbers CROSS JOIN claim_versions v WHERE v.claim_id=? AND v.revision=1""",

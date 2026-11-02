@@ -17,6 +17,7 @@ from .failure_policy import BUDGET_PAUSE_ERRORS, CAPACITY_REFUSALS
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
 from .source_records import StoredSource
+from .worker_entities import defer_held_entity, needs_entity_projection, process_entity_projection
 from .worker_outcomes import (
     budget_left,
     deadline_result,
@@ -537,9 +538,25 @@ def process_embed(
 
 
 def process_rebuild_projection(
-    storage, clock, context, item, *, started: float, budget: float
+    storage, clock, context, item, *, started: float, budget: float, model=None, admission_policy=None
 ) -> tuple[str, str | None, str]:
-    """Re-index one source, or acknowledge one claim revision's projection."""
+    """Screen a held source before rebuilding its index or projecting a claim's entities."""
+    from .source_scan import process_screening
+
+    screening = process_screening(
+        storage, clock, context, item, started=started, budget=budget, admission_policy=admission_policy
+    )
+    if screening is not None:
+        return screening
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        deferred = defer_held_entity(tx, item, clock.utc_now())
+        if deferred is not None:
+            return deferred
+    if callable(getattr(model, "judge", None)):
+        with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+            entity = needs_entity_projection(tx, item)
+        if entity:
+            return process_entity_projection(storage, clock, context, item, model=model, started=started, budget=budget)
     now = clock.utc_now()
     if budget_left(started, clock, budget) <= 0:
         return deadline_result(storage, context, item)

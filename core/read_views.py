@@ -8,11 +8,12 @@ enumerated and how the released statements are grouped.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Callable
 
 from ..contracts import ContractError, SourceContext, TrustedContext, validate_model_request, validate_payload
-from .aliases import validate_alias_source, validate_alias_target
+from .aliases import entity_alias_proof, validate_alias_source, validate_alias_target
 from .claim_storage import parse_source_ref
 from .claims import ClaimVersion, effective_origin, evidence_refs, select_effective
 from .model_content import WITHHELD_PREFIX, withhold_secret_items
@@ -172,6 +173,7 @@ class _AliasResolution:
     subject: str | None
     fence: tuple[ObjectRef, ...]
     scan_capped: bool
+    names: tuple[str, ...] = ()
 
 
 def _alias_source_bound(tx, alias: ClaimVersion, target: ClaimVersion) -> bool:
@@ -201,47 +203,101 @@ def _load_effective(tx, ref: str, now: str) -> ClaimVersion | None:
     return select_effective(versions, now) if versions else None
 
 
-def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
-    """Resolve only admitted project-name aliases; never merge ambiguous names."""
-    alias_refs = tx.claims.list_refs(alias_name=queried, limit=CANDIDATE_CAP)
-    if len(alias_refs) >= CANDIDATE_CAP:
-        return _AliasResolution("ambiguous", None, (), True)
-    accepted: list[tuple[str, ClaimVersion, ClaimVersion]] = []
-    for ref in alias_refs:
-        alias = _load_effective(tx, ref, now)
-        if alias is None or alias.suppressed or alias.state != "active" or alias.payload.get("kind") != "alias":
-            continue
-        if not _claim_evidence_live(tx, alias):
-            continue
-        alias_payload = alias.payload.get("alias")
-        if not isinstance(alias_payload, dict):
-            continue
-        if alias_payload.get("name") != queried and alias.payload.get("value_text") != queried:
-            continue
-        target_ref = alias_payload.get("target_ref")
-        target = _load_effective(tx, target_ref, now) if type(target_ref) is str else None
-        try:
-            if target is None:
-                raise ContractError("SOURCE_MISSING", "alias_target")
-            validate_alias_target(
-                target, scope_id=alias.scope_id, project_id=tx.context.project_id, branch_id=tx.context.branch_id
+def _accepted_alias(tx, ref, now):
+    """Read one current relation through its evidence and exact-audience fences."""
+    alias = _load_effective(tx, ref, now)
+    if alias is None or alias.state != "active" or not _claim_evidence_live(tx, alias):
+        return None
+    relation = alias.payload.get("alias", {})
+    target = _load_effective(tx, relation.get("target_ref", ""), now)
+    if target is None or not _claim_evidence_live(tx, target):
+        return None
+    semantic = entity_alias_proof(tx, alias, target, now)
+    try:
+        validate_alias_target(
+            target,
+            scope_id=alias.scope_id,
+            project_id=tx.context.project_id,
+            branch_id=tx.context.branch_id,
+            entity=semantic,
+        )
+    except ContractError:
+        return None
+    if alias.payload["subject"] != target.payload["subject"]:
+        return None
+    if not semantic and not _alias_source_bound(tx, alias, target):
+        return None
+    return alias, target, semantic
+
+
+def _alias_component(tx, queried, now):
+    """Walk only verified name links, with a shared cap for reads and admitted relations."""
+    names, pending, seen, edges = {queried}, [queried], set(), []
+    while pending and len(seen) < CANDIDATE_CAP:
+        name = pending.pop()
+        refs = tuple(
+            dict.fromkeys(
+                (
+                    *tx.claims.list_refs(alias_name=name, limit=CANDIDATE_CAP),
+                    *tx.claims.list_refs(subject=name, kind="alias", limit=CANDIDATE_CAP),
+                )
             )
-            if alias.payload["subject"] != target.payload["subject"]:
-                raise ContractError("ACCESS_DENIED", "alias_subject_identity")
-        except ContractError:
-            continue
-        if not _claim_evidence_live(tx, target) or not _alias_source_bound(tx, alias, target):
-            continue
-        accepted.append((target.payload["subject"], alias, target))
-    distinct = list(dict.fromkeys(subject for subject, _alias, _target in accepted))
-    has_literal = bool(tx.claims.list_refs(subject=queried, limit=1))
-    if len(distinct) > 1 or (len(distinct) == 1 and has_literal and queried != distinct[0]):
+        )
+        if len(refs) >= CANDIDATE_CAP:
+            return names, edges, True
+        for ref in refs:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            accepted = _accepted_alias(tx, ref, now)
+            if accepted is None:
+                continue
+            alias, target, semantic = accepted
+            edges.append((alias, target, semantic))
+            for linked in (alias.payload.get("alias", {})["name"], target.payload["subject"]):
+                if linked not in names:
+                    names.add(linked)
+                    pending.append(linked)
+    return names, edges, bool(pending)
+
+
+def _literal_audiences(tx, names, now):
+    """Use recorded labels only as a conservative collision guard, never as identity evidence."""
+    return tx.claims.subject_audiences(names)
+
+
+def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
+    """Resolve admitted entity aliases while retaining ambiguous names and separate audiences."""
+    if _verified_current_principal(tx.context) == queried:
+        return _AliasResolution("literal", queried, (), False, (queried,))
+    names, edges, capped = _alias_component(tx, queried, now)
+    if capped:
+        return _AliasResolution("ambiguous", None, (), True)
+    if not edges:
+        if len(_literal_audiences(tx, (queried,), now)) > 1:
+            return _AliasResolution("ambiguous", None, (), False)
+        return _AliasResolution("literal", queried, (), False, (queried,))
+    audiences = {(a.scope_id, a.project_id, a.branch_id) for a, _t, _s in edges}
+    audiences.update(_literal_audiences(tx, names, now))
+    destinations = {t.payload["subject"] for _a, t, _s in edges}
+    origins = {a.payload["alias"]["name"] for a, t, _s in edges if a.payload["alias"]["name"] != t.payload["subject"]}
+    canonical = destinations - origins
+    literal_conflict = bool(tx.claims.subject_audiences((queried,), all_kinds=True)) and queried not in canonical
+    if (
+        len(audiences) != 1
+        or len(canonical) != 1
+        or (literal_conflict and not all(semantic for _a, _t, semantic in edges))
+    ):
         return _AliasResolution("ambiguous", None, (), False)
-    if len(distinct) == 1:
-        _subject, alias, target = next(row for row in accepted if row[0] == distinct[0])
-        fence = tuple(dict.fromkeys(ObjectRef("claim", version.ref, version.revision) for version in (alias, target)))
-        return _AliasResolution("resolved", distinct[0], fence, False)
-    return _AliasResolution("literal", queried, (), False)
+    fence = tuple(dict.fromkeys(ObjectRef("claim", v.ref, v.revision) for a, t, _s in edges for v in (a, t)))
+    proofs = tx._check().execute(
+        "SELECT p.source_ref,p.source_revision FROM json_each(?) accepted "
+        "JOIN entity_alias_proofs p ON p.alias_ref=json_extract(accepted.value,'$[0]') "
+        "AND p.alias_revision=json_extract(accepted.value,'$[1]')",
+        (json.dumps([(a.ref, a.revision) for a, _t, _s in edges]),),
+    )
+    fence = tuple(dict.fromkeys((*fence, *(ObjectRef("claim", row[0], row[1]) for row in proofs))))
+    return _AliasResolution("resolved", next(iter(canonical)), fence, False, tuple(sorted(names)))
 
 
 # -- select, release, recheck -------------------------------------------------
@@ -602,14 +658,18 @@ def read_entity(storage, clock, context: TrustedContext, request) -> dict:
         incoming_names: tuple[str, ...] = ()
         scan_hit = False
         if want_out:
-            outgoing_refs = tx.claims.list_refs(
-                subject=subject, predicate=predicate, kind="fact" if probe else None, limit=CANDIDATE_CAP
+            outgoing_refs = tuple(
+                dict.fromkeys(
+                    ref
+                    for name in (resolution.names or (subject,))
+                    for ref in tx.claims.list_refs(
+                        subject=name, predicate=predicate, kind="fact" if probe else None, limit=CANDIDATE_CAP
+                    )
+                )
             )
             scan_hit = len(outgoing_refs) >= CANDIDATE_CAP
         if want_in:
-            incoming_names = (
-                (lookup_subject,) if resolution.status == "literal" else tuple(dict.fromkeys((lookup_subject, subject)))
-            )
+            incoming_names = resolution.names or (lookup_subject,)
             collected: list[str] = []
             for name in incoming_names:
                 refs = tx.claims.list_refs(value_text=name, predicate=predicate, limit=CANDIDATE_CAP)

@@ -153,3 +153,23 @@ on explicit configuration; the deletion mirror remains independently scheduled.
 
 Mirror failure never rolls back a committed deletion. The lag marker is cleared only after all current records
 have been appended and flushed. Restores apply tombstones before making restored content available.
+
+
+## Entity identity projections
+
+A projection of a current statement can also check its entity identity when the worker supplies the shared
+source-support judgement port. It nominates spelling and vector candidates in the exact scope, project and branch,
+then publishes only a supported same-entity decision. The projection lease, private-mode checks and model budget
+remain in force. An unavailable vector port leaves a content-free diagnostic and allows spelling candidates.
+An uncertain identity leaves both records separate. Name candidates come from indexed character grams and exact
+evidence mentions; at most 128 names are scored and 16 distinct subjects are passed to judgement.
+A judgement receipt belongs to a name in its exact audience, so later facts with checked names spend no model
+request. Endpoint invalidation reopens that name through an existing projection lease.
+
+Identity links are ordinary versioned aliases with source evidence and pinned endpoint versions. Retraction stops
+the link; a later endpoint revision invalidates its old proof and can refresh a live link. A retracted link is not
+recreated by automatic backfill. Existing statement bodies are preserved.
+
+Older stores gain an unresolved progress bit with a default value. The worker queues bounded pages through the
+existing projection lifecycle. Doctor reports completed and pending identity checks; literal recall remains
+available throughout. A missing judgement capability leaves the backfill pending.

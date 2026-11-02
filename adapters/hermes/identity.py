@@ -6,7 +6,7 @@ import os
 import re
 import sys
 from dataclasses import asdict, dataclass
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import cast
 
@@ -23,7 +23,7 @@ from scope_recall.contracts import (
 
 from ...core.private import normalize_project_path
 from ...runtime.worker_launch import RUNTIME_CONFIG_FILENAME
-from ..host_identity import HermesRuntimeScope, RuntimeAudience, principal_ref, resolve_runtime_audience
+from ..host_identity import HermesRuntimeScope, RuntimeAudience, entry_owner, principal_ref, resolve_runtime_audience
 from ..host_identity import context_ref as _context_ref
 from ..host_identity import host_scope_payload as host_scope_payload
 from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID, approved_local_platforms
@@ -275,6 +275,7 @@ class HermesIdentity:
             source_principal=self.source_principal(cast(Origin, resolved_origin), named=not mutation),
             entry_id=self.entry_id,
             project_root=root,
+            owner_resolver=partial(entry_owner, self.binding),
         )
 
     def _agent_workspace_path(self) -> str | None:

@@ -1,8 +1,7 @@
-"""A candidate's identity is not the model's to rewrite, and not its to lose a verdict over.
+"""Candidate identity belongs to the request, while value and evidence remain model choices.
 
-What the candidate is was recorded before the call; the verdict decides whether the evidence supports it, with what
-value and on which quote.  A name the model writes differently -- quoted, escaped, or cut to its first words -- is
-the candidate's own and is restored; a name it lengthens, negates or points at something else is refused.
+Identity echoes cannot retarget the candidate. The name comparison helpers still distinguish harmless wording
+from names that negate, narrow or change the assertion.
 """
 
 from __future__ import annotations
@@ -46,20 +45,18 @@ def test_a_predicate_without_its_subject_s_words_still_settles_the_candidate(app
     assert current.payload["predicate"] == "entity-blue needs review"
 
 
-def test_a_name_turned_into_its_opposite_is_refused_not_restored(app):
-    """Restored, the candidate's 吃辣 would be recorded on a verdict the model gave for 不吃辣."""
+def test_an_echoed_opposite_predicate_cannot_replace_the_candidate(app):
     core, ctx = app
     current, evaluation, work = _verdict(core, ctx, candidate_predicate="吃辣", predicate="不吃辣")
-    assert work["state"] != "done" and evaluation["state"] != "resolved"
-    assert current is None
+    assert work["state"] == "done" and evaluation["state"] == "resolved"
+    assert current.payload["predicate"] == "吃辣"
 
 
-def test_a_name_the_model_lengthened_is_refused(app):
-    """The words a model adds to a name may narrow it; the candidate's shorter name is not restored over them."""
+def test_an_echoed_longer_subject_cannot_narrow_the_candidate(app):
     core, ctx = app
     current, evaluation, work = _verdict(core, ctx, subject="entity-blue in staging")
-    assert work["state"] != "done" and evaluation["state"] != "resolved"
-    assert current is None
+    assert work["state"] == "done" and evaluation["state"] == "resolved"
+    assert current.payload["subject"] == "entity-blue"
 
 
 def test_a_name_quoted_by_the_model_is_the_same_name(app):
@@ -68,20 +65,18 @@ def test_a_name_quoted_by_the_model_is_the_same_name(app):
     assert evaluation["state"] == "resolved" and current.payload["subject"] == "entity-blue"
 
 
-def test_a_different_name_is_still_refused(app):
-    """Rejected, which is one feedback retry away from terminal; never recorded."""
+def test_an_echoed_different_subject_cannot_retarget_the_candidate(app):
     core, ctx = app
     current, evaluation, work = _verdict(core, ctx, subject="entity-red")
-    assert work["state"] != "done" and evaluation["state"] != "resolved"
-    assert current is None, "the candidate stays a proposal; nothing is recorded as a fact"
+    assert work["state"] == "done" and evaluation["state"] == "resolved"
+    assert current.payload["subject"] == "entity-blue"
 
 
-def test_a_different_kind_is_still_refused(app):
-    """A kind is one of a fixed set: there is nothing to write differently."""
+def test_an_echoed_different_kind_cannot_replace_the_candidate_kind(app):
     core, ctx = app
     current, evaluation, work = _verdict(core, ctx, kind="fact")
-    assert work["state"] != "done" and evaluation["state"] != "resolved"
-    assert current is None
+    assert work["state"] == "done" and evaluation["state"] == "resolved"
+    assert current.payload["kind"] == "decision"
 
 
 @pytest.mark.parametrize(

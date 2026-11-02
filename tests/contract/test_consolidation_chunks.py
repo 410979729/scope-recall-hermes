@@ -106,8 +106,8 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
     assert row(core, source)[0] == "pending" and 0 < row(core, source)[1] < len(source.event["content"])
     # A new Core reads the durable cursor; no in-memory model/session state is required.
     core = MemoryCore(CoreConfig(ctx.binding), clock=clock)
-    # About 11.5 KB of each request is fixed overhead, so a 64 KB source takes roughly 85
-    # passes of some 800 characters; the bound only has to be above that.
+    # Schema, instructions and source metadata share the byte limit with each page.
+    # Keep the call bound fixed so growing metadata cannot silently shrink progress.
     for _ in range(120):
         if row(core, source)[0] == "done":
             break
@@ -198,7 +198,12 @@ def test_fragment_evidence_cannot_escape_window_or_omit_original_negation(worker
         lambda sources, **_: consolidation_payload(sources[0], claims=[proposal(sources[0], FIRST)])
     )
     result = core.drain_worker(ctx, consolidation=bad, max_items=1, remaining_seconds=5)
-    assert result.retried == 1 and row(core, source)[1] == 0 and claims(core) == []
+    assert result.retried == 0 and row(core, source)[1] > 0 and claims(core) == []
+    with sqlite3.connect(core.storage.path) as conn:
+        assert (
+            conn.execute("SELECT error_field FROM work_error_details WHERE stage='claim'").fetchone()[0]
+            == "claim_proposals[0].evidence_spans[0].quote"
+        )
     clock.advance(iso="2026-09-06T12:00:03Z")
     model = FakeConsolidation(
         lambda sources, **_: consolidation_payload(
@@ -212,8 +217,7 @@ def test_fragment_evidence_cannot_escape_window_or_omit_original_negation(worker
         assert result.failed == result.retried == 0
     assert row(core, source)[0] == "done"
     assert claims(core) and all(state == "proposed" for _p, state in claims(core))
-    assert model.feedbacks[0] == {"code": "DERIVATION_INVALID", "field": "fragment_evidence"}
-    assert len(model.feedbacks) > 1 and all(value is None for value in model.feedbacks[1:])
+    assert model.feedbacks and all(value is None for value in model.feedbacks)
 
 
 def test_deletion_during_fragment_model_call_cannot_commit_progress(worker_app):

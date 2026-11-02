@@ -215,7 +215,7 @@ def test_window_selection_does_not_mutate_candidate_identity_or_source():
         assert payload[field] == candidate.payload[field]
     assert json.dumps(candidate.payload, sort_keys=True) == before
     assert len(source.event["content"]) > 8000
-    assert "Return zero claim_proposals when evidence is insufficient" in messages[0]["content"]
+    assert "empty JSON object when evidence is insufficient" in messages[0]["content"]
     # The model-safe principal rule also survives selecting a quote window.
     principal = "TEST-private-principal"
     identified = replace(

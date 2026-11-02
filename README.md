@@ -12,7 +12,7 @@ are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
 before upgrading and follow the [management migration and rollback guide](docs/manage.md#migration-and-rollback).
 On a shared store in
 the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
-([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order to schema 1112;
+([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order through the snapshot-backed upgrade coordinator;
 an earlier release cannot open the upgraded store. Section 9 of the
 [3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
 migration procedure for a 2.0.1 memory database.
@@ -46,12 +46,19 @@ Extraction can normalize fact wording while keeping exact source character inter
 ## Manage your memories
 
 Use `scope-recall ui` with the same store selection to open the [local management page](docs/ui.md).
-It provides Chinese and English browsing, reviewed actions, private rules, export and backup status in your browser.
+It provides Chinese and English browsing, reviewed actions, held-content review, private rules, export and backup status in your browser.
+Capture screens text for embedded instructions, exfiltration links and hidden Unicode before indexing. Held sources
+are excluded from recall and processing; explicit inspection returns a reason without their words. The owner can
+review and release them on the [local management page](docs/ui.md). External and unattributed sources await an explicit review result.
 
 Use `scope-recall memory` to browse, search, inspect history, correct a fact, mute it or delete a conversation.
 It runs as the local store owner and makes no model request. Deletion shows the dependent sources and facts before
 `--yes` applies it. `scope-recall memory export --out <new directory or .zip>` writes the visible store as a portable
 package with original sources, facts, history, episodes, readable Markdown and optional retained attachments.
+`scope-recall memory import --source <kind> --from <path> --source-id <stable account>` previews external
+memory files and conversation exports without opening the store. Review the original actors, projects and time range,
+then repeat with the same store selection, `--yes --preview-id <shown hash>`. Approval permits import; it does not
+confirm the content as fact. [Importing memories](docs/import.md) describes supported formats and retry behavior.
 `scope-recall memory secrets` lists stored credential matches by reference, provenance, time and pattern names.
 After upgrading, review its findings, remove them with `scope-recall memory forget <refs>` and change any credential found.
 [The management guide](docs/manage.md) covers store selection, filters, version checks and receipts; the
@@ -166,7 +173,7 @@ an explicit re-embedding run; opening a store never authorizes paid reconstructi
 
 ## Profile and entity read views
 
-Two shared read-only Core methods, `profile` and `entity`, are exposed as Hermes tools and on Codex MCP. They return a deterministic categorized current-fact view, or an exact one-hop statement view, over admitted consolidated claims only. Raw chat is never silently turned into a profile. Incoming relations match the full scalar `value_text` only and keep recorded conditions and validity. Explicit project-name aliases may resolve when they are already admitted and still live; person aliases are not generalized. A `budget_tokens` value too small for even the minimal truthful envelope is a validation error, not an oversized view. See [docs/profile-entity.zh-CN.md](docs/profile-entity.zh-CN.md).
+Two shared read-only Core methods, `profile` and `entity`, are exposed as Hermes tools and on Codex MCP. They return a deterministic categorized current-fact view, or an exact one-hop statement view, over admitted consolidated claims only. Raw chat is never silently turned into a profile. Incoming relations match the full scalar `value_text` only and keep recorded conditions and validity. Admitted aliases can identify people, objects, places, organizations and projects. A worker compares bounded spelling/vector candidates with source evidence before recording a reversible identity relation. Different scopes, projects and branches remain separate; ambiguous names stay unresolved. Entity, trace and recall recheck these relations when reading. A `budget_tokens` value too small for even the minimal truthful envelope is a validation error, not an oversized view. See [docs/profile-entity.zh-CN.md](docs/profile-entity.zh-CN.md).
 
 ## Bounded multi-hop evidence paths
 

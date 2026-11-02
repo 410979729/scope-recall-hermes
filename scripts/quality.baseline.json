@@ -477,11 +477,6 @@
    "E501": 2,
    "UP017": 2
   },
-  "core/inspect_service.py": {
-   "C901": {
-    "inspect_object": 16
-   }
-  },
   "core/lexical_index.py": {
    "UP035": 1
   },

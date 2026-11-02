@@ -299,6 +299,7 @@ def _upgrade_recovery(state: dict, found: int | None = None) -> str:
 
 def _capture_queue_checks(report: DoctorReport, binding, conn) -> None:
     """Distinguish scheduled captures, command-recoverable failures and stopped input without reading payloads."""
+    _injection_checks(report, conn)
     codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
     moment = datetime.now(timezone.utc)
     report.capture_inbox = len(codes)
@@ -374,6 +375,48 @@ def _candidate_queue_checks(report: DoctorReport, tx):
     return tx.candidates.summary(include_all_projects=True)
 
 
+def _injection_checks(report, conn):
+    """Report held source counts without reading or copying their words."""
+    from ..core.injection_policy import load_policy
+
+    try:
+        load_policy(conn)
+    except (ValueError, TypeError, KeyError):
+        report.capability_gaps.append("injection_policy_invalid")
+        record_check(report, "injection_policy", "invalid", "Required source screening policy is incomplete or invalid")
+    safety = dict(
+        conn.execute(
+            "SELECT s.state,count(*) FROM source_safety s JOIN source_events e "
+            "ON e.event_id=s.source_ref AND e.source_revision=s.source_revision "
+            "WHERE e.read_blocked=0 GROUP BY s.state"
+        )
+    )
+    report.injection_quarantined = safety.get("quarantined", 0)
+    report.injection_pending_review = safety.get("pending_review", 0)
+    if report.injection_pending_review:
+        report.capability_gaps.append("injection_review_pending")
+    record_check(
+        report,
+        "injection_safety",
+        "held" if report.injection_quarantined + report.injection_pending_review else "clear",
+        f"quarantined={report.injection_quarantined}; pending_review={report.injection_pending_review}",
+    )
+
+
+def _entity_resolution_check(report, tx, binding):
+    """Report content-free background entity progress alongside the ordinary work queue."""
+    from scope_recall.core.entity_resolution import entity_progress
+
+    _capture_queue_checks(report, binding, tx._check())
+    progress = entity_progress(tx, include_all_projects=True)
+    record_check(
+        report,
+        "entity_resolution",
+        "waiting" if progress["pending"] else "ok",
+        f"{progress['completed']}/{progress['total']} statements checked; {progress['pending']} pending",
+    )
+
+
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
     """Copy the store's queue, source and candidate status onto the report.
 
@@ -397,7 +440,7 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            _capture_queue_checks(report, binding, conn)
+            _entity_resolution_check(report, transaction, binding)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(

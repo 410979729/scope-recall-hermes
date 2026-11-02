@@ -178,3 +178,38 @@ def test_a_verdict_on_a_persons_own_words_still_promotes(app):
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     assert evaluator.calls == 1
     assert core.claim_history(ctx, saved.ref)[-1].state == "active"
+
+
+@pytest.mark.parametrize("origin", ["tool_observation", "assistant_visible"])
+def test_positioned_evaluation_cannot_borrow_a_value_from_an_agent_source(app, origin):
+    core, ctx = app
+    said = capture(core, ctx, "entity-disk property-disk 42GB。另外 entity-disk 该清理了。")
+    read = capture(core, ctx, "entity-disk property-disk 42GB。", origin=origin)
+    saved, registration = _proposal_from(core, ctx, said, read)
+    assert registration.work_queued
+    spans = [_span(read, read.event["content"]), _span(said, "另外 entity-disk 该清理了")]
+    evaluator = Evaluator(proposal=dict(draft(read, "42GB", **DISK), evidence_spans=spans))
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+    assert [(v.revision, v.state) for v in core.claim_history(ctx, saved.ref)] == [(1, "proposed")]
+    _, evaluations, _ = _candidate_rows(core)
+    assert [(row["state"], row["reason"]) for row in evaluations] == [("waiting_evidence", "insufficient_evidence")]
+
+
+@pytest.mark.parametrize("origin", ["tool_observation", "assistant_visible"])
+def test_consolidation_cannot_publish_an_agent_quote_beside_a_person(worker_app, origin):
+    core, ctx = worker_app
+    said = capture(core, ctx, "entity-disk property-disk 42GB。另外 entity-disk 该清理了。")
+    read = capture(core, ctx, "entity-disk property-disk 42GB。", origin=origin)
+    claim = dict(
+        draft(read, "42GB", **DISK),
+        evidence_spans=[_span(read, read.event["content"]), _span(said, "另外 entity-disk 该清理了")],
+    )
+    model = FakeConsolidation(lambda sources, **kw: consolidation_payload(*sources, claims=[claim]))
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=model)
+    assert model.calls >= 1
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM claim_versions").fetchone()[0] == 0
+        assert conn.execute("SELECT error_field FROM work_error_details WHERE stage='claim'").fetchall() == [
+            ("claim_proposals[0].evidence_spans[0].source_ref",)
+        ]

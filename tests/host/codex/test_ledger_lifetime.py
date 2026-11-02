@@ -231,7 +231,7 @@ def test_legacy_database_upgrade_binds_identity_without_guessing_birth(installed
     old = json.loads(path.read_text(encoding="utf-8"))
     old.pop("database_id")
     path.write_text(json.dumps(old), encoding="utf-8")
-    downgrade_store(core.storage.path, 1112)
+    downgrade_store(core.storage.path, 1118)
     core.initialize()
     assert local_authorized_at(config, seconds=5) == old["since"]
     with closing(sqlite3.connect(core.storage.path)) as db:

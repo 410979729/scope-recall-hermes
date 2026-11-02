@@ -9,7 +9,10 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
-from .installation import SCHEMA_VERSION, HermesIdentityError, InstallationManifest, is_archive_scope
+from scope_recall.contracts import InstanceBinding, SourcePrincipal
+
+from .installation import REQUIRED_FIELDS, SCHEMA_VERSION, HermesIdentityError, InstallationManifest, is_archive_scope
+from .shared_entries import ENTRY_HOSTS, read_shared_payload
 
 
 def _opaque_ref(prefix: str, *parts: str) -> str:
@@ -173,3 +176,62 @@ def resolve_runtime_audience(manifest: InstallationManifest, scope: HermesRuntim
         includes_owner_private,
         frozenset(writable),
     )
+
+
+def _owner_grants(binding: InstanceBinding) -> dict[str, frozenset[tuple[str, str]]]:
+    """Read one checked installation snapshot and derive each entry's approved speakers.
+
+    Reuse the manifest's field validators; these grants establish ownership only.
+    Source visibility remains the scoped SQLite read transaction's responsibility.
+    """
+    payload = read_shared_payload(binding.data_directory)
+    if (payload["installation_id"], payload["agent_id"], payload["test_mode"]) != (
+        binding.installation_id,
+        binding.agent_id,
+        binding.test_mode,
+    ):
+        return {}
+    grants = {}
+    for record in payload["entries"]:
+        if record.get("host") not in ENTRY_HOSTS:
+            return {}
+        fields = {name: check(record.get(name)) for name, check in REQUIRED_FIELDS}
+        speakers = {
+            ("human", principal_ref("human", binding.installation_id, owner["platform"], owner["user_id"]))
+            for owner in fields["owner_principals"]
+        }
+        speakers.add(
+            ("assistant", principal_ref("assistant", binding.installation_id, binding.agent_id, record["entry_id"]))
+        )
+        grants[record["entry_id"]] = frozenset(speakers)
+    return grants
+
+
+def entry_owner(binding: InstanceBinding, entry_id: str, principal: SourcePrincipal | None, memo: dict) -> str | None:
+    """Resolve an entry owner and separately check any stored source speaker against its grants.
+
+    Attachment approves each entry's owner principals as the installation owner.
+    An assistant is its entry's own actor; other verified people are not owners.
+    A missing or changed binding supplies no proof. The caller owns the memo for
+    one request; neither successes nor failed reads survive into another request.
+    """
+    if binding.installation_kind != "shared":
+        return None
+    if principal is not None and principal.get("resolution") != "verified":
+        return None
+    key = ("owner_grants", binding.installation_id, str(binding.data_directory))
+    if key not in memo:
+        # Cache failure too: an unreadable manifest cannot cause per-candidate retries.
+        memo[key] = {}
+        try:
+            memo[key] = _owner_grants(binding)
+        except (HermesIdentityError, OSError, ValueError):
+            pass
+    expected = memo[key].get(entry_id)
+    if expected is None:
+        return None
+    # None identifies the reader's entry owner, not an unknown source actor.
+    # Visibility still comes from the already scoped trusted context.
+    if principal is None:
+        return binding.installation_id
+    return binding.installation_id if (principal.get("kind"), principal.get("principal_ref")) in expected else None

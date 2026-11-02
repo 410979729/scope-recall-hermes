@@ -23,21 +23,27 @@ def without_private(text: str) -> tuple[str, int]:
     transcript line cannot release it on replay. The count is metadata only and never includes hidden content.
     """
     kept, position, depth, count = [], 0, 0, 0
-    for tag in re.finditer(r"</?private>", text):
+    for tag in re.finditer(r"</?private\s*>", text, re.IGNORECASE):
         if depth == 0:
             kept.append(text[position : tag.start()])
-        if tag.group() == "<private>":
+        if not tag.group().startswith("</"):
             if depth == 0:
                 count += 1
             depth += 1
         elif depth:
             depth -= 1
         else:
-            kept.append(tag.group())
+            count += 1
         position = tag.end()
     if depth == 0:
         kept.append(text[position:])
     return "".join(kept), count
+
+
+def strip_private_content(text: str) -> tuple[str, bool]:
+    """Expose whether the shared nested-span filter omitted any private markup or content."""
+    filtered, count = without_private(text)
+    return filtered, bool(count)
 
 
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (

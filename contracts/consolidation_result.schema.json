@@ -225,6 +225,30 @@
             ],
             "format": "date-time",
             "description": "UTC instant of the described event; null when unknown."
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "person",
+              "object",
+              "place",
+              "organization",
+              "project"
+            ],
+            "default": "unknown"
+          },
+          "entity_names": {
+            "type": "array",
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "default": [],
+            "description": "Verbatim names in this fact evidence that identify its subject. Similar names and ungrounded translations are excluded."
           }
         },
         "required": [

@@ -409,6 +409,27 @@ return an instance to its own store, detach it, rename `scope-recall.local-<date
 `scope-recall`, install the package version that store was last opened with, re-enable its
 autostart and start its gateway.
 
+## Repeated evidence in recall
+
+Automatic injection and current lookups prefer a matching first-hand statement or
+source-backed fact when trusted owner bindings and audience proofs agree. The reader and both source
+entries must resolve to the same owner; speaker identity remains human or assistant.
+Missing owner binding preserves the existing order and content. Pairing across audiences needs
+explicit evidence links whose nodes are readable in the current request.
+
+A retelling is omitted only when its complete body equals the first-hand body
+after collapsing whitespace. Proper substrings remain available even when all their
+words occur in the original. Numbers, single characters, case, punctuation and
+repetitions remain significant. Bounded or unfinished comparisons retain the
+content. A pairing cutoff preserves completed ordering relations and all bodies;
+unconfirmed pairs keep their original order. A retained retelling keeps its assistant
+origin and entry labels and uses the existing `derived_summary` basis. The existing
+`qualification_reason` field identifies the retelling's entry and a readable original
+reference in both the packet and host-injected text. Original content and stored
+evidence references remain unchanged. The packet does not publish a `restatement_of` field because
+its transport has no field-capability negotiation. Historical reads and exact
+references retain their existing semantics.
+
 ## Moving the store
 
 1. Pause the shared worker (`autostart pause`), stop every attached host and a WorkBuddy or dsh entry's resident

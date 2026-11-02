@@ -253,9 +253,9 @@ def test_flaky_model_derivation_recovers_on_bounded_retry(worker_app):
     from scope_recall.runtime.instance import _BoundedConsolidation
 
     payloads = []
-    # The field names the property the model left out, not the schema keyword
-    # that caught it: "required" told the model nothing it could act on.
-    hint = 'validation_error={"code":"INPUT_INVALID","field":"source_refs"}'
+    # Feedback names the invalid property rather than the schema keyword,
+    # so the model can correct the actual array type.
+    hint = 'validation_error={"code":"INPUT_INVALID","field":"claim_proposals"}'
 
     class RepairPort:
         def propose(self, messages, *, remaining_seconds):
@@ -263,7 +263,7 @@ def test_flaky_model_derivation_recovers_on_bounded_retry(worker_app):
             # This succeeds only when the actual formatter carries the validator
             # feedback, not merely because this happens to be the second call.
             if hint not in messages[0]["content"]:
-                return '{"protocol_version":"1.1"}'
+                return '{"claim_proposals":"TEST-invalid-array"}'
             return json.dumps(json.loads(messages[-1]["content"])["empty_result"])
 
     model = _BoundedConsolidation(build_consolidation_model(RepairPort()), 3)
@@ -583,17 +583,23 @@ def test_model_cannot_submit_evidence_outside_its_authorized_batch(worker_app):
 
     class HallucinatingModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
-            return json.dumps(consolidation_payload(unrelated), ensure_ascii=False)
+            return json.dumps(consolidation_payload(unrelated, claims=[draft(unrelated)]), ensure_ascii=False)
 
     for attempt in range(1, 5):
         clock.advance(seconds=65.0, iso=f"2026-09-06T12:{attempt:02d}:30Z")
         core.drain_worker(ctx, consolidation=HallucinatingModel(), max_items=4, remaining_seconds=5)
     row = next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
-    # D4 retains invalid derivation as failed/needs-review after one extra
-    # automatic attempt; unauthorized evidence must never become done/source_only.
-    assert row[3] == "failed" and row[6].lower().endswith("derivation_invalid")
+    # The bad claim is refused with a reason, without publishing its evidence.
+    assert row[3] == "done"
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT count(*) FROM consolidation_outcomes").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM claim_versions").fetchone()[0] == 0
+        assert (
+            db.execute(
+                "SELECT count(*) FROM work_error_details WHERE stage='claim' "
+                "AND error_field='claim_proposals[0].evidence_spans[0].source_ref'"
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_M41_precise_anchor_survives_failed_derivation(worker_app):

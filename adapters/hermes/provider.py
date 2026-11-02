@@ -249,6 +249,13 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         with self._sync_lock:
             self._turns.sync(user_content, assistant_content, session_id=session_id, messages=messages)
 
+    @_serialized_host_event
+    def on_memory_write(self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None) -> None:
+        """Mirror the native file write using its reported writer, without owner attestation."""
+        from .native_memory import record_memory_write
+
+        record_memory_write(self, action, target, content, metadata)
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # One capture pass (``steer_deadline``) for the steers and the retry inside ``end``. The steers' store
         # I/O runs without the lock; ``end`` then holds it, serialized with shutdown, and never drains. The worker
