@@ -42,6 +42,8 @@ Credentials are environment variable references. Never put their values in a rou
 | <a id="drain_seconds"></a>`drain_seconds` | `float` | `120.0` |
 | <a id="auto_recall_seconds"></a>`auto_recall_seconds` | `float` | `5.0` |
 | <a id="hook_processing_seconds"></a>`hook_processing_seconds` | `float` | `6.0` |
+| <a id="session_brief_enabled"></a>`session_brief_enabled` | `bool` | `true` |
+| <a id="session_brief_tokens"></a>`session_brief_tokens` | `int` | `1024` |
 | <a id="max_items"></a>`max_items` | `int` | `32` |
 | <a id="lease_seconds"></a>`lease_seconds` | `float` | `60.0` |
 | <a id="auxiliary"></a>`auxiliary` | `AuxiliaryRuntimeConfig &#124; None` | `{"external_embedding": false, "external_consolidation": false, "installation_dir": null, "ledger_path": null, "budget": {"batch": "auxiliary", "cap_micro_usd": 0, "total_input_cap": 0, "total_output_cap": 0, "total_call_cap": 0, "max_request_bytes": 128000, "default_reserve_input": 32768, "default_reserve_output": 4096, "model_reserve_output": {"mimo-v2.5": 131072}, "model_token_caps": {}, "pricing": {}, "approved_models": [], "period": "lifetime", "time_zone": "UTC"}, "embedding": null, "consolidation": null, "consolidation_reserve_input": 32768}` |

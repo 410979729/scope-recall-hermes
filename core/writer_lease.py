@@ -391,7 +391,7 @@ def _os_lock_available() -> bool:
     return callable(posix_flock) or callable(windows_locking)
 
 
-def _try_lock_exclusive_nonblocking(handle: IO[bytes]) -> bool:
+def try_lock_exclusive_nonblocking(handle: IO[bytes]) -> bool:
     """One non-blocking exclusive lock attempt on byte 0 of the lease file."""
 
     posix_flock = getattr(_fcntl, "flock", None) if _fcntl is not None else None
@@ -548,7 +548,7 @@ class TruthWriterLease:
             except OSError:
                 logger.warning("Scope Recall writer lease file unavailable")
                 return _busy("lease_file_error")
-            if _try_lock_exclusive_nonblocking(handle):
+            if try_lock_exclusive_nonblocking(handle):
                 state = _ProcessLeaseState(handle)
                 if self._role == "truth_connection":
                     # Connection-first authority is a pin, not a named holder.
@@ -696,4 +696,5 @@ __all__ = [
     "read_truth_writer_owner",
     "sanitized_truth_writer_owner",
     "truth_writer_process_snapshot",
+    "try_lock_exclusive_nonblocking",
 ]

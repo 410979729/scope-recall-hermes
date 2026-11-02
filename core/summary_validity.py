@@ -128,71 +128,6 @@ def group_signature(tx, members):
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def legacy_group_signature(tx, members, *, before_health=False):
-    """Recheck older dependency receipts without accepting a changed assertion."""
-    facts = set()
-    for start in range(0, len(members), 128):
-        page = members[start : start + 128]
-        if not page:
-            continue
-        pairs = {(m["ref"], m["revision"]) for m in page}
-        rows = (
-            tx._check()
-            .execute(
-                "SELECT DISTINCT c.claim_id,c.current_revision,c.read_blocked,c.suppressed,v.state "
-                "FROM evidence_links l JOIN claims c ON c.claim_id=l.object_ref JOIN claim_versions v "
-                "ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
-                "WHERE l.object_kind='claim' AND json_extract(v.payload_json,'$.kind')!='observation' "
-                "AND v.qualification_reason NOT IN (?,?,?,?,?,?) AND (l.source_ref,l.source_revision) IN ("
-                + ",".join("(?,?)" for _ in page)
-                + ")",
-                [*DEPENDENCY_EXCLUDED_REASONS, *(value for m in page for value in (m["ref"], m["revision"]))],
-            )
-            .fetchall()
-        )
-        for ref, revision, blocked, suppressed, state in rows:
-            if before_health:
-                current = revision
-                revision, state = _legacy_health_head(tx, ref, revision, state)
-                if revision != current:
-                    linked = set(lineage.evidence(tx._check(), "claim", ref, revision))
-                    if not pairs.intersection(linked):
-                        continue
-            facts.add((ref, revision, blocked, suppressed, state))
-    excluded = [(ref, rev, spans) for (ref, rev), spans in sorted(obsolete_ranges(tx, members).items())]
-    body = json.dumps(["whole_sentences", members, sorted(facts), excluded], sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(body.encode()).hexdigest()
-
-
-def _legacy_health_head(tx, ref, revision, state):
-    """Recover a matching pre-merge head; never erase a later statement correction."""
-    head = tx.claims.version(ref, revision)
-    if head is None:
-        return revision, state
-    if state == "superseded":
-        target = lineage.resolve_replacement(tx, ref)
-        if target is None or statement_key(target.payload) != statement_key(head.payload):
-            return revision, state
-    rows = tx._check().execute(
-        "SELECT json_extract(j.value,'$.before') FROM management_actions a, json_each(a.targets_json) j "
-        "WHERE a.action='health_fact_merge' AND json_extract(j.value,'$.ref')=? "
-        "AND json_extract(j.value,'$.revision')<=? ORDER BY a.rowid",
-        (ref, revision),
-    )
-    for (before,) in rows:
-        original = tx.claims.version(ref, before) if type(before) is int else None
-        if original is not None and statement_key(original.payload) == statement_key(head.payload):
-            return original.revision, original.state
-    return revision, state
-
-
-def group_signature_matches(tx, members, signature):
-    """Accept current or older receipts only when their visible assertion snapshot agrees."""
-    if group_signature(tx, members) == signature:
-        return True
-    return any(legacy_group_signature(tx, members, before_health=mode) == signature for mode in (False, True))
-
-
 def open_task(tx, group):
     """Confirmed unfinished work keeps its conversation on the original-message path.
 
@@ -263,7 +198,7 @@ def summary_live(tx, ref, revision, *, query_scope=None, excluded=()):
         return False
     if row["signature"] != row["dependencies_json"] or not tx.remembered(
         ("summary_signature_match", row["group_key"], row["generation"]),
-        lambda: group_signature_matches(tx, group_members(tx, row), row["signature"]),
+        lambda: group_signature(tx, group_members(tx, row)) == row["signature"],
     ):
         return False
     try:

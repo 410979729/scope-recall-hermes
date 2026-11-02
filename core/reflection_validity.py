@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from ..contracts import ContractError
 from . import private
 from .reflection_conflicts import owner_conflict
-from .summary_validity import group_signature, legacy_group_signature, members_in_scope
+from .summary_validity import group_signature, members_in_scope
 
 OBSERVATION_REASONS = ("reflection_pending", "grounded_observation", "confirmed_observation")
 
@@ -43,14 +43,7 @@ def check_dependencies(tx, members, signature=None, *, now=None):
     """One fence for dispatch, publication, hydration, inspection and final release."""
     sources = live_members(tx, members, now=now)
     if signature is not None and dependency_signature(tx, members, sources=sources) != signature:
-        rules = private.source_rules(tx, sources)
-        legacy = (legacy_group_signature(tx, members, before_health=mode) for mode in (False, True))
-        values = (
-            hashlib.sha256(json.dumps([item, rules], sort_keys=True).encode()).hexdigest() if rules else item
-            for item in legacy
-        )
-        if signature not in values:
-            raise ContractError("VERSION_CONFLICT", "reflection_dependencies")
+        raise ContractError("VERSION_CONFLICT", "reflection_dependencies")
     return sources
 
 

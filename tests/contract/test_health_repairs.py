@@ -82,6 +82,76 @@ def test_merge_and_undo_preserve_valid_evidence_ranges(app):
         assert obsolete_ranges(tx, manifest) == {}
 
 
+def test_brief_tracks_health_merge_choice_and_correction(app):
+    from scope_recall.core import lineage
+    from scope_recall.core.session_brief import rebuild_scope
+
+    core, ctx = app
+
+    def decision(value, subject):
+        source = capture(core, ctx, f"{subject} color {value}.")
+        proposal = draft(source, value, subject=subject, predicate="color")
+        with core.storage.write(ctx) as tx:
+            return tx.claims.append(
+                "TEST-scope",
+                proposal,
+                Qualification("active", "direct_report", "synthetic"),
+                recorded_at=core.clock.utc_now(),
+            )
+
+    first = decision("blue", "TEST-project")
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+    assert first.ref in core.session_brief(ctx)["text"]
+    second = decision("blue", "test-project")
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+    assert {item["ref"] for item in core.session_brief(ctx)["items"]} >= {first.ref, second.ref}
+    api = owner(app)
+    receipt = api.health_merge_facts(first.ref, first.revision, second.ref, second.revision)
+    with core.storage.read(ctx) as tx:
+        assert lineage.resolve_replacement(tx, second.ref, core.clock.utc_now()).ref == first.ref
+    brief = core.session_brief(ctx)
+    assert first.ref in brief["text"]
+    assert second.ref not in brief["text"]
+    assert brief["items"][0]["revision"] == receipt["versions"][first.ref]
+    prepared = core.session_brief(ctx, deliver=True, defer_confirmation=True)
+    capture(core, ctx, "TEST unrelated source changes the authority snapshot.")
+    assert core.confirm_session_brief(ctx, prepared, remaining_seconds=1) == "brief_delivered"
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+        span = second.payload["evidence_spans"][0]
+        tx._check(write=True).execute(
+            "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) VALUES(?,?,?,?,?)",
+            (span["source_ref"], span["source_revision"], "quarantined", '["TEST-held"]', core.clock.utc_now()),
+        )
+        assert rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+    assert first.ref not in core.session_brief(ctx)["text"]
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "DELETE FROM source_safety WHERE source_ref=? AND source_revision=?",
+            (span["source_ref"], span["source_revision"]),
+        )
+        assert rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+    assert first.ref in core.session_brief(ctx)["text"]
+    corrected = api.revise(first.ref, expected_revision=receipt["versions"][first.ref], value="green")
+    assert first.ref not in core.session_brief(ctx)["text"]
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+    assert "green" in core.session_brief(ctx)["text"]
+    third = decision("red", "Test-project")
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+    api.health_choose_fact(third.ref, third.revision, first.ref, corrected["item"]["revision"])
+    with core.storage.read(ctx) as tx:
+        assert lineage.resolve_replacement(tx, first.ref, core.clock.utc_now()).ref == third.ref
+    assert first.ref not in core.session_brief(ctx)["text"]
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+    brief = core.session_brief(ctx)
+    assert third.ref in brief["text"] and first.ref not in brief["text"]
+
+
 def test_equal_values_different_validity_are_not_mergeable(app):
     core, ctx = app
     first = separate_fact(core, ctx, "TEST-Object", "blue", valid_to="2026-11-03T00:00:00Z")
@@ -278,49 +348,6 @@ def test_two_choices_keep_earlier_source_values_historical(app):
     api.health_undo(second["action_id"], second["versions"])
     with core.storage.read(ctx) as tx:
         assert lineage.resolve_replacement(tx, a.ref, core.clock.utc_now()).ref == b.ref
-
-
-def test_legacy_observation_signature_survives_evidence_only_merge(app):
-    core, ctx = app
-    first = separate_fact(core, ctx, "TEST-Object", "blue")
-    second = separate_fact(core, ctx, "test-object", "blue")
-    observation, _ = observations(core, ctx)
-    with core.storage.write(ctx) as tx:
-        manifest = []
-        for fact in (first, second):
-            span = fact.payload["evidence_spans"][0]
-            source = tx.source(span["source_ref"], span["source_revision"])
-            position = (
-                tx._check().execute("SELECT rowid FROM source_events WHERE event_id=?", (source.ref,)).fetchone()[0]
-            )
-            manifest.append(
-                dict(
-                    ref=source.ref,
-                    revision=source.revision,
-                    position=position,
-                    digest=hashlib.sha256(source.event["content"].encode()).hexdigest(),
-                    total=len(source.event["content"]),
-                    session_id=source.session_id,
-                    entry_id=source.entry_id,
-                    occurred_at=source.event["occurred_at"],
-                )
-            )
-        facts = sorted((fact.ref, fact.revision, 0, 0, "active") for fact in (first, second))
-        old = hashlib.sha256(
-            json.dumps(["whole_sentences", manifest, facts, []], sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        tx._check(write=True).execute(
-            "UPDATE observations SET manifest_json=?,signature=? WHERE claim_ref=? AND claim_revision=?",
-            (json.dumps(manifest), old, observation.ref, observation.revision),
-        )
-    with core.storage.read(ctx) as tx:
-        assert reflection_live(tx, tx.claims.version(observation.ref, observation.revision))
-    receipt = owner(app).health_merge_facts(first.ref, first.revision, second.ref, second.revision)
-    with core.storage.read(ctx) as tx:
-        assert reflection_live(tx, tx.claims.version(observation.ref, observation.revision))
-    owner(app).health_undo(receipt["action_id"], receipt["versions"])
-    with core.storage.read(ctx) as tx:
-        assert reflection_live(tx, tx.claims.version(observation.ref, observation.revision))
 
 
 def test_fact_statement_identity_ignores_nonapplicability_metadata(app):

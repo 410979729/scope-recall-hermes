@@ -558,19 +558,19 @@ def test_source_keys_use_session_turn_and_public_event_ids():
 
 def test_a_session_start_s_read_of_the_store_waits_no_longer_than_a_capture(installed, project_root, monkeypatch):
     """A hook's core lets a write wait 2 s for the store's lock, as long as the owner's prompt may, and a read given
-    no time of its own would wait as long.  A session's start reads the store's standing for a capture's 1 s at most."""
+    no time of its own would wait as long. A session's start reads its prepared briefing for a capture's 1 s at most."""
     from scope_recall.adapters.clients.hook_events import CAPTURE_TIMEOUT_S
     from scope_recall.core import MemoryCore
 
     config, _core, _clock, _root = installed
     asked = []
-    status = MemoryCore.status
+    brief = MemoryCore.session_brief
 
     def timed(self, context, **kwargs):
         asked.append(kwargs.get("remaining_seconds"))
-        return status(self, context, **kwargs)
+        return brief(self, context, **kwargs)
 
-    monkeypatch.setattr(MemoryCore, "status", timed)
+    monkeypatch.setattr(MemoryCore, "session_brief", timed)
     monkeypatch.setattr(CodexHookHandler, "launch_worker", lambda *args, **kwargs: None)
     hook = CodexHookHandler.from_config_path(str(config.config_path))
     try:

@@ -68,6 +68,7 @@ from .boundary import (
     is_workbuddy_agent_run,
     without_lone_surrogates,
 )
+from .session_marks import clear_compaction, compaction_marker, mark_compaction, rebase_compaction
 
 HOSTS = ("claude-code", "codex", "workbuddy", "dsh")
 #: Hosts whose Stop and SessionEnd send the lines of their own session record (``transcript``).
@@ -77,7 +78,7 @@ _RECORD_HOSTS = frozenset({"claude-code", "workbuddy", "codex"})
 #: answers as soon as the server does; the server's work is bounded by the entry's budget.  WorkBuddy's hooks are
 #: given the same waits as the claude-code host's: its prompt is blocked by a hook that runs past its wait.
 HOOK_TIMEOUTS = {
-    "claude-code": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
+    "claude-code": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "codex": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "Interrupt": 3, "SessionEnd": 3},
     "workbuddy": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "dsh": {"UserPromptSubmit": 9, "Stop": 20},
@@ -537,6 +538,12 @@ def _flush_item(config, item: Path, left: float) -> int | None:
         _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
         item.unlink(missing_ok=True)
         return 0
+    payload = kept.get("payload")
+    session = payload.get("session_id") if isinstance(payload, dict) else None
+    session = session if type(session) is str else None
+    compact = compaction_marker(config, session) if session is not None else None
+    if compact is not None:
+        kept.update(compacted_at=compact["at"], compaction_seq=compact["ordinal"], compaction_epoch=compact["epoch"])
     if _private_rules(config):
         state = _private_check(config, kept, min(left, 1.0))
         if state is None:
@@ -548,6 +555,7 @@ def _flush_item(config, item: Path, left: float) -> int | None:
     answer = _post(config, kept, min(left, 30.0))
     if answer is None or answer.get("retry"):
         return None
+    _ack_compaction(config, session, compact, answer)
     item.unlink(missing_ok=True)
     return int(not answer.get("refused"))
 
@@ -697,6 +705,28 @@ def _hook_input(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     return _visible_payload(payload), {}
 
 
+def _pending_compaction(
+    config: dict[str, Any], payload: dict[str, Any], observed_at: str
+) -> tuple[str | None, dict | None]:
+    """Record this client's compaction before transport and return its pending watermark."""
+    session = payload.get("session_id")
+    if config["host"] not in {"claude-code", "codex"} or type(session) is not str or not session.strip():
+        return None, None
+    if payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "compact":
+        mark_compaction(config, session, observed_at)
+    return session, compaction_marker(config, session)
+
+
+def _ack_compaction(config, session: str | None, compact: dict | None, answer: dict) -> None:
+    """Retire only the client mark the server confirmed."""
+    if compact is not None and session is not None:
+        watermark = answer.get("compaction_watermark")
+        if type(watermark) is int:
+            rebase_compaction(config, session, compact["epoch"], compact["ordinal"], watermark)
+        if answer.get("compaction_ack") == compact["ordinal"]:
+            clear_compaction(config, session, compact["ordinal"], compact["epoch"], watermark)
+
+
 def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
     started = time.monotonic() if started is None else started
     payload, local = _hook_input(raw)
@@ -720,9 +750,12 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     # Every request carries the moment the hook ran here.  A request that timed out here may still have been
     # stored there, and its replay must then be the same event, not a second one with a later time.
     observed_at = _now()
+    session, compact = _pending_compaction(config, payload, observed_at)
     if host == "claude-code" and event == "UserPromptSubmit":
         payload = _with_context_since(payload)
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
+    if compact is not None:
+        body.update(compacted_at=compact["at"], compaction_seq=compact["ordinal"], compaction_epoch=compact["epoch"])
     cursor = None
     record_page = None
     if (
@@ -742,6 +775,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         return {}
     if answer.get("refused"):
         return {}
+    _ack_compaction(config, session, compact, answer)
     through = answer.get("through")
     if cursor is not None and type(through) is int and through > body["record"]["start"]:
         cursor.save(through, directory=record_page.directory_at(through) if record_page is not None else None)
