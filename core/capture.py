@@ -59,11 +59,19 @@ def _inbox_entry_gone(tx, token: str, scope_id: str, context: TrustedContext) ->
 
 def _store_events(tx, clock: CaptureClock, prepared, scope_id: str, admission_policy, scan_budget):
     """Write all parts and screen their stable group before any admission side effect."""
-    receipts = [
-        tx.sources.put_source(event, scope_id=scope_id, persisted_at=clock.utc_now(), capture_gaps=prepared.gaps)
-        for event in prepared.events
-    ]
-    eligible = screen_sources(tx, receipts, clock.utc_now(), remaining_seconds=scan_budget())
+    receipts = []
+    for event in prepared.events:
+        scan_budget()
+        receipts.append(
+            tx.sources.put_source(event, scope_id=scope_id, persisted_at=clock.utc_now(), capture_gaps=prepared.gaps)
+        )
+    # Replaying a stable event must not rescan, reset a continuation lease or
+    # change a prior safety verdict. Explicit maintenance owns re-screening.
+    eligible = (
+        screen_sources(tx, receipts, clock.utc_now(), remaining_seconds=scan_budget())
+        if any(source.disposition == "inserted" for source in receipts)
+        else ()
+    )
     candidates = []
     fresh = {(source.ref, source.revision) for source in receipts if source.disposition == "inserted"}
     for ref, revision in eligible:
@@ -148,6 +156,14 @@ def _import_context(value, context, prepared):
     )
 
 
+def _capture_left(clock, started, budget):
+    """Refuse new policy or identity work once the caller must defer its capture."""
+    left = budget - (clock.monotonic() - started)
+    if left <= 0:
+        raise ContractError("DEADLINE_EXCEEDED")
+    return left
+
+
 def record_event(
     storage: SQLiteStorage,
     clock: CaptureClock,
@@ -194,6 +210,7 @@ def record_event(
                 return _private_refusal(prepared)
             # Decided on the whole message, before any part is written: the first part alone would let a copy of a
             # deleted message through.
+            _capture_left(clock, started, remaining_seconds)
             tx.sources.refuse_under_a_deleted_key(prepared.events, scope_id=scope_id)
             receipts, projection_states, admission_markers, candidate_sources = _store_events(
                 tx,
@@ -201,7 +218,7 @@ def record_event(
                 prepared,
                 scope_id,
                 admission_policy,
-                lambda: max(0, remaining_seconds - (clock.monotonic() - started)),
+                lambda: _capture_left(clock, started, remaining_seconds),
             )
             mutations = _capture_mutations(tx, clock, receipts)
             candidate_triggers = observe_admitted(tx, clock, candidate_sources)

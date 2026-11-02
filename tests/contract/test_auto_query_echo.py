@@ -10,6 +10,8 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 
 from tests.contract.test_claims import Clock, capture
+from tests.store_clock import metered_store as metered_store
+from tests.store_clock import semantic_store as semantic_store
 from tests.v11_support import context, recall_request, slowdown
 
 

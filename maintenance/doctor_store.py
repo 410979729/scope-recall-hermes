@@ -393,13 +393,17 @@ def _injection_checks(report, conn):
     )
     report.injection_quarantined = safety.get("quarantined", 0)
     report.injection_pending_review = safety.get("pending_review", 0)
+    report.injection_scan_deadlines = conn.execute(
+        "SELECT count(*) FROM work_error_details WHERE stage='source_scan' AND error_code='scan_time_budget'"
+    ).fetchone()[0]
     if report.injection_pending_review:
         report.capability_gaps.append("injection_review_pending")
     record_check(
         report,
         "injection_safety",
         "held" if report.injection_quarantined + report.injection_pending_review else "clear",
-        f"quarantined={report.injection_quarantined}; pending_review={report.injection_pending_review}",
+        f"quarantined={report.injection_quarantined}; pending_review={report.injection_pending_review}; "
+        f"scan_deadlines={report.injection_scan_deadlines}",
     )
 
 

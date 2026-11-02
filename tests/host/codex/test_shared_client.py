@@ -2669,15 +2669,17 @@ def test_a_kept_recaller_uses_one_handler_until_its_files_change():
     assert _KeptFake.made[1].closed and kept(_prompt("TEST closed"), (), (), 5.0) is None
 
 
-def test_a_kept_recaller_counts_its_time_from_the_request_s_arrival():
-    import time
+def test_a_kept_recaller_counts_its_time_from_the_request_s_arrival(monkeypatch):
+    from scope_recall.adapters.clients import local_endpoint
 
-    from scope_recall.adapters.clients.local_endpoint import KeptRecaller
-
+    monkeypatch.setattr(local_endpoint, "time", SimpleNamespace(monotonic=lambda: 100.0))
     _KeptFake.made = []
-    kept = KeptRecaller(_KeptFake)
-    kept(_prompt("TEST late"), (), (), 5.0, received=time.monotonic() - 2.0)
-    assert 2.9 < _KeptFake.made[0].calls[0] <= 3.0
+    kept = local_endpoint.KeptRecaller(_KeptFake)
+    try:
+        kept(_prompt("TEST late"), (), (), 5.0, received=98.0)
+        assert _KeptFake.made[0].calls == [3.0]
+    finally:
+        kept.close()
 
 
 class _WarmedFake(_KeptFake):
@@ -2742,35 +2744,39 @@ def test_a_kept_recaller_that_could_not_make_its_handler_makes_none_to_keep_warm
 
 
 def test_closing_a_recaller_does_not_wait_for_its_keep_warm_search_and_its_handler_is_closed(monkeypatch):
-    """Closing a recaller does not wait for an active keep-warm search;
-    that search closes its handler when it finishes."""
+    """Closing returns while a search is held; that search closes its handler after release."""
     import threading
-    import time
+    from concurrent.futures import ThreadPoolExecutor
 
     from scope_recall.adapters.clients import local_endpoint
 
     monkeypatch.setattr(local_endpoint, "KEEP_WARM_IDLE_SECONDS", 0.1)
     monkeypatch.setattr(local_endpoint, "KEEP_WARM_CHECK_SECONDS", 0.02)
-    monkeypatch.setattr(local_endpoint, "CLOSE_WAIT_SECONDS", 0.5)
-    searching, closed = threading.Event(), []
+    searching, release, closed = threading.Event(), threading.Event(), []
 
     class Slow(_WarmedHandler):
         searches = 0
 
         def warm_vectors(self, seconds):
             Slow.searches += 1
-            if Slow.searches == 2:  # the first search after the start's
+            if Slow.searches == 2:
                 searching.set()
-                time.sleep(1.5)
+                assert release.wait(30)
 
     kept = local_endpoint.KeptRecaller(lambda: Slow(closed))
-    kept.warm()
-    assert searching.wait(10)
-    started = time.monotonic()
-    kept.close()
-    waited = time.monotonic() - started
-    assert _eventually(lambda: len(closed) == 1), f"the handler was never closed (closing waited {waited:.2f} s)"
-    assert waited < 0.3, f"closing waited {waited:.2f} s for the keep-warm search"
+    try:
+        kept.warm()
+        assert searching.wait(30)
+        with ThreadPoolExecutor(1) as executor:
+            try:
+                executor.submit(kept.close).result(timeout=10)
+                assert closed == [], "the active search still owns its handler"
+            finally:
+                release.set()
+        assert _eventually(lambda: len(closed) == 1)
+    finally:
+        release.set()
+        kept.close()
 
 
 def test_a_keep_warm_search_that_failed_is_tried_again_at_once(monkeypatch):
@@ -2973,26 +2979,38 @@ def test_a_server_without_a_runtime_config_makes_a_handler_for_each_recall(resid
 
 
 def test_a_replaced_kept_handler_is_closed_off_the_request_s_time():
-    """Replaced handlers close outside the request's recall budget."""
-    import time
+    """A replacement answers while the old handler is still held inside close."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
     _KeptFake.made = []
+    closing, release = threading.Event(), threading.Event()
 
     class SlowClose(_KeptFake):
         def close(self):
-            time.sleep(1.0)
+            closing.set()
+            assert release.wait(30)
             super().close()
 
     stamp = ["one"]
     kept = KeptRecaller(SlowClose, stamp=lambda: stamp[0])
-    kept(_prompt("TEST first"), (), (), 5.0)
-    stamp[0] = "two"
-    started = time.monotonic()
-    assert kept(_prompt("TEST second"), (), (), 5.0)[0] == {"TEST": "TEST second"}
-    assert time.monotonic() - started < 0.5
-    assert _eventually(lambda: _KeptFake.made[0].closed)
+    try:
+        kept(_prompt("TEST first"), (), (), 5.0)
+        stamp[0] = "two"
+        with ThreadPoolExecutor(1) as executor:
+            try:
+                answer = executor.submit(kept, _prompt("TEST second"), (), (), 5.0).result(timeout=10)
+                assert closing.wait(30)
+                assert answer[0] == {"TEST": "TEST second"}
+                assert not _KeptFake.made[0].closed
+            finally:
+                release.set()
+        assert _eventually(lambda: _KeptFake.made[0].closed)
+    finally:
+        release.set()
+        kept.close()
 
 
 def test_a_kept_handler_is_made_anew_when_the_entry_s_pointer_or_grants_change(resident):
@@ -3314,21 +3332,34 @@ class _WarmedHandler:
 
 
 def test_closing_a_recaller_does_not_wait_for_its_warming():
-    """Closing a recaller does not wait for startup warming;
-    warming closes the handler after observing closure."""
-    import time
+    """Closing returns while startup warming is held, which then releases its own handler."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
-    closed = []
-    kept = KeptRecaller(lambda: _WarmedHandler(closed, seconds=1.5))
-    kept.warm()
-    time.sleep(0.2)
-    started = time.monotonic()
-    kept.close()
-    assert time.monotonic() - started < 1.0, "closing did not wait for the warming"
-    assert kept._warming.wait(10) and kept._handler is None
-    assert _eventually(lambda: len(closed) == 1), "the warming closed the handler it made"
+    entered, release, closed = threading.Event(), threading.Event(), []
+
+    class Warming(_WarmedHandler):
+        def warm_vectors(self, seconds):
+            entered.set()
+            assert release.wait(30)
+
+    kept = KeptRecaller(lambda: Warming(closed))
+    try:
+        kept.warm()
+        assert entered.wait(30)
+        with ThreadPoolExecutor(1) as executor:
+            try:
+                executor.submit(kept.close).result(timeout=10)
+                assert not kept._warming.is_set() and closed == []
+            finally:
+                release.set()
+        assert kept._warming.wait(30) and kept._handler is None
+        assert _eventually(lambda: len(closed) == 1)
+    finally:
+        release.set()
+        kept.close()
 
 
 def test_a_warming_takes_its_stamp_before_its_build():
@@ -4804,3 +4835,23 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
     assert (
         result["status"]["retryAfter"] and result["status"]["lastStore"]["error"] and result["status"]["backlog"] == 2
     )
+
+
+def test_a_shared_duplicate_capture_preserves_entry_activity_and_all_database_bytes(store):
+    from tests.v11_support import source_event
+
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    try:
+        audience = hook.audience_of(_prompt("TEST shared replay"))
+        ctx = hook.context(audience, "TEST-byte-replay", "human_direct")
+        event = source_event(content="TEST ordinary shared blue paint")
+        hook.core.record_event(ctx, event, scope_id=_scope, remaining_seconds=10)
+        with hook.core.storage.read(ctx) as tx:
+            before = tx._check().serialize()
+        replay = hook.core.record_event(ctx, event, scope_id=_scope, remaining_seconds=10)
+        assert replay.disposition == "duplicate"
+        with hook.core.storage.read(ctx) as tx:
+            assert tx._check().serialize() == before
+    finally:
+        hook.close()

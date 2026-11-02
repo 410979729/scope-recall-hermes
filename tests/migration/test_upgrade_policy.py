@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scope_recall.adapters.clients import install_codex_scope_recall
@@ -207,11 +208,17 @@ def test_migration_lock_wait_uses_time_left_after_snapshot(tmp_path, monkeypatch
     _, core = old_store(tmp_path)
     with closing(sqlite3.connect(core.storage.path)) as conn:
         conn.execute("PRAGMA journal_mode=DELETE")
+    from scope_recall.core import backup_primitives
+
     backup = store_upgrade.backup_sqlite
+    elapsed = [100.0]
+    controlled = SimpleNamespace(monotonic=lambda: elapsed[0])
+    for module in (storage, store_upgrade, backup_primitives):
+        monkeypatch.setattr(module, "time", controlled)
 
     def slow_snapshot(*args, **kwargs):
         result = backup(*args, **kwargs)
-        time.sleep(0.08)
+        elapsed[0] += 0.08
         return result
 
     def inspect_wait(self, conn):

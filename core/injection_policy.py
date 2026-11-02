@@ -23,7 +23,9 @@ from .injection_schema import DEFAULT_RULES
 STRIDE = 2048
 MARGIN = 2048
 COMPILER_VERSION = "bounded-structured-payload-3"
-SCAN_SECONDS = 0.1
+# Each window owns STRIDE characters and inspects at most two margins of context.
+# Body and metadata share this allowance; larger groups resume on the local queue.
+SCAN_WINDOWS = 128
 _SIMPLE_FOLD = re.compile(r"[\x00-\x7f\u4e00-\u9fff\uff01-\uff5e]*")
 _WIDE_ASCII = str.maketrans({cp: cp - 0xFEE0 for cp in range(0xFF01, 0xFF5F)})
 _FLAGS = tuple(
@@ -45,11 +47,12 @@ _QUOTE_CLOSE = {'"': '"', "'": "'", "“": "”", "‘": "’", "`": "`"}
 
 @dataclass(frozen=True)
 class ScanResult:
-    """A content-free verdict whose reasons may be shown outside owner review."""
+    """A content-free verdict and completed-window count for a shared transaction allowance."""
 
     state: str
     rules: tuple[str, ...] = ()
     progress: dict | None = None
+    windows: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,8 @@ def _slots(pattern):
 
 def load_policy(conn, deadline=None):
     """Validate required rules, categories and every enabled rule before scanning."""
+    if deadline is not None and time.perf_counter() >= deadline:
+        raise TimeoutError
     rows = conn.execute("SELECT * FROM injection_rules ORDER BY rule_id LIMIT 65").fetchall()
     required = {rule[0]: (rule[1], rule[2], rule[3] if rule[2] == "unicode" else None) for rule in DEFAULT_RULES}
     found = {}
@@ -308,22 +313,24 @@ def _window(value, offset):
     return raw, text, owned, folded_owned
 
 
-def scan(tx, event, *, remaining_seconds=SCAN_SECONDS, policy=None, progress=None, max_windows=None):
+def scan(tx, event, *, remaining_seconds=None, policy=None, progress=None, max_windows=SCAN_WINDOWS):
     """Scan one body and its metadata; a checkpoint never authorizes publication."""
     return scan_events(
         tx, [event], remaining_seconds=remaining_seconds, policy=policy, progress=progress, max_windows=max_windows
     )
 
 
-def scan_events(tx, events, *, remaining_seconds=SCAN_SECONDS, policy=None, progress=None, max_windows=None):
+def scan_events(tx, events, *, remaining_seconds=None, policy=None, progress=None, max_windows=SCAN_WINDOWS):
     """Resume a complete group's body and every part's metadata within a bounded batch.
 
     The caller binds checkpoints to exact group bytes and policy before reusing them.
     Rules and quote orientation survive windows, never identity changes.
     """
-    deadline = time.perf_counter() + max(0, remaining_seconds)
+    deadline = None if remaining_seconds is None else time.perf_counter() + max(0, remaining_seconds)
     try:
-        policy = policy if policy is not None else load_policy(tx._check())
+        policy = policy if policy is not None else load_policy(tx._check(), deadline)
+    except TimeoutError:
+        return _verdict(dict((progress or {}).get("matches", {})), dict(progress or {}), reason="scan_time_budget")
     except (ValueError, TypeError, KeyError, RecursionError):
         return ScanResult("pending_review", ("invalid_scan_policy",))
     values = [("".join(event["content"] for event in events), True)]
@@ -338,15 +345,17 @@ def scan_events(tx, events, *, remaining_seconds=SCAN_SECONDS, policy=None, prog
         first_offset = cursor.get("offset", 0) if index == cursor.get("value", 0) else 0
         tracker = _QuotedSpans(value, cursor.get("quotes")) if discussion else None
         for offset in range(first_offset, len(value), STRIDE):
-            if time.perf_counter() >= deadline or (max_windows is not None and windows >= max_windows):
-                return _verdict(matches, _checkpoint(index, offset, matches, tracker))
+            if max_windows is not None and windows >= max_windows:
+                return _verdict(matches, _checkpoint(index, offset, matches, tracker), windows=windows)
+            if deadline is not None and time.perf_counter() >= deadline:
+                return _verdict(matches, _checkpoint(index, offset, matches, tracker), "scan_time_budget", windows)
             raw, text, owned, folded_owned = _window(value, offset)
             if len(text) > 32768:
-                return ScanResult("pending_review", ("scan_normalization_budget",))
+                return ScanResult("pending_review", ("scan_normalization_budget",), windows=windows + 1)
             quotes = tracker.window(raw, text, offset) if tracker is not None else ()
             for rule in policy.rules:
-                if time.perf_counter() >= deadline:
-                    return _verdict(matches, _checkpoint(index, offset, matches, tracker))
+                if deadline is not None and time.perf_counter() >= deadline:
+                    return _verdict(matches, _checkpoint(index, offset, matches, tracker), "scan_time_budget", windows)
                 hit = _hits(rule, raw, text, discussion, owned, folded_owned, quotes)
                 if hit:
                     state = rule[3] if hit != "pending_review" else "pending_review"
@@ -356,14 +365,20 @@ def scan_events(tx, events, *, remaining_seconds=SCAN_SECONDS, policy=None, prog
                         matches["quoted_instruction"] = "pending_review"
             windows += 1
         cursor = {}
-    return _verdict(matches)
+    return _verdict(matches, windows=windows)
 
 
 def _checkpoint(index, offset, matches, tracker):
     return dict(value=index, offset=offset, matches=matches, quotes=tracker.checkpoint() if tracker else None)
 
 
-def _verdict(matches, progress=None):
-    state = "quarantined" if "quarantined" in matches.values() else "pending_review" if matches or progress else "clear"
-    rules = tuple(matches) + (("scan_time_budget",) if progress is not None else ())
-    return ScanResult(state, rules, progress)
+def _verdict(matches, progress=None, reason="scan_work_budget", windows=0):
+    state = (
+        "quarantined"
+        if "quarantined" in matches.values()
+        else "pending_review"
+        if matches or progress is not None
+        else "clear"
+    )
+    rules = tuple(matches) + ((reason,) if progress is not None else ())
+    return ScanResult(state, rules, progress, windows)
