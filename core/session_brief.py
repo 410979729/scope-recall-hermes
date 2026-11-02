@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from ..contracts import ContractError, utc_timestamp
 from . import lineage, private
 from .claim_storage import parse_source_ref
+from .claims import statement_key
 from .recall_budget import estimate_tokens
 from .retrieval import CandidateRef, SearchContext, SearchLimits
 from .retrieval_hydration import RetrievalHydration
@@ -326,6 +327,18 @@ def _rank(item):
 def _safe_line(tx, search, item, intervals, hydration):
     """Hydrate the current object and check each evidence root before formatting it."""
     kind = "episode" if item["kind"] == "task" else "claim"
+    if kind == "claim":
+        saved = tx.claims.version(item["ref"], item["revision"])
+        revision = tx.claims.current_revision(item["ref"])
+        head = tx.claims.version(item["ref"], revision) if revision is not None else None
+        if saved is None or head is None or head.state != "active":
+            return None
+        if head.revision != saved.revision:
+            if statement_key(head.payload) != statement_key(saved.payload):
+                return None
+            # Rehydrate every current evidence root; an unchanged assertion may
+            # acquire more evidence without invalidating its cached selection.
+            item = {**item, "revision": head.revision}
     candidate = CandidateRef(kind, item["ref"], item["revision"], "background")
     obj = hydration.hydrate(tx, candidate, search)
     if obj is None or obj.temporal_status != "current" or not obj.evidence_refs:
@@ -375,7 +388,7 @@ def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
             if estimate_tokens("\n".join([_HEADING, *lines, line])) > token_limit:
                 continue
             lines.append(line)
-            items.append({"kind": kind, "ref": item["ref"], "revision": item["revision"]})
+            items.append({"kind": kind, "ref": candidate.ref, "revision": candidate.revision})
     return items, lines
 
 
@@ -491,10 +504,10 @@ def _still_valid(tx, clock, context, brief) -> bool:
     if tx.memory_epoch() == brief["_epoch"] and marker == brief["_privacy_marker"]:
         return True
     search = SearchContext("session briefing", "auto", None, (), SearchLimits(), clock.monotonic() + 5, now, context)
-    manifest = {(item["kind"], item["ref"], item["revision"]): item for item in _manifest(tx, context)}
+    manifest = {(item["kind"], item["ref"]): item for item in _manifest(tx, context)}
     intervals, hydration = private.active_intervals(tx, now), RetrievalHydration()
     for item, line in zip(brief["items"], brief["_lines"], strict=True):
-        saved = manifest.get((item["kind"], item["ref"], item["revision"]))
+        saved = manifest.get((item["kind"], item["ref"]))
         found = _safe_line(tx, search, saved, intervals, hydration) if saved else None
         if found is None or found[2] != line:
             return False

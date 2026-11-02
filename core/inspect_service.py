@@ -18,6 +18,7 @@ class InspectedObject:
     value: object
     memory_epoch: int
     gaps: tuple[str, ...] = ()
+    historical: bool = False
 
 
 def _resolve(tx, ref, revision):
@@ -68,4 +69,10 @@ def inspect_object(
         automatic=False,
         history=revision is not None,
     )
-    return InspectedObject(kind, ref, actual_revision, released[0], status.memory_epoch)
+    item = released[0]
+    historical = (
+        kind == "claim"
+        and revision is not None
+        and (item.revision != item.current_revision or item.state == "superseded")
+    )
+    return InspectedObject(kind, ref, actual_revision, item, status.memory_epoch, historical=historical)

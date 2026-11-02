@@ -92,7 +92,31 @@ def test_1124_step_creates_compaction_sequence_schema(app):
         assert "delivery_compacted_seq" in injections
 
 
-@pytest.mark.parametrize("version", range(1105, 1125))
+def test_health_step_rollback_preserves_briefing_schema(app, monkeypatch):
+    core, ctx = app
+    source = capture(core, ctx, "TEST health migration preserves briefing data.")
+    downgrade_store(core.storage.path, 1125)
+    step = storage.SCHEMA_MIGRATIONS[1125]
+
+    def fail(conn):
+        step(conn)
+        raise RuntimeError("TEST interrupted health migration")
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1125, fail)
+    with pytest.raises(RuntimeError, match="TEST interrupted"):
+        core.storage.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1125
+        assert db.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == 1125
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='session_briefs'").fetchone()
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='safety_retractions'").fetchone()
+        assert (
+            db.execute("SELECT content FROM source_events WHERE event_id=?", (source.ref,)).fetchone()[0]
+            == source.event["content"]
+        )
+
+
+@pytest.mark.parametrize("version", range(1105, 1126))
 def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version):
     from scope_recall.maintenance.shared_import import SOURCE_SCHEMAS
 

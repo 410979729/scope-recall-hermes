@@ -8,6 +8,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Full, Queue
 from uuid import uuid4
@@ -31,6 +32,7 @@ class RecallLogWriter:
         self.stopping = threading.Event()
         self.dropped_full = 0
         self.write_failures = 0
+        self.last_loss_at = None
         self.written = 0
         self.published = dict(dropped_full=0, write_failures=0, written=0)
         _WRITERS.add(self)
@@ -40,11 +42,13 @@ class RecallLogWriter:
         with self.lock:
             if self.closed:
                 self.write_failures += 1
+                self._note_loss(record)
                 return
             try:
                 self.queue.put_nowait(record)
             except Full:
                 self.dropped_full += 1
+                self._note_loss(record)
             if self.thread is None:
                 self.thread = threading.Thread(target=self._run, name="recall-log", daemon=True)
                 try:
@@ -73,6 +77,7 @@ class RecallLogWriter:
                     self.written += 1
             except Exception:  # noqa: BLE001 - a disposable log cannot fail a conversation.
                 self.write_failures += 1
+                self._note_loss(record)
             finally:
                 try:
                     self._persist_health()
@@ -96,10 +101,11 @@ class RecallLogWriter:
             self.store.cancel()
             while True:
                 try:
-                    self.queue.get_nowait()
+                    record = self.queue.get_nowait()
                 except Empty:
                     break
                 self.write_failures += 1
+                self._note_loss(record)
                 self.queue.task_done()
         self.stopping.set()
         if thread is not None:
@@ -115,6 +121,11 @@ class RecallLogWriter:
             queued=self.queue.qsize(),
         )
 
+    def _note_loss(self, record):
+        stamp = record.get("timestamp") or record.get("prune_at") or datetime.now(UTC).isoformat()
+        if self.last_loss_at is None or stamp > self.last_loss_at:
+            self.last_loss_at = stamp
+
     def _persist_health(self):
         # Health uses a fixed sibling name, so it remains readable when the
         # database is locked. A completely full disk can prevent this too.
@@ -125,8 +136,13 @@ class RecallLogWriter:
                 previous = read_health(self.store.path)
                 current = self.health()
                 total = {key: previous.get(key, 0) + current[key] - self.published[key] for key in self.published}
+                previous_loss = previous.get("last_loss_at")
+                losses = [stamp for stamp in (previous_loss, self.last_loss_at) if stamp]
+                last_loss = max(losses) if losses else None
                 with temporary.open("x", encoding="utf-8") as stream:
-                    stream.write(json.dumps(dict(total, queued=current["queued"]), separators=(",", ":")))
+                    stream.write(
+                        json.dumps(dict(total, queued=current["queued"], last_loss_at=last_loss), separators=(",", ":"))
+                    )
                 temporary.replace(path)
                 self.published = {key: current[key] for key in self.published}
         except (OSError, ValueError):
@@ -154,11 +170,15 @@ def read_health(path: Path) -> dict:
         value = json.loads(raw) if len(raw) <= 1024 else {}
         if not isinstance(value, dict):
             return {}
-        return {
+        result = {
             key: value[key]
             for key in ("dropped_full", "write_failures", "written", "queued")
             if type(value.get(key)) is int and value[key] >= 0
         }
+        for key in ("last_loss_at", "loss_tracking_since"):
+            if type(value.get(key)) is str:
+                result[key] = value[key]
+        return result
     except (OSError, ValueError, TypeError):
         return {}
 

@@ -65,7 +65,7 @@ def entity_messages(source, sources, candidates, *, names=None):
     return messages
 
 
-def publish_entity_merge(tx, source, target, decision: SupportVerdict, *, now: str, name=None):
+def publish_entity_merge(tx, source, target, decision: SupportVerdict, *, now: str, name=None, only_unmerged=False):
     """Publish a prepared same-entity decision under the caller's writer lease.
 
     Endpoints and their evidence are re-read. The alias carries both original
@@ -112,6 +112,8 @@ def publish_entity_merge(tx, source, target, decision: SupportVerdict, *, now: s
     )
     history = tx.claims.slot(source.scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
+    if only_unmerged and previous is not None:
+        raise ContractError("VERSION_CONFLICT", "entity_alias")
     # Explicit withdrawals are durable; endpoint revisions may refresh a live proof.
     if previous is not None and previous.state == "retracted":
         tx._check(write=True).execute(

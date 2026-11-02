@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from ..contracts import ContractError
 from . import private
@@ -116,11 +117,13 @@ def _merge_alias_live(tx, alias, now):
     return target is not None and entity_alias_proof(tx, alias, target, now)
 
 
-def merge_candidates(tx, proposal, scope_id, *, now, entity=None, vector_hits=()):
+def merge_candidates(tx, proposal, scope_id, *, now, entity=None, vector_hits=(), paging=None) -> Any:
     """Find same-slot candidates by normalized components and verified aliases in this audience."""
     from .claims import bind_claim_subject, evidence_refs, valid_at
     from .fact_identity import normalize_fact_component
 
+    page = paging is not None
+    after, limit = paging if page else (None, 16)
     if entity is not None:
         from .entity_candidates import entity_candidates
 
@@ -128,7 +131,7 @@ def merge_candidates(tx, proposal, scope_id, *, now, entity=None, vector_hits=()
     roots = tx.claims.roots(evidence_refs(proposal))
     bound, _, issue = bind_claim_subject(proposal, roots, semantic_support=True)
     if issue:
-        return ()
+        return ((), None) if page else ()
     subject = normalize_fact_component(bound["subject"])
     predicate = normalize_fact_component(bound["predicate"])
     subjects = {subject}
@@ -144,7 +147,12 @@ def merge_candidates(tx, proposal, scope_id, *, now, entity=None, vector_hits=()
             subjects.add(normalize_fact_component(alias.payload["subject"]))
     found = []
     refs = tx.claims.merge_lookup(
-        scope_id, subjects=subjects, predicate=predicate, kind=proposal["kind"], conditions=proposal["conditions"]
+        scope_id,
+        subjects=subjects,
+        predicate=predicate,
+        kind=proposal["kind"],
+        conditions=proposal["conditions"],
+        options=dict(after=after, limit=limit),
     )
     for ref in refs:
         versions = tx.claims.versions(ref)
@@ -157,7 +165,8 @@ def merge_candidates(tx, proposal, scope_id, *, now, entity=None, vector_hits=()
             and sorted(head.payload["conditions"]) == sorted(proposal["conditions"])
         ):
             found.append(dict(ref=head.ref, revision=head.revision, payload=head.payload))
-    return tuple(found[:16])
+    result = tuple(found[:limit])
+    return (result, refs[-1] if len(refs) == limit else None) if page else result
 
 
 def prepare_publication(storage, context, value, sources, judge, *, remaining_seconds=1.0, clock=None):
