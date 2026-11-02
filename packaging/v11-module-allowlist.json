@@ -154,6 +154,7 @@
     "core/recall_needs.py",
     "core/recall_packet.py",
     "core/recall_policy.py",
+    "core/recall_restatement.py",
     "core/recall_scope.py",
     "core/records.py",
     "core/reference_storage.py",
