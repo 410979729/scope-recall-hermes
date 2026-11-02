@@ -44,7 +44,9 @@ def host_memory_duplicate(obj: RetrievedObject, entries: frozenset[str] | tuple[
     if not entries:
         return False
     payload = optional_json(obj.content) if obj.kind == "claim" else None
-    if obj.kind == "claim" and not isinstance(payload, dict):
+    if obj.kind == "claim" and (
+        not isinstance(payload, dict) or dict(obj.metadata).get("state") != "active" or obj.temporal_status != "current"
+    ):
         return False
     if isinstance(payload, dict):
         # The three text fields do not express temporal, procedural or other structured qualifiers.

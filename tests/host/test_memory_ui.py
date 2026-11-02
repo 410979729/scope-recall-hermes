@@ -269,3 +269,32 @@ def test_cli_opens_capability_and_closes_on_interrupt(page, monkeypatch, capsys)
         ui, "open_management", lambda args: (_ for _ in ()).throw(ContractError("SOURCE_MISSING", "database"))
     )
     assert cli.main(["ui", "--root", "unused"]) == 2
+
+
+def test_review_http_policy_decision_and_undo(page, app):
+    from test_claims import accept, draft
+
+    call, api, _, _ = page
+    plan = ok(
+        call, "preview", dict(action="review-policy-set", scope="TEST-scope", enabled=True, expected_version=0), True
+    )
+    ok(call, "confirm", dict(id=plan["id"], confirmed=True), True)
+    core, ctx = app
+    accept(core, ctx, draft(capture(core, ctx, "TEST-project 配色绿色。"), "绿色"))
+    item = ok(call, "reviews", dict(source="fact"))["items"][0]
+    plan = ok(
+        call,
+        "preview",
+        dict(action="review-decide", key=item["key"], decision="reject", expected_version=item["version"]),
+        True,
+    )
+    receipt = ok(call, "confirm", dict(id=plan["id"], confirmed=True), True)["result"]
+    assert not ok(call, "reviews", dict(source="fact"))["items"]
+    plan = ok(
+        call,
+        "preview",
+        dict(action="review-undo", action_id=receipt["action_id"], expected_version=receipt["version"]),
+        True,
+    )
+    ok(call, "confirm", dict(id=plan["id"], confirmed=True), True)
+    assert ok(call, "reviews", dict(source="fact"))["items"]

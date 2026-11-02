@@ -21,6 +21,7 @@ from .claim_storage import parse_source_ref
 from .delete_storage import retraction_after
 from .management_query import MemoryFilter, source_metadata
 from .reflection_validity import reflection_live
+from .review_policy import REVIEW_REASONS
 from .source_records import StoredSource
 from .summary_validity import is_conversation_summary, summary_live
 
@@ -371,6 +372,10 @@ class MemoryExport:
                     continue
                 head = view.claims.version(ref, revision)
                 if head is None:
+                    continue
+                if head.reason in REVIEW_REASONS:
+                    # Held versions remain portable history, never current facts.
+                    yield ClaimExport(None, self._claim_history(view, ref, -1))
                     continue
                 if head.state == "superseded" and head.reason == "health_superseded":
                     # The shared resolver enforces the same scope and visibility as recall.

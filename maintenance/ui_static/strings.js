@@ -1,6 +1,25 @@
 "use strict";
 window.UI_STRINGS = {
   "en": {
+    "reviews": "Review",
+    "reviewSource": "Source",
+    "review_import": "Imported material",
+    "review_adoption": "Proposal adoption",
+    "review_observation": "Observation",
+    "review_health": "Health finding",
+    "review_fact": "Extracted fact",
+    "reviewPolicy": "Review before publication",
+    "reviewEnabled": "On",
+    "reviewDisabled": "Off",
+    "reviewApprove": "Approve",
+    "reviewReject": "Reject",
+    "reviewUndo": "Undo",
+    "reviewActions": "Decisions",
+    "reviewEvidence": "Evidence",
+    "reviewTime": "Time",
+    "reviewKeep": "Keep",
+
+
     "handoffs": "Handoffs", "accepted": "Accepted", "cancelled": "Cancelled", "expired": "Expired",
     "entries": "Entries",
     "entry_normal": "Normal",
@@ -175,6 +194,25 @@ window.UI_STRINGS = {
     "saveImportance": "Save importance"
   },
   "zh": {
+    "reviews": "待审",
+    "reviewSource": "来源",
+    "review_import": "导入材料",
+    "review_adoption": "方案采纳",
+    "review_observation": "观察",
+    "review_health": "体检问题",
+    "review_fact": "提炼事实",
+    "reviewPolicy": "先审再存",
+    "reviewEnabled": "开启",
+    "reviewDisabled": "关闭",
+    "reviewApprove": "通过",
+    "reviewReject": "驳回",
+    "reviewUndo": "撤销",
+    "reviewActions": "处理记录",
+    "reviewEvidence": "依据",
+    "reviewTime": "时间",
+    "reviewKeep": "保留项",
+
+
     "handoffs": "交接", "accepted": "已接", "cancelled": "取消", "expired": "过期",
     "entries": "入口",
     "entry_normal": "正常",

@@ -8,7 +8,7 @@ from copy import deepcopy
 
 from ..contracts import ContractError
 from .claims import Qualification
-from .reflection_validity import dependency_signature, reflection_live
+from .reflection_validity import dependency_signature, reviewable_observation
 from .secret_patterns import structure_contains_secret_like_text
 
 
@@ -19,7 +19,7 @@ def revise_observation(tx, clock, head, value, source):
         .execute("SELECT * FROM observations WHERE claim_ref=? AND claim_revision=?", (head.ref, head.revision))
         .fetchone()
     )
-    if row is None or not reflection_live(tx, head, check_conflicts=False):
+    if row is None or not reviewable_observation(tx, head, check_conflicts=False):
         raise ContractError("SOURCE_MISSING", "observation_dependencies")
     retract = value is None or value == {"state": "retracted"}
     confirm = value == {"confirmed": True}

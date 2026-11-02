@@ -30,7 +30,7 @@ from .reflection_validity import reflection_live
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, RetrievedObject, SearchContext
 from .summary_validity import is_conversation_summary, summary_live, summary_origin
-from .visibility import CLOSED_INTENTION_STATES, allowed, allowed_refs
+from .visibility import CLOSED_INTENTION_STATES, allowed, allowed_refs, check_claim_release
 
 #: Modes in which a delivered source must still be live, not merely visible.
 LIVE_MODES = frozenset({"auto", "current", "method"})
@@ -384,7 +384,17 @@ class RetrievalHydration:
         if not allowed(tx, candidate.kind, candidate.ref, automatic=context.mode == "auto"):
             return None
         load = {"event": self._hydrate_event, "claim": self._hydrate_claim}.get(candidate.kind, self._hydrate_versioned)
-        return load(tx, candidate, context)
+        obj = load(tx, candidate, context)
+        if obj is not None and candidate.kind == "claim":
+            # Every hydrated claim, including notices and optional host-memory
+            # comparisons, shares the final native publication gate.
+            try:
+                check_claim_release(
+                    tx, tx.claims.version(obj.ref, obj.revision), history=context.mode == "history", owner_review=False
+                )
+            except ContractError:
+                return None
+        return obj
 
     def _hydrate_event(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         source = tx.source(candidate.ref, candidate.revision)

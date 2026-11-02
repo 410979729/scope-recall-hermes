@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from ..contracts import ContractError
 from . import private
 from .reflection_conflicts import owner_conflict
+from .review_policy import PENDING_OBSERVATION
 from .summary_validity import group_signature, members_in_scope
 
 OBSERVATION_REASONS = ("reflection_pending", "grounded_observation", "confirmed_observation")
@@ -101,3 +103,10 @@ def reflection_live(tx, version, *, query_scope=None, excluded=(), check_conflic
         return not check_conflicts or not owner_conflict(tx, version, members)
     except ContractError:
         return False
+
+
+def reviewable_observation(tx, version, *, check_conflicts=True):
+    """Allow owner review of supported held observations without publishing them."""
+    if version.state == "proposed" and version.reason == PENDING_OBSERVATION:
+        return reflection_live(tx, replace(version, state="active"), check_conflicts=check_conflicts)
+    return reflection_live(tx, version, check_conflicts=check_conflicts)

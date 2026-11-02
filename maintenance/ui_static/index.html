@@ -13,9 +13,15 @@
   <header><div><h1>Scope Recall</h1><p data-i18n="local"></p></div>
     <label><span data-i18n="language"></span><select id="language"><option value="en">English</option><option value="zh">中文</option></select></label>
   </header>
-  <nav aria-label="Pages"><button data-page="entries" data-i18n="entries"></button><button data-page="overview" data-i18n="overview"></button><button data-page="browse" data-i18n="browse"></button><button data-page="handoffs" data-i18n="handoffs"></button><button data-page="health" data-i18n="health"></button><button data-page="recalls" data-i18n="recalls"></button><button data-page="quarantine" data-i18n="quarantine"></button><button data-page="private" data-i18n="private"></button><button data-page="export" data-i18n="export"></button><button data-page="backup" data-i18n="backup"></button></nav>
+  <nav aria-label="Pages"><button data-page="reviews" data-i18n="reviews"></button><button data-page="entries" data-i18n="entries"></button><button data-page="overview" data-i18n="overview"></button><button data-page="browse" data-i18n="browse"></button><button data-page="handoffs" data-i18n="handoffs"></button><button data-page="health" data-i18n="health"></button><button data-page="recalls" data-i18n="recalls"></button><button data-page="quarantine" data-i18n="quarantine"></button><button data-page="private" data-i18n="private"></button><button data-page="export" data-i18n="export"></button><button data-page="backup" data-i18n="backup"></button></nav>
   <p id="status" role="status" aria-live="polite"></p>
   <main>
+    <section id="reviews" class="page" hidden><h2 data-i18n="reviews"></h2>
+      <form id="review-policy-form"><label><span data-i18n="scope"></span><input name="scope" required></label><button data-i18n="reviewPolicy"></button></form><div id="review-policy-data"></div>
+      <form id="review-filters"><label><span data-i18n="reviewSource"></span><select name="source"><option value="" data-i18n="all"></option><option value="import" data-i18n="review_import"></option><option value="adoption" data-i18n="review_adoption"></option><option value="observation" data-i18n="review_observation"></option><option value="health" data-i18n="review_health"></option><option value="fact" data-i18n="review_fact"></option></select></label><button data-i18n="refresh"></button></form>
+      <div id="review-items"></div><button id="reviews-next" data-i18n="next" disabled></button>
+      <h3 data-i18n="reviewActions"></h3><div id="review-actions"></div><button id="review-actions-next" data-i18n="next" disabled></button>
+    </section>
     <section id="entries" class="page" hidden><h2 data-i18n="entries"></h2><div id="entry-items"></div></section>
     <section id="overview" class="page"><h2 data-i18n="overview"></h2><button id="refresh-overview" data-i18n="refresh"></button><div id="overview-data" class="cards"></div></section>
     <section id="handoffs" class="page" hidden><h2 data-i18n="handoffs"></h2><button id="refresh-handoffs" data-i18n="refresh"></button><div id="handoff-items"></div><button id="handoff-next" data-i18n="next" disabled></button></section>

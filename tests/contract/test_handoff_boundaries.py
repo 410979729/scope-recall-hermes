@@ -324,3 +324,20 @@ def test_inline_private_handoff_fields_are_removed_before_storage(app):
     assert "visible" in stored
     assert "TEST-private-" not in json.dumps(handoff.execute(core, sender, "list", {}))
     assert "TEST-private-" not in core.session_brief(sender)["text"]
+
+
+def test_review_policy_does_not_turn_handoffs_into_facts_or_review_items(app):
+    from scope_recall.core.management import MemoryManagement
+
+    core, sender, _source, payload = prepare(app)
+    api = MemoryManagement(core, InstallationMaintenance(replace(sender, allowed_scope_ids=sender.binding.scope_ids)))
+    api.set_review_policy("TEST-scope", True, expected_version=0)
+    before = api.reviews()["items"]
+    saved = write(core, sender, payload)
+    assert api.reviews()["items"] == before
+    receiver = replace(sender, entry_id="claude-code", session_id="TEST-reviewed-handoff")
+    assert saved["ref"] in core.session_brief(receiver)["text"]
+    handoff.execute(core, receiver, "accept", dict(ref=saved["ref"], expected_revision=1))
+    with core.storage.read(sender) as tx:
+        assert tx._check().execute("SELECT count(*) FROM claims").fetchone()[0] == 0
+    assert api.reviews()["items"] == before

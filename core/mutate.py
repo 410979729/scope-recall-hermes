@@ -48,6 +48,7 @@ from .evidence_quote import resolve_evidence_quotes, same_evidence
 from .evidence_support import positioned, support_verdict
 from .reflection_revision import revise_observation
 from .reflection_validity import reflection_live
+from .review_policy import PENDING, REVIEW_REASONS, held_proposal, owner_publication, policy
 from .secret_patterns import structure_contains_secret_like_text
 from .semantic_proposals import merge_candidates
 from .source_qualification import (
@@ -102,7 +103,8 @@ def merge_entity_from_management(tx, clock, source_ref, source_revision, target_
     if management_claims_private(tx, clock, versions):
         raise ContractError("ACCESS_DENIED", "private_mode")
     verdict = SupportVerdict("", "supported", target.ref, target.revision, "duplicate")
-    result = publish_entity_merge(tx, source, target, verdict, now=clock.utc_now(), name=name, only_unmerged=True)
+    with owner_publication():
+        result = publish_entity_merge(tx, source, target, verdict, now=clock.utc_now(), name=name, only_unmerged=True)
     if result is None:
         raise ContractError("VERSION_CONFLICT", "entity_alias")
     return result
@@ -199,14 +201,19 @@ def health_apply_facts(tx, clock, first, second, *, merge):
 
 def health_restore_fact(tx, clock, original, head):
     """Append the pre-decision state without rewriting either reference's history."""
-    saved = tx.claims.append(
-        original.scope_id,
-        original.payload,
-        Qualification(original.state, original.basis, original.reason),
-        recorded_at=clock.utc_now(),
-        previous=head,
-        expected_revision=head.revision,
-    )
+    with owner_publication():
+        saved = tx.claims.append(
+            original.scope_id,
+            original.payload,
+            Qualification(original.state, original.basis, original.reason),
+            recorded_at=clock.utc_now(),
+            previous=head,
+            expected_revision=head.revision,
+        )
+    if original.payload["kind"] == "alias":
+        from .entity_resolution import copy_entity_proof
+
+        copy_entity_proof(tx, original, saved)
     if original.payload["kind"] == "observation":
         row = (
             tx._check()
@@ -534,6 +541,21 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
     proposal, qualification, semantic_duplicate = _qualify_incoming(tx, proposal, roots, scope_id, now, _subject_bound)
     history = tx.claims.slot(scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
+    reviewed = held_proposal(tx, proposal, scope_id, history)
+    if reviewed is not None:
+        return Mutation(reviewed.ref, reviewed.revision, "duplicate", reviewed.state)
+    if policy(tx, scope_id)["enabled"]:
+        # Store beside an existing head: review must not displace a fact before
+        # the owner approves, nor trigger automatic conflict/retraction effects.
+        saved = tx.claims.append(
+            scope_id,
+            proposal,
+            Qualification("proposed", qualification.basis, PENDING),
+            recorded_at=now,
+            previous=previous,
+            advance_head=previous is None,
+        )
+        return Mutation(saved.ref, saved.revision, "historical", saved.state)
     held = select_effective(history, now) if history else None
     denial_reason, ends_held = denial_verdict(proposal, held, roots, history)
     gated = qualification
@@ -1102,6 +1124,7 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
         for v in heads
         if v is not None
         and v.state == "proposed"
+        and v.reason not in REVIEW_REASONS
         and v.payload["kind"] != "observation"
         and v.scope_id == source.scope_id
         and (v.project_id, v.branch_id) == (source.project_id, source.branch_id)

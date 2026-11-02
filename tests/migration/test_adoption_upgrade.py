@@ -116,7 +116,7 @@ def test_health_step_rollback_preserves_briefing_schema(app, monkeypatch):
         )
 
 
-@pytest.mark.parametrize("version", range(1105, 1129))
+@pytest.mark.parametrize("version", range(1105, SCHEMA_VERSION))
 def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version):
     from scope_recall.maintenance.shared_import import SOURCE_SCHEMAS
 
@@ -200,7 +200,11 @@ def test_entry_state_schema_upgrade_and_rollback_snapshot(app):
     downgrade_store(core.storage.path, 1127)
     receipt = {}
     core.storage.initialize(receipt=receipt)
-    assert (receipt["schema_before"], receipt["schema_after"], receipt["snapshot_verified"]) == (1127, 1130, True)
+    assert (receipt["schema_before"], receipt["schema_after"], receipt["snapshot_verified"]) == (
+        1127,
+        SCHEMA_VERSION,
+        True,
+    )
     owner = MemoryManagement(core, InstallationMaintenance(ctx))
     assert owner.entry("local")["state"] == "normal"
     owner.set_entry_state("local", "paused", actor="TEST-owner")

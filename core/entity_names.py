@@ -270,3 +270,41 @@ def candidate_refs(tx, scope, name, vector_refs, evidence):
     for _explicit, _score, _vector, subject, ref in sorted(ranked, reverse=True):
         chosen.setdefault(subject, ref)
     return tuple(chosen.values())[:16]
+
+
+def review_control_state(tx, alias_ref):
+    """Read content-free entity controls whose alias is affected by owner review."""
+    return [
+        dict(row)
+        for row in tx._check().execute(
+            "SELECT name_id,status,work_id,source_ref,source_revision,target_ref,target_revision,"
+            "alias_ref,alias_revision "
+            "FROM entity_names WHERE alias_ref=? ORDER BY name_id",
+            (alias_ref,),
+        )
+    ]
+
+
+def restore_review_controls(tx, controls):
+    """Restore reviewed controls after version restoration, without declaring a withdrawal."""
+    fields = (
+        "status",
+        "work_id",
+        "source_ref",
+        "source_revision",
+        "target_ref",
+        "target_revision",
+        "alias_ref",
+        "alias_revision",
+    )
+    for row in controls:
+        changed = (
+            tx._check(write=True)
+            .execute(
+                "UPDATE entity_names SET " + ",".join(name + "=?" for name in fields) + " WHERE name_id=?",
+                (*[row[name] for name in fields], row["name_id"]),
+            )
+            .rowcount
+        )
+        if changed != 1:
+            raise ContractError("VERSION_CONFLICT", "entity_review_controls")

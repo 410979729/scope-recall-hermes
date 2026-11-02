@@ -83,7 +83,7 @@ def test_handoff_upgrade_chain_is_atomic(app, monkeypatch, version, interrupted)
         core.initialize()
         assert core.current_claim(ctx, claim.ref).payload == content
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == (version if interrupted else 1130)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (version if interrupted else SCHEMA_VERSION)
         assert (
             conn.execute("SELECT content FROM source_events WHERE event_id=?", (source.ref,)).fetchone()[0]
             == source.event["content"]

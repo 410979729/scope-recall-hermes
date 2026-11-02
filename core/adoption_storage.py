@@ -117,7 +117,7 @@ def source_reason(tx, snapshot):
 
 def binding_reason(tx, snapshot, selection):
     """Validate exact slices, owner conditions and session-wide label uniqueness."""
-    reason = source_reason(tx, snapshot)
+    reason = source_reason(tx, snapshot) or owner_selection_reason(tx, snapshot, selection)
     if reason is not None:
         return reason
     owner, assistant = snapshot.confirmation, snapshot.assistant
@@ -126,6 +126,37 @@ def binding_reason(tx, snapshot, selection):
         return "fragment_changed"
     if any(condition not in owner.event["content"] for condition in selection["conditions"]):
         return "condition_unbound"
+    if selection.get("owner_reviewed") is True:
+        return None
+    return reference_reason(tx, snapshot, selection)
+
+
+def owner_selection_reason(tx, snapshot, selection):
+    """Require the exact persisted owner choice, never a model-supplied flag."""
+    reviewed = (
+        tx._check()
+        .execute(
+            "SELECT selection_json,state,reason FROM adoption_relations "
+            "WHERE confirmation_ref=? AND confirmation_revision=?",
+            (snapshot.confirmation.ref, snapshot.confirmation.revision),
+        )
+        .fetchone()
+    )
+    if reviewed is None:
+        return "owner_review_changed" if selection.get("owner_reviewed") else None
+    stored = json.loads(reviewed["selection_json"])
+    if reviewed["reason"] == "owner_review_rejected":
+        return "owner_review_rejected"
+    if stored.get("owner_reviewed") and stored != selection:
+        return "owner_review_changed"
+    if selection.get("owner_reviewed"):
+        return None if reviewed["state"] == "bound" and stored == selection else "owner_review_changed"
+    return None
+
+
+def reference_reason(tx, snapshot, selection):
+    """Resolve model-selected labels only when the session's reference is unique."""
+    owner = snapshot.confirmation
     labels = _binding_labels(snapshot, selection)
     if labels is None:
         return "reference_unbound"
@@ -282,6 +313,14 @@ def adoption_qualification(tx, proposal):
 def purge_adoptions(conn, kind, ref):
     """Erase relationships when either source or its decision is physically purged."""
     if kind == "event":
+        # Review preimages may contain a selected quote or a paid checkpoint.
+        # They cannot outlive either source whose deletion they would undo.
+        conn.execute(
+            "DELETE FROM management_actions WHERE action='review_decide' "
+            "AND json_extract(targets_json,'$.key[0]')='adoption' "
+            "AND (json_extract(targets_json,'$.key[1]')=? OR json_extract(targets_json,'$.before.assistant_ref')=?)",
+            (ref, ref),
+        )
         conn.execute("DELETE FROM adoption_processing WHERE confirmation_ref=? OR assistant_ref=?", (ref, ref))
         conn.execute("DELETE FROM adoption_relations WHERE confirmation_ref=? OR assistant_ref=?", (ref, ref))
     elif kind == "claim":

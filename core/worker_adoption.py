@@ -8,7 +8,14 @@ import time
 from ..contracts import ContractError
 from . import private
 from .adoption import adoption_messages, decision_messages, decision_proposal, decode_selection
-from .adoption_storage import PreparedAdoption, adoption_context, binding_reason, record_binding, source_reason
+from .adoption_storage import (
+    PreparedAdoption,
+    adoption_context,
+    binding_reason,
+    owner_selection_reason,
+    record_binding,
+    source_reason,
+)
 from .entry_control import entry_fence, paused_since
 from .evidence_support import SupportVerdict, support_fingerprint, using_support
 from .mutate import apply_claim_frames, validate_claims
@@ -114,6 +121,8 @@ def publish_adoption(tx, adoption, *, now):
         raise ContractError("ACCESS_DENIED", "entry_paused")
     if adoption.selection is None:
         raise ContractError("DERIVATION_INVALID", "adoption_selection")
+    if owner_selection_reason(tx, adoption.snapshot, adoption.selection) is not None:
+        return None
     reason = adoption.reason or binding_reason(tx, adoption.snapshot, adoption.selection)
     if reason is not None:
         record_binding(tx, adoption, reason=reason, now=now)
@@ -146,7 +155,8 @@ def publish_adoption(tx, adoption, *, now):
     )
     from .adoption_dedup import retire_duplicates
 
-    retire_duplicates(tx, adoption, item.ref, now=now)
+    if item.state == "active":
+        retire_duplicates(tx, adoption, item.ref, now=now)
     from .session_brief import rebuild_scope
 
     rebuild_scope(tx, adoption.snapshot.confirmation.scope_id, now)

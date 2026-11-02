@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
+from ..contracts import ContractError
 from .adoption_storage import PreparedAdoption, adoption_context, binding_reason
 from .claims import Qualification
 from .fact_identity import normalize_fact_component
@@ -76,8 +78,9 @@ def is_bound_duplicate(tx, proposal):
 
 
 def retire_duplicates(tx, adoption, adopted_ref, *, now):
-    """Retire earlier ordinary duplicates through the append-only fact writer."""
+    """Retire earlier ordinary duplicates and return their reversible version receipts."""
     owner = adoption.snapshot.confirmation
+    retired = []
     rows = (
         tx._check()
         .execute(
@@ -96,10 +99,85 @@ def retire_duplicates(tx, adoption, adopted_ref, *, now):
             and head.state in {"active", "proposed", "disputed"}
             and same_adoption(head.payload, adoption)
         ):
-            tx.claims.append(
+            saved = tx.claims.append(
                 head.scope_id,
                 head.payload,
                 Qualification("retracted", head.basis, "adoption_duplicate"),
                 recorded_at=now,
                 previous=head,
             )
+            retired.append(dict(ref=head.ref, before=head.revision, revision=saved.revision))
+    return retired
+
+
+def approve_deferred_adoption(tx, pending, approved, *, now) -> dict[str, Any]:
+    """Apply adoption deduplication only after the owner publishes its held claim."""
+    row = (
+        tx._check()
+        .execute(
+            "SELECT confirmation_ref,confirmation_revision FROM adoption_relations "
+            "WHERE state='bound' AND claim_ref=? AND claim_revision=?",
+            (pending.ref, pending.revision),
+        )
+        .fetchone()
+    )
+    if row is None:
+        return {}
+    adoption = next(
+        (
+            item
+            for item in bound_adoptions(tx, approved.payload)
+            if item.snapshot.confirmation.ref == row[0] and item.proposal == approved.payload
+        ),
+        None,
+    )
+    if adoption is None:
+        raise ContractError("VERSION_CONFLICT", "adoption_dependencies")
+    retired = retire_duplicates(tx, adoption, approved.ref, now=now)
+    tx._check(write=True).execute(
+        "UPDATE adoption_relations SET claim_revision=? WHERE confirmation_ref=? AND confirmation_revision=?",
+        (approved.revision, row[0], row[1]),
+    )
+    from .session_brief import rebuild_scope
+
+    rebuild_scope(tx, pending.scope_id, now)
+    return dict(
+        heads={v["ref"]: v["revision"] for v in retired},
+        before_heads={v["ref"]: v["before"] for v in retired},
+        adoption_bindings=[
+            dict(
+                confirmation_ref=row[0],
+                confirmation_revision=row[1],
+                claim_ref=approved.ref,
+                before=pending.revision,
+                revision=approved.revision,
+            )
+        ],
+    )
+
+
+def restore_reviewed_adoptions(tx, bindings, *, now):
+    """Restore the exact adoption pointers together with the approval's fact heads."""
+    for item in bindings:
+        changed = (
+            tx._check(write=True)
+            .execute(
+                "UPDATE adoption_relations SET claim_revision=? WHERE confirmation_ref=? AND confirmation_revision=? "
+                "AND claim_ref=? AND claim_revision=? AND state='bound'",
+                (
+                    item["before"],
+                    item["confirmation_ref"],
+                    item["confirmation_revision"],
+                    item["claim_ref"],
+                    item["revision"],
+                ),
+            )
+            .rowcount
+        )
+        if changed != 1:
+            raise ContractError("VERSION_CONFLICT", "adoption_revision")
+    if bindings:
+        from .session_brief import rebuild_scope
+
+        version = tx.claims.version(bindings[0]["claim_ref"], bindings[0]["before"])
+        rebuild_scope(tx, version.scope_id, now)

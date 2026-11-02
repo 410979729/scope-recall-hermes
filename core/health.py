@@ -18,6 +18,7 @@ from .management_query import partition
 from .mutate import health_pair_kind, management_claims_private
 from .recall_log_storage import cutoff
 from .recall_log_writer import read_health
+from .review_policy import health_decided, health_key
 from .secret_patterns import structure_contains_secret_like_text
 from .semantic_proposals import merge_candidates
 from .visibility import allowed
@@ -190,12 +191,12 @@ def _remaining_issues(view, core, version, phase, marker, result, log, limits):
         for index in range(int(marker or "0"), len(entities)):
             if _full(result, limit, deadline):
                 return "entities", str(index), True
-            result["entities"].append(entities[index])
+            _append_issue(view, result, "entities", entities[index])
         phase, marker = "unused", ""
     if phase == "unused" and _unused(version, log):
         if _full(result, limit, deadline):
             return "unused", "", True
-        result["unused"].append(dict(facts=[asdict(version)]))
+        _append_issue(view, result, "unused", dict(facts=[asdict(version)]))
     return phase, marker, False
 
 
@@ -269,7 +270,7 @@ def health_page(core, context, *, limit=30, cursor=None, deadline_seconds=2.0):
                         kind = health_pair_kind(version, other) if other else None
                         if kind:
                             category = "duplicates" if kind == "duplicate" else "contradictions"
-                            result[category].append(dict(facts=[asdict(version), asdict(other)]))
+                            _append_issue(view, result, category, dict(facts=[asdict(version), asdict(other)]))
                         marker = candidate["ref"]
                     if next_ref:
                         result["next_cursor"] = _encode(ref, "facts", next_ref)
@@ -301,3 +302,9 @@ def _full(result, limit, deadline):
         time.monotonic() >= deadline
         or sum(len(result[name]) for name in ("entities", "duplicates", "contradictions", "unused")) >= limit
     )
+
+
+def _append_issue(view, result, category, issue):
+    """Keep owner-disposed findings out of both health and unified review views."""
+    if not health_decided(view, health_key(category, issue)):
+        result[category].append(issue)

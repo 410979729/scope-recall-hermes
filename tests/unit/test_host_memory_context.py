@@ -40,7 +40,17 @@ def test_claim_with_unrepresented_qualification_is_not_duplicate(field):
         field: "TEST",
     }
     obj = RetrievedObject(
-        "TEST-claim", 1, "claim", json.dumps(payload), "human_direct", "current", "", (), "direct_report", True
+        "TEST-claim",
+        1,
+        "claim",
+        json.dumps(payload),
+        "human_direct",
+        "current",
+        "",
+        (),
+        "direct_report",
+        True,
+        metadata=(("state", "active"),),
     )
     assert not host_memory_duplicate(obj, ("TEST project palette amber",))
 
@@ -64,7 +74,19 @@ def test_unstructured_claim_cannot_prove_absence_of_qualifiers():
     from scope_recall.core.retrieval import RetrievedObject
 
     sentence = "TEST project palette amber"
-    obj = RetrievedObject("TEST-claim", 1, "claim", sentence, "human_direct", "current", "", (), "direct_report", True)
+    obj = RetrievedObject(
+        "TEST-claim",
+        1,
+        "claim",
+        sentence,
+        "human_direct",
+        "current",
+        "",
+        (),
+        "direct_report",
+        True,
+        metadata=(("state", "active"),),
+    )
     assert not host_memory_duplicate(obj, frozenset({sentence}))
 
 
@@ -288,12 +310,32 @@ def test_claim_without_conditions_matches_its_complete_statement():
 
     payload = {"subject": "TEST project", "predicate": "palette", "value_text": "amber", "conditions": []}
     obj = RetrievedObject(
-        "TEST-claim", 1, "claim", json.dumps(payload), "human_direct", "current", "", (), "direct_report", True
+        "TEST-claim",
+        1,
+        "claim",
+        json.dumps(payload),
+        "human_direct",
+        "current",
+        "",
+        (),
+        "direct_report",
+        True,
+        metadata=(("state", "active"),),
     )
     assert host_memory_duplicate(obj, ("TEST project palette amber",))
     payload["conditions"] = ["only indoors"]
     obj = RetrievedObject(
-        "TEST-claim", 1, "claim", json.dumps(payload), "human_direct", "current", "", (), "direct_report", True
+        "TEST-claim",
+        1,
+        "claim",
+        json.dumps(payload),
+        "human_direct",
+        "current",
+        "",
+        (),
+        "direct_report",
+        True,
+        metadata=(("state", "active"),),
     )
     assert not host_memory_duplicate(obj, ("TEST project palette amber",))
 

@@ -33,7 +33,7 @@ from .recall_log_storage import LogPolicy
 from .recall_restatement import normalized_statement
 from .recall_trace import CURRENT_TRACE, logged_recall
 from .records import Records
-from .restore import InstallationMaintenance, maintenance_context
+from .restore import InstallationMaintenance, validate_owner_context
 from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits, validate_host_memory_entries
 from .source_records import StoredSource
 from .storage import SQLiteStorage, StoreStatus
@@ -403,9 +403,7 @@ class MemoryCore:
                 "unknown", ref, revision or 1, None, self.memory_epoch(context), ("entry_state:paused",)
             )
         if owner_authority is not None:
-            owner = maintenance_context(self.storage, owner_authority)
-            if replace(context, project_id=owner.project_id, branch_id=owner.branch_id) != owner:
-                raise ContractError("ACCESS_DENIED", "owner_authority")
+            validate_owner_context(self.storage, owner_authority, context)
         marker = self._private_read_refusal(context) if owner_authority is None else None
         if type(ref) is str and ref.startswith((RECALL_DIAGNOSTIC_PREFIX, REQUEST_PREFIX)):
             if revision not in (None, 1):
@@ -426,7 +424,9 @@ class MemoryCore:
             record = diagnostic(view)
             result = InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
         else:
-            result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
+            result = inspect_object(
+                self.storage, self.clock, context, ref, revision, limit=limit, owner_authority=owner_authority
+            )
         if owner_authority is None:
             if self._entry_blocked(context, entry):
                 return InspectedObject(

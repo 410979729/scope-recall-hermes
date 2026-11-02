@@ -10,14 +10,16 @@ import hashlib
 import json
 import sqlite3
 
-from ..contracts import utc_timestamp
+from ..contracts import ContractError, utc_timestamp
 from . import lineage, private
 from . import session_brief as briefing
 from .claims import statement_key
 from .entry_control import context_fence
 from .recall_budget import canonical_render_json, estimate_tokens
 from .retrieval import SearchContext, SearchLimits
+from .review_policy import PENDING, PENDING_OBSERVATION
 from .secret_patterns import contains_secret_like_text
+from .visibility import check_claim_release
 from .writer_lease import TruthWriterBusyError
 
 NOTICE_TOKEN_CAP = 300
@@ -84,6 +86,11 @@ def _make_notice(tx, row, key, replacement):
     if replacement is not None and replacement.temporal_status == "current":
         if replacement.kind in {"claim", "procedure"}:
             claim = tx.claims.version(replacement.ref, replacement.revision)
+            if claim is not None:
+                try:
+                    check_claim_release(tx, claim, history=False, owner_review=False)
+                except ContractError:
+                    return None
             value = claim.payload["value_text"] if claim and claim.state == "active" else None
         else:
             value = replacement.content
@@ -117,6 +124,10 @@ def _make_notice(tx, row, key, replacement):
 
 def _claim_change(tx, search, ref, revision, batch):
     """Resolve reviewed replacements; evidence alone does not change an assertion."""
+    # A held correction has no publishable value or withdrawal notice. Once
+    # decided, the ordinary change detector compares the effective assertion.
+    if any(v.reason in {PENDING, PENDING_OBSERVATION} for v in tx.claims.versions(ref)):
+        return False, None
     head = _head(tx, "claim", ref)
     version = tx.claims.version(ref, head) if head else None
     target = (

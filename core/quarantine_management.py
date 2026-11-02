@@ -9,7 +9,7 @@ from dataclasses import replace
 
 from ..contracts import ContractError
 from .injection_guard import group_rows, notice, scan
-from .reflection_validity import reflection_live
+from .reflection_validity import reviewable_observation
 from .restore import maintenance_context
 from .source_admission import admit_source, observe_admitted
 from .source_records import SourceWrite, stored_source
@@ -35,6 +35,7 @@ def review_page(storage, authority, *, limit=30, before=None):
                     FROM source_safety WHERE state!='released'
                     UNION ALL SELECT confirmation_ref,confirmation_revision,state,json_array(reason),'adoption'
                     FROM adoption_relations WHERE state='pending_review'
+                    AND coalesce(reason,'')!='owner_review_rejected'
                 ) s JOIN source_events e ON e.event_id=s.source_ref AND e.source_revision=s.source_revision
                 WHERE e.source_id<? ORDER BY e.source_id DESC LIMIT ?""",
                 (before if before is not None else 2**63 - 1, limit + 1),
@@ -89,7 +90,7 @@ def review_observations(tx, *, limit, before):
             replace(tx.context, project_id=candidate["project_id"], branch_id=candidate["branch_id"])
         )
         version = view.claims.version(candidate["claim_ref"], candidate["claim_revision"])
-        if version is not None and reflection_live(view, version):
+        if version is not None and reviewable_observation(view, version):
             items.append(
                 dict(
                     ref=version.ref,

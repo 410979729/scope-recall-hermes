@@ -330,6 +330,63 @@ const assert = require('assert/strict');
     assert json.loads(completed.stdout) == {"groups": 3, "actions": True}
 
 
+def test_review_page_renders_native_sources_actions_and_scope_policy():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    script = (
+        DOM_HARNESS
+        + r"""
+const assert = require('assert/strict');
+(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  global.FormData = class { *[Symbol.iterator]() {} };
+  const calls = [];
+  global.fetch = async (url, options) => {
+    const body = options.body && JSON.parse(options.body);
+    calls.push({url, body});
+    let data;
+    if (url.startsWith('/api/review-actions')) data = {items: [{action_id: 'TEST-action', source: 'fact',
+      decision: 'reject', version: 'TEST-undo-version', time: 'TEST-time'}], next_before: null};
+    else if (url.startsWith('/api/reviews')) data = {items:
+      ['import','adoption','observation','health','fact'].map(source => ({
+      source, key: [source,'claim-TEST',1], version: 'TEST-version', content: '<script>TEST-literal</script>',
+      evidence: [{source_ref: 'event-TEST', source_revision: 1}],
+      time: 'TEST-time',
+      fragments: source === 'adoption' ? [{id: 2, text: 'TEST-selected-fragment'}] : []})), next_cursor: null};
+    else if (url === '/api/preview') data = {id: 'TEST-preview', preview: body};
+    else throw new Error('Unexpected route ' + url);
+    return {ok: true, json: async () => ({data})};
+  };
+  await loadPage('reviews');
+  assert.equal(document.getElementById('review-items').children.length, 5);
+  assert(document.getElementById('review-items').textContent.includes('<script>TEST-literal</script>'));
+  assert(document.getElementById('review-items').textContent.includes(window.UI_STRINGS.zh.reviewEvidence));
+  const first = document.getElementById('review-items').children[0];
+  await first.children.find(child => child.tagName === 'button').click();
+  assert.equal(calls.at(-1).body.expected_version, 'TEST-version');
+  assert.equal(calls.at(-1).body.decision, 'approve');
+  assert.equal(document.getElementById('review-hint').hidden, true);
+  await document.getElementById('review-actions').children[0].click();
+  assert.equal(calls.at(-1).body.action, 'review-undo');
+  assert.equal(calls.at(-1).body.expected_version, 'TEST-undo-version');
+  vm.runInThisContext("reviewPolicyState = {scope_id: 'TEST-scope', enabled: false, version: 0};");
+  renderReviewPolicy();
+  vm.runInThisContext("language = 'en'; translate();");
+  assert(document.getElementById('review-items').textContent.includes('Imported material'));
+  assert(document.getElementById('review-policy-data').textContent.includes('Off'));
+  await document.getElementById('review-policy-data').children[1].click();
+  assert.equal(calls.at(-1).body.expected_version, 0);
+  assert.equal(calls.at(-1).body.enabled, true);
+  console.log(JSON.stringify({sources: 5, versions: true, bilingual: true}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"sources": 5, "versions": True, "bilingual": True}
+
+
 def test_handoff_page_renders_external_text_and_reviews_cancellation():
     executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
     if not executable:
@@ -385,6 +442,7 @@ def test_entry_handoff_and_existing_pages_coexist():
     page = Page()
     page.feed((ASSETS / "index.html").read_text(encoding="utf-8"))
     expected = {
+        "reviews",
         "entries",
         "handoffs",
         "overview",

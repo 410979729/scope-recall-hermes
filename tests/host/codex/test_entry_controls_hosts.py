@@ -184,3 +184,83 @@ def test_shared_entry_list_reports_each_registered_grant(client):
     selected = entries["test-boundary"]
     assert selected["read_scopes"] and selected["write_scopes"]
     assert set(selected["write_scopes"]) <= set(selected["read_scopes"])
+
+
+def test_review_gate_in_each_hook_mcp_and_brief(client, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from scope_recall.adapters.clients.identity import resolve_runtime_audience, trusted_context
+    from scope_recall.adapters.clients.mcp_server import CodexMCPServer
+
+    from tests.contract.test_claims import draft
+
+    _root, home, host = client
+    hook = CodexHookHandler.from_home(str(home), host)
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *args, **kwargs: None)
+    binding = hook.core.storage.binding
+    owner_context = TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated")
+    owner = MemoryManagement(hook.core, InstallationMaintenance(owner_context))
+    reader = trusted_context(hook.config, resolve_runtime_audience(hook.config, None), session_id="TEST-review")
+    server = CodexMCPServer(hook.config, workspace=tmp_path, core=hook.core)
+    try:
+        for scope in binding.scope_ids:
+            owner.set_review_policy(scope, True, expected_version=0)
+        hook.handle_payload(
+            dict(
+                hook_event_name="UserPromptSubmit",
+                session_id="TEST-review",
+                turn_id="TEST-1",
+                prompt_id="TEST-1",
+                generation_id="TEST-1",
+                cwd=str(tmp_path),
+                prompt="TEST-project palette ultramarine.",
+            )
+        )
+        with hook.core.storage.read(owner_context) as tx:
+            row = (
+                tx._check()
+                .execute(
+                    "SELECT event_id,source_revision,scope_id,project_id,branch_id FROM source_events "
+                    "ORDER BY source_id DESC LIMIT 1"
+                )
+                .fetchone()
+            )
+        scoped = replace(reader, project_id=row["project_id"], branch_id=row["branch_id"])
+        source = hook.core.source(scoped, row[0], row[1])
+        pending = hook.core.records.accept_claim_proposals(
+            scoped,
+            dict(
+                protocol_version="1.1",
+                source_refs=[f"{source.ref}@{source.revision}"],
+                claim_proposals=[
+                    draft(source, "ultramarine", predicate="palette", kind="fact", statement_kind="assertion")
+                ],
+                resume_proposals=[],
+                reference_proposals=[],
+            ),
+            scope_id=row["scope_id"],
+            remaining_seconds=10,
+        ).items[0]
+        assert pending.state == "proposed"
+        answer = hook.handle_payload(
+            dict(
+                hook_event_name="UserPromptSubmit",
+                session_id="TEST-review-next",
+                turn_id="TEST-2",
+                prompt_id="TEST-2",
+                generation_id="TEST-2",
+                cwd=str(tmp_path),
+                prompt="What is TEST-project palette?",
+            )
+        )
+        request = SimpleNamespace(request_context=SimpleNamespace(meta={"threadId": str(uuid4())}))
+        explicit = server.recall(request, "1.1", "TEST-project palette", "current", 6)
+        assert pending.ref not in str(answer)
+        assert pending.ref not in str(explicit)
+        assert pending.ref not in str(hook.core.session_brief(scoped))
+    finally:
+        if server._host_runtime is not None:
+            server._host_runtime.close()
+        hook.close()

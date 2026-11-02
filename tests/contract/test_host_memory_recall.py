@@ -95,3 +95,28 @@ def test_legacy_brief_time_does_not_attest_session_start(app):
     assert observed_session_start(core.storage, ctx, remaining_seconds=1) is None
     observe_session_start(core.storage, ctx, "2026-11-01T14:00:00Z", remaining_seconds=1)
     assert observed_session_start(core.storage, ctx, remaining_seconds=1) is None
+
+
+@pytest.mark.parametrize("state,duplicate", [("active", True), ("proposed", False), ("retracted", False)])
+def test_host_claim_dedup_requires_effective_fact_state(state, duplicate):
+    import json
+
+    from scope_recall.core.recall_restatement import host_memory_duplicate
+    from scope_recall.core.retrieval import RetrievedObject
+
+    obj = RetrievedObject(
+        "claim-TEST",
+        1,
+        "claim",
+        json.dumps(
+            dict(subject="TEST", predicate="palette", value_text="green", kind="fact", statement_kind="assertion")
+        ),
+        "human_direct",
+        "current",
+        "",
+        (),
+        "direct_report",
+        True,
+        metadata=(("state", state),),
+    )
+    assert host_memory_duplicate(obj, ("TEST palette green",)) is duplicate
