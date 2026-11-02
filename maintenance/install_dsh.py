@@ -49,7 +49,7 @@ from .install_client import (  # noqa: F401 -- install.py calls these on every h
     validate_local_platforms,
     validate_owner_logins,
 )
-from .install_common import InstallError, InstallPlan, like_original, read_host_file
+from .install_common import SKILLS, InstallError, InstallPlan, like_original, read_host_file
 
 HOST = "dsh"
 PATCH_FILENAME = "cordis.patch.yml"
@@ -102,8 +102,13 @@ def plugin_source() -> bytes:
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
-    """The plugin file, the installer's own; the patch file is merged (``merged_file``)."""
-    return {plugin_path(plan.target_plugin_dir): plugin_source()}
+    """Own the native plugin and memory skill; the host patch is merged separately."""
+    return {
+        plugin_path(plan.target_plugin_dir): plugin_source(),
+        plan.target_plugin_dir / "skills" / "scope-recall-memory" / "SKILL.md": SKILLS["scope-recall-memory"].read_text(
+            encoding="utf-8"
+        ),
+    }
 
 
 # -- the rows ---------------------------------------------------------------------------------------------------

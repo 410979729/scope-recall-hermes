@@ -153,3 +153,8 @@ def write_receipt(
     path = receipt_file(plan.instance_root)
     atomic_write(path, json_dump(body))
     return path
+
+
+def setup_receipts_directory(home: Path) -> Path:
+    """The setup journal lives beside the entry pointer for local and shared installations alike."""
+    return home / "scope-recall" / "setup-receipts"

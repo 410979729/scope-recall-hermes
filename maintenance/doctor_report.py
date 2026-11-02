@@ -93,6 +93,8 @@ class DoctorReport:
     #: For a home attached to a shared store: the store's root, and this home's
     #: entry.  Everything else in the report is then the shared store's.
     shared_store: dict[str, str] = field(default_factory=dict)
+    model_workload_per_100_turns: list[dict[str, Any]] = field(default_factory=list)
+    project_copy_suggestions: list[dict[str, str]] = field(default_factory=list)
     capability_gaps: list[str] = field(default_factory=list)
     checks: list[dict[str, str]] = field(default_factory=list)
 

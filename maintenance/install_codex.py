@@ -172,7 +172,7 @@ def _plugin_json(plugin_name: str) -> dict[str, Any]:
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
-    config = config_path(plan.instance_root)
+    config = attachment_path(plan.instance_root) if plan.pending_attachment else config_path(plan.instance_root)
     if config.name != ATTACHMENT_FILENAME and plan.project_root is None:
         raise InstallError("project_root is required for a Codex installation of its own")
     launcher = plan.target_plugin_dir / "hooks" / WINDOWS_HOOK_LAUNCHER

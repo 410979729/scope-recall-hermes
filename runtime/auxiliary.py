@@ -23,6 +23,7 @@ from .model_budget import (
     AuxiliaryBudgetLedger,
     BudgetPolicy,
     ModelPricing,
+    ModelTokenCapInput,
     default_budget_policy,
     load_hermes_attempt_authorization,
     read_auxiliary_budget_status,
@@ -150,7 +151,7 @@ def _model_caps_from_mapping(raw: object) -> dict[str, tuple[int | None, int | N
     for model, sides in mapping("model_token_caps", raw).items():
         text("model_token_caps", model)
         sides = mapping("model_token_caps", sides)
-        for key in ("input", "output"):
+        for key in sorted(ModelTokenCapInput.__required_keys__):
             if key not in sides:
                 raise ValueError(f"model_token_caps_{key}")
         caps[model] = (sides["input"], sides["output"])

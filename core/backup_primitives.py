@@ -19,6 +19,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import IO, Any
 
+from .file_access import preserve_file_access
 from .file_lock import advisory_file_lock
 from .writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
 
@@ -143,7 +144,9 @@ def sha256(path: Path) -> str:
         return stream_digest(stream)
 
 
-def atomic_write(path: Path, content: str | bytes) -> None:
+def atomic_write(
+    path: Path, content: str | bytes, *, mode: int | None = None, access_source: Path | None = None
+) -> None:
     """Flush a complete checkpoint before atomically publishing it beside its target."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -151,6 +154,11 @@ def atomic_write(path: Path, content: str | bytes) -> None:
     try:
         with temporary.open("xb") as stream:
             owned = os.fstat(stream.fileno())
+            if mode is not None and os.name != "nt":
+                # Restrict the empty temporary before any sensitive bytes enter it.
+                os.fchmod(stream.fileno(), mode)
+            if access_source is not None:
+                preserve_file_access(access_source, temporary)
             # Installation receipts rely on the platform's text newline convention.
             stream.write(content if isinstance(content, bytes) else content.replace("\n", os.linesep).encode("utf-8"))
             stream.flush()
