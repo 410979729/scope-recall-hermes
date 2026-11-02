@@ -1519,7 +1519,8 @@ def test_mirror_preserves_groups_created_after_snapshot(tmp_path: Path):
         segment={"group_key": "message-one", "index": 0, "total": 2, "truncated": False},
     )
     receipt = core.record_event(ctx, event, scope_id=next(iter(ctx.allowed_scope_ids)), remaining_seconds=10)
-    source = core.source(ctx, receipt.event_refs[0].ref, 1)
+    assert core.source(ctx, receipt.event_refs[0].ref, 1) is None
+    source = receipt.event_refs[0]
     _forget(core, ctx, source)
     dest = tmp_path / "restored"
     dest = Path(apply_disaster_restore(bundle, dest)["data_directory"])

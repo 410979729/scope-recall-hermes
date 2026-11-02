@@ -48,6 +48,8 @@ class DoctorReport:
     extraction_outcomes: dict[str, int] = field(default_factory=dict)
     autostart_status: str = "not_registered"
     worker_status: dict[str, Any] = field(default_factory=dict)
+    injection_quarantined: int = 0
+    injection_pending_review: int = 0
     sources: int | None = None
     #: Bytes of memory.sqlite3 with its journal, and of everything under vectors/.
     store_bytes: int | None = None

@@ -365,14 +365,20 @@ class MemoryExport:
                 if revision is None:
                     continue
                 head = view.claims.version(ref, revision)
-                if head is None or not all(
-                    self._claim_sources(view, version) is not None for version in self._claim_versions(view, ref)
-                ):
+                if head is None:
+                    continue
+                # Summary history contains pending and invalidated generations,
+                # not portable truth. Export only its currently valid snapshot;
+                # ordinary facts still require their full history to be visible.
+                summary = is_conversation_summary(head)
+                versions = (head,) if summary else self._claim_versions(view, ref)
+                if not all(self._claim_sources(view, version) is not None for version in versions):
                     continue
                 sources = self._claim_sources(view, head)
                 if sources is not None:
                     yield ClaimExport(
-                        self._claim_record(head, "fact", sources), self._claim_history(view, ref, revision)
+                        self._claim_record(head, "fact", sources),
+                        iter(()) if summary else self._claim_history(view, ref, revision),
                     )
             after = page[-1][0]
             if len(page) < _OBJECT_PAGE:

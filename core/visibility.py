@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from ..contracts import ContractError
 from .claims import select_effective
 from .delete_storage import retraction_after
+from .injection_guard import blocked_refs
 
 OBJECT_KINDS = ("event", "claim", "episode", "artifact", "reference")
 #: Intention states that automatic exits never surface as current.
@@ -49,6 +50,11 @@ def allowed(tx, kind: str, ref: str, *, automatic: bool = False) -> bool:
 
 
 def _allowed_now(tx, kind: str, ref: str, automatic: bool) -> bool:
+    return deletion_allows(tx, kind, ref, automatic=automatic) and ref not in blocked_refs(tx, kind, (ref,))
+
+
+def deletion_allows(tx, kind: str, ref: str, *, automatic: bool = False) -> bool:
+    """Check deletion identity fences for capture preflight, without releasing held text."""
     conn = tx._check()
     if conn.execute(
         "SELECT 1 FROM restored_absence_blocks WHERE object_kind=? AND object_ref=?", (kind, ref)
@@ -61,9 +67,9 @@ def _allowed_now(tx, kind: str, ref: str, automatic: bool) -> bool:
 
 
 def allowed_refs(tx, kind: str, refs, *, automatic: bool = False) -> frozenset[str]:
-    """The refs of one kind that ``allowed`` admits, read in one statement and one row.
+    """Resolve one kind of identity in batch queries.
 
-    Checked one by one, an episode's members would take two statements each inside every capture that joins the
+    Checked one by one, an episode's members would repeat queries inside every capture that joins the
     episode, and in a busy Hermes gateway each statement waits for the GIL (``lexical_index.index_terms``).
     """
     wanted = list(dict.fromkeys(refs))
@@ -81,10 +87,13 @@ def allowed_refs(tx, kind: str, refs, *, automatic: bool = False) -> frozenset[s
         )
         .fetchone()
     )
+    unsafe = blocked_refs(tx, kind, wanted)
     admitted = frozenset(
         item["ref"]
         for item in json.loads(row[0])
-        if not item["absent"] and _admits(tx, item if item["blocked"] else None, automatic=automatic)
+        if not item["absent"]
+        and item["ref"] not in unsafe
+        and _admits(tx, item if item["blocked"] else None, automatic=automatic)
     )
     remember = getattr(tx, "remember", None)
     if remember is not None:

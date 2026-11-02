@@ -88,6 +88,15 @@ def note_source(tx, source, *, now, historical=False):
             "state=CASE WHEN ? THEN state ELSE 'waiting' END",
             (key, *values, now, int(historical), int(historical)),
         )
+        if historical:
+            # Safety review can restore sources after a part could not even be
+            # queued. Retry only source failures; model failures keep their
+            # existing retry budget and complete summaries remain readable.
+            tx._check().execute(
+                "UPDATE summary_groups SET state='waiting',signature='',failure=NULL WHERE group_key=? "
+                "AND state='partial' AND failure IN ('source_coverage','source_unavailable','summary_source')",
+                (key,),
+            )
 
 
 def close_session(tx, session_id, *, now):

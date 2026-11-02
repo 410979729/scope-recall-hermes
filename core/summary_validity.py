@@ -107,7 +107,12 @@ def group_signature(tx, members):
 
 
 def open_task(tx, group):
-    """An unfinished task keeps its conversation on the original-message path."""
+    """Confirmed unfinished work keeps its conversation on the original-message path.
+
+    Hosts may assign automatic task anchors to ordinary conversation. An
+    unknown anchor alone proves no unfinished work and does not end a task;
+    task summaries independently require a completed episode.
+    """
     row = (
         tx._check()
         .execute(
@@ -116,7 +121,7 @@ def open_task(tx, group):
             "JOIN episodes e ON e.episode_id=ee.episode_id JOIN episode_versions v ON "
             "v.episode_id=e.episode_id AND v.revision=e.current_revision "
             "WHERE s.session_id=? AND s.scope_id=? AND s.entry_id=? AND e.anchor_kind='task' AND "
-            "v.state!='completed' LIMIT 1",
+            "v.state IN ('open','interrupted') LIMIT 1",
             (group["subject_ref"], group["scope_id"], group["entry_id"]),
         )
         .fetchone()

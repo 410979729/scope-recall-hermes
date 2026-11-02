@@ -21,6 +21,9 @@ from scope_recall.core.claims import (
     states_a_value,
 )
 from scope_recall.core.confirmation import CONFIRMED_REASON
+from scope_recall.core.management import MemoryManagement
+from scope_recall.core.restore import InstallationMaintenance
+from scope_recall.core.source_storage import source_reference
 from test_denial_values import NEGATED_STATES
 from v11_support import context, source_event
 
@@ -1055,7 +1058,8 @@ def test_negative_state_transition_is_preserved_across_lifecycle(app):
 def test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering(app, origin):
     core, ctx = app
     item, source = initial(core, ctx)
-    echo = capture(core, ctx, "TEST-project 配色 银色。", origin=origin, evidence_refs=[f"{source.ref}@1"])
+    writer = capture
+    echo = writer(core, ctx, "TEST-project 配色 银色。", origin=origin, evidence_refs=[f"{source.ref}@1"])
     with core.storage.read(ctx) as tx:
         roots = tx.claims.roots((f"{source.ref}@1", f"{echo.ref}@1"))
     assert [(r.ref, r.revision) for r in roots] == [(source.ref, 1)]

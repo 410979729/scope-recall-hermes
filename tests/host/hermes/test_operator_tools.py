@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
-from scope_recall.adapters.hermes.installation import _build_audience_scope_ids
+from scope_recall.adapters.installation import _build_audience_scope_ids
 
 
 def _payload(text: str, *, key: str) -> dict:

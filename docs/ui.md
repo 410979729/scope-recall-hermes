@@ -46,6 +46,14 @@ and English otherwise. The language selector switches between both languages.
   ten minutes; if the underlying selection changes, create a new preview.
   Each confirmed action displays its receipt. Deletion uses the existing
   deletion and background purge process; a receipt can still show pending work.
+- **Held content** lists source text with the rules that quarantined it or left it pending review.
+  These sources are excluded from search, recall, summaries and background extraction. Ordinary explicit
+  inspection returns only their state and rule names. Choose Review release, inspect the source revision,
+  then confirm to restore normal admission. Delete uses the existing reviewed deletion flow and does
+  not require releasing the source first. Actions are recorded without copying the source text.
+  Deletion and scope restrictions still apply. External and unattributed sources without a completed safety review stay
+  pending; no model is called for this review. A hold on an older revision also withholds later revisions
+  of the same source identity until the owner reviews each held version.
 - **Private mode** shows the current whole-store mode and active rules. Choose
   an exact session, absolute project directory, or the whole store to inspect,
   enable or close its rules. Full mode blocks capture, recall and outbound work;

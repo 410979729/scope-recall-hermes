@@ -1,9 +1,13 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1114
-#: Schemas a store may carry and be brought forward from, oldest first.  Any
+from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
+from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
+from .injection_schema import install as install_injection_schema
+
+SCHEMA_VERSION = 1120
+#: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113)
+UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -144,6 +148,52 @@ LEXICAL_STATEMENTS = (
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX lexical_postings_source ON lexical_postings(source_id,term_id)",
 )
+# Posting keys include the public claim ref so a term range is already in the
+# nomination tie order. Bounded intersections need no corpus-sized sort.
+CLAIM_LEXICAL_STATEMENTS = (
+    """CREATE TABLE claim_lexical_postings (
+        term_id INTEGER NOT NULL,
+        claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+        PRIMARY KEY(term_id,claim_id)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_lexical_claim ON claim_lexical_postings(claim_id,term_id)",
+)
+
+# Subject markers share the body dictionary and writer boundary. A partial
+# posting range avoids scanning common predicate/value words during nomination.
+CLAIM_SUBJECT_STATEMENTS = (
+    "ALTER TABLE claim_lexical_postings ADD COLUMN subject_terms INTEGER NOT NULL DEFAULT 0 CHECK(subject_terms>=0)",
+    "CREATE INDEX claim_lexical_subject ON claim_lexical_postings(term_id,claim_id,subject_terms) "
+    "WHERE subject_terms>0",
+)
+
+# A rank certificate is derived from one immutable statement, not a second
+# version selector. Semantic edits invalidate it; derived processing flags do not
+# affect the selected statement or its rank. The partial truth index also keeps
+# multi-version subjects searchable independently of the current head's words.
+CLAIM_RANK_STATEMENTS = (
+    """CREATE TABLE claim_lexical_heads (
+        claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id) ON DELETE CASCADE,
+        is_simple INTEGER NOT NULL CHECK(is_simple IN (0,1)), recorded TEXT NOT NULL
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_lexical_rank ON claim_lexical_heads(is_simple,claim_id)",
+    "CREATE INDEX claim_lexical_versions ON claim_versions(claim_id) WHERE revision>1",
+    *(
+        f"""CREATE TRIGGER claim_lexical_{operation.lower()} AFTER {operation} ON claim_versions BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id={source}.claim_id;
+    END"""
+        for operation, source in (("INSERT", "NEW"), ("DELETE", "OLD"))
+    ),
+    """CREATE TRIGGER claim_lexical_update AFTER UPDATE OF
+        claim_id,revision,payload_json,state,basis,qualification_reason,valid_from,valid_to,
+        recorded_from,recorded_to,replaces_revision,conflict_revisions_json ON claim_versions BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id IN (OLD.claim_id,NEW.claim_id);
+    END""",
+    """CREATE TRIGGER claim_lexical_head AFTER UPDATE OF current_revision,subject,predicate,kind ON claims BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id=NEW.claim_id;
+    END""",
+)
+
 CANDIDATE_STATEMENTS = (
     """CREATE TABLE candidate_lifecycle (
         candidate_ref TEXT NOT NULL, candidate_revision INTEGER NOT NULL CHECK(candidate_revision>=1),
@@ -389,7 +439,8 @@ STATEMENTS = (
         memory_epoch INTEGER NOT NULL DEFAULT 0 CHECK(memory_epoch>=0),
         config_version INTEGER NOT NULL DEFAULT 1 CHECK(config_version>=1),
         test_mode INTEGER NOT NULL CHECK(test_mode IN (0,1)),
-        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared'))
+        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared')),
+        database_id TEXT NOT NULL DEFAULT '', database_created_at TEXT
     ) STRICT""",
         """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
         MANAGEMENT_STATEMENT,
@@ -434,6 +485,8 @@ STATEMENTS = (
         WORK_ITEMS_STATEMENT,
         "CREATE INDEX work_ready ON work_items(state,available_at,work_id)",
         *LEXICAL_STATEMENTS,
+        *CLAIM_LEXICAL_STATEMENTS,
+        *CLAIM_SUBJECT_STATEMENTS,
         """CREATE TABLE claims (
         claim_id TEXT PRIMARY KEY NOT NULL,
         scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
@@ -590,6 +643,9 @@ STATEMENTS = (
     + CANDIDATE_STATEMENTS
     + ENTITY_STATEMENTS
     + SUMMARY_STATEMENTS
+    + CLAIM_RANK_STATEMENTS
+    + INJECTION_STATEMENTS
+    + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
@@ -821,21 +877,6 @@ def upgrade_1112(connection):
     connection.execute("PRAGMA user_version=1113")
 
 
-def upgrade_1113(connection):
-    """Add salience defaults and rebuildable summary bookkeeping without model work."""
-    for column, definition in (
-        ("importance", "INTEGER NOT NULL DEFAULT 3 CHECK(importance BETWEEN 1 AND 5)"),
-        ("pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))"),
-        ("importance_assigned", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_assigned IN (0,1))"),
-        ("importance_owner", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_owner IN (0,1))"),
-    ):
-        connection.execute(f"ALTER TABLE claims ADD COLUMN {column} {definition}")
-    for statement in SUMMARY_STATEMENTS:
-        connection.execute(statement)
-    connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
-    connection.execute("PRAGMA user_version=1114")
-
-
 def normalize_scope_authorizations(connection) -> int:
     """Move each source's ``scope_authorization`` out of its extra_json, kept once per distinct payload.
 
@@ -851,3 +892,78 @@ def normalize_scope_authorizations(connection) -> int:
         WHERE json_type(e.extra_json,'$.scope_authorization') IS NOT NULL""")
     return connection.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$.scope_authorization')
         WHERE json_type(extra_json,'$.scope_authorization') IS NOT NULL""").rowcount
+
+
+def upgrade_1113(connection):
+    """Install source safety decisions and defaults under the upgrade coordinator."""
+    install_injection_schema(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1114")
+
+
+def upgrade_1114(connection):
+    """Install bounded source policy under the upgrade coordinator."""
+    from .injection_schema import upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1115 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1115")
+
+
+def upgrade_1115(connection):
+    """Install content-bound screening checkpoints and bounded rule spans."""
+    from .injection_schema import SCAN_STATEMENT, upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute(SCAN_STATEMENT.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+    connection.execute("UPDATE instance_meta SET schema_version=1116 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1116")
+
+
+def upgrade_1116(connection):
+    """Install current-fact postings and a durable cursor for bounded initialization pages."""
+    for statement in CLAIM_LEXICAL_STATEMENTS:
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now'))"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1117 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1117")
+
+
+def upgrade_1117(connection):
+    """Add subject eligibility postings and restart their resumable head projection."""
+    for statement in (*CLAIM_SUBJECT_STATEMENTS, *CLAIM_RANK_STATEMENTS):
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
+        "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0,"
+        "updated_at=excluded.updated_at"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1118 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1118")
+
+
+def upgrade_1118(connection) -> None:
+    """Give an existing database a stable lifetime identity without inventing its creation time."""
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_id TEXT NOT NULL DEFAULT ''")
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_created_at TEXT")
+    connection.execute(
+        "UPDATE instance_meta SET database_id=lower(hex(randomblob(16))),schema_version=1119 WHERE singleton=1"
+    )
+    connection.execute("PRAGMA user_version=1119")
+
+
+def upgrade_1119(connection):
+    """Add salience defaults and rebuildable summary bookkeeping without model work."""
+    for column, definition in (
+        ("importance", "INTEGER NOT NULL DEFAULT 3 CHECK(importance BETWEEN 1 AND 5)"),
+        ("pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))"),
+        ("importance_assigned", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_assigned IN (0,1))"),
+        ("importance_owner", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_owner IN (0,1))"),
+    ):
+        connection.execute(f"ALTER TABLE claims ADD COLUMN {column} {definition}")
+    for statement in SUMMARY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1120 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1120")

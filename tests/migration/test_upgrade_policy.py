@@ -15,6 +15,7 @@ from scope_recall.adapters.clients import install_codex_scope_recall
 from scope_recall.core import storage, store_upgrade
 from scope_recall.core.backup_primitives import BackupError
 from scope_recall.core.file_lock import advisory_file_lock
+from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import cli
 from scope_recall.maintenance.doctor_report import DoctorReport
 from scope_recall.maintenance.doctor_store import check_storage
@@ -56,7 +57,7 @@ def worker_config(root, core):
     return path
 
 
-@pytest.mark.parametrize("latest", [1111, storage.SCHEMA_VERSION])
+@pytest.mark.parametrize("latest", [1111, SCHEMA_VERSION])
 def test_failed_upgrade_keeps_successful_and_latest_snapshots(tmp_path, monkeypatch, latest):
     _, core = old_store(tmp_path, 1108)
     core.storage.initialize()
@@ -276,7 +277,7 @@ def test_doctor_orders_successful_cross_schema_undo_by_actual_versions(tmp_path)
     report = DoctorReport(host="codex", status="degraded")
     assert check_storage(report, core.storage.binding, core.storage.path.parent)
     text = str(report)
-    assert f"current store schema {storage.SCHEMA_VERSION}" in text and "snapshot schema 1111" in text
+    assert f"current store schema {SCHEMA_VERSION}" in text and "snapshot schema 1111" in text
     assert text.index("--backup-dir") < text.index("After it reports prepared") < text.index("snapshot schema 1111")
     assert "--apply" in text
 
@@ -305,7 +306,7 @@ def test_interrupted_maintenance_doctor_names_foreground_command(tmp_path):
         "phase": "snapshot",
         "reason": "process_interrupted",
         "schema_before": 1111,
-        "schema_target": 1112,
+        "schema_target": SCHEMA_VERSION,
         "snapshot_verified": False,
     }
     (core.storage.path.parent / store_upgrade.UPGRADE_STATE).write_text(json.dumps(state), encoding="utf-8")

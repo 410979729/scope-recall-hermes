@@ -111,6 +111,8 @@ class UIApi:
             return api.show(text(data, "ref"), revision=number(data, "revision"))
         if route == "history":
             return api.history(text(data, "ref"), before=number(data, "before"), limit=number(data, "limit", 30))
+        if route == "quarantine":
+            return api.quarantine(limit=number(data, "limit", 30), before=number(data, "before"))
         if route == "private":
             return api.private_status(session=text(data, "session"), project=text(data, "project"))
         if route == "backup":
@@ -139,6 +141,15 @@ class UIApi:
             mode = {"mute": "suppress", "unmute": "unmute", "forget": "delete"}[action]
             plan = api.preview([ref], mode=mode, expected={ref: revision} if revision else None)
             return dict(action=action, plan=plan)
+        if action == "release-quarantine":
+            ref = text(data, "ref")
+            revision = number(data, "expected_revision")
+            if revision is None:
+                raise ContractError("INPUT_INVALID", "expected_revision")
+            item = api.preview_quarantine_release(ref, expected_revision=revision)
+            return dict(
+                action=action, ref=ref, expected_revision=revision, item=item, content_sha256=item["content_sha256"]
+            )
         if action == "forget-session":
             # Session deletion uses the CLI's source filters, independently of browse text.
             return dict(action=action, plan=api.forget_session(filters(dict(data, query=""))))
@@ -188,6 +199,10 @@ class UIApi:
         action = plan["action"]
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
+        if action == "release-quarantine":
+            return api.release_quarantine(
+                plan["ref"], expected_revision=plan["expected_revision"], content_sha256=plan["content_sha256"]
+            )
         if action == "importance":
             return api.importance(
                 plan["item"]["ref"],

@@ -326,6 +326,15 @@ def _stop_residents(host: str, instance_root: Path) -> None:
         )
 
 
+def _reuse_installation(adapter: ModuleType, plan: InstallPlan) -> str:
+    """Preserve host authorization evidence before the common installer replaces its receipt."""
+    identity = adapter.installation_id(plan.instance_root)
+    prepare = getattr(adapter, "prepare_reuse", None)
+    if prepare is not None:
+        prepare(plan)
+    return identity
+
+
 def apply_install(plan: InstallPlan) -> InstallResult:
     plan = plan_install(
         target_plugin_dir=plan.target_plugin_dir,
@@ -354,7 +363,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
     instance_initialized = False
     try:
         if plan.reuse_instance:
-            installation_id = adapter.installation_id(plan.instance_root)
+            installation_id = _reuse_installation(adapter, plan)
             if adapter.unapproved_local_platforms(plan) or adapter.unapproved_owner_logins(plan):
                 # The manifest is the adapter's, not a wrapper: it is rewritten in
                 # place, with the copy the rollback below restores, and the receipt

@@ -20,6 +20,9 @@ from ..contracts import ContractError, RecallRequest, TrustedContext, utc_timest
 from .events import capture_content_digests
 from .recall_scope import QueryScope, QueryTime
 
+# The legacy packet ceiling also bounds optional release-time additions.
+MAX_PACKET_ITEMS = 30
+
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
 CandidateChannel = Literal[
     "lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background", "scoped", "dated"
@@ -97,7 +100,7 @@ class SearchLimits:
 
     def __post_init__(self) -> None:
         checks = {
-            "max_items": (self.max_items, 1, 30),
+            "max_items": (self.max_items, 1, MAX_PACKET_ITEMS),
             "budget_tokens": (self.budget_tokens, 64, 8000),
             "candidate_pool": (self.candidate_pool, 1, 200),
             "recent_items": (self.recent_items, 0, 24),
@@ -348,6 +351,10 @@ class RetrievalResult:
     request_id: str = ""
     unmet_needs: tuple[str, ...] = ()
     release_deadline: float | None = field(default=None, compare=False)
+    # Release-only matching candidates; neither field extends the public packet.
+    # Defaults preserve callers that construct results without optional excerpts.
+    overflow_candidates: tuple[CandidateRef, ...] = field(default=(), compare=False, repr=False)
+    overflow_policy_revision: int | None = field(default=None, compare=False, repr=False)
 
     def release_context(self, context: SearchContext) -> SearchContext:
         """Carry the effective total cutoff into every compiler entry point."""

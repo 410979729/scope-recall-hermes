@@ -284,6 +284,7 @@ def _persist_worker_status_unlocked(
         key: payload[key]
         for key in (
             "status",
+            "transcript_replay",
             "processed",
             "completed",
             "failed",
@@ -645,7 +646,20 @@ def run_worker(
                 if deadline_epoch is not None and time.monotonic() >= deadline:
                     # No window left to start in; nothing is reserved yet.
                     return _owner_timeout(sink, config, started_at=started_at)
+                from ..adapters.clients.ledger import reconcile_store
+                from ..adapters.clients.store_service import manage
+
+                manage(config.binding, minutes=config.resident_recall_minutes)
+                ledger = reconcile_store(config.binding, seconds=min(2.0, max(0.001, deadline - time.monotonic())))
                 payload = _drain_once(config, instance, deadline)
+                payload["transcript_replay"] = ledger
+                checkpoint = worker_metadata_path(config, "transcript-replay.json")
+                pending_replay = bool(ledger.get("ready") or ledger.get("deferred") or ledger.get("pending_scan"))
+                if pending_replay or checkpoint.exists():
+                    write_worker_metadata(
+                        checkpoint,
+                        {"next_at": time.time() + 60 if pending_replay else None, "states": ledger},
+                    )
                 return _report(sink, config, payload, started_at=started_at, exit_code=0)
         except TimeoutError:
             payload = _minimal_payload(config, "busy", "worker_wait_timeout")
@@ -741,7 +755,7 @@ def run_retry_failed(
             # Reuse the ordinary worker's lease/fence path.  No retry command
             # can execute a work item outside the existing bounded drain.
             receipt = instance.drain()
-        gaps = list(getattr(instance.auxiliary, "capability_gaps", ()) or ())
+        gaps: list[str] = list(getattr(instance.auxiliary, "capability_gaps", ()) or ())
         gaps.extend(provider_refusals(getattr(instance.auxiliary, "ledger_path", None)))
         gaps.extend(pre_request_refusals(instance.auxiliary))
         _write(sink, _retry_payload(config, retry_results, receipt, gaps))

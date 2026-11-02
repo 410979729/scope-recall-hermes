@@ -12,6 +12,7 @@ from .claims import evidence_refs
 from .entity_names import backfill_names, checked, index_claim, ineligible, pending_names, reserve_names
 from .entity_resolution import entity_messages, live_entity, publish_entity_merge
 from .evidence_support import SupportVerdict
+from .injection_guard import blocked_refs
 from .retrieval import SearchContext, SearchLimits
 from .semantic_proposals import _publication_blocked, judgement_result, merge_candidates
 from .worker_outcomes import (
@@ -23,6 +24,22 @@ from .worker_outcomes import (
     stale_result,
     work_result,
 )
+
+
+def defer_held_entity(tx, item, now):
+    """Retain the existing projection job while a live fact's evidence is withheld.
+
+    Safety holds are reversible. They must not withdraw names or acknowledge
+    entity resolution; deletion fences continue to retire truly absent facts.
+    """
+    from .visibility import deletion_allows
+
+    if deletion_allows(tx, "claim", item.subject_ref) and blocked_refs(tx, "claim", (item.subject_ref,)):
+        return work_result(
+            tx.work.defer_without_attempt(*item.lease, now=now, seconds=1, error_code="source_safety_hold"),
+            error_code="source_safety_hold",
+        )
+    return None
 
 
 def _vector_hits(storage, clock, context, source, seconds):
@@ -126,6 +143,9 @@ def process_entity_projection(storage, clock, context, item, *, model, started: 
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
         if exc.code in {"SOURCE_MISSING", "ACCESS_DENIED"}:
             with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+                deferred = defer_held_entity(tx, item, clock.utc_now())
+                if deferred is not None:
+                    return deferred
                 ineligible(tx, item.subject_ref)
                 tx._check(write=True).execute(
                     "UPDATE claim_versions SET entity_resolved=1 WHERE claim_id=? AND revision=?",

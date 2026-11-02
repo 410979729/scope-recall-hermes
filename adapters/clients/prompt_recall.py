@@ -25,6 +25,7 @@ from .boundary import (
     is_workbuddy_agent_run,
     is_workbuddy_notice,
     turn_id_from_payload,
+    visible_recall_payload,
     workbuddy_person_text,
 )
 from .config import SharedClientConfig
@@ -95,7 +96,9 @@ class PromptRecall:
 
         def ask() -> None:
             try:
-                answers.append(self._hook.resident_recall(payload, current_refs, gaps, remaining))
+                answers.append(
+                    self._hook.resident_recall(visible_recall_payload(payload), current_refs, gaps, remaining)
+                )
             except Exception:  # noqa: BLE001 - the hook's own recall is always there to fall back on
                 answers.append(None)
             finally:
@@ -174,7 +177,7 @@ class PromptRecall:
             return {}
         self._hook.bind_project_root(payload, audience)
         turn_id, _gaps = turn_id_from_payload(payload, required=True, field=TURN_FIELD[self._hook.host])
-        prompt = payload.get("prompt")
+        prompt = visible_recall_payload(payload).get("prompt")
         if self._hook.host == "workbuddy":
             if type(prompt) is not str or is_workbuddy_agent_run(payload):
                 return {}

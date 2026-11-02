@@ -6,10 +6,13 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import time
+import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -18,6 +21,7 @@ from ..contracts import (
     InstanceBinding,
     TrustedContext,
 )
+from . import lexical_index
 from .deadline import remaining_seconds as request_remaining_seconds
 from .delete_storage import Deletions, watch_mirrored_tombstones
 from .failure_policy import failure_kind
@@ -27,6 +31,8 @@ from .registry_storage import Registry
 from .restore import restore_pending
 from .schema import (
     APPLICATION_ID,
+    PRIVATE_INTERVALS_STATEMENT,
+    PRIVATE_TARGET_INDEX,
     SCHEMA_VERSION,
     STATEMENTS,
     UPGRADE_CHAIN,
@@ -42,6 +48,12 @@ from .schema import (
     upgrade_1111,
     upgrade_1112,
     upgrade_1113,
+    upgrade_1114,
+    upgrade_1115,
+    upgrade_1116,
+    upgrade_1117,
+    upgrade_1118,
+    upgrade_1119,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -68,10 +80,32 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1111,
             upgrade_1112,
             upgrade_1113,
+            upgrade_1114,
+            upgrade_1115,
+            upgrade_1116,
+            upgrade_1117,
+            upgrade_1118,
+            upgrade_1119,
         ),
         strict=True,
     )
 )
+
+
+def _privacy_read_authorizer(action: int, table: str | None, *_rest: object) -> int:
+    """Restrict a privacy snapshot to interval metadata without exposing source rows."""
+    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ and table != "private_intervals" else sqlite3.SQLITE_OK
+
+
+def _check_privacy_contract(conn: sqlite3.Connection) -> None:
+    """Require the canonical privacy schema, including case-sensitive stored literal values."""
+    for name, expected in (
+        ("private_intervals", PRIVATE_INTERVALS_STATEMENT),
+        ("private_target", PRIVATE_TARGET_INDEX),
+    ):
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()
+        if row is None or " ".join(row[0].split()) != " ".join(expected.split()):
+            raise ContractError("SCHEMA_UNSUPPORTED", "privacy_contract")
 
 
 def _directory(path: Path) -> str:
@@ -137,6 +171,7 @@ class Transaction:
         self.__memo: dict | None = None if writable else {}
         self.__memo_bytes = 0
         self.__parent: Transaction | None = None
+        self.__authorized_sources: dict = {}
 
     def with_context(self, context: TrustedContext, *, writable: bool = False) -> Transaction:
         """Borrow this transaction for an authorized partition, without widening its scopes or lifetime."""
@@ -268,6 +303,18 @@ class Transaction:
         """Read the authority fence in this transaction without queue diagnostics."""
         return int(self._check().execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0])
 
+    def database_identity(self) -> tuple[str, str | None]:
+        """Return this database's immutable identity and known creation time from its verified transaction."""
+        row = (
+            self._check()
+            .execute("SELECT database_id,database_created_at FROM instance_meta WHERE singleton=1")
+            .fetchone()
+        )
+        identity = row[0]
+        if type(identity) is not str or len(identity) != 32 or any(c not in "0123456789abcdef" for c in identity):
+            raise ContractError("IDENTITY_UNBOUND", "database_id")
+        return identity, row[1]
+
     def status(
         self, *, include_all_projects: bool = False, include_admission: bool = False, include_queue_age: bool = True
     ) -> StoreStatus:
@@ -361,11 +408,31 @@ class Transaction:
             pending_error_counts=_most_frequent(kinds["pending"]),
         )
 
+    @contextmanager
+    def _reuse_source(self, source):
+        """Reuse an authorized immutable source during one admission operation only.
+
+        The caller must already have read this version in this transaction.
+        The narrow lifetime excludes later visibility-changing mutations.
+        """
+        self._check(write=True)
+        key = (source.ref, source.revision)
+        previous = self.__authorized_sources.get(key)
+        self.__authorized_sources[key] = source
+        try:
+            yield source
+        finally:
+            if previous is None:
+                self.__authorized_sources.pop(key, None)
+            else:
+                self.__authorized_sources[key] = previous
+
     def source(self, ref: str, revision: int) -> StoredSource | None:
         conn = self._check()
         if type(ref) is not str or not ref or len(ref) > 240 or type(revision) is not int or revision < 1:
             raise ContractError("INPUT_INVALID", "source_ref")
-
+        if (ref, revision) in self.__authorized_sources:
+            return self.__authorized_sources[(ref, revision)]
         if not allowed(self, "event", ref):
             return None
         loaded = self.remembered(
@@ -500,6 +567,20 @@ def _store_bytes(conn: sqlite3.Connection) -> int:
 def _initialization_left(deadline: float | None) -> float | None:
     """Return the unspent part of the single initialization deadline."""
     return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+
+def _finish_claim_index(conn: sqlite3.Connection, deadline: float | None) -> None:
+    """Commit bounded index pages under initialization admission; an interrupted page is repeatable."""
+    while lexical_index.claim_backfill_pending(conn):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_deadline_exceeded")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            lexical_index.backfill_claim_page(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 #: Requested memory-map size.  Operations open separate connections, so they do not share SQLite's page cache.
@@ -744,6 +825,7 @@ class SQLiteStorage:
         repair_header: bool = False,
         receipt: dict | None = None,
         unbounded_upgrade: bool = False,
+        created_at: str | None = None,
     ) -> StoreStatus:
         """Create or upgrade this store and return its verified status within the caller's lock-wait budget."""
         self._timeout(remaining_seconds)
@@ -763,6 +845,7 @@ class SQLiteStorage:
                     repair_header=repair_header,
                     receipt=receipt,
                     unbounded_upgrade=unbounded_upgrade,
+                    created_at=created_at or datetime.now(UTC).isoformat(),
                 )
         except BaseException as exc:
             original = exc
@@ -779,6 +862,7 @@ class SQLiteStorage:
         repair_header: bool,
         receipt: dict | None,
         unbounded_upgrade: bool,
+        created_at: str,
     ) -> StoreStatus:
         status: StoreStatus | None = None
 
@@ -824,7 +908,8 @@ class SQLiteStorage:
                 for statement in STATEMENTS:
                     conn.execute(statement)
                 conn.execute(
-                    "INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,test_mode,installation_kind) VALUES (1,?,?,?,?,?,?)",
+                    "INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,"
+                    "test_mode,installation_kind,database_id,database_created_at) VALUES (1,?,?,?,?,?,?,?,?)",
                     (
                         self.binding.agent_id,
                         self.binding.installation_id,
@@ -832,6 +917,8 @@ class SQLiteStorage:
                         SCHEMA_VERSION,
                         int(self.binding.test_mode),
                         self.binding.installation_kind,
+                        uuid.uuid4().hex,
+                        created_at,
                     ),
                 )
                 conn.executemany(
@@ -842,6 +929,7 @@ class SQLiteStorage:
             if status is None:
                 status = self._initial_status(conn)
             conn.commit()
+            _finish_claim_index(conn, deadline)
             with suppress(sqlite3.Error):
                 conn.execute("PRAGMA busy_timeout=0")
                 _ensure_wal(conn)
@@ -933,7 +1021,9 @@ class SQLiteStorage:
             # the lock timeout does not limit a worker's upgrade budget.
             upgrade_budget = self._remaining_budget(remaining_seconds, started)
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            upgrade = self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            upgrade = (
+                self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            ) or self._claim_index_pending(conn, restoring, version)
             if upgrade:
                 fits = upgrade_fits(_store_bytes(conn), upgrade_budget)
             elif writable and version == SCHEMA_VERSION:
@@ -994,6 +1084,13 @@ class SQLiteStorage:
         if mirror:
             self._after_commit_deletions()
 
+    def _claim_index_pending(self, conn, restoring: bool, version: int) -> bool:
+        """Keep partially backfilled stores behind initialization admission, including after interruption."""
+        pending = not restoring and version == SCHEMA_VERSION and lexical_index.claim_backfill_pending(conn)
+        if pending and not self.upgrade_on_open:
+            self._defer_upgrade()
+        return pending
+
     def _after_commit_deletions(self) -> None:
         """Try bounded mirroring after lease cleanup; I/O errors leave durable catch-up."""
         try:
@@ -1005,6 +1102,50 @@ class SQLiteStorage:
 
     def write(self, context: TrustedContext, *, remaining_seconds: float | None = None):
         return self._transaction(context, writable=True, remaining_seconds=remaining_seconds)
+
+    @contextmanager
+    def capture_privacy(self, context: TrustedContext, *, remaining_seconds: float = 1.0):
+        """Read only the recognized privacy contract while ordinary storage is refusing an upgrade.
+
+        The header and recorded schema must agree, as must identity, location, scopes and installation kind. An
+        exact privacy table and index contract are required; an unknown format never authorizes a local copy.
+        Restore fences remain active. No general source read or write is exposed by this transaction.
+        """
+        deadline = time.monotonic() + remaining_seconds
+        with ExitStack() as opened:
+            try:
+                ordinary = opened.enter_context(self.read(context, remaining_seconds=remaining_seconds))
+            except ContractError as exc:
+                if exc.code != "SCHEMA_UNSUPPORTED":
+                    raise
+            else:
+                _check_privacy_contract(ordinary._check())
+                ordinary._check().set_authorizer(_privacy_read_authorizer)
+                yield ordinary
+                return
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        self._context_check(context)
+        conn = self._open("ro", remaining_seconds, coordinating=True)
+        tx = Transaction(conn, context, writable=False)
+        try:
+            conn.execute("BEGIN")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            self.verify(conn, expected_schema=version)
+            _check_privacy_contract(conn)
+            if restore_pending(self.binding.data_directory):
+                raise ContractError("RESTORE_UNVERIFIED")
+            conn.set_authorizer(_privacy_read_authorizer)
+            yield tx
+        finally:
+            original = sys.exception()
+            tx._finish()
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            finally:
+                self._close(conn, original)
 
     def read(self, context: TrustedContext, *, remaining_seconds: float | None = None):
         return self._transaction(context, writable=False, remaining_seconds=remaining_seconds)

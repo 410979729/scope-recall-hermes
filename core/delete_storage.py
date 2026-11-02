@@ -494,6 +494,8 @@ class Deletions:
                 ):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
+            if delete and target.kind == "claim":
+                lexical_index.forget_claim(conn, target.ref)
             conn.execute(
                 "DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)",
                 (target.ref,),
@@ -610,6 +612,7 @@ class Deletions:
                         ),
                     )
             elif kind == "claim":
+                lexical_index.forget_claim(conn, ref)
                 conn.execute("UPDATE claims SET subject='',predicate='' WHERE claim_id=?", (ref,))
                 conn.execute("UPDATE claim_versions SET payload_json='{}' WHERE claim_id=?", (ref,))
                 # A candidate's trigger terms are words of its subject, predicate and value, and a blocked

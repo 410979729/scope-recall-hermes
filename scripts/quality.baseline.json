@@ -6,10 +6,6 @@
   "adapters/clients/config.py": {
    "reportPrivateImportUsage": 1
   },
-  "adapters/clients/handler.py": {
-   "reportArgumentType": 1,
-   "reportAssignmentType": 1
-  },
   "adapters/clients/hook_answer.py": {
    "reportAttributeAccessIssue": 1
   },
@@ -17,29 +13,23 @@
    "reportArgumentType": 1
   },
   "adapters/clients/mcp_server.py": {
-   "reportArgumentType": 1,
-   "reportOptionalMemberAccess": 3
+   "reportArgumentType": 1
   },
   "adapters/clients/prompt_recall.py": {
    "reportOptionalCall": 1
   },
   "adapters/clients/record_reader.py": {
    "reportArgumentType": 1,
-   "reportAttributeAccessIssue": 1,
    "reportOptionalMemberAccess": 1
   },
   "adapters/clients/remote_client.py": {
    "reportArgumentType": 1
   },
   "adapters/clients/remote_server.py": {
-   "reportAttributeAccessIssue": 2,
    "reportOptionalMemberAccess": 1
   },
-  "adapters/clients/resident_entry.py": {
-   "reportAssignmentType": 1
-  },
   "adapters/clients/transcript.py": {
-   "reportArgumentType": 8,
+   "reportArgumentType": 4,
    "reportOperatorIssue": 2,
    "reportOptionalMemberAccess": 4
   },
@@ -51,12 +41,6 @@
    "reportOptionalOperand": 1
   },
   "adapters/hermes/capture.py": {
-   "reportArgumentType": 1
-  },
-  "adapters/hermes/identity.py": {
-   "reportArgumentType": 1
-  },
-  "adapters/hermes/shared_entries.py": {
    "reportArgumentType": 1
   },
   "adapters/hermes/tool_surface.py": {
@@ -113,9 +97,6 @@
   "core/recall_needs.py": {
    "reportGeneralTypeIssues": 1,
    "reportOperatorIssue": 1
-  },
-  "core/recall_packet.py": {
-   "reportGeneralTypeIssues": 1
   },
   "core/requalify.py": {
    "reportArgumentType": 3
@@ -183,8 +164,7 @@
    "reportArgumentType": 1
   },
   "maintenance/migration_activation.py": {
-   "reportArgumentType": 6,
-   "reportPrivateImportUsage": 1
+   "reportArgumentType": 6
   },
   "maintenance/migration_index.py": {
    "reportArgumentType": 2
@@ -244,7 +224,7 @@
    "reportOptionalMemberAccess": 1
   },
   "runtime/worker_entry.py": {
-   "reportArgumentType": 4
+   "reportArgumentType": 1
   },
   "runtime/worker_watchdog.py": {
    "reportAttributeAccessIssue": 1
@@ -271,42 +251,30 @@
     "verify_provenance": 9
    }
   },
+  "adapters/audiences.py": {
+   "PLR0913": {
+    "audience_entry": 11
+   }
+  },
   "adapters/clients/boundary.py": {
    "PLR0913": {
     "tool_use_source_event": 9
    }
   },
-  "adapters/clients/config.py": {
-   "UP035": 1
-  },
   "adapters/clients/handler.py": {
-   "BLE001": 2,
-   "UP017": 1,
-   "UP035": 1,
-   "UP037": 2
+   "BLE001": 2
   },
   "adapters/clients/hook_entry.py": {
-   "BLE001": 2,
-   "PLR0912": {
-    "main": 16
-   }
+   "BLE001": 2
   },
   "adapters/clients/hook_events.py": {
    "E501": 1
   },
-  "adapters/clients/identity.py": {
-   "UP035": 1
-  },
   "adapters/clients/local_endpoint.py": {
-   "C901": {
-    "ensure_resident": 16
-   },
    "PLR0911": {
     "Recaller._exchange": 11,
     "ensure_resident": 12
-   },
-   "UP035": 1,
-   "UP041": 2
+   }
   },
   "adapters/clients/mcp_server.py": {
    "E501": 3,
@@ -319,12 +287,7 @@
   },
   "adapters/clients/record_reader.py": {
    "B905": 1,
-   "E501": 1,
-   "UP037": 2
-  },
-  "adapters/clients/remote_client.py": {
-   "UP017": 1,
-   "UP037": 1
+   "E501": 1
   },
   "adapters/clients/remote_server.py": {
    "UP017": 3,
@@ -334,20 +297,12 @@
    "UP037": 2
   },
   "adapters/clients/transcript.py": {
-   "E501": 1,
-   "UP017": 2,
-   "UP035": 1
+   "E501": 1
   },
   "adapters/hermes/attachments.py": {
    "PLR0911": {
     "authorize_attachment_metadata": 9
    }
-  },
-  "adapters/hermes/audiences.py": {
-   "PLR0913": {
-    "audience_entry": 11
-   },
-   "UP035": 1
   },
   "adapters/hermes/boundary.py": {
    "PLR0913": {
@@ -366,18 +321,7 @@
    "UP045": 1
   },
   "adapters/hermes/hooks.py": {
-   "BLE001": 1,
-   "UP035": 1
-  },
-  "adapters/hermes/identity.py": {
-   "UP035": 1
-  },
-  "adapters/hermes/installation.py": {
-   "PLR0913": {
-    "build_installation_manifest": 18,
-    "install_hermes_scope_recall": 16
-   },
-   "UP035": 1
+   "BLE001": 1
   },
   "adapters/hermes/protocol.py": {
    "UP006": 8,
@@ -394,11 +338,6 @@
    "BLE001": 2,
    "UP031": 1
   },
-  "adapters/hermes/shared_entries.py": {
-   "PLR0913": {
-    "client_entry_record": 9
-   }
-  },
   "adapters/hermes/tool_surface.py": {
    "E501": 1,
    "UP006": 3,
@@ -408,12 +347,23 @@
    "BLE001": 1,
    "UP035": 1
   },
+  "adapters/installation.py": {
+   "PLR0913": {
+    "build_installation_manifest": 18,
+    "install_hermes_scope_recall": 16
+   }
+  },
   "adapters/runtime_wiring.py": {
    "BLE001": 1,
    "PLR0913": {
     "attach_trusted_host_runtime": 10
    },
    "UP035": 1
+  },
+  "adapters/shared_entries.py": {
+   "PLR0913": {
+    "client_entry_record": 9
+   }
   },
   "adapters/tool_common.py": {
    "E501": 1,
@@ -524,11 +474,6 @@
    "E501": 2,
    "UP017": 2
   },
-  "core/inspect_service.py": {
-   "C901": {
-    "inspect_object": 16
-   }
-  },
   "core/lexical_index.py": {
    "UP035": 1
   },
@@ -562,8 +507,7 @@
    "BLE001": 2,
    "PLR0911": {
     "RecallPacketCompiler._fence": 9
-   },
-   "UP035": 1
+   }
   },
   "core/recall_policy.py": {
    "UP017": 1,
@@ -617,7 +561,7 @@
   "core/storage.py": {
    "B010": 1,
    "BLE001": 4,
-   "E501": 6
+   "E501": 5
   },
   "core/trace.py": {
    "C901": {
@@ -818,7 +762,7 @@
     "_imported": 18
    },
    "PLR0915": {
-    "_import_rows": 99
+    "_import_rows": 97
    },
    "UP017": 1,
    "UP035": 1

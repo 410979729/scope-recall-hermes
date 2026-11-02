@@ -20,10 +20,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from scope_recall.adapters import shared_entries
 from scope_recall.adapters.clients import remote_client
 from scope_recall.adapters.clients.config import load_shared_client
-from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity, shared_entries
-from scope_recall.adapters.hermes.shared_entries import CLIENT_HOSTS, read_attachment, read_shared_payload
+from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
+from scope_recall.adapters.shared_entries import CLIENT_HOSTS, read_attachment, read_shared_payload
 from scope_recall.maintenance import cli, install_codex, install_dsh, install_workbuddy, shared, shared_run
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, apply_uninstall, plan_install, plan_uninstall

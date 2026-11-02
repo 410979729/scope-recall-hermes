@@ -178,7 +178,12 @@ def test_source_withdrawal_blocks_summary_before_worker_rebuild(app, mode):
 def test_task_completion_queues_task_summary_and_idle_does_not_complete_open_task(app):
     core, ctx = app
     task = replace(ctx, task_anchor="TEST-build-task")
-    capture(core, task, "Implement TEST-project and run its checks.")
+    capture(core, task, "Continue TEST-project and run its checks.")
+    with core.storage.read(ctx) as tx:
+        assert (
+            tx._check().execute("SELECT state FROM episode_versions ORDER BY revision DESC LIMIT 1").fetchone()[0]
+            == "open"
+        )
     core.clock.now = "2026-09-06T13:00:00Z"
     build(core, task)
     with core.storage.read(ctx) as tx:
@@ -240,7 +245,7 @@ def test_additive_upgrade_preserves_sources_and_returns_neutral_importance(app):
     core, ctx = app
     item, source = initial(core, ctx)
     before = source.event.copy()
-    downgrade_store(core.storage.path, 1113)
+    downgrade_store(core.storage.path, 1119)
     assert core.initialize().schema_version == SCHEMA_VERSION
     assert core.source(ctx, source.ref, source.revision).event == before
     with core.storage.write(ctx) as tx:

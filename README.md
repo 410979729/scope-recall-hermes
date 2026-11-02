@@ -12,7 +12,7 @@ are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
 before upgrading and follow the [management migration and rollback guide](docs/manage.md#migration-and-rollback).
 On a shared store in
 the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
-([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order to schema 1112;
+([docs/configuration.md](docs/configuration.md#vector_threshold)). Older supported stores migrate in order through the snapshot-backed upgrade coordinator;
 an earlier release cannot open the upgraded store. Section 9 of the
 [3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
 migration procedure for a 2.0.1 memory database.
@@ -20,6 +20,9 @@ Facts are drawn from accumulated evidence rather than judged one sentence on
 sight; only the owner's explicit correction or confirmation changes a fact as it
 is captured. SQLite is the only fact authority; host adapters share the same
 contracts.
+
+Host messages, linked worktree identity, transcript recovery and MCP lifetime are described in
+[Host capture and identity](docs/host-integration.md).
 
 Automatic recall injects zero to six items that clear a lexical coverage or
 vector similarity floor. Background preferences and tasks accompany passing
@@ -30,6 +33,20 @@ keeps its admission behavior. Retrieval reserves time for compilation and fresh
 SQLite release checks, so slow optional channels can leave a partial packet with
 their cutoff reason. Unverified items never ship. The thresholds and diagnostic counts are described
 in [the recall configuration](docs/configuration.md#vector_threshold).
+
+Current and automatic recall preserve the ordinary complete items and can
+append a neutral list when remaining matching records span at least three
+sessions. Each session contributes its highest-ranked remaining visible
+record. The list does not assert that records describe the same event or
+count how often something occurred. Every row labels its excerpt, full text
+length, source time and versioned reference; use inspect to expand the source.
+At most twelve rows share at most 1024 budget units and one quarter of the
+packet budget, using only space left after the complete items. Rows that do
+not fit are omitted without displacing full evidence. Visibility, privacy,
+suppression, current versions and retelling checks apply before publication.
+Historical reads keep their ordinary items. Existing packet fields and the
+shared host renderer carry the list; no migration or configuration change is
+required.
 
 **Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)
 provides reproducible development and held-out splits for retrieval, answerability,
@@ -43,7 +60,10 @@ Extraction can normalize fact wording while keeping exact source character inter
 ## Manage your memories
 
 Use `scope-recall ui` with the same store selection to open the [local management page](docs/ui.md).
-It provides Chinese and English browsing, reviewed actions, private rules, export and backup status in your browser.
+It provides Chinese and English browsing, reviewed actions, held-content review, private rules, export and backup status in your browser.
+Capture screens text for embedded instructions, exfiltration links and hidden Unicode before indexing. Held sources
+are excluded from recall and processing; explicit inspection returns a reason without their words. The owner can
+review and release them on the [local management page](docs/ui.md). External and unattributed sources await an explicit review result.
 
 Use `scope-recall memory` to browse, search, inspect history, correct a fact, mute it or delete a conversation.
 It runs as the local store owner and makes no model request. Deletion shows the dependent sources and facts before

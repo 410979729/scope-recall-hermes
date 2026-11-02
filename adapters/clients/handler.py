@@ -6,11 +6,12 @@ import json
 import math
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Protocol, cast
+from typing import Any, Protocol, cast
 
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
@@ -18,9 +19,10 @@ from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
+from ..host_profiles import HOSTS, agent_run
 from ..runtime_wiring import strict_hook_budget
 from .boundary import (
-    is_workbuddy_agent_run,
+    filter_capture_reply,
     without_lone_surrogates,
 )
 from .bounded_call import BoundedCall
@@ -37,6 +39,7 @@ from .hook_events import (
 )
 from .identity import project_root_of, resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
+from .record_locator import remember
 from .record_reader import RecordLines, RecordReader
 from .runtime_wiring import (
     GAP_UNCONFIGURED,
@@ -52,21 +55,10 @@ from .session_marks import (
 _MAX_STDIN_BYTES = 65536
 _TOTAL_BUDGET_S = 2.0
 _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "Interrupt", "SessionEnd"})
-#: Clients whose prompt hook may run the entry's ``hook_processing_seconds`` (at most 6 s) from the
-#: start.  Both wait 15 s for a prompt's hook (``maintenance/install_claude_code.py``,
-#: ``maintenance/install_codex.py``), and recall on a shared store took 2.7-5.7 s: with 2 s most
-#: automatic recalls would come back empty.  The budget bounds the work; the hook
-#: answers as soon as it is done.  WorkBuddy waits 60 s unless its hook says otherwise, and a prompt hook
-#: that runs past its wait blocks the prompt: the budget is what keeps it inside.
+#: Attached prompt hooks may use the entry's bounded processing allowance. The installed command timeout also
+#: leaves room for loading, serialization and shutdown outside the recall operation.
 _CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code", "codex", "workbuddy", "dsh"})
-_HOST_EVENTS = {
-    "codex": _SUPPORTED_EVENTS,
-    "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
-    "workbuddy": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
-    # dsh's plugin (``distribution/dsh``) sends a prompt hook before a turn's first step and a Stop at its
-    # end; dsh has no session end.
-    "dsh": frozenset({"UserPromptSubmit", "Stop"}),
-}
+_HOST_EVENTS = {host: profile.events for host, profile in HOSTS.items()}
 
 
 class HookClock(Protocol):
@@ -76,7 +68,7 @@ class HookClock(Protocol):
 
 class SystemHookClock:
     def utc_now(self) -> str:
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
     def monotonic(self) -> float:
         return time.monotonic()
@@ -116,7 +108,7 @@ class CodexHookHandler:
 
     def __init__(
         self,
-        config: CodexInstallationConfig,
+        config: CodexInstallationConfig | SharedClientConfig,
         *,
         core: MemoryCore | None = None,
         host_runtime: TrustedHostRuntime | None = None,
@@ -183,7 +175,7 @@ class CodexHookHandler:
         clock: HookClock | None = None,
         trusted_runtime_config_path: str | None = None,
         hook_started_at: float | None = None,
-    ) -> "CodexHookHandler":
+    ) -> CodexHookHandler:
         config = load_codex_config(config_path)
         if host_runtime is None and core is None:
             # Capture uses a basic Core first.  Trusted runtime attach
@@ -214,7 +206,7 @@ class CodexHookHandler:
         trusted_runtime_config_path: str | None = None,
         hook_started_at: float | None = None,
         remote_paths: bool = False,
-    ) -> "CodexHookHandler":
+    ) -> CodexHookHandler:
         """A client attached to a shared store; its runtime config is the entry's, beside its pointer.
 
         ``event_clock``, when given, dates the hook's own events (a remote client's moment), while the store keeps
@@ -285,7 +277,7 @@ class CodexHookHandler:
         )
         return (
             replace(context, project_identity=getattr(self, "_project_identity", "remote"))
-            if self.remote_paths
+            if self.remote_paths or getattr(self, "_project_identity", None) == "unverified"
             else context
         )
 
@@ -445,7 +437,7 @@ class CodexHookHandler:
     # -- payload dispatch ------------------------------------------------
 
     def session_of(self, payload: dict[str, Any]) -> str | None:
-        session_id = payload.get("session_id")
+        session_id = payload.get(HOSTS[self.host].session_field)
         # A shared entry's stored session carries the entry (``identity.stored_session_id``).
         limit = 240 - len(self.config.entry_id) - 1 if isinstance(self.config, SharedClientConfig) else 240
         if type(session_id) is not str or not session_id.strip() or len(session_id.strip()) > limit:
@@ -492,9 +484,8 @@ class CodexHookHandler:
         if event == "UserPromptSubmit":
             return self.events.prompt(session_id, audience, payload, deadline)
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
-            # The rest of a thread Codex opened to ask the model for suggestions: its tool calls, its answer and its
-            # end are Codex's own activity.  In one store such a thread left four tool outputs of 2-11 kB and an end
-            # marker after its request and answer had been kept out.
+            # A thread opened for application suggestions contains application activity. Its mark excludes later
+            # tool calls, replies and end events as well as the request that opened it.
             self.note("host_generated_thread")
             return {}
         if event == "Interrupt":
@@ -529,9 +520,9 @@ class CodexHookHandler:
         if event not in _HOST_EVENTS[self.host]:
             self.note("unsupported_event")
             return None
-        if self.host == "workbuddy" and is_workbuddy_agent_run(payload):
+        if agent_run(self.host, payload):
             # A subagent's prompt is the agent that started it speaking, and its end is not the session's: like a
-            # task notification, none of it is the person's.  WorkBuddy 5.3.14 sends these hooks for the main session
+            # task notification, none of it is the person's. The host can send these hooks for the main session
             # only; this keeps a later version that sends them from storing a subagent under the person's session.
             self.note("agent_run")
             return None
@@ -542,6 +533,8 @@ class CodexHookHandler:
         if audience is None:
             return None
         self.bind_project_root(payload, audience)
+        if self.call.local_record:
+            remember(self.config, payload)
         if self._host_runtime is not None:
             self._host_runtime.rebind_session(session_id, audience.allowed_scope_ids)
             self._merge_runtime_gaps()
@@ -612,6 +605,9 @@ class CodexHookHandler:
         if type(payload) is not dict:
             self.note("invalid_root")
             return {}
+        filtered = filter_capture_reply(payload)
+        if filtered is not None:
+            return filtered
         result = self.handle_payload(payload)
         if self.host == "dsh" and payload.get("hook_event_name") != "PrivateCheck":
             session_id, audience = self.session_of(payload), self.audience_of(payload)

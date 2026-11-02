@@ -249,7 +249,7 @@ def _available_types(tx, scope_id, policy, important, candidates=WORK_TYPES):
     )
 
 
-def _repeated_tool_output(tx, scope_id, text) -> bool:
+def _repeated_tool_output(tx, scope_id, text, source_ref, source_revision) -> bool:
     """Whether an earlier, still readable tool output in this scope has exactly this content.
 
     A matching tool source that is not marked ``source_only`` suppresses another
@@ -262,8 +262,9 @@ def _repeated_tool_output(tx, scope_id, text) -> bool:
         tx._check()
         .execute(
             """SELECT 1 FROM source_events WHERE scope_id=? AND role='tool' AND content_sha256=? AND read_blocked=0
-           AND COALESCE(json_extract(extra_json,'$._scope_recall_admission.disposition'),'')!='source_only' LIMIT 1""",
-            (scope_id, digest),
+           AND COALESCE(json_extract(extra_json,'$._scope_recall_admission.disposition'),'')!='source_only'
+           AND NOT(event_id IS ? AND source_revision IS ?) LIMIT 1""",
+            (scope_id, digest, source_ref, source_revision),
         )
         .fetchone()
         is not None
@@ -281,12 +282,14 @@ def wanted_work_types(event) -> frozenset[str]:
     return TOOL_OUTPUT_WORK_TYPES if event.get("role") == "tool" else WORK_TYPES
 
 
-def decide(tx, event, scope_id, policy=None):
+def decide(tx, event, scope_id, policy=None, *, source_ref=None, source_revision=None):
     policy = policy or AdmissionPolicy()
     decision = classify(event, policy)
     if decision.disposition != "schedule":
         return decision
-    if event.get("role") == "tool" and _repeated_tool_output(tx, scope_id, event["content"]):
+    if event.get("role") == "tool" and _repeated_tool_output(
+        tx, scope_id, event["content"], source_ref, source_revision
+    ):
         return AdmissionDecision("source_only", "tool_output_repeat")
     wanted = wanted_work_types(event)
     kinds = _available_types(tx, scope_id, policy, decision.important, wanted)

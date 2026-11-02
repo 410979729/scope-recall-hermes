@@ -489,48 +489,49 @@ class TurnCapture:
             ],
         )
         took = time.monotonic() - began
-        for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
-            with adapter._lock, adapter._calls.holding(hook):
-                taken = held
-                # Kept to retry: the buffer writes it, or gives it up and the next hook reads it again.
-                if not held and (key, 1) not in adapter._retry.captures:
-                    event, gaps, ledger_identity = steer_source_event(
-                        adapter._ledger, context, steer=steer, recorded_at=adapter._utc_now()
-                    )
-                    if event is None:
-                        # Being stored by another hook, or the ledger is full for now.
-                        if gaps:
-                            adapter._merge_gaps(gaps)
-                    elif not fits(deadline, took):
-                        # The hook's time is spent, or what is left would not hold another write as long as the last
-                        # (``fits``): kept to retry with no store call.
-                        adapter._writer.defer(
-                            context,
-                            event,
-                            identity=ledger_identity,
-                            gaps=gaps,
-                            scope_id=identity.local_scope_id,
-                            bound=identity,
-                            guard=guard,
+        with adapter._writer.using_capture_guard(guard):
+            for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
+                with adapter._lock, adapter._calls.holding(hook):
+                    taken = held
+                    # Kept to retry: the buffer writes it, or gives it up and the next hook reads it again.
+                    if not held and (key, 1) not in adapter._retry.captures:
+                        event, gaps, ledger_identity = steer_source_event(
+                            adapter._ledger, context, steer=steer, recorded_at=adapter._utc_now()
                         )
-                    else:
-                        began = time.monotonic()
-                        receipt = adapter._writer.write(
-                            context,
-                            event,
-                            identity=ledger_identity,
-                            gaps=gaps,
-                            scope_id=identity.local_scope_id,
-                            remaining_seconds=_budget(deadline),
-                            bound=identity,
-                            release=True,
-                        )
-                        took = time.monotonic() - began
-                        taken = receipt is not None
-                if taken:
-                    adapter._steers_written[key] = None
-                    while len(adapter._steers_written) > _STEERS_WRITTEN:
-                        adapter._steers_written.pop(next(iter(adapter._steers_written)))
+                        if event is None:
+                            # Being stored by another hook, or the ledger is full for now.
+                            if gaps:
+                                adapter._merge_gaps(gaps)
+                        elif not fits(deadline, took):
+                            # The hook's time is spent, or what is left would not hold another write as long as the last
+                            # (``fits``): kept to retry with no store call.
+                            adapter._writer.defer(
+                                context,
+                                event,
+                                identity=ledger_identity,
+                                gaps=gaps,
+                                scope_id=identity.local_scope_id,
+                                bound=identity,
+                                guard=guard,
+                            )
+                        else:
+                            began = time.monotonic()
+                            receipt = adapter._writer.write(
+                                context,
+                                event,
+                                identity=ledger_identity,
+                                gaps=gaps,
+                                scope_id=identity.local_scope_id,
+                                remaining_seconds=_budget(deadline),
+                                bound=identity,
+                                release=True,
+                            )
+                            took = time.monotonic() - began
+                            taken = receipt is not None
+                    if taken:
+                        adapter._steers_written[key] = None
+                        while len(adapter._steers_written) > _STEERS_WRITTEN:
+                            adapter._steers_written.pop(next(iter(adapter._steers_written)))
 
     def _held(self, unread, identity, context, deadline: float) -> tuple[bool, ...]:
         """Which steers the store holds already, in any session of the scope, or holds deleted: a compression

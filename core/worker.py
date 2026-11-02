@@ -554,7 +554,7 @@ def drain_worker(
         "rebuild_projection": partial(
             process_rebuild_projection,
             model=consolidation if "consolidate" in allowed else None,
-            summary_enabled=config.summary_capable,
+            config=config,
         ),
         "purge": partial(process_purge, purge=purge),
     }

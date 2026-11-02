@@ -878,3 +878,24 @@ def test_only_a_chat_of_the_person_s_alone_says_whose_a_message_put_back_was(cha
     )
     words = [steer.words for steer in turn_capture._said_aside(identity, _put_back(1790000200.0))]
     assert words == (["TEST 游戏里能正确显示中文吗", "TEST 还没做好吗"] if taken else [])
+
+
+def test_failed_steer_copies_reuse_the_batch_privacy_snapshot(telegram, monkeypatch):
+    """A busy batch checks local-copy privacy once, including captures whose writes fail."""
+    checks = []
+    check = telegram._core.private_capture_blocked
+
+    def observed(context, event, **kwargs):
+        checks.append(kwargs.get("guard"))
+        return check(context, event, **kwargs)
+
+    def busy(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(telegram._core, "private_capture_blocked", observed)
+    monkeypatch.setattr(telegram._core, "record_host_event", busy)
+    monkeypatch.setattr(telegram._retry, "start", lambda: None)
+    rows = [_row(_steer(f"TEST busy steer {n}", message_id=str(950 + n))) for n in range(3)]
+    telegram.on_pre_compress(rows)
+    assert len(telegram._retry.captures) == len(rows)
+    assert checks and all(guard is not None for guard in checks)
