@@ -4,65 +4,74 @@ from __future__ import annotations
 
 import copy
 import json
-import uuid
-from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from ..core.secret_patterns import structure_contains_secret_like_text
 from ..runtime.auxiliary import AuxiliaryRuntimeConfig
-from ..runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
-from .backup import atomic_write
+from ..runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig, configuration_value
+from .backup import adjacent_backup, write_private_configuration
 from .install_common import InstallError
+from .shared import WORKER_OWNER, WORKER_SESSION, bind_runtime_configuration
 
 
-def runtime_payload(binding, *, models=None, worker="on-demand", host="hermes") -> dict:
-    """Bind validated model routes to one store; zero budget and no routes are the default."""
-    value: dict[str, Any] = dict(
-        binding=dict(
-            agent_id=binding.agent_id,
-            installation_id=binding.installation_id,
-            data_directory=str(binding.data_directory),
-            scope_ids=sorted(binding.scope_ids),
-            test_mode=binding.test_mode,
-            installation_kind=binding.installation_kind,
-        ),
-        allowed_scope_ids=sorted(binding.scope_ids),
-        session_id="setup-background",
-        host_adapter=host,
-        supervisor_enabled=worker == "on-demand",
-        auxiliary=dict(
-            external_embedding=False, external_consolidation=False, installation_dir=str(binding.data_directory)
-        ),
+def merge_model_fields(current: dict, changes: dict) -> dict:
+    """Apply only explicitly supplied route fields, preserving all unrelated operator choices."""
+    out = copy.deepcopy(current)
+    for key, value in changes.items():
+        if key in {"response_format", "text_format", "thinking", "headers"}:
+            out[key] = copy.deepcopy(value)
+            continue
+        if (
+            key == "consolidation"
+            and isinstance(value, dict)
+            and value.get("kind", "openai") != (out.get(key) or {}).get("kind", "openai")
+        ):
+            out[key] = copy.deepcopy(value)
+            continue
+        out[key] = (
+            merge_model_fields(out.get(key) or {}, value) if isinstance(value, dict) and value else copy.deepcopy(value)
+        )
+    return out
+
+
+def runtime_payload(binding, *, models=None, worker=None, host="hermes", existing=None) -> dict:
+    """Reuse shared binding/serialization; existing runtime bounds and non-model fields stay unchanged."""
+    value = (
+        copy.deepcopy(existing)
+        if existing is not None
+        else dict(
+            session_id=WORKER_SESSION,
+            owner_id=WORKER_OWNER,
+            host_adapter=host,
+            auxiliary=dict(external_embedding=False, external_consolidation=False),
+        )
     )
-    if models:
-        value.update(copy.deepcopy(models))
-        value["auxiliary"]["installation_dir"] = str(binding.data_directory)
-        value["auxiliary"]["ledger_path"] = str(binding.data_directory / "auxiliary-budget.sqlite3")
-        if value.get("vector"):
-            without_vector = {key: member for key, member in value.items() if key != "vector"}
-            space = RuntimeInstanceConfig.from_mapping(without_vector).embedding_space_id()
-            value["vector"]["storage_dir"] = str(binding.data_directory / "vectors" / space)
-    RuntimeInstanceConfig.from_mapping(value)
-    return value
+    if existing is not None:
+        binding = RuntimeInstanceConfig.from_mapping(existing).binding
+    if models is not None:
+        value = merge_model_fields(value, models)
+    if worker is not None:
+        value["supervisor_enabled"] = worker == "on-demand"
+    prior = RuntimeInstanceConfig.from_mapping(existing).auxiliary if existing is not None else None
+    directory = (
+        binding.data_directory
+        if existing is None or (models is not None and (prior is None or prior.ledger_path is None))
+        else None
+    )
+    return bind_runtime_configuration(value, binding, preserve_scopes=existing is not None, ledger_directory=directory)
 
 
-def configuration_value(value: Any) -> Any:
-    """Serialize validated definitions without copying unrecognized input keys into configuration."""
-    if is_dataclass(value) and not isinstance(value, type):
-        return {item.name: configuration_value(getattr(value, item.name)) for item in fields(value)}
-    if isinstance(value, Mapping):
-        return {key: configuration_value(member) for key, member in value.items()}
-    if isinstance(value, (frozenset, set)):
-        return [configuration_value(member) for member in sorted(value)]
-    if isinstance(value, (tuple, list)):
-        return [configuration_value(member) for member in value]
-    if isinstance(value, (Path, Decimal)):
-        return str(value)
-    return value
+def _explicit_fields(normalized: dict, supplied: dict) -> dict:
+    """Keep only accepted fields present in the recipe; omission cannot reset an existing setting."""
+    return {
+        key: _explicit_fields(value, supplied[key])
+        if isinstance(value, dict) and isinstance(supplied[key], dict)
+        else value
+        for key, value in normalized.items()
+        if key in supplied
+    }
 
 
 def read_models(path: Path | None) -> dict | None:
@@ -84,10 +93,12 @@ def validate_models(raw: dict) -> dict:
             raise ValueError
         auxiliary = AuxiliaryRuntimeConfig.from_mapping(raw["auxiliary"])
         value: dict[str, Any] = {"auxiliary": configuration_value(auxiliary)}
-        if raw.get("vector") is not None:
-            value["vector"] = configuration_value(VectorRuntimeConfig.from_mapping(raw["vector"]))
-        if raw.get("vector_threshold") is not None:
-            value["vector_threshold"] = float(raw["vector_threshold"])
+        if "vector" in raw:
+            value["vector"] = (
+                None if raw["vector"] is None else configuration_value(VectorRuntimeConfig.from_mapping(raw["vector"]))
+            )
+        if "vector_threshold" in raw:
+            value["vector_threshold"] = None if raw["vector_threshold"] is None else float(raw["vector_threshold"])
         safe = copy.deepcopy(value)
         for name in ("embedding", "consolidation"):
             route = safe["auxiliary"].get(name)
@@ -100,7 +111,13 @@ def validate_models(raw: dict) -> dict:
                     raise ValueError
         if structure_contains_secret_like_text(safe):
             raise ValueError
-        return value
+        normalized = _explicit_fields(value, raw)
+        if auxiliary.consolidation is not None:
+            normalized["auxiliary"]["consolidation"]["kind"] = auxiliary.consolidation.kind
+        # Store and ledger identity come from the binding, never from a model recipe.
+        for key in ("installation_dir", "ledger_path"):
+            normalized["auxiliary"].pop(key, None)
+        return normalized
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise InstallError(
             "model configuration invalid; use route definitions with credential environment names"
@@ -113,7 +130,6 @@ def write_configuration(path: Path, content: str, backups: list[str]) -> None:
     if path.is_file() and path.read_bytes() == raw:
         return
     if path.is_file():
-        backup = path.parent / ".scope-recall-backups" / uuid.uuid4().hex / path.name
-        atomic_write(backup, path.read_bytes())
+        backup = adjacent_backup(path)
         backups.append(str(backup))
-    atomic_write(path, raw)
+    write_private_configuration(path, raw)

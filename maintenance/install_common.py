@@ -127,6 +127,8 @@ class InstallPlan:
     changes: list[PlannedChange] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     reuse_instance: bool = False
+    #: Read-only planning may describe a shared attachment that setup has not written yet.
+    pending_attachment: bool = False
     #: Matching artifacts and edited skills whose packaged copy is unchanged, each kept with the package digest
     #: recorded by the receipt so a later install can distinguish edits from package changes.
     kept: dict[str, str] = field(default_factory=dict)
@@ -381,3 +383,12 @@ def manifest_version(version: str = PACKAGE_VERSION) -> str:
 
 def json_dump(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def validate_write_path(path: Path) -> None:
+    """Refuse non-files and blocking parent types before an installer mutates any binding."""
+    reject_symlink_chain(path)
+    if path.exists() and not path.is_file():
+        raise InstallError(f"planned file is not a regular file: {path}")
+    if any(parent.exists() and not parent.is_dir() for parent in path.parents):
+        raise InstallError(f"planned file has a non-directory parent: {path}")

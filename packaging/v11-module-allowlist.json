@@ -140,6 +140,7 @@
     "core/fact_temporal_semantics.py",
     "core/failure_policy.py",
     "core/failure_retry.py",
+    "core/file_access.py",
     "core/file_lock.py",
     "core/gating.py",
     "core/inbox_rules.py",
@@ -272,6 +273,7 @@
     "maintenance/setup_existing.py",
     "maintenance/setup_models.py",
     "maintenance/setup_packages.py",
+    "maintenance/setup_preflight.py",
     "maintenance/setup_projects.py",
     "maintenance/setup_verify.py",
     "maintenance/setup_workload.py",
@@ -379,6 +381,9 @@
     "prompts/aliases.json",
     "prompts/entity.txt",
     "prompts/entity.examples.json"
+  ],
+  "startup_files": [
+    "scope_recall_setup.pth"
   ],
   "forbidden_wheel_substrings": [
     ".execution/",

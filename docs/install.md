@@ -11,6 +11,8 @@ Choose your host: [Claude Code](install/claude-code.md), [Codex](install/codex.m
 ## Plan and apply
 
 `scope-recall setup --dry-run` prints a plan without writing files, opening a writable database or starting workers.
+The installed command disables Python cache writes before importing the package. When running a source
+checkout as a module, use `python -B -m scope_recall.maintenance.cli setup --dry-run`.
 Add `--plan-json` for machine-readable output. `--yes` skips confirmation for an already approved plan.
 Use `--host` to select one detected host, or repeat it to choose several. Only override `--home` or `--python`
 when discovery cannot find your installation. All options are in the generated [configuration reference](configuration.md).
@@ -33,12 +35,18 @@ original-text search work without any model call. Run `scope-recall setup --conf
 model, dimensions, credential environment names, pricing and spending limits before reviewing the plan.
 For scripts, `--models` reads a JSON object containing the existing `auxiliary` and `vector` route definitions
 and an optional `vector_threshold`. Unknown input fields are never copied to generated configuration.
-Set credentials in the process environment before starting the host; setup does not print or save their values.
+Set credentials in the process environment before starting the host; setup does not collect or log their values.
 
-Setup and doctor share one workload catalog. Per-hundred-turn figures separate measured ratios, planning
-assumptions and reserved token estimates. Tasks without a measurement carry no invented allowance. The catalog
-is an estimate for planning, not an automatic authorization to spend. The existing budget ledger enforces
-approved models, prices, tokens, calls and calendar periods.
+Setup and doctor share one workload catalog measured with synthetic conversations through the real worker.
+Request token figures are estimates of message contents; chat planning also applies a floor from recorded
+server usage. The wizard asks for daily turns and a budget period, scales the expected usage to that horizon,
+then shows a variation factor and a separate allowance for simultaneous reservations. A lifetime horizon
+never renews itself. Tasks without measurements have no invented allowance. The amount limit remains zero
+until explicitly changed. The existing ledger enforces approved models, prices, tokens, calls and periods.
+
+Changed configuration is backed up under a unique name beside the original file. These byte-exact copies
+can contain existing service settings and keep the source's Windows access control; POSIX copies are private
+to their owner. Receipts record backup paths and hashes, never configuration contents.
 
 ## Background work
 
@@ -52,12 +60,14 @@ For unattended scheduled wakes, use the existing explicit [background operation 
 
 Setup runs doctor against the selected installation, then captures a synthetic statement, runs a real worker
 pass and recalls it in a second session in an independent disposable store. Its routes match the selected
-configuration. No self-test conversation is added to the owner's memory. A successful zero-budget check reports
+configuration. The selected truth store must also pass doctor; vector and embedding faults in that store
+prevent the complete state even when the isolated probe succeeds. No self-test conversation is added to the owner's memory. A successful zero-budget check reports
 **原文检索可用**. The model-enabled state **完整记忆功能可用** additionally requires working extraction,
 embedding and model-backed retrieval through the configured ledger. Failures list the step, completed stages,
 receipts, configuration backups and retry instructions, without raw exception text or credentials.
 
-The installation check exercises host adapters and installed commands. It cannot approve a host's trust dialog
+The setup self-check directly calls Python host adapters. The separate installation test suite executes the
+installed hook commands and provider wrappers. It cannot approve a host's trust dialog
 or prove a running desktop host has reloaded its settings. Start a new host session and perform the two-session
 check in the host after approval. Windows isolated checks are covered by the test suite; clean Linux/macOS
 machines and running host processes require platform acceptance.

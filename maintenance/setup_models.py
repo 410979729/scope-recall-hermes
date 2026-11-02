@@ -25,8 +25,9 @@ def configure_models() -> dict:
         dialect=_ask("Embedding dialect", "openai"),
         credential_env=_ask("Embedding credential environment variable", "SCOPE_RECALL_EMBED_KEY"),
     )
+    extraction_model = _ask("Extraction model")
     extraction = dict(
-        model=_ask("Extraction model"),
+        model=extraction_model,
         endpoint=_ask("Extraction endpoint (no key in URL)"),
         credential_env=_ask("Extraction credential environment variable", "SCOPE_RECALL_CHAT_KEY"),
         output_limit_field=_ask("Output limit field", "max_tokens"),
@@ -38,7 +39,15 @@ def configure_models() -> dict:
             input_usd_per_million=_ask(f"{model} input price per million tokens (USD)", "0"),
             output_usd_per_million=_ask(f"{model} output price per million tokens (USD)", "0"),
         )
-    totals = recommended_totals()
+    daily = int(_ask("Expected conversation turns per day (20 substantive exchanges is a planning default)", "20"))
+    period = _ask("Budget period (lifetime or monthly)", "monthly")
+    days = 31 if period == "monthly" else int(_ask("Lifetime planning horizon in days (no automatic reset)", "30"))
+    totals = recommended_totals(daily_turns=daily, period=period, days=days, model=extraction_model)
+    print("Period recommendation:", totals)
+    print(
+        "Usage includes a 1.5 variation factor for retries and changing fact density; "
+        "headroom covers two simultaneous reservations."
+    )
     print("Planning scenarios per 100 turns:", recommended_workload())
     print("Embedding, entity decisions and backlog depend on workload. The limits below are your explicit caps.")
     budget = dict(
@@ -49,7 +58,7 @@ def configure_models() -> dict:
         total_call_cap=int(_ask("Total call cap", str(totals["total_call_cap"]))),
         total_input_cap=int(_ask("Total input token cap", str(totals["total_input_cap"]))),
         total_output_cap=int(_ask("Total output token cap", str(totals["total_output_cap"]))),
-        period=_ask("Budget period (lifetime or monthly)", "monthly"),
+        period=period,
         time_zone=_ask("Budget time zone", "UTC"),
     )
     auxiliary = dict(

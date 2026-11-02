@@ -1,67 +1,125 @@
-"""Shared planning estimates for model budgets; estimates never enable spending."""
+"""Measured planning usage and separate in-flight headroom; recommendations never enable spending."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from decimal import ROUND_CEILING, Decimal
 from math import ceil
+from typing import Any
 
 from ..runtime.embedding_models import EMBED_RESERVE_FLOOR
 from ..runtime.model_budget import default_budget_policy
 
-
-@dataclass(frozen=True)
-class Workload:
-    """A declared scenario per hundred turns, with reserved rather than billed tokens."""
-
-    task: str
-    calls: int | None
-    input_tokens: int | None
-    output_tokens: int | None
-    basis: str
-
-
-def recommended_workload() -> list[dict]:
-    """Return a single catalog used by setup and doctor; unmeasured tasks have no allowance."""
-    policy = default_budget_policy()
-    # The extraction report estimates 45 calls for twelve examples. Scale that planning
-    # estimate and use transport reservations because the report supplies no token meter.
-    extraction_calls = ceil(100 * 45 / 12)
-    rows = [
-        Workload(
-            "extraction",
-            extraction_calls,
-            extraction_calls * policy.default_reserve_input,
-            extraction_calls * policy.default_reserve_output,
-            "Planning estimate: 45 calls / 12 examples; tokens are request reservations, not billed usage.",
-        ),
-        Workload(
-            "entity_resolution",
-            10,
-            10 * policy.default_reserve_input,
-            10 * policy.default_reserve_output,
-            "Planning scenario: one fact per turn and the measured 5,000 judgments / 50,000 facts name reuse ratio.",
-        ),
-        Workload(
-            "embedding",
-            300,
-            300 * EMBED_RESERVE_FLOOR,
-            0,
-            (
-                "Planning scenario: two source messages and one query per turn, "
-                "without batching savings; reserved input tokens."
-            ),
-        ),
-        Workload("summary_importance", None, None, None, "No installed task estimate."),
-        Workload("adoption", None, None, None, "No installed task estimate."),
-    ]
-    return [asdict(row) for row in rows]
+# One hundred user/assistant exchanges with long code answers, ten grounded
+# fact proposals, real worker processing and one explicit query per exchange.
+# Tokens count request message contents, using the runtime's token estimator.
+MEASURED_100 = {
+    "extraction": (110, 519936, 10369),
+    "entity_resolution": (9, 18740, 351),
+    "embedding": (220, 79174, 0),
+}
+# Each recorded suite contains twenty-four cases. These are server usage totals,
+# not reservation sizes. Aggregate usage cannot establish a stage-specific tokenizer ratio.
+SERVER_CALIBRATION = (
+    (32, 79861, 3885),
+    (34, 81259, 4274),
+    (36, 82106, 4591),
+    (35, 84122, 4946),
+    (35, 84119, 4281),
+    (36, 85017, 5019),
+)
+SAFETY_FACTOR = Decimal("1.5")
 
 
-def recommended_totals() -> dict[str, int]:
-    """Sum measured or declared scenarios; unmeasured tasks never receive an invented allowance."""
-    rows = recommended_workload()
-    return {
-        "total_call_cap": sum(row["calls"] or 0 for row in rows),
-        "total_input_cap": sum(row["input_tokens"] or 0 for row in rows),
-        "total_output_cap": sum(row["output_tokens"] or 0 for row in rows),
-    }
+def recommended_workload() -> list[dict[str, Any]]:
+    """Expose measured usage plus an aggregate server-usage floor for chat requests, never reservations."""
+    calls = sum(row[0] for row in SERVER_CALIBRATION)
+    input_floor = ceil(sum(row[1] for row in SERVER_CALIBRATION) / calls)
+    output_floor = ceil(sum(row[2] for row in SERVER_CALIBRATION) / calls)
+    rows = []
+    for task, (count, inputs, outputs) in MEASURED_100.items():
+        chat = task != "embedding"
+        rows.append(
+            dict(
+                task=task,
+                calls=count,
+                input_tokens=inputs,
+                output_tokens=outputs,
+                calibrated_input_tokens=max(inputs, count * input_floor) if chat else inputs,
+                calibrated_output_tokens=max(outputs, count * output_floor) if chat else outputs,
+                basis=(
+                    "Production worker with synthetic transport, 100 exchanges; chat uses the larger "
+                    "of estimated request tokens "
+                    "and a six-suite server-usage mean floor."
+                ),
+            )
+        )
+    for task in ("summary_importance", "adoption"):
+        rows.append(
+            dict(
+                task=task,
+                calls=None,
+                input_tokens=None,
+                output_tokens=None,
+                calibrated_input_tokens=None,
+                calibrated_output_tokens=None,
+                basis="No installed task measurement.",
+            )
+        )
+    return rows
+
+
+def recommended_totals(
+    *,
+    daily_turns: int = 20,
+    period: str = "monthly",
+    days: int = 31,
+    concurrency: int = 2,
+    safety_factor: Decimal = SAFETY_FACTOR,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Scale usage to an explicit horizon, add 50% workload variation, then only concurrent reservations.
+
+    A monthly horizon uses 31 days to cover the longest calendar month. A
+    lifetime budget needs an explicit planning horizon; it never renews itself.
+    Two in-flight requests cover overlapping worker/query calls by default.
+    """
+    if any(type(value) is not int or value < 1 for value in (daily_turns, days, concurrency)) or period not in {
+        "monthly",
+        "lifetime",
+    }:
+        raise ValueError("positive workload and a supported budget period required")
+    factor = Decimal(str(safety_factor))
+    if not factor.is_finite() or factor < 1:
+        raise ValueError("workload safety factor must be at least one")
+    rows, policy = recommended_workload(), default_budget_policy()
+    turns = daily_turns * days
+    scale = Decimal(turns) / 100 * factor
+
+    def scaled(field):
+        return int((sum(row[field] or 0 for row in rows) * scale).to_integral_value(rounding=ROUND_CEILING))
+
+    inputs = scaled("calibrated_input_tokens")
+    outputs = scaled("calibrated_output_tokens")
+    inflight_input = concurrency * max(policy.default_reserve_input, EMBED_RESERVE_FLOOR)
+    output_reserve = (
+        policy.model_reserve_output.get(model, policy.default_reserve_output)
+        if model
+        else policy.default_reserve_output
+    )
+    inflight_output = concurrency * output_reserve
+    return dict(
+        period=period,
+        days=days,
+        daily_turns=daily_turns,
+        turns=turns,
+        safety_factor=float(factor),
+        concurrency=concurrency,
+        usage_input_cap=inputs,
+        usage_output_cap=outputs,
+        inflight_input=inflight_input,
+        inflight_output=inflight_output,
+        total_call_cap=scaled("calls") + concurrency,
+        total_input_cap=inputs + inflight_input,
+        total_output_cap=outputs + inflight_output,
+        cap_micro_usd=0,
+    )

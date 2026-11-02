@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from ..adapters.clients.config import CodexConfigError, load_codex_config
-from .backup import atomic_write
+from .backup import adjacent_backup, atomic_write
 
 
 def remote_identity(root: Path) -> str | None:
@@ -58,7 +58,7 @@ def project_suggestions(home: Path, project: Path) -> list[dict[str, str]]:
     ]
 
 
-def register_project_copy(home: Path, suggestion: dict[str, str]) -> None:
+def register_project_copy(home: Path, suggestion: dict[str, str]) -> Path:
     """Register one explicitly confirmed directory, preserving all existing scope grants."""
     import json
 
@@ -68,9 +68,8 @@ def register_project_copy(home: Path, suggestion: dict[str, str]) -> None:
     if suggestion not in current:
         raise ValueError("project suggestion changed; rerun setup")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    backup = home / ".scope-recall-backups" / "project-registration" / "codex-installation.json"
-    if not backup.exists():
-        atomic_write(backup, path.read_bytes())
+    backup = adjacent_backup(path)
     payload["project_roots"][suggestion["directory"]] = suggestion["scope_id"]
     atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     load_codex_config(config.config_path)
+    return backup

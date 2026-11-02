@@ -52,6 +52,15 @@ def _empty_home_route(root: Path, host: str, result: dict) -> dict:
     return result
 
 
+def planning_database_state(path: Path) -> str:
+    """Describe the read-only planning snapshot without creating SQLite coordination files."""
+    if not path.is_file():
+        return "not_created"
+    if any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-journal")):
+        return "unknown"
+    return "main-file snapshot"
+
+
 def inspect_installation(home: str | Path, *, host: str = "hermes", database: str | Path | None = None) -> dict:
     """Classify a selected home read-only; damaged or custom legacy state never authorizes a new store."""
     if host not in {"hermes", "codex"}:
@@ -88,8 +97,10 @@ def inspect_installation(home: str | Path, *, host: str = "hermes", database: st
     if not databases:
         return _empty_home_route(root, host, result)
     database = safe_path(databases[0], must_exist=True)
+    result["database_consistency"] = planning_database_state(database)
+    active = result["database_consistency"] == "unknown"
     try:
-        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as conn:
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as conn:
             conn.execute("PRAGMA query_only=ON")
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             schema = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -115,6 +126,13 @@ def inspect_installation(home: str | Path, *, host: str = "hermes", database: st
             route="current_upgrade",
             reason="current_core_detected",
             migration_required=False,
+        )
+    if active:
+        return dict(
+            result,
+            route="needs_agent_inspection",
+            reason="active_database_state_unknown",
+            safe_action="quiesce_writers_and_rerun_setup",
         )
     if "memories" in tables or "journal_entries" in tables:
         return dict(

@@ -359,11 +359,12 @@ def test_guided_models_ask_for_environment_names_without_key_values(monkeypatch)
             "0",
             "0",
             "0",
+            "20",
+            "monthly",
             "1",
             "800",
             "20000000",
             "2000000",
-            "monthly",
             "UTC",
             "0.7",
         ]

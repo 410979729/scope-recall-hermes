@@ -119,19 +119,32 @@ def _space(raw: dict[str, Any]) -> str:
     return RuntimeInstanceConfig.from_mapping(raw).embedding_space_id()
 
 
-def _bound(raw: dict[str, Any], binding: InstanceBinding) -> dict[str, Any]:
+def bind_runtime_configuration(
+    raw: dict[str, Any],
+    binding: InstanceBinding,
+    *,
+    preserve_scopes: bool = False,
+    ledger_directory: Path | None = None,
+) -> dict[str, Any]:
     """``raw`` bound to ``binding``: its scopes, and its vectors in the store's directory."""
-    space = _space(raw)
     out = copy.deepcopy(raw)
-    out["binding"] = {
-        "agent_id": binding.agent_id,
-        "installation_id": binding.installation_id,
-        "data_directory": str(binding.data_directory),
-        "scope_ids": sorted(binding.scope_ids),
-        "test_mode": binding.test_mode,
-        "installation_kind": binding.installation_kind,
-    }
-    out["allowed_scope_ids"] = sorted(binding.scope_ids)
+    if not preserve_scopes:
+        out["binding"] = {
+            "agent_id": binding.agent_id,
+            "installation_id": binding.installation_id,
+            "data_directory": str(binding.data_directory),
+            "scope_ids": sorted(binding.scope_ids),
+            "test_mode": binding.test_mode,
+            "installation_kind": binding.installation_kind,
+        }
+    if not preserve_scopes:
+        out["allowed_scope_ids"] = sorted(binding.scope_ids)
+    space = _space({key: value for key, value in out.items() if key != "vector"})
+    if ledger_directory is not None:
+        auxiliary = out.setdefault("auxiliary", {})
+        auxiliary.update(
+            installation_dir=str(ledger_directory), ledger_path=str(ledger_directory / DEFAULT_LEDGER_NAME)
+        )
     if isinstance(out.get("vector"), dict):
         out["vector"]["storage_dir"] = str(binding.data_directory / "vectors" / space)
     RuntimeInstanceConfig.from_mapping(out)
@@ -146,9 +159,9 @@ def _ledger_in(out: dict[str, Any], directory: Path) -> None:
         auxiliary["ledger_path"] = str(directory / DEFAULT_LEDGER_NAME)
 
 
-def _worker_config(raw: dict[str, Any], binding: InstanceBinding) -> dict[str, Any]:
+def worker_configuration(raw: dict[str, Any], binding: InstanceBinding) -> dict[str, Any]:
     """The shared worker's config: an entry's model routes, bound to every scope of the store."""
-    out = _bound(raw, binding)
+    out = bind_runtime_configuration(raw, binding)
     out.update(session_id=WORKER_SESSION, owner_id=WORKER_OWNER, host_adapter="hermes")
     # The spend ledger is the store's, not the entry's the routes came from.
     _ledger_in(out, binding.data_directory)
@@ -174,7 +187,7 @@ def _entry_config(
     beside the entry's pointer, where ``detach`` takes it from.  A client's routes
     come from another home, so the names its runtime reports are made its own.
     """
-    out = _bound(raw, binding)
+    out = bind_runtime_configuration(raw, binding)
     table = (
         (worker or {}).get("vector", {}).get("table_name") if isinstance((worker or {}).get("vector"), dict) else None
     )
@@ -369,7 +382,7 @@ def _runtime_configs(
             preserve_ledger=recovering and routes_from.resolve() == recovered_routes.resolve(),
         )
         if worker_now is None:
-            worker_config = _worker_config(routes, store_binding(payload, root, union))
+            worker_config = worker_configuration(routes, store_binding(payload, root, union))
         elif _space(worker_now) != _space(routes):
             # A query vector from another model searches a directory the worker never fills.
             raise SharedStoreError(
@@ -379,7 +392,7 @@ def _runtime_configs(
     else:
         notes.append("vector_recall_unavailable: no runtime config for this entry; its recall is lexical only")
     if worker_config is None and worker_now is not None:
-        worker_config = _bound(worker_now, store_binding(payload, root, union))
+        worker_config = bind_runtime_configuration(worker_now, store_binding(payload, root, union))
         if worker_config == worker_now:
             # Rewriting it unchanged would still restart the running worker (supervisor_config_changed).
             worker_config = None
@@ -572,7 +585,7 @@ def adopt(*, root: Path, now: str | None = None) -> dict[str, Any]:
         run = Run(root, "adopt", now)
         worker_path = root / RUNTIME_CONFIG_FILENAME
         worker_now = _read_json(worker_path) if worker_path.is_file() else None
-        worker_config = _bound(worker_now, binding) if worker_now is not None else None
+        worker_config = bind_runtime_configuration(worker_now, binding) if worker_now is not None else None
         if worker_config is not None and isinstance(worker_config.get("auxiliary"), dict):
             auxiliary = worker_config["auxiliary"]
             if auxiliary.get("installation_dir") or auxiliary.get("ledger_path"):
@@ -788,7 +801,9 @@ def _planned_grants(instance_root: Path, grants_from: Path) -> _GrantsPlan:
     entry_config = None
     if entry_path.is_file():
         now_config = _read_json(entry_path)
-        entry_config = _bound(now_config, store_binding(updated, store, frozenset(after["scope_ids"])))
+        entry_config = bind_runtime_configuration(
+            now_config, store_binding(updated, store, frozenset(after["scope_ids"]))
+        )
         if entry_config == now_config:
             entry_config = None
     change["entry_runtime_config_rebound"] = entry_config is not None

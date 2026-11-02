@@ -1,0 +1,2 @@
+# Guard the first package import as well as later imports during setup.
+import sys; sys.dont_write_bytecode = sys.dont_write_bytecode or (sys.argv[1:2] == ["setup"] and (sys.argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower() in {"scope-recall", "scope-recall.exe", "hermes-scope-recall", "hermes-scope-recall.exe"} or "scope_recall.maintenance.cli" in getattr(sys, "orig_argv", ())))

@@ -550,9 +550,13 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert not any(name in Path(path).name for path in installed.files_written for name in before), (
         "WorkBuddy's files are never the receipt's"
     )
-    copies = {Path(path).name: Path(path).read_bytes() for path in installed.backups if Path(path).name in before}
+    copies = {
+        Path(path).name.split(".scope-recall-", 1)[0]: Path(path).read_bytes()
+        for path in installed.backups
+        if Path(path).parent == workbuddy
+    }
     assert copies == before, "each file is copied before it is changed"
-    assert {path.name for path in workbuddy.iterdir()} == present | {"skills"}
+    assert _workbuddy_visible_names(workbuddy) == present | {"skills"}
     skill = workbuddy / "skills" / "scope-recall-memory" / "SKILL.md"
     assert skill.is_file()
     assert (workbuddy / ".mcp.json").read_bytes() == proxy, "WorkBuddy's own proxy record is not touched"
@@ -599,7 +603,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     removed = apply_uninstall(removal)
     assert stopped == [(entry, "workbuddy")] * 4, "each install and the uninstall stop the entry's resident server"
     assert sorted(Path(path).name for path in removed.unmerged_files) == ["mcp.json", "settings.json"]
-    assert {Path(path).name: Path(path).read_bytes() for path in removed.backups} == held
+    assert {Path(path).name.split(".scope-recall-", 1)[0]: Path(path).read_bytes() for path in removed.backups} == held
     assert _read(workbuddy / "settings.json") == {
         **settings,
         "hooks": {
@@ -610,7 +614,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert _read(workbuddy / "mcp.json") == mcp and (workbuddy / ".mcp.json").read_bytes() == proxy
     assert plan_uninstall(instance_root=entry).unmerged_files == [], "nothing of this entry's is left"
     assert not skill.exists()
-    assert {path.name for path in workbuddy.iterdir()} == present
+    assert _workbuddy_visible_names(workbuddy) == present
 
     code, result = _run(capsys, "detach", "--instance-root", str(entry))
     assert (code, result["status"]) == (0, "detached")
@@ -1925,7 +1929,11 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
     plugin = install_dsh.plugin_path(home)
     assert plugin.read_bytes() == install_dsh.plugin_source() and str(plugin) in installed.files_written
     assert [Path(path).name for path in installed.files_merged] == ["cordis.patch.yml"]
-    assert [Path(path).read_bytes() for path in installed.backups if Path(path).name == "cordis.patch.yml"] == [before]
+    assert [
+        Path(path).read_bytes()
+        for path in installed.backups
+        if Path(path).parent == home and Path(path).name.startswith("cordis.patch.yml.scope-recall-")
+    ] == [before]
 
     ops = _patch_ops(home / "cordis.patch.yml")
     assert ops[:2] == [
@@ -2130,3 +2138,9 @@ def _patch_ops_text(data):
     import yaml
 
     return yaml.load(data.decode("utf-8-sig"), Loader=install_dsh._Loader)
+
+
+def _workbuddy_visible_names(home):
+    """Rollback copies sit beside their source files but are not active host configuration."""
+    prefixes = ("mcp.json.scope-recall-", "settings.json.scope-recall-")
+    return {path.name for path in home.iterdir() if not (path.name.startswith(prefixes) and path.suffix == ".bak")}

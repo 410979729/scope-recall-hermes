@@ -13,13 +13,15 @@ from ..adapters.hermes.shared_entries import attachment_path, read_shared_payloa
 from ..core.schema import SCHEMA_VERSION
 from ..runtime.instance_config import RuntimeInstanceConfig
 from ..runtime.model_budget import initialize_auxiliary_budget_ledger
-from .backup import atomic_write
+from .backup import atomic_write, sha256
 from .doctor import load_binding, run_doctor
-from .install import apply_install, plan_install
+from .install import apply_install
 from .install_common import InstallError
+from .install_receipt import setup_receipts_directory
 from .setup_activation import register_codex
 from .setup_configuration import runtime_payload, write_configuration
 from .setup_packages import install_package
+from .setup_preflight import check_plan, installation_plan
 from .setup_projects import register_project_copy
 from .shared import attach, init_shared, store_binding
 
@@ -32,16 +34,14 @@ def _runtime(row: dict, plan, backups: list[str]) -> Path:
         if binding.installation_kind == "shared"
         else directory / "runtime-config.json"
     )
-    if path.is_file():
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        raw["supervisor_enabled"] = row["worker"] == "on-demand"
-        if plan.models is not None:
-            configured = runtime_payload(binding, models=plan.models, host=row["host"], worker=row["worker"])
-            raw.update(
-                {key: configured[key] for key in ("auxiliary", "vector", "vector_threshold") if key in configured}
-            )
-    else:
-        raw = runtime_payload(binding, models=plan.models, host=row["host"], worker=row["worker"])
+    existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    raw = runtime_payload(
+        binding,
+        models=plan.models,
+        host=row["host"],
+        existing=existing,
+        worker=row["worker"] if plan.worker_explicit or existing is None else None,
+    )
     config = RuntimeInstanceConfig.from_mapping(raw)
     write_configuration(path, json.dumps(raw, ensure_ascii=False, indent=2) + "\n", backups)
     if config.auxiliary is not None and config.auxiliary.ledger_path is not None:
@@ -105,24 +105,7 @@ def _worker(plan, config_path: Path, python: str, backups: list[str], env_file: 
 
 def _install(row: dict, plan, backups: list[str]) -> dict:
     home = Path(row["home"])
-    binding, _directory = load_binding(row["host"], home)
-    options = {}
-    if row["host"] == "hermes":
-        from ..adapters.hermes.shared_entries import load_binding_for_home
-        from .install_hermes import bound_workspace
-
-        options["agent_workspace"] = bound_workspace(load_binding_for_home(home))
-    install = plan_install(
-        host=row["host"],
-        instance_root=home,
-        target_plugin_dir=Path(row["target"]),
-        project_root=plan.project if row["state"] == "local" and row["host"] == "codex" else None,
-        agent_id=binding.agent_id,
-        python_executable=Path(row["python"]),
-        test_mode=binding.test_mode,
-        env_file=row.get("env_file"),
-        **options,
-    )
+    install = installation_plan(row, plan)
     result = apply_install(install)
     backups.extend(result.backups)
     if row["host"] == "hermes":
@@ -140,8 +123,34 @@ def _store_usable(report: dict) -> bool:
         and report["database_present"]
         and report["sources"] is not None
         and report["schema_version"] == SCHEMA_VERSION
-        and "capture_authorization_invalid" not in report["capability_gaps"]
+        and not {
+            "capture_authorization_invalid",
+            "hermes_runtime_package_missing",
+            "hermes_runtime_package_mismatch",
+        }.intersection(report["capability_gaps"])
     )
+
+
+def _full_store_usable(report: dict) -> bool:
+    """A successful disposable probe cannot repair errors in the selected store's derived surfaces."""
+    return _store_usable(report) and not any(
+        name.startswith(("vector_", "embedding_", "hermes_runtime_"))
+        or name in {"storage_budget_exceeded", "dependency_drift"}
+        for name in report["capability_gaps"]
+    )
+
+
+def _register_copy(item: dict, backups: list[str]) -> None:
+    """Track this registration's exact prior file so a later registration has an independent rollback."""
+    backup = register_project_copy(Path(item["home"]), {key: value for key, value in item.items() if key != "home"})
+    backups.append(str(backup))
+
+
+def _write_setup_receipt(path: Path, value: dict[str, Any], backups: list[str]) -> dict[str, Any]:
+    """Journal paths and digests without including any original configuration bytes."""
+    value["backup_hashes"] = {name: sha256(Path(name)) for name in backups if Path(name).is_file()}
+    atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    return value
 
 
 def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
@@ -150,16 +159,20 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
 
     if plan.blockers:
         raise InstallError("setup plan is blocked; resolve the listed findings before applying")
+    conflicts = check_plan(plan)
+    if conflicts:
+        return dict(status="blocked", failed_step="preflight", completed=[], conflicts=conflicts)
     completed, backups, results = [], [], []
-    receipt_home = Path(plan.hosts[0]["home"]) / "scope-recall" / "setup-receipts"
+    receipt_home = setup_receipts_directory(Path(plan.hosts[0]["home"]))
     receipt = receipt_home / (uuid.uuid4().hex + ".json")
     stage = "binding"
+    value: dict[str, Any]
     try:
         if register_copies:
             for item in plan.project_copies:
-                register_project_copy(
-                    Path(item["home"]), {key: member for key, member in item.items() if key != "home"}
-                )
+                stage = "project-registration"
+                _register_copy(item, backups)
+                completed.append(stage)
         for row in plan.hosts:
             stage = row["host"] + ":package"
             install_package(row.get("package_command", []), Path(row["python"]))
@@ -182,7 +195,13 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
                 payload = read_shared_payload(root)
                 shared_binding = store_binding(payload, root, frozenset(payload["scope_ids"]))
                 if not worker_path.is_file() or plan.models is not None:
-                    raw = runtime_payload(shared_binding, models=plan.models, worker=plan.worker)
+                    existing = json.loads(worker_path.read_text("utf-8")) if worker_path.is_file() else None
+                    raw = runtime_payload(
+                        shared_binding,
+                        models=plan.models,
+                        existing=existing,
+                        worker=plan.worker if plan.worker_explicit or existing is None else None,
+                    )
                     write_configuration(worker_path, json.dumps(raw, indent=2) + "\n", backups)
                 elif plan.worker_explicit:
                     raw = json.loads(worker_path.read_text(encoding="utf-8"))
@@ -196,7 +215,7 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
             )
             completed.append(stage)
             stage = row["host"] + ":verification"
-            configured = json.loads(config_path.read_text(encoding="utf-8"))
+            configured = json.loads(worker_path.read_text(encoding="utf-8"))
             check = (
                 verify_memory(Path(row["home"]), row["host"], configured, env_file=row.get("env_file"))
                 if _store_usable(doctor.to_dict())
@@ -210,7 +229,9 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
                     host=row["host"], installation=installed, worker=worker, doctor=doctor.to_dict(), verification=check
                 )
             )
-        full = bool(results) and all(item["verification"].get("models_verified") for item in results)
+        full = bool(results) and all(
+            item["verification"].get("models_verified") and _full_store_usable(item["doctor"]) for item in results
+        )
         ready = all(
             item["verification"].get("cross_session_recall") and _store_usable(item["doctor"]) for item in results
         )
@@ -219,7 +240,8 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
             state=("完整记忆功能可用" if full else "原文检索可用") if ready else None,
             missing=[]
             if full
-            else [
+            else sorted({gap for item in results for gap in item["doctor"]["capability_gaps"]})
+            + [
                 (
                     "Configure embedding and extraction routes, credentials and a nonzero budget; "
                     "rerun setup to verify them."
@@ -246,5 +268,4 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
                 "restore the listed configuration backups if needed."
             ),
         )
-    atomic_write(receipt, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-    return value
+    return _write_setup_receipt(receipt, value, backups)

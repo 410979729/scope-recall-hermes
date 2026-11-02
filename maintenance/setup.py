@@ -13,7 +13,7 @@ from typing import Any
 from ..adapters.hermes.shared_entries import read_attachment, read_shared_payload
 from .install_common import InstallError, require_absolute
 from .install_receipt import load_receipt
-from .onboarding import inspect_installation
+from .onboarding import inspect_installation, planning_database_state
 from .setup_bindings import scope_choice
 from .setup_configuration import read_models
 from .setup_discovery import HOST_DIRECTORIES, HostLocation, discover_hosts, host_locations, interpreter, user_home
@@ -37,6 +37,7 @@ class SetupPlan:
     blockers: list[str] = field(default_factory=list)
     user_root: Path | None = None
     worker_explicit: bool = False
+    configuration_changes: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Describe actions and reference names, never model credentials or arbitrary input configuration."""
@@ -44,6 +45,7 @@ class SetupPlan:
         budget = auxiliary.get("budget") or {}
         return {
             "format": "scope-recall.setup/1",
+            "configuration_changes": self.configuration_changes,
             "hosts": self.hosts,
             "store": str(self.store),
             "project": str(self.project),
@@ -213,6 +215,17 @@ def _local_state(host: str, home: Path, blockers: list[str]) -> str:
     return "fresh"
 
 
+def _shared_worker_mode(args, store: Path, rows: list[dict]) -> str:
+    """Keep the shared worker's mode independent of an entry's trigger configuration."""
+    if args.worker is not None:
+        return args.worker
+    path = store / "runtime-config.json"
+    if path.is_file():
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return "on-demand" if raw.get("supervisor_enabled", True) else "manual"
+    return rows[0]["worker"]
+
+
 def build_plan(args: argparse.Namespace, *, environment=None) -> SetupPlan:
     """Discover only explicit roots; classify existing installs without opening a writable database."""
     env = os.environ if environment is None else environment
@@ -282,6 +295,10 @@ def build_plan(args: argparse.Namespace, *, environment=None) -> SetupPlan:
         ):
             row["scopes"]["source_entry"] = first_fresh
     for row in rows:
+        directory = Path(row["home"]) / ("data" if row["host"] == "codex" else "scope-recall")
+        row["database_inspection"] = planning_database_state(
+            (directory if row["state"] == "local" else store) / "memory.sqlite3"
+        )
         existing = _existing_settings(row, store)
         row["worker"] = args.worker or ("on-demand" if existing.get("supervisor_enabled", True) else "manual")
         auxiliary = existing.get("auxiliary") or {}
@@ -293,11 +310,11 @@ def build_plan(args: argparse.Namespace, *, environment=None) -> SetupPlan:
                 for key in ("cap_micro_usd", "total_call_cap", "total_input_cap", "total_output_cap")
             },
         )
-    return SetupPlan(
+    plan = SetupPlan(
         rows,
         store,
         project,
-        args.worker or rows[0]["worker"],
+        _shared_worker_mode(args, store, rows),
         models,
         args.test_mode,
         copies,
@@ -305,6 +322,11 @@ def build_plan(args: argparse.Namespace, *, environment=None) -> SetupPlan:
         user_home(env),
         args.worker is not None,
     )
+    from .setup_preflight import check_plan, configuration_changes
+
+    plan.blockers.extend(check_plan(plan))
+    plan.configuration_changes = configuration_changes(plan)
+    return plan
 
 
 def print_plan(plan: SetupPlan, *, machine: bool = False) -> None:
@@ -318,6 +340,7 @@ def print_plan(plan: SetupPlan, *, machine: bool = False) -> None:
         print(f"  {row['host']}: {row['home']} ({row['state']}); Python: {row['python']}")
         print(f"    Scopes: {row.get('scopes')}; worker: {row.get('worker')}")
         print(f"    Existing models and budget: {row.get('existing_models')}")
+        print(f"    Database planning state: {row.get('database_inspection')}; health is checked by doctor.")
         if row.get("package_command"):
             print(f"    Install core in host venv: {row['package_command']}")
     print(f"  Store: {plan.store}; scopes: preserve existing grants, or owner's private scope for new entries")
@@ -331,6 +354,8 @@ def print_plan(plan: SetupPlan, *, machine: bool = False) -> None:
         print(f"  Project copy requires separate approval: {copy['directory']} -> {copy['same_project_as']}")
     for blocker in plan.blockers:
         print(f"  Blocked: {blocker}")
+    for change in plan.configuration_changes:
+        print(f"  Change {change['path']} {change['field']}: {change['before']} -> {change['after']}")
     print("  Then: doctor and an isolated capture, worker pass and cross-session recall check.")
 
 
@@ -351,6 +376,9 @@ def main(argv: list[str] | None = None) -> int:
 
             plan.models = configure_models()
             _check_model_change(plan.store, plan.hosts, plan.models, plan.blockers)
+            from .setup_preflight import configuration_changes
+
+            plan.configuration_changes = configuration_changes(plan)
         print_plan(plan, machine=args.plan_json)
         if args.dry_run:
             return 2 if plan.blockers else 0

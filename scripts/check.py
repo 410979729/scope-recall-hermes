@@ -171,6 +171,7 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_setup_workload.py",
         "tests/contract/test_memory_import.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",
@@ -343,6 +344,7 @@ SUITES = {
     ],
     "packaging": [
         "tests/packaging/test_setup.py",
+        "tests/packaging/test_setup_repairs.py",
         "tests/packaging/test_clean_v11_wheel.py",
         "tests/packaging/test_package_upgrade.py",
         "tests/packaging/test_install_v11.py",
