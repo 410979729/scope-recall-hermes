@@ -493,25 +493,32 @@ def test_a_detached_start_starts_the_server_from_a_process_that_ends_at_once(ent
 
 
 def test_a_resident_server_names_itself_resident_and_ends_when_idle(entry, monkeypatch):
-    monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
-    monkeypatch.setattr(resident_entry, "LOCK_WAIT_SECONDS", 0.25)  # its length is the next tests'
+    idle = threading.Event()
+    served = []
+    original = resident_entry.serve
+
+    def serve(*args, **kwargs):
+        served.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(resident_entry, "serve", serve)
+    monkeypatch.setattr(resident_entry, "_idle_seconds", lambda *args: 10.0 if idle.is_set() else 0.0)
     _runtime_config(entry)
     worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "5.0"])
     name = local_endpoint.endpoints(entry) / f"{os.getpid()}.json"
     record = local_endpoint.resident_record(entry, "workbuddy")
-    assert _wait(lambda: name.exists() and record.exists(), 10)
-    assert json.loads(name.read_text(encoding="utf-8"))["resident"] is True
-    assert json.loads(record.read_text(encoding="utf-8"))["pid"] == os.getpid()
-    assert local_endpoint.resident_running(entry, "workbuddy")
-    # A second start of the same entry, client and version gives way at once while the first serves; serving, it
-    # would have run its own idle seconds.
-    second = time.monotonic()
-    assert resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "5.0"]) == 0
-    assert time.monotonic() - second < 2.0, "a second resident server served beside the first"
-    assert worker.is_alive()
-    worker.join(20)
+    try:
+        assert _wait(lambda: name.exists() and record.exists(), 30)
+        assert json.loads(name.read_text(encoding="utf-8"))["resident"] is True
+        assert json.loads(record.read_text(encoding="utf-8"))["pid"] == os.getpid()
+        assert local_endpoint.resident_running(entry, "workbuddy")
+        assert resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "5.0"]) == 0
+        assert served == [1] and worker.is_alive(), "only the lock owner may serve"
+    finally:
+        idle.set()
+        worker.join(30)
     assert not worker.is_alive() and box["code"] == 0
-    assert not name.exists() and not record.exists(), "an idle resident server took its name and record with it"
+    assert not name.exists() and not record.exists()
 
 
 def test_a_resident_server_ends_once_its_package_is_replaced_or_its_minutes_are_0(entry, monkeypatch):

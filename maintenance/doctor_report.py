@@ -49,6 +49,7 @@ class DoctorReport:
     worker_status: dict[str, Any] = field(default_factory=dict)
     injection_quarantined: int = 0
     injection_pending_review: int = 0
+    injection_scan_deadlines: int = 0
     sources: int | None = None
     #: Bytes of memory.sqlite3 with its journal, and of everything under vectors/.
     store_bytes: int | None = None

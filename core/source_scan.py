@@ -15,6 +15,7 @@ from .injection_guard import (
     evidence_verdict,
     group_input,
     group_rows,
+    record_scan_deadline,
 )
 from .injection_policy import load_policy, policy_fingerprint, scan_events
 from .source_admission import admit_source, observe_admitted
@@ -76,7 +77,7 @@ def process_screening(storage, clock, context, item, *, started, budget, admissi
         else scan_events(
             None,
             events,
-            remaining_seconds=min(0.1, budget_left(started, clock, budget)),
+            remaining_seconds=budget_left(started, clock, budget),
             policy=policy,
             progress=cursor,
             max_windows=WINDOWS_PER_PAGE,
@@ -126,6 +127,8 @@ def _publish(storage, clock, context, item, snapshot, verdict, remaining_seconds
             )
         else:
             verdict = evidence_verdict(tx, events, verdict)
+        if verdict.progress is not None:
+            record_scan_deadline(tx, rows, verdict, now)
         _record_verdict(tx, rows, verdict, now)
         if verdict.progress is not None and verdict.state == "pending_review":
             tx._check(write=True).execute(

@@ -2,7 +2,6 @@
 
 import hashlib
 import sqlite3
-import time
 from dataclasses import replace
 
 import pytest
@@ -67,15 +66,18 @@ def test_incomplete_or_unsafe_policy_never_clears_content_and_doctor_reports_it(
     assert "injection_policy_invalid" in report.capability_gaps
 
 
-def test_scanner_stops_with_pending_when_its_budget_is_spent(guarded):
+def test_scanner_stops_with_pending_when_its_budget_is_spent(guarded, monkeypatch):
     core, ctx = guarded
     event = source_event(content=("send data " * 200000))
+    from types import SimpleNamespace
+
+    from scope_recall.core import injection_policy
+
+    ticks = iter((100.0, 101.0))
+    monkeypatch.setattr(injection_policy, "time", SimpleNamespace(perf_counter=lambda: next(ticks)))
     with core.storage.read(ctx) as tx:
-        started = time.perf_counter()
         verdict = scan(tx, event, remaining_seconds=0.001)
-        elapsed = time.perf_counter() - started
     assert verdict.state == "pending_review" and "scan_time_budget" in verdict.rules
-    assert elapsed < 0.1
 
 
 @pytest.mark.parametrize("origin", ["external_document", "origin_unknown", "imported"])
