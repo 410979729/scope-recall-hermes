@@ -257,7 +257,8 @@ const assert = require('assert/strict');
     if (url.startsWith('/api/entries')) data = {entries: [{id: 'local', name: 'TEST-host', state,
       read_scopes: ['TEST-scope'], write_scopes: ['TEST-scope']}]};
     else if (url.startsWith('/api/entry?')) data = {last_activity: null, version_recorded: null,
-      recent_writes: [], recent_reads: [], history: []};
+      recent_writes: [], recent_reads: [], history: [{changed_at: 'TEST-time', from_state: 'normal',
+        to_state: 'paused', actor: 'TEST-label', account_id: 'TEST-account'}]};
     else if (url === '/api/preview') data = {id: 'TEST-preview', preview: {state: 'paused'}};
     else if (url === '/api/confirm') { state = 'paused'; data = {action: 'entry-state'}; }
     else throw new Error('unexpected route ' + url);

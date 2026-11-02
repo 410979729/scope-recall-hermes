@@ -20,7 +20,7 @@ from scope_recall.core import MemoryCore
 from scope_recall.core.capture import CaptureReceipt
 from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text
 from scope_recall.core.deadline import fits
-from scope_recall.core.events import prepare_capture
+from scope_recall.core.events import prepare_capture, stored_content_digest
 from scope_recall.core.failure_policy import capture_retryable
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
@@ -58,24 +58,6 @@ def _may_pass(outcome: CaptureReceipt | Exception | None) -> bool:
     if isinstance(outcome, Exception):
         return True
     return outcome is not None and outcome.disposition not in {"rejected", "conflict", "cancelled"}
-
-
-def _same_stored_content(stored_event: dict, content: object) -> bool:
-    """Whether a capture repeats what is already stored under its key.
-
-    Storage keeps the admitted text, not the host's raw text, and splits a long
-    one into segments whose first holds the prefix, so the comparison runs on
-    the same admitted form.
-    """
-    if type(content) is not str:
-        return False
-    admitted = sanitize_source_capture_text(redact_secret_text(content)[0])
-    stored = stored_event.get("content")
-    if type(stored) is not str:
-        return False
-    if "segment" in stored_event:
-        return admitted[: len(stored)] == stored
-    return admitted == stored
 
 
 @dataclass(frozen=True)
@@ -356,7 +338,7 @@ class CaptureWriter:
         again, so a different message can arrive under an old key.  Storage re-keys that one, and it must keep its
         own time.
         """
-        previous = self._adapter._require_core().source_by_event_key(
+        previous = self._adapter._require_core()._source_replay_metadata(
             context,
             identity[0],
             identity[1],
@@ -364,15 +346,17 @@ class CaptureWriter:
         )
         if (
             previous is not None
-            and previous.scope_id == scope_id
-            and previous.session_id == context.session_id
-            and previous.project_id == context.project_id
-            and previous.branch_id == context.branch_id
-            and _same_stored_content(previous.event, event.get("content"))
+            and previous["scope_id"] == scope_id
+            and previous["session_id"] == context.session_id
+            and previous["project_id"] == context.project_id
+            and previous["branch_id"] == context.branch_id
+            and type(event.get("content")) is str
+            and stored_content_digest(sanitize_source_capture_text(redact_secret_text(event["content"])[0]))
+            == previous["content_sha256"]
         ):
             for field in ("occurred_at", "recorded_at", "time_precision"):
-                if field in previous.event:
-                    event[field] = previous.event[field]
+                if field in previous["event"]:
+                    event[field] = previous["event"][field]
 
     def _closed_meanwhile(self, identity, outcome: CaptureReceipt | Exception, replay: bool, snapshot):
         """A shutdown stopped waiting for this write and closed the session meanwhile.  The write itself may well

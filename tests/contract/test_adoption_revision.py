@@ -330,9 +330,8 @@ def test_locator_failure_is_recorded_without_review_or_lost_ordinary_decision(ap
     with core.storage.read(ctx) as tx:
         assert tx._check().execute("SELECT count(*) FROM adoption_relations").fetchone()[0] == 0
         assert tx._check().execute("SELECT 1 FROM work_error_details WHERE stage='adoption_locate'").fetchone()
-        assert (
-            tx._check().execute("SELECT payload_json FROM adoption_processing").fetchone()[0] == '{"stage": "locate"}'
-        )
+        state = json.loads(tx._check().execute("SELECT payload_json FROM adoption_processing").fetchone()[0])
+        assert state["stage"] == "locate" and state["entry_fence"]
 
 
 @pytest.mark.parametrize("delete_confirmation", [False, True])

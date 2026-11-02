@@ -266,6 +266,13 @@ class PromptRecall:
                         in_context_since=since,
                     )
                 preparation = self._hook.core.prepare_recall_render(context, packet)
+                current = getattr(self._hook.core, "recall_packet_current", None)
+                if packet.get("items") and callable(current) and not current(context, packet):
+                    options = {"current_source_refs": current_refs, "deadline_seconds": self._hook.remaining(deadline)}
+                    if since is not None:
+                        options["in_context_since"] = since
+                    packet = self._hook.core.recall_packet(context, request, **options)
+                    preparation = self._hook.core.prepare_recall_render(context, packet)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             code = getattr(exc, "code", None)
             self._hook.diagnostics.recall_error_detail = error_detail(
@@ -306,4 +313,7 @@ class PromptRecall:
             text = f"{text}\n\n{notice}" if text else notice
         if not text:
             return {}
+        current = getattr(self._hook.core, "recall_packet_current", None)
+        if packet.get("items") and callable(current) and not current(context, packet):
+            return self._notice(notice) if notice else {}
         return self._notice(text)

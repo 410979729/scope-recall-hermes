@@ -86,6 +86,10 @@ class Prefetch:
             zone=display_zone(),
         )
         preparation = core.prepare_recall_render(context, packet)
+        current = getattr(core, "recall_packet_current", None)
+        if packet.get("items") and callable(current) and not current(context, packet):
+            packet = core.recall_packet(context, request, current_source_refs=current_refs, zone=display_zone())
+            preparation = core.prepare_recall_render(context, packet)
         with self._adapter._lock:
             if self._adapter._active_turn_id == turn:
                 # A turn begun meanwhile, after Hermes gave up on this call, keeps its own state.
@@ -101,6 +105,8 @@ class Prefetch:
             entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
             zone=display_zone(),
         )
+        if packet.get("items") and callable(current) and not current(context, packet):
+            return notice
         if notice:
             return f"{rendered}\n\n{notice}" if rendered else notice
         return rendered

@@ -112,9 +112,15 @@ async function loadEntries() {
     const row = node("article", undefined, $("entry-items"));
     node("h3", entry.name + " · " + entry.id, row);
     node("p", t("entry_" + entry.state), row);
-    for (const [label, value] of [["entryReadScopes", entry.read_scopes], ["entryWriteScopes", entry.write_scopes], ["entryActivity", detail.last_activity], ["entryVersion", detail.version_recorded], ["entryWrites", detail.recent_writes], ["entryReads", detail.recent_reads], ["entryHistory", detail.history]]) {
+    for (const [label, value] of [["entryReadScopes", entry.read_scopes], ["entryWriteScopes", entry.write_scopes], ["entryActivity", detail.last_activity], ["entryVersion", detail.version_recorded], ["entryWrites", detail.recent_writes], ["entryReads", detail.recent_reads]]) {
       node("h4", t(label), row);
       node("pre", value == null ? t("notRecorded") : JSON.stringify(value, null, 2), row);
+    }
+    node("h4", t("entryHistory"), row);
+    for (const change of detail.history) {
+      node("p", change.changed_at + " ? " + t("entry_" + change.from_state) + " ? " + t("entry_" + change.to_state), row);
+      node("p", t("entryActor") + ": " + change.actor, row);
+      node("p", t("entryAccount") + ": " + (change.account_id || t("notRecorded")), row);
     }
     for (const state of ["normal", "read-only", "paused"]) {
       const button = node("button", t(state === "normal" ? "entry_restore" : "entry_" + state), row);

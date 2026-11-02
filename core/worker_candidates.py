@@ -17,7 +17,7 @@ from .candidate_tables import UNRESOLVED_SUBJECT_REASON
 from .claim_normalization import normalize_frame
 from .claims import evidence_refs
 from .consolidate import candidate_evidence_sources
-from .entry_control import sources_paused, sources_paused_now
+from .entry_control import paused_since, sources_paused
 from .evidence_question import evidence_text, rooted_verdict
 from .evidence_support import SupportVerdict, positioned, support_fingerprint, using_support
 from .failure_policy import BUDGET_PAUSE_ERRORS
@@ -153,6 +153,10 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
     """Record the model's verdict on a candidate, in the transaction that re-checked the lease: obsolete when the
     candidate, its evidence or anything it was judged on changed during the call; else the claim the verdict
     supports, if any, applied and the evaluation completed."""
+    if paused_since(tx, dependencies.entries or {}):
+        return work_result(
+            tx.candidates.defer_entry(evaluation.evaluation_id, item, now=now), error_code="entry_paused"
+        )
     current = tx.candidates.evaluation(evaluation.evaluation_id)
     if current is None:
         mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
@@ -297,14 +301,15 @@ def process_candidate_evaluation(
             if invalid_reason is not None
             else fail(code="candidate_attempt_interrupted")
         )
+    assert dependencies is not None
     try:
         repair = {"validation_feedback": feedback} if feedback is not None else {}
         blocked = private.outbound_blocked(
             storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)
         )
-        if blocked or sources_paused_now(
-            storage, context, evidence_sources, remaining_seconds=budget_left(started, clock, budget)
-        ):
+        with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+            interrupted = paused_since(tx, dependencies.entries or {})
+        if blocked or interrupted:
             return (
                 fail(code="private_mode", budget_pause=True)
                 if blocked

@@ -113,7 +113,41 @@ def test_render_checks_entry_state_and_version(app):
     owner.set_entry_state("local", "paused", actor="TEST-owner")
     assert core.prepare_recall_render(context, packet).context is None
     owner.set_entry_state("local", "normal", actor="TEST-owner")
-    assert core.prepare_recall_render(context, packet).context is not None
+    assert core.prepare_recall_render(context, packet).context is None
+    released = core.release_recall_packet(context, packet)
+    assert not released["items"] and "entry_state:paused" in released["gaps"]
+    fresh = core.recall_packet(context, recall_request(query="TEST harbor palette"))
+    assert core.prepare_recall_render(context, fresh).context is not None
+
+
+def test_paused_entry_public_content_reads_are_empty(app):
+    from tests.contract.test_claims import initial
+
+    core, context = app
+    claim, source = initial(core, context)
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    assert core.source_by_event_key(context, source.event["source_event_key"]) is not None
+    assert core.current_claim(context, claim.ref) is not None
+    assert core.claim_history(context, claim.ref)
+    assert core.episodes(context)
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    assert core.source_by_event_key(context, source.event["source_event_key"]) is None
+    assert core.current_claim(context, claim.ref) is None
+    assert not core.claim_history(context, claim.ref)
+    assert not core.episodes(context)
+
+
+def test_history_records_process_account_separately_from_actor(app, monkeypatch):
+    import os
+
+    core, context = app
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    monkeypatch.setenv("LOGNAME", "TEST-forged-account")
+    monkeypatch.setenv("USERNAME", "TEST-forged-account")
+    owner.set_entry_state("local", "paused", actor="TEST-label")
+    history = owner.entry("local")["history"][0]
+    assert history["actor"] == "TEST-label"
+    assert history["account_id"].startswith("S-1-") if os.name == "nt" else history["account_id"] == str(os.getuid())
 
 
 def test_paused_entry_cannot_read_a_source_directly(app):

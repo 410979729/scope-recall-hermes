@@ -9,6 +9,7 @@ from ..contracts import ContractError
 from . import private
 from .adoption import adoption_messages, decision_messages, decision_proposal, decode_selection
 from .adoption_storage import PreparedAdoption, adoption_context, binding_reason, record_binding, source_reason
+from .entry_control import entry_fence, paused_since
 from .evidence_support import SupportVerdict, support_fingerprint, using_support
 from .mutate import apply_claim_frames, validate_claims
 from .semantic_proposals import prepare_support
@@ -78,11 +79,18 @@ def prepare_adoptions(storage, context, sources, judge, *, clock, remaining_seco
         return ()
     deadline = time.monotonic() + remaining_seconds
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-        snapshots = tuple(s for source in sources if (s := adoption_context(tx, source)) is not None)
+        snapshots = tuple(
+            (s, entry_fence(tx, (s.confirmation, s.assistant)))
+            for source in sources
+            if (s := adoption_context(tx, source)) is not None
+        )
     results = []
-    for snapshot in snapshots:
+    for snapshot, fence in snapshots:
         state = dict(stage="locate")
         while state["stage"] != "done":
+            with storage.read(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+                if paused_since(tx, fence):
+                    raise ContractError("ACCESS_DENIED", "entry_paused")
             state, result = advance_adoption(
                 storage,
                 context,
@@ -93,12 +101,17 @@ def prepare_adoptions(storage, context, sources, judge, *, clock, remaining_seco
                 remaining_seconds=max(0.001, deadline - time.monotonic()),
             )
             if result is not None:
-                results.append(result)
+                from dataclasses import replace
+
+                results.append(replace(result, entry_fence=fence))
     return tuple(results)
 
 
 def publish_adoption(tx, adoption, *, now):
     """Publish only a supported decision after revalidating its exact live binding."""
+    fence = adoption.entry_fence or entry_fence(tx, (adoption.snapshot.confirmation, adoption.snapshot.assistant))
+    if paused_since(tx, fence):
+        raise ContractError("ACCESS_DENIED", "entry_paused")
     if adoption.selection is None:
         raise ContractError("DERIVATION_INVALID", "adoption_selection")
     reason = adoption.reason or binding_reason(tx, adoption.snapshot, adoption.selection)

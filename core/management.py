@@ -98,7 +98,11 @@ class MemoryManagement:
                 "WHERE entry_id=? ORDER BY version DESC LIMIT 100",
                 (entry_id,),
             )
+            from .entry_control import history_actor
+
             history_rows = [dict(row) for row in rows]
+            for row in history_rows:
+                row["actor"], row["account_id"] = history_actor(row["actor"])
             latest_capture = (
                 tx._check()
                 .execute(
