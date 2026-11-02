@@ -144,7 +144,12 @@ def event_admission_order(ranked, limits):
         if (
             obj.kind == "event"
             and candidate.source not in {"exact_ref", "background"}
-            and not {"restatement_of", "restatement_anchor"}.intersection(dict(obj.metadata))
+            and not {
+                "restatement_of",
+                "restatement_anchor",
+                "aggregation_members",
+                "aggregation_priority",
+            }.intersection(dict(obj.metadata))
         ):
             run.append(pair)
         else:

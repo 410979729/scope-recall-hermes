@@ -18,20 +18,24 @@ import json
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Callable, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 
-from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
+from ..contracts import ContractError, RecallItem, RecallPacket
 from .background_context import is_background, mark_background
 from .entity_queries import fence_entity_query
+from .recall_aggregation import aggregation_candidates, recheck_aggregation
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics, RecallTimings
+from .recall_items import PacketKind as PacketKind
+from .recall_items import packet_item as packet_item
+from .recall_items import packet_kind as packet_kind
 from .recall_needs import asks_to_resume, unmet_needs
 from .recall_restatement import recheck_restatement
 from .resume_compaction import (
     compact_episode_variants,
     next_step_provenance_supported,
-    resume_evidence_refs,
     resume_fields,
 )
 from .retrieval import (
@@ -41,12 +45,9 @@ from .retrieval import (
     SearchContext,
     SearchLimits,
     effective_limits,
-    optional_json,
 )
 from .retrieval_storage import RetrievalStorage
 
-_BASIS = frozenset({"direct_report", "observed", "derived_summary", "inferred_suggestion", "unknown"})
-_CLAIM_STATES = frozenset({"proposed", "active", "superseded", "disputed", "retracted"})
 _AUTHORITY_GAP_PREFIXES = ("sqlite_unavailable",)
 #: Gaps after which the evidence delivered may lack part of the answer: authority failed, or a read did not finish.
 #: Query evidence dropped as stale or by the budget may have held part of it too (``_Draft.answer_dropped``).  The
@@ -72,7 +73,6 @@ _BARE_MARKER_PREFIXES = frozenset(
 _MAX_PACKET_ITEM_CHARS = 12000
 _MAX_APPLICABILITY_CHARS = 2048
 _MAX_ORIGIN_CHARS = 80
-_MAX_OCCURRED_AT_CHARS = 64
 _MAX_EVIDENCE_REFS = 32
 _MAX_RENDER_PREPARED = 64
 _RENDER_CONTEXT_SCHEMA = "scope-recall.recall_context/1.1"
@@ -80,7 +80,6 @@ _RENDER_CONTEXT_SCHEMA = "scope-recall.recall_context/1.1"
 # so a packet measured before recording has the bytes of the packet returned.
 _DIAGNOSTIC_REF_PLACEHOLDER = RECALL_DIAGNOSTIC_PREFIX + ("0" * 16)
 
-PacketKind = Literal["event", "episode", "claim", "procedure", "artifact"]
 Pair = tuple[CandidateRef, RetrievedObject]
 
 
@@ -117,54 +116,6 @@ def envelope_tokens(packet: RecallPacket, *, include_diagnostic_ref: bool = True
     """The one estimate used for admission and the final canonical JSON."""
     measured = packet if include_diagnostic_ref else dict(packet, diagnostic_ref=None)
     return estimate_tokens(canonical_render_json(measured))
-
-
-def packet_kind(obj: RetrievedObject) -> PacketKind:
-    if obj.kind in {"event", "episode", "claim", "procedure", "artifact"}:
-        return cast(PacketKind, obj.kind)
-    return "event"
-
-
-def packet_item(obj: RetrievedObject, *, content: dict | None = None) -> RecallItem:
-    """The public item for one released object.
-
-    ``content`` replaces an episode resume with a compact field selection; the
-    item then carries every ref of every retained field, so a cross-field
-    packet stays provable rather than merely plausible-looking.
-    """
-    evidence = list(dict.fromkeys(obj.evidence_refs)) if content is None else list(resume_evidence_refs(content))
-    if not evidence:
-        evidence = [f"{obj.ref}@{obj.revision}"]
-    item: RecallItem = {
-        "ref": obj.ref,
-        "revision": obj.revision,
-        "kind": packet_kind(obj),
-        "content": obj.content if content is None else canonical_render_json(content),
-        "temporal_status": obj.temporal_status,
-        "origin": obj.origin,
-        "applicability": obj.applicability,
-        "evidence_refs": evidence,
-        "expandable": bool(obj.expandable),
-        "basis": cast(Basis, obj.basis if obj.basis in _BASIS else "unknown"),
-    }
-    metadata = dict(obj.metadata)
-    # An unpromoted claim reaches recall labelled: temporal_status alone cannot
-    # tell a lead from a retired truth, since both look "historical".
-    if metadata.get("state") in _CLAIM_STATES:
-        item["claim_state"] = metadata["state"]
-    reason = metadata.get("restatement_qualification") or metadata.get("qualification_reason")
-    if reason:
-        item["qualification_reason"] = str(reason)[:120]
-    contexts = bounded_source_contexts(optional_json(metadata.get("source_contexts")))
-    if contexts:
-        item["source_contexts"] = contexts
-    occurred = metadata.get("occurred_at")
-    if type(occurred) is str and 0 < len(occurred) <= _MAX_OCCURRED_AT_CHARS:
-        item["occurred_at"] = occurred
-    entries = bounded_entry_labels(optional_json(metadata.get("entries")))
-    if entries:
-        item["entries"] = entries
-    return item
 
 
 def fits_packet_schema(obj: RetrievedObject) -> bool:
@@ -473,7 +424,18 @@ class RecallPacketCompiler:
         if self._remaining_ms(context) == 0:
             gaps.append("deadline_exceeded_release")
             return None
-        fresh = self.storage_reader.hydrate(tx, candidate, context)
+        fresh = (
+            recheck_aggregation(
+                tx,
+                context,
+                candidate,
+                obj,
+                self.storage_reader,
+                now=getattr(self._clock, "utc_now", lambda: context.now)(),
+            )
+            if "aggregation_members" in dict(obj.metadata)
+            else self.storage_reader.hydrate(tx, candidate, context)
+        )
         if fresh is None:
             gaps.append(f"stale_candidate:{candidate.ref}@{candidate.revision}")
             return None
@@ -494,7 +456,11 @@ class RecallPacketCompiler:
         their own in every read."""
         prefetch = getattr(self.storage_reader, "prefetch", None)
         if prefetch is not None and self._remaining_ms(context) > 0:
-            prefetch(tx, tuple(candidate for candidate, _obj in pairs), context)
+            prefetch(
+                tx,
+                tuple(member for candidate, obj in pairs for member in aggregation_candidates(candidate, obj)),
+                context,
+            )
 
     def _verify(self, storage, draft: _Draft, ranked: list[Pair]) -> list[Pair]:
         """Rehydrate every candidate in one fresh read; a withdrawal in its scopes empties it."""

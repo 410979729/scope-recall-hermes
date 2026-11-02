@@ -31,6 +31,20 @@ SQLite release checks, so slow optional channels can leave a partial packet with
 their cutoff reason. Unverified items never ship. The thresholds and diagnostic counts are described
 in [the recall configuration](docs/configuration.md#vector_threshold).
 
+Current and automatic recall can fold related first-hand evidence from at
+least three sessions into one packet item. Normalized facts share a subject
+and predicate; raw messages share query anchors and common content terms.
+Groups retain one verified speaker and an exact scope, project and branch.
+Each item shows the number of visible evidence records, their time range,
+verbatim source windows and versioned references. These are matching records
+from the bounded search, not a lifetime occurrence count. At most twelve
+records are listed per group; all grouped items together use at most 2048
+budget units and half the requested packet budget. The remaining slots and
+budget remain available to other evidence. Truncation is labelled, and every
+member is checked again before release. Historical reads keep separate items.
+The existing packet fields and shared host renderer carry the view; no store
+migration or configuration change is required.
+
 **Recall-quality checks.** The [synthetic recall benchmark](CONTRIBUTING.md#the-recall-benchmark)
 provides reproducible development and held-out splits for retrieval, answerability,
 scope isolation, packet size and latency. It uses proposed claims and a word-hashing

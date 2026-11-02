@@ -20,6 +20,7 @@ from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
 from .model_content import withhold_secret_items
 from .owner_view import OwnerView, owner_names, owner_view
+from .recall_aggregation import aggregate_evidence, aggregation_candidates
 from .recall_budget import estimate_tokens, event_admission_order, release_reserve_seconds
 from .recall_diagnostics import RecallTimings
 from .recall_needs import (
@@ -1257,8 +1258,26 @@ class RetrievalPipeline:
         ordered = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_select")
+        query_objects = {candidate.key: obj for candidate, obj in ordered}
+        protected = self._apply_budget(DistinctContent().filtered(ordered), working.limits)
+        ordered = aggregate_evidence(
+            tx,
+            withhold_secret_items(ordered, gaps, content=lambda pair: pair[1]),
+            working,
+            clock=self.clock.monotonic,
+            gaps=gaps,
+            protected=protected,
+            now=getattr(self.clock, "utc_now", lambda: working.now)(),
+        )
         ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)
-        query_items = tuple(obj for _candidate, obj in ranked)
+        # A view changes packing, not the facts used to judge whether the
+        # question is answered. Captions must not turn a missing value into
+        # support merely by repeating the question's vocabulary.
+        query_items = tuple(
+            query_objects.get(member.key, obj)
+            for candidate, obj in ranked
+            for member in aggregation_candidates(candidate, obj)
+        )
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):
                 # Nothing that fits answered (as when the only hit that fits is a message the model still holds): one
