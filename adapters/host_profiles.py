@@ -79,7 +79,7 @@ HOSTS = {
     ),
     "claude-code": HostProfile(
         turn_field="prompt_id",
-        events=frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
+        events=frozenset({"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"}),
         record_format="claude-code",
         prompt_prefixes=("<task-notification>",),
         reminder_open=r"^[ \t]*<system-reminder\b[^>\n]*>",

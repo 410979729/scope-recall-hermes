@@ -85,6 +85,8 @@ class PromptRecall:
         that lost its key would recall every prompt by words alone).  The server writes nothing: the prompt was stored
         here, so an answer that comes after the hook is done costs the turn nothing but its warm vectors."""
         read_mode = getattr(self._hook.core, "private_mode", None)
+        if context.compaction_seq is not None:
+            return self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since)
         if (read_mode(context) if callable(read_mode) else None) == "full":
             # No recall, no query embedding, no server round trip: the notice is the whole answer.
             return self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since)

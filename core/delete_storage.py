@@ -13,6 +13,7 @@ from . import lexical_index, lineage
 from .adoption_storage import purge_adoptions
 from .claims import canonical_time
 from .inbox_rules import deleted_forms, deleted_text, holds, taking_a_new_key
+from .retractions import retraction_after as retraction_after
 from .schema import OBJECT_TABLES
 
 
@@ -76,28 +77,6 @@ def watch_mirrored_tombstones(conn):
         yield touched
     finally:
         conn.set_authorizer(None)
-
-
-def retraction_after(conn, scope_ids, epoch: int) -> bool:
-    """Whether a deletion or suppression touching any of ``scope_ids`` was recorded after ``epoch``.
-
-    Every capture and every derived write moves ``memory_epoch``; only these withdraw anything a
-    reader may already hold.  An operation records the epoch it moved the store to, so one recorded
-    above ``epoch`` came after a read at ``epoch`` -- and a restore replays each with its own, so a
-    deletion made after that read still counts once an older file is back.
-    """
-    scopes = sorted(set(scope_ids))
-    if not scopes:
-        return False
-    marks = ",".join("?" for _ in scopes)
-    return (
-        conn.execute(
-            f"""SELECT 1 FROM deletion_operations o WHERE o.memory_epoch>?
-            AND EXISTS(SELECT 1 FROM json_each(o.scope_ids_json) s WHERE s.value IN ({marks})) LIMIT 1""",
-            (epoch, *scopes),
-        ).fetchone()
-        is not None
-    )
 
 
 def purge_work_ref(operation_id: str, scope_id: str) -> str:
