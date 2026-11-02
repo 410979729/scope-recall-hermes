@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from ..contracts import ContractError, utc_timestamp
-from . import lineage, private
+from . import handoff, lineage, private
 from .claim_storage import parse_source_ref
 from .claims import statement_key
 from .entry_control import context_fence, entry_changed
@@ -46,6 +46,7 @@ def _dependencies(conn, items):
 def rebuild_scope(tx, scope_id: str, now: str) -> bool:
     """Replace one scope's manifest when the selected object versions or their rank change."""
     conn = tx._check(write=True)
+    handoff.expire_pending(tx, scope_id, now)
     cutoff = (datetime.fromisoformat(utc_timestamp(now)) - timedelta(days=14)).isoformat()
     tasks = conn.execute(
         "SELECT e.episode_id,e.current_revision,v.recorded_at FROM episodes e "
@@ -454,6 +455,7 @@ def mark_delivered(tx, context, items, now: str, cutoff: int, source: str = "bri
             item["revision"],
         )
         for item in items
+        if item["kind"] != "handoff"
     ]
     tx._check(write=True).executemany(
         "INSERT INTO session_brief_injections(entry_id,session_id,object_kind,object_ref,revision,delivered_at,"
@@ -468,7 +470,7 @@ def mark_delivered(tx, context, items, now: str, cutoff: int, source: str = "bri
     )
 
 
-def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
+def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool, clock):
     """Render at most the per-kind limits, never a partial line."""
     limits = {"task": 3, "decision": 5, "preference": 8}
     items, lines = [], []
@@ -488,6 +490,9 @@ def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
                 continue
             lines.append(line)
             items.append({"kind": kind, "ref": candidate.ref, "revision": candidate.revision})
+    handoff.append_brief(
+        tx, search.now, items, lines, _HEADING, token_limit, deadline=search.deadline, monotonic=clock.monotonic
+    )
     return items, lines
 
 
@@ -512,7 +517,7 @@ def remove_question_overlaps(brief: dict, question_text: str) -> None:
     kept = [
         (item, line)
         for item, line in zip(brief["items"], brief["_lines"], strict=True)
-        if item["kind"] == "task" or item["ref"] not in question_text
+        if item["kind"] in {"task", "handoff"} or item["ref"] not in question_text
     ]
     brief["items"] = [item for item, _line in kept]
     brief["_lines"] = [line for _item, line in kept]
@@ -535,7 +540,16 @@ def read(
     started = clock.monotonic()
     now = utc_timestamp(clock.utc_now())
     empty = {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
-    search = SearchContext("session briefing", "auto", None, (), SearchLimits(), started + 5, now, context)
+    search = SearchContext(
+        "session briefing",
+        "auto",
+        None,
+        (),
+        SearchLimits(),
+        started + (5 if remaining_seconds is None else min(5, max(0, remaining_seconds))),
+        now,
+        context,
+    )
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         entry = context_fence(tx, context)
         if entry_changed(tx, entry):
@@ -563,6 +577,7 @@ def read(
                 private.active_intervals(tx, now),
                 token_limit,
                 deliver and not compact,
+                clock,
             )
         )
         epoch = tx.memory_epoch()
@@ -593,7 +608,7 @@ def read(
     return result
 
 
-def validate_prepared(tx, clock, context, brief) -> bool:
+def validate_prepared(tx, clock, context, brief, *, deadline=None) -> bool:
     """Recheck selected lines if truth or privacy changed after preparation."""
     now = utc_timestamp(clock.utc_now())
     mode, marker = private.recall_state(tx, context, now, after=brief["_privacy_marker"])
@@ -608,12 +623,16 @@ def validate_prepared(tx, clock, context, brief) -> bool:
         return False
     if (mode == "full" and brief["text"]) or (brief["_deliver"] and not brief["_compact"] and _started(tx, context)):
         return False
+    if not handoff.brief_valid(tx, now, brief["items"], brief["_lines"], deadline=deadline, monotonic=clock.monotonic):
+        return False
     if tx.memory_epoch() == brief["_epoch"] and marker == brief["_privacy_marker"]:
         return True
     search = SearchContext("session briefing", "auto", None, (), SearchLimits(), clock.monotonic() + 5, now, context)
     manifest = {(item["kind"], item["ref"]): item for item in _manifest(tx, context)}
     intervals, hydration = private.active_intervals(tx, now), RetrievalHydration()
     for item, line in zip(brief["items"], brief["_lines"], strict=True):
+        if item["kind"] == "handoff":
+            continue
         saved = manifest.get((item["kind"], item["ref"]))
         found = _safe_line(tx, search, saved, intervals, hydration) if saved else None
         if found is None or found[2] != line:
@@ -626,14 +645,14 @@ def entry_invalid(tx, context, fence):
     return set(fence) != set(context_fence(tx, context)) or entry_changed(tx, fence)
 
 
-def _release_refusal(tx, clock, context, brief, fence):
+def _release_refusal(tx, clock, context, brief, fence, *, deadline=None):
     """Name the first failed entry, retraction or briefing authority fence."""
     from .retractions import retraction_after
 
     if entry_invalid(tx, context, fence):
         return "entry_state:paused"
     if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not validate_prepared(
-        tx, clock, context, brief
+        tx, clock, context, brief, deadline=deadline
     ):
         return "brief_invalidated"
     return None
@@ -644,9 +663,10 @@ def confirm(storage, clock, context, brief: dict, *, entry_fence, remaining_seco
     if remaining_seconds is not None and remaining_seconds <= 0:
         return "brief_safety_unconfirmed"
     started = clock.monotonic()
+    deadline = started + (5 if remaining_seconds is None else remaining_seconds)
     try:
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence, deadline=deadline):
                 return refusal
     except Exception:  # noqa: BLE001 - an unfinished safety check must not release prepared text.
         return "brief_safety_unconfirmed"
@@ -658,7 +678,7 @@ def confirm(storage, clock, context, brief: dict, *, entry_fence, remaining_seco
     try:
         with storage.write(context, remaining_seconds=wait) as tx:
             entered = True
-            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence, deadline=deadline):
                 return refusal
             validated = True
             if brief["_compact"] and context.compaction_seq is None:

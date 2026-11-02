@@ -124,3 +124,13 @@ ranking signals, processing counts and reasons for an empty packet. Private atte
 available item to correct, mute or delete it with the same preview and confirmation as **Browse and search**.
 Deleted, held, private, stale or unauthorized references have no action link. See [Recall history](manage.md#recall-history)
 for retention settings and command-line lookup.
+
+
+## Handoffs
+
+The Handoffs page lists task reports, their sending and receiving entries,
+lifecycle, expiry, confirmation state and injection safety state. Pending reports
+have a Cancel button using the same preview and confirmation flow as other owner
+operations. Content whose source is deleted, hidden or outside the selected
+installation's authority is withheld. Accepting a handoff belongs to an
+agent's authenticated tool entry.

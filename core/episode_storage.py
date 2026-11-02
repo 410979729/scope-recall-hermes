@@ -19,6 +19,7 @@ from .episodes import (
     state_from_sources,
     supported_work_goal,
 )
+from .handoff import after_summary
 from .resume_compaction import resume_evidence_refs
 from .visibility import allowed, allowed_refs
 
@@ -462,4 +463,5 @@ class Episodes:
             target, version = parse_source_ref(artifact)
             lineage.depend_unless_carried(conn, "episode", ref, revision, "artifact", target, version)
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
+        after_summary(self.tx, ref, now)
         return self.get(ref)

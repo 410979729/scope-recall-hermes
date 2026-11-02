@@ -200,7 +200,7 @@ def test_entry_state_schema_upgrade_and_rollback_snapshot(app):
     downgrade_store(core.storage.path, 1127)
     receipt = {}
     core.storage.initialize(receipt=receipt)
-    assert (receipt["schema_before"], receipt["schema_after"], receipt["snapshot_verified"]) == (1127, 1129, True)
+    assert (receipt["schema_before"], receipt["schema_after"], receipt["snapshot_verified"]) == (1127, 1130, True)
     owner = MemoryManagement(core, InstallationMaintenance(ctx))
     assert owner.entry("local")["state"] == "normal"
     owner.set_entry_state("local", "paused", actor="TEST-owner")

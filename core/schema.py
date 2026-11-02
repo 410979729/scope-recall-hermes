@@ -1,11 +1,12 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
+from .handoff_schema import STATEMENTS as HANDOFF_STATEMENTS
 from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1129
+SCHEMA_VERSION = 1130
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -776,6 +777,7 @@ STATEMENTS = (
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
     + SESSION_BRIEF_STATEMENTS
+    + HANDOFF_STATEMENTS
     + INJECTION_DELIVERY_STATEMENTS
     + REFLECTION_STATEMENTS
     + REFLECTION_POLICY_STATEMENTS
@@ -1223,3 +1225,11 @@ def upgrade_1128(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1129 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1129")
+
+
+def upgrade_1129(connection):
+    """Add complete entry-owned task reports without changing existing facts or work types."""
+    for statement in HANDOFF_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1130 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1130")

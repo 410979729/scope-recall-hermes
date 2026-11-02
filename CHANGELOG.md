@@ -15,6 +15,8 @@ Scope owners can version per-scope extraction instructions from management; inst
 Recording can be paused or resumed for the current session with direct owner commands, and capture receipts count removed inline private spans.
 The shared store can run in a Linux container with host networking and remote client entries.
 
+Task handoffs carry versioned agent reports between entries, with conditional acceptance, sender or owner cancellation, configurable expiry, source checks and injection screening. Pending confirmed reports appear in session briefings; unconfirmed summary drafts and held reports remain outside automatic injection. The local management page lists handoffs and supports reviewed cancellation. All handoff exits check copied-field dependencies and host-attested sender-session privacy; acceptance checks expiry after acquiring the writer, and briefing scans share the remaining time budget.
+
 Session start can deliver a bounded, source-checked briefing of unfinished tasks, recent decisions and important
 preferences. Briefings are prepared by the worker, do not require model calls, and omit content already delivered in
 the current context. The coordinated schema upgrade adds rebuildable scope manifests and session delivery accounting.

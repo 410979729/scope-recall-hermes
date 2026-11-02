@@ -21,6 +21,8 @@ let recallBefore = null;
 let recallFilters = {};
 let recallRows = [];
 let recallIdentity = 0;
+let handoffBefore = null;
+let handoffRows = [];
 let healthCursor = null;
 let healthActionsBefore = null;
 let healthPages = [];
@@ -103,6 +105,7 @@ async function loadPage(page) {
   if (page === "overview") overview(await request("overview"));
   if (page === "entries") await loadEntries();
   if (page === "browse") await browse(false);
+  if (page === "handoffs") await loadHandoffs(false);
   if (page === "health") await loadHealth(false);
   if (page === "recalls") await loadRecalls(false);
   if (page === "quarantine") await loadQuarantine(false);
@@ -370,6 +373,7 @@ function translate() {
   if (lastPrivate) privateState(lastPrivate);
   if (lastScan) renderBrowse();
   if (recallRows.length) renderRecalls();
+  if (handoffRows.length) renderHandoffs();
   if (healthPages.length) renderHealth();
   if (healthActionItems.length) renderHealthActions();
   if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
@@ -432,6 +436,7 @@ $("confirm").addEventListener("click", () => run(async () => {
   if (data.action === "health-undo" && currentPage === "health") await loadHealth(false);
   if (["forget", "forget-session"].includes(data.action)) $("detail").hidden = true;
   if (["revise", "mute", "unmute"].includes(data.action) && selected) await detail(selected.ref);
+  if (currentPage === "handoffs") await loadHandoffs(false);
   if (currentPage === "entries") await loadEntries();
   if (currentPage === "quarantine") await loadQuarantine(false);
   if (currentPage === "private") privateState(await request("private"));
@@ -441,3 +446,26 @@ $("recall-filters").addEventListener("submit", (event) => { event.preventDefault
 $("recall-next").addEventListener("click", () => run(() => loadRecalls(true)));
 translate();
 run(() => loadPage("overview"));
+
+async function loadHandoffs(more) {
+  const data = await request("handoffs", more && handoffBefore ? {before: handoffBefore} : {});
+  handoffRows = more ? [...handoffRows, ...data.items] : data.items;
+  handoffBefore = data.next_before;
+  $("handoff-next").disabled = !handoffBefore;
+  renderHandoffs();
+}
+function renderHandoffs() {
+  $("handoff-items").replaceChildren();
+  for (const item of handoffRows) {
+    const row = node("article", undefined, $("handoff-items"));
+    node("h3", item.ref, row);
+    node("span", t(item.state) + " | " + t(item.safety_state), row);
+    node("pre", JSON.stringify(item, null, 2), row);
+    if (item.state === "pending") {
+      const cancel = node("button", t("cancel"), row);
+      cancel.addEventListener("click", () => run(() => preview({action: "handoff-cancel", ref: item.ref, expected_revision: item.revision})));
+    }
+  }
+}
+$("refresh-handoffs").addEventListener("click", () => run(() => loadHandoffs(false)));
+$("handoff-next").addEventListener("click", () => run(() => loadHandoffs(true)));

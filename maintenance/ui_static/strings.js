@@ -1,6 +1,7 @@
 "use strict";
 window.UI_STRINGS = {
   "en": {
+    "handoffs": "Handoffs", "accepted": "Accepted", "cancelled": "Cancelled", "expired": "Expired",
     "entries": "Entries",
     "entry_normal": "Normal",
     "entry_restore": "Restore",
@@ -174,6 +175,7 @@ window.UI_STRINGS = {
     "saveImportance": "Save importance"
   },
   "zh": {
+    "handoffs": "交接", "accepted": "已接", "cancelled": "取消", "expired": "过期",
     "entries": "入口",
     "entry_normal": "正常",
     "entry_restore": "恢复",

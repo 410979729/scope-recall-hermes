@@ -602,6 +602,7 @@ class Deletions:
                 conn.execute(
                     "UPDATE episode_versions SET resume_json=NULL,environment_revision=NULL WHERE episode_id=?", (ref,)
                 )
+                conn.execute("UPDATE handoffs SET resume_json='{}',session_label=NULL WHERE task_ref=?", (ref,))
             elif kind == "artifact":
                 # Keep only opaque retention metadata needed by attachment
                 # cleanup. The public repository is already read-blocked.

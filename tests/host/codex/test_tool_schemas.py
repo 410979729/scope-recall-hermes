@@ -28,7 +28,7 @@ def test_advertised_tools_have_typed_parameters_and_preserve_nullable_inputs(ins
     config, core, _clock, project = installed
     adapter = build_server(config, workspace=project, core=core)
     tools = asyncio.run(adapter.server.list_tools())
-    assert len(tools) == 9
+    assert len(tools) == 13
     for listed in tools:
         external = listed.input_schema
         internal = adapter.server._tool_manager.get_tool(listed.name).fn_metadata.arg_model.model_json_schema()

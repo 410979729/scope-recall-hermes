@@ -391,8 +391,8 @@ def prepare(core, context, text, *, brief=None, entry_fence=None, remaining_seco
     return brief
 
 
-def _valid(tx, clock, context, brief):
-    if not briefing.validate_prepared(tx, clock, context, brief):
+def _valid(tx, clock, context, brief, *, deadline=None):
+    if not briefing.validate_prepared(tx, clock, context, brief, deadline=deadline):
         return False
     injection = brief["_injection"]
     search = _search(clock, context)
@@ -463,11 +463,11 @@ def _record(tx, clock, context, brief):
     injection["session_tokens"] = _usage(tx, context)
 
 
-def _release_refusal(tx, clock, context, brief, entry_fence):
+def _release_refusal(tx, clock, context, brief, entry_fence, *, deadline=None):
     """Apply entry authority before content and accounting checks in each snapshot."""
     if briefing.entry_invalid(tx, context, entry_fence):
         return "entry_state:paused"
-    return None if _valid(tx, clock, context, brief) else "brief_invalidated"
+    return None if _valid(tx, clock, context, brief, deadline=deadline) else "brief_invalidated"
 
 
 def confirm(storage, clock, context, brief, *, entry_fence, remaining_seconds=None):
@@ -475,9 +475,10 @@ def confirm(storage, clock, context, brief, *, entry_fence, remaining_seconds=No
     if remaining_seconds is not None and remaining_seconds <= 0:
         return "brief_safety_unconfirmed"
     started = clock.monotonic()
+    deadline = started + (5 if remaining_seconds is None else remaining_seconds)
     try:
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence, deadline=deadline):
                 return refusal
     except Exception:  # noqa: BLE001 - unfinished safety checks cannot release content.
         return "brief_safety_unconfirmed"
@@ -488,7 +489,7 @@ def confirm(storage, clock, context, brief, *, entry_fence, remaining_seconds=No
     try:
         with storage.write(context, remaining_seconds=max(0, left)) as tx:
             entered = True
-            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence, deadline=deadline):
                 return refusal
             validated = True
             _record(tx, clock, context, brief)

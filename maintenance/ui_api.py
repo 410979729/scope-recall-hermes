@@ -15,6 +15,7 @@ from typing import Any
 
 from ..contracts import ContractError
 from ..core.deletion_mirror import configured_backup_dir
+from ..core.handoff import manage as manage_handoffs
 from ..core.installation_copy import installation_copy_id
 from ..core.management_query import MemoryFilter
 from ..runtime import backup_upkeep
@@ -112,7 +113,7 @@ class UIApi:
     def read(self, route, data):
         """Dispatch a read without invoking any state-changing owner method."""
         api = self.management
-        if route in {"overview", "backup", "entries", "entry", "health", "health-actions"}:
+        if route in {"overview", "backup", "entries", "entry", "health", "health-actions", "handoffs"}:
             return self._read_control(route, data)
         if route in {"list", "search"}:
             return api.list(filters(data), limit=number(data, "limit", 30), cursor=text(data, "cursor"))
@@ -141,6 +142,13 @@ class UIApi:
 
     def _read_control(self, route, data):
         """Dispatch entry, status and health reads."""
+        if route == "handoffs":
+            return manage_handoffs(
+                self.management.core,
+                self.management.authority,
+                "list",
+                dict(include_closed=True, limit=number(data, "limit", 30), before=number(data, "before")),
+            )
         return (
             self._read_health(route, data)
             if route in {"health", "health-actions"}
@@ -178,7 +186,9 @@ class UIApi:
     def _plan(self, data):
         api = self.management
         action = text(data, "action")
-        if action in {"entry-state", "instruction-set"} or (action is not None and action.startswith("health-")):
+        if action in {"entry-state", "instruction-set", "handoff-cancel"} or (
+            action is not None and action.startswith("health-")
+        ):
             return self._control_plan(data, action)
         if action in {"mute", "unmute", "forget"}:
             ref = text(data, "ref")
@@ -233,6 +243,8 @@ class UIApi:
 
     def _health_plan(self, data, action):
         """Validate the reviewed health decision without disclosing hidden facts."""
+        if action == "handoff-cancel":
+            return dict(action=action, ref=text(data, "ref"), expected_revision=number(data, "expected_revision"))
         if action in {"health-entity", "health-merge", "health-choose"}:
             first, second = text(data, "first_ref"), text(data, "second_ref")
             return dict(
@@ -272,7 +284,9 @@ class UIApi:
     def _apply(self, plan):
         api = self.management
         action = plan["action"]
-        if action in {"entry-state", "instruction-set"} or (action is not None and action.startswith("health-")):
+        if action in {"entry-state", "instruction-set", "handoff-cancel"} or (
+            action is not None and action.startswith("health-")
+        ):
             return self._control_apply(plan)
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
@@ -300,6 +314,10 @@ class UIApi:
         """Apply a reviewed health decision through the management boundary."""
         api = self.management
         action = plan["action"]
+        if action == "handoff-cancel":
+            return manage_handoffs(
+                api.core, api.authority, "cancel", dict(ref=plan["ref"], expected_revision=plan["expected_revision"])
+            )
         if action in {"health-entity", "health-merge", "health-choose"}:
             fn = {
                 "health-entity": api.health_merge_entity,

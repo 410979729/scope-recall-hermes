@@ -150,6 +150,8 @@
     "core/file_access.py",
     "core/file_lock.py",
     "core/gating.py",
+    "core/handoff.py",
+    "core/handoff_schema.py",
     "core/health.py",
     "core/importance.py",
     "core/inbox_rules.py",
