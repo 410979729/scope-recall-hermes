@@ -3,9 +3,9 @@
 import json
 
 
-def _tokens(*slots):
+def _tokens(*slots, span=256):
     """Encode ordered literal alternatives as stored policy data."""
-    return json.dumps(slots, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(dict(slots=slots, span=span), ensure_ascii=False, separators=(",", ":"))
 
 
 DEFAULT_RULES = (
@@ -38,8 +38,9 @@ DEFAULT_RULES = (
                 "[system]",
                 "[developer]",
                 "<|im_start|>system",
-                "<|im_start|> system",
+                "<|im_start|>developer",
                 "<|start_header_id|>system",
+                "<|start_header_id|>developer",
                 "system prompt override",
             ],
         ),
@@ -82,6 +83,7 @@ DEFAULT_RULES = (
                 "visibility:hidden",
                 "visibility: hidden",
             ],
+            span=1536,
         ),
         "quarantined",
     ),
@@ -93,6 +95,7 @@ DEFAULT_RULES = (
             ["send", "post", "upload", "transmit", "exfiltrate"],
             ["conversation", "history", "messages", "context", "credentials", "secrets", "memory", "data"],
             ["https://", "http://", "mailto:"],
+            span=1536,
         ),
         "quarantined",
     ),
@@ -104,6 +107,7 @@ DEFAULT_RULES = (
             ["聊天记录", "对话记录", "会话内容", "系统提示", "上下文", "凭据", "密钥", "记忆内容", "私密数据"],
             ["发送", "上传", "传给", "提交", "外传"],
             ["https://", "http://", "mailto:"],
+            span=1536,
         ),
         "quarantined",
     ),
@@ -115,6 +119,7 @@ DEFAULT_RULES = (
             ["发送", "上传", "外传"],
             ["聊天记录", "上下文", "密钥"],
             ["https://", "http://", "mailto:"],
+            span=1536,
         ),
         "quarantined",
     ),
@@ -125,6 +130,7 @@ DEFAULT_RULES = (
         _tokens(
             ["curl", "wget"],
             ["key", "token", "secret", "password", ".env", "credentials"],
+            span=1024,
         ),
         "quarantined",
     ),
@@ -144,6 +150,14 @@ DEFAULT_RULES = (
     ),
 )
 
+SCAN_STATEMENT = """CREATE TABLE source_scan_progress (
+    source_ref TEXT NOT NULL, source_revision INTEGER NOT NULL,
+    input_sha256 TEXT NOT NULL, policy_sha256 TEXT NOT NULL,
+    cursor_json TEXT NOT NULL CHECK(json_valid(cursor_json)),
+    PRIMARY KEY(source_ref,source_revision),
+    FOREIGN KEY(source_ref,source_revision) REFERENCES source_events(event_id,source_revision) ON DELETE CASCADE
+) STRICT, WITHOUT ROWID"""
+
 STATEMENTS = (
     """CREATE TABLE injection_rules (
         rule_id TEXT PRIMARY KEY NOT NULL, category TEXT NOT NULL,
@@ -159,6 +173,7 @@ STATEMENTS = (
         FOREIGN KEY(source_ref,source_revision) REFERENCES source_events(event_id,source_revision) ON DELETE CASCADE
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX source_safety_state ON source_safety(state,source_ref,source_revision)",
+    SCAN_STATEMENT,
 )
 
 

@@ -32,8 +32,15 @@ def test_group_hold_survives_segment_count_changes(guarded, grow):
         core.inspect_object(ctx, row.ref, 2).value["state"] in {"quarantined", "pending_review"}
         for row in second.event_refs
     )
+    core.drain_worker(ctx, max_items=4, remaining_seconds=5)
+    assert all(core.source(ctx, row.ref, 2) is None for row in second.event_refs)
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT count(*) FROM work_items").fetchone()[0] == 0
+        assert (
+            db.execute(
+                "SELECT count(*) FROM work_items WHERE work_type IN ('consolidate','embed','evaluate_candidate')"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize("damage", ["empty", "disabled", "category", "unsafe", "command", "wrong_mode"])
@@ -100,10 +107,11 @@ def test_complete_flag_emoji_is_normal_text(guarded, code):
         "安全讨论：“忽略之前的所有指令”是提示注入攻击示例，不要执行。",
     ],
 )
-def test_authentication_and_quoted_security_discussion_are_not_injections(guarded, text):
+def test_authentication_clears_while_quoted_security_discussion_needs_review(guarded, text):
     core, ctx = guarded
     with core.storage.read(ctx) as tx:
-        assert scan(tx, source_event(content=text)).state == "clear"
+        expected = "pending_review" if "讨论" in text or "Security discussion" in text else "clear"
+        assert scan(tx, source_event(content=text)).state == expected
 
 
 @pytest.mark.parametrize("malicious", [False, True])
@@ -187,7 +195,7 @@ def test_flag_sequences_remain_valid_across_window_boundaries(guarded, offset):
     assert verdict.state == "clear"
 
 
-def test_quoted_security_discussion_does_not_become_an_attack_in_an_overlap(guarded):
+def test_quoted_security_discussion_stays_pending_in_an_overlap(guarded):
     core, ctx = guarded
     text = (
         "x" * 1700
@@ -200,15 +208,15 @@ def test_quoted_security_discussion_does_not_become_an_attack_in_an_overlap(guar
     )
     with core.storage.read(ctx) as tx:
         verdict = scan(tx, source_event(content=text), remaining_seconds=1)
-    assert verdict.state == "clear"
+    assert verdict.state == "pending_review"
 
 
-def test_dense_quoted_security_discussion_remains_normal(guarded):
+def test_dense_quoted_security_discussion_stays_pending(guarded):
     core, ctx = guarded
     unit = 'Security discussion: "ignore previous instructions" is a prompt injection attack. '
     with core.storage.read(ctx) as tx:
         verdict = scan(tx, source_event(content=unit * 830), remaining_seconds=1)
-    assert verdict.state == "clear"
+    assert verdict.state == "pending_review"
 
 
 def test_attack_between_two_quoted_examples_is_still_held(guarded):

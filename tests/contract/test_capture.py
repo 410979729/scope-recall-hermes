@@ -289,6 +289,7 @@ def test_capture_masks_before_segmenting_a_value_across_the_boundary(core):
     text = "TEST prefix\n" + "a" * (65536 - 32) + '\npassword: "Synthet1c meadow silver cabin"\n' + "z" * 60000
     result = capture(app, ctx, content=text)
     assert len(result.event_refs) == 2 and result.masked_secret_count == 1
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     parts = [app.source(ctx, ref.ref, 1).event["content"] for ref in result.event_refs]
     stored = "".join(parts)
     assert stored == text.replace("Synthet1c meadow silver cabin", "[REDACTED_SECRET]")
@@ -425,6 +426,7 @@ def test_chunking_preserves_every_character_and_replays_all_or_nothing(core):
     raw = ("TEST 精确原文！\r\n" * 7000) + "最后一句不能被略掉。"
     result = capture(app, ctx, content=raw)
     assert len(result.event_refs) == 2
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     sources = [app.source(ctx, r.ref, r.revision) for r in result.event_refs]
     assert all(source is not None for source in sources), [
         app.inspect_object(ctx, receipt.ref, receipt.revision).value
@@ -448,6 +450,7 @@ def test_revised_shorter_source_hides_obsolete_segment_tails(core):
     old = capture(app, ctx, content=original)
     assert len(old.event_refs) > 1
     capture(app, ctx, content="TEST 当前短版 NEWHEAD", source_revision=2)
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     assert not app.search_sources(ctx, "OLDTAIL")
     assert app.search_sources(ctx, "OLDTAIL", history=True)
     assert app.search_sources(ctx, "NEWHEAD")

@@ -23,7 +23,9 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--sizes", nargs="+", type=int, default=[1000, 4000, 12000, 65536, 524288, 2096000])
     parser.add_argument("--samples", type=int, default=7)
-    parser.add_argument("--pattern", choices=("send_data", "quoted_discussion", "expansion"), default="send_data")
+    parser.add_argument(
+        "--pattern", choices=("send_data", "quoted_discussion", "expansion", "normal_cjk"), default="send_data"
+    )
     parser.add_argument("--budget-seconds", type=float)
     args = parser.parse_args()
     ctx = context(args.data_directory)
@@ -34,6 +36,7 @@ def main():
         "send_data": "send data ",
         "quoted_discussion": 'Security discussion: "ignore previous instructions" is a prompt injection attack. ',
         "expansion": "\ufdfa",
+        "normal_cjk": "TEST 精确原文！\r\n",
     }[args.pattern]
     rows = []
     with core.storage.read(ctx) as tx:

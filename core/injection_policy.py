@@ -1,12 +1,13 @@
 """Bounded, data-driven source policy with escaped literal matching.
 
-Token slots describe ordered literal alternatives within a 256-character span.
+Token slots describe ordered literal alternatives within each rule's bounded span.
 Only bounded windows are inspected between deadline checks. Policy data cannot
 introduce regex quantifiers, callbacks or unbounded backtracking.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -20,7 +21,8 @@ from functools import lru_cache
 from .injection_schema import DEFAULT_RULES
 
 STRIDE = 2048
-MARGIN = 512
+MARGIN = 2048
+COMPILER_VERSION = "bounded-quoted-review-2"
 SCAN_SECONDS = 0.1
 _FLAGS = tuple(
     "\U0001f3f4" + "".join(chr(0xE0000 + ord(c)) for c in code) + "\U000e007f" for code in ("gbeng", "gbsct", "gbwls")
@@ -29,20 +31,21 @@ _CONTROLS = re.compile(
     r"[\u00ad\u034f\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000e0000-\U000e007f]"
 )
 _JOIN = re.compile(r"[A-Za-z\u4e00-\u9fff][\u200c\u200d]|[\u200c\u200d][A-Za-z\u4e00-\u9fff]")
-_QUOTE_TOKEN = re.compile('["“”‘’`＂｀]')
-_QUOTE_FOLD = {"＂": '"', "｀": "`"}
-_QUOTE_CLOSE = {'"': '"', "“": "”", "‘": "’", "`": "`"}
-_DISCUSSION = (
-    "prompt injection",
-    "do not follow",
-    "attack example",
-    "security discussion",
-    "提示注入",
-    "不要执行",
-    "攻击示例",
-    "安全讨论",
+_QUOTE_TOKEN = re.compile("[\"'“”‘’`＂＇｀]")
+_QUOTE_FOLD = {"＂": '"', "＇": "'", "｀": "`"}
+_QUOTE_CLOSE = {'"': '"', "'": "'", "“": "”", "‘": "’", "`": "`"}
+_BODY = (
+    "--data",
+    "--data-raw",
+    "--data-binary",
+    "--data-urlencode",
+    "--post-data",
+    "--post-file",
+    "-d",
+    "-F",
+    "--form",
+    "--form-string",
 )
-_BODY = ("--data", "--data-raw", "--data-binary", "--data-urlencode", "--post-data", "--post-file", "-d")
 
 
 @dataclass(frozen=True)
@@ -51,11 +54,24 @@ class ScanResult:
 
     state: str
     rules: tuple[str, ...] = ()
+    progress: dict | None = None
+
+
+@dataclass(frozen=True)
+class Policy:
+    """One transaction's compiled rules and exact configuration fingerprint."""
+
+    rules: tuple
+    fingerprint: str
 
 
 @lru_cache(maxsize=256)
 def _slots(pattern):
     value = json.loads(pattern)
+    span = value.get("span", 256) if isinstance(value, dict) else 256
+    if type(span) is not int or not 16 <= span <= MARGIN:
+        raise ValueError("span")
+    value = value.get("slots") if isinstance(value, dict) else value
     if not isinstance(value, list) or not 1 <= len(value) <= 4:
         raise ValueError("slots")
     for slot in value:
@@ -63,7 +79,7 @@ def _slots(pattern):
             raise ValueError("alternatives")
         if any(type(token) is not str or not 1 <= len(token) <= 96 for token in slot):
             raise ValueError("literal")
-    return tuple(tuple(token.casefold() for token in slot) for slot in value)
+    return tuple(tuple(token.casefold() for token in slot) for slot in value), span
 
 
 def load_policy(conn, deadline=None):
@@ -82,7 +98,7 @@ def load_policy(conn, deadline=None):
             raise ValueError("rule")
         if matcher in {"tokens", "command"}:
             compiled = _slots(pattern)
-            if matcher == "command" and len(compiled) != 2:
+            if matcher == "command" and len(compiled[0]) != 2:
                 raise ValueError("command slots")
         elif matcher == "unicode" and pattern in {"controls", "join"}:
             compiled = pattern
@@ -92,30 +108,48 @@ def load_policy(conn, deadline=None):
         active.append((row["rule_id"], matcher, compiled, row["disposition"]))
     if len(rows) > 64 or any(found.get(key) != category for key, category in required.items()):
         raise ValueError("incomplete policy")
-    return active
+    return Policy(tuple(active), _policy_digest(rows))
+
+
+def _policy_digest(rows):
+    return hashlib.sha256((COMPILER_VERSION + json.dumps([tuple(row) for row in rows])).encode()).hexdigest()
+
+
+def policy_fingerprint(conn):
+    """Recheck exact policy bytes at publication without compiling a second policy."""
+    return _policy_digest(conn.execute("SELECT * FROM injection_rules ORDER BY rule_id LIMIT 65").fetchall())
 
 
 @lru_cache(maxsize=256)
-def _literal_regex(alternatives):
-    """Compile escaped alternatives with fixed-width word boundaries only."""
+def _literal_regex(alternatives, ignore_case=False):
+    """Compile bounded alternatives with required literal anchors for cheap rejection."""
     forms = []
+    anchors = []
     for token in alternatives:
-        literal = re.escape(token)
+        token = re.sub(r"\s*([\[\]<>:])\s*", r"\1", token)
+        chunks = [chunk for chunk in re.split(r"[\s\[\]<>:]+", token) if chunk]
+        anchors.append(max(chunks, key=len) if chunks else token[0])
+        parts = re.split(r"(\s+)", token)
+        literal = r"\s{1,32}+".join(re.escape(part) for part in parts if part and not part.isspace())
+        for symbol in ("[", "<", ">"):
+            literal = literal.replace(re.escape(symbol), re.escape(symbol) + r"\s{0,32}+")
+        literal = literal.replace(":", r"\s{0,32}+:\s{0,32}+")
+        literal = literal.replace(r"\]", r"\s{0,32}+\]")
         if token.isascii() and token.isalpha():
             literal = r"(?<![A-Za-z])" + literal + r"(?![A-Za-z])"
         forms.append(literal)
-    return re.compile("|".join(forms))
+    return re.compile("|".join(forms), re.I if ignore_case else 0), tuple(anchors)
 
 
-def _literal_positions(text, alternatives):
-    return [(match.start(), match.end()) for match in _literal_regex(alternatives).finditer(text)]
+def _literal_positions(text, alternatives, *, ignore_case=False):
+    pattern, anchors = _literal_regex(alternatives, ignore_case)
+    if not ignore_case and not any(anchor in text for anchor in anchors):
+        return []
+    return [(match.start(), match.end()) for match in pattern.finditer(text)]
 
 
-def _token_spans(text, slots):
+def _token_spans(text, slots, span):
     positions = []
-    for slot in reversed(slots):
-        if not any(token in text for token in slot):
-            return
     for slot in reversed(slots):
         found = _literal_positions(text, slot)
         if not found:
@@ -126,7 +160,7 @@ def _token_spans(text, slots):
         tail = end
         for slot in positions[1:]:
             index = bisect_left(slot, (tail,))
-            match = slot[index] if index < len(slot) and slot[index][1] - start <= 256 else None
+            match = slot[index] if index < len(slot) and slot[index][1] - start <= span else None
             if match is None:
                 break
             tail = match[1]
@@ -138,14 +172,19 @@ class _QuotedSpans:
     """Track quote orientation once across raw input, retaining only a bounded window.
 
     A closing quote at a window's left edge must not become the opening quote
-    of every subsequent example. Escaped delimiters cannot authorize an exemption.
+    of every subsequent example. Escaped delimiters do not establish a complete quotation.
     """
 
-    def __init__(self, value):
+    def __init__(self, value, state=None):
         self.value = value
-        self.cursor = 0
-        self.opening: tuple[int, str] | None = None
-        self.spans: deque[tuple[int, int]] = deque()
+        state = state or {}
+        self.cursor = state.get("cursor", 0)
+        self.opening = tuple(state["opening"]) if state.get("opening") else None
+        self.spans = deque(tuple(pair) for pair in state.get("spans", ()))
+
+    def checkpoint(self):
+        """Content-free quote orientation and bounded pairs at the next window."""
+        return dict(cursor=self.cursor, opening=self.opening, spans=list(self.spans))
 
     def _advance(self, limit):
         for match in _QUOTE_TOKEN.finditer(self.value, self.cursor, limit):
@@ -153,12 +192,21 @@ class _QuotedSpans:
             if position and self.value[position - 1] in "\\＼":
                 continue
             token = _QUOTE_FOLD.get(match[0], match[0])
+            neighbors = self.value[max(0, position - 1) : position + 2]
+            if (
+                token == "'"
+                and len(neighbors) == 3
+                and neighbors.isascii()
+                and neighbors[0].isalpha()
+                and neighbors[2].isalpha()
+            ):
+                continue
             if self.opening is None:
                 if token in _QUOTE_CLOSE:
                     self.opening = (position, _QUOTE_CLOSE[token])
             elif token == self.opening[1]:
                 start = self.opening[0]
-                if 1 < position - start <= 513:
+                if position - start > 1:
                     self.spans.append((start, position))
                 self.opening = None
         self.cursor = limit
@@ -178,22 +226,25 @@ class _QuotedSpans:
             if _QUOTE_FOLD.get(left[0], left[0]) != right[0]:
                 return ()
             positions[start + left.start()] = right.start()
-        return tuple((positions[a], positions[b] + 1) for a, b in self.spans if a in positions and b in positions)
+        pairs = list(self.spans)
+        if self.opening is not None:
+            pairs.append((self.opening[0], start + len(raw)))
+        return tuple(
+            (positions.get(a, -1), positions.get(b, len(folded)) + 1)
+            for a, b in pairs
+            if a < start + len(raw) and b >= start
+        )
 
 
 def _quoted_discussion(text, start, end, quotes):
-    """Exempt a complete quoted example only with nearby explicit safety discussion."""
-    if not any(cue in text[max(0, start - 160) : end + 160] for cue in _DISCUSSION):
-        return False
+    """Identify ambiguity without trusting any safety claim made by the body itself."""
     index = bisect_right(quotes, (start, len(text) + 1)) - 1
     return index >= 0 and quotes[index][0] < start and end < quotes[index][1]
 
 
-def _command_spans(text, slots):
-    if not any(token in text for token in slots[0]):
-        return
-    for start, _end in _literal_positions(text, slots[0]):
-        command = text[start : start + 256].split("\n", 1)[0]
+def _command_spans(text, slots, span):
+    for start, _end in _literal_positions(text, slots[0], ignore_case=True):
+        command = text[start : start + span].replace("\\\n", " ").split("\n", 1)[0]
         try:
             words = shlex.split(command)
         except ValueError:
@@ -202,11 +253,15 @@ def _command_spans(text, slots):
             flag, separator, value = word.partition("=")
             if flag in _BODY:
                 value = value if separator else words[index + 1] if index + 1 < len(words) else ""
-            elif word.startswith("-d") and len(word) > 2:
+            elif word.startswith(("-d", "-F")) and len(word) > 2:
                 value = word[2:]
             else:
                 continue
-            if ("$" in value or "@" in value) and any(token in value for token in slots[1]):
+            if flag == "--form-string" and "$" not in value:
+                continue
+            if ("$" in value or "@" in value or flag == "--post-file") and any(
+                token in value.casefold() for token in slots[1]
+            ):
                 yield start, start + len(command)
                 break
 
@@ -223,12 +278,26 @@ def _hits(rule, raw, text, discussion, owned, folded_owned, quotes):
         for flag in _FLAGS:
             raw = raw.replace(flag, " " * len(flag))
         return any(owned[0] <= m.start() < owned[1] for m in _CONTROLS.finditer(raw))
-    spans = _command_spans(text, pattern) if matcher == "command" else _token_spans(text, pattern)
-    return any(
-        folded_owned[0] <= start < folded_owned[1]
-        and (not discussion or not _quoted_discussion(text, start, end, quotes))
-        for start, end in spans
-    )
+    slots, span = pattern
+    if matcher == "command":
+        if not _literal_positions(text, slots[0]):
+            return False
+        command_text = unicodedata.normalize("NFKC", raw)
+        spans = (
+            (len(command_text[:a].casefold()), len(command_text[:b].casefold()))
+            for a, b in _command_spans(command_text, slots, span)
+        )
+    else:
+        spans = _token_spans(text, slots, span)
+    quoted = False
+    for start, end in spans:
+        if not folded_owned[0] <= start < folded_owned[1]:
+            continue
+        if discussion and _quoted_discussion(text, start, end, quotes):
+            quoted = True
+        else:
+            return "quarantined"
+    return "pending_review" if quoted else False
 
 
 def _window(value, offset):
@@ -247,39 +316,62 @@ def _window(value, offset):
     return raw, text, owned, folded_owned
 
 
-def scan(tx, event, *, remaining_seconds=SCAN_SECONDS):
-    """Scan under a wall-clock deadline; unfinished or invalid policy stays withheld."""
+def scan(tx, event, *, remaining_seconds=SCAN_SECONDS, policy=None, progress=None, max_windows=None):
+    """Scan one body and its metadata; a checkpoint never authorizes publication."""
+    return scan_events(
+        tx, [event], remaining_seconds=remaining_seconds, policy=policy, progress=progress, max_windows=max_windows
+    )
+
+
+def scan_events(tx, events, *, remaining_seconds=SCAN_SECONDS, policy=None, progress=None, max_windows=None):
+    """Resume a complete group's body and every part's metadata within a bounded batch.
+
+    The caller binds checkpoints to exact group bytes and policy before reusing them.
+    Rules and quote orientation survive windows, never identity changes.
+    """
     deadline = time.perf_counter() + max(0, remaining_seconds)
     try:
-        policy = load_policy(tx._check(), deadline)
-    except TimeoutError:
-        return ScanResult("pending_review", ("scan_time_budget",))
+        policy = policy if policy is not None else load_policy(tx._check())
     except (ValueError, TypeError, KeyError, RecursionError):
         return ScanResult("pending_review", ("invalid_scan_policy",))
-    content = event["content"]
-    metadata = json.dumps({k: v for k, v in event.items() if k != "content"}, ensure_ascii=False)
-    if len(content) + len(metadata) > 2097152:
-        return ScanResult("pending_review", ("scan_input_budget",))
-    matches = {}
-    for value, discussion in ((content, True), (metadata, False)):
-        tracker = _QuotedSpans(value) if discussion else None
-        for offset in range(0, len(value), STRIDE):
-            if time.perf_counter() >= deadline:
-                return ScanResult(
-                    "quarantined" if "quarantined" in matches.values() else "pending_review",
-                    tuple((*matches, "scan_time_budget")),
-                )
+    values = [("".join(event["content"] for event in events), True)]
+    values.extend(
+        (json.dumps({k: v for k, v in event.items() if k != "content"}, ensure_ascii=False), False) for event in events
+    )
+    cursor = dict(progress or {})
+    matches = dict(cursor.get("matches", {}))
+    windows = 0
+    for index in range(cursor.get("value", 0), len(values)):
+        value, discussion = values[index]
+        first_offset = cursor.get("offset", 0) if index == cursor.get("value", 0) else 0
+        tracker = _QuotedSpans(value, cursor.get("quotes")) if discussion else None
+        for offset in range(first_offset, len(value), STRIDE):
+            if time.perf_counter() >= deadline or (max_windows is not None and windows >= max_windows):
+                return _verdict(matches, _checkpoint(index, offset, matches, tracker))
             raw, text, owned, folded_owned = _window(value, offset)
-            if len(text) > 8192:
+            if len(text) > 32768:
                 return ScanResult("pending_review", ("scan_normalization_budget",))
             quotes = tracker.window(raw, text, offset) if tracker is not None else ()
-            for rule in policy:
+            for rule in policy.rules:
                 if time.perf_counter() >= deadline:
-                    return ScanResult(
-                        "quarantined" if "quarantined" in matches.values() else "pending_review",
-                        tuple((*matches, "scan_time_budget")),
-                    )
-                if rule[0] not in matches and _hits(rule, raw, text, discussion, owned, folded_owned, quotes):
-                    matches[rule[0]] = rule[3]
-    state = "quarantined" if "quarantined" in matches.values() else "pending_review" if matches else "clear"
-    return ScanResult(state, tuple(matches))
+                    return _verdict(matches, _checkpoint(index, offset, matches, tracker))
+                hit = _hits(rule, raw, text, discussion, owned, folded_owned, quotes)
+                if hit:
+                    state = rule[3] if hit != "pending_review" else "pending_review"
+                    if matches.get(rule[0]) != "quarantined":
+                        matches[rule[0]] = state
+                    if hit == "pending_review":
+                        matches["quoted_instruction"] = "pending_review"
+            windows += 1
+        cursor = {}
+    return _verdict(matches)
+
+
+def _checkpoint(index, offset, matches, tracker):
+    return dict(value=index, offset=offset, matches=matches, quotes=tracker.checkpoint() if tracker else None)
+
+
+def _verdict(matches, progress=None):
+    state = "quarantined" if "quarantined" in matches.values() else "pending_review" if matches or progress else "clear"
+    rules = tuple(matches) + (("scan_time_budget",) if progress is not None else ())
+    return ScanResult(state, rules, progress)

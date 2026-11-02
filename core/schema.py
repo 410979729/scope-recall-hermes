@@ -4,10 +4,10 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1114
+SCHEMA_VERSION = 1115
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114)
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -689,3 +689,13 @@ def upgrade_1113(connection):
     upgrade_policy(connection)
     connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1114")
+
+
+def upgrade_1114(connection):
+    """Install content-bound screening checkpoints and bounded rule spans."""
+    from .injection_schema import SCAN_STATEMENT, upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute(SCAN_STATEMENT.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+    connection.execute("UPDATE instance_meta SET schema_version=1115 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1115")

@@ -95,14 +95,19 @@ def preview_release(core, authority, ref, revision):
 
 
 def _resume(tx, core, ref, revision):
-    """Admit the latest group through the same boundary as capture."""
+    """Restore approved versions, scheduling only the latest group."""
     rows = group_rows(tx, ref)
     latest = max(row["source_revision"] for row in rows)
     sources = []
     for row in rows:
-        if row["source_revision"] != latest:
-            continue
-        decision = admit_source(tx, core.clock, row["event_id"], latest, core.config.admission_policy)
+        decision = admit_source(
+            tx,
+            core.clock,
+            row["event_id"],
+            row["source_revision"],
+            core.config.admission_policy,
+            schedule=row["source_revision"] == latest,
+        )
         if decision is not None:
             sources.append((SourceWrite("inserted", row["event_id"], latest), decision))
     observe_admitted(tx, core.clock, sources)

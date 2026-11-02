@@ -232,11 +232,11 @@ def test_exhausted_scan_budget_persists_pending_without_projections(guarded, mon
     core, ctx = guarded
     budgets = []
 
-    def exhausted(tx, event, *, remaining_seconds):
+    def exhausted(tx, events, *, remaining_seconds, **kwargs):
         budgets.append(remaining_seconds)
         return injection_guard.ScanResult("pending_review", ("scan_time_budget",))
 
-    monkeypatch.setattr(injection_guard, "scan", exhausted)
+    monkeypatch.setattr(injection_guard.injection_policy, "scan_events", exhausted)
     saved = capture(core, ctx, "TEST ordinary preference")
     assert budgets and 0 < budgets[0] <= 0.1
     assert saved.durability == "persisted"

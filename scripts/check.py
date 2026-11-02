@@ -219,6 +219,7 @@ SUITES = {
         "tests/contract/test_capture_row_crossings.py",
         "tests/contract/test_injection_guard.py",
         "tests/contract/test_injection_revision.py",
+        "tests/contract/test_injection_screening.py",
     ],
     "claims": [
         "tests/test_denial_values.py",

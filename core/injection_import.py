@@ -43,19 +43,9 @@ def screen_imported_sources(tx, names, now):
 
 def _admit_missing(tx, clock, eligible):
     """Restore projections and work omitted by an obsolete provenance-only hold."""
-    conn = tx._check()
     observed = []
     for ref, revision in eligible:
-        indexed = conn.execute(
-            "SELECT 1 FROM lexical_postings p JOIN source_events e USING(source_id) "
-            "WHERE e.event_id=? AND e.source_revision=? LIMIT 1",
-            (ref, revision),
-        ).fetchone()
-        queued = conn.execute(
-            "SELECT 1 FROM work_items WHERE subject_ref=? AND subject_revision=? LIMIT 1", (ref, revision)
-        ).fetchone()
-        if indexed is None and queued is None:
-            decision = admit_source(tx, clock, ref, revision)
-            if decision is not None:
-                observed.append((SourceWrite("inserted", ref, revision), decision))
+        decision = admit_source(tx, clock, ref, revision)
+        if decision is not None:
+            observed.append((SourceWrite("inserted", ref, revision), decision))
     observe_admitted(tx, clock, observed)

@@ -95,7 +95,7 @@ def test_bounded_policy_upgrade_preserves_holds_owner_disables_and_custom_rules(
     assert state["backup_schema"] == 1113 and state["snapshot_verified"]
 
 
-@pytest.mark.parametrize("version", range(1108, 1115))
+@pytest.mark.parametrize("version", range(1108, SCHEMA_VERSION + 1))
 def test_snapshot_recovery_reports_actual_supported_phase(store, capsys, version):
     from test_restore import backup, run
 

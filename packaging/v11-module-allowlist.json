@@ -170,6 +170,7 @@
     "core/source_admission.py",
     "core/source_qualification.py",
     "core/source_records.py",
+    "core/source_scan.py",
     "core/source_storage.py",
     "core/storage.py",
     "core/store_upgrade.py",

@@ -157,6 +157,7 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1115: {"tables": ("source_scan_progress",)},
     1114: {},
     1113: {"tables": ("source_safety", "injection_rules")},
     1112: {"tables": ("private_intervals",), "columns": (("source_events", "project_root"),)},

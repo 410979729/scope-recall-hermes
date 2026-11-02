@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 
-from .injection_policy import SCAN_SECONDS, ScanResult, scan
+from . import injection_policy
+from .injection_policy import SCAN_SECONDS, ScanResult
+from .injection_policy import scan as scan
 from .source_records import stored_source
 
 # A ref changes when segment counts change. This identity remains stable across
@@ -28,22 +31,57 @@ def group_rows(tx, ref, revision=None):
     )
 
 
-def _scan_events(tx, events, remaining_seconds):
+def group_input(rows):
+    """Canonical decoded events plus identities, hashing actual bytes, not stored digests."""
+    events = [stored_source(row, len(rows)).event for row in rows]
+    identity = [(row["event_id"], row["source_revision"], event) for row, event in zip(rows, events, strict=True)]
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return events, digest
+
+
+def save_checkpoint(tx, rows, cursor, policy, now):
+    """Persist a withheld group's exact-input checkpoint and idempotent local work."""
+    anchor = rows[0]
+    _events, digest = group_input(rows)
+    conn = tx._check(write=True)
+    old = conn.execute(
+        "SELECT * FROM source_scan_progress WHERE source_ref=? AND source_revision=?",
+        (anchor["event_id"], anchor["source_revision"]),
+    ).fetchone()
+    if old is not None and old["input_sha256"] == digest and old["policy_sha256"] == policy.fingerprint:
+        previous = json.loads(old["cursor_json"])
+        if (previous.get("value", 0), previous.get("offset", 0)) > (cursor.get("value", 0), cursor.get("offset", 0)):
+            cursor = previous
+    conn.execute(
+        """INSERT INTO source_scan_progress VALUES (?,?,?,?,?)
+        ON CONFLICT(source_ref,source_revision) DO UPDATE SET input_sha256=excluded.input_sha256,
+        policy_sha256=excluded.policy_sha256,cursor_json=excluded.cursor_json""",
+        (anchor["event_id"], anchor["source_revision"], digest, policy.fingerprint, json.dumps(cursor)),
+    )
+    conn.execute(
+        """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
+        VALUES ('rebuild_projection',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision)
+        DO UPDATE SET state='pending',attempt=0,available_at=excluded.available_at,lease_owner=NULL,lease_until=NULL""",
+        (
+            anchor["event_id"],
+            anchor["source_revision"],
+            anchor["scope_id"],
+            anchor["project_id"],
+            anchor["branch_id"],
+            now,
+        ),
+    )
+
+
+def _scan_events(tx, events, remaining_seconds, policy):
     """Join body boundaries once, then check every part's own metadata under one budget."""
-    deadline = time.perf_counter() + remaining_seconds
-    content = "".join(event["content"] for event in events)
-    for index, event in enumerate(events):
-        verdict = scan(
-            tx,
-            dict(event, content=content if index == 0 else ""),
-            remaining_seconds=max(0, deadline - time.perf_counter()),
-        )
-        if verdict.state != "clear":
-            return verdict
-    return verdict
+    return injection_policy.scan_events(tx, events, remaining_seconds=remaining_seconds, policy=policy)
 
 
-def _group_verdict(tx, rows, remaining_seconds):
+def complete_events(rows):
+    """Return a complete capture group, treating masking separately from missing parts."""
+    if not rows:
+        return None
     total = rows[0]["segment_total"] or 1
     events = [stored_source(row, len(rows)).event for row in rows]
     indices = {row["segment_index"] for row in rows}
@@ -58,8 +96,12 @@ def _group_verdict(tx, rows, remaining_seconds):
             for row, e in zip(rows, events, strict=True)
         )
     ):
-        return ScanResult("pending_review", ("incomplete_scan_group",))
-    verdict = _scan_events(tx, events, remaining_seconds)
+        return None
+    return events
+
+
+def evidence_verdict(tx, events, verdict):
+    """Keep content whose evidence is held unavailable at either publication boundary."""
     if verdict.state == "clear":
         evidence = tuple(ref.rsplit("@", 1)[0] for event in events for ref in event.get("evidence_refs", ()))
         if blocked_refs(tx, "event", evidence):
@@ -67,32 +109,56 @@ def _group_verdict(tx, rows, remaining_seconds):
     return verdict
 
 
-def _record_verdict(tx, rows, verdict, now):
+def _group_verdict(tx, rows, remaining_seconds, policy):
+    events = complete_events(rows)
+    if events is None:
+        return ScanResult("pending_review", ("incomplete_scan_group",))
+    if policy is None:
+        return ScanResult("pending_review", ("invalid_scan_policy",))
+    verdict = _scan_events(tx, events, remaining_seconds, policy)
+    return evidence_verdict(tx, events, verdict)
+
+
+def _record_verdict(tx, rows, verdict, now, *, fresh=()):
     conn = tx._check(write=True)
     for row in rows:
         key = (row["event_id"], row["source_revision"])
-        old = conn.execute("SELECT state FROM source_safety WHERE source_ref=? AND source_revision=?", key).fetchone()
+        old = (
+            None
+            if key in fresh
+            else conn.execute(
+                "SELECT state FROM source_safety WHERE source_ref=? AND source_revision=?", key
+            ).fetchone()
+        )
         if old is not None and old[0] in {"quarantined", "released"}:
             continue
         if verdict.state == "clear":
-            conn.execute("DELETE FROM source_safety WHERE source_ref=? AND source_revision=?", key)
+            if old is not None:
+                conn.execute("DELETE FROM source_safety WHERE source_ref=? AND source_revision=?", key)
         else:
             conn.execute(
                 """INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at)
                 VALUES (?,?,?,?,?) ON CONFLICT(source_ref,source_revision) DO UPDATE
-                SET state=excluded.state,rules_json=excluded.rules_json,scanned_at=excluded.scanned_at""",
+                SET state=excluded.state,rules_json=excluded.rules_json,scanned_at=excluded.scanned_at
+                WHERE source_safety.state NOT IN ('quarantined','released')""",
                 (*key, verdict.state, json.dumps(verdict.rules), now),
             )
 
 
-def _remove_held_projections(tx, rows):
+def _remove_held_projections(tx, rows, *, preserve_work_id=None):
     held = blocked_refs(tx, "event", (row["event_id"] for row in rows))
     conn = tx._check(write=True)
     for row in rows:
         if row["event_id"] in held:
             conn.execute("DELETE FROM lexical_postings WHERE source_id=?", (row["source_id"],))
             conn.execute(
-                "DELETE FROM work_items WHERE subject_ref=? AND state IN ('pending','leased')", (row["event_id"],)
+                """DELETE FROM work_items WHERE subject_ref=? AND state IN ('pending','leased') AND work_id IS NOT ?
+                AND NOT (work_type='rebuild_projection' AND EXISTS(
+                    SELECT 1 FROM source_scan_progress p WHERE p.source_ref=work_items.subject_ref
+                    AND p.source_revision=work_items.subject_revision))""",
+                # A hold cancels derived work, but must not cancel the local job
+                # that can finish that hold, including an older group version.
+                (row["event_id"], preserve_work_id),
             )
 
 
@@ -104,6 +170,10 @@ def screen_sources(tx, sources, now, *, remaining_seconds=SCAN_SECONDS):
     Existing quarantine and owner release decisions are never overwritten.
     """
     deadline = time.perf_counter() + min(SCAN_SECONDS, max(0, remaining_seconds))
+    try:
+        policy = injection_policy.load_policy(tx._check())
+    except (ValueError, TypeError, KeyError, RecursionError):
+        policy = None
     seen, eligible = set(), []
     inserted = {(s.ref, s.revision) for s in sources if s.disposition == "inserted"}
     for source in sources:
@@ -111,20 +181,31 @@ def screen_sources(tx, sources, now, *, remaining_seconds=SCAN_SECONDS):
             continue
         rows = group_rows(tx, source.ref, source.revision)
         seen.update((row["event_id"], row["source_revision"]) for row in rows)
-        pending = {
-            (r[0], r[1])
-            for r in tx._check().execute(
-                "SELECT source_ref,source_revision FROM source_safety WHERE state='pending_review' "
-                "AND source_revision=? "
-                "AND source_ref IN (SELECT value FROM json_each(?))",
-                (source.revision, json.dumps([row["event_id"] for row in rows])),
-            )
-        }
-        verdict = _group_verdict(tx, rows, max(0, deadline - time.perf_counter()))
-        _record_verdict(tx, rows, verdict, now)
+        pending = (
+            set()
+            if all((r["event_id"], r["source_revision"]) in inserted for r in rows)
+            else {
+                (r[0], r[1])
+                for r in tx._check().execute(
+                    "SELECT source_ref,source_revision FROM source_safety WHERE state='pending_review' "
+                    "AND source_revision=? "
+                    "AND source_ref IN (SELECT value FROM json_each(?))",
+                    (source.revision, json.dumps([row["event_id"] for row in rows])),
+                )
+            }
+        )
+        verdict = _group_verdict(tx, rows, max(0, deadline - time.perf_counter()), policy)
+        _record_verdict(tx, rows, verdict, now, fresh=inserted)
         held = blocked_refs(tx, "event", (row["event_id"] for row in rows))
         if held:
             _remove_held_projections(tx, group_rows(tx, source.ref))
+        if verdict.progress is not None and verdict.state == "pending_review":
+            save_checkpoint(tx, rows, verdict.progress, policy, now)
+        elif pending:
+            tx._check(write=True).execute(
+                "DELETE FROM source_scan_progress WHERE source_ref IN (SELECT value FROM json_each(?))",
+                (json.dumps([row["event_id"] for row in rows]),),
+            )
         for row in rows:
             if row["event_id"] not in held and (row["event_id"], row["source_revision"]) in inserted | pending:
                 eligible.append((row["event_id"], row["source_revision"]))

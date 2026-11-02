@@ -531,7 +531,7 @@ def drain_worker(
         "consolidate": partial(process_consolidate, model=consolidation),
         "embed": partial(process_embed, embed=embed),
         "evaluate_candidate": partial(process_candidate_evaluation, evaluator=candidate),
-        "rebuild_projection": process_rebuild_projection,
+        "rebuild_projection": partial(process_rebuild_projection, admission_policy=config.admission_policy),
         "purge": partial(process_purge, purge=purge),
     }
     receipts: list[WorkerItemReceipt] = []
