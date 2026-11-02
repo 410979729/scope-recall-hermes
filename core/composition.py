@@ -27,12 +27,14 @@ from .capture_filters import without_private
 from .delete_storage import retraction_after
 from .model_content import withhold_secret_items
 from .operations import Operations
+from .recall_budget import DEFAULT_INJECTION_TOKEN_CAP
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .recall_log_storage import LogPolicy
+from .recall_restatement import normalized_statement
 from .recall_trace import CURRENT_TRACE, logged_recall
 from .records import Records
 from .restore import InstallationMaintenance, validate_owner_context
-from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits
+from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits, validate_host_memory_entries
 from .source_records import StoredSource
 from .storage import SQLiteStorage, StoreStatus
 
@@ -79,6 +81,8 @@ class CoreConfig:
     admission_policy: AdmissionPolicy = field(default_factory=AdmissionPolicy)
     session_brief_enabled: bool = True
     session_brief_tokens: int = 1024
+    injection_token_cap: int = DEFAULT_INJECTION_TOKEN_CAP
+    session_token_cap: int | None = None
     recall_log_policy: LogPolicy = field(default_factory=LogPolicy)
 
     def __post_init__(self) -> None:
@@ -90,6 +94,12 @@ class CoreConfig:
             raise ValueError("invalid session briefing configuration")
         if not 1 <= self.session_brief_tokens <= 8192:
             raise ValueError("session briefing token limit must be between 1 and 8192")
+        for name in ("injection_token_cap", "session_token_cap"):
+            value = getattr(self, name)
+            if name == "session_token_cap" and value is None:
+                continue
+            if type(value) is not int or not 0 <= value < 2**63:
+                raise ValueError(name)
         if not isinstance(self.recall_log_policy, LogPolicy):
             raise ValueError("recall_log_policy must be a LogPolicy")
         value = self.write_timeout_seconds
@@ -201,6 +211,9 @@ class MemoryCore:
         """Confirm a prepared briefing once the host has built its response."""
         from .session_brief import confirm
 
+        if "_injection" in brief:
+            from .session_injection import confirm
+
         with self._packet_fences_lock:
             saved = self._brief_fences.get(id(brief))
         if saved is None or saved[0] is not brief or saved[1] != context.binding.installation_id:
@@ -216,6 +229,24 @@ class MemoryCore:
 
             record_brief(self, context, brief, reason)
         return reason
+
+    def prepare_session_injection(self, context, text: str, *, brief=None, remaining_seconds=0.2) -> dict:
+        """Fit the host's final text and prepare delivery marks without writing them."""
+        from .session_injection import prepare
+
+        with self._packet_fences_lock:
+            saved = self._brief_fences.get(id(brief))
+        fence = saved[2] if saved and saved[0] is brief and saved[1] == context.binding.installation_id else None
+        prepared = prepare(self, context, text, brief=brief, entry_fence=fence, remaining_seconds=remaining_seconds)
+        with self._packet_fences_lock:
+            self._brief_fences[id(prepared)] = (
+                prepared,
+                context.binding.installation_id,
+                prepared["_entry_fence"].copy(),
+            )
+            while len(self._brief_fences) > 128:
+                self._brief_fences.pop(next(iter(self._brief_fences)))
+        return prepared
 
     def sync_session_compaction(self, context: TrustedContext, *, remaining_seconds: float = 0.03) -> bool:
         """Persist an observed compaction without waiting indefinitely for the writer."""
@@ -838,6 +869,7 @@ class MemoryCore:
         background_without_evidence: bool = True,
         zone: tzinfo | None = None,
         in_context_since: str | None = None,
+        host_memory_entries: tuple[str, ...] | frozenset[str] = (),
     ):
         """Retrieve once, compile once, and return the public RecallPacket contract.
 
@@ -862,7 +894,17 @@ class MemoryCore:
             return self._private_recall_packet(search_context)
         if self._entry_blocked(context, fence):
             return self._paused_recall_packet(search_context)
-        search_context = replace(search_context, packet_selection=True)
+        try:
+            # A malformed optional host snapshot must not prevent an ordinary recall.
+            validate_host_memory_entries(host_memory_entries)
+            entries = (
+                host_memory_entries
+                if isinstance(host_memory_entries, frozenset)
+                else frozenset(normalized_statement(item) for item in host_memory_entries)
+            )
+        except Exception:  # noqa: BLE001 - optional host deduplication must not stop recall
+            entries = frozenset()
+        search_context = replace(search_context, packet_selection=True, host_memory_entries=entries)
         result = self.recall_pipeline.search(search_context)
         compiler = self.recall_packet_compiler
         # Keep the compiler on the pipeline's current read boundary.  Tests

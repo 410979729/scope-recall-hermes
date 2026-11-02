@@ -5,16 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from ..contracts import ContractError, utc_timestamp
-from . import lineage, private
+from . import handoff, lineage, private
 from .claim_storage import parse_source_ref
 from .claims import statement_key
 from .entry_control import context_fence, entry_changed
 from .recall_budget import estimate_tokens
 from .retrieval import CandidateRef, SearchContext, SearchLimits
 from .retrieval_hydration import RetrievalHydration
+from .visibility import allowed
 from .writer_lease import TruthWriterBusyError
 
 _HEADING = "Session background:"
@@ -44,6 +46,7 @@ def _dependencies(conn, items):
 def rebuild_scope(tx, scope_id: str, now: str) -> bool:
     """Replace one scope's manifest when the selected object versions or their rank change."""
     conn = tx._check(write=True)
+    handoff.expire_pending(tx, scope_id, now)
     cutoff = (datetime.fromisoformat(utc_timestamp(now)) - timedelta(days=14)).isoformat()
     tasks = conn.execute(
         "SELECT e.episode_id,e.current_revision,v.recorded_at FROM episodes e "
@@ -129,9 +132,41 @@ def _line(tx, item, obj, now: str) -> str | None:
     return f"{kind} | {content} | {item['time']} | {item['ref']}@{item['revision']}"
 
 
-def _entry(context) -> str:
+def session_entry(context) -> str:
     """The installation-scoped host entry that owns this session's delivery marks."""
     return context.entry_id or context.binding.installation_id
+
+
+def observe_session_start(storage, context, timestamp: str, *, remaining_seconds: float) -> None:
+    """Record the first locally observed start in the briefing's existing session mark."""
+    # Existing briefing timestamps are canonical +00:00 and can be created at a later prompt.
+    # The equivalent UTC Z spelling identifies a hook-observed start without trusting old rows.
+    observed = utc_timestamp(timestamp).replace("+00:00", "Z")
+    with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        tx._check(write=True).execute(
+            "INSERT OR IGNORE INTO session_brief_sessions(entry_id,session_id,started,started_at) VALUES(?,?,0,?)",
+            (session_entry(context), context.session_id, observed),
+        )
+
+
+def observed_session_start(storage, context, *, remaining_seconds: float) -> float | None:
+    """Read a hook-observed start; older briefing timestamps cannot attest a host snapshot."""
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT started_at FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
+                (session_entry(context), context.session_id),
+            )
+            .fetchone()
+        )
+    value = row[0] if row else None
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError):
+        return None
 
 
 def already_injected(tx, kind: str, ref: str, revision: int) -> bool:
@@ -144,19 +179,19 @@ def already_injected(tx, kind: str, ref: str, revision: int) -> bool:
         .execute(
             "SELECT delivery_compacted_seq FROM session_brief_injections WHERE entry_id=? AND session_id=? "
             "AND object_kind=? AND object_ref=? AND revision=?",
-            (_entry(context), context.session_id, kind, ref, revision),
+            (session_entry(context), context.session_id, kind, ref, revision),
         )
         .fetchone()
     )
-    return row is not None and row[0] >= _compaction_cutoff(tx, context)
+    return row is not None and row[0] >= compaction_cutoff(tx, context)
 
 
-def _compaction_cutoff(tx, context) -> int:
+def compaction_cutoff(tx, context) -> int:
     """Translate a client counter into this session's persisted monotonic sequence."""
 
     def load():
         conn = tx._check()
-        key = (_entry(context), context.session_id)
+        key = (session_entry(context), context.session_id)
         row = conn.execute(
             "SELECT compacted_seq FROM session_brief_sessions WHERE entry_id=? AND session_id=?", key
         ).fetchone()
@@ -177,7 +212,7 @@ def _compaction_cutoff(tx, context) -> int:
     return tx.remembered(
         (
             "session_brief_compaction",
-            _entry(context),
+            session_entry(context),
             context.session_id,
             context.compaction_seq,
             context.compaction_epoch,
@@ -191,26 +226,31 @@ def _started(tx, context) -> bool:
         tx._check()
         .execute(
             "SELECT started,started_compacted_seq FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
-            (_entry(context), context.session_id),
+            (session_entry(context), context.session_id),
         )
         .fetchone()
     )
-    return bool(row and row[0] and row[1] >= _compaction_cutoff(tx, context))
+    return bool(row and row[0] and row[1] >= compaction_cutoff(tx, context))
 
 
-def _reset(tx, context) -> None:
-    key = (_entry(context), context.session_id)
+def clear_session(tx, context) -> None:
+    """Discard delivery references and usage for the context being compacted."""
+    key = (session_entry(context), context.session_id)
     tx._check(write=True).execute("DELETE FROM session_brief_injections WHERE entry_id=? AND session_id=?", key)
-    tx._check(write=True).execute("UPDATE session_brief_sessions SET started=0 WHERE entry_id=? AND session_id=?", key)
+    tx._check(write=True).execute(
+        "UPDATE session_brief_sessions SET started=0,brief_tokens=0,brief_elapsed_ms=0,"
+        "recall_tokens=0,recall_elapsed_ms=0 WHERE entry_id=? AND session_id=?",
+        key,
+    )
 
 
-def _apply_compaction(tx, context) -> None:
+def apply_compaction(tx, context) -> None:
     """Persist the translated watermark and forget only older delivery marks."""
     if context.compaction_seq is None:
         return
-    cutoff = _compaction_cutoff(tx, context)
+    cutoff = compaction_cutoff(tx, context)
     conn = tx._check(write=True)
-    key = (_entry(context), context.session_id)
+    key = (session_entry(context), context.session_id)
     previous = conn.execute(
         "SELECT base_seq,local_seq FROM session_brief_compaction_epochs WHERE entry_id=? AND session_id=? AND epoch=?",
         (*key, context.compaction_epoch),
@@ -232,6 +272,10 @@ def _apply_compaction(tx, context) -> None:
         "compaction_epoch,compaction_local_seq) VALUES(?,?,0,?,?,?,?) "
         "ON CONFLICT(entry_id,session_id) DO UPDATE SET "
         "started=CASE WHEN started_compacted_seq<excluded.compacted_seq THEN 0 ELSE started END, "
+        "brief_tokens=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE brief_tokens END, "
+        "brief_elapsed_ms=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE brief_elapsed_ms END, "
+        "recall_tokens=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE recall_tokens END, "
+        "recall_elapsed_ms=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE recall_elapsed_ms END, "
         "compacted_at=excluded.compacted_at,compacted_seq=excluded.compacted_seq,"
         "compaction_epoch=excluded.compaction_epoch,compaction_local_seq=excluded.compaction_local_seq",
         (*key, context.compacted_at, cutoff, context.compaction_epoch, context.compaction_seq),
@@ -244,7 +288,9 @@ def sync_compaction(storage, context, *, remaining_seconds: float = 0.03) -> boo
         return False
     try:
         with storage.write(context, remaining_seconds=remaining_seconds) as tx:
-            _apply_compaction(tx, context)
+            if entry_changed(tx, context_fence(tx, context)):
+                return False
+            apply_compaction(tx, context)
     except (TruthWriterBusyError, sqlite3.OperationalError):
         return False
     return True
@@ -257,7 +303,7 @@ def compaction_watermark(storage, context) -> int:
             tx._check()
             .execute(
                 "SELECT compacted_seq FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
-                (_entry(context), context.session_id),
+                (session_entry(context), context.session_id),
             )
             .fetchone()
         )
@@ -267,13 +313,13 @@ def compaction_watermark(storage, context) -> int:
 def reset_session(storage, context, *, remaining_seconds: float | None = None) -> None:
     """Clear delivery marks when the host signals that context is being compacted."""
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
-        _reset(tx, context)
+        clear_session(tx, context)
 
 
 def record_recall(storage, clock, context, *, tokens: int, elapsed_ms: int, remaining_seconds: float) -> None:
     """Accumulate the host's delivered question recall without storing its content."""
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
-        _apply_compaction(tx, context)
+        apply_compaction(tx, context)
         mode, _marker = private.recall_state(tx, context, utc_timestamp(clock.utc_now()))
         if mode == "full":
             return
@@ -282,7 +328,7 @@ def record_recall(storage, clock, context, *, tokens: int, elapsed_ms: int, rema
             "VALUES(?,?,0,?,?) ON CONFLICT(entry_id,session_id) DO UPDATE SET "
             "recall_tokens=recall_tokens+excluded.recall_tokens, "
             "recall_elapsed_ms=recall_elapsed_ms+excluded.recall_elapsed_ms",
-            (_entry(context), context.session_id, tokens, elapsed_ms),
+            (session_entry(context), context.session_id, tokens, elapsed_ms),
         )
 
 
@@ -294,7 +340,7 @@ def session_stats(storage, context) -> dict:
             .execute(
                 "SELECT brief_tokens,brief_elapsed_ms,recall_tokens,recall_elapsed_ms "
                 "FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
-                (_entry(context), context.session_id),
+                (session_entry(context), context.session_id),
             )
             .fetchone()
         )
@@ -325,8 +371,47 @@ def _rank(item):
     return score, item["time"], item["ref"]
 
 
+def visibility_batch(tx, search):
+    """Share private rules and hydrated objects within one authority snapshot."""
+    return {
+        "intervals": private.active_intervals(tx, search.now),
+        "hydration": RetrievalHydration(),
+        "objects": {},
+    }
+
+
+def visible_object(tx, search, kind, ref, revision, *, history=False, batch=None):
+    """Read one automatically visible object; history preserves superseded versions.
+
+    Historical readability distinguishes correction from withdrawal. Suppression,
+    quarantine, missing dependencies and privacy still block historical objects.
+    A batch belongs to one transaction and cannot be reused across snapshots.
+    """
+    kind = "claim" if kind == "procedure" else kind
+    batch = visibility_batch(tx, search) if batch is None else batch
+    key = (kind, ref, revision, history)
+    if key not in batch["objects"]:
+        candidate = CandidateRef(kind, ref, revision, "background")
+        mode = replace(search, mode="history") if history else search
+        obj = batch["hydration"].hydrate(tx, candidate, mode) if allowed(tx, kind, ref, automatic=True) else None
+        if obj is not None:
+            for cited in obj.evidence_refs:
+                source_ref, source_revision = parse_source_ref(cited)
+                source = tx.source(source_ref, source_revision)
+                if (
+                    source is None
+                    or source.suppressed
+                    or not allowed(tx, "event", source_ref, automatic=True)
+                    or private.source_blocked(batch["intervals"], source)
+                ):
+                    obj = None
+                    break
+        batch["objects"][key] = obj
+    return batch["objects"][key]
+
+
 def _safe_line(tx, search, item, intervals, hydration):
-    """Hydrate the current object and check each evidence root before formatting it."""
+    """Render only current objects through the shared automatic visibility check."""
     kind = "episode" if item["kind"] == "task" else "claim"
     if kind == "claim":
         saved = tx.claims.version(item["ref"], item["revision"])
@@ -341,13 +426,10 @@ def _safe_line(tx, search, item, intervals, hydration):
             # acquire more evidence without invalidating its cached selection.
             item = {**item, "revision": head.revision}
     candidate = CandidateRef(kind, item["ref"], item["revision"], "background")
-    obj = hydration.hydrate(tx, candidate, search)
+    batch = {"intervals": intervals, "hydration": hydration, "objects": {}}
+    obj = visible_object(tx, search, kind, item["ref"], item["revision"], batch=batch)
     if obj is None or obj.temporal_status != "current" or not obj.evidence_refs:
         return None
-    for ref in obj.evidence_refs:
-        source = tx.source(*parse_source_ref(ref))
-        if source is None or private.source_blocked(intervals, source):
-            return None
     line = _line(tx, item, obj, search.now)
     if not line:
         return None
@@ -358,19 +440,37 @@ def _safe_line(tx, search, item, intervals, hydration):
     return candidate, obj, line
 
 
-def _mark_delivered(tx, context, items, now: str, cutoff: int) -> None:
-    pairs = [("claim", item["ref"], item["revision"]) for item in items if item["kind"] != "task"]
+def mark_delivered(tx, context, items, now: str, cutoff: int, source: str = "brief") -> None:
+    """Record only selected object identities under the confirmed context watermark."""
+    pairs = [
+        (
+            "episode"
+            if item["kind"] == "task"
+            else "claim"
+            if source == "brief"
+            else "claim"
+            if item["kind"] == "procedure"
+            else item["kind"],
+            item["ref"],
+            item["revision"],
+        )
+        for item in items
+        if item["kind"] != "handoff"
+    ]
     tx._check(write=True).executemany(
         "INSERT INTO session_brief_injections(entry_id,session_id,object_kind,object_ref,revision,delivered_at,"
-        "delivery_compacted_at,delivery_compacted_seq) VALUES(?,?,?,?,?,?,?,?) "
+        "delivery_compacted_at,delivery_compacted_seq,source) VALUES(?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(entry_id,session_id,object_kind,object_ref,revision) DO UPDATE SET "
         "delivered_at=excluded.delivered_at,delivery_compacted_at=excluded.delivery_compacted_at,"
         "delivery_compacted_seq=excluded.delivery_compacted_seq",
-        [(_entry(context), context.session_id, *pair, now, context.compacted_at, cutoff) for pair in pairs],
+        [
+            (session_entry(context), context.session_id, *pair, now, context.compacted_at, cutoff, source)
+            for pair in pairs
+        ],
     )
 
 
-def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
+def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool, clock):
     """Render at most the per-kind limits, never a partial line."""
     limits = {"task": 3, "decision": 5, "preference": 8}
     items, lines = [], []
@@ -390,18 +490,23 @@ def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
                 continue
             lines.append(line)
             items.append({"kind": kind, "ref": candidate.ref, "revision": candidate.revision})
+    handoff.append_brief(
+        tx, search.now, items, lines, _HEADING, token_limit, deadline=search.deadline, monotonic=clock.monotonic
+    )
     return items, lines
 
 
-def _record_brief(tx, context, tokens: int, elapsed_ms: int, now: str, cutoff: int) -> None:
+def record_brief_usage(tx, context, tokens: int, elapsed_ms: int, now: str, cutoff: int) -> None:
+    """Mark the opening brief and add its delivered usage in the caller transaction."""
     tx._check(write=True).execute(
         "INSERT INTO session_brief_sessions(entry_id,session_id,started,brief_tokens,brief_elapsed_ms,started_at,"
         "started_compacted_at,started_compacted_seq) VALUES(?,?,1,?,?,?,?,?) "
         "ON CONFLICT(entry_id,session_id) DO UPDATE SET "
-        "started=1,started_at=excluded.started_at,started_compacted_at=excluded.started_compacted_at, "
+        "started=1,started_at=coalesce(session_brief_sessions.started_at,excluded.started_at), "
+        "started_compacted_at=excluded.started_compacted_at, "
         "started_compacted_seq=excluded.started_compacted_seq, "
         "brief_tokens=brief_tokens+excluded.brief_tokens,brief_elapsed_ms=brief_elapsed_ms+excluded.brief_elapsed_ms",
-        (_entry(context), context.session_id, tokens, elapsed_ms, now, context.compacted_at, cutoff),
+        (session_entry(context), context.session_id, tokens, elapsed_ms, now, context.compacted_at, cutoff),
     )
 
 
@@ -412,7 +517,7 @@ def remove_question_overlaps(brief: dict, question_text: str) -> None:
     kept = [
         (item, line)
         for item, line in zip(brief["items"], brief["_lines"], strict=True)
-        if item["kind"] == "task" or item["ref"] not in question_text
+        if item["kind"] in {"task", "handoff"} or item["ref"] not in question_text
     ]
     brief["items"] = [item for item, _line in kept]
     brief["_lines"] = [line for _item, line in kept]
@@ -435,7 +540,16 @@ def read(
     started = clock.monotonic()
     now = utc_timestamp(clock.utc_now())
     empty = {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
-    search = SearchContext("session briefing", "auto", None, (), SearchLimits(), started + 5, now, context)
+    search = SearchContext(
+        "session briefing",
+        "auto",
+        None,
+        (),
+        SearchLimits(),
+        started + (5 if remaining_seconds is None else min(5, max(0, remaining_seconds))),
+        now,
+        context,
+    )
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         entry = context_fence(tx, context)
         if entry_changed(tx, entry):
@@ -446,11 +560,11 @@ def read(
                 tx._check()
                 .execute(
                     "SELECT compacted_seq FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
-                    (_entry(context), context.session_id),
+                    (session_entry(context), context.session_id),
                 )
                 .fetchone()
             )
-            compact = _compaction_cutoff(tx, context) > (row[0] if row else 0)
+            compact = compaction_cutoff(tx, context) > (row[0] if row else 0)
         if (mode == "full" and not compact) or (deliver and not compact and _started(tx, context)):
             return empty
         items, lines = (
@@ -463,10 +577,11 @@ def read(
                 private.active_intervals(tx, now),
                 token_limit,
                 deliver and not compact,
+                clock,
             )
         )
         epoch = tx.memory_epoch()
-        compaction = _compaction_cutoff(tx, context)
+        compaction = compaction_cutoff(tx, context)
         text = "\n".join([_HEADING, *lines]) if lines else ""
         tokens = estimate_tokens(text) if text else 0
     result = {
@@ -493,7 +608,7 @@ def read(
     return result
 
 
-def _still_valid(tx, clock, context, brief) -> bool:
+def validate_prepared(tx, clock, context, brief, *, deadline=None) -> bool:
     """Recheck selected lines if truth or privacy changed after preparation."""
     now = utc_timestamp(clock.utc_now())
     mode, marker = private.recall_state(tx, context, now, after=brief["_privacy_marker"])
@@ -503,10 +618,12 @@ def _still_valid(tx, clock, context, brief) -> bool:
     ):
         brief["_log_allowed"] = False
     brief["_log_checked"] = True
-    cutoff = _compaction_cutoff(tx, context)
+    cutoff = compaction_cutoff(tx, context)
     if cutoff > brief["_compaction_cutoff"]:
         return False
     if (mode == "full" and brief["text"]) or (brief["_deliver"] and not brief["_compact"] and _started(tx, context)):
+        return False
+    if not handoff.brief_valid(tx, now, brief["items"], brief["_lines"], deadline=deadline, monotonic=clock.monotonic):
         return False
     if tx.memory_epoch() == brief["_epoch"] and marker == brief["_privacy_marker"]:
         return True
@@ -514,6 +631,8 @@ def _still_valid(tx, clock, context, brief) -> bool:
     manifest = {(item["kind"], item["ref"]): item for item in _manifest(tx, context)}
     intervals, hydration = private.active_intervals(tx, now), RetrievalHydration()
     for item, line in zip(brief["items"], brief["_lines"], strict=True):
+        if item["kind"] == "handoff":
+            continue
         saved = manifest.get((item["kind"], item["ref"]))
         found = _safe_line(tx, search, saved, intervals, hydration) if saved else None
         if found is None or found[2] != line:
@@ -521,19 +640,19 @@ def _still_valid(tx, clock, context, brief) -> bool:
     return True
 
 
-def _entry_invalid(tx, context, fence):
+def entry_invalid(tx, context, fence):
     """Reject a briefing prepared for a changed or different entry."""
     return set(fence) != set(context_fence(tx, context)) or entry_changed(tx, fence)
 
 
-def _release_refusal(tx, clock, context, brief, fence):
+def _release_refusal(tx, clock, context, brief, fence, *, deadline=None):
     """Name the first failed entry, retraction or briefing authority fence."""
     from .retractions import retraction_after
 
-    if _entry_invalid(tx, context, fence):
+    if entry_invalid(tx, context, fence):
         return "entry_state:paused"
-    if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(
-        tx, clock, context, brief
+    if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not validate_prepared(
+        tx, clock, context, brief, deadline=deadline
     ):
         return "brief_invalidated"
     return None
@@ -544,9 +663,10 @@ def confirm(storage, clock, context, brief: dict, *, entry_fence, remaining_seco
     if remaining_seconds is not None and remaining_seconds <= 0:
         return "brief_safety_unconfirmed"
     started = clock.monotonic()
+    deadline = started + (5 if remaining_seconds is None else remaining_seconds)
     try:
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence, deadline=deadline):
                 return refusal
     except Exception:  # noqa: BLE001 - an unfinished safety check must not release prepared text.
         return "brief_safety_unconfirmed"
@@ -558,18 +678,18 @@ def confirm(storage, clock, context, brief: dict, *, entry_fence, remaining_seco
     try:
         with storage.write(context, remaining_seconds=wait) as tx:
             entered = True
-            if refusal := _release_refusal(tx, clock, context, brief, entry_fence):
+            if refusal := _release_refusal(tx, clock, context, brief, entry_fence, deadline=deadline):
                 return refusal
             validated = True
             if brief["_compact"] and context.compaction_seq is None:
-                _reset(tx, context)
-            _apply_compaction(tx, context)
-            cutoff = _compaction_cutoff(tx, context)
+                clear_session(tx, context)
+            apply_compaction(tx, context)
+            cutoff = compaction_cutoff(tx, context)
             brief["_confirmed_seq"] = cutoff
             if brief["_deliver"]:
                 now = utc_timestamp(clock.utc_now())
-                _mark_delivered(tx, context, brief["items"], now, cutoff)
-                _record_brief(tx, context, brief["tokens"], brief["elapsed_ms"], now, cutoff)
+                mark_delivered(tx, context, brief["items"], now, cutoff)
+                record_brief_usage(tx, context, brief["tokens"], brief["elapsed_ms"], now, cutoff)
     except (TruthWriterBusyError, sqlite3.OperationalError):
         return "brief_safety_unconfirmed" if entered and not validated else "brief_delivery_unconfirmed"
     except Exception:  # noqa: BLE001 - a failed write-time recheck cannot release prepared text.

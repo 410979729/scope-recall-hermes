@@ -281,3 +281,99 @@ def test_duplicate_changed_after_approval_prevents_combined_undo(app):
     api.revise(ordinary.ref, expected_revision=revision, value="方案三")
     with pytest.raises(ContractError, match="VERSION_CONFLICT"):
         api.review_undo(receipt["action_id"], expected_version=receipt["version"])
+
+
+@pytest.mark.parametrize("delivered", ["claim", "event"])
+def test_pending_correction_waits_then_notifies_only_after_approval(app, delivered):
+    from scope_recall.core.session_brief import mark_delivered
+
+    core, ctx = app
+    old_source = capture(core, ctx, "TEST-project palette blue.")
+    old = accept(
+        core, ctx, draft(old_source, "blue", predicate="palette", kind="fact", statement_kind="assertion")
+    ).items[0]
+    with core.storage.write(ctx) as tx:
+        mark_delivered(
+            tx,
+            ctx,
+            [dict(kind=delivered, ref=old.ref if delivered == "claim" else old_source.ref, revision=1)],
+            core.clock.utc_now(),
+            0,
+            "question",
+        )
+    api = owner(app)
+    api.set_review_policy("TEST-scope", True, expected_version=0)
+    new_source = capture(core, ctx, "TEST-project palette green.", when="2026-09-05T12:00:00Z")
+    accept(core, ctx, draft(new_source, "green", predicate="palette", kind="fact", statement_kind="assertion"))
+    prepared = core.prepare_session_injection(ctx, "")
+    assert prepared["_injection"]["notices"] == []
+    item = api.reviews(source="fact")["items"][0]
+    api.review_decide(item["key"], "approve", expected_version=item["version"])
+    notices = core.prepare_session_injection(ctx, "")["_injection"]["notices"]
+    assert len(notices) == 1 and notices[0]["corrected"] and "green" in notices[0]["text"]
+
+
+def test_notice_rechecks_native_review_marker_before_rendering(app):
+    from types import SimpleNamespace
+
+    from scope_recall.core import session_injection
+
+    core, ctx = app
+    api = owner(app)
+    api.set_review_policy("TEST-scope", True, expected_version=0)
+    held = accept(
+        core, ctx, draft(capture(core, ctx, "TEST-project palette green."), "green", predicate="palette")
+    ).items[0]
+    replacement = SimpleNamespace(kind="claim", ref=held.ref, revision=held.revision, temporal_status="current")
+    row = dict(object_kind="claim", object_ref=held.ref, revision=held.revision, notice_marker=None)
+    with core.storage.read(ctx) as tx:
+        assert session_injection._make_notice(tx, row, "claim:" + held.ref + "@1", replacement) is None
+
+
+def test_host_comparison_never_receives_held_facts(app, monkeypatch):
+    from scope_recall.core import recall_packet
+    from scope_recall.core.visibility import REVIEW_REASONS
+
+    core, ctx = app
+    api = owner(app)
+    old = accept(
+        core,
+        ctx,
+        draft(
+            capture(core, ctx, "TEST-project palette blue."),
+            "blue",
+            predicate="palette",
+            kind="fact",
+            statement_kind="assertion",
+        ),
+    ).items[0]
+    api.set_review_policy("TEST-scope", True, expected_version=0)
+    accept(
+        core,
+        ctx,
+        draft(
+            capture(core, ctx, "TEST-project palette green.", when="2026-09-05T12:00:00Z"),
+            "green",
+            predicate="palette",
+            kind="fact",
+            statement_kind="assertion",
+        ),
+    )
+    compared = []
+    original = recall_packet.host_memory_duplicate
+
+    def compare(obj, entries):
+        if obj.kind == "claim":
+            with core.storage.read(ctx) as tx:
+                native = tx.claims.version(obj.ref, obj.revision)
+                assert native.state == "active" and native.reason not in REVIEW_REASONS
+            compared.append(obj.ref)
+        return original(obj, entries)
+
+    monkeypatch.setattr(recall_packet, "host_memory_duplicate", compare)
+    core.recall_packet(
+        ctx,
+        recall_request(query="TEST-project palette", mode="auto"),
+        host_memory_entries=("TEST-project palette green",),
+    )
+    assert old.ref in compared

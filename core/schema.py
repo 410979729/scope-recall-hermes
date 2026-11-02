@@ -1,11 +1,12 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
+from .handoff_schema import STATEMENTS as HANDOFF_STATEMENTS
 from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1129
+SCHEMA_VERSION = 1131
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -169,6 +170,12 @@ SESSION_BRIEF_STATEMENTS = (
         recall_tokens INTEGER NOT NULL DEFAULT 0, recall_elapsed_ms INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(entry_id,session_id)
     ) STRICT, WITHOUT ROWID""",
+)
+
+INJECTION_DELIVERY_STATEMENTS = (
+    "ALTER TABLE session_brief_injections ADD COLUMN source TEXT NOT NULL DEFAULT 'brief' "
+    "CHECK(source IN ('brief','question'))",
+    "ALTER TABLE session_brief_injections ADD COLUMN notice_marker TEXT",
 )
 
 
@@ -770,6 +777,8 @@ STATEMENTS = (
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
     + SESSION_BRIEF_STATEMENTS
+    + HANDOFF_STATEMENTS
+    + INJECTION_DELIVERY_STATEMENTS
     + REFLECTION_STATEMENTS
     + REFLECTION_POLICY_STATEMENTS
     + ENTRY_CONTROL_STATEMENTS
@@ -1217,7 +1226,23 @@ def upgrade_1127(connection):
 
 
 def upgrade_1128(connection):
-    """Install owner publication policy without changing existing facts."""
-    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_review_policy")))
+    """Retain existing delivery marks while adding their source and notice state."""
+    for statement in INJECTION_DELIVERY_STATEMENTS:
+        connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1129 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1129")
+
+
+def upgrade_1129(connection):
+    """Add complete entry-owned task reports without changing existing facts or work types."""
+    for statement in HANDOFF_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1130 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1130")
+
+
+def upgrade_1130(connection):
+    """Install owner publication policy without changing existing facts."""
+    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_review_policy")))
+    connection.execute("UPDATE instance_meta SET schema_version=1131 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1131")

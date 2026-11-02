@@ -19,6 +19,8 @@ window.UI_STRINGS = {
     "reviewTime": "Time",
     "reviewKeep": "Keep",
 
+
+    "handoffs": "Handoffs", "accepted": "Accepted", "cancelled": "Cancelled", "expired": "Expired",
     "entries": "Entries",
     "entry_normal": "Normal",
     "entry_restore": "Restore",
@@ -210,6 +212,8 @@ window.UI_STRINGS = {
     "reviewTime": "时间",
     "reviewKeep": "保留项",
 
+
+    "handoffs": "交接", "accepted": "已接", "cancelled": "取消", "expired": "过期",
     "entries": "入口",
     "entry_normal": "正常",
     "entry_restore": "恢复",

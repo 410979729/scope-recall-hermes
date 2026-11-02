@@ -39,6 +39,11 @@ class HookDiagnostics:
     brief_tokens: int = 0
     brief_elapsed_ms: int = 0
     brief_items: tuple[tuple[str, int], ...] = ()
+    injection_tokens: int = 0
+    session_tokens: int = 0
+    injection_token_cap: int = 0
+    session_token_cap: int | None = None
+    delivery_reason: str | None = None
     session_statistics_failed: bool = False
     capability_gaps: tuple[str, ...] = ()
     capture_stage: str | None = None
@@ -72,6 +77,19 @@ class HookDiagnostics:
     #: How long all of this hook's captures took: a Stop writes each session-record line (``capture_elapsed_ms`` is
     #: the last one's).
     capture_total_ms: int | None = None
+
+    def injection_receipt(self) -> dict:
+        """Return content-free usage and delivery status for operator receipts."""
+        return {
+            name: getattr(self, name)
+            for name in (
+                "injection_tokens",
+                "session_tokens",
+                "injection_token_cap",
+                "session_token_cap",
+                "delivery_reason",
+            )
+        }
 
     @property
     def capture_settled(self) -> bool:
@@ -182,6 +200,12 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
     sys.stdout.write(json.dumps(result, ensure_ascii=True) if result else empty)
     if diagnostics is not None and diagnostics.last_reason:
         sys.stderr.write(f"CODEX_HOOK:{diagnostics.last_reason}\n")
+    if diagnostics is not None and diagnostics.delivery_reason is not None:
+        sys.stderr.write(
+            "CODEX_INJECTION:"
+            + json.dumps(diagnostics.injection_receipt(), ensure_ascii=True, separators=(",", ":"))
+            + "\n"
+        )
     if diagnostics is not None and diagnostics.capture_stage:
         detail = {
             "stage": diagnostics.capture_stage,

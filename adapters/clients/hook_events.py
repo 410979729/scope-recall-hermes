@@ -242,7 +242,7 @@ class HookEvents:
             )
         else:
             result = self._hook.prompt_recall.own(
-                context, prompt, request_id, current_refs, deadline, capture_gaps, since=since
+                context, prompt, request_id, current_refs, deadline, capture_gaps, since=since, session_id=session_id
             )
         if brief and self._hook._pending_brief is not None:
             prepared = self._hook._pending_brief[1]

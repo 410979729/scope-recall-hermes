@@ -385,3 +385,74 @@ const assert = require('assert/strict');
     completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"sources": 5, "versions": True, "bilingual": True}
+
+
+def test_handoff_page_renders_external_text_and_reviews_cancellation():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    script = (
+        DOM_HARNESS
+        + r"""
+const assert = require('assert/strict');
+(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  global.fetch = async () => ({ok: true, json: async () => ({data: {
+    items: [{ref: 'handoff:TEST', revision: 1, state: 'pending', safety_state: 'quarantined',
+      resume: {next_step: '<img onerror="global.executed=true">'}}], next_before: 12
+  }})});
+  await loadHandoffs(false);
+  const rows = document.getElementById('handoff-items');
+  assert.ok(rows.textContent.includes('<img onerror='));
+  assert.ok(rows.textContent.includes('handoff:TEST'));
+  assert.ok(!global.executed);
+  assert.equal(document.getElementById('handoff-next').disabled, false);
+  vm.runInThisContext("preview = async data => { global.operation = data; };");
+  rows.children[0].children.at(-1).click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(global.operation, {action: 'handoff-cancel', ref: 'handoff:TEST', expected_revision: 1});
+  console.log(JSON.stringify({handoffs: true, literal: true, review: true}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"handoffs": True, "literal": True, "review": True}
+
+
+def test_entry_handoff_and_existing_pages_coexist():
+    from html.parser import HTMLParser
+
+    class Page(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = []
+            self.pages = set()
+            self.navigation = set()
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if "id" in values:
+                self.ids.append(values["id"])
+            if tag == "section" and "page" in values.get("class", "").split():
+                self.pages.add(values["id"])
+            if "data-page" in values:
+                self.navigation.add(values["data-page"])
+
+    page = Page()
+    page.feed((ASSETS / "index.html").read_text(encoding="utf-8"))
+    expected = {
+        "reviews",
+        "entries",
+        "handoffs",
+        "overview",
+        "browse",
+        "health",
+        "recalls",
+        "quarantine",
+        "private",
+        "export",
+        "backup",
+    }
+    assert expected <= page.pages and expected <= page.navigation
+    assert len(page.ids) == len(set(page.ids))

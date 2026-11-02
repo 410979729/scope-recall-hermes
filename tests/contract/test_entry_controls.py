@@ -320,3 +320,22 @@ def test_prepared_brief_cannot_replace_its_entry_fence(app):
     owner.set_entry_state("local", "normal", actor="TEST-owner")
     brief["_entry_fence"] = core._entry_fence(context)
     assert core.confirm_session_brief(context, brief) == "entry_state:paused"
+
+
+def test_prepared_brief_cannot_replace_fence_when_becoming_an_injection(app):
+    from scope_recall.core.session_brief import rebuild_scope
+
+    from tests.contract.test_claims import initial
+
+    core, context = app
+    item, _ = initial(core, context, when=core.clock.now)
+    with core.storage.write(context) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.now)
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    brief = core.session_brief(context, deliver=True, defer_confirmation=True)
+    assert item.ref in brief["text"]
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    owner.set_entry_state("local", "normal", actor="TEST-owner")
+    brief["_entry_fence"] = core._entry_fence(context)
+    prepared = core.prepare_session_injection(context, brief["text"], brief=brief)
+    assert core.confirm_session_brief(context, prepared) == "entry_state:paused"

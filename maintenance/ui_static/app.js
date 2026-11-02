@@ -26,6 +26,9 @@ let reviewActionsBefore = null;
 let reviewRows = [];
 let reviewActionRows = [];
 let reviewPolicyState = null;
+
+let handoffBefore = null;
+let handoffRows = [];
 let healthCursor = null;
 let healthActionsBefore = null;
 let healthPages = [];
@@ -109,6 +112,7 @@ async function loadPage(page) {
   if (page === "reviews") await loadReviews(false);
   if (page === "entries") await loadEntries();
   if (page === "browse") await browse(false);
+  if (page === "handoffs") await loadHandoffs(false);
   if (page === "health") await loadHealth(false);
   if (page === "recalls") await loadRecalls(false);
   if (page === "quarantine") await loadQuarantine(false);
@@ -379,6 +383,8 @@ function translate() {
   if (reviewRows.length) renderReviews();
   if (reviewActionRows.length) renderReviewActions();
   if (reviewPolicyState) renderReviewPolicy();
+
+  if (handoffRows.length) renderHandoffs();
   if (healthPages.length) renderHealth();
   if (healthActionItems.length) renderHealthActions();
   if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
@@ -441,6 +447,7 @@ $("confirm").addEventListener("click", () => run(async () => {
   if (data.action === "health-undo" && currentPage === "health") await loadHealth(false);
   if (["forget", "forget-session"].includes(data.action)) $("detail").hidden = true;
   if (["revise", "mute", "unmute"].includes(data.action) && selected) await detail(selected.ref);
+  if (currentPage === "handoffs") await loadHandoffs(false);
   if (currentPage === "entries") await loadEntries();
   if (currentPage === "reviews") await loadReviews(false);
   if (currentPage === "quarantine") await loadQuarantine(false);
@@ -518,3 +525,26 @@ $("review-filters").addEventListener("submit", (event) => { event.preventDefault
 $("review-policy-form").addEventListener("submit", (event) => { event.preventDefault(); run(async () => { reviewPolicyState = await request("review-policy", formValues("review-policy-form")); renderReviewPolicy(); }); });
 $("reviews-next").addEventListener("click", () => run(() => loadReviews(true)));
 $("review-actions-next").addEventListener("click", () => run(() => loadReviewActions(true)));
+
+async function loadHandoffs(more) {
+  const data = await request("handoffs", more && handoffBefore ? {before: handoffBefore} : {});
+  handoffRows = more ? [...handoffRows, ...data.items] : data.items;
+  handoffBefore = data.next_before;
+  $("handoff-next").disabled = !handoffBefore;
+  renderHandoffs();
+}
+function renderHandoffs() {
+  $("handoff-items").replaceChildren();
+  for (const item of handoffRows) {
+    const row = node("article", undefined, $("handoff-items"));
+    node("h3", item.ref, row);
+    node("span", t(item.state) + " | " + t(item.safety_state), row);
+    node("pre", JSON.stringify(item, null, 2), row);
+    if (item.state === "pending") {
+      const cancel = node("button", t("cancel"), row);
+      cancel.addEventListener("click", () => run(() => preview({action: "handoff-cancel", ref: item.ref, expected_revision: item.revision})));
+    }
+  }
+}
+$("refresh-handoffs").addEventListener("click", () => run(() => loadHandoffs(false)));
+$("handoff-next").addEventListener("click", () => run(() => loadHandoffs(true)));

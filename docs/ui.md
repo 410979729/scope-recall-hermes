@@ -144,7 +144,8 @@ original messages remain searchable. Automatic entity aliases wait for the same
 review, and approving an adoption retires matching older decisions only at that
 point. Undo restores those decisions together with the reviewed item. Turning
 the switch off leaves existing
-pending items waiting. Rejected records remain in history.
+pending items waiting. Rejected records remain in history. Session correction
+notices wait until a held fact is approved; they do not disclose the proposed value.
 
 An ambiguous adoption requires the owner's selected fragment IDs. Approval resumes
 the existing extraction stages; imported material keeps its original authorship
@@ -170,3 +171,12 @@ decision history continues with `--before`. HTTP reads use `reviews`,
 `review-actions` and `review-policy`; writes use `review-decide`, `review-undo`
 and `review-policy-set` through the existing preview/confirm endpoints. Each write
 requires the version displayed by its corresponding read.
+
+## Handoffs
+
+The Handoffs page lists task reports, their sending and receiving entries,
+lifecycle, expiry, confirmation state and injection safety state. Pending reports
+have a Cancel button using the same preview and confirmation flow as other owner
+operations. Content whose source is deleted, hidden or outside the selected
+installation's authority is withheld. Accepting a handoff belongs to an
+agent's authenticated tool entry.

@@ -25,6 +25,7 @@ from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
 from scope_recall.adapters.hermes.identity import unbound_session_hint
 from scope_recall.adapters.hermes.shared_entries import read_attachment
 from scope_recall.adapters.hermes.unbound_sessions import owner_sessions_unbound
+from scope_recall.adapters.host_memory import inspect_host_memory
 from scope_recall.core.recall_policy import RecallPolicy, embedding_space_id
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import (
@@ -908,6 +909,7 @@ def run_doctor(
     from .setup_workload import recommended_workload
 
     report = DoctorReport(host=host, status="degraded")
+    report.host_memory = inspect_host_memory(host, instance, project=Path(project_root or Path.cwd()))
     report.model_workload_per_100_turns = recommended_workload()
     if host == "codex":
         report.project_copy_suggestions = project_suggestions(instance, Path(project_root or Path.cwd()))
