@@ -55,11 +55,12 @@ from typing import Any, cast
 
 from scope_recall.core.capture_filters import without_private
 from scope_recall.core.file_lock import advisory_file_lock
-from scope_recall.core.private import normalize_project_path, notice_for_mode
+from scope_recall.core.private import normalize_project_path, notice_for_mode, parse_recording_command
 
 from ...contracts import ContractError
 from ...runtime.remote_clock import event_times as _private_times
 from ...runtime.remote_clock import private_metadata
+from ..host_profiles import agent_run
 from . import transcript
 from .boundary import (
     EMPTY_ANSWER,
@@ -68,6 +69,8 @@ from .boundary import (
     is_workbuddy_agent_run,
     without_lone_surrogates,
 )
+from .hook_answer import command_block
+from .session_marks import clear_compaction, compaction_marker, mark_compaction, rebase_compaction
 
 HOSTS = ("claude-code", "codex", "workbuddy", "dsh")
 #: Hosts whose Stop and SessionEnd send the lines of their own session record (``transcript``).
@@ -77,7 +80,7 @@ _RECORD_HOSTS = frozenset({"claude-code", "workbuddy", "codex"})
 #: answers as soon as the server does; the server's work is bounded by the entry's budget.  WorkBuddy's hooks are
 #: given the same waits as the claude-code host's: its prompt is blocked by a hook that runs past its wait.
 HOOK_TIMEOUTS = {
-    "claude-code": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
+    "claude-code": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "codex": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "Interrupt": 3, "SessionEnd": 3},
     "workbuddy": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "dsh": {"UserPromptSubmit": 9, "Stop": 20},
@@ -204,7 +207,7 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
             _connection_failed(config, event, exc)
             return None
         connection.sock.settimeout(max(0.2, until - time.monotonic()))
-        if _private_rules(config):
+        if _private_rules(config) and not direct_owner_command(body, config["host"]):
             state = _private_check(config, body, until - time.monotonic())
             if state is None:
                 return None
@@ -240,6 +243,35 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
     if isinstance(answer, dict):
         _remember_private_rules(config, answer)
     return answer if isinstance(answer, dict) else None
+
+
+def owner_prompt(host: str, payload: dict[str, Any]) -> bool:
+    """Accept a host-attested direct user prompt, retaining every source field."""
+    if payload.get("hook_event_name") != "UserPromptSubmit" or agent_run(host, payload):
+        return False
+    if payload.get("attachments") not in (None, []) or payload.get("record") is not None:
+        return False
+    if host == "dsh" and payload.get("scope_recall_command_eligible") is False:
+        return False
+    role = payload.get("role")
+    origin = payload.get("origin")
+    source = payload.get("source")
+    if isinstance(source, dict):
+        source = source.get("kind")
+    return role in (None, "user") and origin in (None, "human_direct") and source in (None, "user", "human_direct")
+
+
+def direct_owner_command(body: dict[str, Any], host: str) -> bool:
+    """Check the entire fresh owner-command envelope before accepting it."""
+    payload = body.get("payload")
+    return bool(
+        isinstance(payload, dict)
+        and body.get("direct_owner_command") is True
+        and body.get("fresh_observation") is True
+        and "record" not in body
+        and owner_prompt(host, payload)
+        and parse_recording_command(payload.get("prompt"))
+    )
 
 
 # -- private state before anything is sent -----------------------------------
@@ -537,6 +569,12 @@ def _flush_item(config, item: Path, left: float) -> int | None:
         _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
         item.unlink(missing_ok=True)
         return 0
+    payload = kept.get("payload")
+    session = payload.get("session_id") if isinstance(payload, dict) else None
+    session = session if type(session) is str else None
+    compact = compaction_marker(config, session) if session is not None else None
+    if compact is not None:
+        kept.update(compacted_at=compact["at"], compaction_seq=compact["ordinal"], compaction_epoch=compact["epoch"])
     if _private_rules(config):
         state = _private_check(config, kept, min(left, 1.0))
         if state is None:
@@ -548,6 +586,7 @@ def _flush_item(config, item: Path, left: float) -> int | None:
     answer = _post(config, kept, min(left, 30.0))
     if answer is None or answer.get("retry"):
         return None
+    _ack_compaction(config, session, compact, answer)
     item.unlink(missing_ok=True)
     return int(not answer.get("refused"))
 
@@ -665,44 +704,90 @@ def _visible_value(value: Any) -> Any:
     return value
 
 
+def _private_span_count(value: Any) -> int:
+    """Count the shared filter's removals across a wire field before it is copied."""
+    if isinstance(value, str):
+        return without_private(value)[1]
+    if isinstance(value, list):
+        return sum(_private_span_count(item) for item in value)
+    if isinstance(value, dict):
+        return sum(_private_span_count(key) + _private_span_count(item) for key, item in value.items())
+    return 0
+
+
 def _visible_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Strip inline private text before the same envelope reaches transport or durable spool."""
     result = dict(payload)
+    event_name = result.get("hook_event_name")
+    event_name = event_name if isinstance(event_name, str) else ""
+    fields = {
+        "UserPromptSubmit": ("prompt",),
+        "Stop": ("last_assistant_message",),
+        "PostToolUse": ("tool_input", "tool_response"),
+    }.get(event_name, ("prompt",))
+    count = sum(_private_span_count(result.get(field)) for field in fields)
+    result.pop("scope_recall_private_spans_removed", None)
+    if count:
+        result["scope_recall_private_spans_removed"] = count
     for field in ("prompt", "last_assistant_message", "tool_input", "tool_response"):
         if field in result:
             result[field] = _visible_value(result[field])
     if isinstance(result.get("record"), list):
-        result["record"] = [
-            dict(row, text=without_private(row["text"])[0])
-            if isinstance(row, dict) and isinstance(row.get("text"), str)
-            else row
-            for row in result["record"]
-        ]
+        rows = []
+        for row in result["record"]:
+            if isinstance(row, dict) and isinstance(row.get("text"), str):
+                visible, removed = without_private(row["text"])
+                previous = row.get("private_spans_removed", 0)
+                previous = previous if type(previous) is int and 0 <= previous <= 1000000 else 0
+                row = cast(dict[str, Any], dict(row, text=visible))
+                if removed + previous:
+                    row["private_spans_removed"] = removed + previous
+            rows.append(row)
+        result["record"] = rows
     return result
 
 
-def _hook_input(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+def _hook_input(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, Any] | None]:
     """Decode one event and resolve local text filtering before any transport access."""
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError):
-        return None, {}
+        return None, {}, None
     if not isinstance(payload, dict):
-        return None, {}
+        return None, {}, None
+    original = payload
     # JavaScript can emit lone surrogates; replacement keeps JSON text valid UTF-8.
     payload = cast(dict[str, Any], without_lone_surrogates(payload))
     filtered = filter_capture_reply(payload)
     if filtered is not None:
-        return None, filtered
-    return _visible_payload(payload), {}
+        return None, filtered, None
+    return _visible_payload(payload), {}, original
 
 
-def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
-    started = time.monotonic() if started is None else started
-    payload, local = _hook_input(raw)
-    if payload is None:
-        return local
-    event = payload.get("hook_event_name")
+def _pending_compaction(
+    config: dict[str, Any], payload: dict[str, Any], observed_at: str
+) -> tuple[str | None, dict | None]:
+    """Record this client's compaction before transport and return its pending watermark."""
+    session = payload.get("session_id")
+    if config["host"] not in {"claude-code", "codex"} or type(session) is not str or not session.strip():
+        return None, None
+    if payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "compact":
+        mark_compaction(config, session, observed_at)
+    return session, compaction_marker(config, session)
+
+
+def _ack_compaction(config, session: str | None, compact: dict | None, answer: dict) -> None:
+    """Retire only the client mark the server confirmed."""
+    if compact is not None and session is not None:
+        watermark = answer.get("compaction_watermark")
+        if type(watermark) is int:
+            rebase_compaction(config, session, compact["epoch"], compact["ordinal"], watermark)
+        if answer.get("compaction_ack") == compact["ordinal"]:
+            clear_compaction(config, session, compact["ordinal"], compact["epoch"], watermark)
+
+
+def _normalize_hook_project(payload):
+    """Normalize the client's project path while preserving an unverified identity marker."""
     cwd = payload.get("cwd")
     if isinstance(cwd, str):
         try:
@@ -710,6 +795,15 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         except ContractError:
             payload["cwd"] = normalize_project_path(cwd, resolve_links=False)
             payload["project_unverified"] = True
+
+
+def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
+    started = time.monotonic() if started is None else started
+    payload, local, original = _hook_input(raw)
+    if payload is None:
+        return local
+    event = payload.get("hook_event_name")
+    _normalize_hook_project(payload)
     host = config["host"]
     if event == "PrivateCheck":
         return _private_check(config, {"payload": payload}, 2.0) or {}
@@ -720,9 +814,21 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     # Every request carries the moment the hook ran here.  A request that timed out here may still have been
     # stored there, and its replay must then be the same event, not a second one with a later time.
     observed_at = _now()
+    direct_command = bool(original and owner_prompt(host, original) and parse_recording_command(original.get("prompt")))
+    session, compact = (None, None) if direct_command else _pending_compaction(config, payload, observed_at)
     if host == "claude-code" and event == "UserPromptSubmit":
         payload = _with_context_since(payload)
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
+    if direct_command:
+        body = {
+            "payload": payload,
+            "observed_at": observed_at,
+            "fresh_observation": True,
+            "direct_owner_command": True,
+            "command_id": secrets.token_hex(16),
+        }
+    if compact is not None:
+        body.update(compacted_at=compact["at"], compaction_seq=compact["ordinal"], compaction_epoch=compact["epoch"])
     cursor = None
     record_page = None
     if (
@@ -737,11 +843,12 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
             # The record is here, not on the server: this side says whether the reply is an error WorkBuddy showed.
             body["error_reply"] = True
 
-    answer = _send_checked(config, body, until)
+    answer = _post(config, body, until - time.monotonic()) if direct_command else _send_checked(config, body, until)
     if answer is None:
-        return {}
+        return command_block(host, "Scope Recall could not change recording mode.") if direct_command else {}
     if answer.get("refused"):
-        return {}
+        return command_block(host, "Scope Recall could not change recording mode.") if direct_command else {}
+    _ack_compaction(config, session, compact, answer)
     through = answer.get("through")
     if cursor is not None and type(through) is int and through > body["record"]["start"]:
         cursor.save(through, directory=record_page.directory_at(through) if record_page is not None else None)

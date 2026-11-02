@@ -469,6 +469,11 @@ class RecallPacketCompiler:
         if self._remaining_ms(context) == 0:
             gaps.append("deadline_exceeded_release")
             return None
+        if context.automatic_injection:
+            from .session_brief import already_injected
+
+            if already_injected(tx, candidate.kind, candidate.ref, candidate.revision):
+                return None
         fresh = self.storage_reader.hydrate(tx, candidate, context)
         if fresh is None:
             note_candidate(candidate, recall_log_view.rejection_reason(tx, candidate, context))

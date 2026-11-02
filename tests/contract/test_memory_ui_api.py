@@ -148,3 +148,12 @@ def test_entry_controls_are_available_through_management_routes(web_api, monkeyp
     api.confirm({"id": review["id"], "confirmed": True})
     assert api.read("entry", {"entry_id": "local"})["state"] == "paused"
     assert api.read("entry", {"entry_id": "local"})["history"][0]["actor"] == "TEST-owner"
+
+
+def test_owner_reviews_and_updates_scope_instruction(web_api):
+    api, _item = web_api
+    preview = api.preview({"action": "instruction-set", "scope": "TEST-scope", "instruction": "Only decisions"})
+    assert api.read("instruction", {"scope": "TEST-scope"})["instructions"] == []
+    receipt = api.confirm({"id": preview["id"], "confirmed": True})
+    assert receipt["result"]["version"] == 1
+    assert api.read("instruction", {"scope": "TEST-scope"})["instructions"][0]["text"] == "Only decisions"

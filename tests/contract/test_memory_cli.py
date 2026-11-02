@@ -282,3 +282,12 @@ def test_real_local_entry_list_reports_configured_scopes(store, capsys):
     assert code == 0
     entry = result["data"]["entries"][0]
     assert entry["id"] == "local" and entry["read_scopes"] and entry["write_scopes"]
+
+
+@pytest.mark.parametrize(
+    "action,args", [("entries", []), ("instruction-get", ["--scope", "TEST-scope"]), ("health", [])]
+)
+def test_merged_management_commands_use_the_same_json_contract(command, action, args):
+    call, _item, _source = command
+    code, result = call(action, *args)
+    assert code == 0 and result["status"] == "ok"

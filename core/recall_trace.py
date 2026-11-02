@@ -205,3 +205,37 @@ def record_refusal(core, context: TrustedContext, query: object, reason: str) ->
                 )
     except Exception:  # noqa: BLE001 - a diagnostic cannot change an already refused host result.
         return
+
+
+def record_brief(core, context: TrustedContext, brief: dict, reason: str) -> None:
+    """Publish prepared references after the confirmation's private-mode fence."""
+    if not brief.get("_log_allowed") or not brief.get("_log_checked"):
+        return
+    try:
+        trace = RecallTrace(
+            enabled=True,
+            private_marker=brief["_privacy_marker"],
+            context=RefusalContext("", core.identifiers.next_id(), utc_timestamp(core.clock.utc_now()), context),
+        )
+        trace.capture = {"state": "not_applicable", "refs": []}
+        delivered = []
+        for rank, (item, line) in enumerate(zip(brief["items"], brief["_lines"], strict=True), 1):
+            kind = "episode" if item["kind"] == "task" else "claim"
+            # The first rendered column is generated from the current kind and adoption state.
+            label = line.split(" | ", 1)[0]
+            source_type = "adopted_decision" if label == "decision (owner adopted assistant proposal)" else label
+            key = (kind, item["ref"], item["revision"])
+            trace.candidates[key] = dict(
+                kind=kind,
+                ref=item["ref"],
+                revision=item["revision"],
+                source_type=source_type,
+                channels={"session_brief": {"rank": rank}},
+                reason=reason,
+            )
+            if reason == "brief_delivered":
+                delivered.append(dict(kind=kind, ref=item["ref"], revision=item["revision"]))
+        trace.metrics = dict(phase="session_brief", elapsed_ms=brief["elapsed_ms"], estimated_tokens=brief["tokens"])
+        core.recall_diagnostics.finish(trace, dict(items=delivered, gaps=[], status="ok", memory_epoch=brief["_epoch"]))
+    except Exception:  # noqa: BLE001 - diagnostic failure cannot alter the host response.
+        return

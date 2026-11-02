@@ -23,6 +23,7 @@ from ..contracts import (
 from . import private
 from .admission import AdmissionPolicy
 from .capture import CaptureReceipt, record_event
+from .capture_filters import without_private
 from .delete_storage import retraction_after
 from .model_content import withhold_secret_items
 from .operations import Operations
@@ -76,6 +77,8 @@ class CoreConfig:
     write_timeout_seconds: float = 1.0
     auto_recall_seconds: float = 5.0
     admission_policy: AdmissionPolicy = field(default_factory=AdmissionPolicy)
+    session_brief_enabled: bool = True
+    session_brief_tokens: int = 1024
     recall_log_policy: LogPolicy = field(default_factory=LogPolicy)
 
     def __post_init__(self) -> None:
@@ -83,6 +86,10 @@ class CoreConfig:
             raise ValueError("binding must be an InstanceBinding")
         if not isinstance(self.admission_policy, AdmissionPolicy):
             raise ValueError("admission_policy must be an AdmissionPolicy")
+        if type(self.session_brief_enabled) is not bool or type(self.session_brief_tokens) is not int:
+            raise ValueError("invalid session briefing configuration")
+        if not 1 <= self.session_brief_tokens <= 8192:
+            raise ValueError("session briefing token limit must be between 1 and 8192")
         if not isinstance(self.recall_log_policy, LogPolicy):
             raise ValueError("recall_log_policy must be a LogPolicy")
         value = self.write_timeout_seconds
@@ -133,6 +140,7 @@ class MemoryCore:
         )
         self.recall_packet_renderer = RecallPacketRenderer()
         self._packet_fences = {}
+        self._brief_fences = {}
         self._packet_fences_lock = threading.RLock()
         self.recall_packet_compiler = RecallPacketCompiler(
             self.recall_pipeline.storage_reader,
@@ -145,6 +153,108 @@ class MemoryCore:
     def initialize(self) -> StoreStatus:
         """Explicit initialization or an identity-checked supported schema upgrade."""
         return self.storage.initialize(created_at=self.clock.utc_now())
+
+    def session_brief(
+        self,
+        context: TrustedContext,
+        *,
+        token_limit: int | None = None,
+        remaining_seconds=None,
+        deliver: bool = False,
+        compact: bool = False,
+        defer_confirmation: bool = False,
+    ) -> dict:
+        """Read a bounded, source-checked briefing for the bound session."""
+        from .session_brief import read
+
+        limit = self.config.session_brief_tokens if token_limit is None else token_limit
+        if not self.config.session_brief_enabled:
+            if not compact:
+                return {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
+            limit = 0
+            deliver = False
+        brief = read(
+            self.storage,
+            self.clock,
+            context,
+            token_limit=limit,
+            remaining_seconds=remaining_seconds,
+            deliver=deliver,
+            compact=compact,
+            defer_confirmation=True,
+        )
+        if "_entry_fence" in brief:
+            fence = brief["_entry_fence"].copy()
+            if self._entry_blocked(context, fence):
+                return {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0, "delivery_reason": "entry_state:paused"}
+            with self._packet_fences_lock:
+                self._brief_fences[id(brief)] = (brief, context.binding.installation_id, fence)
+                while len(self._brief_fences) > 128:
+                    self._brief_fences.pop(next(iter(self._brief_fences)))
+        if not defer_confirmation and (deliver or compact) and "_epoch" in brief:
+            brief["delivery_reason"] = self.confirm_session_brief(context, brief, remaining_seconds=remaining_seconds)
+            if brief["delivery_reason"] in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"}:
+                brief.update(text="", items=[], tokens=0, elapsed_ms=0)
+        return brief
+
+    def confirm_session_brief(self, context: TrustedContext, brief: dict, *, remaining_seconds=None) -> str:
+        """Confirm a prepared briefing once the host has built its response."""
+        from .session_brief import confirm
+
+        with self._packet_fences_lock:
+            saved = self._brief_fences.get(id(brief))
+        if saved is None or saved[0] is not brief or saved[1] != context.binding.installation_id:
+            return "entry_state:paused"
+        fence = saved[2]
+        reason = confirm(
+            self.storage, self.clock, context, brief, entry_fence=fence, remaining_seconds=remaining_seconds
+        )
+        if reason != "entry_state:paused" and self._entry_blocked(context, fence):
+            reason = "entry_state:paused"
+        if brief.get("_deliver") and brief.get("items") and reason in {"brief_delivered", "brief_delivery_unconfirmed"}:
+            from .recall_trace import record_brief
+
+            record_brief(self, context, brief, reason)
+        return reason
+
+    def sync_session_compaction(self, context: TrustedContext, *, remaining_seconds: float = 0.03) -> bool:
+        """Persist an observed compaction without waiting indefinitely for the writer."""
+        from .session_brief import sync_compaction
+
+        return sync_compaction(self.storage, context, remaining_seconds=remaining_seconds)
+
+    @staticmethod
+    def remove_question_overlaps(brief: dict, question_text: str) -> None:
+        """Remove facts already present in the same host response's question recall."""
+        from .session_brief import remove_question_overlaps
+
+        remove_question_overlaps(brief, question_text)
+
+    def session_compaction_watermark(self, context: TrustedContext) -> int:
+        """Read the last committed compaction sequence for this entry and session."""
+        from .session_brief import compaction_watermark
+
+        return compaction_watermark(self.storage, context)
+
+    def reset_session_injections(self, context: TrustedContext, *, remaining_seconds=None) -> None:
+        """Forget the current context's delivered references after host compaction."""
+        from .session_brief import reset_session
+
+        reset_session(self.storage, context, remaining_seconds=remaining_seconds)
+
+    def record_session_recall(self, context: TrustedContext, *, tokens: int, elapsed_ms: int, remaining_seconds: float):
+        """Record content-free automatic recall usage after the host chooses its answer."""
+        from .session_brief import record_recall
+
+        record_recall(
+            self.storage, self.clock, context, tokens=tokens, elapsed_ms=elapsed_ms, remaining_seconds=remaining_seconds
+        )
+
+    def session_injection_stats(self, context: TrustedContext) -> dict:
+        """Return opening and question recall usage for this session."""
+        from .session_brief import session_stats
+
+        return session_stats(self.storage, context)
 
     def status(
         self,
@@ -491,6 +601,7 @@ class MemoryCore:
         *,
         scope_id: str,
         remaining_seconds: float | None = None,
+        _prepared=None,
     ) -> CaptureReceipt:
         return record_event(
             self.storage,
@@ -499,6 +610,7 @@ class MemoryCore:
             value,
             scope_id=scope_id,
             admission_policy=self.config.admission_policy,
+            _prepared=_prepared,
             remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
         )
 
@@ -637,6 +749,8 @@ class MemoryCore:
             trace.enabled = privacy_state[0] is None
             trace.private_marker = privacy_state[1]
         payload = validate_model_request("recall_request", request, context)
+        payload["query"] = without_private(payload["query"])[0]
+        context = replace(context, recent_messages=tuple(without_private(text)[0] for text in context.recent_messages))
         if deadline_seconds is None:
             effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
         else:
@@ -650,7 +764,7 @@ class MemoryCore:
             if payload.get("mode") == "auto":
                 effective_deadline = min(effective_deadline, self.config.auto_recall_seconds)
         search_context = SearchContext.from_request(
-            request,
+            payload,
             context,
             now=self.clock.utc_now(),
             deadline=self.clock.monotonic() + effective_deadline,

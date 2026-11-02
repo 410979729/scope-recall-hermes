@@ -241,3 +241,82 @@ def test_render_cache_separates_entries_with_equal_request_ids():
         entry_id="TEST-b",
     )
     assert a.context is not None and b.context is not None
+
+
+def test_entry_state_fences_session_brief_and_delivery(app):
+    from scope_recall.core.session_brief import rebuild_scope
+
+    from tests.contract.test_claims import initial
+
+    core, context = app
+    item, _ = initial(core, context, when=core.clock.now)
+    with core.storage.write(context) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.now)
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    owner.set_entry_state("local", "read-only", actor="TEST-owner")
+    old = core.session_brief(context, deliver=True, defer_confirmation=True)
+    assert item.ref in old["text"]
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    paused = core.session_brief(context, deliver=True)
+    assert not paused["text"] and not paused["items"]
+    assert paused["delivery_reason"] == "entry_state:paused"
+    assert core.confirm_session_brief(context, old) == "entry_state:paused"
+    owner.set_entry_state("local", "normal", actor="TEST-owner")
+    assert core.confirm_session_brief(context, old) == "entry_state:paused"
+    assert item.ref in core.session_brief(context, deliver=True)["text"]
+
+
+def test_entry_history_stores_actor_and_account_in_separate_columns(app):
+    core, context = app
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    owner.set_entry_state("local", "paused", actor="TEST-label")
+    with core.storage.read(context) as tx:
+        row = tx._check().execute("SELECT actor,account_id FROM entry_control_history").fetchone()
+    assert row[0] == "TEST-label" and row[1]
+
+
+def test_brief_confirmation_rechecks_entry_in_write_transaction(app, monkeypatch):
+    from scope_recall.core.session_brief import rebuild_scope
+
+    from tests.contract.test_claims import initial
+
+    core, context = app
+    item, _ = initial(core, context, when=core.clock.now)
+    with core.storage.write(context) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.now)
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    brief = core.session_brief(context, deliver=True, defer_confirmation=True)
+    assert item.ref in brief["text"]
+    original = core.storage.write
+    changed = False
+
+    def race(*args, **kwargs):
+        nonlocal changed
+        if not changed:
+            changed = True
+            owner.set_entry_state("local", "paused", actor="TEST-owner")
+            owner.set_entry_state("local", "normal", actor="TEST-owner")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(core.storage, "write", race)
+    assert core.confirm_session_brief(context, brief) == "entry_state:paused"
+    with core.storage.read(context) as tx:
+        assert tx._check().execute("SELECT count(*) FROM session_brief_injections").fetchone()[0] == 0
+
+
+def test_prepared_brief_cannot_replace_its_entry_fence(app):
+    from scope_recall.core.session_brief import rebuild_scope
+
+    from tests.contract.test_claims import initial
+
+    core, context = app
+    item, _ = initial(core, context, when=core.clock.now)
+    with core.storage.write(context) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.now)
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    brief = core.session_brief(context, deliver=True, defer_confirmation=True)
+    assert item.ref in brief["text"]
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    owner.set_entry_state("local", "normal", actor="TEST-owner")
+    brief["_entry_fence"] = core._entry_fence(context)
+    assert core.confirm_session_brief(context, brief) == "entry_state:paused"

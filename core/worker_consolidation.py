@@ -19,6 +19,7 @@ from .consolidate import (
     accept_consolidation,
     candidate_evaluation_messages,
     consolidation_messages,
+    using_memory_instruction,
 )
 from .consolidation_chunks import source_chunk
 from .consolidation_summary import resume_seed
@@ -533,7 +534,20 @@ def _process_ordinary(storage, clock, context, item, prepared, *, model, started
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
         if sources_paused_now(storage, context, roots, remaining_seconds=budget_left(started, clock, budget)):
             return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
-        with private.using_outbound_check(lambda: private.outbound_blocked(storage, clock, context, sources=roots)):
+        with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+            row = (
+                tx._check()
+                .execute(
+                    "SELECT text FROM scope_memory_instructions WHERE scope_id=? ORDER BY version DESC LIMIT 1",
+                    (source.scope_id,),
+                )
+                .fetchone()
+            )
+            instruction = row[0] if row else None
+        with (
+            using_memory_instruction(instruction),
+            private.using_outbound_check(lambda: private.outbound_blocked(storage, clock, context, sources=roots)),
+        ):
             raw = model.propose(
                 roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair
             )

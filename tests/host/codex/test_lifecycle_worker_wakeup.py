@@ -124,7 +124,7 @@ def test_denied_session_start_does_not_wake_worker(codex_install, tmp_path):
     handler.close()
 
 
-def test_failed_status_and_failed_stop_capture_do_not_wake_worker(codex_install):
+def test_failed_brief_read_and_failed_stop_capture_do_not_wake_worker(codex_install):
     config, _core, project, runtime_path = codex_install
 
     failed_status = CodexHookHandler.from_config_path(
@@ -132,7 +132,7 @@ def test_failed_status_and_failed_stop_capture_do_not_wake_worker(codex_install)
         trusted_runtime_config_path=str(runtime_path),
     )
     with (
-        patch.object(failed_status.core, "status", side_effect=ContractError("status_failed")),
+        patch.object(failed_status.core, "session_brief", side_effect=ContractError("brief_unavailable")),
         patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch,
     ):
         assert failed_status.handle_payload(_payload(project, "SessionStart")) == {}

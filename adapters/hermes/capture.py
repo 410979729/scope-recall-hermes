@@ -16,9 +16,9 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
 from scope_recall.contracts import ContractError, SourceEvent, TrustedContext
-from scope_recall.core import MemoryCore
+from scope_recall.core import MemoryCore, private
 from scope_recall.core.capture import CaptureReceipt
-from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text
+from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text, without_private
 from scope_recall.core.deadline import fits
 from scope_recall.core.events import prepare_capture, stored_content_digest
 from scope_recall.core.failure_policy import capture_retryable
@@ -115,6 +115,14 @@ class CaptureWriter:
         """Record one host event: the receipt, or None when nothing was written (said in the diagnostics and the
         log).  ``release``: the caller holds the adapter's lock exactly once, and the store I/O runs without it."""
         adapter = self._adapter
+        if (
+            context.actor_origin == "human_direct"
+            and isinstance(event, dict)
+            and private.parse_recording_command(event.get("content"))
+            and not event.get("artifact_refs")
+            and not gaps
+        ):
+            return None
         if event is None:
             if gaps:
                 adapter._merge_gaps(gaps)
@@ -127,6 +135,7 @@ class CaptureWriter:
             self.record_failure(identity, "capability_gap")
             adapter._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return None
+        turn_key = (context.session_id, adapter._active_turn_id)
         started = time.monotonic()
         snapshot = self._snapshot(context, event, identity, gaps, scope_id, bound)
         retry = adapter._retry.captures
@@ -135,6 +144,14 @@ class CaptureWriter:
         receipt = self._store(context, store_event, identity, scope_id, host_scope, remaining_seconds, started, release)
         if isinstance(receipt, CaptureReceipt):
             adapter._diagnostics.masked_secret_count += receipt.masked_secret_count
+            if context.actor_origin == "human_direct":
+                for gap in receipt.gaps:
+                    if gap.startswith("private_spans_removed:"):
+                        count = gap.removeprefix("private_spans_removed:")
+                        if count.isascii() and count.isdecimal():
+                            adapter._private_span_receipts[turn_key] = int(count)
+                            if len(adapter._private_span_receipts) > 128:
+                                del adapter._private_span_receipts[next(iter(adapter._private_span_receipts))]
         if release and not adapter._initialized:
             return self._closed_meanwhile(identity, receipt, replay, snapshot)
         if isinstance(receipt, Exception):
@@ -351,7 +368,9 @@ class CaptureWriter:
             and previous["project_id"] == context.project_id
             and previous["branch_id"] == context.branch_id
             and type(event.get("content")) is str
-            and stored_content_digest(sanitize_source_capture_text(redact_secret_text(event["content"])[0]))
+            and stored_content_digest(
+                sanitize_source_capture_text(redact_secret_text(without_private(event["content"])[0])[0])
+            )
             == previous["content_sha256"]
         ):
             for field in ("occurred_at", "recorded_at", "time_precision"):
@@ -414,7 +433,7 @@ class CaptureWriter:
             adapter._ledger.confirm(identity)
             if replay:
                 _log.info("scope-recall: queued on retry: %s", label(identity))
-        adapter._merge_gaps(gaps, ("capture_gap:durable_ingress_pending",))
+        adapter._merge_gaps(gaps, receipt.gaps, ("capture_gap:durable_ingress_pending",))
         adapter._binding.wake_worker(context=context)
         return receipt
 
@@ -437,8 +456,8 @@ class CaptureWriter:
                 _log.info("scope-recall: stored on retry: %s", label(identity))
         if context.session_id == adapter._require_identity().stored_session_id():
             self._fence(receipt)
-        if gaps:
-            adapter._merge_gaps(gaps)
+        if gaps or receipt.gaps:
+            adapter._merge_gaps(gaps, receipt.gaps)
         adapter._binding.wake_worker(context=context)
         return receipt
 

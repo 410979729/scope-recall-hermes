@@ -60,3 +60,43 @@ def test_read_only_hook_keeps_semantic_recall(client, tmp_path, monkeypatch):
         assert calls
     finally:
         hook.close()
+
+
+def test_entry_pause_at_brief_confirmation_discards_all_prepared_memory(client, monkeypatch):
+    import time
+
+    _root, home, host = client
+    hook = CodexHookHandler.from_home(str(home), host)
+    try:
+        hook._pending_brief = (None, {"text": "TEST brief"})
+        monkeypatch.setattr(hook.core, "confirm_session_brief", lambda *_args, **_kwargs: "entry_state:paused")
+        result = {"hookSpecificOutput": {"additionalContext": "TEST brief\nTEST recalled memory"}}
+        assert hook._confirm_brief(result, time.monotonic() + 10) == {}
+        assert hook.diagnostics.last_reason == "entry_state:paused"
+    finally:
+        hook.close()
+
+
+def test_paused_entry_session_start_reports_brief_refusal(client, tmp_path, monkeypatch):
+    import pytest
+
+    _root, home, host = client
+    if host not in {"codex", "claude-code"}:
+        pytest.skip("This host has no SessionStart event")
+    hook = CodexHookHandler.from_home(str(home), host)
+    monkeypatch.setattr(hook, "ensure_runtime", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hook, "launch_worker", lambda *_args, **_kwargs: None)
+    binding = hook.core.storage.binding
+    owner = MemoryManagement(
+        hook.core, InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated"))
+    )
+    owner.set_entry_state("test-boundary", "paused", actor="TEST-owner")
+    try:
+        result = hook.handle_payload(dict(hook_event_name="SessionStart", session_id="TEST-start", cwd=str(tmp_path)))
+        assert not result.get("hookSpecificOutput", {}).get("additionalContext")
+        assert (
+            "entry_state:paused" in hook.diagnostics.capability_gaps
+            or hook.diagnostics.last_reason == "entry_state:paused"
+        )
+    finally:
+        hook.close()

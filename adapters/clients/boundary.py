@@ -8,6 +8,7 @@ from typing import Any
 
 from scope_recall.contracts import ContractError, SourceEvent, utc_timestamp
 from scope_recall.core.capture_filters import without_private
+from scope_recall.core.private import parse_recording_command
 
 from ..host_profiles import (
     HOSTS,
@@ -43,14 +44,19 @@ EMPTY_ANSWER = {host: profile.empty_answer for host, profile in HOSTS.items()}
 TURN_FIELD = {host: profile.turn_field for host, profile in HOSTS.items()}
 
 
-def filter_capture_reply(payload: dict[str, Any]) -> dict[str, str] | None:
+def filter_capture_reply(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Filter native spool text locally; None identifies an ordinary hook event."""
     if payload.get("hook_event_name") != "FilterCapture":
         return None
     text = payload.get("text")
     if not isinstance(text, str):
         return {}
-    return {"text": without_private(without_lone_surrogates(text))[0]}
+    command = parse_recording_command(text)
+    visible, count = without_private(without_lone_surrogates(text))
+    result = {"text": visible, "private_spans_removed": count}
+    if command:
+        result["command"] = command
+    return result
 
 
 def host_source_key(

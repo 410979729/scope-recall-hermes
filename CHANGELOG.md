@@ -5,6 +5,20 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 ## [4.0.0.dev0] - unreleased
 
 Entry controls record owner changes and apply read-only or paused states to individual entries. Paused entry work is rechecked at dispatch and publication, and stale recall packets are discarded.
+
+
+Remote recording commands now retain their source metadata and reject replay in the same transaction as the session rule.
+Hermes reports inline private omissions through its prefetch receipt.
+
+Scope owners can version per-scope extraction instructions from management; instructions only narrow later extraction.
+Recording can be paused or resumed for the current session with direct owner commands, and capture receipts count removed inline private spans.
+The shared store can run in a Linux container with host networking and remote client entries.
+
+Session start can deliver a bounded, source-checked briefing of unfinished tasks, recent decisions and important
+preferences. Briefings are prepared by the worker, do not require model calls, and omit content already delivered in
+the current context. The coordinated schema upgrade adds rebuildable scope manifests and session delivery accounting.
+Claude Code installations need their host hooks refreshed through setup to receive the new session-start event.
+
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.
 Worker-published counters replace queue scans during recall. The minimum diagnostic capacity is 128 KiB; existing
@@ -14,7 +28,7 @@ Setup retires only its disposable diagnostic writers before removing verificatio
 
 Reflection checks the full dependency manifest's privacy at dispatch and every content exit, pages owner-conflict scans without treating unrelated history as a denial, and preserves reviewed states during fact maintenance. Fresh supported evidence can replace stale observations while retaining history and direct owner blocks. Candidates validate explicit session numbers individually. An independent ceiling of four reflection calls per scope and UTC day, paced historical pages and empty-result backoff bound background cost; doctor reports the counter. The coordinated store upgrade adds this durable state with its verified rollback snapshot.
 
-Idle reflection now publishes bounded cross-session observations only after independent evidence support, using explicitly budgeted auxiliary routes. Observations retain their inductive basis, source dependencies and owner review controls across management, revision, recall and export. Invalidated evidence blocks them immediately, original words take precedence, and observations are excluded from overflow excerpts. The store upgrades automatically to format 1124 with a verified rollback snapshot; existing fact and source payloads are preserved.
+Idle reflection now publishes bounded cross-session observations only after independent evidence support, using explicitly budgeted auxiliary routes. Observations retain their inductive basis, source dependencies and owner review controls across management, revision, recall and export. Invalidated evidence blocks them immediately, original words take precedence, and observations are excluded from overflow excerpts. The store upgrades automatically to format 1125 with a verified rollback snapshot; existing fact and source payloads are preserved.
 
 Summary requests bound each source by role and page completed tasks within the input limit. Unquoted long replies remain candidates for time-based recall. Budget recommendations include the measured summary and adoption processing.
 
@@ -27,7 +41,7 @@ Model updates preserve existing shared-worker settings and preview each changed 
 
 Explicit owner adoption can turn selected assistant proposal fragments into a sourced decision. The confirmation remains the authority; versioned source references, fragment offsets, scope and conditions bind the adopted content. Ambiguous, unavailable or edited proposals await owner confirmation in the existing held-content list. Decisions retain the normal correction and deletion paths, and do not assert execution. Adopted decisions share ordinary decision importance and owner controls; fully repeated summary excerpts yield to a displayed same-source decision. Overflow lists keep adopted plans separate from matching originals. Ordinary consolidation input is unchanged when no adoption is found. The coordinated schema upgrade retains its rollback snapshot.
 
-Fact extraction records importance from 1 to 5, with owner edits and pinning in management, the CLI and revise. Background preferences use salience without changing ordinary query ranking. Ended sessions and completed tasks gain grounded, version-checked summaries through the existing worker and model budget; dated and previous-conversation questions retain raw fallback for incomplete, failed or invalidated summaries. Existing stores receive additive metadata and bounded background backfill. Summary excerpts retain complete sentences; unquoted details remain on the raw path, corrected evidence is excluded during rebuilding, and unchanged input pages are reused after continuation. Pinning preserves the base importance, and automatic summaries require explicit API or subscription budgets. Summaries fully repeated by displayed originals are omitted after packet fitting, and mixed-speaker summaries carry the least trusted member origin. The combined store format is 1124, retaining source safety, fact postings and database lifetime identity. Safety release and rescan restore summary eligibility; portable exports include the valid summary head, and shared-store imports rebuild summaries from renamed originals.
+Fact extraction records importance from 1 to 5, with owner edits and pinning in management, the CLI and revise. Background preferences use salience without changing ordinary query ranking. Ended sessions and completed tasks gain grounded, version-checked summaries through the existing worker and model budget; dated and previous-conversation questions retain raw fallback for incomplete, failed or invalidated summaries. Existing stores receive additive metadata and bounded background backfill. Summary excerpts retain complete sentences; unquoted details remain on the raw path, corrected evidence is excluded during rebuilding, and unchanged input pages are reused after continuation. Pinning preserves the base importance, and automatic summaries require explicit API or subscription budgets. Summaries fully repeated by displayed originals are omitted after packet fitting, and mixed-speaker summaries carry the least trusted member origin. The combined store format is 1125, retaining source safety, fact postings and database lifetime identity. Safety release and rescan restore summary eligibility; portable exports include the valid summary head, and shared-store imports rebuild summaries from renamed originals.
 
 Host adapters share binding and route validation. Local linked worktrees inherit a registered project only after forward and reverse Git metadata agree. Workers recover missed visible messages from session records, including Codex rollouts, with idempotence and private-history checks; inline private spans are removed before capture and remote spooling. MCP input declarations retain omission and null semantics, and stdio services exit after input closure or launcher death. Existing attachment and hook commands remain valid.
 

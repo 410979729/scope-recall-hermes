@@ -95,6 +95,31 @@ def _entry_arguments(command, action):
         command.add_argument("--actor", required=True)
 
 
+def _instruction_arguments(command, action):
+    """Expose scope instruction fields only on management commands."""
+    if action in {"instruction-get", "instruction-set"}:
+        command.add_argument("--scope", required=True)
+    if action == "instruction-set":
+        command.add_argument("--text", required=True, help="instruction text, at most 2000 characters")
+
+
+def _health_arguments(command, action):
+    """Add arguments for the on-demand health commands."""
+    if action == "health":
+        command.add_argument("--limit", type=int, default=30)
+        command.add_argument("--cursor")
+    if action in {"health-entity", "health-merge", "health-choose"}:
+        command.add_argument("first_ref")
+        command.add_argument("first_revision", type=int)
+        command.add_argument("second_ref")
+        command.add_argument("second_revision", type=int)
+        if action == "health-entity":
+            command.add_argument("--name")
+    if action == "health-undo":
+        command.add_argument("action_id")
+        command.add_argument("versions", help="JSON object mapping references to expected revisions")
+
+
 def parser():
     """Build command arguments without opening a database or calling a provider."""
     root = argparse.ArgumentParser(prog="scope-recall memory", description=__doc__)
@@ -117,14 +142,24 @@ def parser():
         "entry",
         "entry-state",
         "import",
+        "instruction-get",
+        "instruction-set",
+        "health",
+        "health-entity",
+        "health-merge",
+        "health-choose",
+        "health-undo",
     ):
         command = commands.add_parser(action)
         _common(command)
         _entry_arguments(command, action)
+
+        _instruction_arguments(command, action)
         if action == "recalls":
             command.add_argument("--session")
             command.add_argument("--request-id")
             command.add_argument("--before", type=int)
+        _health_arguments(command, action)
         if action == "import":
             from .memory_import import add_arguments
 
@@ -199,10 +234,37 @@ def _entry_command(api, args):
     return api.set_entry_state(args.entry_id, args.state, actor=args.actor)
 
 
+def _execute_health(api, args):
+    """Route health actions through the same owner methods as the UI."""
+    if args.action == "health":
+        return api.health(limit=args.limit, cursor=args.cursor)
+    if args.action in {"health-entity", "health-merge", "health-choose"}:
+        fn = {
+            "health-entity": api.health_merge_entity,
+            "health-merge": api.health_merge_facts,
+            "health-choose": api.health_choose_fact,
+        }[args.action]
+        values = (args.first_ref, args.first_revision, args.second_ref, args.second_revision)
+        return fn(*values, name=args.name) if args.action == "health-entity" else fn(*values)
+    if args.action == "health-undo":
+        return api.health_undo(args.action_id, json.loads(args.versions))
+    raise ContractError("INPUT_INVALID", "action")
+
+
+def _execute_instruction_or_health(api, args):
+    """Route scope instructions and reviewed health actions through management."""
+    if args.action.startswith("health"):
+        return _execute_health(api, args)
+    if args.action == "instruction-get":
+        return {"instructions": api.memory_instructions(args.scope)}
+    return api.set_memory_instruction(args.scope, args.text)
+
+
 def execute(api, args):
     """Translate one parsed command to the same methods used by the local UI."""
-    if args.action in {"entries", "entry", "entry-state"}:
-        return _entry_command(api, args)
+    entry_action = args.action in {"entries", "entry", "entry-state"}
+    if entry_action or args.action in {"instruction-get", "instruction-set"} or args.action.startswith("health"):
+        return _entry_command(api, args) if entry_action else _execute_instruction_or_health(api, args)
     if args.action in {"recalls", "secrets", "list", "search"}:
         return _inventory(api, args)
     if args.action == "importance":

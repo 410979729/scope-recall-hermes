@@ -224,3 +224,16 @@ def test_local_hermes_entry_reports_its_grants(adapter, hermes_home):
     _provider, _clock = adapter
     grants = entry_grants(SimpleNamespace(root=None, host="hermes", instance_root=str(hermes_home)))
     assert grants["local"]["read_scopes"] and grants["local"]["write_scopes"]
+
+
+def test_provider_discards_memory_when_brief_confirmation_finds_paused_entry(adapter, monkeypatch):
+    provider, _clock = adapter
+    core = provider._require_core()
+    context = provider._require_identity().trusted_context()
+    turn = provider._active_turn_id
+    monkeypatch.setattr(core, "confirm_session_brief", lambda *_args, **_kwargs: "entry_state:paused")
+    result = provider._prefetch._confirm(
+        core, context, context.session_id, turn, {"_epoch": 1, "text": "TEST brief"}, "TEST brief\nTEST recalled memory"
+    )
+    assert result == ""
+    assert "entry_state:paused" in provider._diagnostics.capability_gaps

@@ -1,6 +1,5 @@
 """Durable entry state and the owner-only transition boundary."""
 
-import json
 import os
 
 from ..contracts import ContractError
@@ -73,7 +72,7 @@ def context_fence(tx, context):
 def entry_changed(tx, fence):
     """Reject a paused or changed entry at a read or delivery boundary."""
     return paused_since(tx, fence) or any(
-        state_for(tx, tx.context, entry_id=key) != value for key, value in fence.items()
+        state_for(tx, tx.context, entry_id=key) != tuple(value) for key, value in fence.items()
     )
 
 
@@ -119,19 +118,6 @@ def process_account_id():
         kernel.CloseHandle(token)
 
 
-def history_actor(value):
-    """Decode process identity while retaining older history records without one."""
-    # Older labels were limited to 240 characters, so padded envelopes cannot
-    # be mistaken for a label that happens to resemble the serialization.
-    if len(value) > 240 and value.startswith("account-v1:"):
-        try:
-            data = json.loads(value[len("account-v1:") :])
-            return data["label"], data["account_id"]
-        except (ValueError, KeyError, TypeError):
-            pass
-    return value, None
-
-
 def paused_since(tx, fence):
     """Block a result when an owner is paused or was paused after its snapshot."""
     for key, (state, version) in fence.items():
@@ -172,13 +158,14 @@ def change(tx, context, entry_id, state, actor, now):
         (entry_id, state, version),
     )
     conn.execute(
-        "INSERT INTO entry_control_history VALUES (?,?,?,?,?,?)",
+        "INSERT INTO entry_control_history VALUES (?,?,?,?,?,?,?)",
         (
             entry_id,
             version,
             previous,
             state,
-            ("account-v1:" + json.dumps({"label": actor.strip(), "account_id": process_account_id()})).ljust(241),
+            actor.strip(),
+            process_account_id(),
             now,
         ),
     )

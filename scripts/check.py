@@ -135,7 +135,7 @@ def packaging_helper_env(tier: str) -> dict[str, str]:
     env = {"SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS": str(Path(packaging_uv).resolve().parent)}
     if declared:
         env["SCOPE_RECALL_UV"] = declared
-    for name in ("UV_CACHE_DIR", "UV_OFFLINE"):
+    for name in ("UV_CACHE_DIR", "UV_OFFLINE", "UV_FIND_LINKS"):
         if value := os.environ.get(name):
             env[name] = value
     return env
@@ -176,6 +176,7 @@ SUITES = {
         "tests/contract/test_reflection.py",
         "tests/contract/test_reflection_repairs.py",
         "tests/contract/test_reflection_cost.py",
+        "tests/contract/test_docker_distribution.py",
         "tests/contract/test_setup_workload.py",
         "tests/contract/test_adoption.py",
         "tests/contract/test_adoption_merge.py",
@@ -201,6 +202,8 @@ SUITES = {
         "tests/contract/test_backup_relocation.py",
         "tests/contract/test_full_backup.py",
         "tests/contract/test_memory_admin.py",
+        "tests/contract/test_memory_health.py",
+        "tests/contract/test_health_repairs.py",
         "tests/contract/test_memory_cli.py",
         "tests/contract/test_memory_ui_api.py",
         "tests/contract/test_entry_controls.py",
@@ -294,6 +297,8 @@ SUITES = {
         "tests/recall_bench/test_recall_bench.py",
     ],
     "native": [
+        "tests/storage_native/test_docker_lock.py",
+        "tests/storage_native/test_docker_setup.py",
         "tests/storage_native/test_sqlite_vector_native.py",
         "tests/contract/test_lance_embed_fence.py",
         "tests/contract/test_retained_lock_deadline.py",
@@ -317,6 +322,7 @@ SUITES = {
         "tests/host/test_memory_ui_http.py",
         "tests/host/test_memory_ui_assets.py",
         "tests/host/codex/test_client_private_mode.py",
+        "tests/host/codex/test_private_commands.py",
         "tests/host/hermes/test_hermes_private_mode.py",
         "tests/host/test_endpoint_credentials.py",
         "tests/host/hermes/test_attachments_shutdown.py",
@@ -362,6 +368,7 @@ SUITES = {
         "tests/host/codex/test_tool_schemas.py",
     ],
     "migration": [
+        "tests/migration/test_health_upgrade.py",
         "tests/migration/test_reflection_upgrade.py",
         "tests/migration/test_adoption_upgrade.py",
         "tests/migration/test_database_identity_upgrade.py",
@@ -385,6 +392,7 @@ SUITES = {
         *SCRIPT_GATE_TESTS,
     ],
     "integration": [
+        "tests/integration/test_health_scale.py",
         "tests/integration/test_memory_import.py",
         "tests/contract/test_worker.py",
         "tests/contract/test_worker_incremental_batch.py",

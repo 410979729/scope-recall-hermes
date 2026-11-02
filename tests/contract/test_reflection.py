@@ -577,3 +577,20 @@ def test_reflection_discards_result_when_entry_was_paused_during_call(app):
     model = TransitionReflection()
     run(core, ctx, model)
     assert len(model.calls) == 1 and observation(core, ctx) is None
+
+
+def test_reflection_observations_are_excluded_from_session_brief(app):
+    from scope_recall.core.session_brief import rebuild_scope
+
+    core, ctx = app
+    populate(core, ctx)
+    run(core, ctx, ReflectionModel())
+    item = observation(core, ctx)
+    assert item is not None
+    with core.storage.write(ctx) as tx:
+        rebuild_scope(tx, "TEST-scope", core.clock.utc_now())
+        manifest = json.loads(
+            tx._check().execute("SELECT items_json FROM session_briefs WHERE scope_id=?", ("TEST-scope",)).fetchone()[0]
+        )
+    assert all(entry["ref"] != item.ref for entry in manifest)
+    assert item.ref not in core.session_brief(ctx)["text"]

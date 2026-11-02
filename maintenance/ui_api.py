@@ -112,8 +112,8 @@ class UIApi:
     def read(self, route, data):
         """Dispatch a read without invoking any state-changing owner method."""
         api = self.management
-        if route in {"overview", "backup", "entries", "entry"}:
-            return self._entry_or_status(route, data)
+        if route in {"overview", "backup", "entries", "entry", "health", "health-actions"}:
+            return self._read_control(route, data)
         if route in {"list", "search"}:
             return api.list(filters(data), limit=number(data, "limit", 30), cursor=text(data, "cursor"))
         if route == "detail":
@@ -129,10 +129,31 @@ class UIApi:
                 before=number(data, "before"),
                 limit=number(data, "limit", 30),
             )
-        if route == "private":
-            return api.private_status(session=text(data, "session"), project=text(data, "project"))
+        if route in {"private", "instruction"}:
+            return (
+                api.private_status(session=text(data, "session"), project=text(data, "project"))
+                if route == "private"
+                else {"instructions": api.memory_instructions(text(data, "scope"))}
+            )
         if route == "receipt":
             return self._lookup(self.receipts, text(data, "id"))
+        raise ContractError("INPUT_INVALID", "route")
+
+    def _read_control(self, route, data):
+        """Dispatch entry, status and health reads."""
+        return (
+            self._read_health(route, data)
+            if route in {"health", "health-actions"}
+            else self._entry_or_status(route, data)
+        )
+
+    def _read_health(self, route, data):
+        """Read health findings or undoable action receipts."""
+        api = self.management
+        if route == "health":
+            return api.health(limit=number(data, "limit", 30), cursor=text(data, "cursor"))
+        if route == "health-actions":
+            return api.health_actions(limit=number(data, "limit", 30), before=number(data, "before"))
         raise ContractError("INPUT_INVALID", "route")
 
     def _remember(self, collection, identity, value):
@@ -146,11 +167,19 @@ class UIApi:
             raise ContractError("SOURCE_MISSING", "review_or_receipt")
         return found[1]
 
+    def _control_plan(self, data, action):
+        """Prepare entry, instruction and health changes through the owner boundary."""
+        if action == "entry-state":
+            return dict(action=action, entry_id=text(data, "entry_id"), state=text(data, "state"))
+        if action == "instruction-set":
+            return dict(action=action, scope=text(data, "scope"), instruction=text(data, "instruction"))
+        return self._health_plan(data, action)
+
     def _plan(self, data):
         api = self.management
         action = text(data, "action")
-        if action == "entry-state":
-            return dict(action=action, entry_id=text(data, "entry_id"), state=text(data, "state"))
+        if action in {"entry-state", "instruction-set"} or (action is not None and action.startswith("health-")):
+            return self._control_plan(data, action)
         if action in {"mute", "unmute", "forget"}:
             ref = text(data, "ref")
             revision = number(data, "expected_revision")
@@ -202,6 +231,27 @@ class UIApi:
             )
         raise ContractError("INPUT_INVALID", "action")
 
+    def _health_plan(self, data, action):
+        """Validate the reviewed health decision without disclosing hidden facts."""
+        if action in {"health-entity", "health-merge", "health-choose"}:
+            first, second = text(data, "first_ref"), text(data, "second_ref")
+            return dict(
+                action=action,
+                first_ref=first,
+                first_revision=number(data, "first_revision"),
+                second_ref=second,
+                second_revision=number(data, "second_revision"),
+                name=text(data, "name"),
+            )
+        if action == "health-undo":
+            versions = data.get("versions")
+            if not isinstance(versions, dict) or not all(
+                type(k) is str and type(v) is int and v > 0 for k, v in versions.items()
+            ):
+                raise ContractError("INPUT_INVALID", "versions")
+            return dict(action=action, action_id=text(data, "action_id"), versions=versions)
+        raise ContractError("INPUT_INVALID", "action")
+
     def preview(self, data):
         """Retain the exact displayed request; confirmation cannot substitute its payload."""
         with self.lock:
@@ -210,11 +260,20 @@ class UIApi:
             self._remember(self.previews, identity, plan)
             return dict(id=identity, preview=plan, expires_in_seconds=REVIEW_SECONDS)
 
+    def _control_apply(self, plan):
+        """Apply an entry, instruction or health review."""
+        action = plan["action"]
+        if action == "entry-state":
+            return self.management.set_entry_state(plan["entry_id"], plan["state"], actor=getpass.getuser())
+        if action == "instruction-set":
+            return self.management.set_memory_instruction(plan["scope"], plan["instruction"])
+        return self._health_apply(plan)
+
     def _apply(self, plan):
         api = self.management
         action = plan["action"]
-        if action == "entry-state":
-            return api.set_entry_state(plan["entry_id"], plan["state"], actor=getpass.getuser())
+        if action in {"entry-state", "instruction-set"} or (action is not None and action.startswith("health-")):
+            return self._control_apply(plan)
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
         if action == "release-quarantine":
@@ -236,6 +295,22 @@ class UIApi:
             return api.private_off(**plan["arguments"])
         with api.export_reader(MemoryFilter(**plan["filters"])) as reader:
             return write_export(reader, plan["out"], with_attachments=plan["with_attachments"])
+
+    def _health_apply(self, plan):
+        """Apply a reviewed health decision through the management boundary."""
+        api = self.management
+        action = plan["action"]
+        if action in {"health-entity", "health-merge", "health-choose"}:
+            fn = {
+                "health-entity": api.health_merge_entity,
+                "health-merge": api.health_merge_facts,
+                "health-choose": api.health_choose_fact,
+            }[action]
+            args = (plan["first_ref"], plan["first_revision"], plan["second_ref"], plan["second_revision"])
+            return fn(*args, name=plan["name"]) if action == "health-entity" else fn(*args)
+        if action == "health-undo":
+            return api.health_undo(plan["action_id"], plan["versions"])
+        raise ContractError("INPUT_INVALID", "action")
 
     def confirm(self, data):
         """Apply a single-use review after an explicit confirmation and retain its receipt."""

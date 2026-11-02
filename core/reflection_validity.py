@@ -59,6 +59,26 @@ def observation_dependencies(tx, ref, revision):
     return (json.loads(row[0]), row[1]) if row is not None else None
 
 
+def reflection_historical(tx, version):
+    """Permit explicit historical display only while its complete source manifest is visible."""
+    if version.payload.get("kind") != "observation":
+        return True
+    if (
+        version.suppressed
+        or version.scope_id not in tx.context.allowed_scope_ids
+        or (version.project_id, version.branch_id) != (tx.context.project_id, tx.context.branch_id)
+    ):
+        return False
+    dependencies = observation_dependencies(tx, version.ref, version.revision)
+    if dependencies is None:
+        return False
+    try:
+        live_members(tx, dependencies[0])
+        return True
+    except ContractError:
+        return False
+
+
 def reflection_live(tx, version, *, query_scope=None, excluded=(), check_conflicts=True):
     """Release only the current, supported induction with all original dependencies intact."""
     if version.payload.get("kind") != "observation":

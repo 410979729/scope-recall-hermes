@@ -1,8 +1,8 @@
 """Human-only private-mode commands; all policy lives in the management API.
 
-The command line is the operator interface.  No agent tool or host event may
-open or close an interval: a model writing the same words is not the person's
-command.  A rule stores metadata only, never a message, attachment or question.
+The command line is an operator interface. A direct human prompt may also
+control its own session through the host boundary. A model writing the same
+words is not the person's command. A rule stores metadata only.
 """
 
 from __future__ import annotations

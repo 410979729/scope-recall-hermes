@@ -46,6 +46,13 @@ _OUTBOUND_CHECK: ContextVar[Callable[[], bool] | None] = ContextVar("private_out
 _UNVERIFIED_PROJECT = ""
 
 
+def parse_recording_command(value: object) -> str | None:
+    """Return the action only for the original complete owner-command text."""
+    if type(value) is not str:
+        return None
+    return {"scope-recall pause": "pause", "scope-recall resume": "resume"}.get(value.strip())
+
+
 @contextmanager
 def using_outbound_check(blocked: Callable[[], bool]):
     """Carry a Core decision through provider queues; split requests copy this context."""
@@ -682,16 +689,21 @@ def open_interval(
     ends = None if duration_seconds is None else _after(started, duration_seconds)
     with storage.write(context, remaining_seconds=5) as tx:
         conn = tx._check(write=True)
-        for row in conn.execute("SELECT * FROM private_intervals WHERE mode=? ORDER BY interval_id", (mode,)):
-            if _same_target(row, target, session_id, project_path) and row["ends_at"] is None:
-                return _row_payload(row, started)
-        cursor = conn.execute(
-            """INSERT INTO private_intervals(target_kind,session_id,project_path,mode,starts_at,ends_at,created_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (target, session_id, project_path, mode, started, ends, started),
-        )
-        row = conn.execute("SELECT * FROM private_intervals WHERE interval_id=?", (cursor.lastrowid,)).fetchone()
-        return _row_payload(row, started)
+        return _open_in_transaction(conn, started, target, session_id, project_path, mode, ends)
+
+
+def _open_in_transaction(conn, started, target, session_id, project_path, mode, ends):
+    """Open an interval within the caller's already-held writer transaction."""
+    for row in conn.execute("SELECT * FROM private_intervals WHERE mode=? ORDER BY interval_id", (mode,)):
+        if _same_target(row, target, session_id, project_path) and row["ends_at"] is None:
+            return _row_payload(row, started)
+    cursor = conn.execute(
+        """INSERT INTO private_intervals(target_kind,session_id,project_path,mode,starts_at,ends_at,created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (target, session_id, project_path, mode, started, ends, started),
+    )
+    row = conn.execute("SELECT * FROM private_intervals WHERE interval_id=?", (cursor.lastrowid,)).fetchone()
+    return _row_payload(row, started)
 
 
 def _closing_rules(conn, now, target, session, project):
@@ -725,18 +737,46 @@ def close_interval(
     now = _now(clock)
     with storage.write(context, remaining_seconds=5) as tx:
         conn = tx._check(write=True)
-        rows = _closing_rules(conn, now, target, session_id, project_path)
-        if expected_rules is not None and expected_rules != rows:
-            raise ContractError("VERSION_CONFLICT", "private_rules_preview")
-        for row in rows:
-            conn.execute(
-                "UPDATE private_intervals SET ends_at=? WHERE interval_id=?",
-                (now, row["rule_id"]),
-            )
-        closed = []
-        for row in rows:
-            closed.append(dict(row, ends_at=_zulu(now), active=False))
-        return {"closed": len(rows), "rules": closed}
+        return _close_in_transaction(conn, now, target, session_id, project_path, expected_rules)
+
+
+def _close_in_transaction(conn, now, target, session_id, project_path, expected_rules=None):
+    """Close exactly the active target rules within the caller's transaction."""
+    rows = _closing_rules(conn, now, target, session_id, project_path)
+    if expected_rules is not None and expected_rules != rows:
+        raise ContractError("VERSION_CONFLICT", "private_rules_preview")
+    for row in rows:
+        conn.execute("UPDATE private_intervals SET ends_at=? WHERE interval_id=?", (now, row["rule_id"]))
+    return {"closed": len(rows), "rules": [dict(row, ends_at=_zulu(now), active=False) for row in rows]}
+
+
+def apply_remote_command(storage, clock, context, *, command, command_id, observed_at):
+    """Commit the session action and its entry-scoped replay fence together."""
+    if command not in ("pause", "resume"):
+        raise ContractError("INPUT_INVALID", "command")
+    entry = _text(context.entry_id, "entry_id", 240)
+    identifier = _text(command_id, "command_id", 128)
+    observed = utc_timestamp(observed_at)
+    session, project = _valid_target("session", context.session_id, None)
+    now = _now(clock)
+    with storage.write(context, remaining_seconds=5) as tx:
+        conn = tx._check(write=True)
+        row = conn.execute(
+            "SELECT command_id,observed_at FROM private_command_fences WHERE entry_id=? AND session_id=?",
+            (entry, session),
+        ).fetchone()
+        if row is not None and (row[0] == identifier or observed <= row[1]):
+            raise ContractError("VERSION_CONFLICT", "command_replay")
+        if command == "pause":
+            _open_in_transaction(conn, now, "session", session, project, "full", None)
+        else:
+            _close_in_transaction(conn, now, "session", session, project)
+        conn.execute(
+            "INSERT INTO private_command_fences(entry_id,session_id,command_id,observed_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(entry_id,session_id) DO UPDATE SET "
+            "command_id=excluded.command_id, observed_at=excluded.observed_at",
+            (entry, session, identifier, observed),
+        )
 
 
 def status(

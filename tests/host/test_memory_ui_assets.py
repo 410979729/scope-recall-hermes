@@ -275,6 +275,8 @@ const assert = require('assert/strict');
   await new Promise(resolve => setImmediate(resolve));
   assert(document.getElementById('entry-items').textContent.includes('Paused'));
   assert(document.getElementById('entry-items').textContent.includes('Restore'));
+  assert(document.getElementById('entry-items').textContent.includes('Declared actor: TEST-label'));
+  assert(document.getElementById('entry-items').textContent.includes('Operating system account: TEST-account'));
   console.log(JSON.stringify({refresh: true, bilingual: true}));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
@@ -282,3 +284,47 @@ const assert = require('assert/strict');
     completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"refresh": True, "bilingual": True}
+
+
+def test_health_page_groups_findings_and_pages_undo_actions():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    script = (
+        DOM_HARNESS
+        + r"""
+const assert = require('assert/strict');
+(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  const calls = [];
+  global.fetch = async url => {
+    calls.push(url);
+    const data = url.startsWith('/api/health-actions') ?
+      {items: [{action_id: 'TEST-action', action: 'health_fact_choose', recorded_at: 'TEST-time',
+        versions: {'claim-TEST': 2}}],
+        next_before: calls.filter(x => x.startsWith('/api/health-actions')).length === 1 ? 17 : null} :
+      {entities: [{name: 'TEST-name', facts: [{ref: 'claim-a', revision: 1}, {ref: 'claim-b', revision: 1}]}],
+        duplicates: [], contradictions: [], unused: [], observation_start: 'TEST-start', observation_end: 'TEST-end',
+        observation_days: 30, records_incomplete: true, complete: false, next_cursor: 'TEST-next'};
+    return {ok: true, json: async () => ({data})};
+  };
+  await loadHealth(false);
+  assert.equal(document.getElementById('health-items').children.length, 3);
+  assert.ok(document.getElementById('health-items').textContent.includes('TEST-name'));
+  assert.ok(document.getElementById('health-period').textContent.includes(window.UI_STRINGS.zh.recordsIncomplete));
+  assert.ok(document.getElementById('health-actions').textContent.includes('claim-TEST'));
+  assert.ok(document.getElementById('health-actions').textContent.includes(window.UI_STRINGS.zh['health-choose']));
+  assert.equal(document.getElementById('health-actions-next').disabled, false);
+  await loadHealthActions(true);
+  assert.ok(calls.some(x => x.includes('health-actions?before=17')));
+  assert.equal(document.getElementById('health-actions-next').disabled, true);
+  vm.runInThisContext("language = 'en'; translate();");
+  assert.ok(document.getElementById('health-items').textContent.includes(window.UI_STRINGS.en.health_duplicateGroup));
+  assert.ok(document.getElementById('health-actions').textContent.includes(window.UI_STRINGS.en['health-choose']));
+  console.log(JSON.stringify({groups: 3, actions: true}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    completed = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"groups": 3, "actions": True}

@@ -43,6 +43,19 @@ def summarize_requests(records):
     return counts
 
 
+def assert_within_a_tenth(counts, rows):
+    """Compare measured stages with the catalog, which recommendations multiply by SAFETY_FACTOR.
+
+    A stage is re-measured once it moves by more than a tenth; small shifts from
+    unrelated worker changes keep the recorded row.
+    """
+    assert set(counts) == {row["task"] for row in rows}
+    for row in rows:
+        for name in ("calls", "input_tokens", "output_tokens"):
+            measured, recorded = counts[row["task"]][name], row[name]
+            assert abs(measured - recorded) <= max(1, recorded // 10), (row["task"], name, measured, recorded)
+
+
 def counting_response(proposals, records):
     """Record each protocol stage while returning bounded synthetic responses."""
 
@@ -131,19 +144,6 @@ def counting_response(proposals, records):
         return 200, json.dumps(data).encode()
 
     return response
-
-
-def _assert_workload_matches_catalog(counts):
-    """Compare measured stages to the planning catalog within its recorded tolerance."""
-    rows = recommended_workload()
-    assert set(counts) == {row["task"] for row in rows}
-    # Recommendations already apply a safety factor; minor variation does not
-    # warrant replacing the catalog's recorded estimates.
-    for row in rows:
-        for name in ("calls", "input_tokens", "output_tokens"):
-            measured, recorded = counts[row["task"]][name], row[name]
-            assert abs(measured - recorded) <= max(1, recorded // 10), (row["task"], name, measured, recorded)
-    assert counts["entity_resolution"]["calls"] > 0
 
 
 def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, record_property):
@@ -298,6 +298,7 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             "workload_measurement",
             json.dumps(dict(turns=100, assistant_token_lengths=lengths, tasks=counts, requests=records)),
         )
-        _assert_workload_matches_catalog(counts)
+        assert_within_a_tenth(counts, recommended_workload())
+        assert counts["entity_resolution"]["calls"] > 0
     finally:
         runtime.close()

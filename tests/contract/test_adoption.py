@@ -82,6 +82,17 @@ def test_paused_entry_rejects_direct_adoption_publication(app):
         publish(core, ctx, rows[0])
 
 
+def test_adopted_decision_in_brief_names_owner_adoption(app):
+    core, ctx = app
+    assistant(core, ctx)
+    owner = capture(core, ctx, "好，就用方案二")
+    rows, _calls = prepared(core, ctx, owner)
+    item = publish(core, ctx, rows[0])
+    brief = core.session_brief(replace(ctx, session_id="TEST-next"))
+    assert item.ref in brief["text"]
+    assert "owner adopted assistant proposal" in brief["text"]
+
+
 def test_fragments_are_exact_disjoint_source_slices():
     text = "## Options\n\n1. First\n   continuation\n2. Second\n\nTail"
     parts = fragments(text)
@@ -474,3 +485,22 @@ def test_adoption_checkpoint_cannot_publish_after_pause_and_resume(app):
                 break
     else:
         pytest.fail("adoption was not prepared again after the entry resumed")
+
+
+def test_adopted_brief_keeps_its_category_in_recall_history(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    assistant(core, ctx)
+    owner = capture(core, ctx, "好，就用方案二")
+    rows, _calls = prepared(core, ctx, owner)
+    item = publish(core, ctx, rows[0])
+    reader = replace(ctx, session_id="TEST-adopted-brief-history")
+    assert item.ref in core.session_brief(reader, deliver=True)["text"]
+    history = MemoryManagement(core, InstallationMaintenance(ctx)).recalls(session=reader.session_id)
+    recorded = [item for attempt in history["items"] for item in attempt["items"]]
+    assert any(
+        row.get("ref") == item.ref and row["source_type"] == "adopted_decision" and "session_brief" in row["channels"]
+        for row in recorded
+    )

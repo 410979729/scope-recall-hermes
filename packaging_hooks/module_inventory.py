@@ -46,6 +46,7 @@ ENTRY_POINTS = (
     "adapters/codex/resident_entry.py",
     "adapters/hermes/register.py",
     "distribution/hermes/__init__.py",
+    "distribution/docker/entry.py",
     "maintenance/cli.py",
     "maintenance/migrate.py",
     "maintenance/upgrade_cli.py",
