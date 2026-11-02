@@ -178,6 +178,12 @@ class MemoryCore:
 
         return confirm(self.storage, self.clock, context, brief, remaining_seconds=remaining_seconds)
 
+    def sync_session_compaction(self, context: TrustedContext, *, remaining_seconds: float = 0.03) -> bool:
+        """Persist an observed compaction without waiting indefinitely for the writer."""
+        from .session_brief import sync_compaction
+
+        return sync_compaction(self.storage, context, remaining_seconds=remaining_seconds)
+
     @staticmethod
     def remove_question_overlaps(brief: dict, question_text: str) -> None:
         """Remove facts already present in the same host response's question recall."""

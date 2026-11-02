@@ -8,8 +8,12 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
+
+from scope_recall.contracts import ContractError, utc_timestamp
+from scope_recall.core.file_lock import advisory_file_lock
 
 from . import transcript
 from .boundary import TURN_FIELD, turn_id_from_payload
@@ -24,9 +28,69 @@ def mark_path(config, kind: str, session_id: str) -> Path:
     """One session's mark of ``kind``: beside the pointer for an entry of a shared store, in its data for a store of
     its own."""
     folder = (
-        Path(config.home) / "scope-recall" if isinstance(config, SharedClientConfig) else Path(config.data_directory)
+        Path(config["state_dir"])
+        if isinstance(config, dict)
+        else Path(config.home) / "scope-recall"
+        if isinstance(config, SharedClientConfig)
+        else Path(config.data_directory)
     ) / kind
     return folder / hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
+
+
+def compaction_at(config, session_id: str) -> str | None:
+    """Read the host's pending compaction watermark, tolerating an unavailable mark."""
+    path = mark_path(config, "compactions", session_id)
+    values = []
+    try:
+        candidates = (path, *path.parent.glob(path.name + ".*.pending"))
+        for candidate in candidates:
+            try:
+                values.append(utc_timestamp(candidate.read_text(encoding="utf-8")))
+            except (OSError, UnicodeError, ContractError):
+                continue
+    except OSError:
+        pass
+    return max(values) if values else None
+
+
+def _write_compaction(path: Path, at: str) -> None:
+    """Publish one complete mark without exposing a partial timestamp to readers."""
+    pending = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    pending.write_text(at, encoding="utf-8")
+    os.replace(pending, path)
+
+
+def mark_compaction(config, session_id: str, at: str) -> str | None:
+    """Atomically retain a compaction without waiting for the truth-database writer."""
+    try:
+        at = utc_timestamp(at)
+        path = mark_path(config, "compactions", session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with advisory_file_lock(path.with_name(path.name + ".lock"), timeout_seconds=0):
+                at = max(at, compaction_at(config, session_id) or at)
+                _write_compaction(path, at)
+        except TimeoutError:
+            # Never wait for a concurrent acknowledgement: its cleanup must not erase this later event.
+            _write_compaction(path.with_name(f"{path.name}.{uuid.uuid4().hex}.pending"), at)
+        return at
+    except (OSError, ContractError):
+        return None
+
+
+def clear_compaction(config, session_id: str, at: str) -> None:
+    """Remove a confirmed watermark only when no newer mark is visible."""
+    path = mark_path(config, "compactions", session_id)
+    try:
+        with advisory_file_lock(path.with_name(path.name + ".lock"), timeout_seconds=0):
+            for candidate in (path, *path.parent.glob(path.name + ".*.pending")):
+                try:
+                    if utc_timestamp(candidate.read_text(encoding="utf-8")) <= at:
+                        candidate.unlink(missing_ok=True)
+                except (OSError, UnicodeError, ContractError):
+                    continue
+    except (OSError, TimeoutError):
+        pass
 
 
 def _thread_mark(config, session_id: str) -> Path:

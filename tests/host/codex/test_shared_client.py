@@ -377,6 +377,132 @@ def test_session_brief_is_delivered_again_after_compaction(store, tmp_path, host
         hook.close()
 
 
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_compaction_mark_survives_another_process_holding_writer(store, tmp_path, host):
+    from scope_recall.adapters.clients.session_marks import mark_path
+    from scope_recall.core.retrieval import CandidateRef, SearchContext
+    from scope_recall.core.session_brief import already_injected
+
+    from tests.v11_support import recall_request
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-locked-compact", "cwd": "C:/anywhere"}
+    holder = None
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            before = db.execute(
+                "SELECT delivered_at FROM session_brief_injections WHERE object_ref=?", (claim.ref,)
+            ).fetchone()[0]
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        assert mark_path(hook.config, "compactions", start["session_id"]).exists()
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        ctx = hook.context(hook.audience_of(start), start["session_id"], "human_direct")
+        with hook.core.storage.read(ctx) as tx:
+            assert not already_injected(tx, "claim", claim.ref, claim.revision)
+            search = SearchContext.from_request(
+                recall_request(query="TEST-project color", mode="auto"),
+                ctx,
+                now=hook.core.clock.utc_now(),
+                deadline=hook.core.clock.monotonic() + 10,
+            )
+            assert hook.core.recall_pipeline._hydrate_admit(
+                tx, CandidateRef("claim", claim.ref, claim.revision, "lexical"), search
+            )
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        hook.handle_payload(start)
+        assert not mark_path(hook.config, "compactions", start["session_id"]).exists()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            after = db.execute(
+                "SELECT delivered_at FROM session_brief_injections WHERE object_ref=?", (claim.ref,)
+            ).fetchone()[0]
+            assert after > before
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
+def test_compaction_ack_does_not_remove_a_newer_concurrent_mark(store, monkeypatch):
+    import threading
+
+    from scope_recall.adapters.clients.session_marks import clear_compaction, compaction_at, mark_compaction, mark_path
+
+    _root, _homes, client, _capture_scope = store
+    hook = _hook(client)
+    session = "TEST-concurrent-compact"
+    older = "2026-09-01T00:00:00Z"
+    newer = "2026-09-01T00:00:01Z"
+    mark = mark_path(hook.config, "compactions", session)
+    original = Path.unlink
+    try:
+        acknowledged = mark_compaction(hook.config, session, older)
+        fired = []
+
+        def race(path, *args, **kwargs):
+            if path == mark and not fired:
+                fired.append(True)
+                thread = threading.Thread(target=mark_compaction, args=(hook.config, session, newer))
+                thread.start()
+                thread.join(5)
+                assert not thread.is_alive()
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", race)
+        clear_compaction(hook.config, session, acknowledged)
+        assert fired and compaction_at(hook.config, session).startswith("2026-09-01T00:00:01")
+    finally:
+        hook.close()
+
+
+def test_pending_compaction_is_persisted_on_the_next_stop_write(store):
+    from scope_recall.adapters.clients.session_marks import mark_path
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    hook = _hook(client)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-stop-compaction", "cwd": "C:/anywhere"}
+    holder = None
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        hook.handle_payload({**start, "source": "compact"})
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        mark = mark_path(hook.config, "compactions", start["session_id"])
+        assert mark.exists()
+        hook.handle_payload({**start, "hook_event_name": "Stop", "last_assistant_message": "TEST answer"})
+        assert not mark.exists()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            assert (
+                db.execute("SELECT count(*) FROM session_brief_injections WHERE object_ref=?", (claim.ref,)).fetchone()[
+                    0
+                ]
+                == 0
+            )
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
 @pytest.mark.parametrize("host", ["workbuddy", "dsh"])
 def test_first_prompt_delivers_the_shared_brief_once(store, request, host):
     claim = _seed_shared_brief(store)
@@ -423,6 +549,32 @@ def test_hermes_retries_brief_after_compaction_when_storage_is_busy(store, monke
         monkeypatch.setattr(core, "session_brief", real)
         assert claim.ref in provider.prefetch("继续")
     finally:
+        provider.shutdown()
+
+
+def test_hermes_compaction_recall_retries_after_another_process_holds_writer(store):
+    claim = _seed_shared_brief(store)
+    root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    holder = None
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("TEST-project 配色")
+        assert provider._brief_compactions
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        assert claim.ref in provider.prefetch("继续")
+        assert not provider._brief_compactions
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
         provider.shutdown()
 
 

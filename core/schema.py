@@ -141,10 +141,12 @@ SESSION_BRIEF_STATEMENTS = (
     """CREATE TABLE session_brief_injections (
         entry_id TEXT NOT NULL, session_id TEXT NOT NULL,
         object_kind TEXT NOT NULL, object_ref TEXT NOT NULL, revision INTEGER NOT NULL,
+        delivered_at TEXT NOT NULL, delivery_compacted_at TEXT,
         PRIMARY KEY(entry_id,session_id,object_kind,object_ref,revision)
     ) STRICT, WITHOUT ROWID""",
     """CREATE TABLE session_brief_sessions (
         entry_id TEXT NOT NULL, session_id TEXT NOT NULL, started INTEGER NOT NULL CHECK(started IN (0,1)),
+        started_at TEXT, started_compacted_at TEXT, compacted_at TEXT,
         brief_tokens INTEGER NOT NULL DEFAULT 0, brief_elapsed_ms INTEGER NOT NULL DEFAULT 0,
         recall_tokens INTEGER NOT NULL DEFAULT 0, recall_elapsed_ms INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(entry_id,session_id)

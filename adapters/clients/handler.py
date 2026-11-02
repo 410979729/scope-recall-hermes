@@ -18,6 +18,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
 from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.writer_lease import TruthWriterBusyError
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from ..host_profiles import HOSTS, agent_run
@@ -49,8 +50,11 @@ from .runtime_wiring import (
     attach_trusted_host_runtime,
 )
 from .session_marks import (
+    clear_compaction,
+    compaction_at,
     forget_turns,
     in_suggestions_thread,
+    mark_compaction,
 )
 
 _MAX_STDIN_BYTES = 65536
@@ -146,6 +150,8 @@ class CodexHookHandler:
         #: shared entry's configured audience has none, so the request's cwd is
         #: used for project-scoped private intervals only; it grants no scope.
         self._project_root: str | None = None
+        self._compacted_at: str | None = None
+        self.compaction_ack: str | None = None
         self.remote_paths = False
         self.background_prompt_capture = False
         self.pending_capture: PendingCapture | None = None
@@ -276,11 +282,9 @@ class CodexHookHandler:
             actor_origin=origin,
             project_root=self._project_root,
         )
-        return (
-            replace(context, project_identity=getattr(self, "_project_identity", "remote"))
-            if self.remote_paths or getattr(self, "_project_identity", None) == "unverified"
-            else context
-        )
+        if self.remote_paths or getattr(self, "_project_identity", None) == "unverified":
+            context = replace(context, project_identity=getattr(self, "_project_identity", "remote"))
+        return replace(context, compacted_at=self._compacted_at)
 
     def ensure_runtime(self, audience=None, *, deadline: float | None = None) -> None:
         """Attach the vector and worker runtime only after Source persist, or for wakeup.
@@ -460,12 +464,15 @@ class CodexHookHandler:
         record: RecordLines | None = None,
         local_record: bool = True,
         error_reply: bool = False,
+        compacted_at: str | None = None,
     ) -> dict[str, Any]:
         payload = without_lone_surrogates(payload)
         # A client on another machine sends its record's lines, and its own judgement of the Stop's reply.
         self.call = HookCall(local_record=record is None and local_record, client_error_reply=error_reply)
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         self._pending_brief = None
+        self._compacted_at = None
+        self.compaction_ack = None
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
         if event == "PrivateCheck":
@@ -474,6 +481,18 @@ class CodexHookHandler:
         if admitted is None:
             return {}
         session_id, audience = admitted
+        if self.remote_paths:
+            if compacted_at is not None:
+                from scope_recall.contracts import utc_timestamp
+
+                try:
+                    self._compacted_at = utc_timestamp(compacted_at)
+                except ContractError:
+                    pass
+        elif self.host in {"claude-code", "codex"}:
+            if event == "SessionStart" and payload.get("source") == "compact":
+                mark_compaction(self.config, session_id, self.clock.utc_now())
+            self._compacted_at = compaction_at(self.config, session_id)
         # The extended trusted budget is for the auto recall path and for a client's
         # read of its session record.  The other hooks keep their short processing cap.
         budget = (
@@ -483,23 +502,30 @@ class CodexHookHandler:
         self._upgrade_wake_context = audience, deadline
         if event == "SessionStart":
             result = self._session_started(session_id, audience, deadline, payload)
-            return self._confirm_brief(result, deadline)
+            return self._finish_compaction(session_id, audience, deadline, self._confirm_brief(result, deadline))
         if event == "UserPromptSubmit":
             started = self.clock.monotonic()
             result = self.events.prompt(session_id, audience, payload, deadline)
             self._record_prompt_usage(session_id, audience, result, started, deadline)
-            return self._confirm_brief(result, deadline)
+            return self._finish_compaction(session_id, audience, deadline, self._confirm_brief(result, deadline))
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
             # A thread opened for application suggestions contains application activity. Its mark excludes later
             # tool calls, replies and end events as well as the request that opened it.
             self.note("host_generated_thread")
             return {}
         if event == "Interrupt":
-            return self.events.interrupt(session_id, audience, payload, deadline)
+            return self._finish_compaction(
+                session_id, audience, deadline, self.events.interrupt(session_id, audience, payload, deadline)
+            )
         if event == "PostToolUse":
-            return self.events.post_tool_use(session_id, audience, payload, deadline)
-        return self._turn_ended(
-            event, session_id, audience, payload, deadline, record=record, local_record=local_record
+            return self._finish_compaction(
+                session_id, audience, deadline, self.events.post_tool_use(session_id, audience, payload, deadline)
+            )
+        return self._finish_compaction(
+            session_id,
+            audience,
+            deadline,
+            self._turn_ended(event, session_id, audience, payload, deadline, record=record, local_record=local_record),
         )
 
     def _private_check(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -563,7 +589,8 @@ class CodexHookHandler:
                 elapsed_ms=elapsed,
                 remaining_seconds=left,
             )
-        except (ContractError, sqlite3.Error, OSError, ValueError):
+            self.compaction_ack = self._compacted_at
+        except (ContractError, sqlite3.Error, OSError, ValueError, TruthWriterBusyError):
             self.diagnostics.session_statistics_failed = True
 
     def briefing(self, context: TrustedContext, deadline: float, *, compact: bool = False) -> str:
@@ -608,12 +635,33 @@ class CodexHookHandler:
             reason = "brief_delivery_unconfirmed"
         if reason == "brief_delivery_unconfirmed":
             self.note(reason)
+        if reason == "brief_delivered":
+            self.compaction_ack = context.compacted_at
         if reason == "brief_invalidated" and brief["text"]:
             output = result.get("hookSpecificOutput", {})
             text = output.get("additionalContext", "").replace(brief["text"], "", 1).strip()
             if not text:
                 return {}
             output["additionalContext"] = text
+        return result
+
+    def _finish_compaction(self, session_id: str, audience, deadline: float, result: dict) -> dict:
+        """Retire only a watermark that the core committed in this request."""
+        if (
+            self._compacted_at
+            and not self.compaction_ack
+            and self.diagnostics.last_reason != "brief_delivery_unconfirmed"
+        ):
+            left = min(0.03, self.remaining(deadline))
+            if left > 0:
+                context = self.context(audience, session_id, "host_generated")
+                try:
+                    if self.core.sync_session_compaction(context, remaining_seconds=left):
+                        self.compaction_ack = self._compacted_at
+                except (ContractError, sqlite3.Error, OSError, ValueError, TruthWriterBusyError):
+                    pass
+        if self.compaction_ack and not self.remote_paths:
+            clear_compaction(self.config, session_id, self.compaction_ack)
         return result
 
     def _session_started(self, session_id: str, audience, deadline: float, payload: dict[str, Any]) -> dict[str, Any]:

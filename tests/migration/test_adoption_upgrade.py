@@ -68,6 +68,7 @@ def test_failed_session_brief_schema_step_rolls_back(app, monkeypatch):
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1122
         assert conn.execute("SELECT name FROM sqlite_master WHERE name='session_briefs'").fetchone() is None
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='safety_retractions'").fetchone() is None
         assert (
             conn.execute("SELECT content FROM source_events WHERE event_id=?", (source.ref,)).fetchone()[0]
             == (source.event["content"])
@@ -118,6 +119,7 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
             "session_briefs",
             "session_brief_injections",
             "session_brief_sessions",
+            "safety_retractions",
             "summary_groups",
             "summary_parts",
             "summary_backfill",

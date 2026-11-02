@@ -137,34 +137,88 @@ def already_injected(tx, kind: str, ref: str, revision: int) -> bool:
     if kind != "claim":
         return False
     context = tx.context
-    return (
+    row = (
         tx._check()
         .execute(
-            "SELECT 1 FROM session_brief_injections WHERE entry_id=? AND session_id=? "
+            "SELECT delivery_compacted_at FROM session_brief_injections WHERE entry_id=? AND session_id=? "
             "AND object_kind=? AND object_ref=? AND revision=?",
             (_entry(context), context.session_id, kind, ref, revision),
         )
         .fetchone()
-        is not None
     )
+    cutoff = _compaction_cutoff(tx, context)
+    return row is not None and (cutoff is None or (row[0] is not None and row[0] >= cutoff))
+
+
+def _compaction_cutoff(tx, context) -> str | None:
+    """Use the newest host or persisted compaction, even if either source is missing."""
+
+    def load():
+        row = (
+            tx._check()
+            .execute(
+                "SELECT compacted_at FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
+                (_entry(context), context.session_id),
+            )
+            .fetchone()
+        )
+        values = [utc_timestamp(value) for value in (context.compacted_at, row[0] if row else None) if value]
+        return max(values) if values else None
+
+    return tx.remembered(("session_brief_compaction", _entry(context), context.session_id, context.compacted_at), load)
 
 
 def _started(tx, context) -> bool:
-    return (
+    row = (
         tx._check()
         .execute(
-            "SELECT 1 FROM session_brief_sessions WHERE entry_id=? AND session_id=? AND started=1",
+            "SELECT started,started_compacted_at FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
             (_entry(context), context.session_id),
         )
         .fetchone()
-        is not None
     )
+    cutoff = _compaction_cutoff(tx, context)
+    return bool(row and row[0] and (cutoff is None or (row[1] is not None and row[1] >= cutoff)))
 
 
 def _reset(tx, context) -> None:
     key = (_entry(context), context.session_id)
     tx._check(write=True).execute("DELETE FROM session_brief_injections WHERE entry_id=? AND session_id=?", key)
     tx._check(write=True).execute("UPDATE session_brief_sessions SET started=0 WHERE entry_id=? AND session_id=?", key)
+
+
+def _apply_compaction(tx, context) -> None:
+    """Persist a watermark and remove only marks older than that compaction."""
+    if context.compacted_at is None:
+        return
+    cutoff = utc_timestamp(context.compacted_at)
+    conn = tx._check(write=True)
+    key = (_entry(context), context.session_id)
+    conn.execute(
+        "DELETE FROM session_brief_injections WHERE entry_id=? AND session_id=? "
+        "AND (delivery_compacted_at IS NULL OR delivery_compacted_at<?)",
+        (*key, cutoff),
+    )
+    conn.execute(
+        "INSERT INTO session_brief_sessions(entry_id,session_id,started,compacted_at) VALUES(?,?,0,?) "
+        "ON CONFLICT(entry_id,session_id) DO UPDATE SET "
+        "started=CASE WHEN started_compacted_at IS NULL OR started_compacted_at<excluded.compacted_at "
+        "THEN 0 ELSE started END, "
+        "compacted_at=max(coalesce(compacted_at,excluded.compacted_at),excluded.compacted_at)",
+        (*key, cutoff),
+    )
+
+
+def sync_compaction(storage, context, *, remaining_seconds: float = 0.03) -> bool:
+    """Persist a pending host watermark when the bounded writer lease is available."""
+    if context.compacted_at is None:
+        return False
+    try:
+        with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+            _apply_compaction(tx, context)
+    except (TruthWriterBusyError, sqlite3.OperationalError):
+        return False
+    return True
 
 
 def reset_session(storage, context, *, remaining_seconds: float | None = None) -> None:
@@ -176,6 +230,7 @@ def reset_session(storage, context, *, remaining_seconds: float | None = None) -
 def record_recall(storage, clock, context, *, tokens: int, elapsed_ms: int, remaining_seconds: float) -> None:
     """Accumulate the host's delivered question recall without storing its content."""
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        _apply_compaction(tx, context)
         mode, _marker = private.recall_state(tx, context, utc_timestamp(clock.utc_now()))
         if mode == "full":
             return
@@ -248,11 +303,13 @@ def _safe_line(tx, search, item, intervals, hydration):
     return candidate, obj, line
 
 
-def _mark_delivered(tx, context, items) -> None:
+def _mark_delivered(tx, context, items, now: str, cutoff: str | None) -> None:
     pairs = [("claim", item["ref"], item["revision"]) for item in items if item["kind"] != "task"]
     tx._check(write=True).executemany(
-        "INSERT OR IGNORE INTO session_brief_injections VALUES(?,?,?,?,?)",
-        [(_entry(context), context.session_id, *pair) for pair in pairs],
+        "INSERT INTO session_brief_injections VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(entry_id,session_id,object_kind,object_ref,revision) DO UPDATE SET "
+        "delivered_at=excluded.delivered_at,delivery_compacted_at=excluded.delivery_compacted_at",
+        [(_entry(context), context.session_id, *pair, now, cutoff) for pair in pairs],
     )
 
 
@@ -279,13 +336,14 @@ def _render(tx, search, manifests, intervals, token_limit: int, deliver: bool):
     return items, lines
 
 
-def _record_brief(tx, context, tokens: int, elapsed_ms: int) -> None:
+def _record_brief(tx, context, tokens: int, elapsed_ms: int, now: str, cutoff: str | None) -> None:
     tx._check(write=True).execute(
-        "INSERT INTO session_brief_sessions(entry_id,session_id,started,brief_tokens,brief_elapsed_ms) "
-        "VALUES(?,?,1,?,?) ON CONFLICT(entry_id,session_id) DO UPDATE SET started=1, "
+        "INSERT INTO session_brief_sessions(entry_id,session_id,started,brief_tokens,brief_elapsed_ms,started_at,"
+        "started_compacted_at) VALUES(?,?,1,?,?,?,?) ON CONFLICT(entry_id,session_id) DO UPDATE SET "
+        "started=1,started_at=excluded.started_at,started_compacted_at=excluded.started_compacted_at, "
         "brief_tokens=brief_tokens+excluded.brief_tokens, "
         "brief_elapsed_ms=brief_elapsed_ms+excluded.brief_elapsed_ms",
-        (_entry(context), context.session_id, tokens, elapsed_ms),
+        (_entry(context), context.session_id, tokens, elapsed_ms, now, cutoff),
     )
 
 
@@ -337,6 +395,7 @@ def read(
             )
         )
         epoch = tx.memory_epoch()
+        compaction = _compaction_cutoff(tx, context)
         text = "\n".join([_HEADING, *lines]) if lines else ""
         tokens = estimate_tokens(text) if text else 0
     result = {
@@ -346,6 +405,7 @@ def read(
         "elapsed_ms": max(0, round((clock.monotonic() - started) * 1000)),
         "_epoch": epoch,
         "_privacy_marker": marker,
+        "_compaction_cutoff": compaction,
         "_lines": lines,
         "_compact": compact,
         "_deliver": deliver and mode != "full",
@@ -361,6 +421,9 @@ def _still_valid(tx, clock, context, brief) -> bool:
     """Recheck selected lines if truth or privacy changed after preparation."""
     now = utc_timestamp(clock.utc_now())
     mode, marker = private.recall_state(tx, context, now, after=brief["_privacy_marker"])
+    cutoff = _compaction_cutoff(tx, context)
+    if cutoff is not None and (brief["_compaction_cutoff"] is None or cutoff > brief["_compaction_cutoff"]):
+        return False
     if (mode == "full" and brief["text"]) or (brief["_deliver"] and not brief["_compact"] and _started(tx, context)):
         return False
     if tx.memory_epoch() == brief["_epoch"] and marker == brief["_privacy_marker"]:
@@ -389,11 +452,14 @@ def confirm(storage, clock, context, brief: dict, *, remaining_seconds: float | 
                 tx, clock, context, brief
             ):
                 return "brief_invalidated"
-            if brief["_compact"]:
+            if brief["_compact"] and context.compacted_at is None:
                 _reset(tx, context)
+            _apply_compaction(tx, context)
             if brief["_deliver"]:
-                _mark_delivered(tx, context, brief["items"])
-                _record_brief(tx, context, brief["tokens"], brief["elapsed_ms"])
+                now = utc_timestamp(clock.utc_now())
+                cutoff = _compaction_cutoff(tx, context)
+                _mark_delivered(tx, context, brief["items"], now, cutoff)
+                _record_brief(tx, context, brief["tokens"], brief["elapsed_ms"], now, cutoff)
     except (TruthWriterBusyError, sqlite3.OperationalError):
         with storage.read(context, remaining_seconds=remaining_seconds) as tx:
             if retraction_after(tx._check(), context.allowed_scope_ids, brief["_epoch"]) or not _still_valid(

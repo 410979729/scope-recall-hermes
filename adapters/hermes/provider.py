@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, Dict, List, Optional
 
@@ -91,6 +92,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._lock = threading.RLock()
         self._brief_lock = threading.Lock()
         self._brief_compactions: dict[str, int] = {}
+        self._brief_compaction_times: dict[str, str] = {}
         #: Guards only ``_interim_said``/``_steer_said`` and the turn they belong to, never across I/O:
         #: ``post_llm_call`` runs before Hermes sends the reply and must not wait behind a capture.
         self._said_lock = threading.Lock()
@@ -295,6 +297,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
             session = self._effective_session_id(str(kwargs.get("session_id") or ""))
             self._brief_compactions[session] = self._brief_compactions.get(session, 0) + 1
+            clock = self._core.clock if self._core is not None else self._clock
+            self._brief_compaction_times[session] = (
+                clock.utc_now() if clock is not None else datetime.now(UTC).isoformat()
+            )
         # The compression takes the steers it summarizes out of the conversation; the turn's end would not find them.
         # Written outside the hook's hold of the lock, so their store I/O runs without it.
         self._turns.steers(

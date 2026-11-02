@@ -1,6 +1,6 @@
 """Scope-bound withdrawal epochs shared by all authority-release boundaries."""
 
-SAFETY_RETRACTIONS = """CREATE TABLE IF NOT EXISTS safety_retractions (
+SAFETY_RETRACTIONS = """CREATE TABLE safety_retractions (
     scope_id TEXT PRIMARY KEY NOT NULL, memory_epoch INTEGER NOT NULL CHECK(memory_epoch>=0)
 ) STRICT, WITHOUT ROWID"""
 
@@ -10,8 +10,6 @@ def record_safety_retraction(conn, scopes):
     scopes = tuple(sorted(set(scopes)))
     if not scopes:
         return
-    # A store already at this schema may predate the optional withdrawal index.
-    conn.execute(SAFETY_RETRACTIONS)
     conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
     epoch = conn.execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0]
     conn.executemany(
@@ -33,9 +31,6 @@ def retraction_after(conn, scope_ids, epoch: int) -> bool:
         (epoch, *scopes),
     ).fetchone():
         return True
-    # An older store at the same schema has no rows until its first new hold.
-    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='safety_retractions'").fetchone():
-        return False
     return (
         conn.execute(
             f"SELECT 1 FROM safety_retractions WHERE scope_id IN ({marks}) AND memory_epoch>? LIMIT 1",

@@ -564,14 +564,15 @@ def test_inspect_rejects_newly_held_source_group_before_release(app, monkeypatch
         core.inspect_object(context, source.ref if kind == "event" else item.ref, revision=1)
 
 
-def test_existing_schema_creates_retraction_index_on_first_new_hold(app):
+def test_safety_retractions_use_the_migrated_table_without_runtime_schema_queries(app):
+    from scope_recall.core.retractions import record_safety_retraction, retraction_after
+
     core, context = app
-    _item, source = initial(core, context)
+    statements = []
     with core.storage.write(context) as tx:
-        tx._check(write=True).execute("DROP TABLE safety_retractions")
-    with owner(core, context).export_reader(MemoryFilter()) as reader:
-        _hold_new_source_revision(core, context, source, "quarantined")
-        with pytest.raises(ContractError, match="memory_epoch"):
-            reader.verify()
-    with core.storage.read(context) as tx:
-        assert tx._check().execute("SELECT count(*) FROM safety_retractions").fetchone()[0] == 1
+        conn = tx._check(write=True)
+        conn.set_trace_callback(statements.append)
+        record_safety_retraction(conn, ["TEST-scope"])
+        assert retraction_after(conn, ["TEST-scope"], 0)
+        conn.set_trace_callback(None)
+    assert not any("CREATE TABLE" in sql.upper() or "SQLITE_MASTER" in sql.upper() for sql in statements)

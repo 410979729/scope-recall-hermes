@@ -125,6 +125,10 @@ class HookEvents:
             event["artifact_refs"] = attachment_refs
         context = self._hook.context(audience, session_id, "human_direct")
         wait = min(PROMPT_CAPTURE_TIMEOUT_S, max(CAPTURE_TIMEOUT_S, self._hook.remaining(deadline) / 2))
+        if context.compacted_at is not None:
+            # A pending compaction can coincide with the writer that blocked its confirmation; leave the
+            # read-only recall enough time to use the watermark while capture follows its ordinary retry path.
+            wait = min(wait, 0.1)
         current_refs, capture_gaps = self._hook.capture(
             context, audience, event, deadline=deadline, gaps=gaps, wait=wait
         )

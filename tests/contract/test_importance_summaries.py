@@ -1000,3 +1000,45 @@ def test_compaction_clears_delivery_even_during_full_privacy(app):
     assert not core.session_brief(ctx, deliver=True, compact=True)["text"]
     with core.storage.read(ctx) as tx:
         assert not already_injected(tx, "claim", item.ref, item.revision)
+
+
+def test_persisted_compaction_is_used_without_a_host_mark(app):
+    from scope_recall.core.session_brief import already_injected
+
+    core, writer = app
+    item, _source = initial(core, writer, when=core.clock.now)
+    drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    reader = replace(writer, session_id="TEST-lost-compaction")
+    assert item.ref in core.session_brief(reader, deliver=True)["text"]
+    compacted = replace(reader, compacted_at="2026-09-07T12:00:00Z")
+    assert core.sync_session_compaction(compacted)
+    with core.storage.write(reader) as tx:
+        tx._check(write=True).execute(
+            "INSERT INTO session_brief_injections VALUES(?,?,?,?,?,?,?)",
+            (
+                reader.binding.installation_id,
+                reader.session_id,
+                "claim",
+                item.ref,
+                item.revision,
+                "2026-09-06T12:00:00.000000+00:00",
+                None,
+            ),
+        )
+    with core.storage.read(reader) as tx:
+        assert not already_injected(tx, "claim", item.ref, item.revision)
+    assert item.ref in core.session_brief(reader, deliver=True)["text"]
+
+
+def test_older_inflight_brief_cannot_confirm_after_newer_compaction(app):
+    core, writer = app
+    item, _source = initial(core, writer, when=core.clock.now)
+    drain_worker(core.storage, core.clock, writer, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    reader = replace(writer, session_id="TEST-overlapping-compaction")
+    assert item.ref in core.session_brief(reader, deliver=True)["text"]
+    older = replace(reader, compacted_at="2026-09-07T12:00:00Z")
+    newer = replace(reader, compacted_at="2026-09-08T12:00:00Z")
+    earlier_brief = core.session_brief(older, deliver=True, compact=True, defer_confirmation=True)
+    later_brief = core.session_brief(newer, deliver=True, compact=True, defer_confirmation=True)
+    assert core.confirm_session_brief(newer, later_brief, remaining_seconds=1) == "brief_delivered"
+    assert core.confirm_session_brief(older, earlier_brief, remaining_seconds=1) == "brief_invalidated"

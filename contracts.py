@@ -419,6 +419,12 @@ def utc_timestamp(value: object) -> str:
     return parsed.astimezone(UTC).isoformat(timespec="microseconds")
 
 
+def _optional_timestamp(value: str | None) -> None:
+    """Validate an optional trusted timestamp without changing its representation."""
+    if value is not None:
+        utc_timestamp(value)
+
+
 def verified_human_principal_ref(principal: object) -> str | None:
     """The ref of a source principal that is a verified person; None for any other principal or none."""
     if not isinstance(principal, dict):
@@ -755,6 +761,8 @@ class TrustedContext:
     #: Remote directories were resolved on their owner; an unverifiable identity
     #: remains explicit across retries instead of being resolved on another machine.
     project_identity: Literal["local", "remote", "unverified"] = "local"
+    #: A host-owned compaction watermark for this session, never a scope grant.
+    compacted_at: str | None = None
     #: Host-owned entry-owner binding. A None principal asks for the reader's
     #: entry owner; a source principal must be checked against that entry's grants.
     #: The final argument is a memo owned by one pairing request, never by this context.
@@ -785,6 +793,7 @@ class TrustedContext:
             raise ContractError("IDENTITY_UNBOUND", "project_root")
         if self.project_identity not in ("local", "remote", "unverified"):
             raise ContractError("IDENTITY_UNBOUND", "project_identity")
+        _optional_timestamp(self.compacted_at)
         if (
             type(self.recent_messages) is not tuple
             or len(self.recent_messages) > 8
