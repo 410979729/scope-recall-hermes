@@ -1,0 +1,1 @@
+[{"uuid": "TEST-chat", "name": "TEST-project-a", "chat_messages": [{"uuid": "TEST-m1", "sender": "human", "created_at": "2026-01-01T12:00:00Z", "content": [{"type": "text", "text": "TEST project uses saffron."}]}, {"uuid": "TEST-m2", "sender": "assistant", "created_at": "2026-01-01T12:01:00Z", "text": "TEST assistant repeats saffron."}]}]

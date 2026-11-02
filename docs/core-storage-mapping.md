@@ -49,4 +49,4 @@ capture 的线性化点是 source + lexical + 必需 work 的同事务 commit。
 
 旧 fact_claims.recorded_at 映射 recorded_from；可核验 retired_at 映射 recorded_to，否则保持 NULL，不以导入时间伪造历史结束。instance_scopes 只保存安装受信 scope_id 清单，不把它视为会话 ACL；每次访问仍要求 TrustedContext.allowed_scope_ids 的子集。旧 shared_scope_id、范围种类和主体绑定由迁移的显式旧范围映射及可信宿主上下文保全，模型不参与授权判定。
 
-事实提名通过 `claim_lexical_postings` 复用来源的 `lexical_terms` 词表，只索引当前版本的主语、谓词和正文值；别名和已删除事实不进入索引。事实头与索引在同一个写事务内更新。初始化按主键分批回填，在 `candidate_scan_cursors` 中记录持久游标；中断后只重做未提交的批次。索引未回填完时，普通召回先恢复初始化，不读取不完整的索引。自动保存的升级前快照用于回滚。
+事实提名通过 `claim_lexical_postings` 复用来源的 `lexical_terms` 词表，只索引当前版本的主语、谓词和正文值；别名和已删除事实不进入索引。事实头与索引在同一个写事务内更新。初始化按主键分批回填，在 `candidate_scan_cursors` 中记录持久游标；中断后只重做未提交的批次。索引未回填完时，普通召回先恢复初始化，不读取不完整的索引。自动保存的升级前快照用于回滚。正文索引和主语标记分别通过 1116→1117、1117→1118 升级建立。事实候选在结果上限之前复用来源安全依赖判定；隔离来源支持的事实不可提名，解除或重扫放行后重新可见，事实头未变时无需重写索引。

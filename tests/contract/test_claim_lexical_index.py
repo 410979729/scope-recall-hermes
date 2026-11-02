@@ -8,7 +8,7 @@ from scope_recall.core.retrieval_storage import RetrievalStorage
 
 from tests.contract.test_claims import accept, app, capture, draft, initial, revise_request
 from tests.contract.test_deletion import authorize, request
-from tests.v11_support import recall_request
+from tests.v11_support import downgrade_store, recall_request
 
 
 def search(core, ctx, query, mode="current"):
@@ -645,3 +645,65 @@ def test_entity_completion_keeps_exact_rank_and_bounded_version_prefetch(app, mo
         actual = RetrievalStorage().claims(tx, search(core, ctx, "alpha beta cat"), limit=1)
     assert actual
     assert (simple, len(fetched)) == (6, 1)
+
+
+@pytest.mark.parametrize("release", ["owner", "rescan"])
+@pytest.mark.parametrize("indirect", [False, True])
+def test_screened_dependencies_are_filtered_before_the_claim_rank_limit(app, monkeypatch, release, indirect):
+    """A real source hold cannot consume a readable fact's exact-rank slot."""
+    from scope_recall.core import lexical_index, lineage
+    from scope_recall.core.injection_guard import screen_sources
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.core.source_records import SourceWrite
+
+    core, ctx = app
+    a_source = capture(core, ctx, "alpha beta cat.")
+    b_source = capture(core, ctx, "alpha beta readable plain.")
+    refs = []
+    for source, value, predicate in [(a_source, "cat", "beta"), (b_source, "plain", "beta readable")]:
+        item = accept(core, ctx, draft(source, value, subject="alpha", predicate=predicate, valid_from=None)).items[0]
+        refs.append(item.ref)
+    assert len(set(refs)) == 2
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for ref in refs:
+            conn.execute("UPDATE claim_versions SET state='active',valid_from=NULL WHERE claim_id=?", (ref,))
+            lexical_index.index_claim(conn, ref)
+        if indirect:
+            conn.execute("DELETE FROM evidence_links WHERE object_kind='claim' AND object_ref=?", (refs[0],))
+            lineage.depend(conn, "claim", refs[0], 1, "event", a_source.ref, 1)
+        conn.execute(
+            "INSERT INTO injection_rules VALUES ('TEST-rank-hold','instruction','tokens',?,?,1)",
+            ('{"slots":[["cat"]],"span":256}', "pending_review" if release == "rescan" else "quarantined"),
+        )
+        screen_sources(tx, [SourceWrite("duplicate", a_source.ref, 1)], core.clock.utc_now(), remaining_seconds=2)
+        assert tx.claims.versions(refs[0]) == ()
+        assert conn.execute("SELECT is_simple FROM claim_lexical_heads WHERE claim_id=?", (refs[0],)).fetchone()[0] == 1
+    context = search(core, ctx, "alpha beta cat")
+    with core.storage.read(ctx) as tx:
+        ideal = _ideal_claims(tx, context, 1, monkeypatch)
+        actual = RetrievalStorage().claims(tx, context, limit=1)
+    assert [item.ref for item in ideal] == [refs[1]]
+    assert actual == ideal
+    downgrade_store(core.storage.path, 1116)
+    core.storage.initialize()
+    context = search(core, ctx, "alpha beta cat")
+    with core.storage.read(ctx) as tx:
+        assert RetrievalStorage().claims(tx, context, limit=1) == _ideal_claims(tx, context, 1, monkeypatch) == ideal
+    if release == "owner":
+        # The review targets the source, while the dependent fact's head and
+        # postings stay unchanged throughout the hold and release.
+        from scope_recall.core.quarantine_management import preview_release, release_source
+
+        preview = preview_release(core, InstallationMaintenance(ctx), a_source.ref, 1)
+        release_source(core, InstallationMaintenance(ctx), a_source.ref, 1, content_sha256=preview["content_sha256"])
+    else:
+        with core.storage.write(ctx) as tx:
+            tx._check(write=True).execute("UPDATE injection_rules SET enabled=0 WHERE rule_id='TEST-rank-hold'")
+            screen_sources(tx, [SourceWrite("duplicate", a_source.ref, 1)], core.clock.utc_now(), remaining_seconds=0)
+        core.drain_worker(ctx, max_items=8, remaining_seconds=10)
+    with core.storage.read(ctx) as tx:
+        assert tx.claims.versions(refs[0])
+        actual = RetrievalStorage().claims(tx, context, limit=1)
+        assert actual == _ideal_claims(tx, context, 1, monkeypatch)
+    assert [item.ref for item in actual] == [refs[0]]

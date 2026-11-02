@@ -112,6 +112,17 @@ def test_credentials_masked_before_any_source_hash_index_or_work(core, secret):
     assert result.error_code is None and result.masked_secret_count == 1
     assert result.durability == "persisted"
     stored = app.source(ctx, result.event_refs[0].ref, 1)
+    if "\u200b" in secret:
+        assert stored is None
+        assert app.inspect_object(ctx, result.event_refs[0].ref, 1).value["state"] == "quarantined"
+        with sqlite3.connect(app.storage.path) as db:
+            content, state, gaps = db.execute(
+                "SELECT content,capture_state,capture_gaps_json FROM source_events"
+            ).fetchone()
+        assert "[REDACTED_SECRET]" in content and state == "partial"
+        assert json.loads(gaps) == ["secret_values_masked"]
+        assert secret not in repr(result) and secret.encode() not in app.storage.path.read_bytes()
+        return
     assert "[REDACTED_SECRET]" in stored.event["content"]
     assert stored.event["capture_state"] == "partial" and stored.capture_gaps == ("secret_values_masked",)
     assert secret not in repr(result)
@@ -278,6 +289,7 @@ def test_capture_masks_before_segmenting_a_value_across_the_boundary(core):
     text = "TEST prefix\n" + "a" * (65536 - 32) + '\npassword: "Synthet1c meadow silver cabin"\n' + "z" * 60000
     result = capture(app, ctx, content=text)
     assert len(result.event_refs) == 2 and result.masked_secret_count == 1
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     parts = [app.source(ctx, ref.ref, 1).event["content"] for ref in result.event_refs]
     stored = "".join(parts)
     assert stored == text.replace("Synthet1c meadow silver cabin", "[REDACTED_SECRET]")
@@ -414,7 +426,13 @@ def test_chunking_preserves_every_character_and_replays_all_or_nothing(core):
     raw = ("TEST 精确原文！\r\n" * 7000) + "最后一句不能被略掉。"
     result = capture(app, ctx, content=raw)
     assert len(result.event_refs) == 2
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     sources = [app.source(ctx, r.ref, r.revision) for r in result.event_refs]
+    assert all(source is not None for source in sources), [
+        app.inspect_object(ctx, receipt.ref, receipt.revision).value
+        for receipt, source in zip(result.event_refs, sources, strict=True)
+        if source is None
+    ]
     assert "".join(s.event["content"] for s in sources) == raw
     assert [s.event["segment"]["index"] for s in sources] == [0, 1]
     assert all(not s.capture_gaps for s in sources)
@@ -432,6 +450,7 @@ def test_revised_shorter_source_hides_obsolete_segment_tails(core):
     old = capture(app, ctx, content=original)
     assert len(old.event_refs) > 1
     capture(app, ctx, content="TEST 当前短版 NEWHEAD", source_revision=2)
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     assert not app.search_sources(ctx, "OLDTAIL")
     assert app.search_sources(ctx, "OLDTAIL", history=True)
     assert app.search_sources(ctx, "NEWHEAD")
@@ -446,7 +465,8 @@ def test_partial_host_segments_show_missing_tail_and_recover_on_replay(core):
         content="TEST 第一段",
         segment={"group_key": "TEST-host-group", "index": 0, "total": 2, "truncated": False},
     )
-    assert "source_segments_incomplete" in app.source(ctx, first.event_refs[0].ref, 1).capture_gaps
+    assert app.source(ctx, first.event_refs[0].ref, 1) is None
+    assert app.inspect_object(ctx, first.event_refs[0].ref, 1).value["state"] == "pending_review"
     capture(
         app,
         ctx,
@@ -463,7 +483,8 @@ def test_partial_host_segments_show_missing_tail_and_recover_on_replay(core):
         capture_state="partial",
         segment={"group_key": "TEST-unknown", "index": 0, "total": None, "truncated": False},
     )
-    assert "source_segments_incomplete" in app.source(ctx, unknown.event_refs[0].ref, 1).capture_gaps
+    assert app.source(ctx, unknown.event_refs[0].ref, 1) is None
+    assert app.inspect_object(ctx, unknown.event_refs[0].ref, 1).value["rules"] == ["incomplete_scan_group"]
 
 
 def test_trusted_attachment_version_order_is_preserved(core):

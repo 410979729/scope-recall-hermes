@@ -15,7 +15,7 @@ from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.admission import AdmissionPolicy
-from scope_recall.core.recall_policy import SPACE_ID
+from scope_recall.core.recall_policy import SPACE_ID, RecallPolicy
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor, doctor_store
 from test_autonomous_admission import app_at, capture
@@ -501,18 +501,16 @@ def test_an_environment_this_account_cannot_read_is_unknown_not_missing(tmp_path
     assert {"name": "hermes_runtime", "result": "unreadable"} in report.checks
 
 
-def test_doctor_names_vector_recall_configured_without_a_threshold(tmp_path, monkeypatch):
-    """No installer writes vector_threshold, and without it recall refuses every
-    vector hit while sources are still embedded; the doctor has to say so."""
+def test_doctor_resolves_builtin_threshold_and_names_unconfigured_other_spaces(tmp_path, monkeypatch):
+    """The built-in space has a default; other spaces need an explicit threshold."""
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     _write_runtime_config(ctx)
     before = app.storage.path.read_bytes()
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
-    assert "vector_threshold_unconfigured" in result.capability_gaps
+    assert "vector_threshold_unconfigured" not in result.capability_gaps
     [check] = [item for item in result.checks if item["name"] == "vector_threshold"]
-    assert check["result"] == "unconfigured"
-    for fragment in ("runtime-config.json", "gemini-embedding-2", "no vector_threshold", "lexical only"):
-        assert fragment in check["detail"]
+    assert check["result"] == "default"
+    assert float(check["detail"]) == RecallPolicy(vector_threshold=None).vector_threshold == 0.70
     assert app.storage.path.read_bytes() == before
     # Worth a look, not a fault: recall still answers lexically.
     alone = doctor.DoctorReport(host="hermes", status="degraded", capability_gaps=["vector_threshold_unconfigured"])

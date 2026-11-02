@@ -170,10 +170,12 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_memory_import.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",
         "tests/contract/test_vector_integrity.py",
         "tests/contract/test_lazy_vector_clock.py",
+        "tests/contract/test_auxiliary_budget_totals.py",
         "tests/contract/test_embed_fallback_deadline.py",
         "tests/contract/test_failure_policy_semantics.py",
         "tests/contract/test_queue_recovery_actions.py",
@@ -222,7 +224,14 @@ SUITES = {
         "tests/contract/test_embedding_respace.py",
         "tests/known_answer/test_recall_invariants_check.py",
     ],
-    "capture": ["tests/contract/test_capture.py", "tests/contract/test_capture_row_crossings.py"],
+    "capture": [
+        "tests/contract/test_capture.py",
+        "tests/contract/test_capture_row_crossings.py",
+        "tests/contract/test_injection_guard.py",
+        "tests/contract/test_injection_revision.py",
+        "tests/contract/test_injection_screening.py",
+        "tests/contract/test_injection_merged.py",
+    ],
     "claims": [
         "tests/test_denial_values.py",
         "tests/contract/test_claims.py",
@@ -245,6 +254,7 @@ SUITES = {
         "tests/contract/test_claim_lexical_index.py",
         "tests/public_bench/test_public_bench.py",
         "tests/contract/test_retrieval_pipeline.py",
+        "tests/contract/test_recall_restatement.py",
         "tests/contract/test_evidence_followup.py",
         "tests/contract/test_recall_admission.py",
         "tests/contract/test_auto_recall_gate.py",
@@ -274,6 +284,7 @@ SUITES = {
         "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/hermes/test_memory_write.py",
         "tests/host/hermes/test_capture_retry_properties.py",
         "tests/host/test_memory_ui.py",
         "tests/host/test_memory_ui_http.py",
@@ -315,6 +326,7 @@ SUITES = {
         "tests/migration/test_entity_upgrade.py",
         "tests/migration/test_migration_drills.py",
         "tests/migration/test_upgrade_coordinator.py",
+        "tests/migration/test_injection_upgrade.py",
         "tests/migration/test_upgrade_policy.py",
     ],
     "packaging": [
@@ -327,6 +339,7 @@ SUITES = {
         *SCRIPT_GATE_TESTS,
     ],
     "integration": [
+        "tests/integration/test_memory_import.py",
         "tests/contract/test_worker.py",
         "tests/contract/test_worker_incremental_batch.py",
         *GIT_TESTS,

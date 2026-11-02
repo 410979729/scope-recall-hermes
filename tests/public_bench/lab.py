@@ -18,7 +18,7 @@ from bench_clock import WorldClock
 from cache import digest
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext, TrustedSourcePrincipal
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.recall_policy import RecallPolicy
+from scope_recall.core.recall_policy import EMBEDDING_SPACE, SPACE_ID, RecallPolicy
 from scope_recall.core.work_storage import CAPACITY_REFUSALS
 from scope_recall.runtime.vector_port import VectorEmbedPort, VectorPort, VectorPurgePort
 from scope_recall.runtime.vector_upkeep import index_if_due
@@ -27,6 +27,25 @@ from scope_recall.vector.store import build_vector_store
 #: Real seconds an idle settle round waits when the remaining work was last refused for capacity.  A provider's
 #: rate limit counts real time, so moving only the business clock would ask again at once and be refused again.
 THROTTLE_WAIT_SECONDS = 30.0
+
+
+def benchmark_policy(config: dict) -> RecallPolicy:
+    """Bind the product floor to the benchmark's request digest for identical built-in geometry.
+
+    Benchmark space ids retain request settings, including the credential's
+    environment-variable name. Product ids describe geometry and encoding.
+    Other models need an explicit floor; synthetic ports supply their own.
+    """
+    route = config["embedding"]
+    builtin = (
+        all(route.get(key, EMBEDDING_SPACE[key]) == EMBEDDING_SPACE[key] for key in ("model", "dimensions", "endpoint"))
+        and route.get("dialect", "gemini") == "gemini"
+    )
+    space = digest(route)
+    policy = RecallPolicy(
+        vector_threshold=config.get("vector_threshold"), embedding_space_id=SPACE_ID if builtin else space
+    )
+    return replace(policy, embedding_space_id=space)
 
 
 def throttled(state: dict) -> bool:
@@ -85,11 +104,20 @@ class Lab:
             CoreConfig(self.binding),
             clock=self.clock,
             vectors=vectors,
-            retrieval_policy=RecallPolicy(vector_threshold=0.7, embedding_space_id=space),
+            retrieval_policy=benchmark_policy(ports.config),
         )
-        self.core.initialize()
+        try:
+            self.core.initialize()
+        except ContractError:
+            self.companion.close()
+            raise
         self.keys: dict[str, str] = {}
         self.sessions: dict[str, str] = {}
+
+    @property
+    def vector_threshold(self) -> float | None:
+        """The effective admission floor used by this store's recall pipeline."""
+        return self.core.recall_pipeline.policy.vector_threshold
 
     def capture(self, turn):
         """Persist a source at its corpus time; gold labels are never sent to core."""

@@ -16,6 +16,7 @@ let lastBackup = null;
 let lastPrivate = null;
 let browseItems = [];
 let lastScan = null;
+let quarantineBefore = null;
 const t = (key) => window.UI_STRINGS[language][key] || key;
 
 // Stored values enter only text nodes. No memory field is interpreted as markup.
@@ -93,8 +94,25 @@ async function loadPage(page) {
   }
   if (page === "overview") overview(await request("overview"));
   if (page === "browse") await browse(false);
+  if (page === "quarantine") await loadQuarantine(false);
   if (page === "private") privateState(await request("private"));
   if (page === "backup") backup(await request("backup"));
+}
+async function loadQuarantine(more) {
+  const data = await request("quarantine", more && quarantineBefore ? {before: quarantineBefore} : {});
+  if (!more) $("quarantine-items").replaceChildren();
+  for (const item of data.items) {
+    const row = node("article", undefined, $("quarantine-items"));
+    node("p", item.ref + " · " + item.revision + " · " + item.state, row);
+    node("pre", item.content, row);
+    node("pre", JSON.stringify(item.rules, null, 2), row);
+    const release = node("button", t("releaseQuarantine"), row);
+    release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
+    const remove = node("button", t("forget"), row);
+    remove.addEventListener("click", () => run(() => preview({action: "forget", ref: item.ref, expected_revision: item.revision})));
+  }
+  quarantineBefore = data.next_before;
+  $("quarantine-next").disabled = quarantineBefore === null;
 }
 async function browse(more) {
   if (more && (browsePending || !continuation)) return;
@@ -215,6 +233,8 @@ function translate() {
 $("language").addEventListener("change", () => { language = $("language").value; translate(); });
 for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => run(() => loadPage(button.dataset.page)));
 $("refresh-overview").addEventListener("click", () => run(() => loadPage("overview")));
+$("refresh-quarantine").addEventListener("click", () => run(() => loadQuarantine(false)));
+$("quarantine-next").addEventListener("click", () => run(() => loadQuarantine(true)));
 $("refresh-backup").addEventListener("click", () => run(() => loadPage("backup")));
 $("filters").addEventListener("submit", (event) => { event.preventDefault(); run(() => browse(false)); });
 $("next").addEventListener("click", () => run(() => browse(true)));
@@ -245,6 +265,7 @@ $("confirm").addEventListener("click", () => run(async () => {
   $("receipt").hidden = false;
   if (["forget", "forget-session"].includes(data.action)) $("detail").hidden = true;
   if (["revise", "mute", "unmute"].includes(data.action) && selected) await detail(selected.ref);
+  if (currentPage === "quarantine") await loadQuarantine(false);
   if (currentPage === "private") privateState(await request("private"));
   $("receipt").scrollIntoView({block: "start"});
 }));

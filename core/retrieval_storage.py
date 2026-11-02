@@ -24,6 +24,7 @@ from . import lexical_index, lineage
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical, retraction_after
 from .events import lexical_terms
+from .injection_guard import held_roots_sql
 from .recall_policy import (
     claim_embedding_text,
     hard_identifiers,
@@ -183,13 +184,15 @@ def _claim_visibility(context: SearchContext) -> tuple[str, tuple]:
     scopes = tuple(sorted(trusted.allowed_scope_ids))
     automatic = "AND c.suppressed=0" if context.mode == "auto" else ""
     automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
+    held = held_roots_sql("SELECT c.claim_id,'claim',c.claim_id")
     return (
         f"""c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 {automatic} AND c.kind!='alias'
             AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
             AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
                 AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block}))
             AND NOT EXISTS(SELECT 1 FROM restored_absence_blocks a
-                WHERE a.object_kind='claim' AND a.object_ref=c.claim_id)""",
+                WHERE a.object_kind='claim' AND a.object_ref=c.claim_id)
+            AND NOT EXISTS({held})""",
         (*scopes, trusted.project_id, trusted.branch_id),
     )
 

@@ -1,9 +1,13 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1115
-#: Schemas a store may carry and be brought forward from, oldest first.  Any
+from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
+from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
+from .injection_schema import install as install_injection_schema
+
+SCHEMA_VERSION = 1118
+#: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114)
+UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -611,6 +615,8 @@ STATEMENTS = (
     + CANDIDATE_STATEMENTS
     + ENTITY_STATEMENTS
     + CLAIM_RANK_STATEMENTS
+    + INJECTION_STATEMENTS
+    + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
@@ -842,30 +848,6 @@ def upgrade_1112(connection):
     connection.execute("PRAGMA user_version=1113")
 
 
-def upgrade_1113(connection):
-    """Install current-fact postings and a durable cursor for bounded initialization pages."""
-    for statement in CLAIM_LEXICAL_STATEMENTS:
-        connection.execute(statement)
-    connection.execute(
-        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now'))"
-    )
-    connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
-    connection.execute("PRAGMA user_version=1114")
-
-
-def upgrade_1114(connection):
-    """Add subject eligibility postings and restart their resumable head projection."""
-    for statement in (*CLAIM_SUBJECT_STATEMENTS, *CLAIM_RANK_STATEMENTS):
-        connection.execute(statement)
-    connection.execute(
-        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
-        "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0,"
-        "updated_at=excluded.updated_at"
-    )
-    connection.execute("UPDATE instance_meta SET schema_version=1115 WHERE singleton=1")
-    connection.execute("PRAGMA user_version=1115")
-
-
 def normalize_scope_authorizations(connection) -> int:
     """Move each source's ``scope_authorization`` out of its extra_json, kept once per distinct payload.
 
@@ -881,3 +863,53 @@ def normalize_scope_authorizations(connection) -> int:
         WHERE json_type(e.extra_json,'$.scope_authorization') IS NOT NULL""")
     return connection.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$.scope_authorization')
         WHERE json_type(extra_json,'$.scope_authorization') IS NOT NULL""").rowcount
+
+
+def upgrade_1113(connection):
+    """Install source safety decisions and defaults under the upgrade coordinator."""
+    install_injection_schema(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1114")
+
+
+def upgrade_1114(connection):
+    """Install bounded source policy under the upgrade coordinator."""
+    from .injection_schema import upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1115 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1115")
+
+
+def upgrade_1115(connection):
+    """Install content-bound screening checkpoints and bounded rule spans."""
+    from .injection_schema import SCAN_STATEMENT, upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute(SCAN_STATEMENT.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+    connection.execute("UPDATE instance_meta SET schema_version=1116 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1116")
+
+
+def upgrade_1116(connection):
+    """Install current-fact postings and a durable cursor for bounded initialization pages."""
+    for statement in CLAIM_LEXICAL_STATEMENTS:
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now'))"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1117 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1117")
+
+
+def upgrade_1117(connection):
+    """Add subject eligibility postings and restart their resumable head projection."""
+    for statement in (*CLAIM_SUBJECT_STATEMENTS, *CLAIM_RANK_STATEMENTS):
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
+        "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0,"
+        "updated_at=excluded.updated_at"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1118 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1118")

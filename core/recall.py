@@ -40,6 +40,7 @@ from .recall_policy import (
     rrf_score,
     same_message,
 )
+from .recall_restatement import prefer_originals
 from .recall_scope import asks_what_held_before, asks_what_was_said, query_scope, query_time
 from .retrieval import (
     CandidateRef,
@@ -1253,6 +1254,7 @@ class RetrievalPipeline:
         # background cannot repeat the evidence either.
         distinct = DistinctContent()
         ordered = self._behind_replacements(self._rank_hydrated(hydrated, working), working)
+        ordered = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_select")
         ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)

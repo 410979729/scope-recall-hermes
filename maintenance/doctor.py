@@ -25,8 +25,15 @@ from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
 from scope_recall.adapters.hermes.identity import unbound_session_hint
 from scope_recall.adapters.hermes.shared_entries import read_attachment
 from scope_recall.adapters.hermes.unbound_sessions import owner_sessions_unbound
+from scope_recall.core.recall_policy import RecallPolicy, embedding_space_id
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
-from scope_recall.runtime.model_budget import budget_totals, budget_window, pre_request_refusals, provider_refusals
+from scope_recall.runtime.model_budget import (
+    budget_totals,
+    budget_window,
+    pre_request_refusals,
+    prepare_budget_totals,
+    provider_refusals,
+)
 from scope_recall.runtime.running_code import live_records, stale_records
 
 from . import package_health
@@ -48,6 +55,7 @@ from .doctor_store import (
     check_unreached,
     check_vector_store,
 )
+from .import_progress import read_progress
 from .install_common import RUNTIME_CONFIG_LIMIT
 
 #: Run as a file by the target interpreter, so an installed package that
@@ -244,6 +252,7 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
         window = budget_window(policy, time.time_ns()) if period == "monthly" else None
         with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
             db.execute("BEGIN")
+            prepare_budget_totals(db, policy, readonly=True)
             totals = budget_totals(db, window)
             lifetime = budget_totals(db) if window is not None else totals
     except (sqlite3.Error, OSError, ValueError):
@@ -284,8 +293,8 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
 #: ``worker_capability_unavailable`` fires because the operator declined
 #: external consolidation, so the work type is unavailable by configuration.
 #: ``vector_threshold_unconfigured`` is vector recall wired without a threshold:
-#: recall still answers lexically, and no value can be supplied for the operator
-#: because a threshold is calibrated for one embedding model.
+#: recall still answers lexically. Only the built-in space has a default;
+#: another space needs its own calibration.
 #: ``audience_owner_unverified`` is an owner grant whose user is no owner
 #: principal: it grants nothing until the owner approves that user, and only
 #: the owner knows whether to.
@@ -775,13 +784,7 @@ def _entry_runtime_config(instance: Path, data_directory: Path):
 
 
 def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
-    """Vector recall that is wired but admits nothing, named instead of silent.
-
-    Reads the ``runtime-config.json`` every host loads by default.  With a
-    vector store and an approved embedding route but no ``vector_threshold``,
-    sources and queries are still embedded while recall refuses every vector hit
-    as ``vector_threshold_unconfigured``.  No threshold is assumed here.
-    """
+    """Report recall's built-in default or configured floor without changing configuration."""
     try:
         raw = _read_control_file(data_directory / "runtime-config.json")
         config = None if raw is None else RuntimeInstanceConfig.from_mapping(raw)
@@ -798,8 +801,12 @@ def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path)
         or auxiliary.embedding is None
     ):
         return
-    if config.vector_threshold is not None:
-        record_check(report, "vector_threshold", "configured", str(config.vector_threshold))
+    policy = RecallPolicy(
+        vector_threshold=config.vector_threshold, embedding_space_id=embedding_space_id(config.embedding_space())
+    )
+    if policy.vector_threshold is not None:
+        state = "default" if config.vector_threshold is None else "configured"
+        record_check(report, "vector_threshold", state, str(policy.vector_threshold))
         return
     model = str(config.embedding_space()["model"])[:64]
     report.capability_gaps.append("vector_threshold_unconfigured")
@@ -849,6 +856,7 @@ def run_doctor(
         return report
     binding, data_directory = bound
     _check_audiences(report, instance)
+    report.memory_import = read_progress(data_directory)
     _check_local_sessions(report, data_directory)
     _check_running_code(report, data_directory)
     package_health.apply_package_health(report, instance, probe)

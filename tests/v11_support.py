@@ -157,7 +157,7 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
-    1115: {
+    1118: {
         "before": (
             "DROP TRIGGER claim_lexical_insert",
             "DROP TRIGGER claim_lexical_update",
@@ -169,10 +169,13 @@ _SCHEMA_STEPS = {
             "ALTER TABLE claim_lexical_postings DROP COLUMN subject_terms",
         ),
     },
-    1114: {
+    1117: {
         "before": ("DELETE FROM candidate_scan_cursors WHERE cursor_name='claim_lexical'",),
         "tables": ("claim_lexical_postings",),
     },
+    1116: {"tables": ("source_scan_progress",)},
+    1115: {},
+    1114: {"tables": ("source_safety", "injection_rules")},
     1113: {
         "before": tuple(
             f"DROP TRIGGER {name}"
