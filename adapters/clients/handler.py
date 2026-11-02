@@ -19,6 +19,7 @@ from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
 from scope_recall.core.events import prepare_capture
 from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.recall_trace import record_unbound_attempt
+from scope_recall.core.session_brief import observe_session_start
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterBusyError
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
@@ -153,6 +154,8 @@ class CodexHookHandler:
         #: shared entry's configured audience has none, so the request's cwd is
         #: used for project-scoped private intervals only; it grants no scope.
         self._project_root: str | None = None
+        #: Host settings require the session's actual working directory, not an audience fallback.
+        self._host_working_dir: str | None = None
         self._compacted_at: str | None = None
         self._compaction_seq: int | None = None
         self._compaction_epoch: str | None = None
@@ -275,9 +278,8 @@ class CodexHookHandler:
         """
         value = payload.get("cwd")
         self._project_identity = "unverified" if payload.get("project_unverified") is True else "remote"
-        self._project_root = project_root_of(
-            value, resolve_links=not getattr(self, "remote_paths", False)
-        ) or project_root_of(audience.matched_project_root)
+        self._host_working_dir = project_root_of(value, resolve_links=not getattr(self, "remote_paths", False))
+        self._project_root = self._host_working_dir or project_root_of(audience.matched_project_root)
         return self._project_root
 
     def context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
@@ -496,7 +498,29 @@ class CodexHookHandler:
 
     def _handle_start_or_prompt(self, event, session_id, audience, payload, deadline):
         """Deliver and account for a normal start or prompt before confirming compaction."""
+        context = self.context(audience, session_id, "host_generated")
+        try:
+            if self.core.entry_state(context)[0] == "paused":
+                self.note("entry_state:paused")
+                return {}
+        except (ContractError, sqlite3.Error, OSError, ValueError, RuntimeError):
+            return {}
         if event == "SessionStart":
+            if (
+                self.host in {"claude-code", "codex"}
+                and self.call.local_record
+                and not self.remote_paths
+                and payload.get("source") != "compact"
+            ):
+                try:
+                    observe_session_start(
+                        self.core.storage,
+                        context,
+                        datetime.now(UTC).isoformat(),
+                        remaining_seconds=min(0.05, max(0.001, self.remaining(deadline))),
+                    )
+                except (ContractError, sqlite3.Error, OSError, ValueError, TruthWriterBusyError):
+                    pass
             result = self._session_started(session_id, audience, deadline, payload)
         else:
             started = self.clock.monotonic()

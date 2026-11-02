@@ -29,10 +29,11 @@ from .model_content import withhold_secret_items
 from .operations import Operations
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .recall_log_storage import LogPolicy
+from .recall_restatement import normalized_statement
 from .recall_trace import CURRENT_TRACE, logged_recall
 from .records import Records
 from .restore import InstallationMaintenance, maintenance_context
-from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits
+from .retrieval import CandidateRef, RetrievalResult, SearchContext, SearchLimits, validate_host_memory_entries
 from .source_records import StoredSource
 from .storage import SQLiteStorage, StoreStatus
 
@@ -838,6 +839,7 @@ class MemoryCore:
         background_without_evidence: bool = True,
         zone: tzinfo | None = None,
         in_context_since: str | None = None,
+        host_memory_entries: tuple[str, ...] | frozenset[str] = (),
     ):
         """Retrieve once, compile once, and return the public RecallPacket contract.
 
@@ -862,7 +864,17 @@ class MemoryCore:
             return self._private_recall_packet(search_context)
         if self._entry_blocked(context, fence):
             return self._paused_recall_packet(search_context)
-        search_context = replace(search_context, packet_selection=True)
+        try:
+            # A malformed optional host snapshot must not prevent an ordinary recall.
+            validate_host_memory_entries(host_memory_entries)
+            entries = (
+                host_memory_entries
+                if isinstance(host_memory_entries, frozenset)
+                else frozenset(normalized_statement(item) for item in host_memory_entries)
+            )
+        except Exception:  # noqa: BLE001 - optional host deduplication must not stop recall
+            entries = frozenset()
+        search_context = replace(search_context, packet_selection=True, host_memory_entries=entries)
         result = self.recall_pipeline.search(search_context)
         compiler = self.recall_packet_compiler
         # Keep the compiler on the pipeline's current read boundary.  Tests

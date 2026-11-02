@@ -360,12 +360,16 @@ def _seed_shared_brief(store):
 
 
 @pytest.mark.parametrize("host", ["claude-code", "codex"])
-def test_session_brief_is_delivered_again_after_compaction(store, tmp_path, host):
+def test_session_brief_is_delivered_again_after_compaction(store, tmp_path, host, monkeypatch):
     """The actual hook returns a stored, source-backed decision at both starts."""
     claim = _seed_shared_brief(store)
     root, _homes, client, _capture_scope = store
     home = client if host == "claude-code" else _codex_client(root, tmp_path)
     hook = CodexHookHandler.from_home(str(home), host)
+    monkeypatch.setattr(
+        "scope_recall.adapters.clients.prompt_recall.read_host_memory",
+        lambda *a, **kw: pytest.fail("brief read host memory"),
+    )
     start = {"hook_event_name": "SessionStart", "session_id": "TEST-new-session", "cwd": "C:/anywhere"}
     try:
         first = hook.handle_payload({**start, "source": "startup"})

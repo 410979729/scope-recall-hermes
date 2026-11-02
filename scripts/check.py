@@ -161,6 +161,8 @@ SCRIPT_GATE_TESTS = [
 GIT_TESTS = ["tests/integration/test_guard_git.py"]
 SUITES = {
     "unit": [
+        "tests/unit/test_host_memory_status.py",
+        "tests/unit/test_host_memory_context.py",
         "tests/unit/test_setup_discovery.py",
         "tests/unit/test_trusted_context.py",
         "tests/unit/test_check_runner.py",
@@ -189,6 +191,7 @@ SUITES = {
         "tests/contract/test_summary_merge.py",
         "tests/contract/test_summary_transfer.py",
         "tests/contract/test_memory_import.py",
+        "tests/contract/test_host_memory_recall.py",
         "tests/contract/test_sqlite_vectors.py",
         "tests/contract/test_mapped_vectors.py",
         "tests/contract/test_vector_integrity.py",
@@ -344,6 +347,7 @@ SUITES = {
         "tests/host/hermes/test_reinjection.py",
         "tests/host/test_runtime_config_threshold.py",
         "tests/host/codex/test_env_file_credentials.py",
+        "tests/host/codex/test_host_memory.py",
         "tests/host/codex/test_hooks.py",
         "tests/host/codex/test_hook_budgets.py",
         "tests/host/codex/test_lifecycle_worker_wakeup.py",
@@ -476,6 +480,7 @@ I_SAFETY_MATRIX = {
     "I01": [
         "tests/unit/test_trusted_context.py",
         "tests/host/hermes/test_identity.py",
+        "tests/host/codex/test_host_memory.py",
         "tests/host/codex/test_hooks.py",
     ],
     "I03": ["tests/contract/test_capture.py", "tests/contract/test_worker.py"],

@@ -134,6 +134,38 @@ def _entry(context) -> str:
     return context.entry_id or context.binding.installation_id
 
 
+def observe_session_start(storage, context, timestamp: str, *, remaining_seconds: float) -> None:
+    """Record the first locally observed start in the briefing's existing session mark."""
+    # Existing briefing timestamps are canonical +00:00 and can be created at a later prompt.
+    # The equivalent UTC Z spelling identifies a hook-observed start without trusting old rows.
+    observed = utc_timestamp(timestamp).replace("+00:00", "Z")
+    with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        tx._check(write=True).execute(
+            "INSERT OR IGNORE INTO session_brief_sessions(entry_id,session_id,started,started_at) VALUES(?,?,0,?)",
+            (_entry(context), context.session_id, observed),
+        )
+
+
+def observed_session_start(storage, context, *, remaining_seconds: float) -> float | None:
+    """Read a hook-observed start; older briefing timestamps cannot attest a host snapshot."""
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT started_at FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
+                (_entry(context), context.session_id),
+            )
+            .fetchone()
+        )
+    value = row[0] if row else None
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError):
+        return None
+
+
 def already_injected(tx, kind: str, ref: str, revision: int) -> bool:
     """Whether this session received this object after the latest compaction."""
     if kind != "claim":
@@ -398,7 +430,8 @@ def _record_brief(tx, context, tokens: int, elapsed_ms: int, now: str, cutoff: i
         "INSERT INTO session_brief_sessions(entry_id,session_id,started,brief_tokens,brief_elapsed_ms,started_at,"
         "started_compacted_at,started_compacted_seq) VALUES(?,?,1,?,?,?,?,?) "
         "ON CONFLICT(entry_id,session_id) DO UPDATE SET "
-        "started=1,started_at=excluded.started_at,started_compacted_at=excluded.started_compacted_at, "
+        "started=1,started_at=coalesce(session_brief_sessions.started_at,excluded.started_at), "
+        "started_compacted_at=excluded.started_compacted_at, "
         "started_compacted_seq=excluded.started_compacted_seq, "
         "brief_tokens=brief_tokens+excluded.brief_tokens,brief_elapsed_ms=brief_elapsed_ms+excluded.brief_elapsed_ms",
         (_entry(context), context.session_id, tokens, elapsed_ms, now, context.compacted_at, cutoff),

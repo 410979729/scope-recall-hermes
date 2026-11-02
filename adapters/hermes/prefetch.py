@@ -4,8 +4,9 @@ lock, the recall run without it, its context rendered for the model."""
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import ContractError, RecallRequest, TrustedContext
 from scope_recall.core.capture_filters import without_private
@@ -15,6 +16,7 @@ from scope_recall.core.recall_trace import record_refusal, record_unbound_attemp
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 from scope_recall.core.writer_lease import TruthWriterBusyError
 
+from ..host_memory import read_host_memory
 from ..runtime_wiring import render_host_recall_context
 from .tool_surface import display_zone
 from .turn_capture import direct_owner_cli
@@ -97,6 +99,11 @@ class Prefetch:
         mode = read_mode(context) if callable(read_mode) else None
         if direct_owner_cli(identity) and command:
             return f"Scope Recall recording mode: {mode or 'none'}."
+        try:
+            if core.entry_state(context)[0] == "paused":
+                return ""
+        except (ContractError, sqlite3.Error, OSError, ValueError, RuntimeError):
+            return ""
         notice = notice_for_mode(mode) or ""
         if removed:
             notice = "\n".join(part for part in (notice, f"private_spans_removed:{removed}") if part)
@@ -111,6 +118,8 @@ class Prefetch:
         core, context, generation, effective_session, turn, notice, request, current_refs, identity = state
         started = core.clock.monotonic()
         briefing = self._brief(core, context, generation)
+        if briefing.get("delivery_reason") == "entry_state:paused":
+            return ""
         brief = briefing["text"]
         if type(query) is not str or not query.strip():
             record_refusal(core, context, query, "blank_prompt")
@@ -118,10 +127,23 @@ class Prefetch:
             self._record_usage(core, context, text, briefing, started, turn)
             return self._confirm(core, context, effective_session, turn, briefing, text)
         try:
+            entries = read_host_memory(
+                "hermes",
+                identity.hermes_home,
+                project=identity.hermes_home,
+                session_started=None,
+                session_id=effective_session,
+                deadline=time.monotonic() + 0.2,
+            )
+        except Exception:  # noqa: BLE001 - optional host reading must not prevent prefetch
+            entries = frozenset()
+        host_context: dict[str, Any] = {"host_memory_entries": entries} if entries else {}
+        try:
             packet = core.recall_packet(
                 context,
                 request,
                 current_source_refs=current_refs,
+                **host_context,
                 # A day the message names is read in the zone this profile tells its model, as its memories' times are.
                 zone=display_zone(),
             )
@@ -134,7 +156,9 @@ class Prefetch:
         preparation = core.prepare_recall_render(context, packet)
         current = getattr(core, "recall_packet_current", None)
         if packet.get("items") and callable(current) and not current(context, packet):
-            packet = core.recall_packet(context, request, current_source_refs=current_refs, zone=display_zone())
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_refs, zone=display_zone(), **host_context
+            )
             preparation = core.prepare_recall_render(context, packet)
         with self._adapter._lock:
             if self._adapter._active_turn_id == turn:

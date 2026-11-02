@@ -28,6 +28,57 @@ COMPARISON_CHARACTERS = 32768
 COMPARISON_TOTAL_CHARACTERS = 262144
 
 
+def normalized_statement(text: str) -> str:
+    """Fold whitespace while preserving the full wording and punctuation."""
+    return " ".join(text.split())
+
+
+def same_statement(first: str, second: str) -> bool:
+    """Compare two complete statements without ignoring negation or conditions."""
+    body = normalized_statement(first)
+    return bool(body) and body == normalized_statement(second)
+
+
+def host_memory_duplicate(obj: RetrievedObject, entries: frozenset[str] | tuple[str, ...]) -> bool:
+    """Match a complete candidate statement to one complete host entry."""
+    if not entries:
+        return False
+    payload = optional_json(obj.content) if obj.kind == "claim" else None
+    if obj.kind == "claim" and not isinstance(payload, dict):
+        return False
+    if isinstance(payload, dict):
+        # The three text fields do not express temporal, procedural or other structured qualifiers.
+        plain_fields = {
+            "subject",
+            "predicate",
+            "value_text",
+            "conditions",
+            "kind",
+            "statement_kind",
+            "evidence_spans",
+            "importance",
+        }
+        if (
+            payload.get("conditions")
+            or payload.get("kind") not in (None, "fact")
+            or payload.get("statement_kind") not in (None, "assertion")
+            or any(
+                value is not None and value != [] and value != {}
+                for key, value in payload.items()
+                if key not in plain_fields
+            )
+        ):
+            return False
+        parts = (payload.get(key) for key in ("subject", "predicate", "value_text"))
+        statement = " ".join(part for part in parts if isinstance(part, str))
+    else:
+        statement = statement_text(obj)
+    if not isinstance(entries, frozenset):
+        entries = frozenset(normalized_statement(entry) for entry in entries)
+    body = normalized_statement(statement)
+    return bool(body) and body in entries
+
+
 class _Expired(Exception):
     """The optional pairing pass must return the untouched ranking."""
 
@@ -239,7 +290,7 @@ class _Pool:
             complete = len(obj.content) <= limit and len(statement) <= limit
             self.characters -= min(limit, len(obj.content))
             self.texts[obj.content] = _Text(
-                " ".join(body.split()), frozenset(lexical_terms(statement[:limit])), complete
+                normalized_statement(body), frozenset(lexical_terms(statement[:limit])), complete
             )
             self.incomplete |= not complete
         self.check()
