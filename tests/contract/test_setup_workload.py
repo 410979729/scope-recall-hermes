@@ -6,6 +6,7 @@ import copy
 import json
 from collections import defaultdict
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scope_recall.core.language_resources import prompt_text
@@ -32,15 +33,8 @@ def summarize_requests(records):
     return counts
 
 
-def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, record_property):
-    ctx = context(tmp_path / "TEST-cost")
-    corpus = json.loads((Path(__file__).parents[2] / "prompts/entity.examples.json").read_text("utf-8"))[:5]
-    proposals = [
-        copy.deepcopy(p)
-        for case in corpus
-        for p in [*(item["payload"] for item in case["input"]["candidates"]), case["input"]["proposal"]]
-    ]
-    records = []
+def counting_response(proposals, records):
+    """Record each protocol stage while returning bounded synthetic responses."""
 
     def response(**kwargs):
         body = json.loads(kwargs["body"])
@@ -56,8 +50,47 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             messages = body["messages"]
             inputs = sum(estimate_tokens(message["content"]) for message in messages)
             payload = json.loads(messages[-1]["content"])
-            if "proposal" in payload:
-                stage = "entity_resolution" if messages[0]["content"] == prompt_text("entity") else "extraction"
+            system = messages[0]["content"]
+            task = payload.get("task")
+            if task == "locate_adoption":
+                stage = task
+                selected = payload["confirmation"].startswith("Adopt option ")
+                answer = json.dumps(
+                    dict(
+                        adopted=True,
+                        fragment_ids=[1],
+                        scope="whole",
+                        conditions=[],
+                        reference_label=payload["confirmation"].removeprefix("Adopt ").rstrip("."),
+                    )
+                    if selected
+                    else dict(adopted=False)
+                )
+            elif task == "describe_adoption":
+                stage = task
+                answer = json.dumps(dict(decision="Back up the configuration.", topic="Backup strategy", importance=4))
+            elif system == prompt_text("session_summary"):
+                stage = "task_summary" if task else "session_summary"
+                source = payload["sources"][0]
+                answer = json.dumps(
+                    dict(
+                        sentences=[
+                            dict(
+                                text=source["content"][:40],
+                                source_ref=source["ref"],
+                                source_revision=source["revision"],
+                            )
+                        ]
+                    )
+                )
+            elif "proposal" in payload:
+                stage = (
+                    "entity_resolution"
+                    if system == prompt_text("entity")
+                    else "adoption_support"
+                    if system != prompt_text("support") + " " + prompt_text("merge")
+                    else "extraction"
+                )
                 answer = json.dumps(dict(support="supported", action="new", target_ref=None, target_revision=None))
             else:
                 stage, found = "extraction", []
@@ -86,6 +119,21 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             )
         records.append(dict(task=stage, input_tokens=inputs, output_tokens=estimate_tokens(answer) if answer else 0))
         return 200, json.dumps(data).encode()
+
+    return response
+
+
+def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, record_property):
+    ctx = context(tmp_path / "TEST-cost")
+    corpus = json.loads((Path(__file__).parents[2] / "prompts/entity.examples.json").read_text("utf-8"))[:5]
+    proposals = [
+        copy.deepcopy(p)
+        for case in corpus
+        for p in [*(item["payload"] for item in case["input"]["candidates"]), case["input"]["proposal"]]
+    ]
+    records = []
+
+    response = counting_response(proposals, records)
 
     transport = FakeTransport(response)
     monkeypatch.setattr(
@@ -136,18 +184,36 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
 
     initialize_auxiliary_budget_ledger(config.auxiliary.ledger_path, config.auxiliary.budget)
     runtime = build_runtime_instance(config)
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    monkeypatch.setattr(runtime.core.clock, "utc_now", lambda: now.isoformat())
     lengths = []
     try:
         runtime.core.initialize()
         for turn in range(100):
+            if turn and turn % 25 == 0:
+                now += timedelta(minutes=31)
+                runtime.drain(max_items=1000, remaining_seconds=120)
+            now += timedelta(seconds=1)
+            turn_ctx = replace(
+                ctx,
+                session_id=f"TEST-session-{turn // 25}",
+                task_anchor="TEST-task" if 40 <= turn <= 49 else None,
+            )
             content = (
                 proposals[turn]["evidence_spans"][0]["quote"]
                 if turn < len(proposals)
                 else f"For synthetic checkpoint {turn}, explain the tradeoffs of SQLite transactions and queue retries."
             )
             content += " Keep source evidence, error recovery, and resource limits explicit. " * (1 + turn % 4)
-            lines = 28 + (turn % 5) * 60
+            if turn in {7, 19, 38, 57, 76, 95}:
+                content = f"Adopt option {turn - 1}."
+            if turn == 40:
+                content = "Continue TEST-project and run its checks."
+            if turn == 49:
+                content = "The task is completed."
+            lines = 3 if 40 <= turn <= 49 else 28 + (turn % 5) * 60
             assistant = (
+                f"option {turn}: Back up the configuration.\n\n"
                 "Implementation details and validation steps:\n```python\n"
                 + "    result = process_record(record, retry_limit=3)  # retain evidence\n" * lines
                 + "```"
@@ -156,8 +222,15 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             for role, text in (("user", content), ("assistant", assistant)):
                 origin = "human_direct" if role == "user" else "assistant_visible"
                 runtime.core.record_event(
-                    replace(ctx, actor_origin=origin),
-                    source_event(source_event_key=f"TEST-cost/{turn}/{role}", role=role, content=text, origin=origin),
+                    replace(turn_ctx, actor_origin=origin),
+                    source_event(
+                        source_event_key=f"TEST-cost/{turn}/{role}",
+                        role=role,
+                        content=text,
+                        origin=origin,
+                        occurred_at=now.isoformat(),
+                        recorded_at=now.isoformat(),
+                    ),
                     scope_id="TEST-scope",
                 )
             receipt = runtime.drain(max_items=1000, remaining_seconds=120)
@@ -171,6 +244,22 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
                     query=f"What does the synthetic checkpoint {turn} say about source evidence?",
                 )
             )
+        now += timedelta(minutes=31)
+        # Discovery is paged, so a quiet session may require several worker passes.
+        for _ in range(20):
+            receipt = runtime.drain(max_items=1000, remaining_seconds=120)
+            assert receipt.failed == 0 and not any(item.error_code for item in receipt.items)
+            with runtime.core.storage.read(ctx) as tx:
+                groups = tx._check().execute("SELECT kind,state FROM summary_groups").fetchall()
+                if sum(kind == "session" and state == "complete" for kind, state in groups) == 4:
+                    assert any(kind == "task" and state == "complete" for kind, state in groups)
+                    bound = (
+                        tx._check().execute("SELECT count(*) FROM adoption_relations WHERE state='bound'").fetchone()[0]
+                    )
+                    assert bound == 6
+                    break
+        else:
+            raise AssertionError("Synthetic session summaries did not complete")
         record_property(
             "worker_diagnostics",
             json.dumps(
@@ -186,9 +275,10 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             "workload_measurement",
             json.dumps(dict(turns=100, assistant_token_lengths=lengths, tasks=counts, requests=records)),
         )
-        for row in recommended_workload():
-            if row["task"] in counts:
-                assert counts[row["task"]] == {name: row[name] for name in ("calls", "input_tokens", "output_tokens")}
+        rows = recommended_workload()
+        assert set(counts) == {row["task"] for row in rows}
+        for row in rows:
+            assert counts[row["task"]] == {name: row[name] for name in ("calls", "input_tokens", "output_tokens")}
         assert counts["entity_resolution"]["calls"] > 0
     finally:
         runtime.close()
