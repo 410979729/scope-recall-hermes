@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 from typing import Iterable
 
-from ..contracts import ContractError
+from ..contracts import ContractError, utc_timestamp
 from .events import WITHHELD_TOOL_OUTPUT_SQL, indexed_terms, lexical_terms, withheld_tool_output
 
 #: ``t`` is the term, ``p`` the posting, ``e`` the source version.
@@ -189,7 +189,7 @@ def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
     }
 
 
-def _replace_claim_terms(conn, refs: tuple[str, ...], postings: list[tuple[str, str]]) -> None:
+def _replace_claim_terms(conn, refs: tuple[str, ...], postings: list[tuple[str, str, int]], heads=()) -> None:
     """Replace a bounded set of heads once, then remove only dictionary words nobody holds.
 
     The same bulk boundary serves a single live head and an initialization page.
@@ -205,8 +205,15 @@ def _replace_claim_terms(conn, refs: tuple[str, ...], postings: list[tuple[str, 
         )
     )
     conn.execute("DELETE FROM claim_lexical_postings WHERE claim_id IN (SELECT value FROM json_each(?))", (encoded,))
+    conn.execute("DELETE FROM claim_lexical_heads WHERE claim_id IN (SELECT value FROM json_each(?))", (encoded,))
+    if heads:
+        conn.execute(
+            "INSERT INTO claim_lexical_heads(claim_id,is_simple,recorded) "
+            "SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?)",
+            (json.dumps(heads),),
+        )
     if postings:
-        terms = tuple(dict.fromkeys(term for _, term in postings))
+        terms = tuple(dict.fromkeys(term for _, term, _ in postings))
         conn.execute(
             "INSERT OR IGNORE INTO lexical_terms(term) SELECT value FROM json_each(?)",
             (json.dumps(terms, ensure_ascii=False),),
@@ -214,8 +221,8 @@ def _replace_claim_terms(conn, refs: tuple[str, ...], postings: list[tuple[str, 
         # The dictionary may have tiny pre-import statistics; JSON rows must
         # drive indexed term probes rather than a dictionary scan per posting.
         conn.execute(
-            "INSERT INTO claim_lexical_postings(term_id,claim_id) "
-            "SELECT t.term_id,json_extract(p.value,'$[0]') FROM json_each(?) p "
+            "INSERT INTO claim_lexical_postings(term_id,claim_id,subject_terms) "
+            "SELECT t.term_id,json_extract(p.value,'$[0]'),json_extract(p.value,'$[2]') FROM json_each(?) p "
             "CROSS JOIN lexical_terms t ON t.term=json_extract(p.value,'$[1]')",
             (json.dumps(postings, ensure_ascii=False),),
         )
@@ -233,14 +240,22 @@ def forget_claim(conn, claim_id: str) -> None:
     _replace_claim_terms(conn, (claim_id,), [])
 
 
-def _claim_postings(rows) -> list[tuple[str, str]]:
-    """Tokenize only eligible current head text; blocked and alias heads contribute no words."""
-    return [
-        (row[0], term)
-        for row in rows
-        if row[4] != "alias" and not row[5]
-        for term in lexical_terms(" ".join(str(part or "") for part in row[1:4]))
-    ]
+def _claim_projection(rows) -> tuple[list, list]:
+    """Project current text and mark subject words with the final scorer's denominator.
+
+    A positive count marks a subject term; the same count on each such posting
+    lets SQL check half-subject coverage without reading or tokenizing payloads.
+    Single-character words do not contribute, as in final claim scoring.
+    """
+    postings, heads = [], []
+    for row in rows:
+        if row[4] == "alias" or row[5]:
+            continue
+        heads.append((row[0], int(row[6]), utc_timestamp(row[7]) if row[6] else ""))
+        subject = {term for term in lexical_terms(str(row[1])) if len(term) > 1}
+        for term in lexical_terms(" ".join(str(part or "") for part in row[1:4])):
+            postings.append((row[0], term, len(subject) if term in subject else 0))
+    return postings, heads
 
 
 # A replayed deletion ledger can precede the head flag. Suppression stays
@@ -248,7 +263,13 @@ def _claim_postings(rows) -> list[tuple[str, str]]:
 _CLAIM_HEAD = (
     "SELECT c.claim_id,c.subject,c.predicate,json_extract(v.payload_json,'$.value_text'),c.kind,"
     "(c.read_blocked OR EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' "
-    "AND b.object_ref=c.claim_id AND b.read_blocked=1)) "
+    "AND b.object_ref=c.claim_id AND b.read_blocked=1)), "
+    "CASE WHEN c.current_revision=1 AND v.state='active' AND v.valid_from IS NULL AND v.valid_to IS NULL "
+    "AND coalesce(json_array_length(v.payload_json,'$.conditions'),0)=0 "
+    "AND json_extract(v.payload_json,'$.subject')=c.subject "
+    "AND json_extract(v.payload_json,'$.predicate')=c.predicate "
+    "AND NOT EXISTS(SELECT 1 FROM claim_versions other WHERE other.claim_id=c.claim_id AND other.revision>1) "
+    "THEN 1 ELSE 0 END,v.recorded_from "
     "FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
 )
 
@@ -260,7 +281,7 @@ def index_claim(conn, claim_id: str) -> None:
     and makes ordinary writes, restore and backfill project identical text.
     """
     rows = conn.execute(_CLAIM_HEAD + "WHERE c.claim_id=?", (claim_id,)).fetchall()
-    _replace_claim_terms(conn, (claim_id,), _claim_postings(rows))
+    _replace_claim_terms(conn, (claim_id,), *_claim_projection(rows))
 
 
 def claim_backfill_pending(conn) -> bool:
@@ -289,7 +310,7 @@ def backfill_claim_page(conn, *, limit: int = 500) -> bool:
         _CLAIM_HEAD + "WHERE c.claim_id>? ORDER BY c.claim_id LIMIT ?", (cursor[0] or "", limit)
     ).fetchall()
     if rows:
-        _replace_claim_terms(conn, tuple(row[0] for row in rows), _claim_postings(rows))
+        _replace_claim_terms(conn, tuple(row[0] for row in rows), *_claim_projection(rows))
     more = len(rows) == limit
     conn.execute(
         "UPDATE candidate_scan_cursors SET position_ref=?,processed_count=processed_count+?,completed=?,"

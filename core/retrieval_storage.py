@@ -177,13 +177,6 @@ def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...
     return {term: original for term, original in live.items() if 0 < frequencies.get(term, 0) < ceiling}
 
 
-#: Claims one query scores after the SQL prefilter.  Scoring loads a claim's
-#: versions, so this bounds a query's cost on an instance with many claims.
-_CLAIM_SCAN_LIMIT = 256
-#: Query terms the prefilter looks for, longest first (a query may have 128).
-_CLAIM_PREFILTER_TERMS = 32
-
-
 def _claim_visibility(context: SearchContext) -> tuple[str, tuple]:
     """The fact prefilter's audience and policy, shared by every indexed intersection."""
     trusted = context.trusted_context
@@ -225,53 +218,149 @@ def _claim_term_counts(conn, needles: tuple[str, ...]) -> list[tuple[int, int]]:
     return sorted(counts.items())
 
 
-def _claim_rows(tx, context: SearchContext, needles: tuple[str, ...]) -> list:
-    """Visible heads in descending hit count and public-ref order, capped before version scoring.
+def _claim_coverage(terms: tuple[int, ...], ref: str) -> str:
+    """Subject coverage from the posting reverse index, for a bounded candidate probe."""
+    return (
+        "(SELECT COUNT(*)*1.0/MAX(q.subject_terms) FROM claim_lexical_postings q "
+        f"WHERE q.claim_id={ref} AND q.subject_terms>0 AND q.term_id IN ({','.join(map(str, terms))}))"
+    )
 
-    For up to four present terms, intersect each subset from most hits to least.
-    Each posting range is in claim-ref order and each subset returns only the
-    remaining places. The smallest refs across these prefixes are exactly the
-    global prefix; visibility is applied before every LIMIT. Higher-hit refs
-    already returned are excluded from lower levels. At most fifteen subsets
-    avoids exponential work on long prompts, whose postings are grouped once.
-    """
-    conn = tx._check()
+
+def _subject_claim_rows(tx, context, terms, *, complex_only=False) -> list:
+    """All subject-qualified refs, using postings before audience and head lookups."""
     visibility, parameters = _claim_visibility(context)
-    present = _claim_term_counts(conn, needles)
-    if not present:
+    ids = ",".join(map(str, terms))
+    eligible = "AND h.is_simple=0" if complex_only else ""
+    return (
+        tx._check()
+        .execute(
+            f"""WITH subjects AS MATERIALIZED (
+            SELECT p.claim_id FROM claim_lexical_postings p INDEXED BY claim_lexical_subject
+            WHERE p.term_id IN ({ids}) AND p.subject_terms>0 GROUP BY p.claim_id
+            HAVING COUNT(*)*2>=MAX(p.subject_terms))
+            SELECT c.claim_id,(SELECT COUNT(*) FROM claim_lexical_postings q
+                WHERE q.claim_id=c.claim_id AND q.term_id IN ({ids})) AS hits
+            FROM subjects s CROSS JOIN claim_lexical_heads h ON h.claim_id=s.claim_id
+            CROSS JOIN claims c ON c.claim_id=s.claim_id
+            WHERE {visibility} {eligible} ORDER BY hits DESC,c.claim_id""",
+            parameters,
+        )
+        .fetchall()
+    )
+
+
+def _complex_claim_rows(tx, context, terms) -> list:
+    """Choose the cheaper indexed driver; neither estimate excludes a fact."""
+    conn = tx._check()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM claim_lexical_heads WHERE is_simple=0 LIMIT 1024)"
+    ).fetchone()[0]
+    if not count:
+        return []
+    ids = ",".join(map(str, terms))
+    subjects = conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM claim_lexical_postings INDEXED BY claim_lexical_subject "
+        f"WHERE subject_terms>0 AND term_id IN ({ids}) LIMIT 1024)"
+    ).fetchone()[0]
+    if count >= subjects:
+        return _subject_claim_rows(tx, context, terms, complex_only=True)
+    visibility, parameters = _claim_visibility(context)
+    return conn.execute(
+        f"""SELECT c.claim_id,(SELECT COUNT(*) FROM claim_lexical_postings q
+            WHERE q.claim_id=c.claim_id AND q.term_id IN ({ids})) AS hits
+            FROM claim_lexical_heads h CROSS JOIN claims c ON c.claim_id=h.claim_id
+            WHERE h.is_simple=0 AND {visibility} AND {_claim_coverage(terms, "c.claim_id")}>=0.5
+            ORDER BY hits DESC,c.claim_id""",
+        parameters,
+    ).fetchall()
+
+
+def _simple_claim_subset(tx, context, terms, subset, selected, limit) -> list:
+    """A final-rank prefix of one posting intersection, after all audience checks."""
+    ordered = sorted(subset, key=lambda term: term[1])
+    probes = " ".join(
+        f"CROSS JOIN claim_lexical_postings k{i} ON k{i}.term_id=? AND k{i}.claim_id=p.claim_id"
+        for i, _ in enumerate(ordered[1:])
+    )
+    visibility, parameters = _claim_visibility(context)
+    excluded = f"AND p.claim_id NOT IN ({_marks(selected)})" if selected else ""
+    return (
+        tx._check()
+        .execute(
+            f"""SELECT p.claim_id,h.recorded,{_claim_coverage(terms, "p.claim_id")} AS covered
+            FROM claim_lexical_postings p {probes}
+            CROSS JOIN claim_lexical_heads h ON h.claim_id=p.claim_id
+            CROSS JOIN claims c ON c.claim_id=p.claim_id
+            WHERE p.term_id=? AND h.is_simple=1 AND covered>=0.5 AND {visibility} {excluded}
+            ORDER BY covered DESC,h.recorded DESC,p.claim_id DESC LIMIT ?""",
+            (*(term for term, _ in ordered[1:]), ordered[0][0], *parameters, *selected, limit),
+        )
+        .fetchall()
+    )
+
+
+def _simple_claim_rows(tx, context, present, needed, limit) -> list:
+    """Exact top active heads, merging equal-hit prefixes by the final score's tie keys.
+
+    Subject coverage is between one half and one. A whole extra body hit always
+    wins over that interval, so descending hit levels need no lower-level scan
+    after the result limit is full. No certificate is used for a version that
+    could have conditions, another revision or temporal selection.
+    """
+    terms = tuple(term for term, _ in present)
+    if not tx._check().execute("SELECT 1 FROM claim_lexical_heads WHERE is_simple=1 LIMIT 1").fetchone():
         return []
     if len(present) > 4:
-        return conn.execute(
-            f"""WITH hits AS MATERIALIZED (
-                SELECT p.claim_id,COUNT(*) AS hits FROM claim_lexical_postings p
-                WHERE p.term_id IN ({_marks(present)}) GROUP BY p.claim_id)
-                SELECT c.claim_id FROM hits h CROSS JOIN claims c ON c.claim_id=h.claim_id
-                WHERE {visibility} ORDER BY h.hits DESC,c.claim_id LIMIT ?""",
-            (*(term for term, _ in present), *parameters, _CLAIM_SCAN_LIMIT),
-        ).fetchall()
-    selected: list[str] = []
-    for count in range(len(present), 0, -1):
-        level: set[str] = set()
-        remaining = _CLAIM_SCAN_LIMIT - len(selected)
-        for subset in combinations(present, count):
-            ordered = sorted(subset, key=lambda term: term[1])
-            probes = " ".join(
-                f"CROSS JOIN claim_lexical_postings k{index} ON k{index}.term_id=? AND k{index}.claim_id=p.claim_id"
-                for index, _ in enumerate(ordered[1:])
+        visibility, parameters = _claim_visibility(context)
+        ids = ",".join(map(str, terms))
+        return (
+            tx._check()
+            .execute(
+                f"""WITH hits AS MATERIALIZED (SELECT claim_id,COUNT(*) AS hits FROM claim_lexical_postings
+                WHERE term_id IN ({ids}) GROUP BY claim_id)
+                SELECT c.claim_id,p.hits,{_claim_coverage(terms, "c.claim_id")} AS covered
+                FROM hits p CROSS JOIN claim_lexical_heads h ON h.claim_id=p.claim_id
+                CROSS JOIN claims c ON c.claim_id=p.claim_id
+                WHERE h.is_simple=1 AND p.hits>=? AND covered>=0.5 AND {visibility}
+                ORDER BY p.hits+covered DESC,h.recorded DESC,c.claim_id DESC LIMIT ?""",
+                (needed, *parameters, limit),
             )
-            excluded = f"AND p.claim_id NOT IN ({_marks(selected)})" if selected else ""
-            rows = conn.execute(
-                f"""SELECT p.claim_id FROM claim_lexical_postings p {probes}
-                    CROSS JOIN claims c ON c.claim_id=p.claim_id
-                    WHERE p.term_id=? AND {visibility} {excluded}
-                    ORDER BY p.claim_id LIMIT ?""",
-                (*(term for term, _ in ordered[1:]), ordered[0][0], *parameters, *selected, remaining),
-            ).fetchall()
-            level.update(row[0] for row in rows)
-        selected.extend(sorted(level)[:remaining])
-        if len(selected) == _CLAIM_SCAN_LIMIT:
+            .fetchall()
+        )
+    selected: dict[str, dict] = {}
+    for hits in range(len(present), needed - 1, -1):
+        remaining = limit - len(selected)
+        level = {}
+        for subset in combinations(present, hits):
+            for row in _simple_claim_subset(tx, context, terms, subset, selected, remaining):
+                level[row["claim_id"]] = dict(row, hits=hits)
+        ranked = sorted(
+            level.values(), key=lambda row: (row["covered"], row["recorded"], row["claim_id"]), reverse=True
+        )
+        selected.update((row["claim_id"], row) for row in ranked[:remaining])
+        if len(selected) == limit:
             break
-    return [{"claim_id": ref} for ref in selected]
+    return list(selected.values())
+
+
+def _claim_rows(tx, context: SearchContext, needles: tuple[str, ...], limit: int = -1) -> list:
+    """Complete undecidable candidates plus an exact final-rank prefix of certified heads.
+
+    The certificate is atomically projected and conservatively invalidated by
+    SQLite truth edits. It only permits pruning heads whose final score is
+    completely known; every other version still uses the ordinary selector.
+    """
+    present = _claim_term_counts(tx._check(), needles)
+    if not present:
+        return []
+    terms = tuple(term for term, _ in present)
+    if limit < 0 or context.mode == "as_of":
+        return _subject_claim_rows(tx, context, terms)
+    rows = [
+        *_complex_claim_rows(tx, context, terms),
+        *_simple_claim_rows(tx, context, present, 1 if len(needles) == 1 else 2, limit),
+    ]
+    return sorted(rows, key=lambda row: (-row["hits"], row["claim_id"]))
 
 
 def _claim_version_for(versions, context: SearchContext, instant: str):
@@ -535,8 +624,8 @@ class RetrievalStorage(RetrievalHydration):
         terms = frozenset(meaningful_query_terms(context.query))
         if not terms or limit <= 0:
             return ()
-        needles = tuple(sorted(terms, key=lambda term: (-len(term), term))[:_CLAIM_PREFILTER_TERMS])
-        rows = _claim_rows(tx, context, needles)
+        needles = tuple(sorted(terms))
+        rows = _claim_rows(tx, context, needles, limit)
         instant = context.as_of or context.now
         scored = []
         prefetch = getattr(tx.claims, "prefetch_versions", None)

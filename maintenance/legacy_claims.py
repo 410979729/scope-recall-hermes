@@ -441,6 +441,7 @@ def write_fact_claims(cv: Conversion, conn: sqlite3.Connection) -> None:
     # complete history has been appended.
     for claim_id, revision in current_revisions.items():
         conn.execute("UPDATE claims SET current_revision=? WHERE claim_id=?", (revision, claim_id))
+        lexical_index.index_claim(conn, claim_id)
 
 
 # --- procedures ------------------------------------------------------------

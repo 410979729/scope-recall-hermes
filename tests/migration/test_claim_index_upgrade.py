@@ -50,3 +50,58 @@ def test_claim_index_upgrade_resumes_after_committed_page(app, monkeypatch):
         assert tx._check().execute("SELECT count(DISTINCT claim_id) FROM claim_lexical_postings").fetchone()[0] == 4
         assert tx._check().execute("PRAGMA foreign_key_check").fetchall() == []
     assert [core.current_claim(ctx, ref).payload for ref in refs] == truth
+
+
+def test_pending_claim_backfill_reports_the_schema_gap_until_upgrade_finishes(app, monkeypatch):
+    """Foreground admission rejects pending upgrades; the pipeline reports empty results and a schema gap."""
+    from scope_recall.contracts import ContractError
+    from scope_recall.core import storage
+
+    from tests.contract.test_claim_lexical_index import search
+    from tests.v11_support import recall_request
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-upgrade theme amber.")
+    accept(core, ctx, draft(source, "amber", subject="TEST-upgrade", predicate="theme"))
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        conn.execute(
+            "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now'))"
+        )
+        conn.commit()
+    # A small synthetic fixture follows the admission branch of a large store;
+    # its pending cursor and foreground packet are real, not mocked results.
+    monkeypatch.setattr(storage, "HEAVY_UPGRADE_BYTES", 0)
+    with pytest.raises(ContractError, match="SCHEMA_UNSUPPORTED"):
+        core.recall_packet(ctx, recall_request(query="TEST-upgrade theme", mode="current"), deadline_seconds=1)
+    result = core.recall_pipeline.search(search(core, ctx, "TEST-upgrade theme"))
+    assert result.candidates == ()
+    assert "sqlite_unavailable:SCHEMA_UNSUPPORTED" in result.gaps
+    core.storage.initialize(unbounded_upgrade=True)
+    with core.storage.read(ctx, remaining_seconds=60) as tx:
+        from scope_recall.core.retrieval_storage import RetrievalStorage
+
+        assert RetrievalStorage().claims(tx, search(core, ctx, "TEST-upgrade theme"), limit=6)
+    recovered = core.recall_packet(ctx, recall_request(query="TEST-upgrade theme", mode="current"), deadline_seconds=1)
+    assert "sqlite_unavailable:SCHEMA_UNSUPPORTED" not in recovered["gaps"]
+    assert recovered["items"]
+
+
+def test_subject_projection_upgrades_an_existing_body_index(app):
+    """The preceding schema's complete body cursor must restart for subject markers."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST-upgrade theme amber.")
+    ref = accept(core, ctx, draft(source, "amber", subject="TEST-upgrade", predicate="theme")).items[0].ref
+    downgrade_store(core.storage.path, 1114)
+    core.storage.initialize()
+    with core.storage.read(ctx) as tx:
+        assert (
+            tx._check()
+            .execute(
+                "SELECT subject_terms FROM claim_lexical_postings p JOIN lexical_terms t USING(term_id) "
+                "WHERE p.claim_id=? AND t.term='test-upgrade'",
+                (ref,),
+            )
+            .fetchone()[0]
+            == 1
+        )
+        assert not lexical_index.claim_backfill_pending(tx._check())

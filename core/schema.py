@@ -1,9 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1114
+SCHEMA_VERSION = 1115
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114)
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -153,6 +153,33 @@ CLAIM_LEXICAL_STATEMENTS = (
         PRIMARY KEY(term_id,claim_id)
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX claim_lexical_claim ON claim_lexical_postings(claim_id,term_id)",
+)
+
+# Subject markers share the body dictionary and writer boundary. A partial
+# posting range avoids scanning common predicate/value words during nomination.
+CLAIM_SUBJECT_STATEMENTS = (
+    "ALTER TABLE claim_lexical_postings ADD COLUMN subject_terms INTEGER NOT NULL DEFAULT 0 CHECK(subject_terms>=0)",
+    "CREATE INDEX claim_lexical_subject ON claim_lexical_postings(term_id,claim_id,subject_terms) "
+    "WHERE subject_terms>0",
+)
+
+# A rank certificate is derived from one immutable statement, not a second
+# version selector. Any truth edit invalidates it before a writer can refresh it.
+CLAIM_RANK_STATEMENTS = (
+    """CREATE TABLE claim_lexical_heads (
+        claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id) ON DELETE CASCADE,
+        is_simple INTEGER NOT NULL CHECK(is_simple IN (0,1)), recorded TEXT NOT NULL
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_lexical_rank ON claim_lexical_heads(is_simple,claim_id)",
+    *(
+        f"""CREATE TRIGGER claim_lexical_{operation.lower()} AFTER {operation} ON claim_versions BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id={source}.claim_id;
+    END"""
+        for operation, source in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD"))
+    ),
+    """CREATE TRIGGER claim_lexical_head AFTER UPDATE OF current_revision,subject,predicate,kind ON claims BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id=NEW.claim_id;
+    END""",
 )
 
 CANDIDATE_STATEMENTS = (
@@ -423,6 +450,7 @@ STATEMENTS = (
         "CREATE INDEX work_ready ON work_items(state,available_at,work_id)",
         *LEXICAL_STATEMENTS,
         *CLAIM_LEXICAL_STATEMENTS,
+        *CLAIM_SUBJECT_STATEMENTS,
         """CREATE TABLE claims (
         claim_id TEXT PRIMARY KEY NOT NULL,
         scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
@@ -574,6 +602,7 @@ STATEMENTS = (
     + RECOVERY_STATEMENTS
     + CANDIDATE_STATEMENTS
     + ENTITY_STATEMENTS
+    + CLAIM_RANK_STATEMENTS
     + (RESTORED_SUPPRESSION_STATEMENT,)
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
@@ -814,6 +843,19 @@ def upgrade_1113(connection):
     )
     connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1114")
+
+
+def upgrade_1114(connection):
+    """Add subject eligibility postings and restart their resumable head projection."""
+    for statement in (*CLAIM_SUBJECT_STATEMENTS, *CLAIM_RANK_STATEMENTS):
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
+        "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0,"
+        "updated_at=excluded.updated_at"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1115 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1115")
 
 
 def normalize_scope_authorizations(connection) -> int:

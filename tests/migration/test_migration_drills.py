@@ -1480,3 +1480,36 @@ lease.release()
     finally:
         _out, err = child.communicate(timeout=5)
         assert child.returncode == 0, err
+
+
+def test_conversion_reindexes_the_explicit_current_head_after_history(tmp_path: Path) -> None:
+    """A retired current marker still selects the head after a newer superseded row."""
+    legacy = _shaped_store(
+        tmp_path / "old.sqlite3",
+        journals=[(1, "scope-a", "TEST-project theme amber"), (2, "scope-a", "TEST-project theme cobalt")],
+    )
+    _legacy_facts(
+        legacy,
+        [
+            ("fact-early", "TEST-project", "theme", "amber", "current", _AT, 1, "amber"),
+            ("fact-later", "TEST-project", "theme", "cobalt", "superseded", "2026-07-02T00:00:00Z", 2, "cobalt"),
+        ],
+    )
+    with closing(sqlite3.connect(legacy)) as conn:
+        conn.execute("ALTER TABLE fact_claims ADD COLUMN retired_at TEXT")
+        conn.execute("UPDATE fact_claims SET retired_at=? WHERE claim_id='fact-early'", (_AT,))
+        conn.commit()
+    target = tmp_path / "target"
+    report = migrate_legacy(legacy, target)
+    assert report["completion_status"] == "complete", report["cutover_block"]
+    with closing(sqlite3.connect(target / "memory.sqlite3")) as conn:
+        head = conn.execute(
+            "SELECT json_extract(v.payload_json,'$.value_text') FROM claims c "
+            "JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision"
+        ).fetchone()[0]
+        terms = {
+            row[0]
+            for row in conn.execute("SELECT t.term FROM claim_lexical_postings p JOIN lexical_terms t USING(term_id)")
+        }
+    assert head == "amber"
+    assert "amber" in terms and "cobalt" not in terms

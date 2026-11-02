@@ -170,12 +170,13 @@ def test_indexed_and_substring_nomination_deliver_equivalent_candidates(app, mon
                     )
                     previous = RetrievalStorage().claims(tx, context, limit=48)
                 assert indexed == previous, (mode, query, trusted, indexed, previous)
+                assert indexed == _ideal_claims(tx, context, 48, monkeypatch), (mode, query, trusted)
 
 
 @pytest.mark.parametrize("extra", [("amber", "cobalt", "green"), ("amber", "cobalt", "green", "blue")])
 @pytest.mark.parametrize("mode", ["auto", "current"])
-def test_bounded_intersections_preserve_hit_order_after_policy(app, monkeypatch, extra, mode):
-    """Compare the capped posting prefixes to an exhaustive visible-head oracle."""
+def test_subject_candidates_preserve_hit_order_after_policy(app, monkeypatch, extra, mode):
+    """Compare subject-qualified postings to an exhaustive visible-head oracle."""
     import json
 
     from scope_recall.core import lexical_index, retrieval_storage
@@ -211,7 +212,6 @@ def test_bounded_intersections_preserve_hit_order_after_policy(app, monkeypatch,
                 tuple(body.values()),
             )
             lexical_index.index_claim(conn, ref)
-    monkeypatch.setattr(retrieval_storage, "_CLAIM_SCAN_LIMIT", 3)
     query = "TEST-project " + " ".join(extra)
     context = search(core, ctx, query, mode)
     terms = retrieval_storage.meaningful_query_terms(query)
@@ -227,7 +227,7 @@ def test_bounded_intersections_preserve_hit_order_after_policy(app, monkeypatch,
             if count:
                 exhaustive.append((-count, row["claim_id"]))
         assert [row["claim_id"] for row in retrieval_storage._claim_rows(tx, context, terms)] == [
-            ref for _, ref in sorted(exhaustive)[:3]
+            ref for _, ref in sorted(exhaustive)
         ]
 
 
@@ -250,8 +250,8 @@ def test_claim_dictionary_lookup_uses_index_with_stale_statistics(app):
         assert any("SEARCH t" in step and "term=?" in step for step in plan), plan
 
 
-def test_posting_intersection_precedes_head_policy_lookup(app):
-    """Only intersected posting refs should pay for reading a potentially large claim head."""
+def test_subject_posting_probe_precedes_head_policy_lookup(app):
+    """Only subject-qualified posting refs should pay for reading a claim head."""
     from scope_recall.core import retrieval_storage
 
     core, ctx = app
@@ -263,9 +263,9 @@ def test_posting_intersection_precedes_head_policy_lookup(app):
         conn.set_trace_callback(statements.append)
         retrieval_storage._claim_rows(tx, context, retrieval_storage.meaningful_query_terms(context.query))
         conn.set_trace_callback(None)
-        query = next(sql for sql in statements if sql.startswith("SELECT p.claim_id"))
+        query = next(sql for sql in statements if sql.startswith("WITH subjects AS MATERIALIZED"))
         plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + query)]
-        probe = next(index for index, step in enumerate(plan) if "SEARCH k" in step)
+        probe = next(index for index, step in enumerate(plan) if "SEARCH p" in step)
         policy = next(index for index, step in enumerate(plan) if "SEARCH c" in step)
         assert probe < policy, plan
 
@@ -283,3 +283,220 @@ def test_reindex_preserves_a_deletion_held_only_in_the_object_ledger(app):
         conn.execute("UPDATE claims SET read_blocked=0 WHERE claim_id=?", (item.ref,))
         lexical_index.index_claim(conn, item.ref)
         assert not held(tx, item.ref)
+
+
+def _synthetic_claims(core, ctx, records):
+    """Clone a valid synthetic version while varying the fields relevant to nomination."""
+    import json
+
+    from scope_recall.core import lexical_index
+
+    item, _ = initial(core, ctx)
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        head = dict(conn.execute("SELECT * FROM claims WHERE claim_id=?", (item.ref,)).fetchone())
+        version = dict(conn.execute("SELECT * FROM claim_versions WHERE claim_id=?", (item.ref,)).fetchone())
+        for ref, subject, predicate, value in records:
+            clone = dict(head, claim_id=ref, subject=subject, predicate=predicate, slot_key=ref)
+            payload = dict(json.loads(version["payload_json"]), subject=subject, predicate=predicate, value_text=value)
+            body = dict(version, claim_id=ref, payload_json=json.dumps(payload))
+            for table, row in (("claims", clone), ("claim_versions", body)):
+                conn.execute(
+                    f"INSERT INTO {table}({','.join(row)}) VALUES ({','.join('?' for _ in row)})", tuple(row.values())
+                )
+            lexical_index.index_claim(conn, ref)
+
+
+def _ideal_claims(tx, context, limit, monkeypatch):
+    """Score every visible fact through the real version selector and final ranking."""
+    from scope_recall.core import retrieval_storage
+
+    visibility, parameters = retrieval_storage._claim_visibility(context)
+    rows = tx._check().execute(f"SELECT c.claim_id FROM claims c WHERE {visibility}", parameters).fetchall()
+    with monkeypatch.context() as patch:
+        patch.setattr(retrieval_storage, "_claim_rows", lambda *_: rows)
+        return RetrievalStorage().claims(tx, context, limit=limit)
+
+
+def test_subjectless_distractors_cannot_hide_a_qualified_answer(app, monkeypatch):
+    """A token tie must not spend the candidate budget on facts that cannot answer."""
+    core, ctx = app
+    records = [(f"claim-TEST-a{i:04d}", f"unrelated{i}", "alpha beta", "plain") for i in range(256)]
+    target = "claim-TEST-zz-answer"
+    _synthetic_claims(core, ctx, [*records, (target, "alpha", "beta", "catfish")])
+    context = search(core, ctx, "alpha beta cat")
+    with core.storage.read(ctx) as tx:
+        ideal = _ideal_claims(tx, context, 48, monkeypatch)
+        actual = RetrievalStorage().claims(tx, context, limit=48)
+    assert [item.ref for item in ideal] == [target]
+    assert actual == ideal
+
+
+@pytest.mark.parametrize("query", ["alpha beta cat", "alpha beta cat 海青 部署"])
+@pytest.mark.parametrize("seed", [7, 4111, 992])
+@pytest.mark.parametrize("mode", ["current", "auto", "as_of", "history"])
+def test_adversarial_nomination_matches_unbounded_final_ranking(app, monkeypatch, seed, mode, query):
+    """Random predicate/value noise and more than 256 answers preserve ideal top limits."""
+    import json
+    import random
+
+    from scope_recall.core import lexical_index, retrieval_storage
+
+    core, ctx = app
+    rng = random.Random(seed)
+    records = []
+    for index in range(1200):
+        subject = rng.choice(["alpha", "alpha beta", "alpha unrelated", "海青", f"unrelated{index}"])
+        records.append(
+            (
+                f"claim-TEST-random-{index:04d}",
+                subject,
+                rng.choice(["beta", "beta cat", "theme"]),
+                rng.choice(["catfish", "cat", "plain", "部署"]),
+            )
+        )
+    _synthetic_claims(core, ctx, records)
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for index, (ref, *_rest) in enumerate(records):
+            # Proposal thresholds, condition-only extra hits and both policy
+            # flags affect final eligibility independently of body hit order.
+            if index % 5 == 0:
+                conn.execute("UPDATE claim_versions SET state='proposed' WHERE claim_id=?", (ref,))
+            if index % 7 == 0:
+                conn.execute(
+                    "UPDATE claim_versions SET payload_json=json_set(payload_json,'$.conditions',json(?)) "
+                    "WHERE claim_id=?",
+                    (json.dumps(["cat"]), ref),
+                )
+            conn.execute(
+                "UPDATE claims SET read_blocked=?,suppressed=? WHERE claim_id=?",
+                (int(index % 17 == 0), int(index % 13 == 0), ref),
+            )
+            if mode != "as_of":
+                conn.execute(
+                    "UPDATE claim_versions SET valid_from=NULL,"
+                    "payload_json=json_set(payload_json,'$.valid_from',NULL) WHERE claim_id=?",
+                    (ref,),
+                )
+            stamp = [
+                "2026-09-01T12:00:00Z",
+                "2026-09-01T12:00:00.000001+00:00",
+                "2026-09-01T12:00:00.999999+00:00",
+                "2026-09-01T13:00:00+01:00",
+            ][index % 4]
+            conn.execute("UPDATE claim_versions SET recorded_from=? WHERE claim_id=?", (stamp, ref))
+            lexical_index.index_claim(conn, ref)
+    context = search(core, ctx, query, mode)
+    with core.storage.read(ctx) as tx:
+        visibility, parameters = retrieval_storage._claim_visibility(context)
+        heads = (
+            tx._check()
+            .execute(
+                "SELECT c.claim_id,lower(c.subject||' '||c.predicate||' '||"
+                "coalesce(json_extract(v.payload_json,'$.value_text'),'')) statement FROM claims c "
+                "JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
+                f"WHERE {visibility}",
+                parameters,
+            )
+            .fetchall()
+        )
+        terms = retrieval_storage.meaningful_query_terms(context.query)
+        old_rows = sorted(heads, key=lambda row: (-sum(term in row["statement"] for term in terms), row["claim_id"]))[
+            :256
+        ]
+        for limit in (6, 300, 1500):
+            ideal = _ideal_claims(tx, context, limit, monkeypatch)
+            actual = RetrievalStorage().claims(tx, context, limit=limit)
+            with monkeypatch.context() as patch:
+                patch.setattr(retrieval_storage, "_claim_rows", lambda *_: old_rows)
+                previous = RetrievalStorage().claims(tx, context, limit=limit)
+            assert actual == ideal, (seed, mode, limit)
+            ideal_refs = {item.ref for item in ideal}
+            assert len(ideal_refs - {item.ref for item in actual}) <= len(ideal_refs - {item.ref for item in previous})
+        assert len(ideal) > 256
+
+
+@pytest.mark.parametrize("mode", ["current", "auto", "history", "method"])
+def test_dense_undated_heads_preserve_ideal_ranking_without_loading_the_whole_pool(app, monkeypatch, mode):
+    """A popular subject can have hundreds of answers; final rank bounds version hydration."""
+    from scope_recall.core import lexical_index
+
+    core, ctx = app
+    records = [(f"claim-TEST-dense-{i:04d}", "alpha beta", "cat" if i % 3 else "theme", "plain") for i in range(600)]
+    _synthetic_claims(core, ctx, records)
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        conn.execute(
+            "UPDATE claim_versions SET valid_from=NULL,payload_json=json_set(payload_json,'$.valid_from',NULL) "
+            "WHERE claim_id LIKE 'claim-TEST-dense-%'"
+        )
+        for ref, *_ in records:
+            lexical_index.index_claim(conn, ref)
+    context = search(core, ctx, "alpha beta cat", mode)
+    with core.storage.read(ctx) as tx:
+        ideal = _ideal_claims(tx, context, 48, monkeypatch)
+        fetched = []
+        native = type(tx.claims).prefetch_versions
+
+        def tracked(self, refs):
+            refs = tuple(refs)
+            fetched.extend(refs)
+            return native(self, refs)
+
+        monkeypatch.setattr(type(tx.claims), "prefetch_versions", tracked)
+        actual = RetrievalStorage().claims(tx, context, limit=48)
+    assert actual == ideal
+    assert len(fetched) <= 48
+
+
+@pytest.mark.parametrize("change", ["state", "validity", "payload", "insert", "head"])
+def test_truth_edits_invalidate_rank_certificates_before_limiting(app, monkeypatch, change):
+    """A state or payload edit cannot leave a stale exact-rank shortcut hiding another answer."""
+    core, ctx = app
+    refs = ["claim-TEST-cert-a", "claim-TEST-cert-b"]
+    _synthetic_claims(core, ctx, [(refs[0], "alpha", "beta", "cat"), (refs[1], "alpha", "beta", "plain")])
+    from scope_recall.core import lexical_index
+
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for ref in refs:
+            conn.execute(
+                "UPDATE claim_versions SET valid_from=NULL,"
+                "payload_json=json_set(payload_json,'$.valid_from',NULL) WHERE claim_id=?",
+                (ref,),
+            )
+            lexical_index.index_claim(conn, ref)
+        assert conn.execute("SELECT is_simple FROM claim_lexical_heads WHERE claim_id=?", (refs[0],)).fetchone()[0] == 1
+        statements = {
+            "state": "UPDATE claim_versions SET state='proposed' WHERE claim_id=?",
+            "validity": "UPDATE claim_versions SET valid_to='2026-01-01T00:00:00Z' WHERE claim_id=?",
+            "payload": "UPDATE claim_versions SET payload_json=json_set(payload_json,'$.conditions',"
+            "json('[\"cat\"]')) WHERE claim_id=?",
+            "head": "UPDATE claims SET predicate='other' WHERE claim_id=?",
+        }
+        if change == "insert":
+            row = dict(conn.execute("SELECT * FROM claim_versions WHERE claim_id=?", (refs[0],)).fetchone())
+            row.update(revision=2, state="proposed")
+            conn.execute(
+                f"INSERT INTO claim_versions({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
+                tuple(row.values()),
+            )
+        else:
+            conn.execute(statements[change], (refs[0],))
+        assert conn.execute("SELECT is_simple FROM claim_lexical_heads WHERE claim_id=?", (refs[0],)).fetchone()[0] == 0
+    context = search(core, ctx, "alpha beta cat")
+    with core.storage.read(ctx) as tx:
+        assert RetrievalStorage().claims(tx, context, limit=1) == _ideal_claims(tx, context, 1, monkeypatch)
+
+
+def test_long_queries_retain_subject_terms_for_final_scoring(app, monkeypatch):
+    """Long queries retain the subject terms required by final scoring."""
+    core, ctx = app
+    _synthetic_claims(core, ctx, [("claim-TEST-long-query", "alpha", "beta", "plain")])
+    query = " ".join([*(f"unmatchedidentifier{i:03d}" for i in range(40)), "alpha", "beta"])
+    context = search(core, ctx, query)
+    with core.storage.read(ctx) as tx:
+        actual = RetrievalStorage().claims(tx, context, limit=6)
+        assert actual == _ideal_claims(tx, context, 6, monkeypatch)
+        assert [item.ref for item in actual] == ["claim-TEST-long-query"]
