@@ -20,6 +20,7 @@ from . import lineage
 from .claim_storage import parse_source_ref
 from .delete_storage import retraction_after
 from .management_query import MemoryFilter, source_metadata
+from .reflection_validity import reflection_live
 from .source_records import StoredSource
 from .summary_validity import is_conversation_summary, summary_live
 
@@ -281,6 +282,8 @@ class MemoryExport:
 
     def _claim_sources(self, view, version) -> list[dict] | None:
         """Resolve one revision's evidence without retaining the claim's history."""
+        if not reflection_live(view, version):
+            return None
         if is_conversation_summary(version) and not summary_live(view, version.ref, version.revision):
             return None
         pairs = lineage.evidence(view._check(), "claim", version.ref, version.revision)
@@ -370,7 +373,7 @@ class MemoryExport:
                 # Summary history contains pending and invalidated generations,
                 # not portable truth. Export only its currently valid snapshot;
                 # ordinary facts still require their full history to be visible.
-                summary = is_conversation_summary(head)
+                summary = is_conversation_summary(head) or head.payload["kind"] == "observation"
                 versions = (head,) if summary else self._claim_versions(view, ref)
                 if not all(self._claim_sources(view, version) is not None for version in versions):
                     continue

@@ -43,6 +43,7 @@ class DoctorReport:
     recall_log: dict[str, Any] = field(default_factory=dict)
     recall_attempt: dict[str, Any] = field(default_factory=dict)
     summaries: dict[str, Any] = field(default_factory=dict)
+    reflections: dict[str, Any] = field(default_factory=dict)
     capture_inbox: int = 0
     capture_inbox_blocked: int = 0
     #: Of those, rows a replay gave up after its tries (``retry-failures --apply`` returns them to it).

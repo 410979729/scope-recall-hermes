@@ -26,7 +26,7 @@ The `inspect` tool accepts `recall-request:REQUEST` within the asking session an
 `recall-diag:` reference. The management page and local commands use the installation owner's capability.
 References are checked again against current scope, project, source versions, deletion, mute, privacy and
 injection holds. A reference that fails those checks has no content or action link. Each item keeps its object kind and retrieval-channel ranks. `source_type` additionally distinguishes
-`session_summary`, `task_summary` and `adopted_decision` from ordinary claims. `summary_covered` means the
+`session_summary`, `task_summary`, `adopted_decision` and `observation` from ordinary claims. `summary_covered` means the
 summary was omitted because the final packet already displays its quotes in originals or a same-source decision;
 exploratory packet fits do not create that reason. `pending_review` distinguishes incomplete injection screening
 from `quarantine`, and overflow rows retain the original source reference, revision and retrieval channel.
@@ -206,7 +206,7 @@ files are outside that active-content receipt.
 
 ## Migration and rollback
 
-The first open of a supported older store migrates it transactionally to schema 1122. The added tables contain local
+The first open of a supported older store migrates it transactionally to schema 1123. The added tables contain local
 management action identities, actor, action, target versions, timestamp and memory epoch, content-free suppression
 constraints for records that can arrive after a restore, and private intervals that hold only target, session or
 project path, mode and UTC boundaries. Entity judgement receipts, source-screening policies, holds and resumable scan
@@ -226,3 +226,13 @@ when completed by an older executable; use the management-capable executable to 
 For management-capable snapshots, restore uses a complete suppression checkpoint, including records that inherited
 a mute. For a snapshot predating management, it prepares the original deletion-ledger format that the older
 executable understands. Both paths preserve deletions; only the complete checkpoint can release an older mute.
+
+
+## Review observations
+
+The held-content page also lists unconfirmed cross-session observations under a separate induction category.
+Use **Confirm observation** to record review, or open the fact detail to edit the body or delete it. Confirmation
+keeps the `derived_summary` basis and the original multi-session evidence. A source withdrawal still invalidates
+an observation after confirmation. Existing `memory show`, `memory revise` and deletion commands handle these
+claim references. The agent `revise` tool accepts `new_value: {"confirmed": true}` when the current owner message
+explicitly confirms the referenced observation; edits and retractions retain the same conversation authority checks.

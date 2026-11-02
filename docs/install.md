@@ -37,7 +37,8 @@ For scripts, `--models` reads a JSON object containing the existing `auxiliary` 
 and an optional `vector_threshold`. Unknown input fields are never copied to generated configuration.
 Set credentials in the process environment before starting the host; setup does not collect or log their values.
 
-Setup and doctor share one workload catalog measured with synthetic conversations through the real worker.
+Setup and doctor share one workload catalog measured with synthetic conversations through the real worker,
+including ended-session and completed-task summaries and adoption processing.
 Request token figures are estimates of message contents; chat planning also applies a floor from recorded
 server usage. The wizard asks for daily turns and a budget period, scales the expected usage to that horizon,
 then shows a variation factor and a separate allowance for simultaneous reservations. A lifetime horizon

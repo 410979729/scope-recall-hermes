@@ -110,6 +110,7 @@ def _released_event(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool
 
 
 def _released_claim(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool):
+    from .reflection_validity import reflection_live
     from .summary_validity import is_conversation_summary, summary_live
 
     versions = tx.claims.versions(ref.ref)
@@ -121,6 +122,8 @@ def _released_claim(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool
         raise ContractError("VERSION_CONFLICT")
     if item is not None and is_conversation_summary(item) and not summary_live(tx, item.ref, item.revision):
         raise ContractError("SOURCE_MISSING", "summary_dependencies")
+    if item is not None and not reflection_live(tx, item):
+        raise ContractError("SOURCE_MISSING", "observation_dependencies")
     if automatic and item is not None and item.payload.get("intention", {}).get("state") in CLOSED_INTENTION_STATES:
         raise ContractError("SOURCE_MISSING")
     return item

@@ -8,6 +8,8 @@ from ..contracts import ContractError
 from . import private
 from .injection_guard import held_state
 from .model_content import withhold_secret_items
+from .recall_trace import note_candidate
+from .reflection_validity import observation_dependencies
 from .retrieval import CandidateRef, SearchContext, SearchLimits
 from .retrieval_storage import RetrievalStorage
 from .visibility import allowed
@@ -24,10 +26,12 @@ def rejection_reason(tx, candidate, context):
         "artifact": ("artifacts", "artifact_id"),
         "reference": ("reference_bindings", "reference_id"),
     }[candidate.kind]
+    kind_column = "kind" if candidate.kind == "claim" else "NULL"
     row = (
         tx._check()
         .execute(
-            f"SELECT scope_id,project_id,branch_id,read_blocked,suppressed FROM {table} WHERE {key}=?", (candidate.ref,)
+            f"SELECT scope_id,project_id,branch_id,read_blocked,suppressed,{kind_column} FROM {table} WHERE {key}=?",
+            (candidate.ref,),
         )
         .fetchone()
     )
@@ -40,6 +44,9 @@ def rejection_reason(tx, candidate, context):
         or row[2] not in (None, trusted.branch_id)
     ):
         return "permission"
+    if row[5] == "observation":
+        # Scoped identity survives a refused body; no denied payload is hydrated for its label.
+        note_candidate(candidate, source_type="observation")
     if row[3]:
         return "deleted"
     if row[4]:
@@ -47,6 +54,21 @@ def rejection_reason(tx, candidate, context):
     state = held_state(tx, candidate.kind, candidate.ref)
     if state is not None:
         return "pending_review" if state == "pending_review" else "quarantine"
+    return _metadata_rejection(tx, candidate, context)
+
+
+def _metadata_rejection(tx, candidate, context):
+    """Explain complete observation dependencies with the ordinary source rejection interface."""
+    dependencies = (
+        observation_dependencies(tx, candidate.ref, candidate.revision) if candidate.kind == "claim" else None
+    )
+    if dependencies is not None:
+        for member in dependencies[0]:
+            reason = rejection_reason(
+                tx, CandidateRef("event", member["ref"], member["revision"], "exact_ref"), context
+            )
+            if reason != "stale":
+                return reason
     if _private_candidate(tx, candidate, context):
         return "private"
     if candidate.kind == "claim":

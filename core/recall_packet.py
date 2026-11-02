@@ -423,7 +423,7 @@ class RecallPacketCompiler:
 
     @staticmethod
     def _note_selection(verified, packet):
-        """Explain only final fitted bodies; exploratory packings cannot omit a summary."""
+        """Explain only final fitted bodies; exploratory packings cannot omit derived content."""
         selected = {(item["ref"], item["revision"]): item for item in packet["items"]}
         displayed = [
             replace(obj, content=selected[(obj.ref, obj.revision)]["content"])
@@ -434,7 +434,8 @@ class RecallPacketCompiler:
         covered = redundant_summary_keys([*displayed, *summaries])
         for candidate, obj in verified:
             if (obj.ref, obj.revision) not in selected:
-                note_candidate(candidate, "summary_covered" if candidate.key in covered else "budget", obj=obj)
+                reason = "restatement" if obj.origin == "inductive_observation" else "summary_covered"
+                note_candidate(candidate, reason if candidate.key in covered else "budget", obj=obj)
 
     def _record_extension(self, packet, extended, started, context):
         """Keep the diagnostic aligned with the bytes actually delivered."""

@@ -195,12 +195,15 @@ def _consolidation_candidates(tx, capable, now, base, params, scheduled, legacy_
     """Wake bounded source repair and ended-summary discovery through the existing model cooldown."""
     if "consolidate" not in capable:
         return []
+    from ..core.reflection_storage import next_reflection_due
     from ..core.summary_storage import next_summary_due
 
     result = []
-    summary_due = next_summary_due(tx, now=_stamp(now)) if summary_budget_enabled(auxiliary) else None
-    if summary_due is not None:
-        result.append(scheduled("consolidate", max(_utc(summary_due), now), "summary_due"))
+    if summary_budget_enabled(auxiliary):
+        for label, discover in (("summary_due", next_summary_due), ("reflection_due", next_reflection_due)):
+            due = discover(tx, now=_stamp(now))
+            if due is not None:
+                result.append(scheduled("consolidate", max(_utc(due), now), label))
     # Offset-zero failures each receive one inspection; checked sources no longer wake this repair.
     legacy = (
         tx._check()
@@ -214,6 +217,13 @@ def _consolidation_candidates(tx, capable, now, base, params, scheduled, legacy_
     if legacy is not None:
         result.append(legacy_schedule(now, "legacy_source_repair"))
     return result
+
+
+def _conflict_wakes(tx, now):
+    """Local dependency checks can progress even when no model route is authorized."""
+    from ..core.reflection_conflicts import conflict_candidates
+
+    return [(now, "observation_conflict_scan")] if conflict_candidates(tx) else []
 
 
 def next_wake(config, *, now: datetime | None = None, unavailable_until=None) -> WakePlan:
@@ -259,8 +269,8 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
     storage = SQLiteStorage(config.binding)
     with storage.read(config.context(), remaining_seconds=1.0) as tx:
         conn = tx._check()
-        source_pages = tx.candidates.pending_source_pages()
-        if source_pages:
+        candidates.extend(_conflict_wakes(tx, now))
+        if source_pages := tx.candidates.pending_source_pages():
             pending += source_pages
             if "evaluate_candidate" in capable:
                 cooldown = unavailable_until.get("evaluate_candidate", unavailable_until.get("consolidate"))

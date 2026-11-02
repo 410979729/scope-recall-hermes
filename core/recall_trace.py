@@ -50,8 +50,8 @@ class RecallTrace:
     capture: dict = field(default_factory=lambda: {"state": "not_captured", "refs": []})
 
 
-def note_candidate(candidate, reason=None, *, obj=None):
-    """Retain the last decision and all observed channel ranks for one version."""
+def note_candidate(candidate, reason=None, *, obj=None, source_type=None):
+    """Retain decisions, channel ranks and the category from scoped metadata or a hydrated object."""
     trace = CURRENT_TRACE.get()
     if trace is None or not trace.enabled:
         return
@@ -69,12 +69,16 @@ def note_candidate(candidate, reason=None, *, obj=None):
     )
     item["fusion_score"] = candidate.fusion_score
     item.setdefault("source_type", candidate.kind)
+    if source_type is not None:
+        item["source_type"] = source_type
     if obj is not None:
         item["source_type"] = {
             "grounded_session_summary": "session_summary",
             "grounded_task_summary": "task_summary",
             "owner_adopted_assistant_proposal": "adopted_decision",
         }.get(dict(obj.metadata).get("qualification_reason", ""), candidate.kind)
+        if obj.origin == "inductive_observation":
+            item["source_type"] = "observation"
     if reason is not None:
         item["reason"] = reason
 

@@ -651,6 +651,7 @@ class RuntimeInstance:
                 model_request_seconds=self.config.model_request_seconds,
                 held_work_types=frozenset(self.provider_holds),
                 summary_capable=summary_budget_enabled(self.config.auxiliary),
+                reflection_capable=summary_budget_enabled(self.config.auxiliary),
             ),
             remaining_seconds=max(0.001, deadline - time.monotonic()),
             consolidation=model,

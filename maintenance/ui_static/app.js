@@ -124,7 +124,7 @@ function renderRecalls() {
       const entry = node("div", undefined, row);
       node("p", (item.rank ? "#" + item.rank + " · " : "") + t("reason_" + item.reason), entry);
       if (item.readable) {
-        if (["session_summary", "task_summary", "adopted_decision"].includes(item.source_type)) node("p", t("source_" + item.source_type), entry);
+        if (["session_summary", "task_summary", "adopted_decision", "observation"].includes(item.source_type)) node("p", t("source_" + item.source_type), entry);
         const open = node("button", t("show") + " " + item.ref + "@" + item.revision, entry);
         open.addEventListener("click", () => run(async () => { await loadPage("browse"); await detail(item.ref); }));
         const scores = node("details", undefined, entry);
@@ -141,10 +141,15 @@ async function loadQuarantine(more) {
   if (!more) $("quarantine-items").replaceChildren();
   for (const item of data.items) {
     const row = node("article", undefined, $("quarantine-items"));
-    node("p", item.ref + " · " + item.revision + " · " + (item.category === "adoption" ? t("adoptionReview") : item.state), row);
+    node("p", item.ref + " · " + item.revision + " · " + (item.category === "adoption" ? t("adoptionReview") : item.category === "observation" ? t("observationReview") : item.state), row);
     node("pre", item.content, row);
     node("pre", JSON.stringify(item.rules, null, 2), row);
-    if (item.category !== "adoption") {
+    if (item.category === "observation") {
+      const confirm = node("button", t("confirmObservation"), row);
+      confirm.addEventListener("click", () => run(() => preview({action: "revise", ref: item.ref, expected_revision: item.revision, value: item.content})));
+      const inspect = node("button", t("claim"), row);
+      inspect.addEventListener("click", () => run(() => detail(item.ref)));
+    } else if (item.category !== "adoption") {
       const release = node("button", t("releaseQuarantine"), row);
       release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
     }
