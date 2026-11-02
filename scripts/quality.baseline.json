@@ -452,11 +452,11 @@
   },
   "core/claim_storage.py": {
    "C901": {
-    "Claims.append": 20
+    "Claims.append": 18
    },
-   "E501": 12,
+   "E501": 10,
    "PLR0912": {
-    "Claims.append": 20
+    "Claims.append": 18
    }
   },
   "core/composition.py": {
@@ -714,8 +714,7 @@
    "E501": 1,
    "PLR0915": {
     "check_storage": 62
-   },
-   "UP017": 7
+   }
   },
   "maintenance/install.py": {
    "BLE001": 1,
@@ -873,15 +872,15 @@
   },
   "runtime/scheduling.py": {
    "C901": {
-    "next_wake": 25,
+    "next_wake": 23,
     "supervise": 23
    },
    "PLR0912": {
-    "next_wake": 21,
+    "next_wake": 19,
     "supervise": 23
    },
    "PLR0915": {
-    "next_wake": 74,
+    "next_wake": 71,
     "supervise": 83
    }
   },

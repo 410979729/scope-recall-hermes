@@ -12,6 +12,7 @@ from typing import Any
 
 from ..contracts import ContractError
 from .delete_storage import OBJECT_TABLES, canonical
+from .importance import set_importance
 from .management_query import MemoryFilter, browse, partition, session_refs, source_metadata, witnesses
 from .management_revision import correct
 from .restore import InstallationMaintenance, maintenance_context
@@ -255,6 +256,24 @@ class MemoryManagement:
             "ON CONFLICT(action_id) DO NOTHING",
             (identity, action, canonical(targets), self.core.clock.utc_now(), tx.status().memory_epoch),
         )
+
+    def importance(self, ref, *, expected_revision, importance=None, pinned=None):
+        """Change fact salience through the local owner's management capability."""
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            kind, row = self._location(tx, ref)
+            if kind != "claim":
+                raise ContractError("INPUT_INVALID", "claim_required")
+            view = partition(tx, context, row["project_id"], row["branch_id"], writable=True)
+            head = view.claims.version(ref, expected_revision)
+            if head is None:
+                raise ContractError("SOURCE_MISSING", "claim")
+            set_importance(view, head, importance=importance, pinned=pinned)
+            action = "importance-" + hashlib.sha256(canonical([ref, tx.memory_epoch()]).encode()).hexdigest()
+            self._audit(
+                tx, action, "importance", [dict(ref=ref, revision=head.revision, importance=importance, pinned=pinned)]
+            )
+        return self.show(ref)
 
     def revise(self, ref, *, expected_revision, value):
         """Correct a derived claim; a null value withdraws it while keeping history."""

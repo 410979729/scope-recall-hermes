@@ -129,6 +129,7 @@
     "core/failure_retry.py",
     "core/file_lock.py",
     "core/gating.py",
+    "core/importance.py",
     "core/inbox_rules.py",
     "core/index_rebuild.py",
     "core/inspect_service.py",
@@ -175,6 +176,8 @@
     "core/storage.py",
     "core/store_upgrade.py",
     "core/subject_binding.py",
+    "core/summary_storage.py",
+    "core/summary_validity.py",
     "core/suppression.py",
     "core/trace.py",
     "core/truth_connection.py",
@@ -187,6 +190,7 @@
     "core/worker_entities.py",
     "core/worker_outcomes.py",
     "core/worker_projection.py",
+    "core/worker_summaries.py",
     "core/writer_lease.py",
     "distribution/__init__.py",
     "distribution/hermes/__init__.py",
@@ -345,7 +349,11 @@
     "prompts/support.examples.json",
     "prompts/aliases.json",
     "prompts/entity.txt",
-    "prompts/entity.examples.json"
+    "prompts/entity.examples.json",
+    "prompts/importance.txt",
+    "prompts/importance.examples.json",
+    "prompts/session_summary.txt",
+    "prompts/session_summary.examples.json"
   ],
   "forbidden_wheel_substrings": [
     ".execution/",

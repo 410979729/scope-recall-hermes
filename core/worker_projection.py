@@ -32,6 +32,7 @@ from .worker_outcomes import (
     stale_result,
     work_result,
 )
+from .worker_summaries import is_summary_job, process_summary
 
 
 class EmbedPort(Protocol):
@@ -538,9 +539,15 @@ def process_embed(
 
 
 def process_rebuild_projection(
-    storage, clock, context, item, *, started: float, budget: float, model=None
+    storage, clock, context, item, *, started: float, budget: float, model=None, summary_enabled=True
 ) -> tuple[str, str | None, str]:
     """Re-index a source or project a claim, including its source-backed entity identity."""
+    with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        summary = is_summary_job(tx, item)
+    if summary:
+        return process_summary(
+            storage, clock, context, item, model=model if summary_enabled else None, started=started, budget=budget
+        )
     if callable(getattr(model, "judge", None)):
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             entity = needs_entity_projection(tx, item)

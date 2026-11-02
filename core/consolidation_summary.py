@@ -6,6 +6,36 @@ import json
 
 from ..contracts import ContractError, validate_payload
 from .evidence_quote import resolve_fragment_summaries
+from .source_qualification import preserves_qualifiers
+
+
+def grounded_sentences(value, sources, *, originals=None):
+    """Accept extractive summary sentences only, with a source-local position for each sentence."""
+    if not isinstance(value, dict) or set(value) != {"sentences"} or not isinstance(value["sentences"], list):
+        raise ContractError("DERIVATION_INVALID", "summary_sentences")
+    if not 1 <= len(value["sentences"]) <= 32:
+        raise ContractError("DERIVATION_INVALID", "summary_capacity")
+    by_ref = {(s.ref, s.revision): s for s in sources}
+    spans, sentences, covered = [], [], set()
+    for item in value["sentences"]:
+        if not isinstance(item, dict) or set(item) != {"text", "source_ref", "source_revision"}:
+            raise ContractError("DERIVATION_INVALID", "summary_sentence")
+        key = (item["source_ref"], item["source_revision"])
+        source = by_ref.get(key)
+        text = item["text"]
+        if source is None or not isinstance(text, str) or not text.strip() or text not in source.event["content"]:
+            raise ContractError("DERIVATION_INVALID", "summary_grounding")
+        original = originals.get(key, source.event["content"]) if originals is not None else source.event["content"]
+        if not preserves_qualifiers(original, text):
+            raise ContractError("DERIVATION_INVALID", "summary_qualifiers")
+        offset = getattr(source, "consolidation_window", None)
+        start = source.event["content"].index(text) + (offset.start if offset else 0)
+        spans.append(dict(source_ref=key[0], source_revision=key[1], quote=text, start=start, end=start + len(text)))
+        sentences.append(text)
+        covered.add(key)
+    if covered != set(by_ref) or len("\n".join(sentences)) > 1536:
+        raise ContractError("DERIVATION_INVALID", "summary_incomplete")
+    return sentences, spans
 
 
 def _json(value):

@@ -138,3 +138,49 @@ recreated by automatic backfill. Existing statement bodies are preserved.
 Older stores gain an unresolved progress bit with a default value. The worker queues bounded pages through the
 existing projection lifecycle. Doctor reports completed and pending identity checks; literal recall remains
 available throughout. A missing judgement capability leaves the backfill pending.
+
+
+## Importance and ended conversations
+
+Every extracted claim can carry an importance from 1 to 5. Explicit requests to remember, corrections and health
+or safety preferences receive 5; decisions and long-term constraints receive 4; ordinary stable facts receive 3;
+short-term useful events receive 2; incidental conversation receives 1. Scoring does not grant fact authority.
+Older claims read as 3 immediately and the worker marks neutral defaults in pages of 128 without model calls.
+Pinned claims always read as 5. The owner's metadata override survives later model extraction. Importance selects
+background preferences; ordinary query ranking does not read it.
+
+The management detail page edits importance and pinning. The CLI uses
+`scope-recall memory importance <ref> --expected-revision <n> --score 4 --pin` (or `--unpin`). The existing revise
+request accepts `new_value: {"importance": 4, "pinned": false}` with current human evidence explicitly naming the
+claim and the requested metadata. These changes preserve the fact's wording and content revision.
+
+Conversation summaries are extractive claims with the derived-summary basis and sentence-level source positions.
+Each sentence retains its speaker role. Task summaries also receive the existing recovery structure and can cite
+actual tool observations; an assistant's report remains attributed to the assistant. Sources from different scopes,
+projects, branches or entries are never combined. A session closes on `records.close_session(context)` or after
+30 minutes without capture. Hosts that do not supply an end signal use the idle trigger. A task closes only when
+its existing episode state is completed; an open task never closes merely because it has been idle.
+
+Coverage is processed Unicode codepoints divided by all codepoints in the current eligible source versions. It
+measures complete input traversal, not retention of every detail. Every model page must cite each input source;
+all consecutive fragments must finish before any part can substitute for raw conversation. Pages contain at most
+16 sources and 12,000 UTF-8 bytes including instructions, and each result is at most 32 sentences and 1,536 excerpt characters, within the claim limit of 2,048 including speaker labels.
+A group exceeding 2,048 sources remains on the raw path. Historical discovery reads 128 sources per pass, visits
+64 group records per scheduling page and queues at most eight groups. Durable cursors make later groups reachable.
+
+The supervisor wakes at the idle deadline or for old-source discovery. Generation uses the existing projection
+lease and auxiliary model port, including private-mode and budget-ledger checks; no new provider is configured.
+With no model or budget, raw messages and existing facts remain usable. Doctor reports summary group states and
+pending importance defaults. Failed and incomplete summaries retain raw fallback and use the existing bounded
+work retry policy.
+
+A summary records the source versions, content hashes and related fact revisions. Hydration and final release
+recheck them, including current scope, deletion and suppression. A source withdrawal, new source version or fact
+correction blocks the previous summary immediately. Date and entry parsing, date filters and raw expansion remain
+available. The dated-conversation channel substitutes only a complete group wholly present in its filtered raw
+page; other messages remain available. Previous-conversation questions resolve to the latest visible prior session,
+then use the same channel and fallback. Portable fact exports include importance and pinning and omit stale summaries.
+
+The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
+not rewritten by the upgrade.

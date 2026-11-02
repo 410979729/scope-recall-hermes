@@ -21,6 +21,7 @@ from .claim_storage import parse_source_ref
 from .delete_storage import retraction_after
 from .management_query import MemoryFilter, source_metadata
 from .source_records import StoredSource
+from .summary_validity import is_conversation_summary, summary_live
 
 #: Identities one source page loads before their rows are materialized.
 _SOURCE_PAGE = 200
@@ -280,6 +281,8 @@ class MemoryExport:
 
     def _claim_sources(self, view, version) -> list[dict] | None:
         """Resolve one revision's evidence without retaining the claim's history."""
+        if is_conversation_summary(version) and not summary_live(view, version.ref, version.revision):
+            return None
         pairs = lineage.evidence(view._check(), "claim", version.ref, version.revision)
         if not pairs:
             return None
@@ -313,6 +316,8 @@ class MemoryExport:
     def _claim_record(version, kind: str, sources: list[dict]) -> dict:
         payload = {key: value for key, value in version.payload.items() if key != "evidence_spans"}
         return {
+            "importance": version.importance,
+            "pinned": version.pinned,
             "kind": kind,
             "ref": version.ref,
             "revision": version.revision,

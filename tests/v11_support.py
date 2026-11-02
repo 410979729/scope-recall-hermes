@@ -157,6 +157,13 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1114: {
+        "indexes": ("importance_backfill", "summary_due"),
+        "tables": ("summary_parts", "summary_groups", "summary_backfill"),
+        "columns": tuple(
+            ("claims", name) for name in ("importance", "pinned", "importance_assigned", "importance_owner")
+        ),
+    },
     1113: {
         "before": tuple(
             f"DROP TRIGGER {name}"

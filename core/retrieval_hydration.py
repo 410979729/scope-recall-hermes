@@ -28,6 +28,7 @@ from .episodes import source_origin
 from .recall_policy import applicability, in_time_window, parse_time
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, RetrievedObject, SearchContext
+from .summary_validity import is_conversation_summary, summary_live
 from .visibility import CLOSED_INTENTION_STATES, allowed, allowed_refs
 
 #: Modes in which a delivered source must still be live, not merely visible.
@@ -275,6 +276,8 @@ def _claim_content(version) -> str:
 
 
 def _claim_statement_content(version) -> str:
+    if is_conversation_summary(version):
+        return version.payload["value_text"]
     """What a reader is shown for a claim: its payload without the quoted spans.
 
     The spans are verbatim evidence, and a tool-derived claim quotes escaped
@@ -491,6 +494,8 @@ class RetrievalHydration:
         versions = tx.claims.versions(candidate.ref)
         version = next((item for item in versions if item.revision == candidate.revision), None)
         if version is None or (context.mode == "auto" and version.suppressed):
+            return None
+        if is_conversation_summary(version) and not summary_live(tx, version.ref, version.revision):
             return None
         instant = context.as_of or context.now
         effective = select_effective(versions, instant, as_of=context.mode == "as_of")

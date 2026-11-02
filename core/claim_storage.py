@@ -11,6 +11,8 @@ from . import lineage
 from .claim_normalization import PROJECT_TAG, normalize_frame
 from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
 from .delete_storage import canonical
+from .importance import record_importance
+from .summary_validity import is_conversation_summary
 from .visibility import allowed, allowed_refs
 
 if TYPE_CHECKING:
@@ -47,6 +49,8 @@ _VERSION_COLUMNS = (
     "v.replaces_revision",
     "v.conflict_revisions_json",
     "c.suppressed",
+    "c.importance",
+    "c.pinned",
 )
 #: Claims ``Claims.prefetch_versions`` loads per statement.
 _PREFETCH_PAGE = 400
@@ -77,7 +81,52 @@ def _claim_version(row) -> ClaimVersion:
         row["replaces_revision"],
         tuple(json.loads(row["conflict_revisions_json"])),
         bool(row["suppressed"]),
+        int(row["importance"]),
+        bool(row["pinned"]),
     )
+
+
+def _project_claim(tx, version, *, now, advance_head):
+    """Queue ordinary fact projections; grounded summaries already own their rebuildable representation."""
+    if not advance_head:
+        return
+    conn = tx._check(write=True)
+    if is_conversation_summary(version):
+        conn.execute("UPDATE claims SET entity_indexed=1 WHERE claim_id=?", (version.ref,))
+        conn.execute(
+            "UPDATE claim_versions SET entity_resolved=1 WHERE claim_id=? AND revision=?",
+            (version.ref, version.revision),
+        )
+        return
+    conn.execute(
+        "UPDATE summary_groups SET state='waiting' WHERE group_key IN ("
+        "SELECT DISTINCT p.group_key FROM summary_parts p JOIN evidence_links s ON s.object_kind='claim' "
+        "AND s.object_ref=p.claim_ref AND s.object_revision=p.claim_revision JOIN evidence_links f "
+        "ON f.source_ref=s.source_ref AND f.source_revision=s.source_revision "
+        "WHERE f.object_kind='claim' AND f.object_ref=?)",
+        (version.ref,),
+    )
+    context = (version.ref, version.revision, version.scope_id, version.project_id, version.branch_id, now)
+    if version.state != "proposed":
+        # A vector already attempted may have landed; its acknowledgement remains useful after a revision.
+        conn.execute(
+            "UPDATE work_items SET state='obsolete' WHERE subject_ref=? AND state IN ('pending','leased') "
+            "AND NOT (work_type='embed' AND lease_token>0)",
+            (version.ref,),
+        )
+        conn.execute(
+            "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) "
+            "VALUES ('rebuild_projection',?,?,?,?,?,?)",
+            context,
+        )
+    conn.execute(
+        "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) "
+        "VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING",
+        context,
+    )
+    from .entity_names import index_claim
+
+    index_claim(tx, version)
 
 
 class Claims:
@@ -669,6 +718,7 @@ class Claims:
                     slot_key,
                 ),
             )
+        record_importance(self._tx, ref, proposal, advance_head=advance_head)
         if previous and advance_head:
             conn.execute(
                 "UPDATE claim_versions SET recorded_to=? WHERE claim_id=? AND revision=?",
@@ -680,7 +730,7 @@ class Claims:
             (
                 ref,
                 revision,
-                canonical(proposal),
+                canonical({key: value for key, value in proposal.items() if key != "importance"}),
                 qualification.state,
                 qualification.basis,
                 qualification.reason,
@@ -736,34 +786,8 @@ class Claims:
                     raise ContractError("ACCESS_DENIED", "evidence_scope")
                 lineage.link(conn, "claim", ref, revision, *key, relation=relation)
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
-        if advance_head and qualification.state != "proposed":
-            # The old revision's work is moot, except an embed that has held a lease: its vector may have landed
-            # already, and it completes against its own revision, which stays readable, as one done a moment earlier
-            # would have.  That includes one sent back to wait after it wrote (a dependency or its deadline moved).
-            # Made obsolete, it would leave a point in the store no ledger expected.
-            conn.execute(
-                """UPDATE work_items SET state='obsolete' WHERE subject_ref=? AND state IN ('pending','leased')
-                            AND NOT (work_type='embed' AND lease_token>0)""",
-                (ref,),
-            )
-            conn.execute(
-                "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) VALUES ('rebuild_projection',?,?,?,?,?,?)",
-                (ref, revision, scope_id, ctx.project_id, ctx.branch_id, recorded),
-            )
-        # Every head, promoted or not, is queued for the vector index. Proposals
-        # are admitted to recall labelled, and search cannot surface what it has
-        # no vector for: the lexical, vector and recent channels all yield
-        # events, leaving relation expansion as a claim's only other route in.
-        if advance_head:
-            conn.execute(
-                """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
-                   VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""",
-                (ref, revision, scope_id, ctx.project_id, ctx.branch_id, recorded),
-            )
         version = next(v for v in self.versions(ref) if v.revision == revision)
-        from .entity_names import index_claim
-
-        index_claim(self._tx, version)
+        _project_claim(self._tx, version, now=recorded, advance_head=advance_head)
         return version
 
     def require_target(self, version: ClaimVersion) -> None:

@@ -1009,6 +1009,8 @@ class RetrievalPipeline:
         """
         scope = None
         try:
+            from .summary_storage import previous_conversation_scope
+
             if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
                 entries = getattr(getattr(tx, "registry", None), "entries", None)
                 names = (
@@ -1019,6 +1021,8 @@ class RetrievalPipeline:
                 scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
                 if scope is not None and not asks_what_was_said(scope.rest):
                     scope = None
+            if scope is None:
+                scope = previous_conversation_scope(tx, working.query, now=working.now)
         except Exception as exc:
             gaps.append(f"scope_unreadable:{type(exc).__name__}")
             scope = None

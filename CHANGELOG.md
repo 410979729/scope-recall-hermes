@@ -4,6 +4,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Fact extraction records importance from 1 to 5, with owner edits and pinning in management, the CLI and revise. Background preferences use salience without changing ordinary query ranking. Ended sessions and completed tasks gain grounded, version-checked summaries through the existing worker and model budget; dated and previous-conversation questions retain raw fallback for incomplete, failed or invalidated summaries. Existing stores receive additive metadata and bounded background backfill.
+
 Auxiliary model budgets maintain incremental calendar-window, lifetime and per-model totals beside request details. Reservations and settlements update both atomically; indexed meter-breach checks and serialized local writers keep accounting independent of ledger history. Existing ledgers reconcile their counters on first writable use, including changes made by older code. Budget inspection remains read-only.
 
 Local memory imports preview external files and conversation exports before an exact owner-approved write. Parsed user messages retain verified imported origin; assistant memories and third-party summaries stay unconfirmed material. Imports preserve source times, deduplicate repeated versions, honor inline private spans and private-mode rules, and release the writer between occurrences. Doctor exposes content-free import progress and interrupted passes can be repeated safely. Hermes mirrors native memory writes with the host-reported writer without granting owner authority. No storage migration or new dependency is required.

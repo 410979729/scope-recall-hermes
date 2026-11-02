@@ -14,6 +14,7 @@ from .candidate_lifecycle import CandidateSourceTrigger
 from .events import prepare_capture
 from .source_records import SourceWrite
 from .storage import SQLiteStorage
+from .summary_storage import note_source
 from .truth_connection import TruthDatabaseConnectionError
 from .writer_lease import TruthWriterBusyError
 
@@ -77,6 +78,7 @@ def _store_events(tx, clock: CaptureClock, prepared, scope_id: str, admission_po
             for kind in sorted(decision.work_types):
                 tx.sources.enqueue_source(source.ref, source.revision, work_type=kind, available_at=clock.utc_now())
             tx.episodes.attach(tx.source(source.ref, source.revision), clock.utc_now())
+            note_source(tx, tx.source(source.ref, source.revision), now=clock.utc_now())
         marker = decision_marker(tx, source.ref, source.revision)
         if marker is not None:
             admission_markers.append(marker)

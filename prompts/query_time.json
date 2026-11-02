@@ -263,5 +263,9 @@
         "flags": 34
       }
     ]
-  ]
+  ],
+  "previous_conversation": {
+    "pattern": "(?:上次(?:聊|说)到哪(?:里|儿)?(?:了)?|where (?:did we leave off|were we)|what did we discuss last time)[?？。.!！]*",
+    "flags": 2
+  }
 }

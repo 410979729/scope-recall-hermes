@@ -112,7 +112,9 @@ def consolidation_messages(
             )
             record["prior_fragment_goals"] = getattr(source, "consolidation_seed", ())
     schema = model_consolidation_schema(candidate_kind=candidate_kind)
-    system = prompt_text("consolidation").format(schema=json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+    system = prompt_text("importance") + prompt_text("consolidation").format(
+        schema=json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    )
     if chunked:
         system += prompt_text("fragment")
     if validation_feedback is not None:
