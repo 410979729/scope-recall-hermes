@@ -28,6 +28,7 @@ from .evidence_support import using_support
 from .failure_policy import failure_category
 from .semantic_proposals import prepare_publication
 from .source_records import StoredSource
+from .worker_adoption import prepare_adoptions
 from .worker_outcomes import (
     Outcome,
     budget_left,
@@ -496,6 +497,7 @@ def process_consolidate(
         return refused
     assert model is not None
     roots, batch, pending_sources, chunk = read.roots, read.batch, read.pending_sources, None
+    adoptions = ()
     try:
         if _needs_chunk(roots, episode_ref, feedback, read.offset):
             page, chunk = source_chunk(
@@ -511,6 +513,15 @@ def process_consolidate(
         if private.outbound_blocked(storage, clock, context, sources=roots):
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
         with private.using_outbound_check(lambda: private.outbound_blocked(storage, clock, context, sources=roots)):
+            if chunk is None:
+                adoptions = prepare_adoptions(
+                    storage,
+                    context,
+                    roots,
+                    getattr(model, "judge", None),
+                    clock=clock,
+                    remaining_seconds=budget_left(started, clock, budget),
+                )
             raw = model.propose(
                 roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair
             )
@@ -524,6 +535,13 @@ def process_consolidate(
     try:
         rejected_evidence: list[str] = []
         value = decode_consolidation_result(raw, roots, rejected_evidence=rejected_evidence, episode_ref=episode_ref)
+        adopted_refs = {a.snapshot.confirmation.ref for a in adoptions}
+        if adopted_refs:
+            value["claim_proposals"] = [
+                p
+                for p in value["claim_proposals"]
+                if p["kind"] != "decision" or not any(s["source_ref"] in adopted_refs for s in p["evidence_spans"])
+            ]
         verdicts = prepare_publication(
             storage,
             context,
@@ -557,6 +575,7 @@ def process_consolidate(
         pending_sources=pending_sources,
         chunk=chunk,
         rejected_claims=tuple(rejected_evidence),
+        adoptions=adoptions,
     )
     try:
         with using_support(verdicts):

@@ -18,6 +18,7 @@ from .failure_retry import validation_feedback as safe_feedback
 from .language_resources import model_consolidation_schema, prompt_text
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
 from .secret_patterns import cut_between_runs
+from .worker_adoption import publish_adoptions
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ class ConsolidationWorkFence:
     pending_sources: tuple[tuple[str, int, int], ...] = ()
     chunk: ConsolidationChunk | None = None
     rejected_claims: tuple[str, ...] = ()
+    adoptions: tuple = ()
 
 
 def _model_source_principal(source) -> dict[str, str] | None:
@@ -397,6 +399,7 @@ def accept_consolidation(
         if work_fence is not None and work_fence.chunk is not None:
             result = stage_fragment(tx, result, work_fence, now, dropped=dropped)
 
+        items.extend(publish_adoptions(tx, getattr(work_fence, "adoptions", ()), now=now))
         for proposal in result["reference_proposals"]:
             item = apply_summary(tx, work_fence, "reference", proposal, scope_id, now)
             if item is not None:

@@ -157,6 +157,7 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1119: {"tables": ("adoption_relations",)},
     1118: {
         "before": (
             "DROP TRIGGER claim_lexical_insert",

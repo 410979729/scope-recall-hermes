@@ -141,8 +141,8 @@ def test_each_published_format_preserves_truth_and_finishes_fact_nomination(app,
     with core.storage.read(ctx) as tx:
         conn = tx._check()
         assert _truth_hash(conn) == original
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1118
-        assert conn.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == 1118
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert conn.execute("SELECT schema_version FROM instance_meta").fetchone()[0] == SCHEMA_VERSION
         assert not lexical_index.claim_backfill_pending(conn)
         assert conn.execute("SELECT count(DISTINCT claim_id) FROM claim_lexical_postings").fetchone()[0] == 3
         assert conn.execute("SELECT count(*) FROM injection_rules").fetchone()[0] >= 10
@@ -153,9 +153,9 @@ def test_each_published_format_preserves_truth_and_finishes_fact_nomination(app,
                 actual = RetrievalStorage().claims(tx, context, limit=1)
                 assert actual == _ideal_claims(tx, context, 1, monkeypatch)
                 assert actual
-    assert tuple(SCHEMA_MIGRATIONS) == tuple(range(1105, 1118))
+    assert tuple(SCHEMA_MIGRATIONS) == tuple(range(1105, SCHEMA_VERSION))
     assert all(step.__name__ == f"upgrade_{v}" for v, step in SCHEMA_MIGRATIONS.items())
-    assert SOURCE_SCHEMAS == frozenset(range(1109, 1119))
+    assert SOURCE_SCHEMAS == frozenset(range(1109, SCHEMA_VERSION + 1))
 
 
 def _truth_hash(conn):

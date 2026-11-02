@@ -103,11 +103,13 @@ async function loadQuarantine(more) {
   if (!more) $("quarantine-items").replaceChildren();
   for (const item of data.items) {
     const row = node("article", undefined, $("quarantine-items"));
-    node("p", item.ref + " · " + item.revision + " · " + item.state, row);
+    node("p", item.ref + " · " + item.revision + " · " + (item.category === "adoption" ? t("adoptionReview") : item.state), row);
     node("pre", item.content, row);
     node("pre", JSON.stringify(item.rules, null, 2), row);
-    const release = node("button", t("releaseQuarantine"), row);
-    release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
+    if (item.category !== "adoption") {
+      const release = node("button", t("releaseQuarantine"), row);
+      release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
+    }
     const remove = node("button", t("forget"), row);
     remove.addEventListener("click", () => run(() => preview({action: "forget", ref: item.ref, expected_revision: item.revision})));
   }
