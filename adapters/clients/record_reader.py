@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import ContractError
+from scope_recall.core.private import parse_recording_command
 
 from ..host_profiles import HOSTS
 from . import transcript
@@ -72,7 +73,8 @@ def _without_command_records(lines):
             None
             if entry is not None
             and entry.role == "user"
-            and entry.text.strip() in {"scope-recall pause", "scope-recall resume"}
+            and not entry.private_spans_removed
+            and parse_recording_command(entry.text)
             else entry,
         )
         for end, entry in lines

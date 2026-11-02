@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 const [pluginPath, configJson, scenario = 'turn'] = process.argv.slice(2)
-const config = JSON.parse(configJson)
+const config = JSON.parse(configJson.startsWith('@') ? readFileSync(configJson.slice(1), 'utf8') : configJson)
 const listeners = {}
 const effects = []
 const warnings = []

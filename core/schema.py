@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1125
+SCHEMA_VERSION = 1126
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -72,6 +72,17 @@ PRIVATE_INTERVALS_STATEMENT = """CREATE TABLE private_intervals (
     ),
     CHECK(ends_at IS NULL OR starts_at <= ends_at)
 ) STRICT"""
+
+# The latest accepted remote owner command fences replay per entry and session.
+# Its timestamp and random identifier are metadata, never conversation text.
+PRIVATE_COMMAND_FENCES_STATEMENT = """CREATE TABLE private_command_fences (
+    entry_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(entry_id,session_id)
+) STRICT, WITHOUT ROWID"""
+
 PRIVATE_TARGET_INDEX = (
     "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at,starts_at)"
 )
@@ -718,6 +729,7 @@ STATEMENTS = (
     + INJECTION_SEEDS
     + (
         RESTORED_SUPPRESSION_STATEMENT,
+        PRIVATE_COMMAND_FENCES_STATEMENT,
         """CREATE TABLE scope_memory_instructions (
         scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
         version INTEGER NOT NULL CHECK(version >= 1),
@@ -1125,3 +1137,10 @@ def upgrade_1124(connection):
     connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_memory_instructions")))
     connection.execute("UPDATE instance_meta SET schema_version=1125 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1125")
+
+
+def upgrade_1125(connection):
+    """Add the atomic remote owner-command replay fence."""
+    connection.execute(PRIVATE_COMMAND_FENCES_STATEMENT)
+    connection.execute("UPDATE instance_meta SET schema_version=1126 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1126")

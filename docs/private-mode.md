@@ -12,9 +12,12 @@ this control.
 The pause and resume shortcuts work on Codex, Claude Code, WorkBuddy and dsh
 prompt hooks, including their remote entries, and on the Hermes CLI. A remote
 command is sent immediately and is never queued for later replay; when the
-entry is unavailable, its state does not change. The session's rule is
-independent of a project or global rule; resuming the session does not close
-those broader rules.
+entry is unavailable, its state does not change. The entry token authenticates
+the client, not the person at its keyboard: a remote command trusts that
+client machine's hook to identify the owner's direct input. The server checks
+the source fields again and rejects repeated or older command identifiers and
+timestamps for the entry and session. The session's rule is independent of a
+project or global rule; resuming the session does not close those broader rules.
 
 The owner may also set an extraction instruction for each scope. The management
 page shows its history, and these commands read or add a version:

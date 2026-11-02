@@ -167,6 +167,13 @@ class TurnCapture:
                 self.reset_source_refs()
             self._adapter._active_turn_id = ordinal_turn_id
         session_id = self._adapter._effective_session_id(str(kwargs.get("session_id") or ""))
+        pending = self._adapter._pending_private_receipt
+        stored_session = self._adapter._require_identity().stored_session_id(session_id)
+        if pending is not None and pending[0] == stored_session:
+            removed = self._adapter._private_span_receipts.pop(pending, 0)
+            if removed:
+                self._adapter._private_span_receipts[(stored_session, self._adapter._active_turn_id)] = removed
+            self._adapter._pending_private_receipt = None
         if type(message) is str and message:
             self._adapter._current_task_message = without_private(message)[0][:8192]
         self._adapter._outcomes.open_turn(session_id, self._adapter._active_turn_id)
@@ -196,12 +203,11 @@ class TurnCapture:
         if (
             direct_owner_cli(identity)
             and context.actor_origin == "human_direct"
-            and type(current_message) is str
-            and current_message.strip() in {"scope-recall pause", "scope-recall resume"}
+            and private.parse_recording_command(current_message)
             and kwargs.get("attachments") in (None, [])
         ):
             core = self._adapter._require_core()
-            if current_message.strip().endswith("pause"):
+            if private.parse_recording_command(current_message) == "pause":
                 private.open_interval(core.storage, core.clock, context, target="session", session=context.session_id)
             else:
                 private.close_interval(core.storage, core.clock, context, target="session", session=context.session_id)
@@ -225,6 +231,8 @@ class TurnCapture:
             gaps=gaps,
             scope_id=identity.local_scope_id,
         )
+        if receipt is not None and any(gap.startswith("private_spans_removed:") for gap in receipt.gaps):
+            self._adapter._pending_private_receipt = (context.session_id, self._adapter._active_turn_id)
         if receipt is not None and receipt.durability in ("persisted", "queued"):
             self._adapter._user_captured_turns.pop(turn_id, None)
             self._adapter._user_captured_turns[turn_id] = None

@@ -431,3 +431,74 @@ def test_relayed_cli_route_cannot_toggle_owner_recording(adapter, monkeypatch):
     )
     provider.observe_pre_llm(session_id=bound.session_id, turn_id="TEST-relay", user_message="scope-recall pause")
     assert not opened
+
+
+@pytest.mark.parametrize("kind", ["stored", "queued", "empty"])
+def test_inline_omission_count_reaches_prefetch_receipt(adapter, monkeypatch, kind):
+    from scope_recall.core.capture import CaptureReceipt
+
+    provider, _clock = adapter
+    original = provider._writer._store
+    outcomes = []
+
+    def store(*args, **kwargs):
+        outcome = (
+            CaptureReceipt("inserted", (), "queued", "pending", "pending", gaps=("private_spans_removed:1",))
+            if kind == "queued"
+            else original(*args, **kwargs)
+        )
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(provider._writer, "_store", store)
+    message = "<private>TEST hidden</private>" if kind == "empty" else "TEST public <private>TEST hidden</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-notice", user_message=message)
+    assert (
+        outcomes
+        and outcomes[0].durability == {"stored": "persisted", "queued": "queued", "empty": "not_persisted"}[kind]
+    )
+    if kind == "empty":
+        assert outcomes[0].disposition == "rejected"
+    text = provider.prefetch(message, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in text
+    assert "TEST hidden" not in text
+
+
+def test_inline_receipt_survives_tool_diagnostics_and_repeated_input(adapter):
+    provider, _clock = adapter
+    message = "TEST public <private>TEST hidden</private>"
+    for _ in range(2):
+        provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn", user_message=message)
+    provider.observe_post_tool_call(
+        session_id="TEST-session-1",
+        turn_id="TEST-turn",
+        tool_call_id="TEST-tool",
+        tool_name="TEST-tool",
+        result="TEST output",
+    )
+    text = provider.prefetch(message, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in text and "private_spans_removed:2" not in text
+
+
+def test_inline_receipt_survives_turn_start_without_supplied_turn_id(adapter):
+    provider, _clock = adapter
+    message = "TEST public <private>TEST hidden</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=message)
+    provider.on_turn_start(1, message, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in provider.prefetch(message, session_id="TEST-session-1")
+
+
+def test_inline_receipts_follow_their_own_turns_without_turn_ids(adapter):
+    provider, _clock = adapter
+    first = "TEST one <private>TEST hidden one</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=first)
+    provider.on_turn_start(1, first, session_id="TEST-session-1")
+    assert "private_spans_removed:1" in provider.prefetch(first, session_id="TEST-session-1")
+    second = "TEST two <private>TEST hidden two</private> <private>TEST hidden three</private>"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=second)
+    provider.on_turn_start(2, second, session_id="TEST-session-1")
+    assert "private_spans_removed:2" in provider.prefetch(second, session_id="TEST-session-1")
+    third = "TEST ordinary next turn"
+    provider.observe_pre_llm(session_id="TEST-session-1", user_message=third)
+    provider.on_turn_start(3, third, session_id="TEST-session-1")
+    assert "private_spans_removed:" not in provider.prefetch(third, session_id="TEST-session-1")

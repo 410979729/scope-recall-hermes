@@ -8,6 +8,7 @@ from typing import Any
 
 from scope_recall.contracts import ContractError, SourceEvent, utc_timestamp
 from scope_recall.core.capture_filters import without_private
+from scope_recall.core.private import parse_recording_command
 
 from ..host_profiles import (
     HOSTS,
@@ -50,8 +51,12 @@ def filter_capture_reply(payload: dict[str, Any]) -> dict[str, Any] | None:
     text = payload.get("text")
     if not isinstance(text, str):
         return {}
+    command = parse_recording_command(text)
     visible, count = without_private(without_lone_surrogates(text))
-    return {"text": visible, "private_spans_removed": count}
+    result = {"text": visible, "private_spans_removed": count}
+    if command:
+        result["command"] = command
+    return result
 
 
 def host_source_key(

@@ -4,6 +4,9 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Remote recording commands now retain their source metadata and reject replay in the same transaction as the session rule.
+Hermes reports inline private omissions through its prefetch receipt.
+
 Scope owners can version per-scope extraction instructions from management; instructions only narrow later extraction.
 Recording can be paused or resumed for the current session with direct owner commands, and capture receipts count removed inline private spans.
 

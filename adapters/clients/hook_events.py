@@ -127,32 +127,49 @@ class HookEvents:
         )
         return {}
 
+    def _recording_command(self, session_id, audience, payload):
+        """Apply only a source-attested complete command and return its receipt."""
+        command = private.parse_recording_command(payload.get("prompt"))
+        eligible = not self._hook.remote_paths or payload.get("scope_recall_direct_command") is True
+        if command and self._hook.remote_paths and not eligible and not _inline_gaps(payload):
+            return command_block(self._hook.host, "Scope Recall remote command unavailable.")
+        if self._hook.host == "dsh" and payload.get("scope_recall_command_eligible") is False:
+            eligible = False
+        if command and eligible and payload.get("attachments") in (None, []):
+            context = self._hook.context(audience, session_id, "human_direct")
+            if self._hook.remote_paths:
+                private.apply_remote_command(
+                    self._hook.core.storage,
+                    self._hook.core.clock,
+                    context,
+                    command=command,
+                    command_id=payload.get("scope_recall_command_id"),
+                    observed_at=payload.get("scope_recall_command_observed_at"),
+                )
+            elif command == "pause":
+                private.open_interval(
+                    self._hook.core.storage,
+                    self._hook.core.clock,
+                    context,
+                    target="session",
+                    session=context.session_id,
+                )
+            else:
+                private.close_interval(
+                    self._hook.core.storage,
+                    self._hook.core.clock,
+                    context,
+                    target="session",
+                    session=context.session_id,
+                )
+            mode = self._hook.core.private_mode(context) or "none"
+            return command_block(self._hook.host, f"Scope Recall recording mode: {mode}.")
+        return None
+
     def prompt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        prompt = payload.get("prompt")
-        if self._hook.host in {"codex", "claude-code", "workbuddy", "dsh"} and type(prompt) is str:
-            command = prompt.strip()
-            if command in {"scope-recall pause", "scope-recall resume"} and payload.get("attachments") in (None, []):
-                if self._hook.remote_paths and payload.get("scope_recall_direct_command") is not True:
-                    return command_block(self._hook.host, "Scope Recall remote command unavailable.")
-                context = self._hook.context(audience, session_id, "human_direct")
-                if command.endswith("pause"):
-                    private.open_interval(
-                        self._hook.core.storage,
-                        self._hook.core.clock,
-                        context,
-                        target="session",
-                        session=context.session_id,
-                    )
-                else:
-                    private.close_interval(
-                        self._hook.core.storage,
-                        self._hook.core.clock,
-                        context,
-                        target="session",
-                        session=context.session_id,
-                    )
-                mode = self._hook.core.private_mode(context) or "none"
-                return command_block(self._hook.host, f"Scope Recall recording mode: {mode}.")
+        command_result = self._recording_command(session_id, audience, payload)
+        if command_result is not None:
+            return command_result
         taken = self._prompt_turn(session_id, payload)
         if taken is None:
             return {}

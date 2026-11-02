@@ -55,11 +55,12 @@ from typing import Any, cast
 
 from scope_recall.core.capture_filters import without_private
 from scope_recall.core.file_lock import advisory_file_lock
-from scope_recall.core.private import normalize_project_path, notice_for_mode
+from scope_recall.core.private import normalize_project_path, notice_for_mode, parse_recording_command
 
 from ...contracts import ContractError
 from ...runtime.remote_clock import event_times as _private_times
 from ...runtime.remote_clock import private_metadata
+from ..host_profiles import agent_run
 from . import transcript
 from .boundary import (
     EMPTY_ANSWER,
@@ -205,7 +206,7 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
             _connection_failed(config, event, exc)
             return None
         connection.sock.settimeout(max(0.2, until - time.monotonic()))
-        if _private_rules(config) and not direct_owner_command(body):
+        if _private_rules(config) and not direct_owner_command(body, config["host"]):
             state = _private_check(config, body, until - time.monotonic())
             if state is None:
                 return None
@@ -243,29 +244,32 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
     return answer if isinstance(answer, dict) else None
 
 
-def direct_owner_command(body: dict[str, Any]) -> bool:
-    """Recognize a fresh content-free command envelope, never an ordinary spool or record."""
+def owner_prompt(host: str, payload: dict[str, Any]) -> bool:
+    """Accept a host-attested direct user prompt, retaining every source field."""
+    if payload.get("hook_event_name") != "UserPromptSubmit" or agent_run(host, payload):
+        return False
+    if payload.get("attachments") not in (None, []) or payload.get("record") is not None:
+        return False
+    if host == "dsh" and payload.get("scope_recall_command_eligible") is False:
+        return False
+    role = payload.get("role")
+    origin = payload.get("origin")
+    source = payload.get("source")
+    if isinstance(source, dict):
+        source = source.get("kind")
+    return role in (None, "user") and origin in (None, "human_direct") and source in (None, "user", "human_direct")
+
+
+def direct_owner_command(body: dict[str, Any], host: str) -> bool:
+    """Check the entire fresh owner-command envelope before accepting it."""
     payload = body.get("payload")
     return bool(
         isinstance(payload, dict)
         and body.get("direct_owner_command") is True
         and body.get("fresh_observation") is True
         and "record" not in body
-        and "record" not in payload
-        and payload.get("hook_event_name") == "UserPromptSubmit"
-        and type(payload.get("prompt")) is str
-        and payload["prompt"].strip() in {"scope-recall pause", "scope-recall resume"}
-        and set(payload)
-        <= {
-            "hook_event_name",
-            "session_id",
-            "turn_id",
-            "prompt_id",
-            "generation_id",
-            "cwd",
-            "project_unverified",
-            "prompt",
-        }
+        and owner_prompt(host, payload)
+        and parse_recording_command(payload.get("prompt"))
     )
 
 
@@ -735,25 +739,26 @@ def _visible_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _hook_input(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+def _hook_input(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, Any] | None]:
     """Decode one event and resolve local text filtering before any transport access."""
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError):
-        return None, {}
+        return None, {}, None
     if not isinstance(payload, dict):
-        return None, {}
+        return None, {}, None
+    original = payload
     # JavaScript can emit lone surrogates; replacement keeps JSON text valid UTF-8.
     payload = cast(dict[str, Any], without_lone_surrogates(payload))
     filtered = filter_capture_reply(payload)
     if filtered is not None:
-        return None, filtered
-    return _visible_payload(payload), {}
+        return None, filtered, None
+    return _visible_payload(payload), {}, original
 
 
 def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
     started = time.monotonic() if started is None else started
-    payload, local = _hook_input(raw)
+    payload, local, original = _hook_input(raw)
     if payload is None:
         return local
     event = payload.get("hook_event_name")
@@ -777,28 +782,14 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     if host == "claude-code" and event == "UserPromptSubmit":
         payload = _with_context_since(payload)
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
-    direct_command = (
-        event == "UserPromptSubmit"
-        and type(payload.get("prompt")) is str
-        and payload["prompt"].strip() in {"scope-recall pause", "scope-recall resume"}
-        and payload.get("attachments") in (None, [])
-    )
+    direct_command = bool(original and owner_prompt(host, original) and parse_recording_command(original.get("prompt")))
     if direct_command:
-        allowed = {
-            "hook_event_name",
-            "session_id",
-            "turn_id",
-            "prompt_id",
-            "generation_id",
-            "cwd",
-            "project_unverified",
-            "prompt",
-        }
         body = {
-            "payload": {key: value for key, value in payload.items() if key in allowed},
+            "payload": payload,
             "observed_at": observed_at,
             "fresh_observation": True,
             "direct_owner_command": True,
+            "command_id": secrets.token_hex(16),
         }
     cursor = None
     record_page = None

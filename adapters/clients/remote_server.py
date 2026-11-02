@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..._version import __version__
+from ...contracts import ContractError
 from ...core.private import calibrated_event_time
 from ...runtime.remote_clock import private_metadata
 from ...runtime.worker_entry import host_process_credential_environment
@@ -380,6 +381,45 @@ def private_check(config: RemoteServerConfig, body: dict[str, Any]) -> dict[str,
     return {**result, "clock": clock}
 
 
+def _command_payload(config, body):
+    """Validate command provenance and freshness before stripping client-only paths."""
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        raise RemoteServerError("payload must be the hook's object")
+    # Half of a broken emoji (a lone surrogate) is stored as U+FFFD, as a hook here stores it; it would fail the size
+    # check below, and the client would be told to keep the request for good.
+    payload = without_lone_surrogates(payload)
+    direct_command = direct_owner_command({**body, "payload": payload}, config.host)
+    if body.get("direct_owner_command") is True and not direct_command:
+        raise RemoteServerError("invalid command source")
+    if direct_command:
+        observed = _observed_at(body.get("observed_at"))
+        if observed is None or abs((_now() - observed).total_seconds()) > 60:
+            raise RemoteServerError("command observation expired")
+        command_id = body.get("command_id")
+        if type(command_id) is not str or not command_id.strip() or len(command_id) > 128:
+            raise RemoteServerError("invalid command id")
+        payload["scope_recall_direct_command"] = True
+        payload["scope_recall_command_id"] = command_id
+        payload["scope_recall_command_observed_at"] = body["observed_at"]
+        body = {**body, "payload": payload}
+    else:
+        payload.pop("scope_recall_direct_command", None)
+    return payload, body, direct_command
+
+
+def _handle_command_errors(handler, payload, record, body, direct_command):
+    """Translate an atomically refused replay into the remote request error."""
+    try:
+        return handler.handle_payload(
+            payload, record=record, local_record=False, error_reply=body.get("error_reply") is True
+        )
+    except ContractError as exc:
+        if direct_command and exc.field == "command_replay":
+            raise RemoteServerError("command replay") from exc
+        raise
+
+
 def handle_request(
     config: RemoteServerConfig,
     body: dict[str, Any],
@@ -391,36 +431,12 @@ def handle_request(
     asked of ``recaller`` (the server's ``local_endpoint.KeptRecaller``), whose vector store and embedding worker
     stay open between prompts, while this request's handler stores the prompt and recalls itself only if that has
     not answered in time (``handler._resident_answer``)."""
-    payload = body.get("payload")
-    if not isinstance(payload, dict):
-        raise RemoteServerError("payload must be the hook's object")
-    # Half of a broken emoji (a lone surrogate) is stored as U+FFFD, as a hook here stores it; it would fail the size
-    # check below, and the client would be told to keep the request for good.
-    payload = without_lone_surrogates(payload)
-    direct_command = direct_owner_command({**body, "payload": payload})
-    if direct_command:
-        observed = _observed_at(body.get("observed_at"))
-        if observed is None or abs((_now() - observed).total_seconds()) > 60:
-            raise RemoteServerError("command observation expired")
-        allowed = {
-            "hook_event_name",
-            "session_id",
-            "turn_id",
-            "prompt_id",
-            "generation_id",
-            "cwd",
-            "project_unverified",
-            "prompt",
-        }
-        payload = {key: value for key, value in payload.items() if key in allowed}
-        payload["scope_recall_direct_command"] = True
-        body = {"payload": payload, "observed_at": body["observed_at"], "fresh_observation": True}
-    else:
-        payload.pop("scope_recall_direct_command", None)
+    payload, body, direct_command = _command_payload(config, body)
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise RemoteServerError("payload too large")
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
-    payload = {key: value for key, value in payload.items() if key != "transcript_path"}
+    if not direct_command:
+        payload = {key: value for key, value in payload.items() if key != "transcript_path"}
     if direct_command:
         checked = private_check(
             config, dict(session_id=payload.get("session_id"), project=payload.get("cwd"), times=[])
@@ -457,9 +473,7 @@ def handle_request(
     if recaller is not None and payload.get("hook_event_name") == "UserPromptSubmit":
         asked = handler.resident_recall = _Asked(recaller)
     try:
-        result = handler.handle_payload(
-            payload, record=record, local_record=False, error_reply=body.get("error_reply") is True
-        )
+        result = _handle_command_errors(handler, payload, record, body, direct_command)
     finally:
         closing = time.monotonic()
         handler.close()

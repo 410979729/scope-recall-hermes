@@ -122,3 +122,28 @@ def test_policy_upgrade_keeps_observation_dependencies_and_rolls_back(app, monke
         assert tx.claims.version(old.ref, old.revision).payload == old.payload
         assert [tuple(row) for row in tx._check().execute("SELECT * FROM observations")] == history
         assert not tx._check().execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_command_fence_upgrade_and_interrupted_rollback(app, monkeypatch):
+    import pytest
+    from scope_recall.core import storage
+
+    core, ctx = app
+    downgrade_store(core.storage.path, 1125)
+    migrate = storage.SCHEMA_MIGRATIONS[1125]
+
+    def interrupted(db):
+        migrate(db)
+        raise RuntimeError("TEST interrupted command fence")
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1125, interrupted)
+    with pytest.raises(RuntimeError, match="TEST interrupted"):
+        core.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1125
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='private_command_fences'").fetchone()
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1125, migrate)
+    core.initialize()
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("PRAGMA user_version").fetchone()[0] == 1126
+        assert tx._check().execute("SELECT count(*) FROM private_command_fences").fetchone()[0] == 0

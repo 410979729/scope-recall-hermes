@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from scope_recall.contracts import RecallRequest, TrustedContext
 from scope_recall.core.capture_filters import without_private
-from scope_recall.core.private import notice_for_mode
+from scope_recall.core.private import notice_for_mode, parse_recording_command
 from scope_recall.core.recall_trace import record_refusal, record_unbound_attempt
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 
@@ -37,6 +37,7 @@ class Prefetch:
         timed out can run 30-50 s).  Nothing of the turn is written meanwhile: its message was stored before, its
         tools run after.
         """
+        command = parse_recording_command(query)
         if type(query) is str:
             query = without_private(query)[0]
         if not self._adapter._lock.acquire(timeout=_PREFETCH_STATE_WAIT_S):
@@ -76,17 +77,16 @@ class Prefetch:
             request = self._request(query, effective_session)
             core = self._adapter._require_core()
             turn = self._adapter._active_turn_id
+            removed = self._adapter._private_span_receipts.get((context.session_id, turn), 0)
         finally:
             self._adapter._lock.release()
         read_mode = getattr(core, "private_mode", None)
         mode = read_mode(context) if callable(read_mode) else None
-        if (
-            direct_owner_cli(identity)
-            and type(query) is str
-            and query.strip() in {"scope-recall pause", "scope-recall resume"}
-        ):
+        if direct_owner_cli(identity) and command:
             return f"Scope Recall recording mode: {mode or 'none'}."
         notice = notice_for_mode(mode) or ""
+        if removed:
+            notice = "\n".join(part for part in (notice, f"private_spans_removed:{removed}") if part)
         if mode == "full":
             return notice
         if type(query) is not str or not query.strip():

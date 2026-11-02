@@ -30,6 +30,8 @@ const SOURCE = Object.freeze({ kind: 'plugin:scope-recall', form: 'recall' })
 // The hook reads at most 64 KiB of stdin.  A Stop's record takes up to RECORD_BYTES, which leaves room for the turn's
 // reply beside it; one message's text is clipped to MAX_TEXT characters and TEXT_BYTES of JSON, so that it fits alone.
 const PAYLOAD_BYTES = 60_000
+// Leave room for the session and source metadata around an untrimmed command candidate.
+const COMMAND_INPUT_BYTES = PAYLOAD_BYTES - 2048
 const RECORD_BYTES = 40_000
 const TEXT_BYTES = 36_000
 const MAX_TEXT = 20_000
@@ -93,6 +95,8 @@ export function apply(ctx, raw) {
   const ownFile = (sessionId) => join(cfg.spool, `${String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_')}.${process.pid}.jsonl`)
 
   const hasInlinePrivate = (entry) => typeof entry.text === 'string' && /<\/?private\s*>/i.test(entry.text)
+  // Only candidates reach the shared parser; unrelated user text keeps the fast spool path.
+  const mayBeCommand = (entry) => entry.role === 'user' && entry.onlyText && entry.text.includes('scope-recall')
 
   // Group by the directory that owns each event; adopting an older file must
   // obtain the same decision as a new message before copying any plaintext.
@@ -102,11 +106,17 @@ export function apply(ctx, raw) {
     const filtered = []
     const rejected = []
     for (const entry of entries) {
-      if (hasInlinePrivate(entry)) {
+      if (hasInlinePrivate(entry) || mayBeCommand(entry)) {
         const result = await runHook({ hook_event_name: 'FilterCapture', text: entry.text }, cfg.storeTimeoutMs)
         if (!result.ok || typeof result.answer?.text !== 'string') { rejected.push(entry); continue }
-        entry.text = result.answer.text
-        entry.private_spans_removed = result.answer.private_spans_removed
+        const prior = Number.isSafeInteger(entry.private_spans_removed) && entry.private_spans_removed > 0
+          ? Math.min(entry.private_spans_removed, 1_000_000) : 0
+        // Already-filtered text cannot become a command when an old spool is adopted.
+        if (mayBeCommand(entry) && !prior && result.answer.command) continue
+        entry.text = clip(result.answer.text)
+        const removed = Number.isSafeInteger(result.answer.private_spans_removed) && result.answer.private_spans_removed > 0
+          ? result.answer.private_spans_removed : 0
+        entry.private_spans_removed = Math.min(prior + removed, 1_000_000)
       }
       filtered.push(entry)
     }
@@ -118,7 +128,7 @@ export function apply(ctx, raw) {
       groups.get(cwd).push(entry)
     }
     const allowed = new Set()
-    const unchecked = new Set(entries)
+    const unchecked = new Set([...filtered, ...rejected])
     for (const [cwd, group] of groups) {
       for (let start = 0; start < group.length; start += 64) {
         const batch = group.slice(start, start + 64)
@@ -154,7 +164,7 @@ export function apply(ctx, raw) {
     }
     // Ordinary messages reach disk in the event callback. Private metadata checks
     // batch handed-off writes, retaining order without one interpreter per event.
-    if (!privateRules() && !hasInlinePrivate(entry) && !pendingKeeps.has(sessionId)) {
+    if (!privateRules() && !hasInlinePrivate(entry) && !mayBeCommand(entry) && !pendingKeeps.has(sessionId)) {
       append(entry)
       return Promise.resolve()
     }
@@ -238,24 +248,30 @@ export function apply(ctx, raw) {
       const header = session?.header ?? {}
       if (header.origin === 'subagent') return decision
       const sessionId = header.id ?? session?.id
-      const prompt = clip(humanText(decision.messages))
+      const rawPrompt = humanText(decision.messages)
+      let prompt = clip(rawPrompt)
+      // Candidates that need clipping are classified from their complete original text first.
+      if (prompt !== rawPrompt && rawPrompt.includes('scope-recall') && bytes(rawPrompt) <= COMMAND_INPUT_BYTES) {
+        const parsed = await runHook({ hook_event_name: 'FilterCapture', text: rawPrompt }, cfg.recallTimeoutMs, payload.signal)
+        if (parsed.ok && parsed.answer?.command) prompt = rawPrompt
+      }
       if (!sessionId || !prompt) return decision
-      if ((prompt === 'scope-recall pause' || prompt === 'scope-recall resume') &&
-          (decision.messages.length !== 1 || decision.messages[0]?.source?.kind !== 'user' ||
-           payload.messages?.length !== 1 || payload.messages[0]?.source?.kind !== 'user' ||
-           payload.messages[0]?.id !== decision.messages[0]?.id || humanText(payload.messages) !== prompt ||
-           !Array.isArray(payload.messages[0]?.content) ||
-           payload.messages[0].content.some((block) => block?.type !== 'text'))) return decision
+      // A clipped prompt may be captured, but it cannot authorize a recording command.
+      const commandEligible = rawPrompt === prompt && decision.messages.length === 1 && decision.messages[0]?.source?.kind === 'user' &&
+        payload.messages?.length === 1 && payload.messages[0]?.source?.kind === 'user' &&
+        payload.messages[0]?.id === decision.messages[0]?.id && humanText(payload.messages) === prompt &&
+        Array.isArray(payload.messages[0]?.content) && payload.messages[0].content.every((block) => block?.type === 'text')
       const key = `${sessionId}:${payload.turn}`
       if (recalled.has(key)) return decision
       recalled.add(key)
       if (recalled.size > 1000) recalled.delete(recalled.values().next().value)
       const started = Date.now()
       const result = await runHook({ hook_event_name: 'UserPromptSubmit', session_id: sessionId,
-                                     turn_id: String(payload.turn), prompt, cwd: header.cwd ?? process.cwd() },
+                                     turn_id: String(payload.turn), prompt, scope_recall_command_eligible: commandEligible,
+                                     cwd: header.cwd ?? process.cwd() },
                                    cfg.recallTimeoutMs, payload.signal, true)
       if (result.ok && result.answer?.decision === 'block' &&
-          decision.messages.length === 1 && decision.messages[0]?.source?.kind === 'user') {
+          commandEligible) {
         status.lastRecall = { at: new Date().toISOString(), ms: Date.now() - started,
                               outcome: result.answer.reason ?? 'recording command' }
         writeStatus(true)
@@ -292,11 +308,12 @@ export function apply(ctx, raw) {
           return
         case 'user/message': {
           if (data.source?.kind !== 'user') return  // dsh's own context and ours are not the person's
-          const text = clip(textOf(data.content))
-          const onlyText = typeof data.content === 'string' ||
-            (Array.isArray(data.content) && data.content.every((block) => block?.type === 'text'))
-          if (onlyText && (text === 'scope-recall pause' || text === 'scope-recall resume')) return
-          if (text) keep(sessionId, { role: 'user', id: data.id, text, time: event.time, turn: turns.get(sessionId) ?? null, cwd })
+          const rawText = textOf(data.content, false)
+          // Keep bounded candidates whole until the shared filter classifies them; others are clipped immediately.
+          const text = rawText.includes('scope-recall') && bytes(rawText) <= COMMAND_INPUT_BYTES ? rawText : clip(rawText)
+          const onlyText = rawText === text && (typeof data.content === 'string' ||
+            (Array.isArray(data.content) && data.content.every((block) => block?.type === 'text')))
+          if (text) keep(sessionId, { role: 'user', id: data.id, text, onlyText, time: event.time, turn: turns.get(sessionId) ?? null, cwd })
           return
         }
         case 'assistant/message': {
@@ -583,17 +600,18 @@ function alive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error?.code === 'EPERM' }
 }
 
-function textOf(content) {
-  if (typeof content === 'string') return content.trim()
-  if (!Array.isArray(content)) return ''
-  return content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('\n').trim()
+function textOf(content, trim = true) {
+  const text = typeof content === 'string' ? content : Array.isArray(content)
+    ? content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('\n')
+    : ''
+  return trim ? text.trim() : text
 }
 
 // The person's words of this step: the last message of theirs.  dsh claims one queued message for a turn's first step;
 // another of theirs claimed with it is stored from the turn's record.
 function humanText(messages) {
   const own = (Array.isArray(messages) ? messages : []).filter((message) => message?.source?.kind === 'user')
-  return own.length ? textOf(own.at(-1).content) : ''
+  return own.length ? textOf(own.at(-1).content, false) : ''
 }
 
 function clip(text) {

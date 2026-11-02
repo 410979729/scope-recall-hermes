@@ -413,6 +413,7 @@ class MemoryCore:
         *,
         scope_id: str,
         remaining_seconds: float | None = None,
+        _prepared=None,
     ) -> CaptureReceipt:
         return record_event(
             self.storage,
@@ -421,6 +422,7 @@ class MemoryCore:
             value,
             scope_id=scope_id,
             admission_policy=self.config.admission_policy,
+            _prepared=_prepared,
             remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
         )
 

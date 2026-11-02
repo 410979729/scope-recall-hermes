@@ -770,3 +770,29 @@ def test_command_text_with_attachment_does_not_change_private_mode(handler, inst
         )
     )
     assert owner.private_status(session="TEST-session-1")["mode"] == "none"
+
+
+def test_backfill_uses_core_record_event_with_prepared_metadata(handler, monkeypatch):
+    hook, project_root, _config = handler
+    payload = _payload(project_root, "Stop")
+    audience = hook.audience_of(payload)
+    context = hook.context(audience, "TEST-session-1", "human_direct")
+    called = []
+    original = hook.core.record_event
+
+    def record(*args, **kwargs):
+        called.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(hook.core, "record_event", record)
+    event = source_event(content="TEST public", source_event_key="TEST-prepared-backfill", origin="human_direct")
+    hook._capture_event(
+        context,
+        audience,
+        event,
+        hook._hook_deadline(5),
+        ("private_spans_removed:1", "private_content_omitted"),
+        False,
+        5,
+    )
+    assert called and called[0].get("_prepared") is not None

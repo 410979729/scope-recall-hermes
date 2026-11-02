@@ -673,26 +673,13 @@ class CodexHookHandler:
                 self.pending_capture = receipt
                 receipt = receipt.receipt
         else:
-            if prepared is not None:
-                from scope_recall.core.capture import record_event
-
-                receipt = record_event(
-                    self.core.storage,
-                    self.core.clock,
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    _prepared=prepared,
-                    admission_policy=self.core.config.admission_policy,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                )
-            else:
-                receipt = self.core.record_event(
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                )
+            receipt = self.core.record_event(
+                context,
+                event,
+                scope_id=audience.capture_scope_id,
+                remaining_seconds=min(wait, self.remaining(deadline)),
+                **({"_prepared": prepared} if prepared is not None else {}),
+            )
         return receipt
 
     def _note_private_spans(self, receipt):
