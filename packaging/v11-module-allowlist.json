@@ -208,6 +208,7 @@
     "core/secret_patterns.py",
     "core/semantic_proposals.py",
     "core/session_brief.py",
+    "core/session_injection.py",
     "core/source_admission.py",
     "core/source_qualification.py",
     "core/source_records.py",

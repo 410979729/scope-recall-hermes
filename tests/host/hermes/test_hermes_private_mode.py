@@ -374,3 +374,14 @@ def test_late_writer_does_not_resurrect_a_discarded_private_capture(adapter):
     provider._writer._closed_meanwhile(key, RuntimeError("TEST retryable write"), False, pending)
     assert key not in provider._retry.captures
     assert key not in provider._retry.on_disk
+
+
+def test_full_private_prefetch_obeys_zero_injection_cap_and_refreshes_receipt(adapter):
+    provider, _clock = adapter
+    owner, _ctx = _owner(provider)
+    owner.private_on(target="global")
+    provider._core.config = replace(provider._core.config, injection_token_cap=0)
+    provider._diagnostics.injection_tokens = 999
+    assert not provider.prefetch("TEST private question")
+    assert provider.diagnostics.injection_tokens == 0
+    assert provider.diagnostics.injection_token_cap == 0

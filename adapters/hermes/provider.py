@@ -59,6 +59,11 @@ _MemoryProviderBase = _memory_provider_base()
 
 @dataclass
 class AdapterDiagnostics:
+    injection_tokens: int = 0
+    session_tokens: int = 0
+    injection_token_cap: int = 0
+    session_token_cap: int | None = None
+    delivery_reason: str | None = None
     last_prefetch_request_id: str | None = None
     last_prefetch_skip_reason: str | None = None
     last_render_ref: str | None = None

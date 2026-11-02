@@ -11,6 +11,12 @@ preferences. Briefings are prepared by the worker, do not require model calls, a
 the current context. The coordinated schema upgrade adds rebuildable scope manifests and session delivery accounting.
 Claude Code installations need their host hooks refreshed through setup to receive the new session-start event.
 
+Automatic injection has configurable per-response and session token ceilings, counting the complete host text and
+resetting session usage on compaction. Confirmed question recall joins briefing delivery accounting. Sessions receive
+bounded correction or reference-only withdrawal notices for previously delivered items, including after the session
+budget is exhausted; unconfirmed notices retry on the next interaction. Hook receipts expose usage and ceilings.
+The additive store upgrade preserves existing delivery marks and its rollback snapshot.
+
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.
 Worker-published counters replace queue scans during recall. The minimum diagnostic capacity is 128 KiB; existing

@@ -199,7 +199,11 @@ def _started(tx, context) -> bool:
 def _reset(tx, context) -> None:
     key = (_entry(context), context.session_id)
     tx._check(write=True).execute("DELETE FROM session_brief_injections WHERE entry_id=? AND session_id=?", key)
-    tx._check(write=True).execute("UPDATE session_brief_sessions SET started=0 WHERE entry_id=? AND session_id=?", key)
+    tx._check(write=True).execute(
+        "UPDATE session_brief_sessions SET started=0,brief_tokens=0,brief_elapsed_ms=0,"
+        "recall_tokens=0,recall_elapsed_ms=0 WHERE entry_id=? AND session_id=?",
+        key,
+    )
 
 
 def _apply_compaction(tx, context) -> None:
@@ -230,6 +234,10 @@ def _apply_compaction(tx, context) -> None:
         "compaction_epoch,compaction_local_seq) VALUES(?,?,0,?,?,?,?) "
         "ON CONFLICT(entry_id,session_id) DO UPDATE SET "
         "started=CASE WHEN started_compacted_seq<excluded.compacted_seq THEN 0 ELSE started END, "
+        "brief_tokens=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE brief_tokens END, "
+        "brief_elapsed_ms=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE brief_elapsed_ms END, "
+        "recall_tokens=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE recall_tokens END, "
+        "recall_elapsed_ms=CASE WHEN compacted_seq<excluded.compacted_seq THEN 0 ELSE recall_elapsed_ms END, "
         "compacted_at=excluded.compacted_at,compacted_seq=excluded.compacted_seq,"
         "compaction_epoch=excluded.compaction_epoch,compaction_local_seq=excluded.compaction_local_seq",
         (*key, context.compacted_at, cutoff, context.compaction_epoch, context.compaction_seq),
@@ -344,15 +352,28 @@ def _safe_line(tx, search, item, intervals, hydration):
     return candidate, obj, line
 
 
-def _mark_delivered(tx, context, items, now: str, cutoff: int) -> None:
-    pairs = [("claim", item["ref"], item["revision"]) for item in items if item["kind"] != "task"]
+def _mark_delivered(tx, context, items, now: str, cutoff: int, source: str = "brief") -> None:
+    pairs = [
+        (
+            "episode"
+            if item["kind"] == "task"
+            else "claim"
+            if source == "brief"
+            else "claim"
+            if item["kind"] == "procedure"
+            else item["kind"],
+            item["ref"],
+            item["revision"],
+        )
+        for item in items
+    ]
     tx._check(write=True).executemany(
         "INSERT INTO session_brief_injections(entry_id,session_id,object_kind,object_ref,revision,delivered_at,"
-        "delivery_compacted_at,delivery_compacted_seq) VALUES(?,?,?,?,?,?,?,?) "
+        "delivery_compacted_at,delivery_compacted_seq,source) VALUES(?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(entry_id,session_id,object_kind,object_ref,revision) DO UPDATE SET "
         "delivered_at=excluded.delivered_at,delivery_compacted_at=excluded.delivery_compacted_at,"
         "delivery_compacted_seq=excluded.delivery_compacted_seq",
-        [(_entry(context), context.session_id, *pair, now, context.compacted_at, cutoff) for pair in pairs],
+        [(_entry(context), context.session_id, *pair, now, context.compacted_at, cutoff, source) for pair in pairs],
     )
 
 

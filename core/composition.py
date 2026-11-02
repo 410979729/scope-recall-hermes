@@ -25,6 +25,7 @@ from .capture import CaptureReceipt, record_event
 from .delete_storage import retraction_after
 from .model_content import withhold_secret_items
 from .operations import Operations
+from .recall_budget import DEFAULT_INJECTION_TOKEN_CAP
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .recall_log_storage import LogPolicy
 from .recall_trace import CURRENT_TRACE, logged_recall
@@ -77,6 +78,8 @@ class CoreConfig:
     admission_policy: AdmissionPolicy = field(default_factory=AdmissionPolicy)
     session_brief_enabled: bool = True
     session_brief_tokens: int = 1024
+    injection_token_cap: int = DEFAULT_INJECTION_TOKEN_CAP
+    session_token_cap: int | None = None
     recall_log_policy: LogPolicy = field(default_factory=LogPolicy)
 
     def __post_init__(self) -> None:
@@ -88,6 +91,12 @@ class CoreConfig:
             raise ValueError("invalid session briefing configuration")
         if not 1 <= self.session_brief_tokens <= 8192:
             raise ValueError("session briefing token limit must be between 1 and 8192")
+        for name in ("injection_token_cap", "session_token_cap"):
+            value = getattr(self, name)
+            if name == "session_token_cap" and value is None:
+                continue
+            if type(value) is not int or not 0 <= value < 2**63:
+                raise ValueError(name)
         if not isinstance(self.recall_log_policy, LogPolicy):
             raise ValueError("recall_log_policy must be a LogPolicy")
         value = self.write_timeout_seconds
@@ -188,12 +197,21 @@ class MemoryCore:
         """Confirm a prepared briefing once the host has built its response."""
         from .session_brief import confirm
 
+        if "_injection" in brief:
+            from .session_injection import confirm
+
         reason = confirm(self.storage, self.clock, context, brief, remaining_seconds=remaining_seconds)
         if brief.get("_deliver") and brief.get("items") and reason in {"brief_delivered", "brief_delivery_unconfirmed"}:
             from .recall_trace import record_brief
 
             record_brief(self, context, brief, reason)
         return reason
+
+    def prepare_session_injection(self, context, text: str, *, brief=None, remaining_seconds=0.2) -> dict:
+        """Fit the host's final text and prepare delivery marks without writing them."""
+        from .session_injection import prepare
+
+        return prepare(self, context, text, brief=brief, remaining_seconds=remaining_seconds)
 
     def sync_session_compaction(self, context: TrustedContext, *, remaining_seconds: float = 0.03) -> bool:
         """Persist an observed compaction without waiting indefinitely for the writer."""

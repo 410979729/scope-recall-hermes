@@ -392,3 +392,24 @@ def test_hermes_explicit_tool_uses_five_second_ceiling(tmp_path):
     )
     assert calls == [5.0]
     provider.shutdown()
+
+
+def test_runtime_passes_injection_caps_to_the_core(tmp_path):
+    binding = _binding(tmp_path)
+    config = RuntimeInstanceConfig.from_mapping(_runtime_raw(binding, injection_token_cap=200, session_token_cap=700))
+    instance = build_runtime_instance(config)
+    try:
+        assert instance.core.config.injection_token_cap == 200
+        assert instance.core.config.session_token_cap == 700
+    finally:
+        instance.close()
+
+
+@pytest.mark.parametrize("field", ["injection_token_cap", "session_token_cap"])
+@pytest.mark.parametrize("value", [True, -1, 2**63, "100"])
+def test_injection_limits_reject_invalid_configuration(tmp_path, field, value):
+    binding = _binding(tmp_path)
+    with pytest.raises(ValueError):
+        RuntimeInstanceConfig.from_mapping(_runtime_raw(binding, **{field: value}))
+    with pytest.raises(ValueError):
+        CoreConfig(binding, **{field: value})

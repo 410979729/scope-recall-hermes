@@ -83,3 +83,55 @@ def test_a_text_of_many_different_symbols_is_counted_in_linear_time():
     text = symbols(64_000)
     assert slowdown(estimate_tokens, symbols(16_000), text) < 8
     assert estimate_tokens(text) == _reference(text)
+
+
+def test_saturated_legacy_host_text_sets_default_injection_cap(record_property, tmp_path):
+    """Measure the complete legacy envelope at both supported briefing bounds."""
+    from datetime import UTC, timedelta, timezone
+
+    from scope_recall.adapters.runtime_wiring import render_host_recall_context
+    from scope_recall.core import CoreConfig
+    from scope_recall.core.recall_budget import canonical_render_json
+    from scope_recall.core.recall_packet import _DIAGNOSTIC_REF_PLACEHOLDER, RecallPacketRenderer, envelope_tokens
+    from v11_support import context, recall_item, recall_packet
+
+    maximum = 0
+    measurements = {}
+    for count in range(1, 7):
+        for glyph in ("a", "中", "🧪"):
+            items = [
+                recall_item(
+                    ref=f"TEST-claim-{n}",
+                    content="",
+                    occurred_at="2026-09-01T12:00:00Z",
+                    entries=[{"id": "test-other", "name": "中" * 32}],
+                )
+                for n in range(count)
+            ]
+            packet = recall_packet(items=items, diagnostic_ref=_DIAGNOSTIC_REF_PLACEHOLDER)
+            low, high = 0, 12000
+            while low < high:
+                middle = (low + high + 1) // 2
+                items[0]["content"] = glyph * middle
+                if envelope_tokens(packet) <= 4096:
+                    low = middle
+                else:
+                    high = middle - 1
+            items[0]["content"] = glyph * low
+            rendered = RecallPacketRenderer().prepare(
+                packet, installation_id="TEST-install", session_id="TEST-s", request_id="TEST-r"
+            )
+            for zone in (UTC, timezone(timedelta(hours=-12)), timezone(timedelta(hours=14))):
+                question = render_host_recall_context(
+                    rendered.canonical_text, context=rendered.context, entry=("t" + "-" * 31, "🧪" * 32), zone=zone
+                )
+                for bound in (1024, 8192):
+                    prefix = "Session background:\n"
+                    brief = prefix + "a" * ((bound - estimate_tokens(prefix)) * 4)
+                    while estimate_tokens(brief + "a") <= bound:
+                        brief += "a"
+                    cost = estimate_tokens(brief + "\n\n" + question)
+                    measurements[str(bound)] = max(measurements.get(str(bound), 0), cost)
+                    maximum = max(maximum, cost)
+    record_property("legacy_host_maxima", canonical_render_json(measurements))
+    assert CoreConfig(context(tmp_path / "TEST-unused-measurement").binding).injection_token_cap == maximum

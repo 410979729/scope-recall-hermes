@@ -13,6 +13,10 @@ import re
 import unicodedata
 from collections import Counter
 
+# Complete saturated host output, including the largest supported briefing,
+# entry guidance and localized timestamps. Uses the same estimator as release.
+DEFAULT_INJECTION_TOKEN_CAP = 12603
+
 
 def release_reserve_seconds(
     candidates: int, *, remaining_seconds: float = math.inf, hydration_seconds: float = 0.0, hydrated_count: int = 0
