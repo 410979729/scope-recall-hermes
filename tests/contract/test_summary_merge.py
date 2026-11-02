@@ -51,15 +51,11 @@ def test_completed_summary_is_unreadable_during_hold_and_recovers_after_clear(ap
     with core.storage.read(ctx) as tx:
         part = tuple(tx._check().execute("SELECT claim_ref,claim_revision FROM summary_parts LIMIT 1").fetchone())
         assert summary_live(tx, *part)
-    if state == "pending_review":
-        with core.storage.write(ctx) as tx:
-            _store_events(tx, core.clock, prepare_capture(source.event, ctx), "TEST-scope", None, lambda: 0)
-    else:
-        with core.storage.write(ctx) as tx:
-            tx._check(write=True).execute(
-                "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) VALUES(?,?,?,?,?)",
-                (source.ref, 1, state, '["TEST-held"]', core.clock.now),
-            )
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) VALUES(?,?,?,?,?)",
+            (source.ref, 1, state, '["TEST-held"]', core.clock.now),
+        )
     with core.storage.read(ctx) as tx:
         assert not summary_live(tx, *part)
     packet, _rendered = rendered_conversation(core, ctx)
@@ -73,7 +69,9 @@ def test_completed_summary_is_unreadable_during_hold_and_recovers_after_clear(ap
         )
     else:
         with core.storage.write(ctx) as tx:
-            _store_events(tx, core.clock, prepare_capture(source.event, ctx), "TEST-scope", None, lambda: 1)
+            tx._check(write=True).execute(
+                "DELETE FROM source_safety WHERE source_ref=? AND source_revision=?", (source.ref, 1)
+            )
     with core.storage.read(ctx) as tx:
         assert summary_live(tx, *part)
 
@@ -187,8 +185,9 @@ def test_cleared_pending_source_can_resume_a_group_that_could_not_create_its_fir
         queue_summaries(tx, now=core.clock.now)
     with core.storage.read(ctx) as tx:
         assert tx._check().execute("SELECT state FROM summary_groups").fetchone()[0] == "partial"
-    with core.storage.write(ctx) as tx:
-        _store_events(tx, core.clock, prepare_capture(event, ctx), "TEST-scope", None, lambda: 1)
+    from scope_recall.core.worker import WorkerConfig, drain_worker
+
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-scan"), remaining_seconds=30)
     model = FirstSentenceModel()
     build(core, ctx, model)
     assert model.pages

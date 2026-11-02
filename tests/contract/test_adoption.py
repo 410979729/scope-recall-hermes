@@ -68,6 +68,17 @@ def publish(core, ctx, adoption):
         return publish_adoption(tx, adoption, now=core.clock.utc_now())
 
 
+def test_adopted_decision_in_brief_names_owner_adoption(app):
+    core, ctx = app
+    assistant(core, ctx)
+    owner = capture(core, ctx, "好，就用方案二")
+    rows, _calls = prepared(core, ctx, owner)
+    item = publish(core, ctx, rows[0])
+    brief = core.session_brief(replace(ctx, session_id="TEST-next"))
+    assert item.ref in brief["text"]
+    assert "owner adopted assistant proposal" in brief["text"]
+
+
 def test_fragments_are_exact_disjoint_source_slices():
     text = "## Options\n\n1. First\n   continuation\n2. Second\n\nTail"
     parts = fragments(text)

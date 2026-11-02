@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1122
+SCHEMA_VERSION = 1123
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -125,6 +125,27 @@ ADOPTION_PROCESSING_STATEMENTS = (
         payload_json TEXT NOT NULL
     ) STRICT""",
     "CREATE INDEX adoption_processing_sources ON adoption_processing(assistant_ref,confirmation_ref)",
+)
+
+# The cached manifest holds object versions, never copied source text. The
+# reader rechecks each version through the ordinary authority boundary.
+SESSION_BRIEF_STATEMENTS = (
+    """CREATE TABLE session_briefs (
+        scope_id TEXT PRIMARY KEY NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version>=1), signature TEXT NOT NULL,
+        generated_at TEXT NOT NULL, items_json TEXT NOT NULL CHECK(json_valid(items_json))
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE session_brief_injections (
+        entry_id TEXT NOT NULL, session_id TEXT NOT NULL,
+        object_kind TEXT NOT NULL, object_ref TEXT NOT NULL, revision INTEGER NOT NULL,
+        PRIMARY KEY(entry_id,session_id,object_kind,object_ref,revision)
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE session_brief_sessions (
+        entry_id TEXT NOT NULL, session_id TEXT NOT NULL, started INTEGER NOT NULL CHECK(started IN (0,1)),
+        brief_tokens INTEGER NOT NULL DEFAULT 0, brief_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+        recall_tokens INTEGER NOT NULL DEFAULT 0, recall_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(entry_id,session_id)
+    ) STRICT, WITHOUT ROWID""",
 )
 
 
@@ -672,6 +693,7 @@ STATEMENTS = (
     + CLAIM_RANK_STATEMENTS
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
+    + SESSION_BRIEF_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
@@ -1011,3 +1033,11 @@ def upgrade_1121(connection):
         connection.execute(statement)
     connection.execute("UPDATE instance_meta SET schema_version=1122 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1122")
+
+
+def upgrade_1122(connection):
+    """Add the rebuildable scope briefing manifest without altering source truth."""
+    for statement in SESSION_BRIEF_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1123 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1123")

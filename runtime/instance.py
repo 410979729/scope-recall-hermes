@@ -913,7 +913,12 @@ def build_runtime_instance(
         raise TypeError("config must be RuntimeInstanceConfig")
     auxiliary = build_auxiliary_runtime(config.auxiliary) if config.auxiliary is not None else None
     core = MemoryCore(
-        CoreConfig(config.binding, auto_recall_seconds=config.auto_recall_seconds),
+        CoreConfig(
+            config.binding,
+            auto_recall_seconds=config.auto_recall_seconds,
+            session_brief_enabled=config.session_brief_enabled,
+            session_brief_tokens=config.session_brief_tokens,
+        ),
         storage=SQLiteStorage(config.binding),
         vectors=vectors,
         consolidation=consolidation if consolidation is not None else getattr(auxiliary, "consolidation", None),

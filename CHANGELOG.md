@@ -4,6 +4,11 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Session start can deliver a bounded, source-checked briefing of unfinished tasks, recent decisions and important
+preferences. Briefings are prepared by the worker, do not require model calls, and omit content already delivered in
+the current context. The coordinated schema upgrade adds rebuildable scope manifests and session delivery accounting.
+Claude Code installations need their host hooks refreshed through setup to receive the new session-start event.
+
 Setup now detects local hosts, previews and confirms a complete installation, preserves existing stores and grants,
 configures referenced model routes and budgets, and verifies capture, worker processing and cross-session recall
 in an isolated store. WorkBuddy and DeepSeek Harness receive the memory skill. Installation guides are split by host and the

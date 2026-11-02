@@ -627,6 +627,11 @@ class RetrievalPipeline:
         obj = self.storage_reader.hydrate(tx, candidate, context)
         if obj is None:
             return None
+        if context.automatic_injection:
+            from .session_brief import already_injected
+
+            if already_injected(tx, candidate.kind, candidate.ref, candidate.revision):
+                return None
         # The current message already supplies this text. Older copies add no
         # information to automatic context and can crowd out its actual evidence.
         # What such a copy was told in its turn still answers it: the copy is set

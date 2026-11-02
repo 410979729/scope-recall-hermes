@@ -3,10 +3,12 @@ lock, the recall run without it, its context rendered for the model."""
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
-from scope_recall.contracts import RecallRequest
+from scope_recall.contracts import ContractError, RecallRequest
 from scope_recall.core.private import notice_for_mode
+from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 
 from ..runtime_wiring import render_host_recall_context
@@ -61,12 +63,17 @@ class Prefetch:
         notice = notice_for_mode(mode) or ""
         if mode == "full":
             return notice
+        started = core.clock.monotonic()
+        briefing = self._brief(core, context, effective_session)
+        brief = briefing["text"]
         reason = automatic_recall_skip_reason(query)
         if reason is not None:
             with self._adapter._lock:
                 if self._adapter._active_turn_id == turn:
                     self._adapter._diagnostics.last_prefetch_skip_reason = reason
-            return notice
+            text = "\n\n".join(part for part in (brief, notice) if part)
+            self._record_usage(core, context, text, briefing, started)
+            return text
         packet = core.recall_packet(
             context,
             request,
@@ -90,9 +97,44 @@ class Prefetch:
             entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
             zone=display_zone(),
         )
+        if brief:
+            rendered = f"{brief}\n\n{rendered}" if rendered else brief
         if notice:
-            return f"{rendered}\n\n{notice}" if rendered else notice
+            rendered = f"{rendered}\n\n{notice}" if rendered else notice
+        self._record_usage(core, context, rendered, briefing, started)
         return rendered
+
+    def _brief(self, core, context, session):
+        """Serialize brief delivery and apply a pending compaction in the same transaction."""
+        empty = {"text": "", "tokens": 0, "elapsed_ms": 0}
+        if not self._adapter._brief_lock.acquire(timeout=0.2):
+            return empty
+        try:
+            with self._adapter._lock:
+                generation = self._adapter._brief_compactions.get(session, 0)
+            try:
+                brief = core.session_brief(context, deliver=True, compact=bool(generation), remaining_seconds=0.2)
+            except (ContractError, sqlite3.Error, OSError, ValueError):
+                return empty
+            if generation:
+                with self._adapter._lock:
+                    if self._adapter._brief_compactions.get(session) == generation:
+                        del self._adapter._brief_compactions[session]
+            return brief
+        finally:
+            self._adapter._brief_lock.release()
+
+    def _record_usage(self, core, context, text, briefing, started):
+        """Count only the response Hermes is given, not candidate or retry work."""
+        tokens = max(0, (estimate_tokens(text) if text else 0) - briefing["tokens"])
+        elapsed = max(0, round((core.clock.monotonic() - started) * 1000) - briefing.get("elapsed_ms", 0))
+        try:
+            core.record_session_recall(context, tokens=tokens, elapsed_ms=elapsed, remaining_seconds=0.05)
+        except (ContractError, sqlite3.Error, OSError, ValueError):
+            self._adapter._diagnostics.capability_gaps = (
+                *self._adapter._diagnostics.capability_gaps,
+                "session_statistics_unavailable",
+            )
 
     def _request(self, query: str, session_id: str) -> RecallRequest:
         self._adapter._require_identity()

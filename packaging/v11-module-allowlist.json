@@ -196,6 +196,7 @@
     "core/schema.py",
     "core/secret_patterns.py",
     "core/semantic_proposals.py",
+    "core/session_brief.py",
     "core/source_admission.py",
     "core/source_qualification.py",
     "core/source_records.py",

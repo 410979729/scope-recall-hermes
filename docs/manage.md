@@ -151,7 +151,7 @@ files are outside that active-content receipt.
 
 ## Migration and rollback
 
-The first open of a supported older store migrates it transactionally to schema 1122. The added tables contain local
+The first open of a supported older store migrates it transactionally to the current schema. The added tables contain local
 management action identities, actor, action, target versions, timestamp and memory epoch, content-free suppression
 constraints for records that can arrive after a restore, and private intervals that hold only target, session or
 project path, mode and UTC boundaries. Entity judgement receipts, source-screening policies, holds and resumable scan

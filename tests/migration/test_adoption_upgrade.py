@@ -52,7 +52,29 @@ def test_failed_adoption_schema_step_rolls_back_without_publishing_new_format(ap
         )
 
 
-@pytest.mark.parametrize("version", range(1105, 1122))
+def test_failed_session_brief_schema_step_rolls_back(app, monkeypatch):
+    core, ctx = app
+    source = capture(core, ctx, "TEST briefing migration preserves this source.")
+    downgrade_store(core.storage.path, 1122)
+    step = storage.SCHEMA_MIGRATIONS[1122]
+
+    def fail(conn):
+        step(conn)
+        raise RuntimeError("TEST interrupted briefing migration")
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1122, fail)
+    with pytest.raises(RuntimeError, match="TEST interrupted"):
+        core.storage.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1122
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='session_briefs'").fetchone() is None
+        assert (
+            conn.execute("SELECT content FROM source_events WHERE event_id=?", (source.ref,)).fetchone()[0]
+            == (source.event["content"])
+        )
+
+
+@pytest.mark.parametrize("version", range(1105, 1123))
 def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version):
     from scope_recall.maintenance.shared_import import SOURCE_SCHEMAS
 
@@ -84,7 +106,7 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
         db.commit()
     core.storage.initialize()
     with closing(sqlite3.connect(core.storage.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1122
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert (
             db.execute("SELECT event_id,content,content_sha256 FROM source_events ORDER BY source_id").fetchall()
             == originals
@@ -93,6 +115,9 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
         assert tables >= {
             "adoption_relations",
             "adoption_processing",
+            "session_briefs",
+            "session_brief_injections",
+            "session_brief_sessions",
             "summary_groups",
             "summary_parts",
             "summary_backfill",
@@ -115,4 +140,4 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
                 "SELECT pattern,enabled FROM injection_rules WHERE rule_id='TEST-merged-rule'"
             ).fetchone() == ("TEST protected", 0)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert SOURCE_SCHEMAS == frozenset(range(1109, 1123))
+    assert SOURCE_SCHEMAS == frozenset(range(1109, SCHEMA_VERSION + 1))

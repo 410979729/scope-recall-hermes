@@ -243,6 +243,9 @@ def held_roots_sql(seed: str) -> str:
     walk. The seed owns its parameters; callers never supply user text as SQL.
     An empty hold set skips the walk independently of corpus size.
     """
+    # Start from the bounded dependency roots. The unary plus leaves equality
+    # unchanged while preventing the session index from replacing the group-key lookup.
+    group_match = GROUP_MATCH.replace("h.scope_id", "+h.scope_id").replace("h.session_id", "+h.session_id")
     return f"""WITH RECURSIVE lineage(root,kind,ref) AS (
             SELECT * FROM ({seed}) WHERE EXISTS (
                 SELECT 1 FROM source_safety WHERE state!='released')
@@ -251,10 +254,11 @@ def held_roots_sql(seed: str) -> str:
             ON d.object_kind=l.kind AND d.object_ref=l.ref UNION
             SELECT l.root,'event',e.source_ref FROM lineage l JOIN evidence_links e
             ON e.object_kind=l.kind AND e.object_ref=l.ref)
-        SELECT DISTINCT l.root FROM lineage l JOIN source_events e ON l.kind='event' AND e.event_id=l.ref
-        JOIN source_events h ON {GROUP_MATCH}
-        JOIN source_safety s ON s.source_ref=h.event_id AND s.source_revision=h.source_revision
-        WHERE s.state!='released' AND h.read_blocked=0"""
+        SELECT DISTINCT l.root FROM lineage l CROSS JOIN source_events e
+        CROSS JOIN source_events h CROSS JOIN source_safety s
+        WHERE l.kind='event' AND e.event_id=l.ref AND {group_match}
+        AND s.source_ref=h.event_id AND s.source_revision=h.source_revision
+        AND s.state!='released' AND h.read_blocked=0"""
 
 
 def blocked_refs(tx, kind, refs) -> frozenset[str]:
@@ -262,7 +266,21 @@ def blocked_refs(tx, kind, refs) -> frozenset[str]:
     wanted = tuple(dict.fromkeys(refs))
     if not wanted:
         return frozenset()
-    rows = tx._check().execute(
+    conn = tx._check()
+    # A read transaction has a stable snapshot; a write transaction's
+    # ``remembered`` deliberately reloads after a hold changes in that transaction.
+    held = tx.remembered(
+        ("source_safety_has_holds",),
+        lambda: (
+            conn.execute(
+                "SELECT 1 FROM source_safety WHERE state IN ('quarantined','pending_review') LIMIT 1"
+            ).fetchone()
+            is not None
+        ),
+    )
+    if not held:
+        return frozenset()
+    rows = conn.execute(
         held_roots_sql("SELECT value,?,value FROM json_each(?)"),
         (kind, json.dumps(wanted)),
     )

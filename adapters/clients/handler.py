@@ -16,6 +16,7 @@ from typing import Any, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
+from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
@@ -480,9 +481,12 @@ class CodexHookHandler:
         deadline = self._hook_deadline(budget)
         self._upgrade_wake_context = audience, deadline
         if event == "SessionStart":
-            return self._session_started(session_id, audience, deadline)
+            return self._session_started(session_id, audience, deadline, payload)
         if event == "UserPromptSubmit":
-            return self.events.prompt(session_id, audience, payload, deadline)
+            started = self.clock.monotonic()
+            result = self.events.prompt(session_id, audience, payload, deadline)
+            self._record_prompt_usage(session_id, audience, result, started, deadline)
+            return result
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
             # A thread opened for application suggestions contains application activity. Its mark excludes later
             # tool calls, replies and end events as well as the request that opened it.
@@ -540,17 +544,64 @@ class CodexHookHandler:
             self._merge_runtime_gaps()
         return session_id, audience
 
-    def _session_started(self, session_id: str, audience, deadline: float) -> dict[str, Any]:
-        if isinstance(self.config, SharedClientConfig):
-            # An entry starts no worker, and its binding was checked when the config loaded, so its session start
-            # returns at once.  The status a local installation's session start reads (``events.session_start``) counts
-            # the whole store: on a shared store of 277,000 sources, 7-8 s, past Codex's 2 s hook timeout at every
-            # session start.
-            return {}
-        if self.events.session_start(session_id, audience, deadline):
+    def _record_prompt_usage(self, session_id: str, audience, result: dict, started: float, deadline: float) -> None:
+        """Count the answer chosen by this hook, once, without persisting its text."""
+        output = result.get("hookSpecificOutput", {})
+        text = output.get("additionalContext", "") if isinstance(output, dict) else ""
+        tokens = max(0, (estimate_tokens(text) if text else 0) - self.diagnostics.brief_tokens)
+        elapsed = max(0, round((self.clock.monotonic() - started) * 1000) - self.diagnostics.brief_elapsed_ms)
+        left = min(0.05, self.remaining(deadline))
+        if left <= 0:
+            self.diagnostics.session_statistics_failed = True
+            return
+        try:
+            self.core.record_session_recall(
+                self.context(audience, session_id, "host_generated"),
+                tokens=tokens,
+                elapsed_ms=elapsed,
+                remaining_seconds=left,
+            )
+        except (ContractError, sqlite3.Error, OSError, ValueError):
+            self.diagnostics.session_statistics_failed = True
+
+    def briefing(self, context: TrustedContext, deadline: float, *, compact: bool = False) -> str:
+        """Deliver this session's prepared background within the hook deadline."""
+        runtime = self._host_runtime.runtime if self._host_runtime is not None else None
+        if runtime is None:
+            enabled, tokens = _configured_brief(self._pending_runtime_config_path)
+        else:
+            enabled, tokens = runtime.config.session_brief_enabled, runtime.config.session_brief_tokens
+        try:
+            if not enabled and not compact:
+                with self.core.storage.read(context, remaining_seconds=self.remaining(deadline)) as tx:
+                    tx.memory_epoch()
+                return ""
+            brief = self.core.session_brief(
+                context,
+                token_limit=tokens if enabled else 0,
+                deliver=enabled,
+                compact=compact,
+                remaining_seconds=self.remaining(deadline),
+            )
+        except (ContractError, sqlite3.Error, OSError, ValueError):
+            self.note("brief_unavailable")
+            return ""
+        self.diagnostics.brief_tokens = brief["tokens"]
+        self.diagnostics.brief_elapsed_ms = brief.get("elapsed_ms", 0)
+        self.diagnostics.brief_items = tuple((item["ref"], item["revision"]) for item in brief["items"])
+        return brief["text"]
+
+    def _session_started(self, session_id: str, audience, deadline: float, payload: dict[str, Any]) -> dict[str, Any]:
+        context = self.context(audience, session_id, "host_generated")
+        text = self.briefing(
+            context,
+            min(deadline, self.clock.monotonic() + CAPTURE_TIMEOUT_S),
+            compact=payload.get("source") == "compact",
+        )
+        if not isinstance(self.config, SharedClientConfig) and self.diagnostics.last_reason != "brief_unavailable":
             self.ensure_runtime(audience, deadline=deadline)
             self.launch_worker(session_id, audience, require_persisted=False, deadline=deadline)
-        return {}
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}} if text else {}
 
     def _turn_ended(
         self,
@@ -762,6 +813,25 @@ class CodexHookHandler:
 #: installer writes the key, so without this an entry's hooks would fall back to 2 s, and most automatic
 #: recalls would come back empty.
 _DEFAULT_CONFIGURED_BUDGET_S = RuntimeInstanceConfig.hook_processing_seconds
+
+
+def _configured_brief(runtime_config_path: str | None) -> tuple[bool, int]:
+    """Read the entry's briefing switch and limit without attaching model services."""
+    if not runtime_config_path:
+        return True, 1024
+    try:
+        raw = json.loads(Path(runtime_config_path).read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return False, 1024
+        enabled = raw.get("session_brief_enabled", True)
+        tokens = raw.get("session_brief_tokens", 1024)
+        if type(enabled) is not bool or type(tokens) is not int or not 1 <= tokens <= 8192:
+            return False, 1024
+        return enabled, tokens
+    except FileNotFoundError:
+        return True, 1024
+    except (OSError, UnicodeError, ValueError):
+        return False, 1024
 
 
 def _configured_budget(runtime_config_path: str | None) -> float | None:

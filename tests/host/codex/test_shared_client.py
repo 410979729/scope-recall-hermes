@@ -272,6 +272,24 @@ def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypat
         hook.close()
 
 
+def test_claude_session_start_accepts_compaction_signal(store):
+    """A compacted session must reach the same start path as a new session."""
+    _root, _homes, client, _capture = store
+    hook = _hook(client)
+    try:
+        hook.handle_payload(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "TEST-cc-session",
+                "source": "compact",
+                "cwd": "C:/anywhere",
+            }
+        )
+        assert hook.diagnostics.last_reason != "unsupported_event"
+    finally:
+        hook.close()
+
+
 def _codex_client(root, tmp_path):
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
     home = tmp_path / "TEST-codex-home"
@@ -290,6 +308,166 @@ def _codex_client(root, tmp_path):
         now=NOW,
     )
     return home
+
+
+def _seed_shared_brief(store):
+    """Prepare a synthetic decision through the shared store's real worker."""
+    from scope_recall.core.worker import WorkerConfig, drain_worker
+
+    root, _homes, client, capture_scope = store
+    writer = _hook(client)
+    payload = _prompt("TEST-project 配色 蓝色。")
+    try:
+        writer.handle_payload(payload)
+        context = writer.context(writer.audience_of(payload), payload["session_id"], "human_direct")
+        [(ref, revision)] = _rows(root, "SELECT event_id,source_revision FROM source_events WHERE role='user'")
+        source = writer.core.source(context, ref, revision)
+        proposal = {
+            "kind": "decision",
+            "subject": "TEST-project",
+            "predicate": "配色",
+            "value_text": "蓝色",
+            "conditions": [],
+            "statement_kind": "decision",
+            "valid_from": source.event["occurred_at"],
+            "valid_to": None,
+            "evidence_spans": [{"source_ref": ref, "source_revision": revision, "quote": source.event["content"]}],
+        }
+        accepted = writer.core.records.accept_claim_proposals(
+            context,
+            {
+                "protocol_version": "1.1",
+                "source_refs": [f"{ref}@{revision}"],
+                "claim_proposals": [proposal],
+                "resume_proposals": [],
+                "reference_proposals": [],
+            },
+            scope_id=capture_scope,
+            remaining_seconds=10,
+        )
+        claim = accepted.items[0]
+        assert claim.state == "active"
+        drain_worker(
+            writer.core.storage,
+            writer.core.clock,
+            context,
+            config=WorkerConfig("TEST-brief-worker"),
+            remaining_seconds=30,
+        )
+    finally:
+        writer.close()
+    return claim
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_session_brief_is_delivered_again_after_compaction(store, tmp_path, host):
+    """The actual hook returns a stored, source-backed decision at both starts."""
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-new-session", "cwd": "C:/anywhere"}
+    try:
+        first = hook.handle_payload({**start, "source": "startup"})
+        assert claim.ref in first["hookSpecificOutput"]["additionalContext"]
+        assert hook.handle_payload(start) == {}
+        compacted = hook.handle_payload({**start, "source": "compact"})
+        assert claim.ref in compacted["hookSpecificOutput"]["additionalContext"]
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["workbuddy", "dsh"])
+def test_first_prompt_delivers_the_shared_brief_once(store, request, host):
+    claim = _seed_shared_brief(store)
+    entry = request.getfixturevalue(host)
+    home = entry[1]
+    if host == "workbuddy":
+        first, _ = _wb(home, _wb_prompt("继续"))
+        second, _ = _wb(home, _wb_prompt("继续下一步"))
+    else:
+        first, _ = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "1", "prompt": "继续"})
+        second, _ = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "2", "prompt": "继续下一步"})
+    assert claim.ref in first["hookSpecificOutput"]["additionalContext"]
+    assert claim.ref not in second.get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
+def test_hermes_prefetch_delivers_again_after_compression_signal(store):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref not in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_retries_brief_after_compaction_when_storage_is_busy(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        core = provider._require_core()
+        real = core.session_brief
+
+        def unavailable(*args, **kwargs):
+            raise ContractError("DEADLINE_EXCEEDED")
+
+        monkeypatch.setattr(core, "session_brief", unavailable)
+        assert claim.ref not in provider.prefetch("继续")
+        monkeypatch.setattr(core, "session_brief", real)
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_preserves_a_second_compaction_during_brief_delivery(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        core = provider._require_core()
+        real = core.session_brief
+
+        def compact_again(*args, **kwargs):
+            result = real(*args, **kwargs)
+            provider.on_pre_compress([])
+            monkeypatch.setattr(core, "session_brief", real)
+            return result
+
+        monkeypatch.setattr(core, "session_brief", compact_again)
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref not in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_session_brief_runtime_switch_and_limit_apply_at_the_hook(store):
+    claim = _seed_shared_brief(store)
+    _root, _homes, client, _capture_scope = store
+    config_path = client / "scope-recall" / "runtime-config.json"
+    for index, settings, expected in (
+        (1, {"session_brief_enabled": False}, False),
+        (2, {"session_brief_tokens": 1}, False),
+        (3, {"session_brief_tokens": 1024}, True),
+    ):
+        config_path.write_text(json.dumps(settings), encoding="utf-8")
+        hook = _hook(client)
+        try:
+            result = hook.handle_payload(
+                {"hook_event_name": "SessionStart", "session_id": f"TEST-option-{index}", "cwd": "C:/anywhere"}
+            )
+        finally:
+            hook.close()
+        assert (claim.ref in result.get("hookSpecificOutput", {}).get("additionalContext", "")) is expected
 
 
 def test_a_client_s_prompt_runs_the_entry_s_budget(store, tmp_path):

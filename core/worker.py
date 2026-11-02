@@ -24,6 +24,7 @@ from .failure_policy import (
     failure_category,
 )
 from .importance import backfill_importance
+from .session_brief import rebuild_scope
 from .storage import SQLiteStorage
 from .summary_storage import queue_summaries
 from .work_storage import MAX_RECOVERY_PAGE
@@ -530,6 +531,13 @@ def _group_request_floor(budget: float, lease_seconds: float) -> float:
     return min(GROUP_REQUEST_FLOOR_SECONDS, budget / 2, lease_seconds / 4)
 
 
+def _refresh_briefs(storage, clock, context, started, budget):
+    """Backfill manifests at worker wakeup without calling an auxiliary model."""
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        for scope_id in sorted(context.allowed_scope_ids):
+            rebuild_scope(tx, scope_id, clock.utc_now())
+
+
 def drain_worker(
     storage: SQLiteStorage,
     clock,
@@ -545,8 +553,8 @@ def drain_worker(
     """Process ready work until idle or the bounded limit is reached."""
     if type(remaining_seconds) not in (int, float) or not math.isfinite(remaining_seconds) or remaining_seconds <= 0:
         raise ContractError("DEADLINE_EXCEEDED")
-    started = clock.monotonic()
-    budget = remaining_seconds
+    started, budget = clock.monotonic(), remaining_seconds
+    _refresh_briefs(storage, clock, context, started, budget)
     if candidate is None and callable(getattr(consolidation, "evaluate_candidate", None)):
         candidate = consolidation  # type: ignore[assignment]
     # Missing optional ports are a capability state, not attempted model work.

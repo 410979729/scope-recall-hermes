@@ -77,7 +77,7 @@ _RECORD_HOSTS = frozenset({"claude-code", "workbuddy", "codex"})
 #: answers as soon as the server does; the server's work is bounded by the entry's budget.  WorkBuddy's hooks are
 #: given the same waits as the claude-code host's: its prompt is blocked by a hook that runs past its wait.
 HOOK_TIMEOUTS = {
-    "claude-code": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
+    "claude-code": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "codex": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "Interrupt": 3, "SessionEnd": 3},
     "workbuddy": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "dsh": {"UserPromptSubmit": 9, "Stop": 20},

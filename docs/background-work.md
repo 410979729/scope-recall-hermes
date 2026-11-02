@@ -222,6 +222,21 @@ available. The dated-conversation channel checks every member, including tools, 
 Replacement eligibility considers only the user and assistant messages that this channel reads; other messages remain available. Previous-conversation questions resolve to the latest visible prior session,
 then use the same channel and fallback. Portable fact exports include importance and pinning and omit stale summaries.
 
-The store schema is 1122; supported layouts 1105 through 1121 upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+## Session briefing
+
+The worker prepares one briefing manifest per scope from unfinished task resumes, recent decisions, and important
+or pinned preferences and constraints. A briefing contains at most three tasks, five decisions from the last fourteen
+days, and eight preferences or constraints. Each line includes its type, content, time and reference. It uses existing
+facts and task resumes without calling a model. At delivery the current scope, evidence versions, private mode,
+deletion, suppression and source holds are checked again. A changed or unavailable item is omitted.
+
+The runtime settings `session_brief_enabled` and `session_brief_tokens` control delivery; the defaults are enabled
+and 1024 estimated tokens. Claude Code and Codex receive the briefing at session start and after a compaction event.
+Hermes receives it on the first prefetch and resets its delivery marks on its pre-compression hook. WorkBuddy and
+DeepSeek Harness receive it on their first prompt; their current adapters expose no compaction event. The same
+session does not automatically receive an already delivered briefing item again. Session usage keeps briefing and
+question-recall counts separate and stores references rather than copying source content.
+
+Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.

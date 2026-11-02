@@ -33,14 +33,13 @@ def summarize_requests(records):
 
 
 def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, record_property):
-    ctx = context(tmp_path / "TEST-cost")
+    ctx, records = context(tmp_path / "TEST-cost"), []
     corpus = json.loads((Path(__file__).parents[2] / "prompts/entity.examples.json").read_text("utf-8"))[:5]
     proposals = [
         copy.deepcopy(p)
         for case in corpus
         for p in [*(item["payload"] for item in case["input"]["candidates"]), case["input"]["proposal"]]
     ]
-    records = []
 
     def response(**kwargs):
         body = json.loads(kwargs["body"])
@@ -56,7 +55,9 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             messages = body["messages"]
             inputs = sum(estimate_tokens(message["content"]) for message in messages)
             payload = json.loads(messages[-1]["content"])
-            if "proposal" in payload:
+            if payload.get("task") == "locate_adoption":
+                stage, answer = "adoption", json.dumps(dict(adopted=False))
+            elif "proposal" in payload:
                 stage = "entity_resolution" if messages[0]["content"] == prompt_text("entity") else "extraction"
                 answer = json.dumps(dict(support="supported", action="new", target_ref=None, target_revision=None))
             else:
@@ -187,8 +188,8 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             json.dumps(dict(turns=100, assistant_token_lengths=lengths, tasks=counts, requests=records)),
         )
         for row in recommended_workload():
-            if row["task"] in counts:
+            if row["task"] in counts and row["calls"] is not None:
                 assert counts[row["task"]] == {name: row[name] for name in ("calls", "input_tokens", "output_tokens")}
-        assert counts["entity_resolution"]["calls"] > 0
+        assert counts["entity_resolution"]["calls"] > 0 and counts["adoption"]["calls"] > 0
     finally:
         runtime.close()

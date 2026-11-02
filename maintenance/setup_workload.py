@@ -13,7 +13,7 @@ from ..runtime.model_budget import default_budget_policy
 # fact proposals, real worker processing and one explicit query per exchange.
 # Tokens count request message contents, using the runtime's token estimator.
 MEASURED_100 = {
-    "extraction": (110, 519936, 10369),
+    "extraction": (110, 535736, 10369),
     "entity_resolution": (9, 18740, 351),
     "embedding": (220, 79174, 0),
 }

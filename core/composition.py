@@ -73,12 +73,18 @@ class CoreConfig:
     write_timeout_seconds: float = 1.0
     auto_recall_seconds: float = 5.0
     admission_policy: AdmissionPolicy = field(default_factory=AdmissionPolicy)
+    session_brief_enabled: bool = True
+    session_brief_tokens: int = 1024
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):
             raise ValueError("binding must be an InstanceBinding")
         if not isinstance(self.admission_policy, AdmissionPolicy):
             raise ValueError("admission_policy must be an AdmissionPolicy")
+        if type(self.session_brief_enabled) is not bool or type(self.session_brief_tokens) is not int:
+            raise ValueError("invalid session briefing configuration")
+        if not 1 <= self.session_brief_tokens <= 8192:
+            raise ValueError("session briefing token limit must be between 1 and 8192")
         value = self.write_timeout_seconds
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 30:
             raise ValueError("write timeout must be finite and between zero and 30 seconds")
@@ -135,6 +141,54 @@ class MemoryCore:
     def initialize(self) -> StoreStatus:
         """Explicit initialization or an identity-checked supported schema upgrade."""
         return self.storage.initialize(created_at=self.clock.utc_now())
+
+    def session_brief(
+        self,
+        context: TrustedContext,
+        *,
+        token_limit: int | None = None,
+        remaining_seconds=None,
+        deliver: bool = False,
+        compact: bool = False,
+    ) -> dict:
+        """Read a bounded, source-checked briefing for the bound session."""
+        from .session_brief import read
+
+        limit = self.config.session_brief_tokens if token_limit is None else token_limit
+        if not self.config.session_brief_enabled:
+            if not compact:
+                return {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
+            limit = 0
+            deliver = False
+        return read(
+            self.storage,
+            self.clock,
+            context,
+            token_limit=limit,
+            remaining_seconds=remaining_seconds,
+            deliver=deliver,
+            compact=compact,
+        )
+
+    def reset_session_injections(self, context: TrustedContext, *, remaining_seconds=None) -> None:
+        """Forget the current context's delivered references after host compaction."""
+        from .session_brief import reset_session
+
+        reset_session(self.storage, context, remaining_seconds=remaining_seconds)
+
+    def record_session_recall(self, context: TrustedContext, *, tokens: int, elapsed_ms: int, remaining_seconds: float):
+        """Record content-free automatic recall usage after the host chooses its answer."""
+        from .session_brief import record_recall
+
+        record_recall(
+            self.storage, self.clock, context, tokens=tokens, elapsed_ms=elapsed_ms, remaining_seconds=remaining_seconds
+        )
+
+    def session_injection_stats(self, context: TrustedContext) -> dict:
+        """Return opening and question recall usage for this session."""
+        from .session_brief import session_stats
+
+        return session_stats(self.storage, context)
 
     def status(
         self,
