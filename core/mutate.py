@@ -707,6 +707,10 @@ def _revise_in_transaction(tx, clock, request) -> Mutation:
 def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds: float = 1.0) -> MutationReceipt:
     request = validate_model_request("revise_request", value, context)
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        from .entry_control import capture_refusal
+
+        if reason := capture_refusal(tx, context):
+            raise ContractError("ACCESS_DENIED", reason)
         item = _revise_in_transaction(tx, clock, request)
         epoch = tx.status().memory_epoch
     return MutationReceipt((item,), epoch)

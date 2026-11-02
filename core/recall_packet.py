@@ -799,13 +799,22 @@ class RecallPacketRenderer:
     def __init__(self, *, max_prepared: int = _MAX_RENDER_PREPARED) -> None:
         self._max_prepared = max_prepared
         self._lock = threading.RLock()
-        self._prepared: OrderedDict[tuple[str, str, str, int | None], RecallRenderPreparation] = OrderedDict()
+        self._prepared: OrderedDict[tuple[str, str | None, str, str, int | None, int], RecallRenderPreparation] = (
+            OrderedDict()
+        )
         self._counter = 0
 
     def prepare(
-        self, packet: RecallPacket, *, installation_id: str, session_id: str, request_id: str
+        self,
+        packet: RecallPacket,
+        *,
+        installation_id: str,
+        session_id: str,
+        request_id: str,
+        entry_id: str | None = None,
+        entry_version: int = 0,
     ) -> RecallRenderPreparation:
-        key = (installation_id, session_id, request_id, packet.get("memory_epoch"))
+        key = (installation_id, entry_id, session_id, request_id, packet.get("memory_epoch"), entry_version)
         with self._lock:
             if key in self._prepared:
                 # A repeated automatic callback is acknowledged as a duplicate
@@ -819,6 +828,7 @@ class RecallPacketRenderer:
                     json.dumps(
                         {
                             "installation_id": installation_id,
+                            "entry_id": entry_id,
                             "session_id": session_id,
                             "request_id": request_id[:100],
                             "counter": self._counter,
@@ -903,9 +913,16 @@ def render_recall_packet_context(
     installation_id: str,
     session_id: str,
     renderer: RecallPacketRenderer | None = None,
+    entry_id: str | None = None,
+    entry_version: int = 0,
 ) -> RecallRenderPreparation:
     """Prepare an injection-ready memory context without instruction authority."""
     active = renderer if renderer is not None else RecallPacketRenderer()
     return active.prepare(
-        packet, installation_id=installation_id, session_id=session_id, request_id=packet["request_id"]
+        packet,
+        installation_id=installation_id,
+        session_id=session_id,
+        request_id=packet["request_id"],
+        entry_id=entry_id,
+        entry_version=entry_version,
     )

@@ -135,3 +135,16 @@ def test_backup_status_uses_public_state_reader(web_api, monkeypatch):
     )
     monkeypatch.setattr(ui_api.backup_upkeep, "backup_job_problem", lambda directory: None)
     assert api.backup()["problem"] == "synthetic failure"
+
+
+def test_entry_controls_are_available_through_management_routes(web_api, monkeypatch):
+    import getpass
+
+    monkeypatch.setattr(getpass, "getuser", lambda: "TEST-owner")
+    api, _item = web_api
+    assert api.read("entries", {})["entries"][0]["id"] == "local"
+    assert api.read("entry", {"entry_id": "local"})["state"] == "normal"
+    review = api.preview({"action": "entry-state", "entry_id": "local", "state": "paused"})
+    api.confirm({"id": review["id"], "confirmed": True})
+    assert api.read("entry", {"entry_id": "local"})["state"] == "paused"
+    assert api.read("entry", {"entry_id": "local"})["history"][0]["actor"] == "TEST-owner"

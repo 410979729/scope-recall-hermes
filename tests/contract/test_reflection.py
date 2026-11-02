@@ -545,3 +545,35 @@ def test_personal_observations_keep_distinct_verified_principals(app):
             for row in tx._check().execute("SELECT claim_ref,claim_revision FROM observations")
         }
     assert subjects == {"principal:human:TEST-one", "principal:human:TEST-two"}
+
+
+def test_reflection_waits_for_paused_source_entry(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    populate(core, ctx)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    model = ReflectionModel()
+    run(core, ctx, model)
+    assert not model.calls and observation(core, ctx) is None
+
+
+def test_reflection_discards_result_when_entry_was_paused_during_call(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    populate(core, ctx)
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+
+    class TransitionReflection(ReflectionModel):
+        def judge(self, messages, *, remaining_seconds):
+            owner.set_entry_state("local", "paused", actor="TEST-owner")
+            owner.set_entry_state("local", "normal", actor="TEST-owner")
+            return super().judge(messages, remaining_seconds=remaining_seconds)
+
+    model = TransitionReflection()
+    run(core, ctx, model)
+    assert len(model.calls) == 1 and observation(core, ctx) is None

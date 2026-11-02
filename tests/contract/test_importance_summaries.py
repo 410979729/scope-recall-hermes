@@ -578,3 +578,47 @@ def test_importance_cli_uses_the_owner_management_boundary(app):
     )
     value = execute(owner, args)["value"]
     assert value["importance"] == 2 and value["pinned"] is False
+
+
+def test_summary_waits_while_source_entry_is_paused(app):
+    core, ctx = app
+    capture(core, ctx, "TEST paused session summary source.")
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+
+    class CountingSummary(SummaryModel):
+        calls = 0
+
+        def judge(self, messages, *, remaining_seconds):
+            self.calls += 1
+            return super().judge(messages, remaining_seconds=remaining_seconds)
+
+    model = CountingSummary()
+    build(core, ctx, model)
+    assert model.calls == 0
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM summary_parts WHERE coverage_json != '[]'").fetchone()[0] == 0
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )
+
+
+def test_summary_discards_result_when_entry_was_paused_during_call(app):
+    core, ctx = app
+    capture(core, ctx, "TEST session summary state transition.")
+    owner = MemoryManagement(core, InstallationMaintenance(replace(ctx, allowed_scope_ids=ctx.binding.scope_ids)))
+
+    class TransitionSummary(SummaryModel):
+        def judge(self, messages, *, remaining_seconds):
+            owner.set_entry_state("local", "paused", actor="TEST-owner")
+            owner.set_entry_state("local", "normal", actor="TEST-owner")
+            return super().judge(messages, remaining_seconds=remaining_seconds)
+
+    build(core, ctx, TransitionSummary())
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM summary_parts WHERE coverage_json != '[]'").fetchone()[0] == 0
+        assert (
+            tx._check().execute("SELECT count(*) FROM work_items WHERE last_error_code='entry_paused'").fetchone()[0]
+            >= 1
+        )

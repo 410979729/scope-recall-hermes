@@ -440,7 +440,7 @@ class CaptureWriter:
         else:
             self._adapter._retry.done(identity)
         self.record_failure(identity, receipt.error_code or receipt.disposition, replay=replay)
-        self._adapter._merge_gaps(gaps, (f"capture_gap:{receipt.disposition}",))
+        self._adapter._merge_gaps(gaps, receipt.gaps, (f"capture_gap:{receipt.disposition}",))
         return receipt
 
     def _stored(self, context, identity, receipt, gaps, replay: bool):

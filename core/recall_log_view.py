@@ -192,7 +192,7 @@ def visible_record(core, context, record, *, owner=False):
     )
 
 
-def history(core, context, *, session=None, request_id=None, before=None, limit=30):
+def history(core, context, *, session=None, request_id=None, entry_id=None, before=None, limit=30):
     """Owner-authorized bounded pagination, newest first, without returning stored bodies."""
     if (
         type(limit) is not int
@@ -200,7 +200,7 @@ def history(core, context, *, session=None, request_id=None, before=None, limit=
         or (before is not None and (type(before) is not int or before < 1))
     ):
         raise ContractError("INPUT_INVALID", "limit_or_before")
-    for value in (session, request_id):
+    for value in (session, request_id, entry_id):
         if value is not None and (type(value) is not str or not 1 <= len(value) <= 240):
             raise ContractError("INPUT_INVALID", "session_or_request")
     core.recall_diagnostics.expire(core.clock.utc_now())
@@ -209,6 +209,7 @@ def history(core, context, *, session=None, request_id=None, before=None, limit=
         installation_id=context.binding.installation_id,
         session_id=session,
         request_id=request_id,
+        entry_id=entry_id,
         before=before,
         limit=limit + 1,
         now=core.clock.utc_now(),

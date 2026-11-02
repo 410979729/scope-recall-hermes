@@ -1290,3 +1290,26 @@ def test_a_pass_returns_a_candidate_left_pending_with_nothing_to_ask_to_waiting(
     assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-rc10/after") == 1
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     assert evaluator.calls == 1
+
+
+def test_candidate_dispatch_returns_attempt_when_entry_pauses(app, monkeypatch):
+    from scope_recall.core import private
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+
+    def pause_during_preparation(*args, **kwargs):
+        owner.set_entry_state("local", "paused", actor="TEST-owner")
+        return False
+
+    monkeypatch.setattr(private, "outbound_blocked", pause_during_preparation)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 0
+    assert evaluations[0]["model_attempted_at"] is None
+    assert work[0]["state"] == "pending" and work[0]["last_error_code"] == "entry_paused"

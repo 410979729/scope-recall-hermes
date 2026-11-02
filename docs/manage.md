@@ -8,6 +8,23 @@ Select a shared store with `--root /path/to/store`. For an installation with its
 `--host hermes|codex|claude-code|workbuddy|dsh --instance-root /path/to/home`. An attached entry directs you to the shared
 store root so management sees the whole installation. Examples below use a shared root.
 
+## Entry controls
+
+The installation owner can list entries, inspect recent activity and change an entry's state. A local store uses
+`local` as its entry ID. Shared stores use the IDs registered for their host and remote entries.
+
+```sh
+scope-recall memory entries --root /path/to/store
+scope-recall memory entry ENTRY --root /path/to/store
+scope-recall memory entry-state ENTRY read-only --actor OWNER --root /path/to/store
+scope-recall memory entry-state ENTRY paused --actor OWNER --root /path/to/store
+scope-recall memory entry-state ENTRY normal --actor OWNER --root /path/to/store
+```
+
+Read-only blocks new captures while allowing recall. Paused blocks new captures and memory reads; restoring normal
+allows both again. Changes are recorded with the operator and time. Existing memories are retained. The management
+page provides the same controls and doctor reports each entry's state.
+
 ## Recall history
 
 **Recall history** in the management page lists each attempted recall by session or request ID, including empty

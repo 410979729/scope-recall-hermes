@@ -6,6 +6,7 @@ checks and export publication remain in their owning management interfaces.
 
 from __future__ import annotations
 
+import getpass
 import secrets
 import time
 from collections import OrderedDict
@@ -100,11 +101,19 @@ class UIApi:
             problem=backup_upkeep.backup_job_problem(directory) or state.get("last_error"),
         )
 
+    def _entry_or_status(self, route, data):
+        """Read an owner entry or installation status."""
+        if route == "entries":
+            return {"entries": self.management.entries()}
+        if route == "entry":
+            return self.management.entry(text(data, "entry_id"))
+        return getattr(self, route)()
+
     def read(self, route, data):
         """Dispatch a read without invoking any state-changing owner method."""
         api = self.management
-        if route in {"overview", "backup"}:
-            return getattr(self, route)()
+        if route in {"overview", "backup", "entries", "entry"}:
+            return self._entry_or_status(route, data)
         if route in {"list", "search"}:
             return api.list(filters(data), limit=number(data, "limit", 30), cursor=text(data, "cursor"))
         if route == "detail":
@@ -140,6 +149,8 @@ class UIApi:
     def _plan(self, data):
         api = self.management
         action = text(data, "action")
+        if action == "entry-state":
+            return dict(action=action, entry_id=text(data, "entry_id"), state=text(data, "state"))
         if action in {"mute", "unmute", "forget"}:
             ref = text(data, "ref")
             revision = number(data, "expected_revision")
@@ -202,6 +213,8 @@ class UIApi:
     def _apply(self, plan):
         api = self.management
         action = plan["action"]
+        if action == "entry-state":
+            return api.set_entry_state(plan["entry_id"], plan["state"], actor=getpass.getuser())
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
         if action == "release-quarantine":

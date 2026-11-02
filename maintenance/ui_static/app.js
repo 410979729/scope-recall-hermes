@@ -97,11 +97,31 @@ async function loadPage(page) {
     else button.removeAttribute("aria-current");
   }
   if (page === "overview") overview(await request("overview"));
+  if (page === "entries") await loadEntries();
   if (page === "browse") await browse(false);
   if (page === "recalls") await loadRecalls(false);
   if (page === "quarantine") await loadQuarantine(false);
   if (page === "private") privateState(await request("private"));
   if (page === "backup") backup(await request("backup"));
+}
+async function loadEntries() {
+  const data = await request("entries");
+  $("entry-items").replaceChildren();
+  for (const entry of data.entries) {
+    const detail = await request("entry", {entry_id: entry.id});
+    const row = node("article", undefined, $("entry-items"));
+    node("h3", entry.name + " · " + entry.id, row);
+    node("p", t("entry_" + entry.state), row);
+    for (const [label, value] of [["entryReadScopes", entry.read_scopes], ["entryWriteScopes", entry.write_scopes], ["entryActivity", detail.last_activity], ["entryVersion", detail.version_recorded], ["entryWrites", detail.recent_writes], ["entryReads", detail.recent_reads], ["entryHistory", detail.history]]) {
+      node("h4", t(label), row);
+      node("pre", value == null ? t("notRecorded") : JSON.stringify(value, null, 2), row);
+    }
+    for (const state of ["normal", "read-only", "paused"]) {
+      const button = node("button", t(state === "normal" ? "entry_restore" : "entry_" + state), row);
+      button.disabled = state === entry.state;
+      button.addEventListener("click", () => run(() => preview({action: "entry-state", entry_id: entry.id, state})));
+    }
+  }
 }
 async function loadRecalls(more) {
   if (!more) { recallFilters = formValues("recall-filters"); recallBefore = null; recallRows = []; recallIdentity += 1; }
@@ -254,6 +274,7 @@ async function preview(values) {
   const data = await request("preview", values, true);
   reviewId = data.id;
   display("preview-data", data.preview);
+  $("review-hint").hidden = values.action === "entry-state";
   $("review").hidden = false;
   $("receipt").hidden = true;
   $("confirm").disabled = false;
@@ -281,7 +302,11 @@ function translate() {
   if (recallRows.length) renderRecalls();
   if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
 }
-$("language").addEventListener("change", () => { language = $("language").value; translate(); });
+$("language").addEventListener("change", () => {
+  language = $("language").value;
+  translate();
+  if (currentPage === "entries") run(() => loadEntries());
+});
 for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => run(() => loadPage(button.dataset.page)));
 $("refresh-overview").addEventListener("click", () => run(() => loadPage("overview")));
 $("refresh-quarantine").addEventListener("click", () => run(() => loadQuarantine(false)));
@@ -320,6 +345,7 @@ $("confirm").addEventListener("click", () => run(async () => {
   $("receipt").hidden = false;
   if (["forget", "forget-session"].includes(data.action)) $("detail").hidden = true;
   if (["revise", "mute", "unmute"].includes(data.action) && selected) await detail(selected.ref);
+  if (currentPage === "entries") await loadEntries();
   if (currentPage === "quarantine") await loadQuarantine(false);
   if (currentPage === "private") privateState(await request("private"));
   $("receipt").scrollIntoView({block: "start"});

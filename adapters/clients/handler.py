@@ -726,7 +726,7 @@ class CodexHookHandler:
             self.note("private_mode", gaps=gaps)
             return (), gaps
         if receipt.durability != "persisted":
-            gaps = (*gaps, f"capture_gap:{receipt.disposition}")
+            gaps = (*gaps, *receipt.gaps, f"capture_gap:{receipt.disposition}")
             self.note("capture_unavailable", gaps=gaps)
             return (), gaps
         self.call.persisted = True

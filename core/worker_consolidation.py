@@ -22,6 +22,7 @@ from .consolidate import (
 )
 from .consolidation_chunks import source_chunk
 from .consolidation_summary import resume_seed
+from .entry_control import sources_paused, sources_paused_now
 from .episodes import source_origin, source_watermark
 from .evidence_question import DERIVATION_ROOT_ORIGINS
 from .evidence_quote import align_claim_evidence
@@ -36,6 +37,7 @@ from .worker_outcomes import (
     derivation_changed,
     epoch_changed,
     finalize_work,
+    hold_for_entry_state,
     hold_for_private_mode,
     mark_obsolete,
     model_failure,
@@ -370,6 +372,9 @@ def _read_batch(tx, item, clock) -> _ConsolidationBatch:
     # A full interval may cover only some sources of an episode.  Leave those out
     # of this request; their own work items stay pending and will run when it ends.
     batch = private.filter_sources(intervals, batch)
+    # Excluded entries keep their own queued work; another entry's source can
+    # proceed without being coupled to a paused member of the same episode.
+    batch = tuple(source for source in batch if not sources_paused(tx, (source,)))
     roots = _root_only_sources(tx, batch)
     # The dependencies come from the same snapshot as the batch itself.
     dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=(source, *batch), episode_ref=episode_ref)
@@ -488,6 +493,10 @@ def process_consolidate(
             return "stale", "authority_revoked" if state == "obsolete" else None, state
         checkpoint = adoption_checkpoint(tx, item.work_id)
         read = _read_batch(tx, item, clock) if checkpoint is None else None
+        source = tx.source(item.subject_ref, item.subject_revision)
+        entry_paused = source is not None and sources_paused(tx, (source,))
+    if entry_paused:
+        return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
     if checkpoint is not None:
         return process_adoption(storage, clock, context, item, checkpoint, model, started=started, budget=budget)
     return _process_ordinary(
@@ -522,6 +531,8 @@ def _process_ordinary(storage, clock, context, item, prepared, *, model, started
         repair = {"validation_feedback": feedback} if feedback is not None else {}
         if private.outbound_blocked(storage, clock, context, sources=roots):
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
+        if sources_paused_now(storage, context, roots, remaining_seconds=budget_left(started, clock, budget)):
+            return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
         with private.using_outbound_check(lambda: private.outbound_blocked(storage, clock, context, sources=roots)):
             raw = model.propose(
                 roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair

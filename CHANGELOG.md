@@ -4,6 +4,7 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Entry controls record owner changes and apply read-only or paused states to individual entries.
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.
 Worker-published counters replace queue scans during recall. The minimum diagnostic capacity is 128 KiB; existing

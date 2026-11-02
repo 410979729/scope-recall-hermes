@@ -264,3 +264,21 @@ def test_rollback_to_previous_schema_prepares_a_compatible_ledger(store, capsys)
     assert ledger["format"] == "scope-recall-deletion-ledger/1"
     assert "suppressed_objects" not in ledger
     assert source.ref in {m["object_ref"] for op in ledger["operations"] for m in op["members"]}
+
+
+def test_entry_cli_uses_owner_api(command):
+    call, _item, _source = command
+    code, data = call("entries")
+    assert code == 0 and data["data"]["entries"][0]["id"] == "local"
+    code, data = call("entry-state", "local", "paused", "--actor", "TEST-owner")
+    assert code == 0 and data["data"]["state"] == "paused"
+    code, data = call("entry", "local")
+    assert code == 0 and data["data"]["history"][0]["actor"] == "TEST-owner"
+
+
+def test_real_local_entry_list_reports_configured_scopes(store, capsys):
+    code = cli.main(["memory", "entries", *store.target(), "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0
+    entry = result["data"]["entries"][0]
+    assert entry["id"] == "local" and entry["read_scopes"] and entry["write_scopes"]

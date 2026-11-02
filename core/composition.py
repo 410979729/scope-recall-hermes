@@ -163,6 +163,13 @@ class MemoryCore:
         with self.storage.read(context) as tx:
             return tx.memory_epoch()
 
+    def entry_state(self, context: TrustedContext):
+        """Read the current entry control without caching across requests."""
+        from .entry_control import state_for
+
+        with self.storage.read(context) as tx:
+            return state_for(tx, context)
+
     def memory_retracted_since(self, context: TrustedContext, epoch: int) -> bool:
         """Whether a deletion or suppression in this context's scopes was recorded after ``epoch``.
 
@@ -186,8 +193,14 @@ class MemoryCore:
             return tx.sources.source_by_event_key(source_event_key, revision)
 
     def source(self, context: TrustedContext, ref: str, revision: int) -> StoredSource | None:
+        from .entry_control import state_for
+
         with self.storage.read(context) as tx:
-            return tx.source(ref, revision)
+            state = state_for(tx, context)
+            if state[0] == "paused":
+                return None
+            result = tx.source(ref, revision)
+        return result if self.entry_state(context) == state else None
 
     def inspect_object(
         self,
@@ -203,6 +216,11 @@ class MemoryCore:
         from .recall_diagnostics import diagnostic
         from .recall_log_view import REQUEST_PREFIX, visible_record
 
+        entry = self.entry_state(context) if owner_authority is None else None
+        if entry is not None and entry[0] == "paused":
+            return InspectedObject(
+                "unknown", ref, revision or 1, None, self.memory_epoch(context), ("entry_state:paused",)
+            )
         if owner_authority is not None:
             owner = maintenance_context(self.storage, owner_authority)
             if replace(context, project_id=owner.project_id, branch_id=owner.branch_id) != owner:
@@ -229,6 +247,10 @@ class MemoryCore:
         else:
             result = inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
         if owner_authority is None:
+            if self.entry_state(context) != entry:
+                return InspectedObject(
+                    "unknown", ref, revision or 1, None, self.memory_epoch(context), ("entry_state:paused",)
+                )
             self._private_read_refusal(context, after=marker)
             gaps: list[str] = []
             if not withhold_secret_items([result.value], gaps):
@@ -374,6 +396,8 @@ class MemoryCore:
 
     def _private_read_refusal(self, context: TrustedContext, *, after: int | None = None) -> int:
         """Fence read entry and release, including a full interval closed during the read."""
+        if self.entry_state(context)[0] == "paused":
+            raise ContractError("ACCESS_DENIED", "entry_state:paused")
         mode, marker = self._recall_private_state(context, after=after)
         if mode == "full":
             raise ContractError("ACCESS_DENIED", "private_mode")
@@ -381,27 +405,42 @@ class MemoryCore:
 
     def profile(self, context: TrustedContext, request):
         """Read-only categorized current-fact profile for one explicit subject."""
-        from .read_views import read_profile
+        from .read_views import paused_view, read_profile
 
+        entry = self.entry_state(context)
+        if entry[0] == "paused":
+            return paused_view(context, request)
         marker = self._private_read_refusal(context)
         result = read_profile(self.storage, self.clock, context, request)
+        if self.entry_state(context) != entry:
+            return paused_view(context, request)
         self._private_read_refusal(context, after=marker)
         return result
 
     def trace(self, context: TrustedContext, request, *, deadline_seconds=5.0):
-        from .trace import read_trace
+        from .trace import paused_trace, read_trace
 
+        entry = self.entry_state(context)
+        if entry[0] == "paused":
+            return paused_trace(self, context, request)
         marker = self._private_read_refusal(context)
         result = read_trace(self.storage, self.clock, context, request, seconds=deadline_seconds)
+        if self.entry_state(context) != entry:
+            return paused_trace(self, context, request)
         self._private_read_refusal(context, after=marker)
         return result
 
     def entity(self, context: TrustedContext, request):
         """Read-only exact one-hop entity probe or related-statement view."""
-        from .read_views import read_entity
+        from .read_views import paused_view, read_entity
 
+        entry = self.entry_state(context)
+        if entry[0] == "paused":
+            return paused_view(context, request, entity=True)
         marker = self._private_read_refusal(context)
         result = read_entity(self.storage, self.clock, context, request)
+        if self.entry_state(context) != entry:
+            return paused_view(context, request, entity=True)
         self._private_read_refusal(context, after=marker)
         return result
 
@@ -483,8 +522,14 @@ class MemoryCore:
     def search_sources(
         self, context: TrustedContext, query: str, *, limit: int = 20, history: bool = False, automatic: bool = False
     ) -> tuple[StoredSource, ...]:
+        from .entry_control import state_for
+
         with self.storage.read(context) as tx:
-            return tx.sources.search_sources(query, limit=limit, history=history, automatic=automatic)
+            state = state_for(tx, context)
+            if state[0] == "paused":
+                return ()
+            result = tx.sources.search_sources(query, limit=limit, history=history, automatic=automatic)
+        return result if self.entry_state(context) == state else ()
 
     def said_in_session(
         self,
@@ -519,6 +564,13 @@ class MemoryCore:
             unmet_needs=[],
         )
         validate_payload("recall_packet", packet)
+        return packet
+
+    @staticmethod
+    def _paused_recall_packet(search_context) -> dict:
+        """Return an empty public packet carrying the entry-state reason."""
+        packet = MemoryCore._private_recall_packet(search_context)
+        packet["gaps"] = ["entry_state:paused"]
         return packet
 
     def _search_context(
@@ -598,7 +650,20 @@ class MemoryCore:
             return RetrievalResult(
                 (), (), None, ("private_mode:full",), "unknown", "unknown", request_id=search_context.request_id
             )
+        entry_state, entry_version = self.entry_state(context)
+        if entry_state == "paused":
+            return RetrievalResult((), (), None, ("entry_state:paused",), request_id=search_context.request_id)
         result = self.recall_pipeline.search(search_context)
+        try:
+            current_entry = self.entry_state(context)
+        except ContractError as exc:
+            if exc.code != "DEADLINE_EXCEEDED":
+                raise
+            return RetrievalResult(
+                (), (), None, ("deadline_exceeded_release_fence",), request_id=search_context.request_id
+            )
+        if current_entry != (entry_state, entry_version):
+            return RetrievalResult((), (), None, ("entry_state:paused",), request_id=search_context.request_id)
         final_private = self._recall_private_state(context, after=private_marker)[0]
         if final_private is not None and (trace := CURRENT_TRACE.get()) is not None:
             trace.enabled = False
@@ -638,6 +703,9 @@ class MemoryCore:
             # Before the vector channel, so a full interval makes no query embedding
             # request and reaches no provider.
             return self._private_recall_packet(search_context)
+        entry_state, entry_version = self.entry_state(context)
+        if entry_state == "paused":
+            return self._paused_recall_packet(search_context)
         search_context = replace(search_context, packet_selection=True)
         result = self.recall_pipeline.search(search_context)
         compiler = self.recall_packet_compiler
@@ -658,6 +726,17 @@ class MemoryCore:
             result,
             self.storage,
         )
+        if packet["items"]:
+            try:
+                current_entry = self.entry_state(context)
+            except ContractError as exc:
+                if exc.code != "DEADLINE_EXCEEDED":
+                    raise
+                packet = self._paused_recall_packet(search_context)
+                packet["gaps"] = ["deadline_exceeded_release_fence"]
+                return packet
+            if current_entry != (entry_state, entry_version):
+                return self._paused_recall_packet(search_context)
         validate_payload("recall_packet", dict(packet))
         final_private = self._recall_private_state(context, after=private_marker)[0]
         if final_private is not None and (trace := CURRENT_TRACE.get()) is not None:
@@ -668,18 +747,33 @@ class MemoryCore:
 
     def prepare_recall_render(self, context: TrustedContext, packet):
         """Prepare an injection-ready render context; does not assert host adoption."""
-        from .recall_packet import render_recall_packet_context
+        from .entry_control import entry_key
+        from .recall_packet import RecallRenderPreparation, render_recall_packet_context
 
-        return render_recall_packet_context(
+        state, version = self.entry_state(context)
+        if state == "paused":
+            return RecallRenderPreparation(None, None, None)
+
+        result = render_recall_packet_context(
             packet,
             installation_id=context.binding.installation_id,
             session_id=context.session_id,
             renderer=self.recall_packet_renderer,
+            entry_id=entry_key(context),
+            entry_version=version,
         )
+        if self.entry_state(context) != (state, version):
+            return RecallRenderPreparation(None, None, None)
+        return result
 
     def collection(self, context: TrustedContext, query, *, cursor=None, deadline_seconds: float = 2.0):
         if type(deadline_seconds) not in (int, float) or deadline_seconds <= 0:
             raise ContractError("INPUT_INVALID", "deadline_seconds")
+        from .retrieval_storage import CollectionPage
+
+        entry = self.entry_state(context)
+        if entry[0] == "paused":
+            return CollectionPage((), None, "unknown", self.memory_epoch(context), ("entry_state:paused",))
         marker = self._private_read_refusal(context)
         search_context = SearchContext(
             query="collection",
@@ -703,6 +797,8 @@ class MemoryCore:
             trusted_context=context,
         )
         result = self.recall_pipeline.collection(search_context, query, cursor)
+        if self.entry_state(context) != entry:
+            return CollectionPage((), None, "unknown", self.memory_epoch(context), ("entry_state:paused",))
         self._private_read_refusal(context, after=marker)
         return result
 

@@ -80,6 +80,20 @@ def hold_for_private_mode(
         )
 
 
+def hold_for_entry_state(storage, clock, context, item, *, started, budget):
+    """Keep paused-entry work pending without spending a model attempt."""
+    if budget_left(started, clock, budget) <= 0:
+        return deadline_result(storage, context, item)
+    with storage.write(context, remaining_seconds=max(0.001, budget_left(started, clock, budget))) as tx:
+        now = clock.utc_now()
+        if not tx.work._verify_lease(*item.lease, now=now):
+            return stale_result(tx, item)
+        return work_result(
+            tx.work.defer_without_attempt(*item.lease, now=now, error_code="entry_paused", seconds=60),
+            error_code="entry_paused",
+        )
+
+
 def defer_model_pass(storage, clock, context, item, model, *, started, budget):
     """Release work for the next pass when its shared model port has no calls left.
 
@@ -163,8 +177,10 @@ def _source_state(tx, ref: str, revision: int) -> tuple | None:
     conn = tx._check()
     row = conn.execute(
         """SELECT e.event_sha256,e.read_blocked,e.suppressed,e.scope_id,e.project_id,e.branch_id,
-                  e.source_group_key,b.read_blocked,b.suppressed,b.operation_id
+                  e.source_group_key,b.read_blocked,b.suppressed,b.operation_id,e.entry_id,
+                  coalesce(ec.state,'normal'),coalesce(ec.version,0)
            FROM source_events e LEFT JOIN object_blocks b ON b.object_kind='event' AND b.object_ref=e.event_id
+           LEFT JOIN entry_controls ec ON ec.entry_id=e.entry_id
            WHERE e.event_id=? AND e.source_revision=?""",
         (ref, revision),
     ).fetchone()

@@ -133,6 +133,19 @@ def counting_response(proposals, records):
     return response
 
 
+def _assert_workload_matches_catalog(counts):
+    """Compare measured stages to the planning catalog within its recorded tolerance."""
+    rows = recommended_workload()
+    assert set(counts) == {row["task"] for row in rows}
+    # Recommendations already apply a safety factor; minor variation does not
+    # warrant replacing the catalog's recorded estimates.
+    for row in rows:
+        for name in ("calls", "input_tokens", "output_tokens"):
+            measured, recorded = counts[row["task"]][name], row[name]
+            assert abs(measured - recorded) <= max(1, recorded // 10), (row["task"], name, measured, recorded)
+    assert counts["entity_resolution"]["calls"] > 0
+
+
 def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, record_property):
     ctx = context(tmp_path / "TEST-cost")
     corpus = json.loads((Path(__file__).parents[2] / "prompts/entity.examples.json").read_text("utf-8"))[:5]
@@ -285,15 +298,6 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
             "workload_measurement",
             json.dumps(dict(turns=100, assistant_token_lengths=lengths, tasks=counts, requests=records)),
         )
-        rows = recommended_workload()
-        assert set(counts) == {row["task"] for row in rows}
-        # The catalog is a planning estimate that recommendations multiply by
-        # SAFETY_FACTOR, so it is re-measured only when a stage moves by more than
-        # a tenth; small shifts from unrelated worker changes keep the recorded row.
-        for row in rows:
-            for name in ("calls", "input_tokens", "output_tokens"):
-                measured, recorded = counts[row["task"]][name], row[name]
-                assert abs(measured - recorded) <= max(1, recorded // 10), (row["task"], name, measured, recorded)
-        assert counts["entity_resolution"]["calls"] > 0
+        _assert_workload_matches_catalog(counts)
     finally:
         runtime.close()

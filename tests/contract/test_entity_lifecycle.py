@@ -388,3 +388,27 @@ def test_purge_collects_cached_alias_names_after_all_mentions_disappear(app, end
     core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     with core.storage.read(ctx) as tx:
         assert not tx._check().execute("SELECT 1 FROM entity_names WHERE name=?", (name,)).fetchone()
+
+
+def test_entity_worker_waits_for_paused_source_entry(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    item = fact(core, ctx, "TEST-EntryEntity", "home", "TEST-Harbor")
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_entry_state("local", "paused", actor="TEST-owner")
+    with core.storage.write(ctx) as tx:
+        queue_entity_backfill(tx, now=core.clock.utc_now(), limit=10)
+        jobs = tx.work.claim_next(
+            "TEST-entry-entity",
+            core.clock.utc_now(),
+            lease_seconds=60,
+            limit=8,
+            allowed_work_types=frozenset({"rebuild_projection"}),
+        )
+    job = next(job for job in jobs if job.subject_ref == item.ref)
+    outcome = process_rebuild_projection(
+        core.storage, core.clock, ctx, job, model=RecordedModel(), started=core.clock.monotonic(), budget=10
+    )
+    assert outcome[1] == "entry_paused" and outcome[2] == "pending"

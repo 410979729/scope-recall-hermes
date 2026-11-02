@@ -75,6 +75,10 @@ def authorize_forget(tx, request, targets):
 def forget(storage, clock, context, value, *, remaining_seconds=1.0):
     request = validate_model_request("forget_request", value, context)
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        from .entry_control import capture_refusal
+
+        if reason := capture_refusal(tx, context):
+            raise ContractError("ACCESS_DENIED", reason)
         op, _ = tx.deletions.request_key(request)
         prior = tx.deletions.receipt(op)
         if prior is not None:

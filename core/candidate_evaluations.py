@@ -145,6 +145,11 @@ class CandidateEvaluations(CandidateTables):
             (work_id, lease_token, code, field, now),
         )
 
+    def defer_entry(self, evaluation_id: int, work, *, now: str):
+        """Release an uncalled attempt while one of its source entries is paused."""
+        self._release_attempt(evaluation_id, "entry_paused", "entry_paused")
+        return self._tx.work.defer_without_attempt(*work.lease, now=now, error_code="entry_paused", seconds=60)
+
     def defer_budget(self, evaluation_id: int, work, *, now: str, code: str):
         """No verdict was produced: hand the attempt back and park the work for an hour.
 

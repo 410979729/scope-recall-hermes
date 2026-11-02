@@ -233,7 +233,9 @@ def attempt_reasons(trace, items, gaps) -> list[str]:
         reasons.add("retrieval_empty" if not items else "all_candidates_dropped")
         reasons.update(item["reason"] for item in items)
     for gap in gaps:
-        if gap == "blank_prompt":
+        if gap == "entry_state:paused":
+            reasons.add("entry_state:paused")
+        elif gap == "blank_prompt":
             reasons.add("prompt_skipped")
         elif gap == "source_ref_limit":
             reasons.add("source_ref_limit")

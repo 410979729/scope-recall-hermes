@@ -6,7 +6,7 @@
   "required": ["format", "action", "status"],
   "properties": {
     "format": {"type": "string", "const": "scope-recall-management/1"},
-    "action": {"type": "string", "enum": ["list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session", "export", "secrets"]},
+    "action": {"type": "string", "enum": ["list", "search", "show", "history", "revise", "mute", "unmute", "forget", "forget-session", "export", "secrets", "entries", "entry", "entry-state"]},
     "status": {"type": "string", "enum": ["ok", "error"]},
     "code": {"type": "string"},
     "field": {"type": ["string", "null"]},

@@ -58,6 +58,29 @@ def _node(scope: str, subject: str) -> dict:
     return {"id": "entity:" + key, "label": subject}
 
 
+def paused_trace(core, context, request):
+    """Return an empty trace with the entry-state reason and the ordinary envelope."""
+    body = {"max_hops": 2, "max_nodes": 24, "max_paths": 12, "budget_bytes": 16384, "direction": "both", **request}
+    validate_model_request("trace_request", body, context)
+    result = dict(
+        protocol_version="1.1",
+        request_id=body["request_id"],
+        status="unavailable",
+        memory_epoch=core.memory_epoch(context),
+        as_of=core.clock.utc_now(),
+        paths=[],
+        gaps=["entry_state:paused"],
+        coverage="unknown",
+        answerability="unknown",
+        visited_nodes=0,
+        truncated=False,
+        budget_unit="utf8_bytes",
+        facts_written=0,
+    )
+    validate_payload("trace_view", result)
+    return result
+
+
 def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dict:
     if type(request) is not dict:
         raise ContractError("INPUT_INVALID", "object")

@@ -451,6 +451,9 @@ def handle_request(
     # the rest is its recall.
     # ``error``: the capture's code, or the class of what failed it when it was no contract error (a store that is
     # locked or broken), which the log would otherwise not name.
+    state_gaps = [
+        gap for gap in handler.diagnostics.capability_gaps if gap in {"entry_state:read-only", "entry_state:paused"}
+    ]
     return {
         "private_rules": private_rules,
         "result": result,
@@ -463,6 +466,7 @@ def handle_request(
         "retry": not handler.diagnostics.capture_settled,
         "capture_disposition": handler.diagnostics.capture_disposition,
         "capture_durability": handler.diagnostics.capture_durability,
+        **({"capture_gaps": state_gaps} if state_gaps else {}),
         "warm": warm,
         "build_ms": built,
         "capture_ms": handler.diagnostics.capture_total_ms,
