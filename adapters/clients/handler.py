@@ -16,6 +16,7 @@ from typing import Any, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
+from scope_recall.core.events import prepare_capture
 from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.recall_trace import record_unbound_attempt
 from scope_recall.core.storage import SQLiteStorage
@@ -467,6 +468,42 @@ class CodexHookHandler:
             return None
         return audience
 
+    def _load_compaction(self, event, session_id, payload, compacted_at, compaction_seq, compaction_epoch):
+        """Bind the pending host compaction without consuming it on owner commands."""
+        if self.remote_paths:
+            if compacted_at is not None:
+                from scope_recall.contracts import utc_timestamp
+
+                try:
+                    self._compacted_at = utc_timestamp(compacted_at)
+                except ContractError:
+                    pass
+            if (
+                type(compaction_seq) is int
+                and 1 <= compaction_seq < 2**63
+                and type(compaction_epoch) is str
+                and 1 <= len(compaction_epoch) <= 64
+            ):
+                self._compaction_seq, self._compaction_epoch = compaction_seq, compaction_epoch
+        elif self.host in {"claude-code", "codex"}:
+            if event == "SessionStart" and payload.get("source") == "compact":
+                mark_compaction(self.config, session_id, self.clock.utc_now())
+            marker = compaction_marker(self.config, session_id)
+            if marker is not None:
+                self._compacted_at = marker["at"]
+                self._compaction_seq = marker["ordinal"]
+                self._compaction_epoch = marker["epoch"]
+
+    def _handle_start_or_prompt(self, event, session_id, audience, payload, deadline):
+        """Deliver and account for a normal start or prompt before confirming compaction."""
+        if event == "SessionStart":
+            result = self._session_started(session_id, audience, deadline, payload)
+        else:
+            started = self.clock.monotonic()
+            result = self.events.prompt(session_id, audience, payload, deadline)
+            self._record_prompt_usage(session_id, audience, result, started, deadline)
+        return self._finish_compaction(session_id, audience, deadline, self._confirm_brief(result, deadline))
+
     def handle_payload(
         self,
         payload: dict[str, Any],
@@ -496,29 +533,11 @@ class CodexHookHandler:
         if admitted is None:
             return {}
         session_id, audience = admitted
-        if self.remote_paths:
-            if compacted_at is not None:
-                from scope_recall.contracts import utc_timestamp
-
-                try:
-                    self._compacted_at = utc_timestamp(compacted_at)
-                except ContractError:
-                    pass
-            if (
-                type(compaction_seq) is int
-                and 1 <= compaction_seq < 2**63
-                and type(compaction_epoch) is str
-                and 1 <= len(compaction_epoch) <= 64
-            ):
-                self._compaction_seq, self._compaction_epoch = compaction_seq, compaction_epoch
-        elif self.host in {"claude-code", "codex"}:
-            if event == "SessionStart" and payload.get("source") == "compact":
-                mark_compaction(self.config, session_id, self.clock.utc_now())
-            marker = compaction_marker(self.config, session_id)
-            if marker is not None:
-                self._compacted_at = marker["at"]
-                self._compaction_seq = marker["ordinal"]
-                self._compaction_epoch = marker["epoch"]
+        if event == "UserPromptSubmit":
+            command_result = self.events.recording_command(session_id, audience, payload)
+            if command_result is not None:
+                return command_result
+        self._load_compaction(event, session_id, payload, compacted_at, compaction_seq, compaction_epoch)
         # The extended trusted budget is for the auto recall path and for a client's
         # read of its session record.  The other hooks keep their short processing cap.
         budget = (
@@ -526,14 +545,8 @@ class CodexHookHandler:
         )
         deadline = self._hook_deadline(budget)
         self._upgrade_wake_context = audience, deadline
-        if event == "SessionStart":
-            result = self._session_started(session_id, audience, deadline, payload)
-            return self._finish_compaction(session_id, audience, deadline, self._confirm_brief(result, deadline))
-        if event == "UserPromptSubmit":
-            started = self.clock.monotonic()
-            result = self.events.prompt(session_id, audience, payload, deadline)
-            self._record_prompt_usage(session_id, audience, result, started, deadline)
-            return self._finish_compaction(session_id, audience, deadline, self._confirm_brief(result, deadline))
+        if event in {"SessionStart", "UserPromptSubmit"}:
+            return self._handle_start_or_prompt(event, session_id, audience, payload, deadline)
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
             # A thread opened for application suggestions contains application activity. Its mark excludes later
             # tool calls, replies and end events as well as the request that opened it.
@@ -794,6 +807,10 @@ class CodexHookHandler:
         if filtered is not None:
             return filtered
         result = self.handle_payload(payload)
+        notice = self.diagnostics.private_notice()
+        if notice:
+            prior = result.get("systemMessage")
+            result = {**result, "systemMessage": f"{prior}\n{notice}" if isinstance(prior, str) and prior else notice}
         if self.host == "dsh" and payload.get("hook_event_name") != "PrivateCheck":
             session_id, audience = self.session_of(payload), self.audience_of(payload)
             if session_id is not None and audience is not None:
@@ -808,6 +825,50 @@ class CodexHookHandler:
         return result
 
     # -- capture ---------------------------------------------------------
+
+    def _capture_event(self, context, audience, event, deadline, gaps, via_inbox, wait):
+        """Preserve prefiltered omission metadata through either capture route."""
+        removed_gaps = tuple(
+            gap for gap in gaps if gap == "private_content_omitted" or gap.startswith("private_spans_removed:")
+        )
+        prepared = None
+        if removed_gaps and isinstance(self.core, MemoryCore):
+            prepared = prepare_capture(event, context)
+            prepared = replace(prepared, gaps=tuple(dict.fromkeys((*prepared.gaps, *removed_gaps))))
+        if via_inbox:
+            receipt = self.core.record_host_event(
+                context,
+                event,
+                scope_id=audience.capture_scope_id,
+                host_scope=audience.host_scope,
+                remaining_seconds=min(wait, self.remaining(deadline)),
+                **({"_prepared": prepared} if prepared is not None else {}),
+                **(
+                    {"background": True}
+                    if self.background_prompt_capture and self.diagnostics.last_event == "UserPromptSubmit"
+                    else {}
+                ),
+            )
+            if isinstance(receipt, PendingCapture):
+                self.pending_capture = receipt
+                receipt = receipt.receipt
+        else:
+            receipt = self.core.record_event(
+                context,
+                event,
+                scope_id=audience.capture_scope_id,
+                remaining_seconds=min(wait, self.remaining(deadline)),
+                **({"_prepared": prepared} if prepared is not None else {}),
+            )
+        return receipt
+
+    def _note_private_spans(self, receipt):
+        """Count content-free omission markers from a capture receipt."""
+        for gap in set(receipt.gaps):
+            if gap.startswith("private_spans_removed:"):
+                count = gap.removeprefix("private_spans_removed:")
+                if count.isascii() and count.isdecimal():
+                    self.diagnostics.private_spans_removed += int(count)
 
     def capture(
         self,
@@ -837,29 +898,7 @@ class CodexHookHandler:
             self.note("deadline_exceeded", gaps=gaps)
             return (), gaps
         try:
-            if via_inbox:
-                receipt = self.core.record_host_event(
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    host_scope=audience.host_scope,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                    **(
-                        {"background": True}
-                        if self.background_prompt_capture and self.diagnostics.last_event == "UserPromptSubmit"
-                        else {}
-                    ),
-                )
-                if isinstance(receipt, PendingCapture):
-                    self.pending_capture = receipt
-                    receipt = receipt.receipt
-            else:
-                receipt = self.core.record_event(
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                )
+            receipt = self._capture_event(context, audience, event, deadline, gaps, via_inbox, wait)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
@@ -880,6 +919,7 @@ class CodexHookHandler:
         self.diagnostics.capture_disposition = receipt.disposition
         self.diagnostics.capture_durability = receipt.durability
         self.diagnostics.masked_secret_count += receipt.masked_secret_count
+        self._note_private_spans(receipt)
         if receipt.error_code:
             self.diagnostics.note_capture_error(receipt.error_code)
         if receipt.durability == "queued":

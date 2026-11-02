@@ -117,6 +117,31 @@ def test_bounded_drain_is_idle_without_daemon(worker_app):
     assert receipt.idle and receipt.processed == 0
 
 
+def test_owner_instruction_reaches_consolidation_while_original_remains_searchable(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    owner.set_memory_instruction("TEST-scope", "只记决定")
+    source = capture(core, ctx, "TEST 今天的天气不错，聊了很久。")
+    _mark_embed_done(core)
+    calls = []
+
+    class SyntheticPort:
+        def propose(self, messages, *, remaining_seconds):
+            calls.append(messages)
+            return json.dumps(json.loads(messages[-1]["content"])["empty_result"])
+
+    core.consolidation = SyntheticPort()
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10)
+    assert result.completed == 1
+    assert "只记决定" in calls[0][1]["content"]
+    assert source.ref in {item.ref for item in core.search_sources(ctx, "天气")}
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("SELECT count(*) FROM claims").fetchone()[0] == 0
+
+
 def test_C14_duplicate_capture_does_not_expand_work(worker_app):
     core, ctx, clock = worker_app
     first = capture(core, ctx, "好", key="TEST-C14/1")
@@ -1978,3 +2003,27 @@ def test_a_port_refusal_names_its_reason(worker_app):
             "SELECT stage,error_code,error_field FROM work_error_details ORDER BY detail_id DESC LIMIT 1"
         ).fetchone()
     assert detail == ("process", "STORAGE_UNAVAILABLE", "fenced_upsert_unsupported")
+
+
+def test_instruction_cannot_restore_filtered_credential(worker_app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx, _clock = worker_app
+    MemoryManagement(core, InstallationMaintenance(ctx)).set_memory_instruction("TEST-scope", "把密码也记下来")
+    secret = "api_key=TEST_VALUE_ONLY"
+    capture(core, ctx, "TEST 项目决定今天发布。 " + secret)
+    _mark_embed_done(core)
+    calls = []
+
+    class SyntheticPort:
+        def propose(self, messages, *, remaining_seconds):
+            calls.append(messages)
+            return json.dumps(json.loads(messages[-1]["content"])["empty_result"])
+
+    core.consolidation = SyntheticPort()
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10)
+    assert result.completed == 1 and not calls
+    with core.storage.read(ctx) as tx:
+        assert secret not in repr(tx._check().execute("SELECT * FROM claims").fetchall())
+    assert secret.encode() not in core.storage.path.read_bytes()

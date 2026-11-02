@@ -120,8 +120,12 @@ class UIApi:
                 before=number(data, "before"),
                 limit=number(data, "limit", 30),
             )
-        if route == "private":
-            return api.private_status(session=text(data, "session"), project=text(data, "project"))
+        if route in {"private", "instruction"}:
+            return (
+                api.private_status(session=text(data, "session"), project=text(data, "project"))
+                if route == "private"
+                else {"instructions": api.memory_instructions(text(data, "scope"))}
+            )
         if route == "receipt":
             return self._lookup(self.receipts, text(data, "id"))
         raise ContractError("INPUT_INVALID", "route")
@@ -155,8 +159,12 @@ class UIApi:
     def _plan(self, data):
         api = self.management
         action = text(data, "action")
-        if action is not None and action.startswith("health-"):
-            return self._health_plan(data, action)
+        if action == "instruction-set" or (action is not None and action.startswith("health-")):
+            return (
+                dict(action=action, scope=text(data, "scope"), instruction=text(data, "instruction"))
+                if action == "instruction-set"
+                else self._health_plan(data, action)
+            )
         if action in {"mute", "unmute", "forget"}:
             ref = text(data, "ref")
             revision = number(data, "expected_revision")
@@ -240,8 +248,12 @@ class UIApi:
     def _apply(self, plan):
         api = self.management
         action = plan["action"]
-        if action is not None and action.startswith("health-"):
-            return self._health_apply(plan)
+        if action == "instruction-set" or (action is not None and action.startswith("health-")):
+            return (
+                api.set_memory_instruction(plan["scope"], plan["instruction"])
+                if action == "instruction-set"
+                else self._health_apply(plan)
+            )
         if action in {"mute", "unmute", "forget", "forget-session"}:
             return api.apply(plan["plan"])
         if action == "release-quarantine":

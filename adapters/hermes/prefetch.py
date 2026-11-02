@@ -8,7 +8,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from scope_recall.contracts import ContractError, RecallRequest, TrustedContext
-from scope_recall.core.private import notice_for_mode
+from scope_recall.core.capture_filters import without_private
+from scope_recall.core.private import notice_for_mode, parse_recording_command
 from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.recall_trace import record_refusal, record_unbound_attempt
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
@@ -16,6 +17,7 @@ from scope_recall.core.writer_lease import TruthWriterBusyError
 
 from ..runtime_wiring import render_host_recall_context
 from .tool_surface import display_zone
+from .turn_capture import direct_owner_cli
 
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
@@ -39,6 +41,9 @@ class Prefetch:
         timed out can run 30-50 s).  Nothing of the turn is written meanwhile: its message was stored before, its
         tools run after.
         """
+        command = parse_recording_command(query)
+        if type(query) is str:
+            query = without_private(query)[0]
         if not self._adapter._lock.acquire(timeout=_PREFETCH_STATE_WAIT_S):
             self._adapter._calls.busy("prefetch")
             return ""
@@ -66,7 +71,11 @@ class Prefetch:
                     "source_ref_limit",
                 )
                 return ""
-            recent = (self._adapter._current_task_message,) if self._adapter._current_task_message else ()
+            recent = (
+                (without_private(self._adapter._current_task_message)[0],)
+                if self._adapter._current_task_message
+                else ()
+            )
             context = identity.trusted_context(session_id=effective_session, recent_messages=recent)
             generation = self._adapter._brief_compactions.get(effective_session, 0)
             compacted_at = self._adapter._brief_compaction_times.get(effective_session)
@@ -81,13 +90,25 @@ class Prefetch:
             request = self._request(query, effective_session)
             core = self._adapter._require_core()
             turn = self._adapter._active_turn_id
+            removed = self._adapter._private_span_receipts.get((context.session_id, turn), 0)
         finally:
             self._adapter._lock.release()
         read_mode = getattr(core, "private_mode", None)
         mode = read_mode(context) if callable(read_mode) else None
+        if direct_owner_cli(identity) and command:
+            return f"Scope Recall recording mode: {mode or 'none'}."
         notice = notice_for_mode(mode) or ""
+        if removed:
+            notice = "\n".join(part for part in (notice, f"private_spans_removed:{removed}") if part)
         if mode == "full":
             return notice
+        return self._deliver(
+            query, (core, context, generation, effective_session, turn, notice, request, current_refs, identity)
+        )
+
+    def _deliver(self, query, state):
+        """Prepare and confirm the ordinary turn after its source and privacy checks."""
+        core, context, generation, effective_session, turn, notice, request, current_refs, identity = state
         started = core.clock.monotonic()
         briefing = self._brief(core, context, generation)
         brief = briefing["text"]

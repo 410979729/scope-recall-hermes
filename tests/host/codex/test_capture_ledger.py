@@ -238,6 +238,18 @@ def test_wire_records_omit_private_spans():
     )
 
 
+def test_wire_record_keeps_removed_span_count_without_private_text():
+    from scope_recall.adapters.clients.remote_client import _visible_payload
+    from scope_recall.adapters.clients.transcript import Said, said_to_wire
+
+    text = "TEST visible <private>TEST hidden</private> end"
+    wire = said_to_wire(Said("TEST-entry", "user", text, NOW))
+    assert wire["private_spans_removed"] == 1
+    payload = _visible_payload(dict(prompt=text))
+    assert payload["scope_recall_private_spans_removed"] == 1
+    assert "TEST hidden" not in json.dumps((wire, payload))
+
+
 def test_local_rollout_is_discovered_after_hook_died_before_locator(installed, tmp_path, monkeypatch):
     from datetime import UTC, datetime, timedelta
 

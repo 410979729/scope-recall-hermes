@@ -116,7 +116,7 @@ def test_health_step_rollback_preserves_briefing_schema(app, monkeypatch):
         )
 
 
-@pytest.mark.parametrize("version", range(1105, 1126))
+@pytest.mark.parametrize("version", range(1105, 1127))
 def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version):
     from scope_recall.maintenance.shared_import import SOURCE_SCHEMAS
 
@@ -157,6 +157,8 @@ def test_merged_upgrade_chain_preserves_truth_and_existing_features(app, version
         assert tables >= {
             "adoption_relations",
             "adoption_processing",
+            "scope_memory_instructions",
+            "private_command_fences",
             "session_briefs",
             "session_brief_injections",
             "session_brief_sessions",

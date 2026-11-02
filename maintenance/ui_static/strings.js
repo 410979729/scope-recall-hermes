@@ -1,6 +1,8 @@
 "use strict";
 window.UI_STRINGS = {
   "en": {
+    "memoryInstruction": "Memory instruction",
+    "instructionHint": "Choose what future extraction should remember for this scope. Maximum 2,000 characters.",
     "health": "Memory health",
     "health_duplicateGroup": "Possible duplicates",
     "health_entities": "Possible duplicate entities",
@@ -155,6 +157,8 @@ window.UI_STRINGS = {
     "saveImportance": "Save importance"
   },
   "zh": {
+    "memoryInstruction": "记忆说明",
+    "instructionHint": "指定此范围今后提炼时记什么，最多 2,000 个字符。",
     "health": "记忆体检",
     "health_duplicateGroup": "可能重复",
     "health_entities": "可能重复的实体",

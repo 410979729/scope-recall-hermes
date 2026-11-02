@@ -40,6 +40,8 @@
     </section>
     <section id="quarantine" class="page" hidden><h2 data-i18n="quarantine"></h2><p data-i18n="quarantineHint"></p><button id="refresh-quarantine" data-i18n="refresh"></button><div id="quarantine-items"></div><button id="quarantine-next" data-i18n="next" disabled></button></section>
     <section id="private" class="page" hidden><h2 data-i18n="private"></h2><p data-i18n="privateHint"></p><div id="private-data"></div>
+      <h3 data-i18n="memoryInstruction"></h3><p data-i18n="instructionHint"></p>
+      <form id="instruction-form"><label><span data-i18n="scope"></span><input name="scope" required></label><label><span data-i18n="memoryInstruction"></span><textarea name="instruction" maxlength="2000" rows="4"></textarea></label><button type="submit" data-i18n="preview"></button><button type="button" id="instruction-read" data-i18n="history"></button></form><div id="instruction-history"></div>
       <form id="private-form" class="grid"><label><span data-i18n="target"></span><select name="target"><option value="global" data-i18n="global"></option><option value="session" data-i18n="session"></option><option value="project" data-i18n="project"></option></select></label><label><span data-i18n="targetValue"></span><input name="targetValue"></label>
         <label><span data-i18n="mode"></span><select name="mode"><option value="full" data-i18n="full"></option><option value="read-only" data-i18n="readOnly"></option></select></label><label><span data-i18n="duration"></span><input name="duration_seconds" type="number" min="1"></label>
         <button type="submit" data-i18n="turnOn"></button><button id="private-off" type="button" data-i18n="turnOff"></button><button id="private-inspect" type="button" data-i18n="inspectTarget"></button>

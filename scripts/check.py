@@ -320,6 +320,7 @@ SUITES = {
         "tests/host/test_memory_ui_http.py",
         "tests/host/test_memory_ui_assets.py",
         "tests/host/codex/test_client_private_mode.py",
+        "tests/host/codex/test_private_commands.py",
         "tests/host/hermes/test_hermes_private_mode.py",
         "tests/host/test_endpoint_credentials.py",
         "tests/host/hermes/test_attachments_shutdown.py",

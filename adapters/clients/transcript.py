@@ -67,6 +67,7 @@ class Said:
     occurred_at: str
     prompt_id: str | None = None
     cwd: str | None = None
+    private_spans_removed: int = 0
 
 
 def _human(origin: object) -> bool:
@@ -361,7 +362,10 @@ def _dsh_said(row: object) -> Said | None:
         entry_id.encode("utf-8")
     except UnicodeEncodeError:
         return None
-    return Said(entry_id.strip(), role, without_lone_surrogates(text), occurred_at)
+    removed = row.get("private_spans_removed", 0)
+    if type(removed) is not int or not 0 <= removed <= 1000000:
+        return None
+    return Said(entry_id.strip(), role, without_lone_surrogates(text), occurred_at, private_spans_removed=removed)
 
 
 def workbuddy_session(path: Path) -> str | None:
@@ -430,10 +434,16 @@ WIRE_TEXT_LIMIT = 1_000_000
 
 def said_to_wire(entry: Said) -> dict[str, object]:
     """One message, as a client on another machine sends it to its entry's server."""
+    text, count = without_private(entry.text)
     return {
         "entry_id": entry.entry_id,
         "role": entry.role,
-        "text": without_private(entry.text)[0],
+        "text": text,
+        **(
+            {"private_spans_removed": count + entry.private_spans_removed}
+            if count or entry.private_spans_removed
+            else {}
+        ),
         "occurred_at": entry.occurred_at,
         "prompt_id": entry.prompt_id,
         **({"cwd": entry.cwd} if entry.cwd is not None else {}),
@@ -470,7 +480,10 @@ def said_from_wire(value: object) -> Said | None:
         return None
     directory = value.get("cwd")
     directory = directory if type(directory) is str and 0 < len(directory) <= 8192 else None
-    return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None, directory)
+    removed = value.get("private_spans_removed", 0)
+    if type(removed) is not int or not 0 <= removed <= 1000000:
+        return None
+    return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None, directory, removed)
 
 
 #: The 16 MiB tail bounds per-prompt I/O while leaving room for records after the latest compaction; if a larger

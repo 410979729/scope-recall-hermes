@@ -51,6 +51,14 @@ def _filters(parser):
         parser.add_argument("--" + name)
 
 
+def _instruction_arguments(command, action):
+    """Expose scope instruction fields only on management commands."""
+    if action in {"instruction-get", "instruction-set"}:
+        command.add_argument("--scope", required=True)
+    if action == "instruction-set":
+        command.add_argument("--text", required=True, help="instruction text, at most 2000 characters")
+
+
 def _health_arguments(command, action):
     """Add arguments for the on-demand health commands."""
     if action == "health":
@@ -87,6 +95,8 @@ def parser():
         "secrets",
         "recalls",
         "import",
+        "instruction-get",
+        "instruction-set",
         "health",
         "health-entity",
         "health-merge",
@@ -95,6 +105,7 @@ def parser():
     ):
         command = commands.add_parser(action)
         _common(command)
+        _instruction_arguments(command, action)
         if action == "recalls":
             command.add_argument("--session")
             command.add_argument("--request-id")
@@ -182,10 +193,19 @@ def _execute_health(api, args):
     raise ContractError("INPUT_INVALID", "action")
 
 
-def execute(api, args):
-    """Translate one parsed command to the same methods used by the local UI."""
+def _execute_instruction_or_health(api, args):
+    """Route scope instructions and reviewed health actions through management."""
     if args.action.startswith("health"):
         return _execute_health(api, args)
+    if args.action == "instruction-get":
+        return {"instructions": api.memory_instructions(args.scope)}
+    return api.set_memory_instruction(args.scope, args.text)
+
+
+def execute(api, args):
+    """Translate one parsed command to the same methods used by the local UI."""
+    if args.action in {"instruction-get", "instruction-set"} or args.action.startswith("health"):
+        return _execute_instruction_or_health(api, args)
     if args.action in {"recalls", "secrets", "list", "search"}:
         return _inventory(api, args)
     if args.action == "importance":

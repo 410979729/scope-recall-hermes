@@ -157,6 +157,7 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1127: {"tables": ("private_command_fences", "scope_memory_instructions")},
     1125: {
         "tables": (
             "session_brief_compaction_epochs",

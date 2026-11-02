@@ -19,6 +19,37 @@ from tests.v11_support import source_event
 _UNRELATED_QUERY = "紫色海豚量子温泉"
 
 
+def test_prefetch_removes_inline_private_from_query_and_recent_context(adapter):
+    provider, _clock = adapter
+    core = provider._core
+    seen = []
+
+    class CapturePipeline:
+        storage_reader = core.recall_pipeline.storage_reader
+
+        def search(self, search_context):
+            seen.append(search_context)
+            return RetrievalResult(
+                items=(),
+                candidates=(),
+                memory_epoch=0,
+                gaps=(),
+                answerability_hint="unknown",
+                coverage="unknown",
+                candidate_count=0,
+                admitted_count=0,
+                request_id="TEST-request",
+            )
+
+    core.recall_pipeline = CapturePipeline()
+    message = "TEST visible <private>TEST secret sentinel</private> ending"
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn", user_message=message)
+    provider.prefetch(message)
+    assert seen
+    assert "TEST secret sentinel" not in seen[0].query
+    assert "TEST secret sentinel" not in repr(seen[0].trusted_context.recent_messages)
+
+
 def test_prefetch_returns_canonical_render_text_once(adapter, initialize_kwargs):
     provider, _clock = adapter
     core = provider._core

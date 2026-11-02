@@ -19,6 +19,7 @@ from .management_query import MemoryFilter, browse, partition, session_refs, sou
 from .management_revision import correct
 from .quarantine_management import preview_release, release_source, review_page
 from .restore import InstallationMaintenance, maintenance_context
+from .secret_patterns import contains_secret_like_text
 from .suppression import release
 
 
@@ -32,6 +33,44 @@ class MemoryManagement:
 
     def _context(self):
         return maintenance_context(self.core.storage, self.authority)
+
+    def memory_instructions(self, scope_id):
+        """Read the owner's instruction history for one authorized scope, newest first."""
+        context = self._context()
+        if scope_id not in context.allowed_scope_ids:
+            raise ContractError("ACCESS_DENIED", "scope_id")
+        with self.core.storage.read(context) as tx:
+            return [
+                dict(row)
+                for row in tx._check().execute(
+                    "SELECT scope_id,version,text,changed_at,changed_by FROM scope_memory_instructions "
+                    "WHERE scope_id=? ORDER BY version DESC",
+                    (scope_id,),
+                )
+            ]
+
+    def set_memory_instruction(self, scope_id, text):
+        """Append one owner instruction version; source and fact rows are unchanged."""
+        context = self._context()
+        if scope_id not in context.allowed_scope_ids:
+            raise ContractError("ACCESS_DENIED", "scope_id")
+        if type(text) is not str or len(text) > 2000:
+            raise ContractError("INPUT_INVALID", "instruction_max_2000_chars")
+        if contains_secret_like_text(text):
+            raise ContractError("SECRET_DETECTED", "memory_instruction")
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            conn = tx._check()
+            version = conn.execute(
+                "SELECT coalesce(max(version),0)+1 FROM scope_memory_instructions WHERE scope_id=?", (scope_id,)
+            ).fetchone()[0]
+            changed_at = self.core.clock.utc_now()
+            conn.execute(
+                "INSERT INTO scope_memory_instructions VALUES(?,?,?,?,?)",
+                (scope_id, version, text, changed_at, "local_user_management"),
+            )
+            return dict(
+                scope_id=scope_id, version=version, text=text, changed_at=changed_at, changed_by="local_user_management"
+            )
 
     def list(self, filters: MemoryFilter | None = None, *, limit=30, cursor=None):
         """Return one inventory page, with an opaque cursor for the next page."""

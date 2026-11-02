@@ -1182,3 +1182,29 @@ def test_replayed_old_compaction_epoch_does_not_invalidate_new_delivery(app):
     with core.storage.read(reader) as tx:
         assert already_injected(tx, "claim", item.ref, item.revision)
     assert core.session_brief(first, deliver=True, compact=True)["text"] == ""
+
+
+def test_inline_private_source_is_filtered_before_brief_preparation(app):
+    from scope_recall.core.claims import Qualification
+
+    core, ctx = app
+    source = capture(
+        core,
+        ctx,
+        "TEST-project \u914d\u8272 \u84dd\u8272\u3002 <private>TEST-brief-hidden</private>",
+        when="2026-09-05T12:00:00Z",
+    )
+    with core.storage.write(ctx) as tx:
+        item = tx.claims.append(
+            "TEST-scope",
+            draft(source, "\u84dd\u8272"),
+            Qualification("active", "direct_report", "synthetic"),
+            recorded_at=core.clock.utc_now(),
+        )
+    drain_worker(core.storage, core.clock, ctx, config=WorkerConfig("TEST-brief"), remaining_seconds=30)
+    brief = core.session_brief(ctx)
+    assert item.ref in brief["text"] and "\u84dd\u8272" in brief["text"]
+    assert "TEST-brief-hidden" not in json.dumps(brief)
+    with core.storage.read(ctx) as tx:
+        saved = tx._check().execute("SELECT items_json FROM session_briefs").fetchall()
+    assert "TEST-brief-hidden" not in str(saved)

@@ -130,6 +130,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: off until the refs reset rather than run with an incomplete fence.
         self._current_source_refs_overflow = False
         self._current_task_message = ""
+        # Per-turn receipt counts survive tool diagnostic updates without retaining source text.
+        self._private_span_receipts: dict[tuple[str, str], int] = {}
+        self._pending_private_receipt: tuple[str, str] | None = None
         self._retry = CaptureRetry(self)
         self._writer = CaptureWriter(self)
         self._turns = TurnCapture(self)

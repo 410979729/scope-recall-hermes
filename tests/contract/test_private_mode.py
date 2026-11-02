@@ -53,6 +53,18 @@ def _count(core, ctx, table):
         return tx._check().execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
+def test_doctor_reports_active_private_session_metadata(app):
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_storage
+
+    core, ctx, clock, owner = app
+    clock.now = datetime.now(UTC) - timedelta(seconds=2)
+    owner.private_on(target="session", session=ctx.session_id)
+    report = DoctorReport(host="codex", status="ok")
+    assert check_storage(report, ctx.binding, ctx.binding.data_directory)
+    assert any(rule["session_id"] == ctx.session_id and rule["mode"] == "full" for rule in report.private_rules)
+
+
 def test_the_table_holds_interval_metadata_and_nothing_spoken(app):
     core, ctx, _clock, _owner = app
     with closing(sqlite3.connect(core.storage.path)) as conn:

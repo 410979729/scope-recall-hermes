@@ -7,9 +7,37 @@ import pytest
 from jsonschema import Draft202012Validator
 from scope_recall.contracts import ContractError, TrustedSourcePrincipal, validate_payload
 from scope_recall.core.consolidate import CONSOLIDATION_INPUT_BUDGET, consolidation_messages
+from scope_recall.core.management import MemoryManagement
+from scope_recall.core.restore import InstallationMaintenance
 from scope_recall.core.worker_consolidation import decode_consolidation_result
 from test_claims import app as app
 from test_claims import capture
+
+
+def test_scope_instruction_history_and_bounded_prompt(app):
+    core, ctx = app
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    first = owner.set_memory_instruction("TEST-scope", "只记决定")
+    second = owner.set_memory_instruction("TEST-scope", "只记决定和约束")
+    assert (first["version"], second["version"]) == (1, 2)
+    assert [row["text"] for row in owner.memory_instructions("TEST-scope")] == ["只记决定和约束", "只记决定"]
+    with pytest.raises(ContractError, match="2000"):
+        owner.set_memory_instruction("TEST-scope", "x" * 2001)
+    source = capture(core, ctx, "TEST 今天聊了天气。")
+    messages = consolidation_messages((source,), memory_instruction="只记决定")
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+    assert "只记决定" in messages[1]["content"]
+    assert "只记决定" not in messages[0]["content"]
+    assert "天气" in messages[2]["content"]
+
+
+def test_scope_instruction_does_not_escape_request_budget(app):
+    core, ctx = app
+    source = capture(core, ctx, "TEST 用户决定使用蓝色。")
+    plain = consolidation_messages((source,))
+    exact = sum(len(message["content"].encode("utf-8")) for message in plain)
+    messages = consolidation_messages((source,), memory_instruction="只记决定", budget=exact)
+    assert all("只记决定" not in message["content"] for message in messages)
 
 
 def test_consolidation_preserves_authorized_origin_role_and_attested_import(app):

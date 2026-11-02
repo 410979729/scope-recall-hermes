@@ -5,7 +5,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1126
+SCHEMA_VERSION = 1127
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -73,6 +73,17 @@ PRIVATE_INTERVALS_STATEMENT = """CREATE TABLE private_intervals (
     ),
     CHECK(ends_at IS NULL OR starts_at <= ends_at)
 ) STRICT"""
+
+# The latest accepted remote owner command fences replay per entry and session.
+# Its timestamp and random identifier are metadata, never conversation text.
+PRIVATE_COMMAND_FENCES_STATEMENT = """CREATE TABLE private_command_fences (
+    entry_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(entry_id,session_id)
+) STRICT, WITHOUT ROWID"""
+
 PRIVATE_TARGET_INDEX = (
     "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at,starts_at)"
 )
@@ -750,7 +761,18 @@ STATEMENTS = (
     + REFLECTION_POLICY_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
-    + (RESTORED_SUPPRESSION_STATEMENT,)
+    + (
+        RESTORED_SUPPRESSION_STATEMENT,
+        PRIVATE_COMMAND_FENCES_STATEMENT,
+        """CREATE TABLE scope_memory_instructions (
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version >= 1),
+        text TEXT NOT NULL CHECK(length(text) <= 2000),
+        changed_at TEXT NOT NULL,
+        changed_by TEXT NOT NULL CHECK(changed_by = 'local_user_management'),
+        PRIMARY KEY(scope_id,version)
+    ) STRICT, WITHOUT ROWID""",
+    )
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
 
@@ -1156,3 +1178,11 @@ def upgrade_1125(connection):
     """Fence writers that cannot interpret reviewed cross-reference replacements."""
     connection.execute("UPDATE instance_meta SET schema_version=1126 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1126")
+
+
+def upgrade_1126(connection):
+    """Add versioned instructions and replay fences together under the upgrade transaction."""
+    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_memory_instructions")))
+    connection.execute(PRIVATE_COMMAND_FENCES_STATEMENT)
+    connection.execute("UPDATE instance_meta SET schema_version=1127 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1127")
