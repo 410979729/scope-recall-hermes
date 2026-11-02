@@ -1,9 +1,13 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1113
-#: Schemas a store may carry and be brought forward from, oldest first.  Any
+from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
+from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
+from .injection_schema import install as install_injection_schema
+
+SCHEMA_VERSION = 1116
+#: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112)
+UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -562,6 +566,8 @@ STATEMENTS = (
     + RECOVERY_STATEMENTS
     + CANDIDATE_STATEMENTS
     + ENTITY_STATEMENTS
+    + INJECTION_STATEMENTS
+    + INJECTION_SEEDS
     + (RESTORED_SUPPRESSION_STATEMENT,)
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
@@ -808,3 +814,29 @@ def normalize_scope_authorizations(connection) -> int:
         WHERE json_type(e.extra_json,'$.scope_authorization') IS NOT NULL""")
     return connection.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$.scope_authorization')
         WHERE json_type(extra_json,'$.scope_authorization') IS NOT NULL""").rowcount
+
+
+def upgrade_1113(connection):
+    """Install source safety decisions and defaults under the upgrade coordinator."""
+    install_injection_schema(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1114")
+
+
+def upgrade_1114(connection):
+    """Install bounded source policy under the upgrade coordinator."""
+    from .injection_schema import upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1115 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1115")
+
+
+def upgrade_1115(connection):
+    """Install content-bound screening checkpoints and bounded rule spans."""
+    from .injection_schema import SCAN_STATEMENT, upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute(SCAN_STATEMENT.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+    connection.execute("UPDATE instance_meta SET schema_version=1116 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1116")

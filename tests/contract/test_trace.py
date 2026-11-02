@@ -301,6 +301,9 @@ def test_an_import_s_history_gets_the_embedding_its_store_never_had(app):
     note = _imported(core, ctx, "TEST 旧笔记：小橘怕打雷。", role="unknown", key="TEST-import/note")
     tool = _imported(core, ctx, "TEST ls 输出：a.txt b.txt", role="tool", key="TEST-import/tool")
     ack = _imported(core, ctx, "好的", role="user", key="TEST-import/ack")
+    assert core.source(ctx, note, 1) is not None
+    with core.storage.write(ctx, remaining_seconds=10) as tx:
+        tx._check(write=True).execute("DELETE FROM work_items WHERE subject_ref=? AND work_type='embed'", (note,))
     storage = SQLiteStorage(ctx.binding)
     first = queue_import_embeddings(storage, ctx, limit=2)
     assert first["scanned"] == 2 and not first["finished"] and not first["held"] and first["queued"] in (1, 2)

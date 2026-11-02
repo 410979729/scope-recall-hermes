@@ -41,6 +41,9 @@ from .schema import (
     upgrade_1110,
     upgrade_1111,
     upgrade_1112,
+    upgrade_1113,
+    upgrade_1114,
+    upgrade_1115,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -66,6 +69,9 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1110,
             upgrade_1111,
             upgrade_1112,
+            upgrade_1113,
+            upgrade_1114,
+            upgrade_1115,
         ),
         strict=True,
     )
@@ -135,6 +141,7 @@ class Transaction:
         self.__memo: dict | None = None if writable else {}
         self.__memo_bytes = 0
         self.__parent: Transaction | None = None
+        self.__authorized_sources: dict = {}
 
     def with_context(self, context: TrustedContext, *, writable: bool = False) -> Transaction:
         """Borrow this transaction for an authorized partition, without widening its scopes or lifetime."""
@@ -359,11 +366,31 @@ class Transaction:
             pending_error_counts=_most_frequent(kinds["pending"]),
         )
 
+    @contextmanager
+    def _reuse_source(self, source):
+        """Reuse an authorized immutable source during one admission operation only.
+
+        The caller must already have read this version in this transaction.
+        The narrow lifetime excludes later visibility-changing mutations.
+        """
+        self._check(write=True)
+        key = (source.ref, source.revision)
+        previous = self.__authorized_sources.get(key)
+        self.__authorized_sources[key] = source
+        try:
+            yield source
+        finally:
+            if previous is None:
+                self.__authorized_sources.pop(key, None)
+            else:
+                self.__authorized_sources[key] = previous
+
     def source(self, ref: str, revision: int) -> StoredSource | None:
         conn = self._check()
         if type(ref) is not str or not ref or len(ref) > 240 or type(revision) is not int or revision < 1:
             raise ContractError("INPUT_INVALID", "source_ref")
-
+        if (ref, revision) in self.__authorized_sources:
+            return self.__authorized_sources[(ref, revision)]
         if not allowed(self, "event", ref):
             return None
         loaded = self.remembered(

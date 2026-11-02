@@ -157,6 +157,9 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1116: {"tables": ("source_scan_progress",)},
+    1115: {},
+    1114: {"tables": ("source_safety", "injection_rules")},
     1113: {
         "before": tuple(
             f"DROP TRIGGER {name}"

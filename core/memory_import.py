@@ -17,6 +17,9 @@ from ..contracts import (
 )
 from .capture import record_event
 from .events import prepare_capture
+from .injection_guard import blocked_refs
+from .source_records import stored_source
+from .visibility import deletion_allows
 
 
 def digest(value) -> str:
@@ -126,6 +129,19 @@ def prefetch_new_sources(core, context, items, *, source, source_id, scope_id):
     return frozenset(absent)
 
 
+def _replay_source(tx, ref, revision):
+    """Match an approved import internally without releasing a held source to readers.
+
+    Deletion and audience fences still apply. The envelope is returned only to
+    capture, which scans it again before admitting any derived work.
+    """
+    source = tx.source(ref, revision)
+    if source is None and deletion_allows(tx, "event", ref) and ref in blocked_refs(tx, "event", (ref,)):
+        loaded = tx._source_row(tx._check(), ref, revision)
+        source = None if loaded is None else stored_source(*loaded)
+    return source
+
+
 def _versioned_capture(core, context, prepared, *, known_new=False):
     """Reuse an admitted historical envelope or allocate the next source version.
 
@@ -154,9 +170,12 @@ def _versioned_capture(core, context, prepared, *, known_new=False):
         for revision, parts in versions.items():
             if tuple(row["content_sha256"] for row in parts) != digests:
                 continue
-            saved = tuple(source for row in parts if (source := tx.source(row["event_id"], revision)) is not None)
+            saved = tuple(
+                source for row in parts if (source := _replay_source(tx, row["event_id"], revision)) is not None
+            )
             if len(saved) != len(parts) or not all(
                 source is not None
+                and hashlib.sha256(source.event["content"].encode()).hexdigest() == digests[index]
                 and all(
                     source.event.get(field) == prepared.events[index].get(field)
                     for field in ("role", "source_original_origin", "source_principal")
