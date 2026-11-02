@@ -155,7 +155,7 @@ request accepts `new_value: {"importance": 4, "pinned": false}` with current hum
 claim and the requested metadata. These changes preserve the fact's wording and content revision.
 
 Conversation summaries are extractive claims with the derived-summary basis and sentence-level source positions.
-Each sentence retains its speaker role. Task summaries also receive the existing recovery structure and can cite
+Each sentence retains its speaker role. The item origin reflects the least trusted member, including verified imports: tool observation, then assistant, then human. Summaries remain claims and never become fact evidence roots. A summary is omitted only when every excerpted sentence appears verbatim in displayed original messages; partial overlap keeps the whole summary. Packet fitting retains the summary when an original cannot be displayed and refills released capacity from the bounded candidate pool. Task summaries also receive the existing recovery structure and can cite
 actual tool observations; an assistant's report remains attributed to the assistant. Sources from different scopes,
 projects, branches or entries are never combined. A session closes on `records.close_session(context)` or after
 30 minutes without capture. Hosts that do not supply an end signal use the idle trigger. A task closes only when

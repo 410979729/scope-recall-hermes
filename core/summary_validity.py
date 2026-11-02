@@ -6,6 +6,7 @@ import hashlib
 import json
 
 from ..contracts import ContractError
+from .episodes import source_origin
 
 CONVERSATION_SUMMARY_REASONS = ("summary_pending", "grounded_session_summary", "grounded_task_summary")
 
@@ -184,3 +185,29 @@ def summary_live(tx, ref, revision, *, query_scope=None, excluded=()):
     except ContractError:
         return False
     return bool(coverage)
+
+
+def summary_origin(tx, ref, revision):
+    """Label a summary by the least trusted member, resolving verified imports.
+
+    The whole manifest is authoritative, including members on other pages or
+    omitted from the excerpts. This label never grants derivation authority:
+    summaries are claims, while fact evidence roots must be source events.
+    """
+    row = (
+        tx._check()
+        .execute(
+            "SELECT g.manifest_json FROM summary_parts p JOIN summary_groups g USING(group_key) "
+            "WHERE p.claim_ref=? AND p.claim_revision=? AND p.generation=g.generation",
+            (ref, revision),
+        )
+        .fetchone()
+    )
+    if row is None:
+        return "origin_unknown"
+    origins = []
+    for member in json.loads(row[0]):
+        source = tx.source(member["ref"], member["revision"])
+        origins.append(source_origin(source) if source is not None else "origin_unknown")
+    trust = {"tool_observation": 0, "assistant_visible": 1, "human_direct": 2}
+    return min(origins, key=lambda origin: trust.get(origin, -1), default="origin_unknown")

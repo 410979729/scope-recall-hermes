@@ -40,7 +40,7 @@ from .recall_policy import (
     rrf_score,
     same_message,
 )
-from .recall_restatement import prefer_originals
+from .recall_restatement import has_conversation_summaries, prefer_originals
 from .recall_scope import asks_what_held_before, asks_what_was_said, query_scope, query_time
 from .retrieval import (
     CandidateRef,
@@ -1261,7 +1261,16 @@ class RetrievalPipeline:
         ordered = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_select")
-        ranked = self._apply_budget(distinct.filtered(ordered), working.limits, gaps, context=working)
+        pool = distinct.filtered(ordered)
+        defer_budget = working.packet_selection and has_conversation_summaries(pool)
+        # A summary cannot be discarded until the original survives the packet's
+        # full envelope and schema limits. Keep a bounded pool for that compiler,
+        # which owns final selection and can refill slots released by duplicates.
+        ranked = (
+            withhold_secret_items(pool, gaps, content=lambda pair: pair[1])[: working.limits.candidate_pool]
+            if defer_budget
+            else self._apply_budget(pool, working.limits, gaps, context=working)
+        )
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
             if ranked and all(estimate_tokens(obj.content) > working.limits.budget_tokens for _c, obj in ranked):
@@ -1286,7 +1295,8 @@ class RetrievalPipeline:
                 and not (working.in_context_since is not None and _in_context(tx, pair[1], working))
             )
             note_truncation(gaps, "packet_slots", considered=working.limits.max_items, available=len(ranked))
-            ranked = ranked[: working.limits.max_items]
+            if not defer_budget:
+                ranked = ranked[: working.limits.max_items]
         note_duplicates(gaps, distinct.collapsed)
         return ranked, query_items
 

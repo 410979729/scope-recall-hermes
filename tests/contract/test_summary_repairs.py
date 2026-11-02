@@ -232,7 +232,14 @@ def test_first_summary_masks_only_positioned_obsolete_evidence(app):
     assert "回滚期限三天" in str(model.pages)
     packet, rendered = rendered_conversation(core, ctx)
     assert "回滚期限三天" in rendered
-    assert any(i["kind"] == "claim" and "回滚期限三天" in i["content"] for i in packet["items"])
+    with core.storage.read(ctx) as tx:
+        excerpts = [
+            tx.claims.version(*r).payload["value_text"]
+            for r in tx._check().execute("SELECT claim_ref,claim_revision FROM summary_parts")
+            if summary_live(tx, *r)
+        ]
+    assert excerpts and all("蓝色" not in text for text in excerpts)
+    assert any("回滚期限三天" in text for text in excerpts)
     assert all("蓝色" not in i["content"] for i in packet["items"] if i["kind"] == "claim")
 
 
@@ -432,3 +439,205 @@ def test_task_summary_members_stay_in_their_own_entry(tmp_path):
             tx._check().execute("SELECT * FROM summary_groups WHERE kind='task' AND entry_id='test-entry-a'").fetchone()
         )
         assert all(m["ref"] != tool.ref for m in group_members(tx, group))
+
+
+def test_summary_repeated_in_shown_original_is_omitted(app):
+    core, ctx = app
+    source = capture(core, ctx, "If approved, deploy TEST-project.", when="2026-09-05T10:00:00Z")
+    build(core, ctx)
+    packet, rendered = rendered_conversation(core, ctx)
+    assert any(i["ref"] == source.ref for i in packet["items"])
+    assert not any(i.get("qualification_reason") == "grounded_session_summary" for i in packet["items"])
+    assert rendered.count("If approved, deploy TEST-project.") == 1
+
+
+@pytest.mark.parametrize(
+    "raw,expected_summary",
+    [("TEST-project chose blue.", True), ("TEST-project chose blue. Rollback takes three days.", False)],
+)
+def test_summary_compares_only_displayed_original_content(app, raw, expected_summary):
+    from scope_recall.core.retrieval import CandidateRef, SearchContext
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    from tests.contract.test_recall_packet_compiler import _compiled, _said
+
+    core, ctx = app
+    capture(core, ctx, "TEST-project chose blue. Rollback takes three days.")
+    build(core, ctx)
+    with core.storage.read(ctx) as tx:
+        row = tx._check().execute("SELECT claim_ref,claim_revision FROM summary_parts LIMIT 1").fetchone()
+        context = SearchContext.from_request(
+            recall_request(), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 10
+        )
+        summary = RetrievalStorage(clock=core.clock).hydrate(tx, CandidateRef("claim", *row, "scoped"), context)
+    assert summary is not None
+    shown = _said("TEST-displayed-source", raw)
+    packet = _compiled(core, ctx, "TEST-project", [("scoped", summary), ("lexical", shown)])
+    assert any(i["ref"] == summary.ref for i in packet["items"]) == expected_summary
+    if expected_summary:
+        assert "Rollback takes three days." in next(i["content"] for i in packet["items"] if i["ref"] == summary.ref)
+
+
+@pytest.mark.parametrize("weakest", ["human_direct", "assistant_visible", "tool_observation"])
+@pytest.mark.parametrize("imported", [False, True])
+def test_summary_origin_is_its_weakest_member(app, weakest, imported):
+    from scope_recall.contracts import ImportProvenance, import_source_fingerprint
+    from scope_recall.core.retrieval import CandidateRef, SearchContext
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    core, ctx = app
+    task = replace(ctx, task_anchor="TEST-origin-task")
+    capture(core, task, "Implement TEST-project.", when="2026-09-05T10:00:00Z")
+    role = {"human_direct": "user", "assistant_visible": "assistant", "tool_observation": "tool"}[weakest]
+    origin = "imported" if imported else weakest
+    event = source_event(
+        source_event_key="TEST-weakest-member",
+        origin=origin,
+        role=role,
+        content="TEST-project check returned zero.",
+        occurred_at="2026-09-05T11:01:00Z",
+        **({"source_original_origin": weakest} if imported else {}),
+    )
+    provenance = (
+        ImportProvenance(weakest, "a" * 64, frozenset({import_source_fingerprint(event)})) if imported else None
+    )
+    core.record_event(
+        replace(task, actor_origin=origin, import_provenance=provenance),
+        event,
+        scope_id="TEST-scope",
+        remaining_seconds=10,
+    )
+    capture(core, task, "The task is completed.", when="2026-09-05T11:02:00Z")
+    build(core, task)
+    with core.storage.read(ctx) as tx:
+        rows = (
+            tx._check()
+            .execute(
+                "SELECT p.claim_ref,p.claim_revision FROM summary_parts p "
+                "JOIN summary_groups g USING(group_key) WHERE g.kind='task'"
+            )
+            .fetchall()
+        )
+        context = SearchContext.from_request(
+            recall_request(), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 10
+        )
+        objects = [
+            RetrievalStorage(clock=core.clock).hydrate(tx, CandidateRef("claim", *r, "scoped"), context) for r in rows
+        ]
+    assert objects and all(o is not None and o.origin == weakest for o in objects)
+
+
+def test_summary_claim_cannot_be_a_fact_evidence_root(app):
+    from scope_recall.contracts import ContractError
+    from scope_recall.core.evidence_question import DERIVATION_ROOT_ORIGINS
+    from scope_recall.core.worker_consolidation import _root_only_sources
+    from test_claims import accept, draft
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project 配色 蓝色。")
+    build(core, ctx)
+    with core.storage.read(ctx) as tx:
+        ref, revision = tx._check().execute("SELECT claim_ref,claim_revision FROM summary_parts LIMIT 1").fetchone()
+        assert tx.source(ref, revision) is None
+        assert _root_only_sources(tx, (source,)) == (source,)
+    assert "derived_summary" not in DERIVATION_ROOT_ORIGINS
+    proposal = draft(source)
+    proposal["evidence_spans"][0].update(source_ref=ref, source_revision=revision)
+    with pytest.raises(ContractError):
+        accept(core, ctx, proposal)
+
+
+def _quoted_summary(ref, *quotes):
+    """An already released summary shape for deterministic packet budget tests."""
+    from scope_recall.core.retrieval import RetrievedObject
+
+    return RetrievedObject(
+        ref,
+        1,
+        "claim",
+        "\n".join("user: " + quote for quote in quotes),
+        "human_direct",
+        "current",
+        "trusted scope",
+        ("TEST-source@1",),
+        "derived_summary",
+        True,
+        metadata=(
+            ("qualification_reason", "grounded_session_summary"),
+            ("payload_json", json.dumps({"evidence_spans": [{"quote": q} for q in quotes]})),
+        ),
+    )
+
+
+def test_summary_slots_refill_earlier_budget_rejections(app):
+    from tests.contract.test_recall_packet_compiler import _compiled, _said
+
+    core, ctx = app
+    first = _quoted_summary("TEST-summary-one", "TEST-project approved.")
+    second = _quoted_summary("TEST-summary-two", "TEST-project released.")
+    detail = _said("TEST-extra", "Rollback deadline: three days.")
+    original = _said("TEST-original", "TEST-project approved. TEST-project released.")
+    found = [("scoped", first), ("scoped", second), ("lexical", detail), ("lexical", original)]
+    packet = _compiled(core, ctx, "TEST-project", found, max_items=3)
+    assert {i["ref"] for i in packet["items"]} == {detail.ref, original.ref}
+
+
+@pytest.mark.parametrize("length", [11000, 13000])
+def test_unshippable_original_never_suppresses_the_fitting_summary(app, length):
+    from tests.contract.test_recall_packet_compiler import _compiled, _said
+
+    core, ctx = app
+    quote = "TEST-project approved."
+    summary = _quoted_summary("TEST-summary-fallback", quote)
+    original = _said("TEST-too-large-original", quote + "x" * length)
+    packet = _compiled(core, ctx, "TEST-project", [("scoped", summary), ("lexical", original)], budget_tokens=2850)
+    assert any(i["ref"] == summary.ref for i in packet["items"])
+    assert not any(i["ref"] == original.ref for i in packet["items"])
+
+
+def test_continuous_excerpt_requires_one_displayed_original_to_contain_it(app):
+    from tests.contract.test_recall_packet_compiler import _compiled, _said
+
+    core, ctx = app
+    summary = _quoted_summary("TEST-multi-sentence-summary", "TEST-project approved. TEST-project released.")
+    first = _said("TEST-approved", "TEST-project approved.")
+    second = _said("TEST-released", "TEST-project released.")
+    packet = _compiled(core, ctx, "TEST-project", [("scoped", summary), ("lexical", first), ("lexical", second)])
+    assert {i["ref"] for i in packet["items"]} == {summary.ref, first.ref, second.ref}
+
+
+def test_partial_original_delivery_preserves_the_complete_summary(app):
+    from tests.contract.test_recall_packet_compiler import _compiled, _said
+
+    core, ctx = app
+    summary = _quoted_summary("TEST-complete-summary", "TEST-first detail.", "TEST-second detail.")
+    first = _said("TEST-large-first-original", "TEST-first detail." + "x" * 11000)
+    second = _said("TEST-rejected-second-original", "TEST-second detail." + "x" * 13000)
+    packet = _compiled(
+        core, ctx, "TEST-project", [("scoped", summary), ("lexical", first), ("lexical", second)], budget_tokens=3000
+    )
+    assert any(i["ref"] == summary.ref for i in packet["items"])
+    assert "TEST-second detail." in " ".join(i["content"] for i in packet["items"])
+
+
+def test_covered_summary_outside_the_item_cap_is_not_an_answer_drop(app):
+    from tests.contract.test_recall_packet_compiler import _compiled, _said
+
+    core, ctx = app
+    summary = _quoted_summary("TEST-covered-summary", "TEST-project approved.")
+    original = _said("TEST-only-original", "TEST-project approved.")
+    packet = _compiled(core, ctx, "TEST-project", [("scoped", summary), ("lexical", original)], max_items=1)
+    assert [i["ref"] for i in packet["items"]] == [original.ref]
+    assert packet["status"] == "ok" and packet["answerability"] == "supported"
+    assert not any(gap.startswith("budget_") for gap in packet["gaps"])
+
+
+def test_uncompiled_recall_keeps_its_existing_item_limit(app):
+    from datetime import UTC
+
+    core, ctx = app
+    capture(core, ctx, "TEST-project approved.", when="2026-09-05T10:00:00Z")
+    capture(core, ctx, "TEST-project released.", when="2026-09-05T11:00:00Z")
+    build(core, ctx)
+    result = core.recall(ctx, recall_request(query="昨天做了什么", max_items=1), deadline_seconds=10, zone=UTC)
+    assert len(result.items) <= 1
