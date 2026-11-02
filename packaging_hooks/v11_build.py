@@ -69,8 +69,6 @@ class AllowlistedBuildPy(build_py):
             "scope_recall": list(self.allowlist["package_data"]),
         }
         super().run()
-        for name in self.allowlist.get("startup_files", []):
-            self.copy_file(str(_REPO_ROOT / "packaging" / name), str(Path(self.build_lib) / name))
 
     def find_package_modules(self, package, package_dir):
         allowed = set(self.allowlist["python_modules"])
@@ -97,7 +95,6 @@ class AllowlistedInstallLib(install_lib):
         allowed = {
             "scope_recall/" + relative for field in ("python_modules", "package_data") for relative in allowlist[field]
         }
-        allowed.update(allowlist.get("startup_files", []))
         root = Path(self.build_dir)
         for path in root.rglob("*"):
             relative = path.relative_to(root)

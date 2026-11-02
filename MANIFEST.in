@@ -23,7 +23,6 @@ include docs/autonomous-memory.md
 prune tests
 recursive-include packaging_hooks *.py
 include packaging/v11-module-allowlist.json
-include packaging/scope_recall_setup.pth
 # The checker ships with the modules it imports.
 include scripts/check.py
 include scripts/test_directories.py

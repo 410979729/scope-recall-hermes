@@ -382,9 +382,6 @@
     "prompts/entity.txt",
     "prompts/entity.examples.json"
   ],
-  "startup_files": [
-    "scope_recall_setup.pth"
-  ],
   "forbidden_wheel_substrings": [
     ".execution/",
     "config.json",

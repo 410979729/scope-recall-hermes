@@ -57,8 +57,6 @@ ENTRY_POINTS = (
 )
 
 #: Files whose version line is stamped from ``_version.py``, in the spelling of ``manifest_version``.
-STARTUP_FILES = ("scope_recall_setup.pth",)
-
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
 
@@ -169,7 +167,6 @@ def expected_allowlist(repo_root: Path | None = None) -> dict:
         "packages": reachable_packages(modules),
         "python_modules": modules,
         "package_data": list(current["package_data"]),
-        "startup_files": list(STARTUP_FILES),
         "forbidden_wheel_substrings": list(current["forbidden_wheel_substrings"]),
     }
 

@@ -157,7 +157,7 @@ def test_clean_v11_wheel_exact_allowlist(built_wheel: Path) -> None:
 
     assert package_members == expected
     assert dist_info, "wheel must include dist-info metadata"
-    assert members == package_members | dist_info | set(allowlist.get("startup_files", []))
+    assert members == package_members | dist_info
 
     metadata_name = next(name for name in dist_info if name.endswith(".dist-info/METADATA"))
     with zipfile.ZipFile(built_wheel) as archive:

@@ -10,9 +10,9 @@ Choose your host: [Claude Code](install/claude-code.md), [Codex](install/codex.m
 
 ## Plan and apply
 
-`scope-recall setup --dry-run` prints a plan without writing files, opening a writable database or starting workers.
-The installed command disables Python cache writes before importing the package. When running a source
-checkout as a module, use `python -B -m scope_recall.maintenance.cli setup --dry-run`.
+`scope-recall setup --dry-run` prints a plan without changing user files, host configuration or stores,
+opening a writable database or starting workers. Python may still write its own bytecode cache beside the
+installed package.
 Add `--plan-json` for machine-readable output. `--yes` skips confirmation for an already approved plan.
 Use `--host` to select one detected host, or repeat it to choose several. Only override `--home` or `--python`
 when discovery cannot find your installation. All options are in the generated [configuration reference](configuration.md).

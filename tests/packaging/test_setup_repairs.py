@@ -128,9 +128,12 @@ def test_wal_discovery_never_creates_sidecars(fake_user):
     assert snapshot(home) == before
 
 
-def test_cold_cli_dry_run_disables_bytecode_without_runner_environment(fake_user):
+def test_cold_cli_dry_run_leaves_the_user_tree_untouched(fake_user):
+    # A dry run promises nothing changes in user files, host configuration or stores.
+    # Python's own bytecode cache beside the installed package is outside that promise,
+    # so the package lives outside the snapshot and bytecode writing stays enabled.
     root = Path(__file__).resolve().parents[2]
-    source = fake_user / "TEST-cold" / "scope_recall"
+    source = fake_user.parent / "TEST-cold-package" / "scope_recall"
     manifest = json.loads((root / "packaging/v11-module-allowlist.json").read_text("utf-8"))
     files = manifest["python_modules"] + manifest["package_data"] if isinstance(manifest, dict) else manifest
     # Use the wheel's declared Python sources, excluding test/build products.
