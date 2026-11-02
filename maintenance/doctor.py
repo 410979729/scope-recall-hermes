@@ -57,8 +57,6 @@ from .doctor_store import (
 )
 from .import_progress import read_progress
 from .install_common import RUNTIME_CONFIG_LIMIT
-from .setup_projects import project_suggestions
-from .setup_workload import recommended_workload
 
 #: Run as a file by the target interpreter, so an installed package that
 #: predates these diagnostics is still measured. It imports no optional library.
@@ -902,6 +900,11 @@ def run_doctor(
         raise ValueError("host must be 'hermes', 'codex', 'claude-code', 'workbuddy' or 'dsh'")
     instance = _require_absolute(Path(instance_root), "instance_root")
     python = Path(python_executable) if python_executable is not None else None
+    # Imported here: both read sibling packages (runtime budgets, the Codex adapter's config), and
+    # importing them with the module would make ``maintenance`` unimportable as a top-level package.
+    from .setup_projects import project_suggestions
+    from .setup_workload import recommended_workload
+
     report = DoctorReport(host=host, status="degraded")
     report.model_workload_per_100_turns = recommended_workload()
     if host == "codex":

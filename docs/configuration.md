@@ -178,6 +178,7 @@ Credentials are environment variable references. Never put their values in a rou
 | `model` | `str` | `"gpt-5.6-luna"` |
 | `kind` | `str` | `"codex_cli"` |
 | <a id="subscription_budget"></a>`subscription_budget` | `SubscriptionBudgetPolicy` | `{"daily_calls": 4, "daily_input_tokens": 131072, "daily_output_tokens": 32768, "reserve_input": 32768, "reserve_output": 8192, "max_request_bytes": 24576}` |
+| <a id="subscription_budget_explicit"></a>`subscription_budget_explicit` | `bool` | `false` |
 
 ## SubscriptionBudgetPolicy
 
