@@ -542,7 +542,8 @@ def test_real_quarantine_after_search_withholds_direct_and_indirect_tail(app, fa
 
 @pytest.mark.parametrize("facts", [False, True], ids=["raw", "fact_evidence"])
 def test_real_pending_tail_returns_after_owner_release_and_background_rescan(app, facts):
-    from tests.contract.test_injection_screening import store
+    from scope_recall.core.injection_guard import screen_sources
+    from scope_recall.core.source_records import SourceWrite
 
     core, ctx = app
     search, result, compiler, target = overflow_probe(app, facts=facts)
@@ -551,7 +552,10 @@ def test_real_pending_tail_returns_after_owner_release_and_background_rescan(app
         session_id=target.session_id,
         source_principal=TrustedSourcePrincipal("human", "verified", "principal:human:TEST-owner"),
     )
-    store(core, actor, dict(target.event), seconds=0)
+    with core.storage.write(actor) as tx:
+        screen_sources(
+            tx, [SourceWrite("duplicate", target.ref, target.revision)], core.clock.utc_now(), remaining_seconds=0
+        )
     assert core.source(ctx, target.ref, 1) is None
     assert core.inspect_object(ctx, target.ref, 1).value["state"] == "pending_review"
     with core.storage.read(ctx) as tx:
@@ -565,8 +569,11 @@ def test_real_pending_tail_returns_after_owner_release_and_background_rescan(app
     preview = owner.preview_quarantine_release(target.ref, expected_revision=1)
     owner.release_quarantine(target.ref, expected_revision=1, content_sha256=preview["content_sha256"])
     with core.storage.write(ctx) as tx:
-        # Unrelated synthetic embedding/consolidation jobs cannot consume this bounded screening drain.
-        tx._check(write=True).execute("UPDATE work_items SET state='done' WHERE work_type!='rebuild_projection'")
+        # This assertion drains one source's screening, independently of unrelated
+        # fact projection jobs that share the same queue and occurrence time.
+        tx._check(write=True).execute(
+            "UPDATE work_items SET state='done' WHERE work_type!='rebuild_projection' OR subject_ref!=?", (target.ref,)
+        )
     core.drain_worker(ctx, max_items=8, remaining_seconds=10)
     with core.storage.read(ctx) as tx:
         assert (

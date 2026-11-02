@@ -159,6 +159,7 @@ SCRIPT_GATE_TESTS = [
 GIT_TESTS = ["tests/integration/test_guard_git.py"]
 SUITES = {
     "unit": [
+        "tests/unit/test_setup_discovery.py",
         "tests/unit/test_trusted_context.py",
         "tests/unit/test_check_runner.py",
         "tests/unit/test_secret_patterns.py",
@@ -173,6 +174,7 @@ SUITES = {
         "tests/contract/test_reflection.py",
         "tests/contract/test_reflection_repairs.py",
         "tests/contract/test_reflection_cost.py",
+        "tests/contract/test_setup_workload.py",
         "tests/contract/test_adoption.py",
         "tests/contract/test_adoption_merge.py",
         "tests/contract/test_adoption_revision.py",
@@ -330,6 +332,7 @@ SUITES = {
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
+        "tests/host/codex/test_setup_entries.py",
         "tests/host/codex/test_clients_only_store.py",
         "tests/host/codex/test_remote.py",
         "tests/host/codex/test_dsh_remote.py",
@@ -357,6 +360,8 @@ SUITES = {
         "tests/migration/test_upgrade_policy.py",
     ],
     "packaging": [
+        "tests/packaging/test_setup.py",
+        "tests/packaging/test_setup_repairs.py",
         "tests/packaging/test_clean_v11_wheel.py",
         "tests/packaging/test_package_upgrade.py",
         "tests/packaging/test_install_v11.py",

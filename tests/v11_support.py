@@ -280,11 +280,12 @@ def downgrade_store(path, version: int) -> None:
 
 
 def slowdown(work, small, large, *, runs: int = 5) -> float:
-    """How many times as long ``work(large)`` takes as ``work(small)`` on this machine: the shortest of ``runs`` turns
-    of each, taken in turn with the garbage collector off, so that a machine slow or busy throughout changes neither.
+    """Compare per-call CPU work, excluding time the operating system schedules other packages.
 
-    For a test that work grows linearly with its input, which no bound in seconds can say on every machine: four
-    times the input takes about four times as long, where work quadratic in it takes sixteen."""
+    Each sample accumulates enough CPU time to cross coarse Windows accounting
+    ticks. Four times the input costs roughly four times the work for a linear
+    scan and sixteen for a quadratic one; wall-clock latency is measured elsewhere.
+    """
     best = [math.inf, math.inf]
     collecting = gc.isenabled()
     gc.collect()
@@ -292,9 +293,14 @@ def slowdown(work, small, large, *, runs: int = 5) -> float:
     try:
         for _ in range(runs):
             for index, value in enumerate((small, large)):
-                started = time.perf_counter()
-                work(value)
-                best[index] = min(best[index], time.perf_counter() - started)
+                started = time.thread_time()
+                iterations = 0
+                duration = 0.0
+                while duration < 0.05:
+                    work(value)
+                    iterations += 1
+                    duration = time.thread_time() - started
+                best[index] = min(best[index], duration / iterations)
     finally:
         if collecting:
             gc.enable()

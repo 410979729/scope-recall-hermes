@@ -399,7 +399,11 @@ class ConsolidationRouteConfig:
     allow_insecure_endpoint: bool = False
     temperature: float | None = None
 
+    kind: str = "openai"
+
     def __post_init__(self) -> None:
+        if self.kind != "openai":
+            raise ValueError("consolidation_kind")
         _validate_route_target(self.model, self.endpoint, self.credential_env, self.allow_insecure_endpoint)
         if self.output_limit_field not in {"max_tokens", "max_completion_tokens"}:
             raise ValueError("output_limit_field")

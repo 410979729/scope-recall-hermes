@@ -1,74 +1,9 @@
-# Scope Recall: agent-operated installation and upgrade
+# Migration and live-host coordination
 
-Use this workflow when the user says “install Scope Recall”, “upgrade Scope Recall”,
-“帮我安装记忆插件”, or “帮我升级一下 scoperecall”. The user should not execute
-commands, find paths, write scope maps, review memories, or interpret database errors.
-Their installation/upgrade request authorizes the normal reversible work below.
-
-This is an executable operator workflow for the assistant. Keep implementation
-details out of the user's interaction. Report only outcome, any real limitation,
-and an action genuinely requiring the user's knowledge or authorization.
-
-## 1. Discover before changing anything
-
-Inspect the active host's interpreter, plugin import path, instance home, and its
-service/process controller. Use the active runtime, not an arbitrary shell Python.
-If the old version lacks these commands, install the new release into a separate
-helper environment first. Do not overwrite the old running environment to inspect it.
-
-Run `scope-recall setup --host hermes --home <actual-instance-home>` (or `--host codex`).
-If host configuration selects a custom database path, pass `--database <actual-db>`.
-Check the active configuration before interpreting absence at standard paths as a
-fresh install. An explicit missing database is an error, not an empty new account.
-The structured `route` selects exactly one branch:
-
-- `fresh_install`: no old database. Use the standard plan-install/apply-install
-  workflow, configure the user's chosen models, register the host adapter, and
-  check the actual host. Do not run migration or create legacy reprocessing jobs.
-- `current_upgrade`: preserve the current database and configuration, back them
-  up, update the package/wrapper, run the supported Core schema upgrade and host
-  probes. Do not feed an existing Core database into the legacy converter.
-- `legacy_migration`: follow the procedure below.
-- `repair_required`, `unsupported`, or `needs_agent_inspection`: inspect the exact
-  cause and preserve the running old version. Never call this a fresh installation
-  or force an unknown schema through a converter.
-
-The common install CLI takes explicit host/instance/plugin/project/Python paths.
-Resolve these yourself from the host. Never ask a nontechnical user to fill them in.
-
-Find out which Hermes surface the user actually talks through. The CLI is the
-owner's by default. Hermes Desktop's chat panel (`desktop`) and `hermes --tui`
-(`tui`) name no user unless a dashboard login exists, and such a session is
-refused (`user principal required for non-cli platform`) until the installer
-approves the surface: add `--local-platform desktop` and/or `--local-platform tui`
-to plan-install and apply-install, on a fresh install or later on the same
-instance. Approve one only where everyone who can reach that surface without
-logging in is the owner; if you cannot tell, ask the user that one question.
-On a host that serves its dashboard to other machines this is every dashboard
-login: the dashboard's Chat tab runs there as a session that names no user.
-A Hermes whose gateway runs these conversations, and the CLI's turns, over its
-local session transport names the gateway's own OS account instead (`sid:<SID>`,
-`uid:<uid>`): that binds as the owner on an approved surface, and on another
-binds nothing while the host log names the approval, so approve the same way.
-A session that carries a dashboard login (`hermes serve` with
-`dashboard.basic_auth`, or the Desktop app connected to such a host) is that
-login, `basic:<name>` (over the transport `auth:v1:["basic","","<name>"]`), never
-the local owner, and binds nothing until approved: add
-`--owner-login desktop=<login>` (or `tui=`) with the login the host log names,
-only for a login that is the owner's own, and ask which one is if you cannot tell.
-On an entry of a shared store `apply-install` approves neither: add the owner
-principal and row with `scope-recall grants` (docs/shared-store.md).
-A Desktop installation of 1.9 to 2.x wrote under a minted `srdesk_*` principal. When
-the old runtime's own settings show that principal is the owner, keep its private
-scope as it is: list that scope ID in `allowed_scope_ids` of the owner's rows (the
-CLI row, and a desktop row on the route `--local-platform desktop` writes: chat
-type `private`, chat `local`, thread `main`) when you create the destination
-(section 2), so it maps to itself and the same person reads the same memory on
-both surfaces. Mapping it onto
-`owner_private` instead works only when no other old scope maps there, since the
-scope map is one-to-one. The 3.x host never sends that principal, so it needs no
-owner principal of its own. Never approve anything for a scheduled (`cron`) run;
-the installer refuses it.
+Normal installation and configuration use `scope-recall setup`. This document covers operations setup cannot
+infer safely: choosing an active host's package controller, stopping live writers, legacy audience mapping,
+restoring backups and proving use inside a running host. Package replacement and process restarts remain
+separate operator actions. Preserve the existing host until its replacement is verified.
 
 ## 1.1 Current package upgrades (including pip-less uv venvs)
 
@@ -120,11 +55,11 @@ route wheel-based installations through it.
    needs the external pre-upgrade backup, put back with `scope-recall restore`
    (never by copying the file, which brings back what was forgotten since); other
    writes made since are lost. Across a schema step, `restore` with the newer
-   package prepares and `restore` with the older one finishes (docs/install.md,
-   section 9); a snapshot below schema 1110 is refused.
+   package prepares and `restore` with the older one finishes; follow the
+   [restore guide](../docs/manage.md#migration-and-rollback). A snapshot below schema 1110 is refused.
 5. `package_verified` means only that package replacement and isolated import
-   succeeded. Run existing plan-install/apply-install for the same binding and
-   doctor, verify receipt/wrapper/package, then restore the original wake policy,
+   succeeded. Run `scope-recall setup --host <host>` to reuse the same binding,
+   repair its installation and run doctor. Verify receipt/wrapper/package, then restore the original wake policy,
    restart and probe the real host. The package receipt never authorizes restart
    on its own (`host_restart_allowed=false`). Keep the backup until that succeeds.
 

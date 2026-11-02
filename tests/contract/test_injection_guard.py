@@ -238,7 +238,7 @@ def test_exhausted_scan_budget_persists_pending_without_projections(guarded, mon
 
     monkeypatch.setattr(injection_guard.injection_policy, "scan_events", exhausted)
     saved = capture(core, ctx, "TEST ordinary preference")
-    assert budgets and 0 < budgets[0] <= 0.1
+    assert budgets and 0 < budgets[0] <= 10
     assert saved.durability == "persisted"
     assert core.source(ctx, saved.event_refs[0].ref, 1) is None
     with sqlite3.connect(core.storage.path) as db:

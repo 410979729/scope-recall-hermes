@@ -7,6 +7,7 @@ import sqlite3
 import time
 from contextlib import closing
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -314,20 +315,24 @@ def test_reconciliation_deadline_rolls_back_details_summaries_and_state(tmp_path
     before = snapshot()
     original = getattr(budget, phase)
 
+    elapsed = [100.0]
+    monkeypatch.setattr(budget, "time", SimpleNamespace(monotonic=lambda: elapsed[0], time_ns=time.time_ns))
+    reached = []
+
     def slow(*args, **kwargs):
         result = original(*args, **kwargs)
-        time.sleep(0.03)
+        reached.append(phase)
+        elapsed[0] += 0.03
         return result
 
     monkeypatch.setattr(budget, phase, slow)
-    started = time.perf_counter()
     try:
         with pytest.raises(ValueError, match="ledger_busy_timeout"):
             if operation == "reserve":
                 ledger.reserve("model", b"TEST", reserved_input=1, reserved_output=0, timeout_seconds=0.005)
             else:
                 ledger.finish_embedding(request, "http_200", {"promptTokenCount": 1}, timeout_seconds=0.005)
-        assert time.perf_counter() - started >= 0.03
+        assert reached == [phase]
         assert snapshot() == before
     finally:
         ledger.close()
@@ -342,9 +347,11 @@ def test_sqlite_busy_timeout_uses_remaining_time_after_reconciliation(tmp_path, 
 
     def slow(*args, **kwargs):
         result = original(*args, **kwargs)
-        time.sleep(0.03)
+        elapsed[0] += 0.03
         return result
 
+    elapsed = [100.0]
+    monkeypatch.setattr(budget, "time", SimpleNamespace(monotonic=lambda: elapsed[0], time_ns=time.time_ns))
     monkeypatch.setattr(budget, "prepare_budget_totals", slow)
     try:
         ledger.reserve("model", b"TEST", reserved_input=1, reserved_output=0, timeout_seconds=0.3)
