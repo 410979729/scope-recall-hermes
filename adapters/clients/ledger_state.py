@@ -34,41 +34,85 @@ def save_checkpoint(root: Path, name: str, value: dict) -> None:
     atomic_json(root / "capture-ledgers" / name, value)
 
 
+class AuthorizationStateError(ValueError):
+    """A bound authorization time cannot safely grant automatic replay."""
+
+
+def database_lifetime(binding, *, seconds: float = 5) -> tuple[str, str | None]:
+    """Read the database's identity through the verified storage boundary, independent of its filename."""
+    core = MemoryCore(CoreConfig(binding))
+    context = TrustedContext(binding, "capture-authorization", binding.scope_ids, "host_generated")
+    with core.storage.read(context, remaining_seconds=seconds) as tx:
+        return tx.database_identity()
+
+
 def record_authorization(
     config: CodexInstallationConfig, since: str, *, basis: str = "installation", fresh: bool = False
 ) -> str:
-    """Persist an authorization start; only explicit creation of a fresh store begins a new lifetime."""
+    """Bind authorization to one database lifetime; explicit grants may restart future capture."""
+    identity, born = database_lifetime(config.to_binding())
     with advisory_file_lock(config.data_directory / "capture-ledgers" / "scan.lock", timeout_seconds=5):
         saved = checkpoint(config.data_directory, "authorized-at.json")
-        if not fresh and saved.get("installation_id") == config.installation_id and saved.get("since") is not None:
-            return _authorization_time(saved["since"])
+        belongs = saved.get("installation_id") == config.installation_id
+        same = saved.get("database_id") == identity or (saved.get("database_id") is None and born is None)
+        if not fresh and belongs and same:
+            since = _authorization_time(saved.get("since"))
+            basis = saved.get("basis", basis)
         value = _authorization_time(since)
+        if born is not None:
+            value = max(value, _authorization_time(born))
         save_checkpoint(
             config.data_directory,
             "authorized-at.json",
-            dict(installation_id=config.installation_id, since=value, basis=basis),
+            dict(installation_id=config.installation_id, database_id=identity, since=value, basis=basis),
         )
-        if fresh:
+        if fresh or saved.get("database_id") != identity:
             save_checkpoint(
-                config.data_directory, "scan.json", dict(installation_id=config.installation_id, after=None)
+                config.data_directory,
+                "scan.json",
+                dict(installation_id=config.installation_id, database_id=identity, after=None, revisit=False),
             )
         return value
 
 
 def _authorization_time(value: object) -> str:
     if type(value) is not str:
-        raise ValueError("authorization_time_requires_text")
-    stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        raise AuthorizationStateError("authorization_time_requires_text")
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AuthorizationStateError("authorization_time_invalid") from exc
     if stamp.tzinfo is None:
-        raise ValueError("authorization_time_requires_timezone")
+        raise AuthorizationStateError("authorization_time_requires_timezone")
     return stamp.astimezone(UTC).isoformat()
 
 
-def local_authorized_at(config: CodexInstallationConfig, *, seconds: float) -> str | None:
-    """Migrate from a bound install receipt, else the entry's first server-recorded capture; never infer from config."""
+def authorization_problem(config: CodexInstallationConfig) -> str | None:
+    """Inspect a current lifetime's time without migrating or repairing any state."""
     saved = checkpoint(config.data_directory, "authorized-at.json")
-    if saved.get("installation_id") == config.installation_id and saved.get("since"):
-        return record_authorization(config, saved["since"])
+    identity, born = database_lifetime(config.to_binding())
+    if saved.get("installation_id") != config.installation_id:
+        return None
+    if saved.get("database_id") not in (None, identity):
+        return None
+    try:
+        _authorization_time(saved.get("since"))
+    except AuthorizationStateError as exc:
+        return str(exc)
+    return None
+
+
+def local_authorized_at(config: CodexInstallationConfig, *, seconds: float) -> str | None:
+    """Preserve reliable grant evidence within a database lifetime; a rebuilt database starts afresh."""
+    identity, born = database_lifetime(config.to_binding(), seconds=seconds)
+    saved = checkpoint(config.data_directory, "authorized-at.json")
+    if saved.get("installation_id") == config.installation_id:
+        if saved.get("database_id") in (None, identity):
+            _authorization_time(saved.get("since"))
+        same = saved.get("database_id") == identity or (saved.get("database_id") is None and born is None)
+        if same:
+            return record_authorization(config, _authorization_time(saved.get("since")))
+        return record_authorization(config, born or datetime.now(UTC).isoformat(), fresh=True)
     root = config.config_path.parent
     receipt = read_receipt(root)
     if (
@@ -86,6 +130,4 @@ def local_authorized_at(config: CodexInstallationConfig, *, seconds: float) -> s
     context = TrustedContext(binding, "capture-authorization", binding.scope_ids, "host_generated")
     with core.storage.read(context, remaining_seconds=seconds) as tx:
         row = tx._check().execute("SELECT min(recorded_at) FROM source_events WHERE entry_id='local'").fetchone()
-    if row and row[0]:
-        return record_authorization(config, row[0], basis="first_capture")
-    return None
+    return record_authorization(config, row[0], basis="first_capture") if row and row[0] else None

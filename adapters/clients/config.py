@@ -303,7 +303,7 @@ def install_codex_scope_recall(
 
     from .ledger_state import local_authorized_at, record_authorization
 
-    existing = config_path.is_file() or (data_directory / "memory.sqlite3").is_file()
+    existing = (data_directory / "memory.sqlite3").is_file()
     since = clock.utc_now() if clock is not None else datetime.now(UTC).isoformat()
     write_codex_config(config)
     binding = config.to_binding()

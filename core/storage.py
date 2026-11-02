@@ -8,9 +8,11 @@ import os
 import sqlite3
 import sys
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -43,6 +45,7 @@ from .schema import (
     upgrade_1109,
     upgrade_1110,
     upgrade_1111,
+    upgrade_1112,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -67,6 +70,7 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1109,
             upgrade_1110,
             upgrade_1111,
+            upgrade_1112,
         ),
         strict=True,
     )
@@ -282,6 +286,18 @@ class Transaction:
     def memory_epoch(self) -> int:
         """Read the authority fence in this transaction without queue diagnostics."""
         return int(self._check().execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0])
+
+    def database_identity(self) -> tuple[str, str | None]:
+        """Return this database's immutable identity and known creation time from its verified transaction."""
+        row = (
+            self._check()
+            .execute("SELECT database_id,database_created_at FROM instance_meta WHERE singleton=1")
+            .fetchone()
+        )
+        identity = row[0]
+        if type(identity) is not str or len(identity) != 32 or any(c not in "0123456789abcdef" for c in identity):
+            raise ContractError("IDENTITY_UNBOUND", "database_id")
+        return identity, row[1]
 
     def status(
         self, *, include_all_projects: bool = False, include_admission: bool = False, include_queue_age: bool = True
@@ -757,6 +773,7 @@ class SQLiteStorage:
         repair_header: bool = False,
         receipt: dict | None = None,
         unbounded_upgrade: bool = False,
+        created_at: str | None = None,
     ) -> StoreStatus:
         """Create or upgrade this store and return its verified status within the caller's lock-wait budget."""
         self._timeout(remaining_seconds)
@@ -776,6 +793,7 @@ class SQLiteStorage:
                     repair_header=repair_header,
                     receipt=receipt,
                     unbounded_upgrade=unbounded_upgrade,
+                    created_at=created_at or datetime.now(UTC).isoformat(),
                 )
         except BaseException as exc:
             original = exc
@@ -792,6 +810,7 @@ class SQLiteStorage:
         repair_header: bool,
         receipt: dict | None,
         unbounded_upgrade: bool,
+        created_at: str,
     ) -> StoreStatus:
         status: StoreStatus | None = None
 
@@ -837,7 +856,8 @@ class SQLiteStorage:
                 for statement in STATEMENTS:
                     conn.execute(statement)
                 conn.execute(
-                    "INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,test_mode,installation_kind) VALUES (1,?,?,?,?,?,?)",
+                    "INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,"
+                    "test_mode,installation_kind,database_id,database_created_at) VALUES (1,?,?,?,?,?,?,?,?)",
                     (
                         self.binding.agent_id,
                         self.binding.installation_id,
@@ -845,6 +865,8 @@ class SQLiteStorage:
                         SCHEMA_VERSION,
                         int(self.binding.test_mode),
                         self.binding.installation_kind,
+                        uuid.uuid4().hex,
+                        created_at,
                     ),
                 )
                 conn.executemany(

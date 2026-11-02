@@ -856,6 +856,26 @@ def _classify_status(report: DoctorReport) -> None:
     report.status = "degraded" if actionable else ("attention" if attention else "ok")
 
 
+def _check_capture_authorization(report: DoctorReport, instance: Path, binding) -> None:
+    """Report unsafe local grant metadata without changing the owner's authorization."""
+    if report.host != "codex" or binding.installation_kind != "local":
+        return
+    from scope_recall.adapters.clients.ledger_state import authorization_problem
+
+    config = load_codex_config(instance / "codex-installation.json")
+    reason = authorization_problem(config)
+    if reason is not None:
+        report.capability_gaps.append("capture_authorization_invalid")
+        record_check(
+            report,
+            "capture_authorization",
+            "blocked",
+            reason + "; automatic replay is stopped. Re-run the trusted installer for this instance to "
+            "authorize only future capture from the current time, or restore valid authorization state "
+            "from a trusted backup of this database. Do not infer an earlier grant.",
+        )
+
+
 def run_doctor(
     *,
     host: str,
@@ -892,6 +912,7 @@ def run_doctor(
     check_vector_store(report, entry_config, binding)
     check_footprint(report, data_directory, config)
     if readable:
+        _check_capture_authorization(report, instance, binding)
         _check_worker_status(report, binding, data_directory)
         wake_seconds = _check_autostart(report, binding, data_directory)
         _check_supervisor(report, data_directory)

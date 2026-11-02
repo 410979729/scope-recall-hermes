@@ -20,7 +20,7 @@ from ...core.inbox_rules import deferral, deferred_until, given_up, replayable
 from . import transcript
 from .config import CONFIG_FILENAME, CodexInstallationConfig, SharedClientConfig, load_codex_config, shared_clients
 from .handler import CodexHookHandler
-from .ledger_state import checkpoint, local_authorized_at, save_checkpoint
+from .ledger_state import AuthorizationStateError, checkpoint, database_lifetime, local_authorized_at, save_checkpoint
 from .record_reader import RecordLines
 
 
@@ -144,6 +144,8 @@ def _local_ledgers(binding, deadline: float) -> dict[str, int]:
         if since is None:
             return {"stopped": 1}
         return _scan(binding, ((config, record, since) for record in sorted(records, key=str)), deadline)
+    except AuthorizationStateError:
+        return {"stopped": 1}
     except (ContractError, OSError, RuntimeError, ValueError):
         result["deferred"] = result.get("deferred", 0) + 1
     return result
@@ -169,12 +171,17 @@ def _scan_record(config, record: Path, since: str, deadline: float) -> str:
 def _scan(binding, records, deadline: float) -> dict[str, int]:
     result: dict[str, int] = {}
     saved = checkpoint(binding.data_directory, "scan.json")
-    after = saved.get("after") if saved.get("installation_id") == binding.installation_id else None
+    identity, _born = database_lifetime(binding)
+    same = saved.get("installation_id") == binding.installation_id and saved.get("database_id") == identity
+    after = saved.get("after") if same else None
     after = after if type(after) is str else ""
+    revisit = bool(saved.get("revisit")) if after else False
 
     def save(position):
         save_checkpoint(
-            binding.data_directory, "scan.json", dict(installation_id=binding.installation_id, after=position)
+            binding.data_directory,
+            "scan.json",
+            dict(installation_id=binding.installation_id, database_id=identity, after=position, revisit=revisit),
         )
 
     for config, record, since in records:
@@ -187,13 +194,13 @@ def _scan(binding, records, deadline: float) -> dict[str, int]:
             return result
         state = _scan_record(config, record, since, deadline)
         result[state] = result.get(state, 0) + 1
-        if state == "ready":
-            # A partial file keeps its place; deferred files yield to later entries until their backoff expires.
-            result["pending_scan"] = 1
-            return result
+        # Byte offsets stay with each file; a partial page must yield to the next file or entry.
+        revisit = revisit or state in ("ready", "deferred")
         after = key
         save(after)
     save(None)
+    if revisit:
+        result["pending_scan"] = 1
     return result
 
 

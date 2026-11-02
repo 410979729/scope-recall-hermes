@@ -303,6 +303,7 @@ SUITES = {
         "tests/host/codex/test_resident_recall.py",
         "tests/host/codex/test_capture_ledger.py",
         "tests/host/codex/test_ledger_recovery_boundaries.py",
+        "tests/host/codex/test_ledger_lifetime.py",
         "tests/host/codex/test_recall_privacy_boundary.py",
         "tests/host/codex/test_project_worktrees.py",
         "tests/host/codex/test_stdio_lifetime.py",

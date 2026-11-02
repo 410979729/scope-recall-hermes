@@ -14,6 +14,7 @@ from scope_recall.adapters.clients.handler import _TOTAL_BUDGET_S
 from scope_recall.adapters.clients.mcp_server import build_server
 from scope_recall.adapters.clients.runtime_wiring import GAP_UNCONFIGURED, attach_trusted_host_runtime
 from scope_recall.contracts import ContractError, TrustedContext
+from scope_recall.core.schema import SCHEMA_VERSION
 
 
 def test_runtime_wiring_uses_this_source_checkout(record_property):
@@ -121,7 +122,7 @@ def test_mcp_startup_wakes_pending_upgrade_without_status(codex_install, monkeyp
         assert len(workers) == 1
         out, err = workers[0].communicate(timeout=20)
         assert workers[0].poll() == 0, (out, err)
-        assert server.core.storage.initialize().schema_version == 1112
+        assert server.core.storage.initialize().schema_version == SCHEMA_VERSION
     finally:
         server._host_runtime.close(detach_worker=False)
         for worker in workers:
@@ -163,7 +164,7 @@ def test_actual_pending_wakes_even_when_startup_probe_misses_it(codex_install, m
         assert len(workers) == 1
         out, err = workers[0].communicate(timeout=20)
         assert workers[0].poll() == 0, (out, err)
-        assert host.core.status(context).schema_version == 1112
+        assert host.core.status(context).schema_version == SCHEMA_VERSION
     finally:
         host.close(detach_worker=False)
         for worker in workers:

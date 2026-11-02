@@ -1,9 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1112
+SCHEMA_VERSION = 1113
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112)
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -244,7 +244,8 @@ STATEMENTS = (
         memory_epoch INTEGER NOT NULL DEFAULT 0 CHECK(memory_epoch>=0),
         config_version INTEGER NOT NULL DEFAULT 1 CHECK(config_version>=1),
         test_mode INTEGER NOT NULL CHECK(test_mode IN (0,1)),
-        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared'))
+        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared')),
+        database_id TEXT NOT NULL DEFAULT '', database_created_at TEXT
     ) STRICT""",
         """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
         MANAGEMENT_STATEMENT,
@@ -667,3 +668,13 @@ def normalize_scope_authorizations(connection) -> int:
         WHERE json_type(e.extra_json,'$.scope_authorization') IS NOT NULL""")
     return connection.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$.scope_authorization')
         WHERE json_type(extra_json,'$.scope_authorization') IS NOT NULL""").rowcount
+
+
+def upgrade_1112(connection) -> None:
+    """Give an existing database a stable lifetime identity without inventing its creation time."""
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_id TEXT NOT NULL DEFAULT ''")
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_created_at TEXT")
+    connection.execute(
+        "UPDATE instance_meta SET database_id=lower(hex(randomblob(16))),schema_version=1113 WHERE singleton=1"
+    )
+    connection.execute("PRAGMA user_version=1113")

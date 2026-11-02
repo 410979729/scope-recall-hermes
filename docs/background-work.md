@@ -88,12 +88,19 @@ is a separate owner operation. dsh retains unacknowledged messages in its existi
 worker pass. Completed ledgers rely on ordinary worker autostart and host end hooks for discovery; they create no
 perpetual polling task. A library-wide checkpoint retains the next scan position across files and entries. A budget
 cut returns `pending_scan` and requests another worker pass; it does not complete an unvisited record or consume a
-failure attempt. Partial files retain their byte cursor, while deferred files yield to later entries.
+failure attempt. Partial files retain their byte cursor and yield to later files and entries, including when a file
+ends in an incomplete line or continues growing. A scan retains its revisit requirement across budget cuts until
+a full sweep resolves all unfinished files; per-file retry timestamps still prevent early retry.
 
 Local capture authorization has an immutable timestamp separate from configuration saves. An older installation
 uses its verified, bound installation receipt's write time, or its entry's first recorded capture when no receipt
 exists. Without either evidence, automatic replay stops. Reinstalling an existing store preserves that time; creating
-a fresh store starts a new capture lifetime and resets its scan position. WorkBuddy message records attest their session through
+a fresh store starts a new capture lifetime and resets its scan position. Authorization and rotation checkpoints
+bind to the immutable database identity, which survives file replacement and schema upgrades. Existing databases
+receive an identity without an inferred creation time. The installer preserves old receipt evidence before writing
+a replacement receipt. A valid JSON grant with an invalid time stops replay; doctor reports the reason. Re-running
+the trusted installer authorizes only future capture, while restoring a trusted grant requires a backup of the same
+database. WorkBuddy message records attest their session through
 `sessionId`; filenames may identify a different storage agent and cannot grant a session identity. Every replayed
 message must agree with that session before its page reaches capture.
 

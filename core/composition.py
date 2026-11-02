@@ -133,7 +133,7 @@ class MemoryCore:
 
     def initialize(self) -> StoreStatus:
         """Explicit initialization or an identity-checked supported schema upgrade."""
-        return self.storage.initialize()
+        return self.storage.initialize(created_at=self.clock.utc_now())
 
     def status(
         self,

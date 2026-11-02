@@ -6,15 +6,16 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from ..adapters.installation_receipt import (
+from scope_recall.adapters.installation_receipt import (
     RECEIPT_SCHEMA as RECEIPT_SCHEMA,
 )
-from ..adapters.installation_receipt import (
+from scope_recall.adapters.installation_receipt import (
     read_receipt,
 )
-from ..adapters.installation_receipt import (
+from scope_recall.adapters.installation_receipt import (
     receipt_digest as _receipt_digest,
 )
+
 from .backup import atomic_write, sha256
 from .install_common import (
     PACKAGE_VERSION,
