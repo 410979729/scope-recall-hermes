@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import ContractError, Origin
+from scope_recall.core import private
 from scope_recall.core.capture_filters import without_private
 from scope_recall.core.secret_patterns import contains_secret_like_text
 
@@ -29,6 +30,7 @@ from .boundary import (
     user_prompt_source_event,
     workbuddy_person_text,
 )
+from .hook_answer import command_block
 from .session_marks import (
     close_turn,
     in_suggestions_thread,
@@ -56,6 +58,16 @@ RUNTIME_ATTACH_MIN_S = 0.3
 #: Starting the bounded worker needs this much left: it writes the worker's config and starts a process, a few
 #: milliseconds on a machine that is not loaded.  The hook waits for it no longer than what it has left.
 WORKER_START_MIN_S = 0.1
+
+
+def _inline_gaps(payload):
+    """Retain a remote filter's bounded omission count without its removed text."""
+    removed = payload.get("scope_recall_private_spans_removed", 0)
+    return (
+        (f"private_spans_removed:{removed}", "private_content_omitted")
+        if type(removed) is int and 0 < removed <= 1000000
+        else ()
+    )
 
 
 class HookEvents:
@@ -116,10 +128,36 @@ class HookEvents:
         return {}
 
     def prompt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+        prompt = payload.get("prompt")
+        if self._hook.host in {"codex", "claude-code", "workbuddy", "dsh"} and type(prompt) is str:
+            command = prompt.strip()
+            if command in {"scope-recall pause", "scope-recall resume"} and payload.get("attachments") in (None, []):
+                if self._hook.remote_paths and payload.get("scope_recall_direct_command") is not True:
+                    return command_block(self._hook.host, "Scope Recall remote command unavailable.")
+                context = self._hook.context(audience, session_id, "human_direct")
+                if command.endswith("pause"):
+                    private.open_interval(
+                        self._hook.core.storage,
+                        self._hook.core.clock,
+                        context,
+                        target="session",
+                        session=context.session_id,
+                    )
+                else:
+                    private.close_interval(
+                        self._hook.core.storage,
+                        self._hook.core.clock,
+                        context,
+                        target="session",
+                        session=context.session_id,
+                    )
+                mode = self._hook.core.private_mode(context) or "none"
+                return command_block(self._hook.host, f"Scope Recall recording mode: {mode}.")
         taken = self._prompt_turn(session_id, payload)
         if taken is None:
             return {}
         turn_id, prompt, gaps = taken
+        gaps = (*gaps, *_inline_gaps(payload))
         attachment_refs, attachment_gaps = authorized_attachment_refs(payload)
         gaps = (*gaps, *attachment_gaps)
         if attachment_gaps:
@@ -303,6 +341,9 @@ class HookEvents:
             recorded_at=self._hook.clock.utc_now(),
             occurred_at=line.occurred_at if line is not None else None,
         )
+        gaps = (*gaps, *_inline_gaps(payload))
+        if event is not None and _inline_gaps(payload):
+            event["capture_state"] = "partial"
         context = self._hook.context(audience, session_id, "assistant_visible")
         self._hook.capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
         return {}
@@ -345,6 +386,9 @@ class HookEvents:
             tool_response=payload.get("tool_response"),
             recorded_at=self._hook.clock.utc_now(),
         )
+        gaps = (*gaps, *_inline_gaps(payload))
+        if event is not None and _inline_gaps(payload):
+            event["capture_state"] = "partial"
         if tool_gaps:
             self._hook.note("tool_payload_gap", gaps=tool_gaps)
         context = self._hook.context(audience, session_id, cast(Origin, origin))

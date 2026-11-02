@@ -157,6 +157,7 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1125: {"tables": ("scope_memory_instructions",)},
     1124: {
         "tables": ("observation_conflicts", "reflection_daily_usage", "reflection_discovery", "reflection_rejections"),
         "columns": tuple(("reflection_groups", name) for name in ("empty_streak", "new_sources", "required_sources")),

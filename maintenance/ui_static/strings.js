@@ -1,6 +1,8 @@
 "use strict";
 window.UI_STRINGS = {
   "en": {
+    "memoryInstruction": "Memory instruction",
+    "instructionHint": "Choose what future extraction should remember for this scope. Maximum 2,000 characters.",
     "reason_source_ref_limit": "Current-turn source fence exceeded its limit",
     "historicalReference": "Historical version; open the current item from Browse to make changes",
     "recalls": "Recall history",
@@ -139,6 +141,8 @@ window.UI_STRINGS = {
     "saveImportance": "Save importance"
   },
   "zh": {
+    "memoryInstruction": "记忆说明",
+    "instructionHint": "指定此范围今后提炼时记什么，最多 2,000 个字符。",
     "reason_source_ref_limit": "\u672c\u8f6e\u6765\u6e90\u5f15\u7528\u8d85\u8fc7\u5b89\u5168\u6392\u9664\u4e0a\u9650",
     "historicalReference": "\u5386\u53f2\u7248\u672c\uff1b\u8bf7\u5728\u6d4f\u89c8\u9875\u6253\u5f00\u5f53\u524d\u6761\u76ee\u518d\u4fee\u6539",
     "recalls": "召回记录",

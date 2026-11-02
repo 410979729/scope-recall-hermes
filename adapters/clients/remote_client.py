@@ -68,6 +68,7 @@ from .boundary import (
     is_workbuddy_agent_run,
     without_lone_surrogates,
 )
+from .hook_answer import command_block
 
 HOSTS = ("claude-code", "codex", "workbuddy", "dsh")
 #: Hosts whose Stop and SessionEnd send the lines of their own session record (``transcript``).
@@ -204,7 +205,7 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
             _connection_failed(config, event, exc)
             return None
         connection.sock.settimeout(max(0.2, until - time.monotonic()))
-        if _private_rules(config):
+        if _private_rules(config) and not direct_owner_command(body):
             state = _private_check(config, body, until - time.monotonic())
             if state is None:
                 return None
@@ -240,6 +241,32 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
     if isinstance(answer, dict):
         _remember_private_rules(config, answer)
     return answer if isinstance(answer, dict) else None
+
+
+def direct_owner_command(body: dict[str, Any]) -> bool:
+    """Recognize a fresh content-free command envelope, never an ordinary spool or record."""
+    payload = body.get("payload")
+    return bool(
+        isinstance(payload, dict)
+        and body.get("direct_owner_command") is True
+        and body.get("fresh_observation") is True
+        and "record" not in body
+        and "record" not in payload
+        and payload.get("hook_event_name") == "UserPromptSubmit"
+        and type(payload.get("prompt")) is str
+        and payload["prompt"].strip() in {"scope-recall pause", "scope-recall resume"}
+        and set(payload)
+        <= {
+            "hook_event_name",
+            "session_id",
+            "turn_id",
+            "prompt_id",
+            "generation_id",
+            "cwd",
+            "project_unverified",
+            "prompt",
+        }
+    )
 
 
 # -- private state before anything is sent -----------------------------------
@@ -665,19 +692,46 @@ def _visible_value(value: Any) -> Any:
     return value
 
 
+def _private_span_count(value: Any) -> int:
+    """Count the shared filter's removals across a wire field before it is copied."""
+    if isinstance(value, str):
+        return without_private(value)[1]
+    if isinstance(value, list):
+        return sum(_private_span_count(item) for item in value)
+    if isinstance(value, dict):
+        return sum(_private_span_count(key) + _private_span_count(item) for key, item in value.items())
+    return 0
+
+
 def _visible_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Strip inline private text before the same envelope reaches transport or durable spool."""
     result = dict(payload)
+    event_name = result.get("hook_event_name")
+    event_name = event_name if isinstance(event_name, str) else ""
+    fields = {
+        "UserPromptSubmit": ("prompt",),
+        "Stop": ("last_assistant_message",),
+        "PostToolUse": ("tool_input", "tool_response"),
+    }.get(event_name, ("prompt",))
+    count = sum(_private_span_count(result.get(field)) for field in fields)
+    result.pop("scope_recall_private_spans_removed", None)
+    if count:
+        result["scope_recall_private_spans_removed"] = count
     for field in ("prompt", "last_assistant_message", "tool_input", "tool_response"):
         if field in result:
             result[field] = _visible_value(result[field])
     if isinstance(result.get("record"), list):
-        result["record"] = [
-            dict(row, text=without_private(row["text"])[0])
-            if isinstance(row, dict) and isinstance(row.get("text"), str)
-            else row
-            for row in result["record"]
-        ]
+        rows = []
+        for row in result["record"]:
+            if isinstance(row, dict) and isinstance(row.get("text"), str):
+                visible, removed = without_private(row["text"])
+                previous = row.get("private_spans_removed", 0)
+                previous = previous if type(previous) is int and 0 <= previous <= 1000000 else 0
+                row = cast(dict[str, Any], dict(row, text=visible))
+                if removed + previous:
+                    row["private_spans_removed"] = removed + previous
+            rows.append(row)
+        result["record"] = rows
     return result
 
 
@@ -723,6 +777,29 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     if host == "claude-code" and event == "UserPromptSubmit":
         payload = _with_context_since(payload)
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at, "fresh_observation": True}
+    direct_command = (
+        event == "UserPromptSubmit"
+        and type(payload.get("prompt")) is str
+        and payload["prompt"].strip() in {"scope-recall pause", "scope-recall resume"}
+        and payload.get("attachments") in (None, [])
+    )
+    if direct_command:
+        allowed = {
+            "hook_event_name",
+            "session_id",
+            "turn_id",
+            "prompt_id",
+            "generation_id",
+            "cwd",
+            "project_unverified",
+            "prompt",
+        }
+        body = {
+            "payload": {key: value for key, value in payload.items() if key in allowed},
+            "observed_at": observed_at,
+            "fresh_observation": True,
+            "direct_owner_command": True,
+        }
     cursor = None
     record_page = None
     if (
@@ -737,11 +814,11 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
             # The record is here, not on the server: this side says whether the reply is an error WorkBuddy showed.
             body["error_reply"] = True
 
-    answer = _send_checked(config, body, until)
+    answer = _post(config, body, until - time.monotonic()) if direct_command else _send_checked(config, body, until)
     if answer is None:
-        return {}
+        return command_block(host, "Scope Recall could not change recording mode.") if direct_command else {}
     if answer.get("refused"):
-        return {}
+        return command_block(host, "Scope Recall could not change recording mode.") if direct_command else {}
     through = answer.get("through")
     if cursor is not None and type(through) is int and through > body["record"]["start"]:
         cursor.save(through, directory=record_page.directory_at(through) if record_page is not None else None)

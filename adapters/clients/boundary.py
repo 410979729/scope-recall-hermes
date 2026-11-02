@@ -43,14 +43,15 @@ EMPTY_ANSWER = {host: profile.empty_answer for host, profile in HOSTS.items()}
 TURN_FIELD = {host: profile.turn_field for host, profile in HOSTS.items()}
 
 
-def filter_capture_reply(payload: dict[str, Any]) -> dict[str, str] | None:
+def filter_capture_reply(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Filter native spool text locally; None identifies an ordinary hook event."""
     if payload.get("hook_event_name") != "FilterCapture":
         return None
     text = payload.get("text")
     if not isinstance(text, str):
         return {}
-    return {"text": without_private(without_lone_surrogates(text))[0]}
+    visible, count = without_private(without_lone_surrogates(text))
+    return {"text": visible, "private_spans_removed": count}
 
 
 def host_source_key(

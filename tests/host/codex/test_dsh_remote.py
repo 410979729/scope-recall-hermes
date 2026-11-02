@@ -499,7 +499,7 @@ def _plugin_rules(spool, value):
 )
 def test_native_spool_filter_is_local_without_transport_or_store(text, expected):
     answer = remote_client.run_hook({}, json.dumps({"hook_event_name": "FilterCapture", "text": text}).encode())
-    assert answer == ({} if expected is None else {"text": expected})
+    assert answer == ({} if expected is None else {"text": expected, "private_spans_removed": int("<private>" in text)})
 
 
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")
@@ -507,6 +507,7 @@ def test_plugin_filters_inline_private_spans_before_spooling(remote, tmp_path):
     root, _server_home, client, _bodies, _records = remote
     home, rows = _installed(client, tmp_path)
     config = rows["scope-recall"]["config"]
+    (Path(config["home"]) / "scope-recall").mkdir(parents=True, exist_ok=True)
     spool = tmp_path / "TEST-inline-private-spool"
     _plugin_rules(spool, False)
     result = _plugin(
@@ -514,6 +515,9 @@ def test_plugin_filters_inline_private_spans_before_spooling(remote, tmp_path):
         {
             **config,
             "spool": str(spool),
+            "expectBacklog": True,
+            "waitStatus": "lastStore",
+            "waitMs": 30000,
             "prompt": (
                 "TEST visible before <private>TEST hidden inner <private>"
                 "TEST nested</private> tail</private> visible after"
@@ -529,6 +533,40 @@ def test_plugin_filters_inline_private_spans_before_spooling(remote, tmp_path):
     assert "FilterCapture" not in sent
     assert "TEST hidden inner" not in sent
     assert "TEST nested" not in sent
+    assert result["status"]["lastStore"]["private_spans_removed"] == 1
+
+
+@pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")
+def test_plugin_owner_pause_and_resume_do_not_enter_spool(remote, tmp_path):
+    from scope_recall.adapters.clients.config import load_shared_client
+    from scope_recall.adapters.clients.identity import stored_session_id
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core import CoreConfig, MemoryCore
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    root, server_home, client, _bodies, _records = remote
+    home, rows = _installed(client, tmp_path)
+    spool = tmp_path / "TEST-command-spool"
+    config = {**rows["scope-recall"]["config"], "spool": str(spool)}
+    server_config = load_shared_client(server_home, "dsh")
+    binding = server_config.to_binding()
+    owner = MemoryManagement(
+        MemoryCore(CoreConfig(binding)),
+        InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated")),
+    )
+    session = stored_session_id(server_config, "session-TEST-plugin")
+    paused = _plugin(home, {**config, "prompt": "scope-recall pause"})
+    assert paused["decisionRejected"]
+    assert owner.private_status(session=session)["mode"] == "full"
+    resumed = _plugin(home, {**config, "prompt": "scope-recall resume"})
+    assert resumed["decisionRejected"]
+    assert owner.private_status(session=session)["mode"] == "none"
+    assert all("scope-recall pause" not in row[4] and "scope-recall resume" not in row[4] for row in _rows(root))
+    assert all(
+        "scope-recall pause" not in text and "scope-recall resume" not in text
+        for text in paused["diskSnapshots"] + resumed["diskSnapshots"]
+    )
 
 
 @pytest.mark.skipif(not _node_runs(), reason="node 20.6 or later is required")

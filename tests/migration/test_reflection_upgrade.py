@@ -9,6 +9,33 @@ from tests.contract.test_claims import app, initial
 from tests.v11_support import downgrade_store
 
 
+def test_instruction_upgrade_and_interrupted_rollback(app, monkeypatch):
+    """An interrupted instruction-table upgrade leaves the prior format untouched."""
+    import pytest
+    from scope_recall.core import storage
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    downgrade_store(core.storage.path, 1124)
+    migrate = storage.SCHEMA_MIGRATIONS[1124]
+
+    def interrupted(db):
+        migrate(db)
+        raise RuntimeError("TEST interrupted instruction migration")
+
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1124, interrupted)
+    with pytest.raises(RuntimeError, match="TEST interrupted"):
+        core.initialize()
+    with closing(sqlite3.connect(core.storage.path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1124
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='scope_memory_instructions'").fetchone() is None
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1124, migrate)
+    core.initialize()
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+    assert owner.set_memory_instruction("TEST-scope", "TEST decisions")["version"] == 1
+
+
 def test_observation_migration_preserves_fact_versions_and_postings(app):
     core, ctx = app
     item, source = initial(core, ctx)

@@ -6,12 +6,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from scope_recall.contracts import RecallRequest, TrustedContext
+from scope_recall.core.capture_filters import without_private
 from scope_recall.core.private import notice_for_mode
 from scope_recall.core.recall_trace import record_refusal, record_unbound_attempt
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 
 from ..runtime_wiring import render_host_recall_context
 from .tool_surface import display_zone
+from .turn_capture import direct_owner_cli
 
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
@@ -35,6 +37,8 @@ class Prefetch:
         timed out can run 30-50 s).  Nothing of the turn is written meanwhile: its message was stored before, its
         tools run after.
         """
+        if type(query) is str:
+            query = without_private(query)[0]
         if not self._adapter._lock.acquire(timeout=_PREFETCH_STATE_WAIT_S):
             self._adapter._calls.busy("prefetch")
             return ""
@@ -62,7 +66,11 @@ class Prefetch:
                     "source_ref_limit",
                 )
                 return ""
-            recent = (self._adapter._current_task_message,) if self._adapter._current_task_message else ()
+            recent = (
+                (without_private(self._adapter._current_task_message)[0],)
+                if self._adapter._current_task_message
+                else ()
+            )
             context = identity.trusted_context(session_id=effective_session, recent_messages=recent)
             current_refs = tuple(self._adapter._current_source_refs)
             request = self._request(query, effective_session)
@@ -72,6 +80,12 @@ class Prefetch:
             self._adapter._lock.release()
         read_mode = getattr(core, "private_mode", None)
         mode = read_mode(context) if callable(read_mode) else None
+        if (
+            direct_owner_cli(identity)
+            and type(query) is str
+            and query.strip() in {"scope-recall pause", "scope-recall resume"}
+        ):
+            return f"Scope Recall recording mode: {mode or 'none'}."
         notice = notice_for_mode(mode) or ""
         if mode == "full":
             return notice

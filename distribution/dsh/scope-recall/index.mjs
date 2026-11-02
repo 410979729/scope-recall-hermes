@@ -106,6 +106,7 @@ export function apply(ctx, raw) {
         const result = await runHook({ hook_event_name: 'FilterCapture', text: entry.text }, cfg.storeTimeoutMs)
         if (!result.ok || typeof result.answer?.text !== 'string') { rejected.push(entry); continue }
         entry.text = result.answer.text
+        entry.private_spans_removed = result.answer.private_spans_removed
       }
       filtered.push(entry)
     }
@@ -239,6 +240,12 @@ export function apply(ctx, raw) {
       const sessionId = header.id ?? session?.id
       const prompt = clip(humanText(decision.messages))
       if (!sessionId || !prompt) return decision
+      if ((prompt === 'scope-recall pause' || prompt === 'scope-recall resume') &&
+          (decision.messages.length !== 1 || decision.messages[0]?.source?.kind !== 'user' ||
+           payload.messages?.length !== 1 || payload.messages[0]?.source?.kind !== 'user' ||
+           payload.messages[0]?.id !== decision.messages[0]?.id || humanText(payload.messages) !== prompt ||
+           !Array.isArray(payload.messages[0]?.content) ||
+           payload.messages[0].content.some((block) => block?.type !== 'text'))) return decision
       const key = `${sessionId}:${payload.turn}`
       if (recalled.has(key)) return decision
       recalled.add(key)
@@ -247,7 +254,17 @@ export function apply(ctx, raw) {
       const result = await runHook({ hook_event_name: 'UserPromptSubmit', session_id: sessionId,
                                      turn_id: String(payload.turn), prompt, cwd: header.cwd ?? process.cwd() },
                                    cfg.recallTimeoutMs, payload.signal, true)
-      const context = result.ok ? result.answer?.hookSpecificOutput?.additionalContext : null
+      if (result.ok && result.answer?.decision === 'block' &&
+          decision.messages.length === 1 && decision.messages[0]?.source?.kind === 'user') {
+        status.lastRecall = { at: new Date().toISOString(), ms: Date.now() - started,
+                              outcome: result.answer.reason ?? 'recording command' }
+        writeStatus(true)
+        return { kind: 'reject' }
+      }
+      const context = result.ok
+        ? [result.answer?.hookSpecificOutput?.additionalContext, result.answer?.systemMessage]
+            .filter((value) => typeof value === 'string' && value.trim()).join('\n\n')
+        : null
       status.lastRecall = { at: new Date().toISOString(), ms: Date.now() - started,
                             outcome: result.ok ? (context ? 'recalled' : 'nothing') : result.error }
       writeStatus()
@@ -276,6 +293,9 @@ export function apply(ctx, raw) {
         case 'user/message': {
           if (data.source?.kind !== 'user') return  // dsh's own context and ours are not the person's
           const text = clip(textOf(data.content))
+          const onlyText = typeof data.content === 'string' ||
+            (Array.isArray(data.content) && data.content.every((block) => block?.type === 'text'))
+          if (onlyText && (text === 'scope-recall pause' || text === 'scope-recall resume')) return
           if (text) keep(sessionId, { role: 'user', id: data.id, text, time: event.time, turn: turns.get(sessionId) ?? null, cwd })
           return
         }
@@ -351,6 +371,7 @@ export function apply(ctx, raw) {
       ? messages.filter((entry) => entry.role === 'assistant' && entry.turn === lastEnd.turn).at(-1) : null
     const reply = last && now - last.time <= REPLY_FRESH_MS ? last : null
     const stored = new Set()
+    let privateSpansRemoved = 0
     let failure = null
     // A Stop stores what it can in its time (the hook reads at most 3 s of lines): the rest goes with the next one, and
     // only a Stop that stores nothing ends the store.
@@ -367,7 +388,8 @@ export function apply(ctx, raw) {
         if (!chunk.length) continue
       }
       const payload = { hook_event_name: 'Stop', session_id: sessionId, cwd: lastEnd?.cwd ?? chunk[0]?.cwd ?? process.cwd(),
-                        record: chunk.map(({ id, role, text, time, clock }) => ({ id, role, text, time, clock })) }
+                        record: chunk.map(({ id, role, text, time, clock, private_spans_removed }) =>
+                          ({ id, role, text, time, clock, private_spans_removed })) }
       if (reply && chunk.includes(reply) && bytes(payload) + bytes(reply.text) <= PAYLOAD_BYTES) {
         Object.assign(payload, { turn_id: String(lastEnd.turn), last_assistant_message: reply.text, reply_id: reply.id })
       }
@@ -375,6 +397,11 @@ export function apply(ctx, raw) {
       const through = result.ok ? Number(result.answer?.through) : NaN
       if (!Number.isInteger(through) || through < 0) { failure = result.error ?? 'no count in the answer'; break }
       if (through === 0) { failure = 'nothing stored'; break }
+      for (const entry of chunk.slice(0, through)) {
+        if (Number.isInteger(entry.private_spans_removed) && entry.private_spans_removed > 0) {
+          privateSpansRemoved += entry.private_spans_removed
+        }
+      }
       for (const entry of chunk.slice(0, through)) stored.add(entry.k)
       queue = queue.slice(Math.min(through, chunk.length))
     }
@@ -392,7 +419,8 @@ export function apply(ctx, raw) {
       warn(`session ${sessionId}: ${dropped.size} message(s) dropped unstored by private rules or queue limits`)
     }
     status.backlog = countBacklog()
-    status.lastStore = { at: new Date().toISOString(), stored: stored.size, left: status.backlog, error: failure }
+    status.lastStore = { at: new Date().toISOString(), stored: stored.size, left: status.backlog, error: failure,
+                         private_spans_removed: privateSpansRemoved }
     writeStatus(true)
     if (failure) warn(`session ${sessionId}: message(s) kept to store later (${failure})`)
     return !failure

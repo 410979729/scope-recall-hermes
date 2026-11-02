@@ -22,6 +22,7 @@ from ..contracts import (
 from . import private
 from .admission import AdmissionPolicy
 from .capture import CaptureReceipt, record_event
+from .capture_filters import without_private
 from .delete_storage import retraction_after
 from .model_content import withhold_secret_items
 from .operations import Operations
@@ -547,6 +548,8 @@ class MemoryCore:
             trace.enabled = privacy_state[0] is None
             trace.private_marker = privacy_state[1]
         payload = validate_model_request("recall_request", request, context)
+        payload["query"] = without_private(payload["query"])[0]
+        context = replace(context, recent_messages=tuple(without_private(text)[0] for text in context.recent_messages))
         if deadline_seconds is None:
             effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
         else:
@@ -560,7 +563,7 @@ class MemoryCore:
             if payload.get("mode") == "auto":
                 effective_deadline = min(effective_deadline, self.config.auto_recall_seconds)
         search_context = SearchContext.from_request(
-            request,
+            payload,
             context,
             now=self.clock.utc_now(),
             deadline=self.clock.monotonic() + effective_deadline,

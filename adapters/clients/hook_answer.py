@@ -41,6 +41,7 @@ class HookDiagnostics:
     capture_durability: str | None = None
     #: Replacement spans across this hook's captures; diagnostics contain no matched text.
     masked_secret_count: int = 0
+    private_spans_removed: int = 0
     capture_error_type: str | None = None
     capture_error_code: str | None = None
     #: The code before the frozen allowlist collapsed it to CAPTURE_ERROR.
@@ -79,6 +80,10 @@ class HookDiagnostics:
             or self.capture_error_code in _SETTLED_CAPTURE_CODES
         )
 
+    def private_notice(self) -> str:
+        """A content-free receipt for spans removed during this hook."""
+        return f"private_spans_removed:{self.private_spans_removed}" if self.private_spans_removed else ""
+
     def note_capture_error(self, code: object) -> None:
         """A capture's error: as the host may read it (one of ``_CAPTURE_ERROR_CODES``, else ``CAPTURE_ERROR``), and
         as it was, for the local diagnostic line."""
@@ -89,6 +94,13 @@ class HookDiagnostics:
     def capture_refused(self) -> bool:
         """The capture refused its message (a credential, or nothing left to store), rather than failing to write it."""
         return self.capture_disposition == "rejected" or self.capture_error_detail in _SECRET_REFUSALS
+
+
+def command_block(host: str, reason: str) -> dict[str, Any]:
+    """Stop a direct command using the host's documented prompt output contract."""
+    if host == "workbuddy":
+        return {"continue": False, "stopReason": reason}
+    return {"decision": "block", "reason": reason}
 
 
 def error_detail(code: object) -> str | None:
@@ -174,6 +186,7 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
             "error_code": diagnostics.capture_error_code,
             "elapsed_ms": diagnostics.capture_elapsed_ms,
             "masked_secret_count": diagnostics.masked_secret_count,
+            "private_spans_removed": diagnostics.private_spans_removed,
         }
         # Local operator channel only.  stdout carries the host contract; this
         # line is what a person reads when the contract code is not specific

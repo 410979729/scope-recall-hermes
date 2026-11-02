@@ -114,6 +114,39 @@ def test_raw_client_spools_apply_capture_secret_policy(tmp_path):
     assert len(list((state / "spool").glob("*.json"))) == 4
 
 
+def test_full_backup_filters_inline_private_from_old_client_spool(tmp_path):
+    from scope_recall.adapters.clients.remote_client import _spool
+
+    _, _, binding = _create_synthetic_store(tmp_path)
+    state = tmp_path / "TEST-old-client"
+    config = tmp_path / "TEST-old-client.json"
+    config.write_text(json.dumps({"state_dir": str(state), "token_file": str(tmp_path / "TEST-token-ref")}))
+    _spool(
+        {"state_dir": state},
+        {"hook_event_name": "UserPromptSubmit", "prompt": "TEST visible <private>TEST hidden backup</private>"},
+        "2026-01-01T00:00:00Z",
+    )
+    bundle = tmp_path / "TEST-private-backup.zip"
+    create_backup_bundle(binding=binding, output=bundle, client_configs=(config,))
+    with zipfile.ZipFile(bundle) as archive:
+        entries = [archive.read(name) for name in archive.namelist() if "/spool/" in name]
+    assert entries and all(b"TEST hidden backup" not in entry for entry in entries)
+    assert any(b"TEST visible" in entry for entry in entries)
+
+
+def test_full_backup_filters_inline_private_from_old_kept_capture(tmp_path):
+    _, _, binding = _create_synthetic_store(tmp_path)
+    kept = binding.data_directory / "kept-captures" / "TEST-old.json"
+    kept.parent.mkdir()
+    kept.write_text(json.dumps({"event": {"content": "TEST visible <private>TEST hidden kept</private>"}}))
+    bundle = tmp_path / "TEST-kept-backup.zip"
+    create_backup_bundle(binding=binding, output=bundle)
+    with zipfile.ZipFile(bundle) as archive:
+        data = archive.read("kept-captures/TEST-old.json")
+    assert b"TEST hidden kept" not in data
+    assert b"TEST visible" in data
+
+
 def test_full_backup_omits_private_spools_and_kept_capture_bodies(tmp_path):
     from scope_recall.adapters.clients.remote_client import _spool
     from test_private_mode import PrivateClock

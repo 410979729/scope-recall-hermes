@@ -16,6 +16,7 @@ from typing import Any, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
+from scope_recall.core.events import prepare_capture
 from scope_recall.core.recall_trace import record_unbound_attempt
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
@@ -626,6 +627,10 @@ class CodexHookHandler:
         if filtered is not None:
             return filtered
         result = self.handle_payload(payload)
+        notice = self.diagnostics.private_notice()
+        if notice:
+            prior = result.get("systemMessage")
+            result = {**result, "systemMessage": f"{prior}\n{notice}" if isinstance(prior, str) and prior else notice}
         if self.host == "dsh" and payload.get("hook_event_name") != "PrivateCheck":
             session_id, audience = self.session_of(payload), self.audience_of(payload)
             if session_id is not None and audience is not None:
@@ -640,6 +645,63 @@ class CodexHookHandler:
         return result
 
     # -- capture ---------------------------------------------------------
+
+    def _capture_event(self, context, audience, event, deadline, gaps, via_inbox, wait):
+        """Preserve prefiltered omission metadata through either capture route."""
+        removed_gaps = tuple(
+            gap for gap in gaps if gap == "private_content_omitted" or gap.startswith("private_spans_removed:")
+        )
+        prepared = None
+        if removed_gaps and isinstance(self.core, MemoryCore):
+            prepared = prepare_capture(event, context)
+            prepared = replace(prepared, gaps=tuple(dict.fromkeys((*prepared.gaps, *removed_gaps))))
+        if via_inbox:
+            receipt = self.core.record_host_event(
+                context,
+                event,
+                scope_id=audience.capture_scope_id,
+                host_scope=audience.host_scope,
+                remaining_seconds=min(wait, self.remaining(deadline)),
+                **({"_prepared": prepared} if prepared is not None else {}),
+                **(
+                    {"background": True}
+                    if self.background_prompt_capture and self.diagnostics.last_event == "UserPromptSubmit"
+                    else {}
+                ),
+            )
+            if isinstance(receipt, PendingCapture):
+                self.pending_capture = receipt
+                receipt = receipt.receipt
+        else:
+            if prepared is not None:
+                from scope_recall.core.capture import record_event
+
+                receipt = record_event(
+                    self.core.storage,
+                    self.core.clock,
+                    context,
+                    event,
+                    scope_id=audience.capture_scope_id,
+                    _prepared=prepared,
+                    admission_policy=self.core.config.admission_policy,
+                    remaining_seconds=min(wait, self.remaining(deadline)),
+                )
+            else:
+                receipt = self.core.record_event(
+                    context,
+                    event,
+                    scope_id=audience.capture_scope_id,
+                    remaining_seconds=min(wait, self.remaining(deadline)),
+                )
+        return receipt
+
+    def _note_private_spans(self, receipt):
+        """Count content-free omission markers from a capture receipt."""
+        for gap in set(receipt.gaps):
+            if gap.startswith("private_spans_removed:"):
+                count = gap.removeprefix("private_spans_removed:")
+                if count.isascii() and count.isdecimal():
+                    self.diagnostics.private_spans_removed += int(count)
 
     def capture(
         self,
@@ -669,29 +731,7 @@ class CodexHookHandler:
             self.note("deadline_exceeded", gaps=gaps)
             return (), gaps
         try:
-            if via_inbox:
-                receipt = self.core.record_host_event(
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    host_scope=audience.host_scope,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                    **(
-                        {"background": True}
-                        if self.background_prompt_capture and self.diagnostics.last_event == "UserPromptSubmit"
-                        else {}
-                    ),
-                )
-                if isinstance(receipt, PendingCapture):
-                    self.pending_capture = receipt
-                    receipt = receipt.receipt
-            else:
-                receipt = self.core.record_event(
-                    context,
-                    event,
-                    scope_id=audience.capture_scope_id,
-                    remaining_seconds=min(wait, self.remaining(deadline)),
-                )
+            receipt = self._capture_event(context, audience, event, deadline, gaps, via_inbox, wait)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
@@ -712,6 +752,7 @@ class CodexHookHandler:
         self.diagnostics.capture_disposition = receipt.disposition
         self.diagnostics.capture_durability = receipt.durability
         self.diagnostics.masked_secret_count += receipt.masked_secret_count
+        self._note_private_spans(receipt)
         if receipt.error_code:
             self.diagnostics.note_capture_error(receipt.error_code)
         if receipt.durability == "queued":

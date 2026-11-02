@@ -191,6 +191,26 @@ def sanitize_source_capture_text(text: str) -> str:
     return cleaned
 
 
+def sanitize_source_capture_value(value: Any) -> Any:
+    """Filter each JSON string before a capture copy is retained or exported.
+
+    Refuse colliding keys rather than silently replacing one field after filtering.
+    """
+    if isinstance(value, str):
+        return sanitize_source_capture_text(without_private(value)[0])
+    if isinstance(value, list):
+        return [sanitize_source_capture_value(item) for item in value]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            clean_key = sanitize_source_capture_value(key)
+            if clean_key in result:
+                raise ValueError("capture_key_collision")
+            result[clean_key] = sanitize_source_capture_value(item)
+        return result
+    return value
+
+
 def sanitize_capture_text(text: Any) -> str:
     """Remove binary data URLs and gateway attachment markers before storage.
 

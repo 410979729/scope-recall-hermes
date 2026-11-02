@@ -301,6 +301,15 @@ $("importance").addEventListener("submit", (event) => {
   run(() => preview({action: "importance", ref: selected.ref, expected_revision: selected.revision, importance: Number($("importance").elements.importance.value), pinned: $("importance").elements.pinned.checked}));
 });
 $("private-form").addEventListener("submit", (event) => { event.preventDefault(); run(() => preview(privateArguments("private-on"))); });
+$("instruction-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = $("instruction-form");
+  run(() => preview({action: "instruction-set", scope: form.elements.scope.value, instruction: form.elements.instruction.value}));
+});
+$("instruction-read").addEventListener("click", () => run(async () => {
+  const scope = $("instruction-form").elements.scope.value;
+  display("instruction-history", await request("instruction", {scope}));
+}));
 $("private-off").addEventListener("click", () => run(() => preview(privateArguments("private-off"))));
 $("private-inspect").addEventListener("click", () => run(async () => {
   const {session, project} = privateArguments("private-off");

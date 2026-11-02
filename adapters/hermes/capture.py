@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, cast
 from scope_recall.contracts import ContractError, SourceEvent, TrustedContext
 from scope_recall.core import MemoryCore
 from scope_recall.core.capture import CaptureReceipt
-from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text
+from scope_recall.core.capture_filters import redact_secret_text, sanitize_source_capture_text, without_private
 from scope_recall.core.deadline import fits
 from scope_recall.core.events import prepare_capture
 from scope_recall.core.failure_policy import capture_retryable
@@ -69,7 +69,8 @@ def _same_stored_content(stored_event: dict, content: object) -> bool:
     """
     if type(content) is not str:
         return False
-    admitted = sanitize_source_capture_text(redact_secret_text(content)[0])
+    visible, _count = without_private(content)
+    admitted = sanitize_source_capture_text(redact_secret_text(visible)[0])
     stored = stored_event.get("content")
     if type(stored) is not str:
         return False
@@ -133,6 +134,15 @@ class CaptureWriter:
         """Record one host event: the receipt, or None when nothing was written (said in the diagnostics and the
         log).  ``release``: the caller holds the adapter's lock exactly once, and the store I/O runs without it."""
         adapter = self._adapter
+        if (
+            context.actor_origin == "human_direct"
+            and isinstance(event, dict)
+            and type(event.get("content")) is str
+            and event["content"].strip() in {"scope-recall pause", "scope-recall resume"}
+            and not event.get("artifact_refs")
+            and not gaps
+        ):
+            return None
         if event is None:
             if gaps:
                 adapter._merge_gaps(gaps)
@@ -453,8 +463,8 @@ class CaptureWriter:
                 _log.info("scope-recall: stored on retry: %s", label(identity))
         if context.session_id == adapter._require_identity().stored_session_id():
             self._fence(receipt)
-        if gaps:
-            adapter._merge_gaps(gaps)
+        if gaps or receipt.gaps:
+            adapter._merge_gaps(gaps, receipt.gaps)
         adapter._binding.wake_worker(context=context)
         return receipt
 

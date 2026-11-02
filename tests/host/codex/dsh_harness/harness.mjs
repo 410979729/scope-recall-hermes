@@ -64,9 +64,14 @@ if (scenario === 'aborted') {
   const prompt = userMessage(config.prompt ?? 'TEST 我的猫叫什么名字？')
   const queued = config.queued ? [userMessage(config.queued)] : []
   const decision = await preStep([...queued, prompt])
-  const added = decision.messages.filter((message) => message.source?.kind !== 'user')
+  const added = (decision.messages ?? []).filter((message) => message.source?.kind !== 'user')
   result.injected = added.length ? { kind: added[0].source.kind, form: added[0].source.form, text: added[0].content[0].text } : null
   result.decisionKept = decision.kind === 'enter' && decision.startsRequestSeries === true && decision.messages[queued.length] === prompt
+  result.decisionRejected = decision.kind === 'reject'
+  if (decision.kind === 'reject') {
+    emit('user/message', prompt)
+    emit('turn/end', { turn: 1, reason: { kind: 'aborted' } })
+  } else {
   for (const message of queued) emit('user/message', message)
   emit('user/message', prompt)
   emit('user/message', { id: 'ctx-1', role: 'user', content: [{ type: 'text', text: 'TEST runtime context' }], source: { kind: 'runtime-context' } })
@@ -81,6 +86,7 @@ if (scenario === 'aborted') {
       emit('assistant/message', modelMessage(2, 1, 'a-3', 'TEST 第二轮的回答。'))
       emit('turn/end', { turn: 2, reason: { kind: 'completed' } })
     })
+  }
   }
 }
 await later

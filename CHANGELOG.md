@@ -4,6 +4,9 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Scope owners can version per-scope extraction instructions from management; instructions only narrow later extraction.
+Recording can be paused or resumed for the current session with direct owner commands, and capture receipts count removed inline private spans.
+
 Recall history excludes both private modes throughout in-flight requests and no longer stores query hashes.
 Diagnostic writes use recoverable WAL transactions and shared retention limits; history reads never upgrade truth.
 Worker-published counters replace queue scans during recall. The minimum diagnostic capacity is 128 KiB; existing

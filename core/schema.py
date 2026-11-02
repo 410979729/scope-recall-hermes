@@ -4,7 +4,7 @@ from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
 from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 
-SCHEMA_VERSION = 1124
+SCHEMA_VERSION = 1125
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -716,7 +716,17 @@ STATEMENTS = (
     + REFLECTION_POLICY_STATEMENTS
     + INJECTION_STATEMENTS
     + INJECTION_SEEDS
-    + (RESTORED_SUPPRESSION_STATEMENT,)
+    + (
+        RESTORED_SUPPRESSION_STATEMENT,
+        """CREATE TABLE scope_memory_instructions (
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version >= 1),
+        text TEXT NOT NULL CHECK(length(text) <= 2000),
+        changed_at TEXT NOT NULL,
+        changed_by TEXT NOT NULL CHECK(changed_by = 'local_user_management'),
+        PRIMARY KEY(scope_id,version)
+    ) STRICT, WITHOUT ROWID""",
+    )
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
 
@@ -1108,3 +1118,10 @@ def upgrade_1123(connection):
     connection.execute("UPDATE reflection_groups SET new_sources=json_array_length(buffered_json)")
     connection.execute("UPDATE instance_meta SET schema_version=1124 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1124")
+
+
+def upgrade_1124(connection):
+    """Add versioned owner instructions without altering existing source or claim rows."""
+    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_memory_instructions")))
+    connection.execute("UPDATE instance_meta SET schema_version=1125 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1125")

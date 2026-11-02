@@ -27,6 +27,19 @@ def _contents(provider, ctx):
         return [row[0] for row in tx._check().execute("SELECT content FROM source_events")]
 
 
+def test_cli_owner_pause_and_resume_are_not_captured(adapter):
+    provider, clock = adapter
+    owner, ctx = _owner(provider)
+    provider.observe_pre_llm(session_id=ctx.session_id, turn_id="TEST-pause", user_message="scope-recall pause")
+    assert owner.private_status(session=ctx.session_id)["mode"] == "full"
+    provider.sync_turn("scope-recall pause", "TEST response", session_id=ctx.session_id)
+    clock.now = "2026-09-06T13:00:00Z"
+    provider.observe_pre_llm(session_id=ctx.session_id, turn_id="TEST-resume", user_message="scope-recall resume")
+    assert owner.private_status(session=ctx.session_id)["mode"] == "none"
+    provider.sync_turn("scope-recall resume", "TEST response", session_id=ctx.session_id)
+    assert not any("scope-recall pause" in text or "scope-recall resume" in text for text in _contents(provider, ctx))
+
+
 def test_masked_retry_keeps_safe_context_count_and_gaps_through_disk_and_inbox(adapter, monkeypatch):
     provider, clock = adapter
     bound = provider._require_identity()
@@ -118,6 +131,38 @@ def test_new_capture_does_not_inherit_another_messages_mask_count_or_gaps(adapte
     assert receipt.durability == "persisted" and receipt.masked_secret_count == 1
     source = provider._core.source(ctx, receipt.event_refs[0].ref, 1)
     assert source.capture_gaps == ("secret_values_masked",)
+
+
+def test_repeated_inline_private_capture_keeps_first_observation_time(adapter, monkeypatch):
+    provider, clock = adapter
+    bound = provider._require_identity()
+    ctx = bound.trusted_context()
+    key = ("TEST-inline-private-repeat", 1)
+    original = source_event(
+        source_event_key=key[0],
+        origin=ctx.actor_origin,
+        content="TEST public <private>TEST hidden text</private> ending",
+        occurred_at=clock.now,
+        recorded_at=clock.now,
+    )
+    with provider._lock:
+        first = provider._writer.write(ctx, original, identity=key, gaps=(), scope_id=bound.local_scope_id)
+    assert first.durability == "persisted"
+    assert "private_spans_removed:1" in first.gaps
+    clock.now = "2026-09-06T13:00:00Z"
+    replay = {**original, "occurred_at": clock.now, "recorded_at": clock.now}
+    observed = []
+    record = provider._core.record_host_event
+
+    def capture_event(context, event, **kwargs):
+        observed.append(dict(event))
+        return record(context, event, **kwargs)
+
+    monkeypatch.setattr(provider._core, "record_host_event", capture_event)
+    with provider._lock:
+        second = provider._writer.write(ctx, replay, identity=key, gaps=(), scope_id=bound.local_scope_id)
+    assert second.disposition == "duplicate"
+    assert observed[0]["occurred_at"] == original["occurred_at"]
 
 
 @pytest.mark.parametrize("mode", ["full", "read-only"])
@@ -374,3 +419,15 @@ def test_late_writer_does_not_resurrect_a_discarded_private_capture(adapter):
     provider._writer._closed_meanwhile(key, RuntimeError("TEST retryable write"), False, pending)
     assert key not in provider._retry.captures
     assert key not in provider._retry.on_disk
+
+
+def test_relayed_cli_route_cannot_toggle_owner_recording(adapter, monkeypatch):
+    provider, _clock = adapter
+    bound = provider._require_identity()
+    provider._identity = replace(bound, scope=replace(bound.scope, gateway_session_key="TEST-relayed"))
+    opened = []
+    monkeypatch.setattr(
+        "scope_recall.adapters.hermes.turn_capture.private.open_interval", lambda *a, **k: opened.append(1)
+    )
+    provider.observe_pre_llm(session_id=bound.session_id, turn_id="TEST-relay", user_message="scope-recall pause")
+    assert not opened

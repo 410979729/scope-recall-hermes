@@ -51,6 +51,14 @@ def _filters(parser):
         parser.add_argument("--" + name)
 
 
+def _instruction_arguments(command, action):
+    """Expose scope instruction fields only on management commands."""
+    if action in {"instruction-get", "instruction-set"}:
+        command.add_argument("--scope", required=True)
+    if action == "instruction-set":
+        command.add_argument("--text", required=True, help="instruction text, at most 2000 characters")
+
+
 def parser():
     """Build command arguments without opening a database or calling a provider."""
     root = argparse.ArgumentParser(prog="scope-recall memory", description=__doc__)
@@ -70,9 +78,12 @@ def parser():
         "secrets",
         "recalls",
         "import",
+        "instruction-get",
+        "instruction-set",
     ):
         command = commands.add_parser(action)
         _common(command)
+        _instruction_arguments(command, action)
         if action == "recalls":
             command.add_argument("--session")
             command.add_argument("--request-id")
@@ -144,6 +155,12 @@ def _inventory(api, args):
 
 def execute(api, args):
     """Translate one parsed command to the same methods used by the local UI."""
+    if args.action in {"instruction-get", "instruction-set"}:
+        return (
+            {"instructions": api.memory_instructions(args.scope)}
+            if args.action == "instruction-get"
+            else api.set_memory_instruction(args.scope, args.text)
+        )
     if args.action in {"recalls", "secrets", "list", "search"}:
         return _inventory(api, args)
     if args.action == "importance":
