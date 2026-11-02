@@ -545,7 +545,9 @@ def drain_worker(
         "embed": partial(process_embed, embed=embed),
         "evaluate_candidate": partial(process_candidate_evaluation, evaluator=candidate),
         "rebuild_projection": partial(
-            process_rebuild_projection, model=consolidation if "consolidate" in allowed else None
+            process_rebuild_projection,
+            model=consolidation if "consolidate" in allowed else None,
+            admission_policy=config.admission_policy,
         ),
         "purge": partial(process_purge, purge=purge),
     }

@@ -224,7 +224,14 @@ SUITES = {
         "tests/contract/test_embedding_respace.py",
         "tests/known_answer/test_recall_invariants_check.py",
     ],
-    "capture": ["tests/contract/test_capture.py", "tests/contract/test_capture_row_crossings.py"],
+    "capture": [
+        "tests/contract/test_capture.py",
+        "tests/contract/test_capture_row_crossings.py",
+        "tests/contract/test_injection_guard.py",
+        "tests/contract/test_injection_revision.py",
+        "tests/contract/test_injection_screening.py",
+        "tests/contract/test_injection_merged.py",
+    ],
     "claims": [
         "tests/test_denial_values.py",
         "tests/contract/test_claims.py",
@@ -244,6 +251,7 @@ SUITES = {
         "tests/contract/test_storage_growth.py",
     ],
     "retrieval": [
+        "tests/contract/test_claim_lexical_index.py",
         "tests/public_bench/test_public_bench.py",
         "tests/contract/test_retrieval_pipeline.py",
         "tests/contract/test_recall_restatement.py",
@@ -315,9 +323,11 @@ SUITES = {
         "tests/host/codex/test_resident_recall.py",
     ],
     "migration": [
+        "tests/migration/test_claim_index_upgrade.py",
         "tests/migration/test_entity_upgrade.py",
         "tests/migration/test_migration_drills.py",
         "tests/migration/test_upgrade_coordinator.py",
+        "tests/migration/test_injection_upgrade.py",
         "tests/migration/test_upgrade_policy.py",
     ],
     "packaging": [

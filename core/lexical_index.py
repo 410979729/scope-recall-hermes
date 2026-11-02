@@ -1,4 +1,4 @@
-"""The lexical index: a term dictionary and integer postings.
+"""Source and current-fact lexical indexes sharing a term dictionary.
 
 ``lexical_projection``, the table the 1109 upgrade replaces, stored every
 (term, event_id, source_revision) as text, and its mirror index doubled that:
@@ -9,12 +9,18 @@ Here a term is one row in ``lexical_terms`` and a posting two integers in
 ``source_id`` is a source version's integer identity (``source_events.source_id``),
 assigned at insert; the 1109 upgrade numbers the existing rows.
 
-Every reader and writer of the index goes through here.  The two ranking
+Source writes, document frequency and dictionary lifetime are owned here. The two ranking
 queries that start from the terms (``storage.search_sources`` and the lexical
 channel in ``retrieval_storage``) splice in ``JOIN`` below, so the tables are
 named in one place: filter on ``t.term``, aggregate on ``e``.  The preference
 match in ``background_context`` starts from its few claims instead and names
 the tables itself.
+
+Current facts use ``(term_id, claim_id)`` postings, ordered by public claim ref
+so bounded intersections need no whole-corpus tie sort. Their writers replace
+only current head text in the caller's transaction; nomination and its scoped
+policy live in ``retrieval_storage``. Dictionary cleanup accounts for both
+posting tables.
 """
 
 from __future__ import annotations
@@ -22,8 +28,8 @@ from __future__ import annotations
 import json
 from typing import Iterable
 
-from ..contracts import ContractError
-from .events import WITHHELD_TOOL_OUTPUT_SQL, indexed_terms, withheld_tool_output
+from ..contracts import ContractError, utc_timestamp
+from .events import WITHHELD_TOOL_OUTPUT_SQL, indexed_terms, lexical_terms, withheld_tool_output
 
 #: ``t`` is the term, ``p`` the posting, ``e`` the source version.
 JOIN = "lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id JOIN source_events e ON e.source_id=p.source_id"
@@ -75,7 +81,8 @@ def forget(conn, event_id: str) -> None:
         f"""DELETE FROM lexical_terms WHERE term_id IN
             (SELECT term_id FROM lexical_postings WHERE source_id IN ({versions}))
             AND NOT EXISTS (SELECT 1 FROM lexical_postings p WHERE p.term_id=lexical_terms.term_id
-                AND p.source_id NOT IN ({versions}))""",
+                AND p.source_id NOT IN ({versions}))
+            AND NOT EXISTS (SELECT 1 FROM claim_lexical_postings p WHERE p.term_id=lexical_terms.term_id)""",
         (event_id, event_id),
     )
     conn.execute(f"DELETE FROM lexical_postings WHERE source_id IN ({versions})", (event_id,))
@@ -182,10 +189,145 @@ def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
     }
 
 
+def _replace_claim_terms(conn, refs: tuple[str, ...], postings: list[tuple[str, str, int]], heads=()) -> None:
+    """Replace a bounded set of heads once, then remove only dictionary words nobody holds.
+
+    The same bulk boundary serves a single live head and an initialization page.
+    All postings, dictionary changes and the caller's head or cursor commit
+    together. Source postings keep their own identity and are never rewritten.
+    """
+    encoded = json.dumps(refs)
+    previous = tuple(
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT term_id FROM claim_lexical_postings WHERE claim_id IN (SELECT value FROM json_each(?))",
+            (encoded,),
+        )
+    )
+    conn.execute("DELETE FROM claim_lexical_postings WHERE claim_id IN (SELECT value FROM json_each(?))", (encoded,))
+    conn.execute("DELETE FROM claim_lexical_heads WHERE claim_id IN (SELECT value FROM json_each(?))", (encoded,))
+    if heads:
+        conn.execute(
+            "INSERT INTO claim_lexical_heads(claim_id,is_simple,recorded) "
+            "SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?)",
+            (json.dumps(heads),),
+        )
+    if postings:
+        terms = tuple(dict.fromkeys(term for _, term, _ in postings))
+        conn.execute(
+            "INSERT OR IGNORE INTO lexical_terms(term) SELECT value FROM json_each(?)",
+            (json.dumps(terms, ensure_ascii=False),),
+        )
+        # The dictionary may have tiny pre-import statistics; JSON rows must
+        # drive indexed term probes rather than a dictionary scan per posting.
+        conn.execute(
+            "INSERT INTO claim_lexical_postings(term_id,claim_id,subject_terms) "
+            "SELECT t.term_id,json_extract(p.value,'$[0]'),json_extract(p.value,'$[2]') FROM json_each(?) p "
+            "CROSS JOIN lexical_terms t ON t.term=json_extract(p.value,'$[1]')",
+            (json.dumps(postings, ensure_ascii=False),),
+        )
+    if previous:
+        conn.execute(
+            "DELETE FROM lexical_terms WHERE term_id IN (SELECT value FROM json_each(?)) "
+            "AND NOT EXISTS(SELECT 1 FROM lexical_postings p WHERE p.term_id=lexical_terms.term_id) "
+            "AND NOT EXISTS(SELECT 1 FROM claim_lexical_postings p WHERE p.term_id=lexical_terms.term_id)",
+            (json.dumps(previous),),
+        )
+
+
+def forget_claim(conn, claim_id: str) -> None:
+    """Remove a fact's derived text, retaining words still held by any source or fact."""
+    _replace_claim_terms(conn, (claim_id,), [])
+
+
+def _claim_projection(rows) -> tuple[list, list]:
+    """Project current text and mark subject words with the final scorer's denominator.
+
+    A positive count marks a subject term; the same count on each such posting
+    lets SQL check half-subject coverage without reading or tokenizing payloads.
+    Single-character words do not contribute, as in final claim scoring.
+    """
+    postings, heads = [], []
+    for row in rows:
+        if row[4] == "alias" or row[5]:
+            continue
+        heads.append((row[0], int(row[6]), utc_timestamp(row[7]) if row[6] else ""))
+        subject = {term for term in lexical_terms(str(row[1])) if len(term) > 1}
+        for term in lexical_terms(" ".join(str(part or "") for part in row[1:4])):
+            postings.append((row[0], term, len(subject) if term in subject else 0))
+    return postings, heads
+
+
+# A replayed deletion ledger can precede the head flag. Suppression stays
+# indexed for explicit reads; either deletion marker excludes the head.
+_CLAIM_HEAD = (
+    "SELECT c.claim_id,c.subject,c.predicate,json_extract(v.payload_json,'$.value_text'),c.kind,"
+    "(c.read_blocked OR EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' "
+    "AND b.object_ref=c.claim_id AND b.read_blocked=1)), "
+    "CASE WHEN c.current_revision=1 AND v.state='active' AND v.valid_from IS NULL AND v.valid_to IS NULL "
+    "AND coalesce(json_array_length(v.payload_json,'$.conditions'),0)=0 "
+    "AND json_extract(v.payload_json,'$.subject')=c.subject "
+    "AND json_extract(v.payload_json,'$.predicate')=c.predicate "
+    "AND NOT EXISTS(SELECT 1 FROM claim_versions other WHERE other.claim_id=c.claim_id AND other.revision>1) "
+    "THEN 1 ELSE 0 END,v.recorded_from "
+    "FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
+)
+
+
+def index_claim(conn, claim_id: str) -> None:
+    """Replace only the current head's subject, predicate and value in its writer's transaction.
+
+    Reading the durable head keeps non-head proposals from replacing its words
+    and makes ordinary writes, restore and backfill project identical text.
+    """
+    rows = conn.execute(_CLAIM_HEAD + "WHERE c.claim_id=?", (claim_id,)).fetchall()
+    _replace_claim_terms(conn, (claim_id,), *_claim_projection(rows))
+
+
+def claim_backfill_pending(conn) -> bool:
+    """Whether initialization still owes durable pages of current-fact postings."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM candidate_scan_cursors WHERE cursor_name='claim_lexical' AND completed=0"
+        ).fetchone()
+        is not None
+    )
+
+
+def backfill_claim_page(conn, *, limit: int = 500) -> bool:
+    """Index one primary-key page with its cursor atomically; return whether more pages remain.
+
+    The initialization coordinator owns the writer lease across pages. A killed
+    page rolls back its postings and cursor together; committed pages survive.
+    Newly written facts use index_claim and need no cursor reset.
+    """
+    cursor = conn.execute(
+        "SELECT position_ref FROM candidate_scan_cursors WHERE cursor_name='claim_lexical' AND completed=0"
+    ).fetchone()
+    if cursor is None:
+        return False
+    rows = conn.execute(
+        _CLAIM_HEAD + "WHERE c.claim_id>? ORDER BY c.claim_id LIMIT ?", (cursor[0] or "", limit)
+    ).fetchall()
+    if rows:
+        _replace_claim_terms(conn, tuple(row[0] for row in rows), *_claim_projection(rows))
+    more = len(rows) == limit
+    conn.execute(
+        "UPDATE candidate_scan_cursors SET position_ref=?,processed_count=processed_count+?,completed=?,"
+        "updated_at=datetime('now') WHERE cursor_name='claim_lexical'",
+        (rows[-1][0] if rows else cursor[0], len(rows), int(not more)),
+    )
+    return more
+
+
 __all__ = [
     "JOIN",
     "WITHHELD_PAGE_MAX",
+    "backfill_claim_page",
+    "claim_backfill_pending",
     "document_frequency",
+    "forget_claim",
+    "index_claim",
     "forget",
     "index_terms",
     "source_id",

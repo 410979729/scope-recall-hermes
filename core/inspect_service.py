@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..contracts import ContractError, TrustedContext
+from .injection_guard import notice
 from .storage import SQLiteStorage
 from .visibility import ObjectRef, release_objects
 
@@ -17,6 +18,23 @@ class InspectedObject:
     value: object
     memory_epoch: int
     gaps: tuple[str, ...] = ()
+
+
+def _resolve(tx, ref, revision):
+    """Find a visible object using bounded repository lookups, in source-first order."""
+    value = tx.source(ref, revision) if revision is not None else tx.sources.source_current(ref)
+    if value is not None:
+        return "event", value
+    claim_revision = revision if revision is not None else tx.claims.current_revision(ref)
+    if claim_revision is not None:
+        value = tx.claims.version(ref, claim_revision)
+        if value is not None:
+            return "claim", value
+    for kind, repository in (("episode", tx.episodes), ("artifact", tx.artifacts), ("reference", tx.references)):
+        value = repository.get(ref, revision)
+        if value is not None:
+            return kind, value
+    raise ContractError("SOURCE_MISSING", "ref")
 
 
 def inspect_object(
@@ -36,32 +54,10 @@ def inspect_object(
         raise ContractError("INPUT_INVALID", "limit")
     with storage.read(context) as tx:
         status = tx.status()
-        kind: str | None = None
-        value = tx.source(ref, revision) if revision is not None else tx.sources.source_current(ref)
-        if value is not None:
-            kind = "event"
-        if value is None:
-            claim_revision = revision
-            if claim_revision is None:
-                claim_revision = tx.claims.current_revision(ref)
-            if claim_revision is not None:
-                value = tx.claims.version(ref, claim_revision)
-                if value is not None:
-                    kind = "claim"
-        if value is None:
-            value = tx.episodes.get(ref, revision)
-            if value is not None:
-                kind = "episode"
-        if value is None:
-            value = tx.artifacts.get(ref, revision)
-            if value is not None:
-                kind = "artifact"
-        if value is None:
-            value = tx.references.get(ref, revision)
-            if value is not None:
-                kind = "reference"
-        if value is None or kind is None:
-            raise ContractError("SOURCE_MISSING", "ref")
+        held = notice(tx, ref, revision)
+        if held is not None:
+            return InspectedObject("event", ref, held["revision"], held, status.memory_epoch, (held["state"],))
+        kind, value = _resolve(tx, ref, revision)
         actual_revision = int(value.revision)
     released = release_objects(
         storage,

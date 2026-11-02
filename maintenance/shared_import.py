@@ -66,7 +66,7 @@ from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
 from .shared_run import Run, SharedStoreError, store_lock
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
-SOURCE_SCHEMAS = frozenset({1109, 1110, 1111, 1112, SCHEMA_VERSION})
+SOURCE_SCHEMAS = frozenset(range(1109, SCHEMA_VERSION + 1))
 #: Anything shaped like a source id; renamed only when the old store holds exactly that id.
 _EVENT_TOKEN = re.compile(r"(?<![0-9A-Za-z_-])event-[0-9A-Za-z_-]+")
 _CHUNK = 2000
@@ -204,6 +204,11 @@ def _import_blocks(conn, src, names, left_out, epoch):
                     else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
                 ),
             )
+    if "source_safety" in tables:
+        # The destination owns its rule policy; imported source verdicts keep their exact versions.
+        counts["source_safety"] = _copy(
+            conn, src, "source_safety", lambda r: {**r, "source_ref": names.event(r["source_ref"])}
+        )
     if "management_actions" in tables:
         counts["management_actions"] = _copy(
             conn,
@@ -569,14 +574,19 @@ def _brought_in(conn, src, names: _Names, *, payload: dict[str, Any], root: Path
     left_out = {item["claim_id"] for item in copied["claims_left_out"]}
     brought = [row[0] for row in src.execute("SELECT claim_id FROM claims") if row[0] not in left_out]
     copied["counts"]["denials_settled"] = 0
-    if brought:
-        scopes = frozenset(row[0] for row in src.execute("SELECT DISTINCT scope_id FROM claims"))
+    if names.known:
+        scopes = frozenset(row[0] for row in src.execute("SELECT scope_id FROM instance_scopes"))
         binding = InstanceBinding(
             payload["agent_id"], payload["installation_id"], root.resolve(), scopes, payload["test_mode"], "shared"
         )
         tx = Transaction(conn, TrustedContext(binding, "import-entry", scopes, "host_generated"), writable=True)
         try:
+            from ..core.injection_import import screen_imported_sources
+
+            screen_imported_sources(tx, names, now)
             copied["counts"]["denials_settled"] = settle_brought_denials(tx, brought, now=now)
+            for ref in brought:
+                lexical_index.index_claim(conn, ref)
         finally:
             tx._finish()
     return copied

@@ -322,6 +322,11 @@ def test_missing_future_segment_is_still_denied_after_group_key_payload_purge(ap
         key="TEST-part1",
         segment=dict(group_key="TEST-full-source", index=0, total=2, truncated=False),
     )
+    from scope_recall.core.source_storage import source_reference
+
+    assert part is None
+    with core.storage.read(ctx) as tx:
+        part = tx.deletions.target(source_reference(ctx.binding.installation_id, "TEST-part1"))
     authorize(core, ctx, part)
     deleted = core.forget(ctx, request(part), remaining_seconds=10)
     core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)

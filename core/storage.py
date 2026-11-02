@@ -18,6 +18,7 @@ from ..contracts import (
     InstanceBinding,
     TrustedContext,
 )
+from . import lexical_index
 from .deadline import remaining_seconds as request_remaining_seconds
 from .delete_storage import Deletions, watch_mirrored_tombstones
 from .failure_policy import failure_kind
@@ -41,6 +42,11 @@ from .schema import (
     upgrade_1110,
     upgrade_1111,
     upgrade_1112,
+    upgrade_1113,
+    upgrade_1114,
+    upgrade_1115,
+    upgrade_1116,
+    upgrade_1117,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -66,6 +72,11 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1110,
             upgrade_1111,
             upgrade_1112,
+            upgrade_1113,
+            upgrade_1114,
+            upgrade_1115,
+            upgrade_1116,
+            upgrade_1117,
         ),
         strict=True,
     )
@@ -135,6 +146,7 @@ class Transaction:
         self.__memo: dict | None = None if writable else {}
         self.__memo_bytes = 0
         self.__parent: Transaction | None = None
+        self.__authorized_sources: dict = {}
 
     def with_context(self, context: TrustedContext, *, writable: bool = False) -> Transaction:
         """Borrow this transaction for an authorized partition, without widening its scopes or lifetime."""
@@ -359,11 +371,31 @@ class Transaction:
             pending_error_counts=_most_frequent(kinds["pending"]),
         )
 
+    @contextmanager
+    def _reuse_source(self, source):
+        """Reuse an authorized immutable source during one admission operation only.
+
+        The caller must already have read this version in this transaction.
+        The narrow lifetime excludes later visibility-changing mutations.
+        """
+        self._check(write=True)
+        key = (source.ref, source.revision)
+        previous = self.__authorized_sources.get(key)
+        self.__authorized_sources[key] = source
+        try:
+            yield source
+        finally:
+            if previous is None:
+                self.__authorized_sources.pop(key, None)
+            else:
+                self.__authorized_sources[key] = previous
+
     def source(self, ref: str, revision: int) -> StoredSource | None:
         conn = self._check()
         if type(ref) is not str or not ref or len(ref) > 240 or type(revision) is not int or revision < 1:
             raise ContractError("INPUT_INVALID", "source_ref")
-
+        if (ref, revision) in self.__authorized_sources:
+            return self.__authorized_sources[(ref, revision)]
         if not allowed(self, "event", ref):
             return None
         loaded = self.remembered(
@@ -498,6 +530,20 @@ def _store_bytes(conn: sqlite3.Connection) -> int:
 def _initialization_left(deadline: float | None) -> float | None:
     """Return the unspent part of the single initialization deadline."""
     return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+
+def _finish_claim_index(conn: sqlite3.Connection, deadline: float | None) -> None:
+    """Commit bounded index pages under initialization admission; an interrupted page is repeatable."""
+    while lexical_index.claim_backfill_pending(conn):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_deadline_exceeded")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            lexical_index.backfill_claim_page(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 #: Requested memory-map size.  Operations open separate connections, so they do not share SQLite's page cache.
@@ -840,6 +886,7 @@ class SQLiteStorage:
             if status is None:
                 status = self._initial_status(conn)
             conn.commit()
+            _finish_claim_index(conn, deadline)
             with suppress(sqlite3.Error):
                 conn.execute("PRAGMA busy_timeout=0")
                 _ensure_wal(conn)
@@ -931,7 +978,9 @@ class SQLiteStorage:
             # the lock timeout does not limit a worker's upgrade budget.
             upgrade_budget = self._remaining_budget(remaining_seconds, started)
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            upgrade = self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            upgrade = (
+                self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            ) or self._claim_index_pending(conn, restoring, version)
             if upgrade:
                 fits = upgrade_fits(_store_bytes(conn), upgrade_budget)
             elif writable and version == SCHEMA_VERSION:
@@ -991,6 +1040,13 @@ class SQLiteStorage:
             self._close(conn, original)
         if mirror:
             self._after_commit_deletions()
+
+    def _claim_index_pending(self, conn, restoring: bool, version: int) -> bool:
+        """Keep partially backfilled stores behind initialization admission, including after interruption."""
+        pending = not restoring and version == SCHEMA_VERSION and lexical_index.claim_backfill_pending(conn)
+        if pending and not self.upgrade_on_open:
+            self._defer_upgrade()
+        return pending
 
     def _after_commit_deletions(self) -> None:
         """Try bounded mirroring after lease cleanup; I/O errors leave durable catch-up."""
