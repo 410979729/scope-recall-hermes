@@ -25,17 +25,25 @@ from .worker_outcomes import (
     work_result,
 )
 
+SUMMARY_SOURCE_LIMITS = {"user": 1000, "assistant": 600, "tool": 300}
+
 
 def summary_messages(sources, *, episode_ref=None):
     """Format bounded raw windows; task recovery is a hint, never authority for generated text."""
     records = []
     for source in sources:
         window = getattr(source, "consolidation_window", None)
+        content = source.event["content"]
+        limit = SUMMARY_SOURCE_LIMITS[source.event["role"]]
+        total = window.total if window else len(content)
+        if total > limit:
+            available = max(0, limit - (window.start if window else 0))
+            content = content[:available] + f"（已截断，全文 {total} 字符）"
         records.append(
             dict(
                 ref=source.ref,
                 revision=source.revision,
-                content=source.event["content"],
+                content=content,
                 role=source.event["role"],
                 start=window.start if window is not None else 0,
             )
@@ -50,11 +58,49 @@ def summary_messages(sources, *, episode_ref=None):
     return messages
 
 
-def _read_page(tx, group):
+def _task_hint(episode, sources):
+    """Include recovery context only when all its evidence is on this page."""
+    if episode is None:
+        return None
+    refs = {f"{source.ref}@{source.revision}" for source in sources}
+    resume = episode.resume if set(resume_evidence_refs(episode.resume)) <= refs else None
+    return dict(ref=episode.ref, resume=resume)
+
+
+def _page_task(sources, episode, omitted):
+    """Fit the optional recovery hint once, returning the exact hint used to test the page."""
+    task = _task_hint(episode, sources)
+    if omitted and task is not None:
+        task = dict(task, resume=None)
+    try:
+        summary_messages(sources, episode_ref=task)
+        return task, omitted, True
+    except ContractError as exc:
+        if exc.code != "INPUT_INVALID" or exc.field != "consolidation_input_budget":
+            raise
+    if task is not None and task["resume"] is not None:
+        source = sources[-1]
+        empty = replace(source, event=dict(source.event, content=""))
+        try:
+            summary_messages((empty,), episode_ref=task)
+        except ContractError as exc:
+            if exc.code != "INPUT_INVALID" or exc.field != "consolidation_input_budget":
+                raise
+            task, omitted = dict(task, resume=None), True
+            try:
+                summary_messages(sources, episode_ref=task)
+                return task, omitted, True
+            except ContractError as retry_error:
+                if retry_error.code != "INPUT_INVALID" or retry_error.field != "consolidation_input_budget":
+                    raise
+    return task, omitted, False
+
+
+def _read_page(tx, group, episode):
     """Prepare only unprocessed ranges, hiding whole sentences of obsolete facts."""
     members = json.loads(group["manifest_json"])
     blocked = obsolete_ranges(tx, members)
-    sources = []
+    sources, task, omitted = [], None, False
     for index, start, end in unprocessed_ranges(tx, group):
         member = members[index]
         source = tx.source(member["ref"], member["revision"])
@@ -66,20 +112,37 @@ def _read_page(tx, group):
         for a, b in blocked.get((source.ref, source.revision), ()):
             left, right = sentence_bounds(content, a, b)
             mask[left:right] = " " * (right - left)
+        # Previously started generations can have gaps beyond the prefix. Mark
+        # those ranges traversed without sending a later part of the message.
+        limit = SUMMARY_SOURCE_LIMITS[source.event["role"]]
+        if start >= limit:
+            mask[start:end] = " " * (end - start)
         source = replace(source, event=dict(source.event, content="".join(mask)))
         if start or end != member["total"]:
             if sources:
                 break
             values: dict = dict(source.__dict__, event=dict(source.event, content=source.event["content"][start:end]))
             source = ChunkedSource(**values, consolidation_window=ConsolidationChunk(start, end, member["total"]))
-        try:
-            summary_messages((*sources, source))
-        except ContractError:
+        candidate = (*sources, source)
+        candidate_task, candidate_omitted, fits = _page_task(candidate, episode, omitted)
+        if not fits:
             if sources:
                 break
             source = tx.source(member["ref"], member["revision"])
             source = replace(source, event=dict(source.event, content="".join(mask)))
-            source, _chunk = source_chunk(source, start, formatter=summary_messages)
+            try:
+                source, _chunk = source_chunk(source, start, formatter=summary_messages, episode_ref=candidate_task)
+            except ContractError as exc:
+                if (
+                    exc.code != "INPUT_INVALID"
+                    or exc.field != "consolidation_metadata_budget"
+                    or candidate_task is None
+                    or candidate_task["resume"] is None
+                ):
+                    raise
+                # Even one source character must fit for the page to progress.
+                candidate_task, candidate_omitted = dict(candidate_task, resume=None), True
+                source, _chunk = source_chunk(source, start, formatter=summary_messages, episode_ref=candidate_task)
             assert _chunk is not None
             if _chunk.end > end:
                 source = replace(
@@ -88,6 +151,7 @@ def _read_page(tx, group):
                     consolidation_window=ConsolidationChunk(start, end, member["total"]),
                 )
         sources.append(source)
+        task, omitted = candidate_task, candidate_omitted
         if len(sources) == 16 or getattr(source, "consolidation_window", None) is not None:
             break
     coverage = []
@@ -102,7 +166,7 @@ def _read_page(tx, group):
                 window.total if window else len(source.event["content"]),
             ]
         )
-    return tuple(sources), coverage
+    return tuple(sources), coverage, task, omitted
 
 
 def _job(tx, item):
@@ -151,15 +215,10 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
             group = _job(tx, item)
             if group is None:
                 return finish("obsolete", "SOURCE_MISSING")
-            sources, coverage = _read_page(tx, group)
+            episode = tx.episodes.get(group["subject_ref"]) if group["kind"] == "task" else None
+            sources, coverage, task, hint_omitted = _read_page(tx, group, episode)
             originals = {(s.ref, s.revision): tx.source(s.ref, s.revision).event["content"] for s in sources}
             blocked = obsolete_ranges(tx, json.loads(group["manifest_json"]))
-            episode = tx.episodes.get(group["subject_ref"]) if group["kind"] == "task" else None
-            page_refs = {f"{s.ref}@{s.revision}" for s in sources}
-            resume = episode.resume if episode is not None else None
-            if not set(resume_evidence_refs(resume)) <= page_refs:
-                resume = None
-            task = dict(ref=episode.ref, resume=resume) if episode is not None else None
         guard = partial(_outbound_blocked, storage, clock, context, sources, group)
         if guard():
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
@@ -174,12 +233,28 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
                 )
             value = json.loads(raw) if isinstance(raw, str) else raw
             sentences, spans = grounded_sentences(value, submitted, originals=originals, blocked=blocked)
+            # Whole-sentence expansion must not turn text beyond the displayed
+            # prefix into an excerpt that suppresses the unshown original.
+            limits = {}
+            for source in submitted:
+                window = getattr(source, "consolidation_window", None)
+                start = window.start if window else 0
+                end = window.end if window else len(source.event["content"])
+                limits[(source.ref, source.revision)] = (start, min(end, SUMMARY_SOURCE_LIMITS[source.event["role"]]))
+            accepted = [
+                (sentence, span)
+                for sentence, span in zip(sentences, spans, strict=True)
+                if limits[(span["source_ref"], span["source_revision"])][0] <= span["start"]
+                and span["end"] <= limits[(span["source_ref"], span["source_revision"])][1]
+            ]
+            sentences = [sentence for sentence, _span in accepted]
+            spans = [span for _sentence, span in accepted]
         return _publish_summary(
             storage,
             clock,
             context,
             item,
-            (group, coverage, sentences, spans),
+            (group, coverage, sentences, spans, hint_omitted and bool(submitted)),
             started=started,
             budget=budget,
         )
@@ -202,7 +277,7 @@ def _process_summary_page(storage, clock, context, item, *, model, started, budg
 
 def _publish_summary(storage, clock, context, item, prepared, *, started, budget):
     """Publish a grounded page and its next job in one fenced transaction."""
-    group, coverage, sentences, spans = prepared
+    group, coverage, sentences, spans, hint_omitted = prepared
     with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             return stale_result(tx, item)
@@ -210,6 +285,19 @@ def _publish_summary(storage, clock, context, item, prepared, *, started, budget
         if current is None or current["signature"] != group_signature(tx, group_members(tx, current)):
             return work_result(tx.work.mark_obsolete(*item.lease, now=clock.utc_now()))
         head = tx.claims.version(item.subject_ref, item.subject_revision)
+        if hint_omitted:
+            tx._check().execute(
+                "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    item.work_id,
+                    item.lease_token,
+                    "summary",
+                    "resume_hint_omitted",
+                    "resume_hint_omitted_input_budget",
+                    clock.utc_now(),
+                ),
+            )
         saved = store_excerpt_claim(tx, group, head, sentences, spans, coverage, now=clock.utc_now())
         tx._check().execute(
             "UPDATE summary_parts SET claim_revision=?,coverage_json=? WHERE group_key=? AND "

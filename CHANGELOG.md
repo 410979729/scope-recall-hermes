@@ -15,7 +15,7 @@ Reflection checks the full dependency manifest's privacy at dispatch and every c
 
 Idle reflection now publishes bounded cross-session observations only after independent evidence support, using explicitly budgeted auxiliary routes. Observations retain their inductive basis, source dependencies and owner review controls across management, revision, recall and export. Invalidated evidence blocks them immediately, original words take precedence, and observations are excluded from overflow excerpts. The store upgrades automatically to format 1124 with a verified rollback snapshot; existing fact and source payloads are preserved.
 
-Budget recommendations include measured summary and adoption processing.
+Summary requests bound each source by role and page completed tasks within the input limit. Unquoted long replies remain candidates for time-based recall. Budget recommendations include the measured summary and adoption processing.
 
 Setup now detects local hosts, previews and confirms a complete installation, preserves existing stores and grants,
 configures referenced model routes and budgets, and verifies capture, worker processing and cross-session recall

@@ -459,6 +459,21 @@ def _coarse_to_fine(items: list) -> list:
     return [items[index] for index in sorted(range(len(items)), key=lambda index: int(f"{index:0{bits}b}"[::-1], 2))]
 
 
+def _scoped_day_selection(days, limit):
+    """Distribute candidate slots across days, spreading each day's retained messages."""
+    picks = []
+    for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
+        day = []
+        for tier in tiers:
+            room = share - len(day)
+            if room <= 0:
+                break
+            step = max(1.0, len(tier) / room)
+            day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
+        picks.append(day)
+    return [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
+
+
 class RetrievalStorage(RetrievalHydration):
     """Typed read boundary used by one ``RetrievalPipeline`` instance."""
 
@@ -695,6 +710,7 @@ class RetrievalStorage(RetrievalHydration):
         The person's own messages and the replies they were shown, in the question's audience, from the named days
         (and entries), spread evenly across each day so it is seen whole rather than its last hour: the person's
         messages of a length a packet can deliver beside others first, then their longer ones, then the replies.
+        Longer replies follow the shorter candidates; the packet budget still decides what fits.
         A short message that says nothing ("继续", "好的，继续吧") is not offered.  The days share the slots evenly,
         a day with fewer messages handing the rest on, and take turns in the order offered, so the first-named day
         does not fill the packet.  Only lengths are read, and the text of short messages.
@@ -750,28 +766,21 @@ class RetrievalStorage(RetrievalHydration):
             rows = [row for row in rows if source_key(row["event_id"], row["source_revision"]) not in excluded]
             rows = summarized_rows(tx, context, rows, limit=limit)
             rows = [row for row in rows if row["short"] is None or says_something(row["short"])]
-            # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler
-            # never slices content), and on the coding clients' days most messages are: offered first, they would be
-            # dropped and other days' short items delivered instead.
+            # Longer messages follow shorter candidates because the compiler
+            # cannot slice them to fit an automatic packet.
             days.append(
                 [
                     [row for row in rows if row["role"] == "summary"],
                     [row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS],
+                    [row for row in rows if row["role"] == "assistant" and row["size"] > _SCOPED_ITEM_CHARS],
                 ]
             )
-        picks = []
-        for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
-            day: list = []
-            for tier in tiers:
-                room = share - len(day)
-                if room <= 0:
-                    break
-                step = max(1.0, len(tier) / room)
-                day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
-            picks.append(day)
-        chosen = [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
+        # Long replies cannot reserve another day's short-message slots. They
+        # stay candidates when the other tiers leave room.
+        chosen = _scoped_day_selection([tiers[:-1] for tiers in days], limit)
+        chosen += _scoped_day_selection([[tiers[-1]] for tiers in days], limit - len(chosen))
         return tuple(
             CandidateRef(
                 row["candidate_kind"] if "candidate_kind" in row.keys() else "event",
