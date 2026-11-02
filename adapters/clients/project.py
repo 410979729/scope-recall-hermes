@@ -35,7 +35,8 @@ def registered_worktree(cwd: str, roots: Mapping[str, str]) -> tuple[str, str] |
             common = _pointer(admin / "commondir")
             if not admin.is_dir() or admin.parent != common / "worktrees":
                 return None
-            if _pointer(admin / "gitdir") != gitfile.resolve(strict=True):
+            backlink = _pointer(admin / "gitdir")
+            if backlink.parent != candidate.resolve(strict=True) or backlink != gitfile.resolve(strict=True):
                 return None
             for root, scope in roots.items():
                 registered = Path(root) / ".git"

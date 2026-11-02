@@ -74,6 +74,7 @@ def ledger_client(store, tmp_path, request):
             rows = [
                 dict(
                     type="message",
+                    sessionId=session,
                     id=f"TEST-{role}",
                     timestamp=NOW,
                     role=role,

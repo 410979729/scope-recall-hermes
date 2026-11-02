@@ -654,7 +654,7 @@ def run_worker(
                 payload = _drain_once(config, instance, deadline)
                 payload["transcript_replay"] = ledger
                 checkpoint = worker_metadata_path(config, "transcript-replay.json")
-                pending_replay = bool(ledger.get("ready") or ledger.get("deferred"))
+                pending_replay = bool(ledger.get("ready") or ledger.get("deferred") or ledger.get("pending_scan"))
                 if pending_replay or checkpoint.exists():
                     write_worker_metadata(
                         checkpoint,

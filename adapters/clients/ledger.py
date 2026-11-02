@@ -20,6 +20,7 @@ from ...core.inbox_rules import deferral, deferred_until, given_up, replayable
 from . import transcript
 from .config import CONFIG_FILENAME, CodexInstallationConfig, SharedClientConfig, load_codex_config, shared_clients
 from .handler import CodexHookHandler
+from .ledger_state import checkpoint, local_authorized_at, save_checkpoint
 from .record_reader import RecordLines
 
 
@@ -32,8 +33,11 @@ def _records(config: SharedClientConfig):
 
 
 def _session(config: CodexInstallationConfig | SharedClientConfig, path: Path) -> tuple[str, str] | None:
-    if isinstance(config, SharedClientConfig) and config.host != "codex":
+    if isinstance(config, SharedClientConfig) and config.host == "claude-code":
         return path.stem, str(config.home)
+    if isinstance(config, SharedClientConfig) and config.host == "workbuddy":
+        session = transcript.workbuddy_session(path)
+        return (session, str(config.home)) if session is not None else None
     try:
         with path.open("rb") as stream:
             row = json.loads(stream.readline(65537))
@@ -76,7 +80,9 @@ def _reconcile(
             return "stopped"
         hook.bind_project_root({"cwd": cwd}, audience)
         start = cursor.load()
-        page = transcript.read(record, start, rows=transcript.PARSERS[host], directory=cursor.directory())
+        page = transcript.read(
+            record, start, rows=transcript.PARSERS[host], directory=cursor.directory(), session_id=session
+        )
         lines = page
         # Installation authorizes future capture, not automatic import of history from before attachment.
         began = datetime.fromisoformat(attached_at.replace("Z", "+00:00")).astimezone(UTC)
@@ -134,38 +140,73 @@ def _local_ledgers(binding, deadline: float) -> dict[str, int]:
         configured = os.environ.get("CODEX_HOME", "")
         native = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / ".codex"
         records.update((native / "sessions").glob("*/*/*/rollout-*.jsonl"))
-        since = datetime.fromtimestamp(config.config_path.stat().st_mtime, UTC).isoformat()
-        for record in sorted(records, key=lambda path: path.stat().st_mtime, reverse=True):
-            if time.monotonic() >= deadline:
-                break
-            state = _reconcile(config, record, since, deadline)
-            result[state] = result.get(state, 0) + 1
+        since = local_authorized_at(config, seconds=max(0.001, deadline - time.monotonic()))
+        if since is None:
+            return {"stopped": 1}
+        return _scan(binding, ((config, record, since) for record in sorted(records, key=str)), deadline)
     except (ContractError, OSError, RuntimeError, ValueError):
         result["deferred"] = result.get("deferred", 0) + 1
     return result
 
 
-def reconcile_store(binding, *, seconds: float = 2.0) -> dict[str, int]:
-    """Read a bounded page per local shared entry; no model request or new work queue is created."""
+def _shared_records(binding):
+    """Use a stable order so the content-free scan checkpoint spans entries and files."""
+    for config, attached_at in sorted(shared_clients(binding), key=lambda item: item[0].entry_id):
+        if config.host != "dsh":
+            for record in sorted(_records(config), key=str):
+                yield config, record, attached_at
+
+
+def _scan_record(config, record: Path, since: str, deadline: float) -> str:
+    home = config.home if isinstance(config, SharedClientConfig) else config.data_directory
+    try:
+        with advisory_file_lock(home / "scope-recall" / "transcript-replay.lock", timeout_seconds=0):
+            return _reconcile(config, record, since, deadline)
+    except (ContractError, OSError, RuntimeError, ValueError, TimeoutError):
+        return "deferred"
+
+
+def _scan(binding, records, deadline: float) -> dict[str, int]:
     result: dict[str, int] = {}
-    deadline = time.monotonic() + seconds
-    if binding.installation_kind != "shared":
-        return _local_ledgers(binding, deadline)
-    for config, attached_at in shared_clients(binding):
-        if config.host == "dsh":
+    saved = checkpoint(binding.data_directory, "scan.json")
+    after = saved.get("after") if saved.get("installation_id") == binding.installation_id else None
+    after = after if type(after) is str else ""
+
+    def save(position):
+        save_checkpoint(
+            binding.data_directory, "scan.json", dict(installation_id=binding.installation_id, after=position)
+        )
+
+    for config, record, since in records:
+        entry = config.entry_id if isinstance(config, SharedClientConfig) else "local"
+        key = entry + "\0" + str(record)
+        if key <= after:
             continue
         if time.monotonic() >= deadline:
-            break
-        try:
-            with advisory_file_lock(config.home / "scope-recall" / "transcript-replay.lock", timeout_seconds=0):
-                for record in _records(config):
-                    if time.monotonic() >= deadline:
-                        break
-                    state = _reconcile(config, record, attached_at, deadline)
-                    result[state] = result.get(state, 0) + 1
-        except (ContractError, OSError, RuntimeError, ValueError, TimeoutError):
-            result["deferred"] = result.get("deferred", 0) + 1
+            result["pending_scan"] = 1
+            return result
+        state = _scan_record(config, record, since, deadline)
+        result[state] = result.get(state, 0) + 1
+        if state == "ready":
+            # A partial file keeps its place; deferred files yield to later entries until their backoff expires.
+            result["pending_scan"] = 1
+            return result
+        after = key
+        save(after)
+    save(None)
     return result
+
+
+def reconcile_store(binding, *, seconds: float = 2.0) -> dict[str, int]:
+    """Replay bounded pages under current grants, retaining a library-wide scan position when time expires."""
+    deadline = time.monotonic() + seconds
+    try:
+        with advisory_file_lock(binding.data_directory / "capture-ledgers" / "scan.lock", timeout_seconds=0):
+            if binding.installation_kind != "shared":
+                return _local_ledgers(binding, deadline)
+            return _scan(binding, _shared_records(binding), deadline)
+    except (ContractError, OSError, RuntimeError, ValueError, TimeoutError):
+        return {"deferred": 1}
 
 
 def retry_given_up(binding, *, limit: int, dry_run: bool, include_terminal: bool = False) -> dict[str, int]:

@@ -1,17 +1,5 @@
-"""Hermes import surface for shared installation bindings."""
+"""Hermes compatibility imports for shared installation interfaces."""
 
-from ..shared_entries import (
-    _GRANT_FIELDS as _GRANT_FIELDS,
-)
-from ..shared_entries import (
-    _MAX_ATTACHMENT_BYTES as _MAX_ATTACHMENT_BYTES,
-)
-from ..shared_entries import (
-    _MAX_DISPLAY_NAME as _MAX_DISPLAY_NAME,
-)
-from ..shared_entries import (
-    _MAX_SHARED_MANIFEST_BYTES as _MAX_SHARED_MANIFEST_BYTES,
-)
 from ..shared_entries import (
     ATTACHMENT_FILENAME as ATTACHMENT_FILENAME,
 )
@@ -49,9 +37,6 @@ from ..shared_entries import (
     SHARED_SCHEMA_VERSION as SHARED_SCHEMA_VERSION,
 )
 from ..shared_entries import (
-    Any as Any,
-)
-from ..shared_entries import (
     Attachment as Attachment,
 )
 from ..shared_entries import (
@@ -59,51 +44,6 @@ from ..shared_entries import (
 )
 from ..shared_entries import (
     InstallationManifest as InstallationManifest,
-)
-from ..shared_entries import (
-    InstanceBinding as InstanceBinding,
-)
-from ..shared_entries import (
-    Mapping as Mapping,
-)
-from ..shared_entries import (
-    Path as Path,
-)
-from ..shared_entries import (
-    Sequence as Sequence,
-)
-from ..shared_entries import (
-    SQLiteStorage as SQLiteStorage,
-)
-from ..shared_entries import (
-    TrustedContext as TrustedContext,
-)
-from ..shared_entries import (
-    _attached as _attached,
-)
-from ..shared_entries import (
-    _checked_shared_payload as _checked_shared_payload,
-)
-from ..shared_entries import (
-    _display_name as _display_name,
-)
-from ..shared_entries import (
-    _entry_id as _entry_id,
-)
-from ..shared_entries import (
-    _entry_view as _entry_view,
-)
-from ..shared_entries import (
-    _points_here as _points_here,
-)
-from ..shared_entries import (
-    _read_json as _read_json,
-)
-from ..shared_entries import (
-    _replace_file as _replace_file,
-)
-from ..shared_entries import (
-    _same_path as _same_path,
 )
 from ..shared_entries import (
     attach_shared_entry as attach_shared_entry,
@@ -125,9 +65,6 @@ from ..shared_entries import (
 )
 from ..shared_entries import (
     client_entry_record as client_entry_record,
-)
-from ..shared_entries import (
-    dataclass as dataclass,
 )
 from ..shared_entries import (
     entry_grants as entry_grants,

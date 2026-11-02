@@ -364,6 +364,25 @@ def _dsh_said(row: object) -> Said | None:
     return Said(entry_id.strip(), role, without_lone_surrogates(text), occurred_at)
 
 
+def workbuddy_session(path: Path) -> str | None:
+    """Read the first message's attested session ID under a byte limit; filenames do not attest identity."""
+    try:
+        with path.open("rb") as stream:
+            consumed = 0
+            while consumed < READ_BYTES:
+                line = stream.readline(65537)
+                if not line or len(line) > 65536:
+                    return None
+                consumed += len(line)
+                row = json.loads(line)
+                if isinstance(row, dict) and row.get("type") == "message":
+                    session = row.get("sessionId")
+                    return session if type(session) is str and session.strip() and len(session) <= 240 else None
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def workbuddy_projects() -> Path:
     """Where WorkBuddy keeps its session records, one folder per workspace: ``projects`` in the configuration folder
     its CLI takes from ``CODEBUDDY_CONFIG_DIR``, which a hook inherits; ``~/.workbuddy`` when that names none."""
@@ -565,6 +584,7 @@ def read(
     limit: int = READ_BYTES,
     rows: Callable[[object], Said | None] = said,
     directory: str | None = None,
+    session_id: str | None = None,
 ) -> RecordPage:
     """Read complete lines under a byte budget, carrying host-attested directory changes through the page.
 
@@ -584,6 +604,14 @@ def read(
                 row = json.loads(line)
             except (ValueError, RecursionError):
                 row = None
+            if (
+                rows is workbuddy_said
+                and session_id is not None
+                and isinstance(row, dict)
+                and row.get("type") == "message"
+                and row.get("sessionId") != session_id
+            ):
+                raise ValueError("record_session_mismatch")
             entry = rows(row)
             lines.observe_directory(position, row, profile, visible=entry is not None)
             if entry is not None:

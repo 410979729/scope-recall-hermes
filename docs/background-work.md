@@ -86,7 +86,16 @@ offsets and failure codes beside the home; content remains in the host's record 
 Unchanged completed files cost no store read. Installation time bounds automatic recovery; importing earlier history
 is a separate owner operation. dsh retains unacknowledged messages in its existing plugin spool. Incomplete or deferred pages request a later
 worker pass. Completed ledgers rely on ordinary worker autostart and host end hooks for discovery; they create no
-perpetual polling task.
+perpetual polling task. A library-wide checkpoint retains the next scan position across files and entries. A budget
+cut returns `pending_scan` and requests another worker pass; it does not complete an unvisited record or consume a
+failure attempt. Partial files retain their byte cursor, while deferred files yield to later entries.
+
+Local capture authorization has an immutable timestamp separate from configuration saves. An older installation
+uses its verified, bound installation receipt's write time, or its entry's first recorded capture when no receipt
+exists. Without either evidence, automatic replay stops. Reinstalling an existing store preserves that time; creating
+a fresh store starts a new capture lifetime and resets its scan position. WorkBuddy message records attest their session through
+`sessionId`; filenames may identify a different storage agent and cannot grant a session identity. Every replayed
+message must agree with that session before its page reaches capture.
 
 Ledger checkpoints use the inbox's `deferral`, `replayable` and `given_up` rules and delay limits. The worker receipt
 and doctor expose aggregate `transcript_replay` outcomes. `retry-failures --apply` reopens given-up and denied

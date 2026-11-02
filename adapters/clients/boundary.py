@@ -342,3 +342,9 @@ def without_lone_surrogates(value: Any) -> Any:
             else:
                 target.append(item)
     return top
+
+
+def visible_recall_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Copy a recall request with private spans removed before any process or embedding boundary."""
+    prompt = payload.get("prompt")
+    return {**payload, "prompt": without_private(prompt)[0]} if type(prompt) is str else dict(payload)

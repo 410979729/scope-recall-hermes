@@ -1,8 +1,5 @@
-"""Hermes import surface for shared installation bindings."""
+"""Hermes compatibility imports for shared installation interfaces."""
 
-from ..audiences import (
-    _EMPTY_ROUTE_FIELDS as _EMPTY_ROUTE_FIELDS,
-)
 from ..audiences import (
     EXACT_FIELDS as EXACT_FIELDS,
 )
@@ -13,16 +10,7 @@ from ..audiences import (
     LOCAL_USER_ID as LOCAL_USER_ID,
 )
 from ..audiences import (
-    Any as Any,
-)
-from ..audiences import (
     HermesIdentityError as HermesIdentityError,
-)
-from ..audiences import (
-    Sequence as Sequence,
-)
-from ..audiences import (
-    _scope_ids as _scope_ids,
 )
 from ..audiences import (
     approved_local_platforms as approved_local_platforms,

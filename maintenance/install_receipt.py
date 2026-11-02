@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from ..adapters.installation_receipt import (
+    RECEIPT_SCHEMA as RECEIPT_SCHEMA,
+)
+from ..adapters.installation_receipt import (
+    read_receipt,
+)
+from ..adapters.installation_receipt import (
+    receipt_digest as _receipt_digest,
+)
 from .backup import atomic_write, sha256
 from .install_common import (
     PACKAGE_VERSION,
@@ -22,41 +29,13 @@ from .install_common import (
     within,
 )
 
-RECEIPT_SCHEMA = "scope-recall.install-receipt.v1"
-
 
 def receipt_file(instance_root: Path) -> Path:
     return instance_root / RECEIPT_FILENAME
 
 
-def _receipt_digest(payload: dict[str, Any]) -> str:
-    body = {key: value for key, value in payload.items() if key != "receipt_sha256"}
-    encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _verify_receipt_digest(payload: dict[str, Any]) -> None:
-    digest = payload.get("receipt_sha256")
-    if type(digest) is not str or not digest:
-        raise InstallError("receipt digest missing")
-    if _receipt_digest(payload) != digest:
-        raise InstallError("receipt digest mismatch")
-
-
 def load_receipt(instance_root: Path) -> dict[str, Any] | None:
-    path = receipt_file(instance_root)
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise InstallError("existing install receipt is unreadable") from exc
-    if not isinstance(payload, dict):
-        raise InstallError("existing install receipt is invalid")
-    if payload.get("schema_version") != RECEIPT_SCHEMA:
-        raise InstallError("existing install receipt schema mismatch")
-    _verify_receipt_digest(payload)
-    return payload
+    return read_receipt(instance_root, error=InstallError)
 
 
 def _owned_files_from_receipt(
