@@ -9,6 +9,10 @@ once, and reuses bounded source tokenization. Vector imports can catch up their 
 batches with atomic durable publication. An exhausted indexing slice resumes with a smaller batch instead of a
 capability-failure delay; small incremental tails keep primary-key reads and existing cache pages remain readable.
 
+Capture reuses credential checks for unchanged identity text within one preparation and avoids rereading the same authorized source during candidate observation. Stored messages, credential replacement and refusal remain unchanged.
+
+Final injection preparation shares one authority snapshot with its empty briefing. Each entry-fence comparison reads its current state once; later delivery still rechecks live entry state, privacy and source visibility.
+
 Fact recall nominates query subjects from every stored version before applying the existing temporal selector.
 The automatic store upgrade rebuilds this derived index in resumable pages and preserves original truth.
 Repeated releases reuse immutable content safety verdicts; changed content is scanned again. Other-session

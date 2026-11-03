@@ -536,8 +536,43 @@ def read(
     compact: bool = False,
     defer_confirmation: bool = False,
 ) -> dict:
-    """Read the saved manifests and recheck each version in the session's current authority snapshot."""
+    """Read saved manifests and confirm only after the preparation snapshot closes."""
     started = clock.monotonic()
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        result = read_snapshot(
+            tx,
+            clock,
+            context,
+            token_limit=token_limit,
+            remaining_seconds=remaining_seconds,
+            deliver=deliver,
+            compact=compact,
+            started=started,
+        )
+    if "_epoch" not in result:
+        return result
+    result["elapsed_ms"] = max(0, round((clock.monotonic() - started) * 1000))
+    if not defer_confirmation and (deliver or result["_compact"]):
+        result["delivery_reason"] = confirm(
+            storage, clock, context, result, entry_fence=result["_entry_fence"], remaining_seconds=remaining_seconds
+        )
+        if result["delivery_reason"] in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"}:
+            result.update(text="", items=[], tokens=0, elapsed_ms=0)
+    return result
+
+
+def read_snapshot(
+    tx, clock, context, *, token_limit=1024, remaining_seconds=None, deliver=False, compact=False, started=None
+):
+    """Prepare a briefing in an active snapshot without confirming delivery.
+
+    The exact context must match the transaction: preparation borrows authority
+    but neither widens it nor opens a writer inside the caller's read.
+    """
+    if tx.context != context:
+        raise ContractError("ACCESS_DENIED", "brief_transaction")
+    tx._check()
+    started = clock.monotonic() if started is None else started
     now = utc_timestamp(clock.utc_now())
     empty = {"text": "", "items": [], "tokens": 0, "elapsed_ms": 0}
     search = SearchContext(
@@ -550,40 +585,39 @@ def read(
         now,
         context,
     )
-    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-        entry = context_fence(tx, context)
-        if entry_changed(tx, entry):
-            return {**empty, "delivery_reason": "entry_state:paused"}
-        mode, marker = private.recall_state(tx, context, now)
-        if compact and context.compaction_seq is not None:
-            row = (
-                tx._check()
-                .execute(
-                    "SELECT compacted_seq FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
-                    (session_entry(context), context.session_id),
-                )
-                .fetchone()
+    entry = context_fence(tx, context)
+    if entry_changed(tx, entry):
+        return {**empty, "delivery_reason": "entry_state:paused"}
+    mode, marker = private.recall_state(tx, context, now)
+    if compact and context.compaction_seq is not None:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT compacted_seq FROM session_brief_sessions WHERE entry_id=? AND session_id=?",
+                (session_entry(context), context.session_id),
             )
-            compact = compaction_cutoff(tx, context) > (row[0] if row else 0)
-        if (mode == "full" and not compact) or (deliver and not compact and _started(tx, context)):
-            return empty
-        items, lines = (
-            ([], [])
-            if mode == "full"
-            else _render(
-                tx,
-                search,
-                _manifest(tx, context),
-                private.active_intervals(tx, now),
-                token_limit,
-                deliver and not compact,
-                clock,
-            )
+            .fetchone()
         )
-        epoch = tx.memory_epoch()
-        compaction = compaction_cutoff(tx, context)
-        text = "\n".join([_HEADING, *lines]) if lines else ""
-        tokens = estimate_tokens(text) if text else 0
+        compact = compaction_cutoff(tx, context) > (row[0] if row else 0)
+    if (mode == "full" and not compact) or (deliver and not compact and _started(tx, context)):
+        return empty
+    items, lines = (
+        ([], [])
+        if mode == "full"
+        else _render(
+            tx,
+            search,
+            _manifest(tx, context),
+            private.active_intervals(tx, now),
+            token_limit,
+            deliver and not compact,
+            clock,
+        )
+    )
+    epoch = tx.memory_epoch()
+    compaction = compaction_cutoff(tx, context)
+    text = "\n".join([_HEADING, *lines]) if lines else ""
+    tokens = estimate_tokens(text) if text else 0
     result = {
         "text": text,
         "items": items,
@@ -599,12 +633,6 @@ def read(
         "_compact": compact,
         "_deliver": deliver and mode != "full",
     }
-    if not defer_confirmation and (deliver or compact):
-        result["delivery_reason"] = confirm(
-            storage, clock, context, result, entry_fence=entry, remaining_seconds=remaining_seconds
-        )
-        if result["delivery_reason"] in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"}:
-            result.update(empty)
     return result
 
 

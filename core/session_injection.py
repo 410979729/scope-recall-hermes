@@ -351,20 +351,23 @@ def _fit(text, brief, limit, tx, search, batch, style="json"):
 
 def prepare(core, context, text, *, brief=None, entry_fence=None, request_id=None, remaining_seconds=0.2):
     """Read and fit complete host text, retaining only references actually included."""
-    if brief is None or "_epoch" not in brief:
-        generation = brief.get("_generation") if brief else None
-        brief = briefing.read(
-            core.storage,
-            core.clock,
-            context,
-            token_limit=0,
-            deliver=False,
-            remaining_seconds=remaining_seconds,
-            defer_confirmation=True,
-        )
-        if generation is not None:
-            brief["_generation"] = generation
+    started = core.clock.monotonic()
     with core.storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        # Both preparations use the same authority snapshot. Final delivery
+        # still opens its own snapshots to detect later privacy or entry changes.
+        if brief is None or "_epoch" not in brief:
+            generation = brief.get("_generation") if brief else None
+            brief = briefing.read_snapshot(
+                tx,
+                core.clock,
+                context,
+                token_limit=0,
+                deliver=False,
+                remaining_seconds=remaining_seconds,
+                started=started,
+            )
+            if generation is not None:
+                brief["_generation"] = generation
         search = _search(core.clock, context)
         used = _usage(tx, context)
         brief["_entry_fence"] = context_fence(tx, context) if entry_fence is None else entry_fence

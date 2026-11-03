@@ -152,6 +152,29 @@ def test_capture_loads_one_policy_for_all_parts(guarded, monkeypatch):
     assert len(calls) == 1
 
 
+def test_candidate_observation_loads_its_authorized_source_once(guarded, monkeypatch):
+    """Candidate bookkeeping cannot change its already authorized input source."""
+    from scope_recall.core.admission import AdmissionDecision
+    from scope_recall.core.source_admission import observe_admitted
+    from scope_recall.core.storage import Transaction
+
+    core, ctx = guarded
+    receipt = capture(core, ctx, "TEST ordinary blue paint")
+    source = receipt.event_refs[0]
+    calls = []
+    original = Transaction._source_row
+
+    def counted(tx, conn, ref, revision):
+        calls.append((ref, revision))
+        return original(tx, conn, ref, revision)
+
+    monkeypatch.setattr(Transaction, "_source_row", counted)
+    with core.storage.write(ctx) as tx:
+        triggers = observe_admitted(tx, core.clock, [(source, AdmissionDecision("schedule", "TEST"))])
+        assert len(triggers) == 1
+    assert calls == [(source.ref, source.revision)]
+
+
 @pytest.mark.parametrize("change", ["none", "body", "metadata", "policy"])
 def test_background_scan_finishes_group_and_invalidates_stale_progress(guarded, change):
     core, ctx = guarded

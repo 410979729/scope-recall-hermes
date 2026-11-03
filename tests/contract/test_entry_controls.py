@@ -10,6 +10,25 @@ from tests.contract.test_claims import app, capture
 from tests.v11_support import recall_request, source_event
 
 
+def test_entry_fence_reads_current_state_once_per_snapshot(app, monkeypatch):
+    """A fence compares one current state and still consults pause history."""
+    from scope_recall.core import entry_control
+
+    core, ctx = app
+    reads = []
+    state_for = entry_control.state_for
+
+    def counted(*args, **kwargs):
+        reads.append(kwargs.get("entry_id"))
+        return state_for(*args, **kwargs)
+
+    with core.storage.read(ctx) as tx:
+        fence = entry_control.context_fence(tx, ctx)
+        monkeypatch.setattr(entry_control, "state_for", counted)
+        assert not entry_control.entry_changed(tx, fence)
+    assert reads == ["local"]
+
+
 def test_entry_state_lifecycle(app):
     core, context = app
     owner = MemoryManagement(core, InstallationMaintenance(context))
