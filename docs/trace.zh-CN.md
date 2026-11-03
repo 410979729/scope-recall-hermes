@@ -29,6 +29,4 @@ Hermes 和 Codex 都调用同一个 `MemoryCore.trace`。默认最多两跳，�
 没有自己的事实表、图数据库、后台任务、模型配置或宿主专属推理实现。
 不调用 trace，不影响捕获、事实更新和召回。
 
-迁移方面同样划分边界：`maintenance/onboarding.py` 判别安装路径，
-`maintenance/upgrade.py` 管任务状态，`maintenance/migrate_v2.py` 负责唯一转换，
-`core/index_rebuild.py` 负责分页投递到 embed 队列，宿主切换由 Agent 操作流程负责。
+旧库迁移与宿主切换见[升级指南](upgrade-guide.zh-CN.md)。

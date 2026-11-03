@@ -156,12 +156,12 @@ without automatically deleting or muting that fact.
 The CLI uses the same owner API:
 
 ```text
-scope-recall memory reviews --source fact --json
-scope-recall memory review-policy --scope SCOPE --json
-scope-recall memory review-policy-set on --scope SCOPE --expected-version 0 --json
-scope-recall memory review-decide '["fact","claim-REFERENCE",1]' approve --expected-version TOKEN --json
-scope-recall memory review-actions --json
-scope-recall memory review-undo ACTION_ID --expected-version TOKEN --json
+scope-recall memory reviews --source fact --json --root /path/to/store
+scope-recall memory review-policy --scope SCOPE --json --root /path/to/store
+scope-recall memory review-policy-set on --scope SCOPE --expected-version 0 --json --root /path/to/store
+scope-recall memory review-decide '["fact","claim-REFERENCE",1]' approve --expected-version TOKEN --json --root /path/to/store
+scope-recall memory review-actions --json --root /path/to/store
+scope-recall memory review-undo ACTION_ID --expected-version TOKEN --json --root /path/to/store
 ```
 
 Add the installation selector used by the other memory commands. Adoption approval

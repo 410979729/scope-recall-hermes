@@ -2,13 +2,13 @@
 
 ## 采用的边界
 
-Core 入口使用显式 `InstanceBinding`、`TrustedContext`、存储、时钟、ID 生成器、向量端口与辅助模型端口。构造和 import 无文件、数据库或网络副作用。初始化是显式维护动作，正常运行仅核对已有 schema 和身份，不自动迁移。
+Core 入口使用显式 `InstanceBinding`、`TrustedContext`、存储、时钟、ID 生成器、向量端口与辅助模型端口。构造和 import 不创建数据库或发起网络请求。访问支持的旧结构时，默认通过升级协调器先保存核验过的快照，再完成结构升级；调用预算不足时拒绝本次访问并留下后台维护信号。关闭 `upgrade_on_open` 的诊断读取不会升级存储。
 
 `truth_connection.connect_truth_database` 提供路径保护、FK、只读连接与连接级 writer lease。每次短事务单独打开并关闭连接，外部模型调用不持有连接或 lease。SQL 仅在 `core/storage.py` 及其存储职责文件内；应用只接触受控事务对象，不能执行任意 SQL、commit 或 rollback。借用事务使用受控 savepoint。释放成功后立即注销 savepoint，commit 失败不清理已释放的 savepoint；清理异常作为主异常的附加诊断保留，连接弃用。
 
 Core 使用版本化的新库而不直接复用旧 DDL，原因有三个：旧 Journal 唯一键包含正文哈希，不能约束同发生身份同版本的冲突；旧 fact_claims 混合事实身份与版本且关联 memories，不能让它与新 claims.current_revision 同时作为可写或可查询的当前权威（旧表可作只读迁移输入和历史存档）；Journal/nightly/vector 三套任务原生表需要收敛为一个 work 状态所有者。沿用这些表的来源、时间、删除、幂等语义和已验证的连接保护，不把两个 schema 同时接入运行入口。
 
-所有逻辑对象都是同一数据库的版本化表，经受控访问方法读写。每次结构变更提升 schema version，并只在显式的初始化/维护入口升级。不存在先落到第二数据库、以后再同步的过渡路径。
+记忆真值保存在同一数据库的版本化表，经受控访问方法读写。每次结构变更提升 schema version，由同一协调器负责显式维护与自动升级。向量伴随库和召回诊断日志各自保存派生数据，不承担记忆正文与权限的真值。
 
 ## 唯一目标与保全内容
 
@@ -49,4 +49,4 @@ capture 的线性化点是 source + lexical + 必需 work 的同事务 commit。
 
 旧 fact_claims.recorded_at 映射 recorded_from；可核验 retired_at 映射 recorded_to，否则保持 NULL，不以导入时间伪造历史结束。instance_scopes 只保存安装受信 scope_id 清单，不把它视为会话 ACL；每次访问仍要求 TrustedContext.allowed_scope_ids 的子集。旧 shared_scope_id、范围种类和主体绑定由迁移的显式旧范围映射及可信宿主上下文保全，模型不参与授权判定。
 
-事实提名通过 `claim_lexical_postings` 复用来源的 `lexical_terms` 词表，只索引当前版本的主语、谓词和正文值；别名和已删除事实不进入索引。事实头与索引在同一个写事务内更新。初始化按主键分批回填，在 `candidate_scan_cursors` 中记录持久游标；中断后只重做未提交的批次。索引未回填完时，普通召回先恢复初始化，不读取不完整的索引。自动保存的升级前快照用于回滚。正文索引和主语标记分别通过 1116→1117、1117→1118 升级建立。事实候选在结果上限之前复用来源安全依赖判定；隔离来源支持的事实不可提名，解除或重扫放行后重新可见，事实头未变时无需重写索引。
+事实提名复用来源的 `lexical_terms` 词表。`claim_lexical_postings` 保存当前头的主语、谓词和正文值，`claim_version_postings` 保存各版本的检索词与历史主语；时间选择和完整评分仍检查真实版本。别名和已删除事实不进入这些投影。事实头与索引在同一个写事务内更新。初始化按主键分批回填，在 `candidate_scan_cursors` 中记录持久游标；中断后只重做未提交的批次。索引未回填完时，普通召回先恢复初始化，不读取不完整的索引。自动保存的升级前快照用于回滚。事实候选在结果上限之前复用来源安全依赖判定；隔离来源支持的事实不可提名，解除或重扫放行后重新可见，事实头未变时无需重写索引。

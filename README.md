@@ -9,6 +9,9 @@ SQLite keeps the original conversations; model-derived facts and vectors remain 
 2. Run `scope-recall setup`. Review the detected hosts, store, scopes, zero model budget and worker plan, then confirm.
 3. Start a new host session. Approve the plugin hooks or MCP server when the host asks.
 
+For this development checkout, install from the repository root with `python -m pip install -U ".[codex]"`;
+the package-index command above selects a published release. An unpublished wheel can be installed directly with its `codex` extra.
+
 | Host | Setup and host-specific approval |
 |---|---|
 | Claude Code | [Setup](docs/install/claude-code.md) |
@@ -79,7 +82,7 @@ After upgrading, review its findings, remove them with `scope-recall memory forg
 [The management guide](docs/manage.md) covers store selection, filters, version checks and receipts; the
 [export guide](docs/export.md) covers package layout, hashes and filtering.
 
-Use `scope-recall private on --session <id> | --project <path> | --all` to stop keeping a session,
+Use `scope-recall private on` with one of `--session <id>`, `--project <path>` or `--all` to stop keeping a session,
 directory or the whole store. `--mode full` refuses capture, recall and background model work;
 `--mode read-only` refuses capture while recall continues; `--all --for 2h` sets a duration and `off`
 closes a rule. Rules are stored as metadata only, overlap takes the stricter mode, and an event is
@@ -160,6 +163,7 @@ The package root holds only the entry (`__init__.py`), the version and the proto
 
 ## Development checks
 
-The clean wheel must be tested outside the source checkout. At minimum, verify both CLI aliases, a read-only doctor result, Core capture and recall against a temporary installation, and the stdlib HTTP helper's bounded invalid-input response. Host registration, real gateway lifecycle, and production data are separate acceptance boundaries.
+[Contributor checks](CONTRIBUTING.md) cover clean-wheel installation, both CLI aliases, read-only diagnostics and
+capture/recall in temporary stores. These checks do not establish that a running host loaded the package.
 
 Queue states, retry limits and recovery actions are described in [Background work](docs/background-work.md).

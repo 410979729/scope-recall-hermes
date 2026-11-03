@@ -13,7 +13,7 @@ A home without a pointer keeps its own store and binds as its own installation s
 ```
 <root>\                       the shared store; everything memory needs is in here
   installation.json           the store's id, and every entry's grants
-  memory.sqlite3              the one store (schema 1110 or later)
+  memory.sqlite3              the one store (current schema 1134)
   vectors\<space>\            vector companions of the one store
   runtime-config.json         the shared worker's config: every scope, the worker's model routes
   .env                        the shared worker's credentials (you write this)
@@ -36,11 +36,15 @@ strings, which for installations migrated from 2.x includes the owner's private 
 
 ## Make a store and attach the first agent
 
+Replace angle-bracketed paths and IDs with your installation's values. Commands are single-line examples;
+the `ren` command and `%USERPROFILE%` spelling use Windows Command Prompt. Use equivalent paths and a
+rename operation on POSIX. Credential files are supplied by the operator and are not created by attach.
+
 Run the operator CLI from outside any source tree (`python -I -X utf8 -m scope_recall.maintenance.cli ...`).
 Put the store outside every agent's home, on a short path.
 
 ```text
-scope-recall init-shared --root D:\ScopeRecall\shared
+scope-recall init-shared --root "<store>"
 ```
 
 The first agent may be a Hermes instance, as below, or a client, so that clients share the store
@@ -50,12 +54,9 @@ To attach a Hermes instance that has its own store today, stop its gateway first
 worker: `autostart pause`), then move its `scope-recall` directory aside and attach:
 
 ```text
-scope-recall backup --database <home>\scope-recall\memory.sqlite3 --output <backup-dir>\memory.sqlite3
-ren <home>\scope-recall scope-recall.local-20260922
-scope-recall attach --host hermes --instance-root <home> --root D:\ScopeRecall\shared ^
-    --entry desk --display-name Desk ^
-    --grants-from <home>\scope-recall.local-20260922\installation.json ^
-    --runtime-config-from <home>\scope-recall.local-20260922\runtime-config.json
+scope-recall backup --database "<home>/scope-recall/memory.sqlite3" --output "<backup-dir>/memory.sqlite3"
+ren "<home>\scope-recall" scope-recall.local-backup
+scope-recall attach --host hermes --instance-root "<home>" --root "<store>" --entry desk --display-name Desk --grants-from "<home>/scope-recall.local-backup/installation.json" --runtime-config-from "<home>/scope-recall.local-backup/runtime-config.json"
 ```
 
 `--grants-from` carries over that installation's audience rows and owner principals, unchanged.
@@ -68,16 +69,14 @@ with one also gives the shared worker its routes, and its spend ledger moves to 
 directory. Every later entry must use the same embedding model as the worker: a
 query vector from another model searches a directory the worker never fills, so `attach`
 refuses with `embedding_space_differs`. An entry attached without a runtime config recalls
-lexically only (`vector_recall_unavailable`). The entry keeps the `vector_threshold` of the
-config it was attached from; in the shipped embedding space a shared store needs `0.70`
+lexically only (`vector_recall_unavailable`). The entry keeps the `vector_threshold` of the config it was attached from. An omitted value uses `0.70` for the built-in embedding space; a custom space needs an explicit threshold; automatic recall also applies `auto_vector_threshold`
 ([configuration.md](configuration.md#vector_threshold)).
 
 Then give the shared worker its credentials in `<root>\.env` and register it once, with an
 interpreter that has the same package version as every entry:
 
 ```text
-scope-recall autostart enable --config D:\ScopeRecall\shared\runtime-config.json ^
-    --python D:\ScopeRecall\shared-venv\Scripts\python.exe --env-file D:\ScopeRecall\shared\.env
+scope-recall autostart enable --config "<store>/runtime-config.json" --python "<worker-python>" --env-file "<credential-file>"
 ```
 
 An entry never starts a worker of its own. Leave the instance's own autostart paused or
@@ -102,7 +101,7 @@ stop every attached host (and a WorkBuddy or dsh entry's resident recall server:
 pause the shared worker, then run for each agent:
 
 ```text
-scope-recall import-entry --root D:\ScopeRecall\shared --entry desk --from <home>\scope-recall.local-<date>
+scope-recall import-entry --root "<store>" --entry desk --from "<home>/scope-recall.local-backup"
 ```
 
 The old store is opened read-only and copied in one transaction: sources, facts and their history,
@@ -133,13 +132,8 @@ worker keeps running. On a store no other entry is attached to, leave both optio
 client brings the owner's scope ([A store of clients alone](#a-store-of-clients-alone)).
 
 ```text
-scope-recall attach --host claude-code --instance-root D:\ScopeRecall\claude-code ^
-    --root D:\ScopeRecall\shared --entry claude-code --display-name "Claude Code" ^
-    --grants-like all --capture-like desk ^
-    --runtime-config-from <an attached home>\scope-recall\runtime-config.json
-scope-recall apply-install --host claude-code --target-plugin-dir %USERPROFILE%\.claude\skills\scope-recall ^
-    --instance-root D:\ScopeRecall\claude-code --agent-id <the store's agent id> ^
-    --python D:\ScopeRecall\claude-code-venv\Scripts\python.exe --env-file <the file with the embedding key>
+scope-recall attach --host claude-code --instance-root "<claude-code-home>" --root "<store>" --entry claude-code --display-name "Claude Code" --grants-like all --capture-like desk --runtime-config-from "<attached-runtime-config>"
+scope-recall apply-install --host claude-code --target-plugin-dir %USERPROFILE%\.claude\skills\scope-recall --instance-root "<claude-code-home>" --agent-id "<store-agent-id>" --python "<claude-code-python>" --env-file "<credential-file>"
 ```
 
 The plugin under `~/.claude/skills/` loads in every new Claude Code session of that user, the
@@ -151,7 +145,7 @@ none, since the session began) is left out, and other memories take its place. W
 a compaction reaches the model only as the compaction's summary, and is recalled. The
 reminders Claude's desktop app puts in a message (a `<system-reminder>` block that opens a line) are
 not the owner's words: they are neither recorded nor recalled for.
-A turn is recorded under its prompt id, which Claude Code sends from 2.1.196.
+A turn is recorded under the prompt id supplied by Claude Code; a missing prompt id is refused.
 At the end of each turn the Stop hook also reads the session record Claude Code keeps (the hook's
 `transcript_path`) from where the last read stopped, and records what it shows being said: the
 owner's messages, those sent while a turn was running included, and the text Claude Code shows
@@ -164,8 +158,8 @@ by its words and moment) and not stored twice; one that cannot be written now is
 read stopped is kept in `<home>\scope-recall\transcripts`; deleting it only makes the next read
 start from the top. Claude Code runs a hook command through a shell (Git Bash, or
 PowerShell without it), so keep the interpreter, the home and the env file on ASCII paths without
-spaces; `apply-install` refuses others. Its MCP tools read the store. The three that would change
-it (`propose_memory`, `revise`, `forget`) are not offered: the store takes such a change only on the
+spaces; `apply-install` refuses others. Its MCP tools read the store. The three tools that change
+memory facts (`propose_memory`, `revise`, `forget`) are not offered: the store takes such a change only on the
 word of the person's latest message in the same conversation, and Claude Code does not tell the tools
 which conversation a call comes from, so the store would refuse each. Correct or delete through a Hermes
 agent or Codex; the store is one, so the change holds for every entry. Each answer of the tools that
@@ -173,41 +167,12 @@ are offered names the gap `mcp_session_is_not_claude_code_conversation_id` (`...
 `..._dsh_...` on those entries): the call is tied to no conversation. It is expected and needs
 nothing.
 
-Each hook is a process of its own. The entry's MCP server, which the client runs for as long
-as it is open, keeps its recall handler ready and answers the entry's prompts on this machine. The prompt hook
-still stores the prompt itself, then asks the server for its recall; the server writes nothing. It
-listens on 127.0.0.1 and names itself, with a token, in a folder of the user's own profile
-(`%LOCALAPPDATA%\scope-recall\hook-endpoints\`, or `~/.cache/scope-recall/hook-endpoints/`), not in
-the entry's home, and removes its name when it exits. A hook asks the newest server of its own
-version, once that server has proved it holds the token, which is never sent. The other hooks read
-no vectors and ask nothing.
-
-A prompt hook gives the server all of its time but the answer's way back, whenever at least 1 s is
-left. If the server has not answered when 1.5 s are left, the hook recalls as well through its own runtime and uses the answer that ran its vector search (the server's when
-both or neither did); a hook whose own recall went without it waits for the server until its own time
-is up. A server answer without its vector search is used as it is, unless what failed was the
-server's own (its key, its vector store, or no vector search at all while the hook has one): the
-hook then recalls as well and uses its own if that ran its vector search. An embedding call's failure
-(what the provider answered, the network, the time it took) the hook would meet as well.
-With no server running (the client closed, or its MCP server disabled), or one that says it is busy,
-the hook recalls itself at once; an answer that comes after the hook is done is dropped,
-and one that failed, or came back empty because its read did not finish (the store unreadable, or its
-time up), is replaced by the hook's own. A prompt
-hook that asked says how it went on stderr (`CODEX_RECALL_RESIDENT:answered`, `slow`, `late`,
-`without_vectors:<gap>`, `busy`, `refused`, `unproven`, `none`, or `failed:<reason>`). The server
-writes no memory; its query embedding's cost is recorded in the spend ledger like any other, and so is
-the hook's when both recalled. A server with a recall past the time its hook gave it tells every hook
-that it is busy until that recall ends, and one that does not prove itself within 0.5 s loses its name
-until its own check, every 2 s, finds it answering in time. The server keeps the handler it recalls with from
-one prompt to the next, keeping its SQLite vector companion open and its embedding worker connected to
-avoid reopening them for each prompt. One recall uses the handler at a time; another that comes meanwhile is
-recalled by a handler of its own. It is made anew when the env file or the runtime config changed,
-after a recall that raised, or when its runtime could not be attached. A recall that fails in the server is answered as
-failed, with the last frames of its traceback on the server's stderr (the client's MCP log). It reads its key again at the next prompt
-after its env file or the runtime config changed, or when it could not read them before. A server
-started before an upgrade is not asked until its client restarts; a resident recall server ends itself
-within 30 s of the upgrade ([install.md](install.md), section 12). The server searches once more after each 10 minutes without a recall that searched vectors.
-Prompt hooks open their own SQLite companion connections and close them with the hook.
+Hooks and MCP servers use the shared library's resident recall service when it is available.
+The existing worker starts and maintains that service; hooks and MCP servers publish activity but do not start
+one themselves. Each request reloads its own entry binding before recall. Capture stays in the calling hook.
+The default idle allowance is 120 minutes for local coding clients. A library-wide override takes precedence;
+otherwise the longest enabled entry allowance applies. Without the worker or a ready service, hooks use bounded
+direct recall. See [resident recall](host-integration.md#resident-recall) for lifecycle and diagnostics.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches
 its entry here over HTTP on a private network: [remote-entries.md](remote-entries.md).
@@ -218,63 +183,45 @@ and run `apply-install --host codex` without `--project-root`. Its hooks and MCP
 the home and serve every workspace. Refresh Codex's plugin cache and approve the changed hooks in
 Codex. The moved store's memories are not imported.
 
-`doctor --host codex|claude-code|workbuddy|dsh --instance-root <home>` and `detach` work for these
+`doctor --host codex|claude-code|workbuddy|dsh --instance-root "<home>"` and `detach` work for these
 entries as for a Hermes home.
 
 ## Attach WorkBuddy
 
-Every process on the store, its worker included, must run 3.5.0 or later before WorkBuddy
-attaches: an older one does not know the host, and cannot replay a capture this entry queued.
+Use the same package version for the shared worker and every entry.
 
 WorkBuddy attaches the same way, as the owner at this machine, and runs the same hooks and MCP
-server, which offers it the same tools as Claude Code, none that changes the store; its installer adds them to WorkBuddy's own `settings.json` and `mcp.json` rather than
-writing a plugin ([install.md](install.md), section 12, which also says what is not recorded):
+server, which offers the same memory-reading tools and entry-authenticated handoff tools as Claude Code; its installer adds them to WorkBuddy's own `settings.json` and `mcp.json` rather than
+writing a plugin ([WorkBuddy installation](install/workbuddy.md)):
 
 ```text
-scope-recall attach --host workbuddy --instance-root D:\ScopeRecall\workbuddy ^
-    --root D:\ScopeRecall\shared --entry workbuddy --display-name WorkBuddy ^
-    --grants-like all --capture-like desk ^
-    --runtime-config-from <an attached home>\scope-recall\runtime-config.json
-scope-recall apply-install --host workbuddy --instance-root D:\ScopeRecall\workbuddy ^
-    --agent-id <the store's agent id> --python D:\ScopeRecall\workbuddy-venv\Scripts\python.exe ^
-    --env-file <the file with the embedding key>
+scope-recall attach --host workbuddy --instance-root "<workbuddy-home>" --root "<store>" --entry workbuddy --display-name WorkBuddy --grants-like all --capture-like desk --runtime-config-from "<attached-runtime-config>"
+scope-recall apply-install --host workbuddy --instance-root "<workbuddy-home>" --agent-id "<store-agent-id>" --python "<workbuddy-python>" --env-file "<credential-file>"
 ```
 
 Quit WorkBuddy before `apply-install` and start it again after, then approve the MCP server
-`scope-recall` in WorkBuddy's MCP settings: WorkBuddy starts a server of `mcp.json` only once it
-is approved. WorkBuddy 5.6.2 runs that server only with a conversation's agent process, so its
-prompt hook asks a resident recall server instead: started by its hooks and its MCP server, and
-ended with the conversation's agent process that started it (WorkBuddy's agent ends every process
-it started) or `resident_recall_minutes` after the last prompt, whichever comes first
-([install.md](install.md), section 12). Its `Stop`
-reads WorkBuddy's session record. Take the hooks out with `apply-uninstall` before `detach`;
+`scope-recall` in WorkBuddy's MCP settings. Resident recall is supplied by the shared worker,
+independently of a conversation's MCP process. Its `Stop` hook reads WorkBuddy's session record.
+Take the hooks out with `apply-uninstall` before `detach`;
 `detach` alone leaves WorkBuddy's settings as they are.
 
 ## Attach dsh
 
-Every process on the store, its worker included, must run 3.7.0 or later before dsh (DeepSeek
-Harness) attaches: an older one does not know the host, and cannot replay a capture this entry
-queued.
+Use the same package version for the shared worker and every entry.
 
 dsh attaches the same way, as the owner at this machine. A plugin the installer writes runs the
 same hooks (dsh's own hooks name no turn and no reply), and dsh's MCP client runs the same MCP
-server, with the same tools as Claude Code's, none that changes the store; the installer adds both as rows of dsh's home patch, `cordis.patch.yml`, and switches off
-dsh's upload of its session logs to its model API ([install.md](install.md), section 13, which
-also says what is not recorded):
+server, with the same memory-reading and handoff tools as Claude Code; the installer adds both as rows of dsh's home patch, `cordis.patch.yml`, and switches off
+dsh's upload of its session logs to its model API ([dsh installation](install/dsh.md)):
 
 ```text
-scope-recall attach --host dsh --instance-root D:\ScopeRecall\dsh ^
-    --root D:\ScopeRecall\shared --entry dsh --display-name "DeepSeek Harness" ^
-    --grants-like all --capture-like desk ^
-    --runtime-config-from <an attached home>\scope-recall\runtime-config.json
-scope-recall apply-install --host dsh --instance-root D:\ScopeRecall\dsh ^
-    --agent-id <the store's agent id> --python D:\ScopeRecall\dsh-venv\Scripts\python.exe ^
-    --env-file <the file with the embedding key>
+scope-recall attach --host dsh --instance-root "<dsh-home>" --root "<store>" --entry dsh --display-name "DeepSeek Harness" --grants-like all --capture-like desk --runtime-config-from "<attached-runtime-config>"
+scope-recall apply-install --host dsh --instance-root "<dsh-home>" --agent-id "<store-agent-id>" --python "<dsh-python>" --env-file "<credential-file>"
 ```
 
 Quit every dsh before `apply-install` and start it again after. Its prompt hook asks the entry's
-resident recall server, as WorkBuddy's does, which outlives a dsh process and ends
-`resident_recall_minutes` after the last prompt (120 by default). Take the rows out with
+worker-managed library recall service, as WorkBuddy's does. Its idle allowance follows the shared
+[resident recall policy](host-integration.md#resident-recall). Take the rows out with
 `apply-uninstall` before `detach`; `detach` alone leaves dsh's patch file as it is. For dsh on
 another machine, attach its entry on the store machine and use the
 [remote client installer](remote-entries.md#dsh-on-the-client-machine), not a local `apply-install`.
@@ -290,14 +237,9 @@ attached after it names it, or any entry attached since, as above. Codex, Claude
 and dsh can each be the first:
 
 ```text
-scope-recall init-shared --root D:\ScopeRecall\shared
-scope-recall attach --host workbuddy --instance-root D:\ScopeRecall\workbuddy ^
-    --root D:\ScopeRecall\shared --entry workbuddy --display-name WorkBuddy ^
-    --runtime-config-from D:\ScopeRecall\routes.json
-scope-recall attach --host dsh --instance-root D:\ScopeRecall\dsh ^
-    --root D:\ScopeRecall\shared --entry dsh --display-name "DeepSeek Harness" ^
-    --grants-like all --capture-like workbuddy ^
-    --runtime-config-from D:\ScopeRecall\routes.json
+scope-recall init-shared --root "<store>"
+scope-recall attach --host workbuddy --instance-root "<workbuddy-home>" --root "<store>" --entry workbuddy --display-name WorkBuddy --runtime-config-from "<runtime-config>"
+scope-recall attach --host dsh --instance-root "<dsh-home>" --root "<store>" --entry dsh --display-name "DeepSeek Harness" --grants-like all --capture-like workbuddy --runtime-config-from "<runtime-config>"
 ```
 
 With no attached home to take routes from, `--runtime-config-from` names a runtime config you
@@ -323,8 +265,8 @@ attached after that with `--grants-like all` reads both.
 ## Check
 
 ```text
-scope-recall entries --root D:\ScopeRecall\shared
-scope-recall doctor --host hermes --instance-root <home>
+scope-recall entries --root "<store>"
+scope-recall doctor --host hermes --instance-root "<home>"
 ```
 
 `entries` lists each entry, whether its home still points here, and when the store last heard
@@ -343,11 +285,11 @@ row read another scope (a conversation another route captured into, or an older 
 row away, change them from an edited copy:
 
 ```text
-scope-recall grants --instance-root <home> --out D:\grants-desk.json
-rem edit D:\grants-desk.json
-scope-recall grants --instance-root <home> --grants-from D:\grants-desk.json
+scope-recall grants --instance-root "<home>" --out "<grants-file>"
+rem edit "<grants-file>"
+scope-recall grants --instance-root "<home>" --grants-from "<grants-file>"
 rem stop the entry's host (its gateway, or the client)
-scope-recall grants --instance-root <home> --grants-from D:\grants-desk.json --apply
+scope-recall grants --instance-root "<home>" --grants-from "<grants-file>" --apply
 rem start it again, then doctor
 ```
 
@@ -376,7 +318,7 @@ entry; its owner's sessions there bind no scope, and the host log and `doctor`
 `local`, chat type `private`, chat `local`, thread `main`, an empty `gateway_session_key` and the
 entry's `agent_workspace`, reading, writing and capturing into the scope the entry's CLI owner row
 captures into. That route is also where the conversations Hermes's local session transport runs
-for the gateway's own account bind ([install.md](install.md), section 4). An owner's login is
+for the gateway's own account bind ([Hermes installation](install/hermes.md)). An owner's login is
 added the same way, the login in place of `local` as the principal's user and the row's user and
 chat.
 
@@ -400,12 +342,12 @@ command, never a host's.
 ## Detach, and going back
 
 ```text
-scope-recall detach --instance-root <home>
+scope-recall detach --instance-root "<home>"
 ```
 
 `detach` removes the pointer and the entry's runtime config (copies are kept under
 `receipts\`). The entry stays on record: its memories stay in the store and keep its mark. To
-return an instance to its own store, detach it, rename `scope-recall.local-<date>` back to
+return an instance to its own store, detach it, rename `scope-recall.local-backup` back to
 `scope-recall`, install the package version that store was last opened with, re-enable its
 autostart and start its gateway.
 
@@ -446,15 +388,17 @@ references retain their existing semantics.
 
 ## Upgrading
 
-The shared worker and every entry run the same package version. Upgrade the worker's
+Stop all attached hosts, remote entry servers, resident recall and the shared worker before replacing packages.
+Back up the store and its configuration. The shared worker and every entry run the same package version. Upgrade the worker's
 environment first, then each entry's, and run `plan-install`/`apply-install` on each attached
 home as after any upgrade; they recognize the pointer. Until the last one is done, `doctor` on
 any entry may report `version_mismatch`. Each running process is judged against the package it
 was loaded from, so upgrading one entry never makes another entry's process look stale.
 
-## Not yet
+## Limits
 
-`recall` has no per-entry filter, and a deletion receipt does not list entries.
+`recall` has no general per-entry filter. Dated-conversation questions can name an entry; local management
+commands have an `--agent` filter and deletion previews include affected entries.
 
 A deletion an agent's own store made before `import-entry` covers that agent's copies only. The
 same thing told to another agent, in the same scope, comes in with that agent's store; delete it

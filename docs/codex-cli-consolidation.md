@@ -4,7 +4,7 @@ This optional `ConsolidationPort` uses `gpt-5.6-luna` through an existing Codex 
 
 ## Explicit configuration
 
-Merge the following **auxiliary fields** into the instance's trusted `runtime-config.json` configuration. Preserve its identity, scopes, worker settings, Gemini embedding configuration, API pricing and auxiliary ledger path. Do not replace a complete runtime configuration with this fragment.
+Merge the following **auxiliary fields** into the instance's trusted `runtime-config.json` configuration. Preserve its identity, scopes, worker settings, embedding configuration, API pricing and auxiliary ledger path. Do not replace a complete runtime configuration with this fragment.
 
 ```json
 {
@@ -30,7 +30,7 @@ Merge the following **auxiliary fields** into the instance's trusted `runtime-co
 
 Use the same user/service identity that owns the already-established CLI login. The adapter does not read, copy, print or inject OAuth credentials; Codex resolves its own login. It strips ambient API-key/provider overrides and retains only required home/OS/proxy environment locations. An expired/unavailable CLI login fails visibly rather than initiating an interactive login or changing models. Do not put OAuth into an API credential variable or the configuration fragment.
 
-An initialized auxiliary budget database is required, created with `initialize_auxiliary_budget_ledger` ([configuration.md](configuration.md)). The subscription table lives in this same ledger, not the memory truth database. Missing/unavailable ledgers refuse calls. API embedding budgets and prices stay independent; do not add a made-up Luna dollar price to API `approved_models`/`pricing`.
+An initialized auxiliary budget database is required, created with `initialize_auxiliary_budget_ledger` (`runtime/model_budget.py`); normal setup initializes the selected ledger. The subscription table lives in this same ledger, not the memory truth database. Missing/unavailable ledgers refuse calls. API embedding budgets and prices stay independent; do not add a made-up Luna dollar price to API `approved_models`/`pricing`.
 
 ## Hard admission and soft token reservations
 

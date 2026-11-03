@@ -1,6 +1,6 @@
 # Codex
 
-1. Install the package in the intended Python environment: `python -m pip install "hermes-scope-recall[codex]"`.
+1. Install the package in the intended Python environment: `python -m pip install -U "hermes-scope-recall[codex]"`.
 2. Run `scope-recall setup --host codex`, review its plan and confirm.
 3. Start a new host session and complete any approval shown by the host.
 

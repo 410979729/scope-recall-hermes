@@ -70,6 +70,7 @@ questions slow later questions to at most once a day. These evidence timers do n
 These are logical states encoded by row presence and last_error_code, not another stored status column.
 
 | State | Next states | Next action and lease expiry | Wake after capability recovery | Retry limit | Terminal |
+|---|---|---|---|---|---|
 | ready | ready, deferred, given_up, stopped, completed, cancelled | Replay or deterministic conflict rekey in one transaction; rollback retains the row | Worker inbox wake; capture authorization is checked again | Infrastructure contention preserves the row | no |
 | deferred | deferred, given_up, stopped, completed, cancelled | Retry at the timestamp in DEFERRED; replay and rekey retain their own path | Supervisor reads the same deferred_until rule as replay | Twenty-four delayed attempts; one minute doubling to one hour | no |
 | given_up | given_up, ready, deferred, cancelled | Preserve reason and path for inspection | Doctor reports reason; `retry-failures --apply --config <runtime-config.json>` restores the correct path | No automatic attempt after give-up | stopped |
@@ -118,6 +119,7 @@ refuses a local copy.
 ## Hermes capture replay
 
 | State | Next states | Next action and lease expiry | Wake after capability recovery | Retry limit | Terminal |
+|---|---|---|---|---|---|
 | buffered | buffered, in_flight, kept, completed, cancelled | Retry every thirty seconds and at host lifecycle hooks | Retry thread revalidates original audience before writing | Thirty minutes in memory, then persist eligible captures | no |
 | in_flight | buffered, kept, completed, cancelled | One writer per identity; shutdown can persist its checkpoint | Original writer settles; concurrent replay skips the identity | Same memory window | no |
 | kept | kept, buffered, completed, cancelled | Atomic file beside the store; reload after one-hour disk cooldown or host start | Existing retry thread polls disk cooldown; doctor counts kept files | Bounded memory buffer and disk capacity; no abandonment of persisted capture | no |
@@ -132,6 +134,7 @@ remain available for inspection. `scope-recall doctor --host hermes --instance-r
 These states are derived from backup-state.json; file locks fence concurrent publication and retention.
 
 | State | Next states | Next action and lease expiry | Wake after capability recovery | Retry limit | Terminal |
+|---|---|---|---|---|---|
 | due | due, publication, retention, waiting, blocked, unconfigured | Publish one verified archive; a crashed lock owner releases its OS lock | Supervisor's daily_backup wake | Ordinary failure delays fifteen minutes | no |
 | publication | publication, retention, waiting, blocked, unconfigured | Publish archive before recording retention checkpoint | Job failure records the checkpoint; supervisor reopens after the delay | Job deadline stops repeated oversized jobs | no |
 | retention | retention, waiting, blocked, unconfigured | Resume rotation of published archives; never republish to repair retention | Supervisor's backup_retention wake | Fifteen-minute error delay; publication remains valid | no |
@@ -147,6 +150,7 @@ on explicit configuration; the deletion mirror remains independently scheduled.
 ## Deletion mirror
 
 | State | Next states | Next action and lease expiry | Wake after capability recovery | Retry limit | Terminal |
+|---|---|---|---|---|---|
 | pending | pending, caught_up, unconfigured | Append missing tombstones under mirror lock; an interrupted owner releases its OS lock | Supervisor retries every five minutes; doctor reports lag and destination errors | No count limit; persistent tombstones are the checkpoint | no |
 | caught_up | caught_up, pending, unconfigured | Current deletion inventory is durable; a new deletion creates pending work | Post-commit attempt then periodic catch-up | Idempotent inventory keys | yes |
 | unconfigured | unconfigured, pending, caught_up | No configured backup destination | Doctor reports missing backup configuration; configure backup destination to enable upkeep | No outbound attempt without a destination | dependency |
@@ -185,7 +189,7 @@ The stored importance remains the base score when pinned; pinned claims read as 
 background preferences; ordinary query ranking does not read it.
 
 The management detail page edits importance and pinning. The CLI uses
-`scope-recall memory importance <ref> --expected-revision <n> --score 4 --pin` (or `--unpin`). The existing revise
+`scope-recall memory importance <ref> --root /path/to/store --expected-revision <n> --score 4 --pin` (or `--unpin`). The existing revise
 request accepts `new_value: {"importance": 4, "pinned": false}` with current human evidence explicitly naming the
 claim and the requested metadata. These changes preserve the fact's wording and content revision.
 
@@ -256,7 +260,7 @@ Owner recording commands return before injection or accounting. Paused entries r
 content or correction notices, and retain undelivered notices for resumption. Reviewed fact replacements use the
 current retained value; adding evidence without changing the statement does not send another correction notice.
 
-The store schema is 1132. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+The store schema is 1134. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.
 
