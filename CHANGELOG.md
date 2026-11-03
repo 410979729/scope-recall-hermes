@@ -14,6 +14,7 @@ Body scan receipts retain the independent digest of their scanned input, includi
 Copied or replaced originals with a mismatched digest are scanned again; shared import, restore and relocation
 revoke imported receipts. Maintenance checks normal source visibility before inspecting bodies, skips individual
 oversized legacy rows and advances its cursor while preserving live-scanning fallback.
+Legacy imports restart body-scan maintenance in their write transaction when they add source rows.
 
 Remote 3.16 clients can pause recording after the server upgrade; resuming remotely requires a 4.0 client.
 

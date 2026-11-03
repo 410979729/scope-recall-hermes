@@ -899,6 +899,57 @@ def _read(target: Path, scopes: set[str], allowed: set[str]):
     return SQLiteStorage(binding).read(TrustedContext(binding, "TEST-reader", frozenset(allowed), "human_direct"))
 
 
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_legacy_import_restarts_completed_body_scans_atomically(tmp_path, monkeypatch, interrupted):
+    from scope_recall.core.secret_patterns import SECRET_RULES_VERSION
+    from scope_recall.core.source_storage import backfill_secret_scans
+
+    from maintenance import legacy_conversion
+
+    target = tmp_path / "TEST-target"
+    binding = InstanceBinding("p15-synthetic-agent", "p15-synthetic-installation", target, frozenset({"scope-a"}), True)
+    storage = SQLiteStorage(binding)
+    storage.initialize()
+    context = TrustedContext(binding, "TEST-maintenance", binding.scope_ids, "host_generated")
+    contexts = [context, replace(context, project_id="TEST-project", branch_id="TEST-branch")]
+    for partition in contexts:
+        with storage.write(partition) as tx:
+            assert backfill_secret_scans(tx, now=_AT) == 0
+    with closing(sqlite3.connect(storage.path)) as conn:
+        before = conn.execute("SELECT * FROM candidate_scan_cursors ORDER BY cursor_name").fetchall()
+        assert len(before) == 2 and all(row[4] == 1 for row in before)
+    legacy = _shaped_store(tmp_path / "TEST-legacy.sqlite3", journals=[(1, "scope-a", "TEST amber palette")])
+
+    def fail_after_sources(_conversion, conn):
+        assert not conn.execute("SELECT 1 FROM candidate_scan_cursors").fetchone()
+        assert conn.execute("SELECT count(*) FROM source_events").fetchone()[0] == 1
+        raise RuntimeError("TEST import interrupted inside transaction")
+
+    if interrupted:
+        monkeypatch.setattr(legacy_conversion, "_insert_memory_links", fail_after_sources)
+        with pytest.raises(RuntimeError, match="TEST import interrupted"):
+            migrate_legacy(legacy, target)
+        with closing(sqlite3.connect(storage.path)) as conn:
+            assert conn.execute("SELECT * FROM candidate_scan_cursors ORDER BY cursor_name").fetchall() == before
+            assert conn.execute("SELECT count(*) FROM source_events").fetchone()[0] == 0
+        return
+    assert migrate_legacy(legacy, target)["completion_status"] == "complete"
+    with storage.write(contexts[1]) as tx:
+        conn = tx._check(write=True)
+        assert not conn.execute("SELECT 1 FROM candidate_scan_cursors").fetchone()
+        assert conn.execute(
+            "SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256 FROM source_events"
+        ).fetchone()[:] == (None, None, None)
+        assert backfill_secret_scans(tx, now=_AT) == 1
+        assert conn.execute("SELECT secret_scan_version FROM source_events").fetchone()[0] == SECRET_RULES_VERSION
+        assert tx.source(stable_legacy_id("event", "journal_entries:1"), 1).content_secret_scan is not None
+    with closing(sqlite3.connect(storage.path)) as conn:
+        scanned = conn.execute("SELECT * FROM candidate_scan_cursors ORDER BY cursor_name").fetchall()
+    assert migrate_legacy(legacy, target)["completion_status"] == "complete"
+    with closing(sqlite3.connect(storage.path)) as conn:
+        assert conn.execute("SELECT * FROM candidate_scan_cursors ORDER BY cursor_name").fetchall() == scanned
+
+
 def test_a_record_longer_than_a_source_is_stored_in_parts_and_read_whole(tmp_path: Path) -> None:
     """A 2.0 memory merged again and again reached 77,000 characters, and the migration ended on
     ``CHECK(length(content)<=65536)``.  A record that long is stored as a long message is captured: in parts of at most

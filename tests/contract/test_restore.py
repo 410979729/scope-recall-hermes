@@ -23,6 +23,7 @@ from scope_recall.core import restore as core_restore
 from scope_recall.core.delete_storage import group_digest
 from scope_recall.core.restore import InstallationMaintenance, export_deletion_ledger, ledger_digest
 from scope_recall.core.schema import SCHEMA_VERSION
+from scope_recall.core.source_storage import backfill_secret_scans
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterLease
 from scope_recall.maintenance import cli, restore
@@ -149,6 +150,9 @@ def test_restore_revalidates_a_warmed_structural_verdict(store, capsys, monkeypa
 def test_restore_revokes_body_scan_receipts_from_the_snapshot(store, capsys):
     kept = store.say("TEST kept amber palette")
     assert kept.content_secret_scan is not None
+    with store.core.storage.write(store.ctx) as tx:
+        assert backfill_secret_scans(tx, now="TEST-now") == 1
+        assert tx._check().execute("SELECT completed FROM candidate_scan_cursors").fetchone()[0] == 1
     snapshot = backup(capsys, store, "TEST-receipt-revocation")
     code, result = run(
         capsys,
@@ -162,6 +166,58 @@ def test_restore_revokes_body_scan_receipts_from_the_snapshot(store, capsys):
     )
     assert code == 0 and result["status"] == "restored"
     assert store.core.source(store.ctx, kept.ref, 1).content_secret_scan is None
+    with store.core.storage.read(store.ctx) as tx:
+        assert tuple(
+            tx._check()
+            .execute("SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256 FROM source_events")
+            .fetchone()
+        ) == (None, None, None)
+        assert not tx._check().execute("SELECT 1 FROM candidate_scan_cursors").fetchone()
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_restore_receipts_and_scan_cursor_commit_or_roll_back_together(store, monkeypatch, interrupted):
+    store.say("TEST kept amber palette")
+    with store.core.storage.write(store.ctx) as tx:
+        assert backfill_secret_scans(tx, now="TEST-now") == 1
+    authority = InstallationMaintenance(replace(store.ctx, allowed_scope_ids=store.ctx.binding.scope_ids))
+    ledger = export_deletion_ledger(store.core.storage, authority)
+    core_restore.begin_restore(
+        store.core.storage, authority, expected_ledger_sha256=ledger_digest(ledger), ledger_format=ledger["format"]
+    )
+
+    def state():
+        with closing(sqlite3.connect(store.core.storage.path)) as conn:
+            return (
+                conn.execute(
+                    "SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256 FROM source_events"
+                ).fetchall(),
+                conn.execute("SELECT * FROM candidate_scan_cursors ORDER BY cursor_name").fetchall(),
+            )
+
+    before = state()
+    assert all(value is not None for value in before[0][0]) and before[1][0][4] == 1
+
+    def fail_after_revocation(tx, *, now):
+        conn = tx._check(write=True)
+        assert tuple(
+            conn.execute(
+                "SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256 FROM source_events"
+            ).fetchone()
+        ) == (None, None, None)
+        assert not conn.execute("SELECT 1 FROM candidate_scan_cursors").fetchone()
+        raise RuntimeError("TEST restore interrupted inside transaction")
+
+    if interrupted:
+        monkeypatch.setattr("scope_recall.core.suppression.resume_candidates", fail_after_revocation)
+        with pytest.raises(RuntimeError, match="TEST restore interrupted"):
+            core_restore.replay_deletion_ledger(store.core.storage, authority, ledger)
+        assert state() == before
+        assert fenced(store)
+    else:
+        core_restore.replay_deletion_ledger(store.core.storage, authority, ledger)
+        assert state() == ([(None, None, None)], [])
+        assert not fenced(store)
 
 
 def test_disaster_recovery_revokes_body_scan_receipts_before_reopening(store):

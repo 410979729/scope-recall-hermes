@@ -21,6 +21,7 @@ from scope_recall.core import lexical_index
 from scope_recall.core.events import indexed_terms
 from scope_recall.core.requalify import settle_brought_denials
 from scope_recall.core.schema import SCHEMA_VERSION, normalize_scope_authorizations
+from scope_recall.core.source_records import restart_body_scan_maintenance
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.legacy_episode_membership import plan_legacy_episode_memberships
 from scope_recall.maintenance.legacy_v2_compat import (
@@ -601,6 +602,7 @@ def _write_target(cv: Conversion, storage: SQLiteStorage, context: TrustedContex
 def _insert_sources(cv: Conversion, conn: sqlite3.Connection) -> None:
     """Insert archived events; a rerun must find the same content at the same id."""
     placeholders = ",".join("?" for _ in SOURCE_EVENT_FIELDS)
+    before = conn.total_changes
     for item in cv.sources:
         try:
             conn.execute(
@@ -623,6 +625,10 @@ def _insert_sources(cv: Conversion, conn: sqlite3.Connection) -> None:
         ):
             raise MigrationError(f"idempotence conflict: source {item['event_id']}")
         cv.inserted["source_events"] += 1
+    # Partition cursor names are opaque hashes. Restart only body-scan cursors,
+    # covering every reader of the imported rows without changing other work.
+    if conn.total_changes != before:
+        restart_body_scan_maintenance(conn)
 
 
 def _insert_memory_links(cv: Conversion, conn: sqlite3.Connection) -> None:
