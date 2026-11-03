@@ -20,6 +20,18 @@
 Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际实例目录>`。
 存在多个旧库、损坏、未知格式时，会明确返回待检查原因；不能当作新用户覆盖安装。
 
+## 从 4.0 退回 3.16
+
+常规退回使用 [restore 流程](install.md#going-back-to-a-backup)，由新版本保存删除账本，再由读取快照的旧版本完成重放。3.16 的 restore 要求共享库登记范围与清单范围完全相等；若数据库 `instance_scopes` 有 `installation.json` 顶层 `scope_ids` 之外的范围，它不能完成第二步。doctor 不显示这两组范围的差异；可在停写后只读查询数据库的 `SELECT scope_id FROM instance_scopes`，与清单顶层 `scope_ids` 比较。
+
+这种情况下可冷退回到升级前快照，前提是快照之后没有需要保留的删除或撤回。**冷退回不重放删除账本：快照之后的删除或撤回会丢失，已删除内容可能重新出现。**若有这类操作，不要直接打开冷退回的库；保留当前库，先找到能在旧版本完整恢复这些保护的方案。快照之后的新写入和修改也会丢失。
+
+1. 停止这个库的所有宿主和 worker，确认没有进程打开库。保留升级前快照及旧版配置。
+2. 在覆盖前，用 SQLite 一致性备份保存当时的库，包括尚在 WAL 的数据，并保留升级前快照的独立副本。
+3. 确认没有待完成的 restore 标记；若已有，先处理该待恢复状态，不要直接绕过它。
+4. 用升级前快照替换 `memory.sqlite3`，并删除旧的 `memory.sqlite3-wal` 和 `memory.sqlite3-shm`，它们属于被替换的新结构库。
+5. 用 3.16 打开恢复后的库并验证记忆，再重新启用宿主和 worker。
+
 ## 旧版迁移的执行边界
 
 普通安装和配置使用 `scope-recall setup`；需要处理旧格式和运行中宿主时，按 [迁移与宿主协调指引](../maintenance/AGENT_WORKFLOW.md) 执行以下步骤：

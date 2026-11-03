@@ -236,7 +236,8 @@ Before installing the new executable, stop the installation's writers and take a
 snapshot; keep the old executable and configuration alongside it. To roll back, use the existing
 [`restore` procedure](install.md#going-back-to-a-backup) with that snapshot and a separate backup directory. The newer executable
 first records the latest deletion ledger and closes admission; the executable matching the snapshot then completes
-the restore. Do not overwrite the database file by hand: that can resurrect deleted memories. Corrections made after
+  the restore. Do not overwrite the database file by hand: that can resurrect deleted memories. The documented
+  [cold rollback exception](backup-restore.md#returning-from-40-to-316-with-extra-registered-scopes) has that risk and requires its stated precautions. Corrections made after
 the snapshot are outside its recovery point. A snapshot taken while content was muted can restore that older mute
 when completed by an older executable; use the management-capable executable to preserve later unmute decisions.
 
