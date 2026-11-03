@@ -617,6 +617,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_autonomous_corrections.py",
     "tests/contract/test_autonomous_recall.py",
     "tests/contract/test_autonomous_worker.py",
+    "tests/contract/test_work_error_detail.py",
     "tests/contract/test_comprehensive_storage_diagnostics.py",
     "tests/contract/test_http_proxy_boundary.py",
     "tests/contract/test_embedding_space_policy.py",
