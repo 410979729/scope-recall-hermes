@@ -117,6 +117,21 @@ After upgrade, run doctor for each entry, start new host sessions and verify cap
 A package/import check alone does not establish that a running host loaded the update. Remote clients need their
 own update; see [remote compatibility](remote-entries.md).
 
+After reconnecting a Claude Code, Codex or WorkBuddy entry, recover sessions recorded while its hooks were disabled
+with `scope-recall replay-sessions`. The operator declares that `--records` belongs to the selected entry; use the
+host's `projects` directory for Claude Code or WorkBuddy, or its `sessions` directory for Codex. Preview first:
+
+```sh
+scope-recall replay-sessions --host claude-code --instance-root /path/to/entry --records /path/to/claude/projects --since '<start-with-timezone>' --until '<end-with-timezone>' --json
+scope-recall replay-sessions --host claude-code --instance-root /path/to/entry --records /path/to/claude/projects --since '<start-with-timezone>' --until '<end-with-timezone>' --yes --preview-id '<preview-id>' --json
+```
+
+Check the session IDs, recorded working directories, time ranges, event counts and rejection reasons in the preview.
+The time bounds include both endpoints. The confirmation must use the same parameters; if records change, preview
+again. Keep the selected records unchanged throughout execution: the command checks their fingerprint before it
+starts writing. Current grants, entry state and private intervals still apply, and repeated recovery does not duplicate
+events.
+
 ## Going back to a backup
 
 Keep the backup outside the installation and stop its writers before restoring. Run `scope-recall restore --help`

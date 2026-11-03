@@ -6,7 +6,7 @@ reading resumes where the last one stopped (``transcript.Cursor``)."""
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import ContractError
@@ -42,11 +42,13 @@ class RecordLines:
     Each is the offset just past the line and what it shows being said (``transcript.said``); a line that
     shows nothing may be left out, as long as the last offset the client read is present.  The handler sets
     ``through`` to the offset every stored line reaches, which is where that client's cursor may move.
+    ``outcomes`` counts capture dispositions for processed lines without retaining their content.
     """
 
     start: int
     lines: list[tuple[int, transcript.Said | None]]
     through: int | None = None
+    outcomes: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_dsh(cls, payload: dict[str, Any]) -> RecordLines:
@@ -198,7 +200,12 @@ class RecordReader:
                 )
                 origin = "human_direct" if entry.role == "user" else "assistant_visible"
                 if not self._captured_for_good(
-                    self._hook.context(bound, session_id, origin), bound, event, until, entry.private_spans_removed
+                    self._hook.context(bound, session_id, origin),
+                    bound,
+                    event,
+                    until,
+                    entry.private_spans_removed,
+                    remote=remote,
                 ):
                     break
             position = end
@@ -265,7 +272,7 @@ class RecordReader:
             event_id=event_id,
         )
 
-    def _captured_for_good(self, context, audience, event, deadline: float, removed: int = 0) -> bool:
+    def _captured_for_good(self, context, audience, event, deadline: float, removed: int = 0, *, remote=None) -> bool:
         """Capture one record message; False when it may succeed later and the read must stop here."""
         diagnostics = self._hook.diagnostics
         diagnostics.capture_disposition = diagnostics.capture_error_code = diagnostics.capture_error_type = None
@@ -273,6 +280,9 @@ class RecordReader:
         if gaps:
             event["capture_state"] = "partial"
         self._hook.capture(context, audience, event, deadline=deadline, via_inbox=False, gaps=gaps)
+        if remote is not None:
+            outcome = diagnostics.capture_disposition or diagnostics.capture_error_detail or "unavailable"
+            remote.outcomes[outcome] = remote.outcomes.get(outcome, 0) + 1
         return diagnostics.capture_settled
 
 
