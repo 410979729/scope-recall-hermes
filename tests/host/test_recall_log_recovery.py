@@ -11,12 +11,14 @@ from pathlib import Path
 from scope_recall.core.recall_log_storage import RecallLogStore
 
 
-def _recovered_history(path):
+def _recovered_history(path, store):
     """Read after an abrupt exit, allowing only Windows' transient WAL-index unmap window.
 
     A terminated process can release its locks before its shared-memory view is unmapped.
-    Reopening in that window cannot truncate the WAL index. Close the failed connection
-    before waiting; unrelated I/O errors and a persistent truncate failure still fail.
+    Reopening in that window cannot truncate the WAL index, and the window can outlast the
+    first successful reopen, so the store's own read-only page read waits under the same rule.
+    Close the failed connection before waiting; unrelated I/O errors and a persistent truncate
+    failure still fail.
     """
     deadline = time.monotonic() + 2
     retries = 0
@@ -25,7 +27,7 @@ def _recovered_history(path):
             with closing(sqlite3.connect(path)) as conn:
                 integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
                 count = conn.execute("SELECT count(*) FROM attempts").fetchone()[0]
-                return integrity, count, retries
+            return integrity, count, store.list(), retries
         except sqlite3.OperationalError as exc:
             if (
                 sys.platform != "win32"
@@ -100,9 +102,9 @@ RecallLogStore(path).write(dict(ref='TEST-in-flight',timestamp='2026-09-02T12:00
             child.wait(timeout=10)
         for stream in (child.stdin, child.stdout, child.stderr):
             stream.close()
-    integrity, count, retries = _recovered_history(path)
+    integrity, count, history, retries = _recovered_history(path, store)
     assert integrity == "ok" and count == 1
-    assert store.list()[0]["ref"] == "TEST-committed"
+    assert history[0]["ref"] == "TEST-committed"
     (tmp_path / "crash-receipt.json").write_text(
         json.dumps(
             dict(

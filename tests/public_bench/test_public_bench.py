@@ -1465,6 +1465,119 @@ def test_simple_scale_fixture_projects_bulk_claim_writes(tmp_path):
         lab.close()
 
 
+def test_scenario_spec_covers_every_definition_and_fixed_short_prompts():
+    """The comparison uses one fixture and never loses an acceptance scenario."""
+    from scenario_checks import CHECKS
+
+    fixture = json.loads((HERE / "scenarios_fixture.json").read_text(encoding="utf-8"))
+    rows = fixture["checks"]
+    assert len({row["id"] for row in rows}) == len(rows)
+    assert {row["id"].split(".")[0] for row in rows} == set(CHECKS)
+    assert {"按这个写", "好的", "继续"} <= set(fixture["unrelated_prompts"])
+    assert len({item["subject"] for item in fixture["distractors"]}) == 6
+    assert all(row["definition"] and row["method"] and row["criterion"] for row in rows)
+
+
+def test_scenario_clock_uses_queue_ordering_format_and_real_deadlines():
+    """Business-time scheduling compares canonical UTC stamps lexically."""
+    from scenario_store import Clock
+
+    clock = Clock()
+    before, deadline = clock.utc_now(), clock.monotonic()
+    clock.advance(900)
+    assert before.endswith("Z") and clock.utc_now().endswith("Z")
+    assert clock.utc_now() > before
+    assert clock.monotonic() - deadline < 1
+
+
+def test_scenario_worker_port_runs_adoption_without_external_services(tmp_path):
+    """A source-bound confirmation crosses the real hook and worker stages."""
+    from scenario_model import FixtureModel, drain
+    from scenario_store import ScenarioStore
+
+    scenes = ScenarioStore(tmp_path / "TEST-scenario-adoption")
+    try:
+        session = scenes.hook("codex", "TEST 配置重启策略，请给两个方案。")["session"]
+        scenes.hook(
+            "codex",
+            "",
+            session=session,
+            event="Stop",
+            last_assistant_message=("方案一：直接覆盖配置。\n\n方案二：先备份配置，再平滑重启，失败时恢复备份。"),
+        )
+        scenes.hook("codex", "好，就用方案二", session=session)
+        model = FixtureModel()
+        drain(scenes, model)
+        rows = scenes.rows("SELECT state,payload_json FROM claim_versions")
+        assert len(rows) == 1 and rows[0]["state"] == "active"
+        payload = json.loads(rows[0]["payload_json"])
+        assert "先备份配置" in payload["value_text"]
+        assert len(payload["evidence_spans"]) == 2
+        assert {"locate_adoption", "describe_adoption", "support"} <= set(model.calls)
+    finally:
+        scenes.close()
+
+
+def test_scenario_result_preserves_failures_and_real_machine_requirements():
+    """A missing true-host check is never silently counted as a successful flow."""
+    from scenarios import Results
+
+    result = Results({"checks": [dict(id="S1.host", definition="host", method="real", criterion="observed")]})
+    result.machine("S1.host", "real subprocess unavailable")
+    assert result.rows["S1.host"]["status"] == "m6"
+    assert result.rows["S1.host"]["classification"] == "real_machine"
+    result.record("S1.host", False, {"actual": "missing"})
+    assert result.rows["S1.host"]["status"] == "fail"
+
+
+def test_scenario_brief_accepts_escaped_unicode_without_losing_text():
+    """Handoff reports nest JSON strings inside the delivered host briefing."""
+    from scenario_store import rendered_contains
+
+    assert rendered_contains(json.dumps({"next_step": "下一步检查配色"}), "下一步检查配色")
+    assert not rendered_contains("unrelated text", "下一步检查配色")
+
+
+@pytest.mark.parametrize("old_false,new_false,expected", [(0, 0, "pass"), (0, 1, "fail"), (2, 1, "pass")])
+def test_scenario_comparison_uses_observed_question_rates(old_false, new_false, expected):
+    """Paired acceptance fails a regression instead of trusting a runner's marker."""
+    from scenario_report import pair
+
+    def report(count):
+        common = dict(definition="unrelated", method="same prompts", criterion="no regression", status="comparison")
+        return dict(
+            fixture_sha256="TEST-same-fixture",
+            checks=[
+                dict(id="S6.unrelated", actual=dict(false_injections=count, count=48), **common),
+                dict(id="S6.compare", actual={}, **common),
+            ],
+        )
+
+    rows = pair(report(old_false), report(new_false))
+    compared = next(row for row in rows if row["id"] == "S6.compare")
+    assert compared["current"]["status"] == expected
+    assert compared["current"]["actual"]["rate"] == new_false / 48
+    assert compared["baseline"]["actual"]["rate"] == old_false / 48
+
+
+def test_scenario_background_deadline_preserves_the_foreground_window():
+    """A normal batch deadline is retained as evidence, while other faults escape."""
+    from scenario_scale import bounded_pass
+    from scope_recall.contracts import ContractError
+
+    class Core:
+        code = "DEADLINE_EXCEEDED"
+
+        def drain_worker(self, *args, **kwargs):
+            raise ContractError(self.code)
+
+    scenes = SimpleNamespace(core=Core(), context=lambda: None)
+    assert bounded_pass(scenes, None, "TEST-worker", max_items=32) == "bounded_worker_deadline:DEADLINE_EXCEEDED"
+    scenes.core.code = "ACCESS_DENIED"
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        bounded_pass(scenes, None, "TEST-worker", max_items=32)
+
+
 def test_realistic_fixture_declares_its_synthetic_prefix_geometry(tmp_path):
     from realistic_distribution import synthetic_ports
     from scope_recall.vector.cache import coarse_dimensions

@@ -99,3 +99,17 @@ Reconnect the credential references named in the receipt. Review remote addresse
 Only deletions that reached the supplied mirror can be replayed. Its latest deletion time cannot prove that a lost computer had no newer deletion. Unsent uploads and retries outside the files saved in the bundle are unavailable too. Keep the mirror current and check `doctor` before a planned move.
 
 For a rollback while the original store still exists, use the existing snapshot `restore` command. It reads the current store's deletion ledger before returning to the older snapshot. Disaster recovery uses `restore --bundle ... --to ...` because the original store is unavailable.
+
+Restore trusts the local recovery materials supplied by the operator. The snapshot is checked against the installation identity and its digest is calculated; the pending marker and deletion ledger are checked against the installation identity and ledger digest to prevent accidental use of another installation's files. These checks are not signatures and cannot prevent coordinated changes on the same machine; scopes manually added to a snapshot of the same installation become registered scopes after restore.
+
+### Returning from 4.0 to 3.16 with extra registered scopes
+
+The 3.16 restore command requires the shared store's registered scopes to equal the manifest scopes. It cannot complete a rollback when `instance_scopes` contains scopes absent from the top-level `scope_ids` in `installation.json`. Doctor does not report this difference; with writers stopped, compare a read-only `SELECT scope_id FROM instance_scopes` with that manifest list.
+
+A cold rollback can return to the pre-upgrade snapshot when no later deletion, withdrawal, object suppression, source-group suppression or other protection state needs to be preserved. **It does not replay the deletion ledger: those protections are lost, deleted content can reappear, content excluded from automatic recall can participate again, and later segments of a source group lose inherited suppression.** Normal `restore` exports and replays these protection states. If any must be preserved, do not open the cold-restored store; retain the current store until a way to preserve those protections on the older release is available. Captures and updates after the snapshot are also lost.
+
+1. Stop every host and worker using the store and confirm no process has it open. Keep the pre-upgrade snapshot and old configuration.
+2. Before replacement, take a consistent SQLite backup of the current store, including data still in its WAL, and keep a separate copy of the pre-upgrade snapshot.
+3. Confirm no restore marker is pending. If one is present, resolve that pending restore rather than bypassing the fence.
+4. Replace `memory.sqlite3` with the pre-upgrade snapshot and delete the old `memory.sqlite3-wal` and `memory.sqlite3-shm`, which belong to the replaced newer store.
+5. Open with 3.16, verify the restored memories, and then restart hosts and workers.

@@ -21,6 +21,8 @@ The automatic store upgrade rebuilds this derived index in resumable pages and p
 Repeated releases reuse immutable content safety verdicts; changed content is scanned again. Other-session
 matches read a bounded representative window and describe that limit without claiming a complete remaining count.
 
+Snapshot restore accepts shared stores with registered scopes outside the installation manifest, while refusing a snapshot missing any scope registered in the current store. An older release still needs its own compatible restore check to finish a cross-schema rollback.
+
 Automatic injection can use compact text or an outline with inspect references through `injection_format`;
 JSON remains the default. All formats share final-text budgets, privacy and delivery checks. Doctor and recall
 history expose per-injection usage, session usage and both ceilings without retaining injected content.

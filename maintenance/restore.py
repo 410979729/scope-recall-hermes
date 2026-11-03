@@ -37,7 +37,7 @@ import sqlite3
 import sys
 from collections.abc import Iterator
 from contextlib import ExitStack, closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from io import BufferedReader
 from pathlib import Path
@@ -55,6 +55,7 @@ from scope_recall.core.restore import (
     export_deletion_ledger,
     ledger_digest,
     pending_restore_ledger,
+    pending_restore_scopes,
     replay_deletion_ledger,
     restore_pending,
     snapshot_schema_supported,
@@ -160,9 +161,19 @@ def _checked(binding: InstanceBinding, snapshot: Path) -> Iterator[_Checked]:
     _store_file(binding, snapshot)
     # A plan writes nothing, so a store at an older schema is refused rather than brought forward by the read.
     storage = SQLiteStorage(binding, timeout_seconds=_STORE_SECONDS, upgrade_on_open=False)
-    authority = InstallationMaintenance(TrustedContext(binding, "restore", binding.scope_ids, "host_generated"))
     with _held(snapshot) as (source, stream):
-        schema = _snapshot_schema(storage, source)
+        schema, registered_scopes = _snapshot_schema(storage, source)
+        # The checked snapshot covers the current registry; this maintenance capability does not change entry grants.
+        # Ledger export verifies current-store identity, or a pending marker and ledger verify the installation.
+        expanded = replace(binding, scope_ids=registered_scopes)
+        storage = SQLiteStorage(expanded, timeout_seconds=_STORE_SECONDS, upgrade_on_open=False)
+        authority = InstallationMaintenance(TrustedContext(expanded, "restore", registered_scopes, "host_generated"))
+        if restore_pending(binding.data_directory):
+            scopes = pending_restore_scopes(storage, authority, minimum=binding.scope_ids)
+            if scopes != registered_scopes:
+                expanded = replace(binding, scope_ids=scopes)
+                storage = SQLiteStorage(expanded, timeout_seconds=_STORE_SECONDS, upgrade_on_open=False)
+                authority = InstallationMaintenance(TrustedContext(expanded, "restore", scopes, "host_generated"))
         ledger, kept = _ledger(storage, authority, schema)
         stream.seek(0)
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -200,8 +211,8 @@ def _held(snapshot: Path) -> Iterator[tuple[sqlite3.Connection, BufferedReader]]
             yield source, stream
 
 
-def _snapshot_schema(storage: SQLiteStorage, source: sqlite3.Connection) -> int:
-    """The snapshot's schema, once it is a whole ``backup`` snapshot of this very store, with its scopes and entries."""
+def _snapshot_schema(storage: SQLiteStorage, source: sqlite3.Connection) -> tuple[int, frozenset[str]]:
+    """The checked snapshot's schema and the current store's registered scopes."""
     try:
         if str(source.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
             raise RestoreError("snapshot_not_a_backup", "--snapshot is a live store's file; take one with backup")
@@ -213,17 +224,25 @@ def _snapshot_schema(storage: SQLiteStorage, source: sqlite3.Connection) -> int:
         schema = int(source.execute("PRAGMA user_version").fetchone()[0])
         if not snapshot_schema_supported(schema):
             raise RestoreError("snapshot_schema", _schema_hint(schema))
+        scopes = frozenset(row[0] for row in source.execute("SELECT scope_id FROM instance_scopes"))
+        if not storage.binding.scope_ids <= scopes:
+            raise RestoreError("snapshot_scopes", "the snapshot is missing a scope in the current binding")
         try:
             storage.verify(source, expected_schema=schema)
         except ContractError as exc:
             hint = f"the snapshot is not this store's ({exc.code}:{exc.field})"
             raise RestoreError("snapshot_identity", hint) from None
-        scopes = frozenset(row[0] for row in source.execute("SELECT scope_id FROM instance_scopes"))
         registered = frozenset(row[0] for row in source.execute("SELECT entry_id FROM entries"))
+        # The current file may be at a newer schema during a pending restore;
+        # reading its registry does not require opening it as this release's schema.
+        with closing(storage._open("ro", restoring=True)) as current:
+            current_scopes = frozenset(row[0] for row in current.execute("SELECT scope_id FROM instance_scopes"))
     except sqlite3.DatabaseError as exc:
         raise RestoreError("snapshot_damaged", f"{type(exc).__name__}: {exc}") from None
-    if scopes != storage.binding.scope_ids:
-        raise RestoreError("snapshot_scopes", "the snapshot is from before an entry brought a scope of its own")
+    if not storage.binding.scope_ids <= current_scopes:
+        raise ContractError("IDENTITY_UNBOUND", "scope_binding")
+    if not current_scopes <= scopes:
+        raise RestoreError("snapshot_scopes", "the snapshot is missing a scope registered in the current store")
     if storage.binding.installation_kind == "shared":
         # A shared store accepts a capture only through an entry it registered, which attach does.
         entries = read_shared_payload(storage.binding.data_directory)["entries"]
@@ -231,7 +250,7 @@ def _snapshot_schema(storage: SQLiteStorage, source: sqlite3.Connection) -> int:
         if unknown:
             names = ", ".join(unknown)
             raise RestoreError("snapshot_entries", f"the snapshot is from before {names} was attached: detach it first")
-    return schema
+    return schema, current_scopes
 
 
 def _schema_hint(schema: int) -> str:
