@@ -7,6 +7,7 @@ import json
 from ..contracts import ContractError, validate_payload
 from .evidence_quote import resolve_fragment_summaries
 from .source_qualification import sentence_bounds
+from .worker_outcomes import record_error_detail
 
 
 def grounded_sentences(value, sources, *, originals=None, blocked=None, stats=None, positions=None):
@@ -239,9 +240,8 @@ def apply_summary(tx, fence, kind, proposal, scope_id, now):
         if exc.code not in {"DERIVATION_INVALID", "INPUT_INVALID"}:
             raise
         mark_partial(conn, fence.work_id, kind + "_qualification_failed", now)
-        conn.execute(
-            "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
-            (fence.work_id, fence.lease_token, "summary", exc.code, exc.field, now),
+        record_error_detail(
+            conn, fence.work_id, fence.lease_token, now=now, stage="summary", code=exc.code, field=exc.field
         )
         return None
     finally:

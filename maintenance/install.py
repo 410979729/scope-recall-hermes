@@ -301,6 +301,9 @@ def plan_installation(options: InstallPlan) -> InstallPlan:
     plan.changes.append(PlannedChange("write", str(receipt_file(instance)), "install receipt with digest"))
     if host_files:
         plan.changes.append(PlannedChange("restart", str(target), adapter.RESTART_NOTE))
+    environment_notes = getattr(adapter, "environment_notes", None)
+    for note in environment_notes(plan, home_plugin) if environment_notes else ():
+        plan.changes.append(PlannedChange("restart", str(target), note))
 
     if receipt is not None and receipt.get("host") not in {None, plan.host}:
         plan.conflicts.append("existing receipt host mismatch")

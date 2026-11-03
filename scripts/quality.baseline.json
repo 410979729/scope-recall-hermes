@@ -409,9 +409,6 @@
   "core/consolidate.py": {
    "B905": 2
   },
-  "core/consolidation_summary.py": {
-   "E501": 1
-  },
   "core/deadline.py": {
    "UP035": 1
   },

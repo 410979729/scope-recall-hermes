@@ -11,6 +11,7 @@ from .injection_policy import SCAN_WINDOWS, ScanResult
 from .injection_policy import scan as scan
 from .retractions import record_safety_retraction
 from .source_records import stored_source
+from .worker_outcomes import record_error_detail
 
 # A ref changes when segment counts change. This identity remains stable across
 # versions, within the source's authorization and conversation partition.
@@ -78,12 +79,14 @@ def save_checkpoint(tx, rows, cursor, policy, now):
 def record_scan_deadline(tx, rows, verdict, now):
     """Keep content-free fallback counts in the continuation job's retained history."""
     if "scan_time_budget" in verdict.rules:
-        tx._check(write=True).execute(
-            "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,recorded_at) "
-            "SELECT work_id,lease_token,'source_scan','scan_time_budget',? FROM work_items "
+        conn = tx._check(write=True)
+        matches = conn.execute(
+            "SELECT work_id,lease_token FROM work_items "
             "WHERE work_type='rebuild_projection' AND subject_ref=? AND subject_revision=?",
-            (now, rows[0]["event_id"], rows[0]["source_revision"]),
+            (rows[0]["event_id"], rows[0]["source_revision"]),
         )
+        for work_id, lease_token in matches:
+            record_error_detail(conn, work_id, lease_token, now=now, stage="source_scan", code="scan_time_budget")
 
 
 def _scan_events(tx, events, remaining_seconds, policy, max_windows):

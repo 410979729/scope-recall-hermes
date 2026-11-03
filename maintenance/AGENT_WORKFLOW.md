@@ -85,13 +85,16 @@ build. NumPy vector retrieval is part of the base package; the vector extra rema
 accepted for installation compatibility. `doctor` reads that environment and reports
 it under `hermes_runtime`.
 
-1. Once the release is on PyPI, run plan-install/apply-install with
+1. Run plan-install/apply-install with
    `--target-plugin-dir <home>\plugins\scope-recall`. A receipt that names another
    plugin directory is moved (`move` in the plan); a wrapper someone put there by
    hand is backed up and replaced (`replace`). The wrapper's `pyproject.toml`
    declares `hermes-scope-recall[vectors]==<version>`.
 2. Rebuild the environment with Hermes's own sync, `HERMES_HOME` set to the home:
    `<hermes python> -m hermes_cli.venv_sync --project-root <home>\hermes-agent --json`.
+   For a pre-release, development or local build, set `UV_FIND_LINKS` to a directory
+   containing that exact wheel for the sync. Repeat the sync with `UV_FIND_LINKS`
+   after every `hermes update`: otherwise rebuilding fails and disables the plugin.
    A running gateway keeps the environment it started with. `"state": "synced"` or
    `"current"` is success. A failed sync disables the plugin: Hermes adds
    `scope-recall` to `plugins.disabled` in `config.yaml` and empties

@@ -23,6 +23,7 @@ from .worker_outcomes import (
     hold_for_entry_state,
     hold_for_private_mode,
     model_failure,
+    record_error_detail,
     stale_result,
     work_result,
 )
@@ -300,17 +301,14 @@ def _publish_summary(storage, clock, context, item, prepared, *, started, budget
             return work_result(tx.work.mark_obsolete(*item.lease, now=clock.utc_now()))
         head = tx.claims.version(item.subject_ref, item.subject_revision)
         if hint_omitted:
-            tx._check().execute(
-                "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (
-                    item.work_id,
-                    item.lease_token,
-                    "summary",
-                    "resume_hint_omitted",
-                    "resume_hint_omitted_input_budget",
-                    clock.utc_now(),
-                ),
+            record_error_detail(
+                tx._check(),
+                item.work_id,
+                item.lease_token,
+                now=clock.utc_now(),
+                stage="summary",
+                code="resume_hint_omitted",
+                field="resume_hint_omitted_input_budget",
             )
         saved = store_excerpt_claim(tx, group, head, sentences, spans, coverage, now=clock.utc_now())
         tx._check().execute(

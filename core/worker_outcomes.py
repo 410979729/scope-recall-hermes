@@ -391,18 +391,36 @@ def port_failure(exc: BaseException) -> tuple[str, str]:
     return model_failure(exc)
 
 
-def _record_error_detail(conn, item, *, now: str, stage: str, code: str, detail: str | None) -> None:
-    # Store metadata only, never raw model output or exception bodies.
-    field = validation_feedback(code, detail)["field"] if detail else None
+def record_error_detail(
+    conn,
+    work_id: int,
+    lease_token: int,
+    *,
+    now: str,
+    stage: str,
+    code: str,
+    field: str | None = None,
+    retain: bool = False,
+) -> None:
+    """Insert error metadata within the caller's transaction without committing it.
+
+    ``work_id`` identifies the work item, ``lease_token`` its lease, ``stage`` the
+    processing stage, ``code`` the error, ``field`` an optional error field and
+    ``now`` the recorded timestamp. Values are stored as supplied, including
+    NULL fields; callers must sanitize any untrusted detail before passing it.
+    When ``retain`` is true, keep only the newest 16 details for this work item;
+    otherwise leave its existing history intact. The database assigns detail_id.
+    """
     conn.execute(
         "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
-        (item.work_id, item.lease_token, stage, code, field, now),
+        (work_id, lease_token, stage, code, field, now),
     )
-    conn.execute(
-        "DELETE FROM work_error_details WHERE work_id=? AND detail_id NOT IN "
-        "(SELECT detail_id FROM work_error_details WHERE work_id=? ORDER BY detail_id DESC LIMIT 16)",
-        (item.work_id, item.work_id),
-    )
+    if retain:
+        conn.execute(
+            "DELETE FROM work_error_details WHERE work_id=? AND detail_id NOT IN "
+            "(SELECT detail_id FROM work_error_details WHERE work_id=? ORDER BY detail_id DESC LIMIT 16)",
+            (work_id, work_id),
+        )
 
 
 def finalize_work(
@@ -431,8 +449,16 @@ def finalize_work(
         if not tx.work._verify_lease(*item.lease, now=now):
             return stale_result(tx, item, error_code)
         if error_code:
-            _record_error_detail(
-                conn, item, now=now, stage=stage, code=validation_code or error_code, detail=error_detail
+            code = validation_code or error_code
+            record_error_detail(
+                conn,
+                item.work_id,
+                item.lease_token,
+                now=now,
+                stage=stage,
+                code=code,
+                field=validation_feedback(code, error_detail)["field"] if error_detail else None,
+                retain=True,
             )
         if error_code in BUDGET_PAUSE_ERRORS:
             return work_result(

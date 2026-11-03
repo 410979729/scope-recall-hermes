@@ -29,6 +29,7 @@ from .evidence_question import (
     unanswerable_reason,
 )
 from .failure_policy import PROVIDER_RECHECK, retryable
+from .worker_outcomes import record_error_detail
 
 #: Where deleting or suppressing an object reaches candidate work.
 _FENCED_BY = {
@@ -139,10 +140,8 @@ class CandidateEvaluations(CandidateTables):
         )
 
     def _record_error(self, work_id: int, lease_token: int, code: str, now: str, field: str | None = None) -> None:
-        self._write().execute(
-            """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
-               VALUES (?,?,'candidate_evaluation',?,?,?)""",
-            (work_id, lease_token, code, field, now),
+        record_error_detail(
+            self._write(), work_id, lease_token, now=now, stage="candidate_evaluation", code=code, field=field
         )
 
     def defer_entry(self, evaluation_id: int, work, *, now: str):
