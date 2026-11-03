@@ -4,6 +4,7 @@ Gateway run_turn_prepare._hmwa_apply_message_timestamp renders the user row but
 turn_context passes the clean persist_user_message as the hook's user_message.
 These are contract reconstructions, not captured production hook kwargs.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -21,8 +22,13 @@ EPOCH = 1793577600.0
 
 
 def notice_row(**changes):
-    return {"role": "user", "content": STAMP + NOTICE,
-            "timestamp": EPOCH, "display_kind": "async_delegation_complete", **changes}
+    return {
+        "role": "user",
+        "content": STAMP + NOTICE,
+        "timestamp": EPOCH,
+        "display_kind": "async_delegation_complete",
+        **changes,
+    }
 
 
 class NoticeTimestampTests(unittest.TestCase):
@@ -34,8 +40,7 @@ class NoticeTimestampTests(unittest.TestCase):
         self.assertFalse(host_notice([{"role": "user", "content": NOTICE}], NOTICE))
 
     def test_older_same_text_notice_does_not_take_human_paste(self):
-        history = [notice_row(), {"role": "assistant", "content": "TEST done"},
-                   {"role": "user", "content": NOTICE}]
+        history = [notice_row(), {"role": "assistant", "content": "TEST done"}, {"role": "user", "content": NOTICE}]
         self.assertFalse(host_notice(history, NOTICE))
 
     def test_steer_is_still_human(self):
@@ -46,8 +51,9 @@ class NoticeTimestampTests(unittest.TestCase):
         self.assertFalse(host_notice([notice_row(content=STAMP + "Quoted: " + NOTICE)], NOTICE))
 
     def test_metadata_kind_is_not_an_invented_host_contract(self):
-        self.assertFalse(host_notice([notice_row(display_kind=None,
-            metadata={"display_kind": "async_delegation_complete"})], NOTICE))
+        self.assertFalse(
+            host_notice([notice_row(display_kind=None, metadata={"display_kind": "async_delegation_complete"})], NOTICE)
+        )
 
     def test_unstamped_timestamp_lookalike_is_not_unwrapped(self):
         self.assertFalse(host_notice([notice_row(timestamp=None)], NOTICE))
@@ -61,10 +67,14 @@ class NoticeTimestampTests(unittest.TestCase):
         self.assertFalse(capture.opened_by_host("TEST-turn", "TEST human request"))
         self.assertFalse(capture.opened_by_host("TEST-other-turn", NOTICE))
         with self.assertLogs("scope_recall.adapters.hermes.provider", level="WARNING"):
-            HostBackpressure(adapter).busy("pre_llm_call", {
-                "turn_id": "TEST-busy", "user_message": NOTICE,
-                "conversation_history": [notice_row()],
-            })
+            HostBackpressure(adapter).busy(
+                "pre_llm_call",
+                {
+                    "turn_id": "TEST-busy",
+                    "user_message": NOTICE,
+                    "conversation_history": [notice_row()],
+                },
+            )
         self.assertEqual(adapter._skipped_turn_id, "TEST-busy")
         self.assertTrue(capture.opened_by_host("TEST-busy", NOTICE))
 
