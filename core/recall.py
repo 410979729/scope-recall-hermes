@@ -632,6 +632,13 @@ class RetrievalPipeline:
         original_query: str | None = None,
         aside: _Aside | None = None,
     ) -> RetrievedObject | None:
+        empty_episode = getattr(self.storage_reader, "empty_episode", None)
+        if candidate.kind == "episode" and candidate.source != "exact_ref" and callable(empty_episode):
+            if empty_episode(tx, candidate):
+                # Preserve relation inspection/budget accounting while avoiding
+                # the evidence walk for a state-only object admission discards.
+                note_candidate(candidate, "empty_resume")
+                return None
         obj = self.storage_reader.hydrate(tx, candidate, context)
         note_candidate(candidate, obj=obj)
         if obj is None:

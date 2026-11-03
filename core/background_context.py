@@ -108,33 +108,36 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
     terms = meaningful_query_terms(context.query)
     if terms:
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
-        # From the few preference and constraint claims to their supporting sources, and only then to those
-        # sources' postings of the query's terms.  Left to itself SQLite started from every claim's evidence
-        # link and read each linked source's whole posting list: 1.3 s of a 2.5 s recall on a shared store
-        # of 19,000 claim links and 11 million postings, for the 2,300 links it could use.  CROSS JOIN keeps
-        # the order; the rows and their order are the query's own.
+        # Many properties can cite the same source. Match each distinct source
+        # once before expanding back to claims, retaining distinct term counts
+        # across multiple supporting sources and every audience fence.
         matched = conn.execute(
-            f"""SELECT c.claim_id,c.current_revision,COUNT(DISTINCT t.term) AS hits
-            FROM claims c
-            CROSS JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
-            CROSS JOIN evidence_links l ON l.object_kind='claim' AND l.object_ref=c.claim_id
-              AND l.object_revision=c.current_revision
+            f"""WITH profile AS MATERIALIZED (
+              SELECT c.claim_id,c.current_revision,c.pinned,c.importance,v.recorded_from {common}
+            ), links AS MATERIALIZED (
+              SELECT c.claim_id,c.current_revision,l.source_ref,l.source_revision
+              FROM profile c CROSS JOIN evidence_links l ON l.object_kind='claim' AND l.object_ref=c.claim_id
+                AND l.object_revision=c.current_revision WHERE l.relation='supports'
+            ), matched AS MATERIALIZED (
+              SELECT e.event_id,e.source_revision,t.term
+              FROM (SELECT DISTINCT source_ref,source_revision FROM links) l
             CROSS JOIN source_events e ON e.event_id=l.source_ref AND e.source_revision=l.source_revision
             CROSS JOIN lexical_postings p ON p.source_id=e.source_id AND p.term_id IN (
               SELECT term_id FROM lexical_terms WHERE term IN ({",".join("?" for _ in terms)}))
             CROSS JOIN lexical_terms t ON t.term_id=p.term_id
-            WHERE {where} AND c.kind IN ('preference','constraint')
-              AND v.state IN ('active','disputed','retracted') AND l.relation='supports'
-              AND e.scope_id IN ({",".join("?" for _ in scopes)}) AND e.read_blocked=0 AND e.suppressed=0
+            WHERE e.scope_id IN ({",".join("?" for _ in scopes)}) AND e.read_blocked=0 AND e.suppressed=0
               AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                              AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
               AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)
+            ) SELECT c.claim_id,c.current_revision,COUNT(DISTINCT t.term) AS hits
+            FROM profile c CROSS JOIN links l ON l.claim_id=c.claim_id AND l.current_revision=c.current_revision
+            CROSS JOIN matched t ON t.event_id=l.source_ref AND t.source_revision=l.source_revision
             GROUP BY c.claim_id,c.current_revision
             ORDER BY c.pinned DESC,CASE WHEN c.pinned=1 THEN 5 ELSE c.importance END DESC,
-                       hits DESC,v.recorded_from DESC,c.claim_id LIMIT ?""",
+                       hits DESC,c.recorded_from DESC,c.claim_id LIMIT ?""",
             (
-                *terms,
                 *params,
+                *terms,
                 *scopes,
                 context.trusted_context.project_id,
                 context.trusted_context.branch_id,

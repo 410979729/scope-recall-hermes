@@ -241,6 +241,19 @@ def indexed_terms(event) -> tuple[str, ...]:
 
 def lexical_terms(text: str) -> tuple[str, ...]:
     """Chinese bigrams and intact identifiers; normalization affects index only."""
+    # Admission and ranking inspect the same source repeatedly. Bound both the
+    # retained text and entry count; unusually long transcripts are never kept.
+    return _cached_lexical_terms(text) if len(text) <= 16384 else _lexical_terms(text)
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_lexical_terms(text: str) -> tuple[str, ...]:
+    """Reuse the exact tokenization of a bounded source, independent of permissions."""
+    return _lexical_terms(text)
+
+
+def _lexical_terms(text: str) -> tuple[str, ...]:
+    """Tokenize the complete text, including every bounded identifier and CJK bigram."""
     normalized = unicodedata.normalize("NFKC", text).casefold()
     terms = set(_IDENTIFIER.findall(normalized)) | set(_FILENAME.findall(normalized))
     terms.update(part for token in tuple(terms) for part in token.split("/"))

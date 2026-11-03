@@ -91,26 +91,33 @@ def _searched_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()) -> t
 
     Drop query terms too common to separate anything.
 
-    Document frequency is read once for the query's own terms, which is a
-    clustered range scan: ``lexical_postings`` is WITHOUT ROWID keyed on
-    ``(term_id, source_id)``.  If every term is that common the query keeps
-    its rarest ones: answering from a weak signal beats answering from none,
+    Counts stop once a term is known to be common and over budget. Every
+    retained unprotected term still has an exact count. If all terms are
+    common and their minimum saturated that bound, exact counts select the
+    true rarest ones: answering from a weak signal beats answering from none,
     and the vector and recent channels still contribute.
 
     ``keep`` is never dropped however common: the query's hard identifiers,
     which hydration requires of every source.  Without them the SQL cannot
     reach a single source hydration would admit.
     """
+    if len(terms) <= 1:
+        return terms, ()
     conn = tx._check()
-    frequencies = lexical_index.document_frequency(conn, terms)
+    # Query expansion and followups share this snapshot's corpus size.
+    ceiling = tx.remembered(("lexical_common_ceiling",), lambda: _common_term_ceiling(conn))
+    cap = max(ceiling, _LEXICAL_POSTING_BUDGET + 1)
+    frequencies = lexical_index.document_frequency(conn, terms, limit=cap)
     if not frequencies:
         return terms, ()
-    ceiling = _common_term_ceiling(conn)
     kept = tuple(term for term in terms if term in keep or frequencies.get(term, 0) < ceiling)
     if kept:
         searched = _within_posting_budget(kept, frequencies, keep)
         return searched, tuple(term for term in kept if term not in searched)
     rarest = min(frequencies.values())
+    if rarest == cap:
+        frequencies = lexical_index.document_frequency(conn, terms)
+        rarest = min(frequencies.values())
     return tuple(term for term in terms if frequencies.get(term, 0) == rarest) or terms, ()
 
 
@@ -172,10 +179,10 @@ def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...
     if not live:
         return {}
     conn = tx._check()
-    frequencies = lexical_index.document_frequency(conn, live)
+    ceiling = tx.remembered(("lexical_common_ceiling",), lambda: _common_term_ceiling(conn))
+    frequencies = lexical_index.document_frequency(conn, live, limit=ceiling)
     if not frequencies:
         return {}
-    ceiling = _common_term_ceiling(conn)
     return {term: original for term, original in live.items() if 0 < frequencies.get(term, 0) < ceiling}
 
 

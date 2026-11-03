@@ -37,6 +37,168 @@ def test_search_context_copies_request_and_trusted_runtime(app):
         search.query = "changed"
 
 
+def test_hydration_reuses_one_object_only_within_the_same_read_and_context(app, monkeypatch):
+    from scope_recall.core.retrieval_hydration import RetrievalHydration
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST reusable relation evidence", key="TEST-hydrated-snapshot")
+    search = SearchContext.from_request(recall_request(query="relation evidence"), ctx, now=Clock.now, deadline=999)
+    candidate = CandidateRef("event", source.ref, source.revision, "relation")
+    original = RetrievalHydration._hydrate_event
+    calls = []
+
+    def load(self, tx, item, context):
+        calls.append(context.mode)
+        return original(self, tx, item, context)
+
+    monkeypatch.setattr(RetrievalHydration, "_hydrate_event", load)
+    reader = core.recall_pipeline.storage_reader
+    with core.storage.read(ctx) as tx:
+        first = reader.hydrate(tx, candidate, search)
+        assert first is not None
+        assert reader.hydrate(tx, replace(candidate, rank=2, source="lexical"), search) == first
+        assert reader.hydrate(tx, candidate, replace(search, deadline=888)) == first
+        reader.hydrate(tx, candidate, replace(search, mode="history"))
+    assert calls == ["auto", "history"]
+    with core.storage.read(ctx) as tx:
+        reader.hydrate(tx, candidate, search)
+    assert calls == ["auto", "history", "auto"]
+    with core.storage.write(ctx) as tx:
+        reader.hydrate(tx, candidate, search)
+        reader.hydrate(tx, candidate, search)
+    assert calls == ["auto", "history", "auto", "auto", "auto"]
+
+
+@pytest.mark.parametrize("mode", ["auto", "history"])
+def test_repeated_evidence_delivery_reads_each_source_once_per_mode(app, monkeypatch, mode):
+    from scope_recall.core.storage import Transaction
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST shared source", key="TEST-deliverable-once")
+    search = SearchContext.from_request(
+        recall_request(query="shared source", mode=mode), ctx, now=Clock.now, deadline=999
+    )
+    calls = []
+    original = Transaction.source
+
+    def load(self, ref, revision):
+        calls.append((ref, revision))
+        return original(self, ref, revision)
+
+    monkeypatch.setattr(Transaction, "source", load)
+    reader = core.recall_pipeline.storage_reader
+    pairs = ((source.ref, source.revision),)
+    with core.storage.read(ctx) as tx:
+        for _ in range(30):
+            assert reader._deliverable(tx, pairs, search) == (f"{source.ref}@1",)
+    assert len(calls) == 1
+
+
+def test_evidence_context_and_entry_labels_share_one_source_read():
+    from types import SimpleNamespace
+
+    from scope_recall.core.retrieval_hydration import _evidence_metadata
+
+    calls = []
+
+    def source(ref, revision):
+        calls.append((ref, revision))
+        return SimpleNamespace(event={}, entry_id="TEST-entry")
+
+    tx = SimpleNamespace(
+        context=SimpleNamespace(binding=SimpleNamespace(installation_kind="shared")),
+        source=source,
+        entry_label=lambda entry_id: {"id": entry_id, "name": "TEST entry"},
+        remembered=lambda key, load, **kwargs: load(),
+    )
+    metadata = dict(_evidence_metadata(tx, ("TEST-one@1", "TEST-two@1", "TEST-three@1")))
+    assert "TEST-entry" in metadata["entries"]
+    assert len(calls) == 3
+
+
+def test_repeated_lexical_content_is_normalized_once(monkeypatch):
+    from scope_recall.core import events
+
+    original = events.unicodedata.normalize
+    calls = []
+
+    def normalize(form, text):
+        calls.append(text)
+        return original(form, text)
+
+    monkeypatch.setattr(events.unicodedata, "normalize", normalize)
+    text = "TEST-repeated-content/one.txt 甲乙丙丁"
+    results = [events.lexical_terms(text) for _ in range(3)]
+    assert results[0] == results[1] == results[2]
+    assert len(calls) == 1
+
+
+def test_relation_episode_without_a_resume_does_not_load_its_evidence(app, monkeypatch):
+    from scope_recall.core.retrieval_hydration import RetrievalHydration
+
+    core, ctx = app
+    capture(core, ctx, "TEST unconsolidated episode", key="TEST-empty-episode")
+    episode = core.episodes(ctx)[0]
+    assert episode.resume is None
+    search = SearchContext.from_request(
+        recall_request(query="unconsolidated episode"), ctx, now=Clock.now, deadline=999
+    )
+    candidate = CandidateRef("episode", episode.ref, episode.revision, "relation")
+    original = RetrievalHydration._hydrate_versioned
+    calls = []
+
+    def load(self, tx, item, context):
+        calls.append(item.key)
+        return original(self, tx, item, context)
+
+    monkeypatch.setattr(RetrievalHydration, "_hydrate_versioned", load)
+    with core.storage.read(ctx) as tx:
+        assert core.recall_pipeline._hydrate_admit(tx, candidate, search) is None
+        assert calls == []
+        assert core.recall_pipeline._hydrate_admit(tx, replace(candidate, source="exact_ref"), search) is not None
+        assert len(calls) == 1
+
+
+def test_lexical_channels_count_the_corpus_once_per_read_snapshot(app):
+    from scope_recall.core.retrieval_storage import _discriminating_synonyms, _searched_terms
+
+    core, ctx = app
+    capture(core, ctx, "TESTcount corpus", key="TEST-corpus-count")
+    statements = []
+    with core.storage.read(ctx) as tx:
+        conn = tx._check()
+        conn.set_trace_callback(statements.append)
+        _searched_terms(tx, ("testcount",))
+        _discriminating_synonyms(tx, {"testcount": "corpus"}, ("corpus",))
+        conn.set_trace_callback(None)
+    assert sum("SELECT COUNT(*) FROM source_events" in sql for sql in statements) == 1
+
+
+def test_shared_evidence_metadata_is_read_once_for_different_claims(app, monkeypatch):
+    from scope_recall.core import retrieval_hydration
+
+    from tests.contract.test_claims import accept, draft
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber shape amber", key="TEST-evidence-metadata")
+    items = [accept(core, ctx, draft(source, "amber", predicate=p)).items[0] for p in ("color", "shape")]
+    original = retrieval_hydration._evidence_labels
+    calls = []
+
+    def contexts(tx, evidence, **kwargs):
+        calls.append(evidence)
+        return original(tx, evidence, **kwargs)
+
+    monkeypatch.setattr(retrieval_hydration, "_evidence_labels", contexts)
+    search = SearchContext.from_request(recall_request(query="amber"), ctx, now=Clock.now, deadline=999)
+    with core.storage.read(ctx) as tx:
+        for item in items:
+            assert core.recall_pipeline.storage_reader.hydrate(
+                tx, CandidateRef("claim", item.ref, item.revision, "relation"), search
+            )
+    assert len(calls) == 1
+
+
 def test_lexical_recall_is_read_only_and_returns_source_evidence(app):
     core, ctx = app
     source = capture(core, ctx, "P08 keeps H100 as an exact identifier.", key="TEST-p08/lexical")
@@ -815,3 +977,140 @@ def test_claim_scoring_stops_at_cutoff_with_ready_prefix(app, monkeypatch):
     assert 0 < len(partial) < len(complete)
     assert calls[0] == 3
     assert {item.key for item in partial} <= {item.key for item in complete}
+
+
+def _frequency_read(counts):
+    """Create only synthetic posting counts and a snapshot-local memo for selection tests."""
+    import sqlite3
+    from types import SimpleNamespace
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE lexical_terms(term_id INTEGER PRIMARY KEY,term TEXT UNIQUE);"
+        "CREATE TABLE lexical_postings(term_id INTEGER,source_id INTEGER,PRIMARY KEY(term_id,source_id)) WITHOUT ROWID;"
+        "CREATE TABLE claim_lexical_postings(term_id INTEGER,claim_id TEXT,subject_terms INTEGER);"
+    )
+    for identifier, (term, count) in enumerate(counts.items(), 1):
+        conn.execute("INSERT INTO lexical_terms VALUES(?,?)", (identifier, term))
+        conn.executemany("INSERT INTO lexical_postings VALUES(?,?)", ((identifier, row) for row in range(count)))
+        if term == "claim-only":
+            conn.execute("INSERT INTO claim_lexical_postings VALUES(?,?,1)", (identifier, "TEST-claim"))
+    memo = {}
+
+    def remembered(key, load):
+        if key not in memo:
+            memo[key] = load()
+        return memo[key]
+
+    return conn, SimpleNamespace(_check=lambda: conn, remembered=remembered)
+
+
+def test_document_frequency_limit_preserves_exact_default_and_absent_terms():
+    from scope_recall.core import lexical_index
+
+    conn, _tx = _frequency_read({"common": 50000, "rare": 3, "claim-only": 0})
+    try:
+        terms = ("common", "rare", "claim-only", "missing")
+        assert lexical_index.document_frequency(conn, terms) == {"common": 50000, "rare": 3}
+        assert lexical_index.document_frequency(conn, terms, limit=9) == {"common": 9, "rare": 3}
+        assert lexical_index.document_frequency(conn, (), limit=9) == {}
+        with pytest.raises(ValueError):
+            lexical_index.document_frequency(conn, terms, limit=0)
+    finally:
+        conn.close()
+
+
+def test_discriminating_frequency_work_stops_at_the_decision_ceiling(monkeypatch):
+    """A common posting tail cannot increase VM work when a rare term already decides pruning."""
+    from scope_recall.core import retrieval_storage
+
+    conn, tx = _frequency_read({"common": 50000, "rare": 3, "claim-only": 0})
+    monkeypatch.setattr(retrieval_storage, "_common_term_ceiling", lambda _conn: 64)
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 100)
+    steps = 0
+
+    def observed():
+        nonlocal steps
+        steps += 100
+        return 0
+
+    try:
+        conn.set_progress_handler(observed, 100)
+        assert retrieval_storage._searched_terms(tx, ("common", "rare", "claim-only", "missing")) == (
+            ("rare", "claim-only", "missing"),
+            (),
+        )
+        conn.set_progress_handler(None, 0)
+        assert 0 < steps < 5000
+    finally:
+        conn.close()
+
+
+def test_all_common_frequency_fallback_counts_only_when_the_minimum_is_capped(monkeypatch):
+    from scope_recall.core import lexical_index, retrieval_storage
+
+    conn, tx = _frequency_read({"heavy": 700, "rarest": 500, "middle": 600, "lower": 65})
+    monkeypatch.setattr(retrieval_storage, "_common_term_ceiling", lambda _conn: 64)
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 100)
+    calls = []
+    original = lexical_index.document_frequency
+
+    def observed(connection, terms, **kwargs):
+        calls.append(kwargs.get("limit"))
+        return original(connection, terms, **kwargs)
+
+    monkeypatch.setattr(lexical_index, "document_frequency", observed)
+    try:
+        assert retrieval_storage._searched_terms(tx, ("heavy", "rarest", "middle")) == (("rarest",), ())
+        assert calls == [101, None]
+        calls.clear()
+        assert retrieval_storage._searched_terms(tx, ("heavy", "lower")) == (("lower",), ())
+        assert calls == [101]
+    finally:
+        conn.close()
+
+
+def test_frequency_cap_preserves_protected_budget_and_synonym_pruning(monkeypatch):
+    from scope_recall.core import lexical_index, retrieval_storage
+
+    counts = {"protected": 50000, **{f"rare-{i}": i + 2 for i in range(20)}, "claim-only": 0}
+    conn, tx = _frequency_read(counts)
+    monkeypatch.setattr(retrieval_storage, "_common_term_ceiling", lambda _conn: 64)
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 100)
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_MIN_TERMS", 3)
+    calls = []
+    original = lexical_index.document_frequency
+
+    def observed(connection, terms, **kwargs):
+        calls.append(kwargs.get("limit"))
+        return original(connection, terms, **kwargs)
+
+    monkeypatch.setattr(lexical_index, "document_frequency", observed)
+    try:
+        terms = tuple(counts)
+        expected = retrieval_storage._within_posting_budget(terms, counts, ("protected",))
+        assert retrieval_storage._searched_terms(tx, terms, ("protected",)) == (
+            expected,
+            tuple(term for term in terms if term not in expected),
+        )
+        assert calls == [101]
+        calls.clear()
+        assert retrieval_storage._discriminating_synonyms(
+            tx,
+            {"protected": "query", "rare-0": "query", "claim-only": "query", "missing": "query", "rare-1": "gone"},
+            ("query",),
+        ) == {"rare-0": "query"}
+        assert calls == [64]
+    finally:
+        conn.close()
+
+
+def test_single_lexical_term_needs_no_frequency_or_corpus_read():
+    from types import SimpleNamespace
+
+    from scope_recall.core.retrieval_storage import _searched_terms
+
+    def forbidden():
+        raise AssertionError("one term cannot be pruned")
+
+    assert _searched_terms(SimpleNamespace(_check=forbidden), ("common",)) == (("common",), ())

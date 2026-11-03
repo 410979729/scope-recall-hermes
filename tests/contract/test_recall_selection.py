@@ -40,10 +40,38 @@ def test_old_relevant_preference_survives_busy_recent_window(app):
     assert len(selected) <= 2
 
 
-def test_the_profile_term_query_starts_from_the_claims(app):
-    """Left to itself SQLite started from every claim's evidence link and read each linked source's whole
-    posting list: 1.3 s of a 2.5 s automatic recall on a shared store of 19,000 claim links and 11 million
-    postings, for 2,300 preference and constraint links.  Past the hook's budget, the turn got no memory."""
+def test_shared_profile_evidence_is_matched_once_before_claim_fanout(app):
+    from scope_recall.core.background_context import _profile_rows
+
+    core, ctx = app
+    words = " ".join(f"TESTword{i}" for i in range(40))
+    source = capture(core, ctx, "TEST-project Markdown. " + words)
+    item = accept(core, ctx, draft(source, "Markdown", kind="preference", predicate="format")).items[0]
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for table, key in (("claims", "claim_id"), ("claim_versions", "claim_id"), ("evidence_links", "object_ref")):
+            row = dict(conn.execute(f"SELECT * FROM {table} WHERE {key}=?", (item.ref,)).fetchone())
+            names = list(row)
+            for i in range(300):
+                row[key] = f"TEST-profile-fanout-{i:04}"
+                if table == "claims":
+                    row["slot_key"] = row[key]
+                conn.execute(
+                    f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
+                    [row[name] for name in names],
+                )
+    steps = []
+    with core.storage.read(ctx) as tx:
+        conn = tx._check()
+        conn.set_progress_handler(lambda: steps.append(1) or 0, 100)
+        rows = _profile_rows(tx, _search(core, ctx, words))
+        conn.set_progress_handler(None, 0)
+    assert len(rows) == 24
+    assert len(steps) * 100 < 350_000, len(steps) * 100
+
+
+def test_the_profile_term_query_deduplicates_evidence_before_matching(app):
+    """Only authorized profile evidence enters the term probe, once per distinct source."""
     core, ctx = app
     source = capture(core, ctx, "TEST-project 输出格式 Markdown。")
     accept(core, ctx, draft(source, "Markdown", kind="preference", predicate="输出格式"))
@@ -64,7 +92,8 @@ def test_the_profile_term_query_starts_from_the_claims(app):
     assert len(term_queries) == 1, statements
     with sqlite3.connect(core.storage.path) as db:
         plan = [row[3] for row in db.execute("EXPLAIN QUERY PLAN " + term_queries[0])]
-    assert plan[0].startswith(("SCAN c", "SEARCH c")), plan
+    assert any("MATERIALIZE matched" in step for step in plan), plan
+    assert not any(step.startswith("SCAN e") for step in plan), plan
 
 
 def test_matching_condition_selects_exception_instead_of_general_value(app):

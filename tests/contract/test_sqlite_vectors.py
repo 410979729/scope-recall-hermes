@@ -370,6 +370,155 @@ def test_index_failures_keep_one_absolute_retry_time(tmp_path):
         store.close()
 
 
+def test_index_budget_yields_without_capability_failure_hold(tmp_path, monkeypatch):
+    """A partial committed build is runnable next pass when its local slice ends."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from scope_recall.runtime import vector_upkeep
+    from scope_recall.vector.compaction import read_state
+
+    expired = False
+    calls = []
+
+    def maintain(**kwargs):
+        nonlocal expired
+        calls.append(kwargs)
+        if len(calls) == 2:
+            expired = True
+            raise TimeoutError("TEST indexing slice exhausted")
+        return {"outcome": "indexed", "rows": kwargs["max_rows"], "watermark": kwargs["max_rows"]}
+
+    monkeypatch.setattr(vector_upkeep, "remaining_seconds", lambda: 0.0 if expired else 5.0)
+    config = SimpleNamespace(storage_dir=tmp_path)
+    now = datetime.now(UTC)
+    receipt = vector_upkeep.index_if_due(SimpleNamespace(maintain_index=maintain), config, available_seconds=5, now=now)
+    assert receipt["outcome"] == "indexed" and receipt["watermark"] > 0
+    assert read_state(tmp_path)["retry_after"] == 0
+    expired = False
+    again = vector_upkeep.index_if_due(SimpleNamespace(maintain_index=maintain), config, available_seconds=5, now=now)
+    assert again["outcome"] != "held" and len(calls) > 2
+
+
+def test_worker_index_page_amortizes_many_scope_files(tmp_path):
+    """A small multi-scope backlog needs one publication and one completion probe."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.vector_upkeep import index_if_due
+
+    store = build_vector_store("sqlite", storage_dir=tmp_path, table_name="vectors", dimensions=8)
+    store.open()
+    calls = []
+
+    def maintain(**kwargs):
+        calls.append(kwargs)
+        return store.maintain_index(**kwargs)
+
+    try:
+        store.upsert_records(row(f"TEST-{i}", [1.0] * 8, f"TEST-scope-{i % 328}") for i in range(2048))
+        index_if_due(
+            SimpleNamespace(maintain_index=maintain),
+            SimpleNamespace(storage_dir=tmp_path),
+            available_seconds=30,
+            now=datetime.now(UTC),
+        )
+        assert store.diagnostics()["cached_rows"] == 2048
+        assert len(calls) <= 2
+    finally:
+        store.close()
+
+
+def test_completed_import_recovers_earlier_timeout_hold(tmp_path):
+    """An older deadline receipt cannot freeze an otherwise readable imported tail."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.vector_upkeep import index_if_due
+    from scope_recall.vector.compaction import read_state, write_state
+
+    now = datetime.now(UTC)
+    store = build_vector_store("sqlite", storage_dir=tmp_path, table_name="vectors", dimensions=8)
+    store.open()
+    try:
+        store.upsert_records([row("TEST-first", [1.0] * 8)])
+        store.maintain_index()
+        store.upsert_records([row("TEST-imported", [0.5] * 8)])
+        write_state(tmp_path, {"outcome": "failed", "error": "TimeoutError", "retry_after": now.timestamp() + 3600})
+        result = index_if_due(store, SimpleNamespace(storage_dir=tmp_path), available_seconds=30, now=now)
+        assert result["outcome"] == "indexed"
+        assert store.diagnostics()["cached_rows"] == 2
+        assert read_state(tmp_path)["retry_after"] == 0
+    finally:
+        store.close()
+
+
+def test_short_index_slices_reduce_failed_batch_until_progress(tmp_path, monkeypatch):
+    """A slow writer makes committed progress after a bounded batch becomes small enough."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from scope_recall.runtime import vector_upkeep
+    from scope_recall.vector.compaction import read_state
+
+    left = [2.0]
+    committed = []
+    requested = []
+
+    def maintain(*, max_rows):
+        requested.append(max_rows)
+        left[0] -= max_rows / 100.0
+        if left[0] <= 0:
+            raise TimeoutError("TEST indexing slice exhausted")
+        committed.append(max_rows)
+        return {"outcome": "indexed", "rows": max_rows, "watermark": sum(committed)}
+
+    monkeypatch.setattr(vector_upkeep, "remaining_seconds", lambda: left[0])
+    store = SimpleNamespace(maintain_index=maintain)
+    config = SimpleNamespace(storage_dir=tmp_path)
+    outcomes = []
+    for _ in range(3):
+        left[0] = 2.0
+        outcomes.append(vector_upkeep.index_if_due(store, config, available_seconds=2, now=datetime.now(UTC)))
+    assert all(item["outcome"] == "indexed" for item in outcomes)
+    assert committed and sum(committed) > 0
+    assert min(requested) <= 128
+    assert read_state(tmp_path)["retry_after"] == 0
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_index_timeout_before_budget_end_keeps_failure_hold(tmp_path, native):
+    """A TimeoutError unrelated to the local deadline remains a capability failure."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.vector_upkeep import index_if_due
+
+    calls = []
+
+    def maintain(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("TEST unavailable indexing backend")
+
+    store = SimpleNamespace(maintain_index=maintain)
+    if native:
+        store = build_vector_store("sqlite", storage_dir=tmp_path, table_name="vectors", dimensions=8)
+        store.open()
+        store.upsert_records([row("TEST-cached", [1.0] * 8)])
+        store.maintain_index()
+        store.upsert_records([row("TEST-tail", [0.5] * 8)])
+        store.maintain_index = maintain
+    config = SimpleNamespace(storage_dir=tmp_path)
+    now = datetime.now(UTC)
+    try:
+        assert index_if_due(store, config, available_seconds=5, now=now)["outcome"] == "failed"
+        assert index_if_due(store, config, available_seconds=5, now=now)["outcome"] == "held"
+        assert len(calls) == 1
+    finally:
+        if native:
+            store.close()
+
+
 def test_unreadable_raw_file_uses_persisted_retry_instead_of_sliding_it(tmp_path):
     from datetime import UTC, datetime, timedelta
     from types import SimpleNamespace

@@ -175,12 +175,29 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
     }
 
 
-def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
-    """How many source versions hold each term; a term nobody holds is absent."""
+def document_frequency(conn, terms: Iterable[str], *, limit: int | None = None) -> dict[str, int]:
+    """Source-version counts, optionally capped; a term no source holds stays absent.
+
+    Capped counts are sufficient for threshold decisions and stop the indexed
+    posting range early. Callers needing a relative order above that bound
+    must request exact counts instead.
+    """
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise ValueError("positive document frequency limit required")
     wanted = tuple(terms)
     if not wanted:
         return {}
     marks = ",".join("?" for _ in wanted)
+    if limit is not None:
+        return {
+            row[0]: int(row[1])
+            for row in conn.execute(
+                f"SELECT t.term,(SELECT COUNT(*) FROM (SELECT 1 FROM lexical_postings p "
+                f"WHERE p.term_id=t.term_id LIMIT ?)) FROM lexical_terms t WHERE t.term IN ({marks})",
+                (limit, *wanted),
+            )
+            if row[1]
+        }
     return {
         row[0]: int(row[1])
         for row in conn.execute(
