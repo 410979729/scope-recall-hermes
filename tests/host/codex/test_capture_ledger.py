@@ -103,6 +103,154 @@ def _sources(root):
         ).fetchall()
 
 
+def test_explicit_session_replay_previews_without_writing(ledger_client, tmp_path, capsys):
+    """A host's external records can be previewed before they are replayed."""
+    import os
+
+    from scope_recall.adapters.clients.transcript import Cursor
+    from scope_recall.maintenance.cli import main
+
+    root, config, _session, record = ledger_client
+    records = tmp_path / ("sessions" if config.host == "codex" else "projects")
+    target = records / record.relative_to(config.home / records.name)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(record.read_bytes())
+    cursor = Cursor(config.home, _session, record)
+    cursor.save(0)
+    cursor.save_state(last_error_code=None, size=0)
+    saved_cursor = cursor.path.read_bytes()
+    args = [
+        "replay-sessions",
+        "--host",
+        config.host,
+        "--instance-root",
+        str(config.home),
+        "--records",
+        str(records),
+        "--since",
+        NOW,
+        "--json",
+    ]
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        version = db.execute("PRAGMA data_version").fetchone()[0]
+        assert main(args) == 0
+        assert db.execute("PRAGMA data_version").fetchone()[0] == version
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["sessions"] == 1
+    assert preview["events"] == 2
+    assert not _sources(root)
+    original = target.read_bytes()
+    stamp = target.stat()
+    altered = original.replace(b"TEST reply", b"TEST rerly")
+    assert altered != original and len(altered) == len(original)
+    target.write_bytes(altered)
+    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) != 0
+    capsys.readouterr()
+    assert not _sources(root)
+    target.write_bytes(original)
+    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    target.write_bytes(original + b"{}\n")
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) != 0
+    capsys.readouterr()
+    assert not _sources(root)
+    target.write_bytes(original)
+    assert main(args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["written"] == 2
+    assert len(_sources(root)) == 2
+    assert cursor.path.read_bytes() == saved_cursor
+    assert main(args) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second["preview_id"] == preview["preview_id"]
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["written"] == 0
+    assert cursor.path.read_bytes() == saved_cursor
+    reconcile_store(config.to_binding(), seconds=10)
+    assert len(_sources(root)) == 2
+    assert (
+        main(
+            [
+                "replay-sessions",
+                "--host",
+                config.host,
+                "--instance-root",
+                str(config.home),
+                "--records",
+                str(config.home),
+                "--since",
+                NOW,
+                "--json",
+            ]
+        )
+        != 0
+    )
+
+
+def test_explicit_replay_respects_authorization_and_private_history(store, tmp_path, capsys):
+    """External Claude records cannot import earlier or private speech, and secrets are masked."""
+    from types import SimpleNamespace
+
+    from scope_recall.adapters.clients.identity import resolve_runtime_audience, stored_session_id, trusted_context
+    from scope_recall.core import CoreConfig, MemoryCore
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.maintenance.cli import main
+
+    root, _homes, home, _scope = store
+    config = load_shared_client(home, "claude-code")
+    records = tmp_path / "TEST-claude-config" / "projects"
+    folder = records / "TEST-project"
+    folder.mkdir(parents=True)
+    private_session = "TEST-private"
+    clock = SimpleNamespace(utc_now=lambda: "2026-09-24T20:01:00Z", monotonic=time.monotonic)
+    core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+    context = trusted_context(config, resolve_runtime_audience(config, str(home)), session_id=private_session)
+    owner = MemoryManagement(core, InstallationMaintenance(context))
+    owner.private_on(target="session", session=stored_session_id(config, private_session))
+    clock.utc_now = lambda: "2026-09-24T20:03:00Z"
+    owner.private_off(target="session", session=stored_session_id(config, private_session))
+    for session, stamp, content in (
+        ("TEST-before", "2026-09-24T19:59:00Z", "TEST before authorization"),
+        (private_session, "2026-09-24T20:02:00Z", "TEST private message"),
+        ("TEST-normal", "2026-09-24T20:04:00Z", "TEST token sk-abcdefghijklmnopqrstuvwx"),
+    ):
+        row = dict(
+            type="user",
+            uuid=session,
+            timestamp=stamp,
+            origin=dict(kind="human"),
+            message=dict(role="user", content=content),
+        )
+        (folder / f"{session}.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    args = [
+        "replay-sessions",
+        "--host",
+        "claude-code",
+        "--instance-root",
+        str(home),
+        "--records",
+        str(records),
+        "--since",
+        "2026-09-24T19:00:00Z",
+        "--json",
+    ]
+    assert main(args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["sessions"] == 1
+    assert preview["events"] == 1
+    assert preview["rejected"] == {"before_authorization": 1, "private_mode": 1}
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        assert not db.execute("SELECT content FROM source_events WHERE entry_id='claude-code'").fetchall()
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["written"] == 1
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        rows = db.execute("SELECT content FROM source_events WHERE entry_id='claude-code'").fetchall()
+    assert len(rows) == 1
+    assert "abcdefghijklmnopqrstuvwx" not in rows[0][0]
+
+
 @pytest.mark.parametrize("failure", ["DEADLINE_EXCEEDED", "SCHEMA_UNSUPPORTED"])
 def test_worker_recovers_rejected_hook_and_replays_idempotently(ledger_client, monkeypatch, failure):
     root, config, session, record = ledger_client
@@ -473,3 +621,173 @@ def test_unrecognized_metadata_kind_does_not_stop_a_rollout_page(tmp_path):
     record.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     page = read(record, 0, rows=codex_said)
     assert [entry.text for _end, entry in page if entry is not None] == ["TEST retained message"]
+
+
+@pytest.mark.parametrize("state", ["paused", "read-only"])
+def test_explicit_replay_rechecks_entry_state(ledger_client, tmp_path, capsys, state):
+    """A state change after preview still prevents the selected capture."""
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+    from scope_recall.maintenance.cli import main
+
+    root, config, _session, record = ledger_client
+    records = tmp_path / ("sessions" if config.host == "codex" else "projects")
+    target = records / record.relative_to(config.home / records.name)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(record.read_bytes())
+    args = [
+        "replay-sessions",
+        "--host",
+        config.host,
+        "--instance-root",
+        str(config.home),
+        "--records",
+        str(records),
+        "--since",
+        NOW,
+        "--json",
+    ]
+    assert main(args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    with closing(CodexHookHandler(config)) as hook:
+        binding = config.to_binding()
+        owner = MemoryManagement(
+            hook.core,
+            InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated")),
+        )
+        owner.set_entry_state(config.entry_id, state, actor="TEST-owner")
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["written"] == 0
+    assert not _sources(root)
+    assert main(args) == 0
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["events"] == 0
+    assert blocked["rejected"][f"entry_state:{state}"] == 2
+
+
+def test_explicit_replay_refuses_registered_entry_and_store_directories(store, tmp_path, capsys):
+    """Declaring a host directory cannot select a registered entry or the store."""
+    from scope_recall.maintenance.cli import main
+
+    root, homes, home, _scope = store
+    for parent in (home, homes["agent3"], root):
+        records = parent / "projects"
+        records.mkdir(exist_ok=True)
+        args = [
+            "replay-sessions",
+            "--host",
+            "claude-code",
+            "--instance-root",
+            str(home),
+            "--records",
+            str(records),
+            "--since",
+            NOW,
+            "--json",
+        ]
+        assert main(args) != 0
+        assert json.loads(capsys.readouterr().out)["status"] == "error"
+
+
+def test_explicit_replay_local_codex_time_window(installed, tmp_path, capsys):
+    """Local authorization and recorded working directories bind each selected rollout."""
+    from scope_recall.maintenance.cli import main
+
+    config, _core, _clock, project = installed
+    records = tmp_path / "TEST-native" / "sessions"
+    record = records / "2026/09/24/rollout-TEST-window.jsonl"
+    record.parent.mkdir(parents=True)
+    rows = [dict(type="session_meta", timestamp=NOW, payload=dict(id="TEST-window", cwd=str(project)))]
+    for minute in (0, 1, 2):
+        rows.append(
+            dict(
+                type="response_item",
+                timestamp=f"2026-09-24T20:0{minute}:00Z",
+                payload=dict(
+                    type="message", role="user", content=[dict(type="input_text", text=f"TEST window {minute}")]
+                ),
+            )
+        )
+    record.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    args = [
+        "replay-sessions",
+        "--host",
+        "codex",
+        "--instance-root",
+        str(config.config_path.parent),
+        "--records",
+        str(records),
+        "--since",
+        "2026-09-24T20:01:00Z",
+        "--until",
+        "2026-09-24T20:02:00Z",
+        "--json",
+    ]
+    assert main(args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["events"] == 2
+    from scope_recall.core.private import normalize_project_path
+
+    assert preview["session_details"][0]["cwd"] == [normalize_project_path(str(project))]
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["written"] == 2
+    with closing(sqlite3.connect(config.data_directory / "memory.sqlite3")) as db:
+        assert {row[0] for row in db.execute("SELECT content FROM source_events")} == {"TEST window 1", "TEST window 2"}
+
+
+def test_explicit_replay_continues_after_a_bounded_capture_page(store, tmp_path, capsys, monkeypatch):
+    """A long replay resumes its in-memory offset without advancing the ordinary cursor."""
+    from scope_recall.adapters.clients import record_reader
+    from scope_recall.maintenance.cli import main
+
+    root, _homes, home, _scope = store
+    records = tmp_path / "TEST-native" / "projects"
+    record = records / "TEST-project" / "TEST-multipage.jsonl"
+    record.parent.mkdir(parents=True)
+    rows = [
+        dict(
+            type="user",
+            uuid=f"TEST-{i}",
+            timestamp=NOW,
+            origin=dict(kind="human"),
+            message=dict(role="user", content=f"TEST item {i}"),
+        )
+        for i in range(4)
+    ]
+    record.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    args = [
+        "replay-sessions",
+        "--host",
+        "claude-code",
+        "--instance-root",
+        str(home),
+        "--records",
+        str(records),
+        "--since",
+        NOW,
+        "--json",
+    ]
+    assert main(args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    real_capture = CodexHookHandler.capture
+    real_read = record_reader.RecordReader.read
+    calls = []
+
+    def slow_capture(self, *args, **kwargs):
+        result = real_capture(self, *args, **kwargs)
+        time.sleep(0.2)
+        return result
+
+    def counted_read(self, *args, **kwargs):
+        calls.append(1)
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(record_reader, "_RECORD_READ_S", 0.8)
+    monkeypatch.setattr(CodexHookHandler, "capture", slow_capture)
+    monkeypatch.setattr(record_reader.RecordReader, "read", counted_read)
+    assert main([*args, "--yes", "--preview-id", preview["preview_id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["written"] == 4
+    assert len(calls) > 1
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        assert db.execute("SELECT count(*) FROM source_events WHERE entry_id='claude-code'").fetchone()[0] == 4

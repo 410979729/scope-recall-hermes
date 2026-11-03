@@ -102,17 +102,24 @@ def authorization_problem(config: CodexInstallationConfig) -> str | None:
     return None
 
 
-def local_authorized_at(config: CodexInstallationConfig, *, seconds: float) -> str | None:
-    """Preserve reliable grant evidence within a database lifetime; a rebuilt database starts afresh."""
+def local_authorized_at(config: CodexInstallationConfig, *, seconds: float, persist: bool = True) -> str | None:
+    """Resolve local capture authorization; optionally preserve it for later automatic recovery."""
     identity, born = database_lifetime(config.to_binding(), seconds=seconds)
+
+    def authorize(since, *, basis="installation", fresh=False):
+        if persist:
+            return record_authorization(config, since, basis=basis, fresh=fresh)
+        value = _authorization_time(since)
+        return max(value, _authorization_time(born)) if born is not None else value
+
     saved = checkpoint(config.data_directory, "authorized-at.json")
     if saved.get("installation_id") == config.installation_id:
         if saved.get("database_id") in (None, identity):
             _authorization_time(saved.get("since"))
         same = saved.get("database_id") == identity or (saved.get("database_id") is None and born is None)
         if same:
-            return record_authorization(config, _authorization_time(saved.get("since")))
-        return record_authorization(config, born or datetime.now(UTC).isoformat(), fresh=True)
+            return authorize(_authorization_time(saved.get("since")))
+        return authorize(born or datetime.now(UTC).isoformat(), fresh=True)
     root = config.config_path.parent
     receipt = read_receipt(root)
     if (
@@ -124,10 +131,10 @@ def local_authorized_at(config: CodexInstallationConfig, *, seconds: float) -> s
         and os.path.normcase(str(Path(receipt["instance_root"]).resolve())) == os.path.normcase(str(root.resolve()))
     ):
         since = datetime.fromtimestamp((root / RECEIPT_FILENAME).stat().st_mtime, UTC).isoformat()
-        return record_authorization(config, since)
+        return authorize(since)
     binding = config.to_binding()
     core = MemoryCore(CoreConfig(binding))
     context = TrustedContext(binding, "capture-authorization", binding.scope_ids, "host_generated")
     with core.storage.read(context, remaining_seconds=seconds) as tx:
         row = tx._check().execute("SELECT min(recorded_at) FROM source_events WHERE entry_id='local'").fetchone()
-    return record_authorization(config, row[0], basis="first_capture") if row and row[0] else None
+    return authorize(row[0], basis="first_capture") if row and row[0] else None

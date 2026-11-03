@@ -123,7 +123,14 @@ def _ui(argv: list[str]) -> int:
     return main(argv[1:])
 
 
+def _replay_sessions(argv: list[str]) -> int:
+    from .replay_sessions import main
+
+    return main(argv[1:])
+
+
 _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
+    "replay-sessions": ("preview or recover missed host session records", _replay_sessions),
     "ui": ("open the local owner's memory management page", _ui),
     "memory": ("browse, correct, mute or forget memories as the local store owner", _memory),
     "private": (
