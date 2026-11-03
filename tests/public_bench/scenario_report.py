@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from xml.etree import ElementTree
+
+# Isolated CLI execution omits this directory; only test helpers are added.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 LABELS = {"pass": "通过", "fail": "不通过", "m6": "留给 M6 真机", "error": "测法错误"}
 
@@ -20,8 +25,12 @@ def read(path):
 def brief(row):
     """Expose decisive numbers or output snippets beside the status label."""
     a, key = row["actual"], row["id"]
-    if row["status"] == "m6":
-        return a["missing"]
+    if isinstance(a, dict) and (a.get("real_host_result") or row["status"] == "m6"):
+        return (
+            a["real_host_result"]["summary"] + "; " + a["real_host_result"]["evidence"]
+            if a.get("real_host_result")
+            else a["missing"]
+        )
     if key == "S9.latency" and "rows" in a:
         return "; ".join(
             f"{x['scale']}/{x['state']}/{x['metric']}={x['ms']}ms (上限{x['limit_ms']})" for x in a["rows"]
@@ -231,5 +240,120 @@ def main():
     print(json.dumps({key: report[key] for key in ("baseline_counts", "current_counts")}))
 
 
+def merge_real(current, results):
+    """Overlay real evidence by the existing IDs, preserving dry/small runs as unverified.
+
+    Definitions remain owned by the frozen scenario fixture. A result from a
+    different fixture or product version is rejected before any row is changed.
+    """
+    from copy import deepcopy
+
+    from real_hosts import IDS
+
+    merged = deepcopy(current)
+    checks = {row["id"]: row for row in merged["checks"]}
+    fixture = Path(__file__).with_name("scenarios_fixture.json").read_bytes().replace(b"\r\n", b"\n")
+    # Windows text writers may preserve the same frozen JSON with CRLF. Only
+    # these two byte representations are interchangeable, not edited fixtures.
+    fixture_hashes = {hashlib.sha256(fixture).hexdigest(), hashlib.sha256(fixture.replace(b"\n", b"\r\n")).hexdigest()}
+    for result in results:
+        same_fixture = (
+            result["fixture_sha256"] == current["fixture_sha256"]
+            or {result["fixture_sha256"], current["fixture_sha256"]} <= fixture_hashes
+        )
+        if not same_fixture or result["version"] != current["version"]:
+            raise ValueError("real evidence requires the identical fixture and product version")
+        for row in result["checks"]:
+            key = row["id"]
+            if key not in IDS or key not in checks or row["definition"] != checks[key]["definition"]:
+                raise ValueError("real evidence changed a scenario definition")
+            accepted = result["mode"] == "real" and row["status"] in {"pass", "fail", "error"}
+            actual = dict(checks[key]["actual"])
+            observation = dict(
+                mode=result["mode"],
+                status=row["status"],
+                actual=row["actual"],
+                summary=("真机" if accepted else "流程/小规模，真机未验收")
+                + ": "
+                + LABELS[row["status"]]
+                + "; "
+                + real_numbers(row["actual"]),
+                evidence=row["actual"].get("evidence", result["root"]),
+            )
+            prior = actual.get("real_host_result")
+            if accepted or not prior or prior["mode"] != "real" or prior["status"] == "m6":
+                actual["real_host_result"] = observation
+            else:
+                actual.setdefault("real_host_flow_results", []).append(observation)
+            checks[key]["actual"] = actual
+            if accepted:
+                checks[key].update(status=row["status"], classification=row["classification"])
+    return merged
+
+
+def real_numbers(actual):
+    """Keep decisive observed numbers visible in the existing table's evidence column."""
+    text = "详见证据"
+    if "scales" in actual:
+        text = "; ".join(
+            f"{row['scale']}条: 捕获p95={row['warm']['capture']['p95_ms']:.2f}/"
+            f"{row['concurrent']['capture']['p95_ms']:.2f}ms, "
+            f"积压{row['backlog_before']['depth']}→{row['backlog_after']['depth']}→{row['backlog_recovered']['depth']}"
+            for row in actual["scales"]
+        )
+    elif "non_download_seconds" in actual:
+        text = f"非下载{actual['non_download_seconds']:.2f}s; 下载{actual.get('download_seconds', 0):.2f}s"
+    elif "promotion_p95_seconds" in actual:
+        text = f"晋升{actual['completed']}/{actual['sample_count']}; p95={actual['promotion_p95_seconds']}s"
+    elif "matrix_count" in actual:
+        text = f"矩阵{actual['matrix_count']}份"
+    elif "hosts" in actual:
+        text = f"宿主{sum(bool(row['passed']) for row in actual['hosts'].values())}/{len(actual['hosts'])}"
+    elif "faults" in actual:
+        text = f"故障{sum(bool(row['passed']) for row in actual['faults'])}/{len(actual['faults'])}"
+    return text
+
+
+def merge_main():
+    """Amend the original 53-row comparison/table from independently produced host evidence."""
+    parser = argparse.ArgumentParser(description=merge_main.__doc__)
+    parser.add_argument("--comparison", type=Path, required=True)
+    parser.add_argument("--real-results", type=Path, action="append", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--report", type=Path, required=True)
+    args = parser.parse_args(sys.argv[2:])
+    comparison = read(args.comparison)
+    comparison["current"] = merge_real(comparison["current"], [read(path) for path in args.real_results])
+    rows = pair(comparison["baseline"], comparison["current"])
+    comparison.update(checks=rows, current_counts=dict(Counter(row["current"]["status"] for row in rows)))
+    text = args.report.read_text(encoding="utf-8")
+    lines = []
+    by_id = {row["id"]: row for row in rows}
+    for line in text.splitlines():
+        if line.startswith("4.0：") and "共 53 条" in line:
+            counts = comparison["current_counts"]
+            line = (
+                f"4.0：{counts.get('pass', 0)} 条通过、{counts.get('fail', 0)} 条不通过、"
+                f"{counts.get('m6', 0)} 条留给 M6，{counts.get('error', 0)} 条测法错误。共 53 条。"
+            )
+        key = line.split(" | ")[0].removeprefix("| ")
+        if key in by_id:
+            row = by_id[key]
+            line = (
+                f"| {key} | {row['definition']} | {row['method']}；{row['criterion']} | "
+                f"{LABELS[row['baseline']['status']]} | {LABELS[row['current']['status']]} | "
+                + brief(row["current"]).replace("|", "\\|")
+                + " |"
+            )
+        lines.append(line)
+    lines += [
+        "",
+        "M6 附加证据按原子检查 ID 合入；dry-run 和小规模试跑不计为真机通过。",
+        "当前逐条计数：" + json.dumps(comparison["current_counts"], ensure_ascii=False) + "。",
+    ]
+    args.output.write_text(json.dumps(comparison, ensure_ascii=False, indent=2), encoding="utf-8")
+    args.report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 if __name__ == "__main__":
-    main()
+    merge_main() if len(sys.argv) > 1 and sys.argv[1] == "merge-real" else main()
