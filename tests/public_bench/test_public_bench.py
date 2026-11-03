@@ -24,6 +24,7 @@ from lab import Lab  # noqa: E402
 from paired_statistics import holm, paired_binary  # noqa: E402
 from ports import (  # noqa: E402
     CachedEmbedder,
+    CachedModel,
     EvaluatorEmbedding,
     FakeEmbedder,
     Ports,
@@ -91,6 +92,41 @@ def test_embedding_batches_reuse_single_keys_and_only_send_ordered_misses(tmp_pa
     missing = EmbeddingSource("missing", 1, {"content": "TEST absent"}) if single == "embed_source" else "TEST absent"
     with pytest.raises(RuntimeError, match="cache_miss"):
         getattr(replay, batch)([items[0], missing])
+    assert len(calls) == 1
+
+
+@dataclass(frozen=True)
+class ScannedSource:
+    ref: str
+    revision: int
+    event: dict
+    content_secret_scan: tuple | None = None
+
+
+def test_a_stored_secret_scan_verdict_keeps_the_cached_embedding_identity(tmp_path):
+    """A release that stores the body's scan verdict still replays embeddings cached before it had one."""
+    fake = FakeEmbedder()
+    first = CachedEmbedder(fake, RequestCache(tmp_path / "cache.sqlite3"), {"model": "TEST"})
+    expected = first.embed_source(EmbeddingSource("event-1", 1, {"content": "TEST orchard"}))
+    scanned = ScannedSource("event-9", 1, {"content": "TEST orchard"}, ("TEST-rules", "TEST-sha", ()))
+    replay = CachedEmbedder(fake, RequestCache(tmp_path / "cache.sqlite3", only=True), {"model": "TEST"})
+    assert replay.embed_source(scanned) == expected
+
+
+def test_adoption_judgements_without_sources_or_candidates_are_cached(tmp_path):
+    """Adoption's locate stage sends fragments, not sources and candidates, through the same judge port."""
+    calls = []
+
+    def judge(messages, **kwargs):
+        calls.append(messages)
+        return json.dumps({"fragment_id": 2})
+
+    cached = CachedModel(SimpleNamespace(judge=judge), RequestCache(tmp_path / "cache.sqlite3"), {"model": "TEST"})
+    fragments = [{"id": 1, "text": "TEST A"}, {"id": 2, "text": "TEST B"}]
+    body = {"confirmation": "TEST 好，就用方案二", "fragments": fragments}
+    messages = [{"role": "system", "content": "TEST locate"}, {"role": "user", "content": json.dumps(body)}]
+    assert json.loads(cached.judge(messages)) == {"fragment_id": 2}
+    assert json.loads(cached.judge(messages)) == {"fragment_id": 2}
     assert len(calls) == 1
 
 

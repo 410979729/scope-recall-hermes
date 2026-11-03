@@ -120,6 +120,18 @@ class FakeEmbedder:
         return tuple(self.embed_query(query, remaining_seconds) for query in queries)
 
 
+def request_record(source) -> dict:
+    """A source as a cached request names it: every stored field except the body's secret-scan verdict.
+
+    The verdict is derived from the body and never reaches a model or an embedding endpoint (the product drops it
+    the same way in ``core.model_content``), so it stays out of request identities and cached responses keep
+    matching across releases that store it.
+    """
+    record = asdict(source)
+    record.pop("content_secret_scan", None)
+    return record
+
+
 class CachedModel:
     """Cache the complete consolidation/evaluation request and remap corpus refs."""
 
@@ -127,7 +139,7 @@ class CachedModel:
         self.model, self.cache, self.config = model, cache, config
 
     def _call(self, operation, sources, candidate=None, **kwargs):
-        records = [asdict(source) for source in sources]
+        records = [request_record(source) for source in sources]
         refs = {
             source.ref: f"source:{digest({key: value for key, value in record.items() if key != 'ref'})}"
             for source, record in zip(sources, records, strict=True)
@@ -168,10 +180,14 @@ class CachedModel:
         return self._call("evaluate_candidate", sources, candidate, **kwargs)
 
     def judge(self, messages, **kwargs):
-        """Cache source support and merge judgements through the configured product model."""
+        """Cache support, merge and adoption judgements through the configured product model.
+
+        Support and merge bodies name sources and candidates, whose local refs are remapped. Adoption's locate and
+        describe stages send fragments or a decision instead, and are cached on their messages as sent.
+        """
         body = json.loads(messages[-1]["content"])
-        refs = {source["source_ref"]: "source:" + digest(source["content"]) for source in body["sources"]}
-        for candidate in body["candidates"]:
+        refs = {source["source_ref"]: "source:" + digest(source["content"]) for source in body.get("sources", ())}
+        for candidate in body.get("candidates", ()):
             refs[candidate["ref"]] = "claim:" + digest(remap(candidate["payload"], refs))
         request = {"messages": normalized_messages(messages, refs)}
 
@@ -202,7 +218,7 @@ class CachedEmbedder:
     def _request(method, item):
         """Describe the single input identically for single and batch requests."""
         if method == "embed_source":
-            record = asdict(item)
+            record = request_record(item)
             refs = {item.ref: f"source:{digest({key: value for key, value in record.items() if key != 'ref'})}"}
             return {"source": record, "encoding": "document"}, refs
         return {"text": item, "encoding": "query" if method == "embed_query" else "document"}, {}
