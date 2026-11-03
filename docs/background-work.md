@@ -256,7 +256,7 @@ Owner recording commands return before injection or accounting. Paused entries r
 content or correction notices, and retain undelivered notices for resumption. Reviewed fact replacements use the
 current retained value; adding evidence without changing the statement does not send another correction notice.
 
-The store schema is 1131. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+The store schema is 1132. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.
 

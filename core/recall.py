@@ -874,6 +874,9 @@ class RetrievalPipeline:
         matched = {
             candidate.key: query_terms.intersection(lexical_terms(statement_text(obj))) for candidate, obj in ranked
         }
+        # Diversity rescoring visits a candidate repeatedly; its immutable
+        # evidence roots need parsing only once for this admitted pool.
+        roots_by_key = {candidate.key: evidence_roots(obj) for candidate, obj in ranked}
         selected: list[tuple[CandidateRef, RetrievedObject]] = []
         covered: set[str] = set()
         selected_roots: set[str] = set()
@@ -881,7 +884,7 @@ class RetrievalPipeline:
         def score(pair):
             candidate, obj = pair
             hits = matched[candidate.key]
-            roots = evidence_roots(obj)
+            roots = roots_by_key[candidate.key]
             # A small, bounded diversity bonus favours another part of the
             # question over repeats from one source. RRF remains the base.
             relevance = len(hits) / len(query_terms)
@@ -902,7 +905,7 @@ class RetrievalPipeline:
             pair = ranked.pop(max(range(len(ranked)), key=lambda index: score(ranked[index])))
             selected.append(pair)
             covered.update(matched[pair[0].key])
-            selected_roots.update(evidence_roots(pair[1]))
+            selected_roots.update(roots_by_key[pair[0].key])
         return selected
 
     def _apply_budget(
@@ -1322,7 +1325,7 @@ class RetrievalPipeline:
         # full envelope and schema limits. Keep a bounded pool for that compiler,
         # which owns final selection and can refill slots released by duplicates.
         ranked = (
-            withhold_secret_items(pool, gaps, content=lambda pair: pair[1])[: working.limits.candidate_pool]
+            pool[: working.limits.candidate_pool]
             if defer_budget
             else self._apply_budget(pool, working.limits, gaps, context=working)
         )

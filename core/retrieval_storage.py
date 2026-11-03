@@ -257,26 +257,32 @@ def _subject_claim_rows(tx, context, terms, *, simple: bool) -> list:
     )
 
 
-def _complex_claim_rows(tx, context, terms) -> list:
-    """Keep all possible selected subjects without applying current-head coverage.
+def _complex_claim_rows(tx, context, needles) -> list:
+    """Nominate only facts whose selected subject can overlap, across all versions.
 
-    A single version must share a subject term to answer. Multiple versions can
-    have different subjects, so their small truth index bypasses the current
-    postings entirely, even when no query term occurs in the indexed head.
+    The union never certifies a score: temporal selection, conditions and state
+    still use complete versions. Only unprojected direct truth edits bypass it.
     """
-    conn = tx._check()
-    rows = {row["claim_id"]: row for row in _subject_claim_rows(tx, context, terms, simple=False)}
     visibility, parameters = _claim_visibility(context)
-    versions = conn.execute(
-        f"""SELECT DISTINCT c.claim_id,0 AS hits
-            FROM claim_versions v INDEXED BY claim_lexical_versions
-            CROSS JOIN claims c ON c.claim_id=v.claim_id
-            WHERE v.revision>1 AND {visibility}""",
-        parameters,
-    ).fetchall()
-    for row in versions:
-        rows.setdefault(row["claim_id"], row)
-    return list(rows.values())
+    return (
+        tx._check()
+        .execute(
+            f"""WITH nominated AS MATERIALIZED (
+            SELECT p.claim_id FROM lexical_terms t
+            CROSS JOIN claim_version_postings p INDEXED BY claim_version_subject ON p.term_id=t.term_id
+            WHERE t.term IN ({_marks(needles)}) AND p.subject_term=1
+            UNION SELECT claim_id FROM claim_lexical_dirty)
+        SELECT c.claim_id,(SELECT COUNT(*) FROM claim_lexical_postings q
+            JOIN lexical_terms qt ON qt.term_id=q.term_id
+            WHERE q.claim_id=c.claim_id AND qt.term IN ({_marks(needles)})) AS hits FROM nominated n
+        CROSS JOIN claims c ON c.claim_id=n.claim_id
+        LEFT JOIN claim_lexical_heads h ON h.claim_id=c.claim_id
+        WHERE {visibility} AND (coalesce(h.is_simple,0)=0
+            OR EXISTS(SELECT 1 FROM claim_lexical_dirty d WHERE d.claim_id=c.claim_id))""",
+            (*needles, *needles, *parameters),
+        )
+        .fetchall()
+    )
 
 
 def _simple_claim_subset(tx, context, terms, subset, selected, limit) -> list:
@@ -356,7 +362,7 @@ def _claim_rows(tx, context: SearchContext, needles: tuple[str, ...], limit: int
     """
     present = _claim_term_counts(tx._check(), needles)
     terms = tuple(term for term, _ in present)
-    rows = _complex_claim_rows(tx, context, terms)
+    rows = _complex_claim_rows(tx, context, needles)
     if present and context.mode != "as_of":
         rows.extend(
             _subject_claim_rows(tx, context, terms, simple=True)

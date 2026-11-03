@@ -4,6 +4,11 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Fact recall nominates query subjects from every stored version before applying the existing temporal selector.
+The automatic store upgrade rebuilds this derived index in resumable pages and preserves original truth.
+Repeated releases reuse immutable content safety verdicts; changed content is scanned again. Other-session
+matches read a bounded representative window and describe that limit without claiming a complete remaining count.
+
 Automatic injection can use compact text or an outline with inspect references through `injection_format`;
 JSON remains the default. All formats share final-text budgets, privacy and delivery checks. Doctor and recall
 history expose per-injection usage, session usage and both ceilings without retaining injected content.

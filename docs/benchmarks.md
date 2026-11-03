@@ -272,3 +272,24 @@ Ubuntu and Windows CI run the main tiers; macOS CI runs the native import probe,
 jobs record their actual Python SQLite version and extension-loading capability.
 Windows measurements do not establish Linux or macOS behavior; run the same
 commands and frozen workload on those machines separately.
+
+`realistic_distribution.py` adds a heterogeneous shared-store fixture with
+27,951 facts and 51,612 versions, including proposals, retractions, conditions,
+historical subjects and concentrated scopes. Its seed and category counts are
+fixed; all text and 3072-dimensional vectors are synthetic. `latency_pair.py`
+builds either source scale and alternates archived and current recall modules
+on the same synthetic truth and vectors. Each timing question runs three times
+per implementation; the report retains raw samples, each side's shortest result,
+phase timings, CPU load, first recall and affinity. Comparison mode instead checks
+complete fact candidates, fused candidates and packets across temporal modes.
+
+```powershell
+python -X utf8 tests/public_bench/latency_pair.py build --data <new-store> --output <evidence> --scale 350000 --vectors
+python -X utf8 tests/public_bench/latency_pair.py paired --data <store> --output <timings> --before <archived-modules> --cores 0 2 4 6
+python -X utf8 tests/public_bench/latency_pair.py compare --data <store> --output <comparison> --before <archived-modules> --queries 240 --cores 0 2 4 6
+```
+
+The archived directory contains the measured core modules from the baseline
+revision, including the secret scanner. `--missing-vectors` uses a separate,
+absent vector generation and requires the production read-only open to fail;
+it does not delete the populated companion. Cold OS caches are not claimed.

@@ -1399,3 +1399,59 @@ def test_scale_fixture_uses_mapped_backend_without_legacy_sdk_or_embedding_reque
             assert connection.execute("SELECT count(*) FROM responses").fetchone()[0] == 0
     finally:
         lab.close()
+
+
+def test_realistic_fixture_preserves_aggregate_histograms(tmp_path):
+    from realistic_distribution import NOW, SCOPES, seed_claims, seed_sources
+
+    lab = Lab(
+        tmp_path / "realistic",
+        Ports(RequestCache(tmp_path / "requests.sqlite3")),
+        now=NOW,
+        scopes=SCOPES,
+        installation_kind="shared",
+    )
+    try:
+        stats = seed_claims(lab, seed_sources(lab, 3000))
+        with sqlite3.connect(lab.core.storage.path) as conn:
+            assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == 27951
+            assert conn.execute("SELECT count(*) FROM claim_versions").fetchone()[0] == 51612
+            assert conn.execute("SELECT count(DISTINCT scope_id) FROM claims").fetchone()[0] == 31
+            assert dict(conn.execute("SELECT state,count(*) FROM claim_versions GROUP BY state")) == {
+                "proposed": 44740,
+                "active": 3207,
+                "retracted": 2786,
+                "disputed": 879,
+            }
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM claim_versions WHERE json_array_length(payload_json,'$.conditions')>0"
+                ).fetchone()[0]
+                == 33631
+            )
+            assert conn.execute("SELECT count(*) FROM claim_lexical_heads WHERE is_simple=1").fetchone()[0] == 1718
+            assert (
+                conn.execute(
+                    "SELECT count(DISTINCT json_extract(payload_json,'$.subject')) FROM claim_versions"
+                ).fetchone()[0]
+                == 12386
+            )
+        assert stats["versions"] == 51612
+    finally:
+        lab.close()
+
+
+def test_simple_scale_fixture_projects_bulk_claim_writes(tmp_path):
+    from performance import NOW, SCOPES, seed_truth
+
+    lab = Lab(tmp_path / "simple", Ports(RequestCache(tmp_path / "requests.sqlite3")), now=NOW, scopes=SCOPES)
+    try:
+        seed_truth(lab, 100)
+        with sqlite3.connect(lab.core.storage.path) as conn:
+            assert not conn.execute("SELECT 1 FROM claim_lexical_dirty").fetchone()
+            assert (
+                conn.execute("SELECT count(*) FROM claim_lexical_heads").fetchone()[0]
+                == conn.execute("SELECT count(*) FROM claims").fetchone()[0]
+            )
+    finally:
+        lab.close()

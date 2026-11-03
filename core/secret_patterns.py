@@ -18,6 +18,7 @@ import string
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from .language_resources import language_rules
@@ -538,7 +539,8 @@ def _after_key(item: Any) -> str:
     return str(item)
 
 
-def _names_a_credential(key: Any) -> bool:
+@lru_cache(maxsize=1024)
+def _names_a_credential(key: str) -> bool:
     """Classify assignment keys with a witness of at least four ASCII characters including a digit."""
     return contains_secret_like_text(f"{key}: TEST9")
 
@@ -575,7 +577,7 @@ def _structure_texts(value: Any):
                 pending.append({str(item["predicate"]): item["value_text"]})
             for key, member in item.items():
                 yield key
-                if _names_a_credential(key):
+                if _names_a_credential(str(key)):
                     yield f"{key}: {_after_key(member)}"
                 pending.append(member)
         elif isinstance(item, (list, tuple)):

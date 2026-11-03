@@ -364,3 +364,37 @@ def test_size_admission_cannot_put_a_long_restatement_first(restatement_store, m
         c, recall_request(query="TEST-project 配色", mode=mode, max_items=1), deadline_seconds=10
     )
     assert packet["items"][0]["ref"] == source.ref, packet
+
+
+def test_diversity_ranking_reads_each_evidence_root_once(app, monkeypatch):
+    from scope_recall.core import recall
+
+    core, ctx = app
+    pairs = []
+    for index in range(30):
+        ref = f"event-TEST-linear-roots-{index}"
+        candidate = CandidateRef("event", ref, 1, "lexical", fusion_score=0.01)
+        obj = RetrievedObject(
+            ref,
+            1,
+            "event",
+            "Orchard deployment amber",
+            "human_direct",
+            "current",
+            "applicable",
+            (f"{ref}@1",),
+            "direct_report",
+            False,
+        )
+        pairs.append((candidate, obj))
+    calls = []
+    native = recall.evidence_roots
+
+    def counted(obj):
+        calls.append(obj.ref)
+        return native(obj)
+
+    monkeypatch.setattr(recall, "evidence_roots", counted)
+    result = core.recall_pipeline._rank_hydrated(pairs, _search(core, ctx, "Orchard deployment amber"))
+    assert len(result) == len(pairs)
+    assert len(calls) == len(pairs)

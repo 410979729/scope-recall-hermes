@@ -32,6 +32,40 @@ def held(tx, ref):
     }
 
 
+def test_unrelated_multiversion_facts_do_not_load_versions(app, monkeypatch):
+    """Version reads follow query subjects rather than unrelated revision count."""
+    import json
+
+    from scope_recall.core import lexical_index
+
+    core, ctx = app
+    records = [(f"claim-TEST-unrelated-{i}", f"unrelated{i}", "theme", "amber") for i in range(80)]
+    records.append(("claim-TEST-related", "alpha", "beta", "amber"))
+    _synthetic_claims(core, ctx, records)
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for ref, *_ in records:
+            row = dict(conn.execute("SELECT * FROM claim_versions WHERE claim_id=?", (ref,)).fetchone())
+            row.update(revision=2, payload_json=json.dumps(json.loads(row["payload_json"])))
+            conn.execute(
+                f"INSERT INTO claim_versions({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
+                tuple(row.values()),
+            )
+            lexical_index.index_claim(conn, ref)
+    fetched = []
+    with core.storage.read(ctx) as tx:
+        native = type(tx.claims).prefetch_versions
+
+        def tracked(self, refs):
+            refs = tuple(refs)
+            fetched.extend(refs)
+            return native(self, refs)
+
+        monkeypatch.setattr(type(tx.claims), "prefetch_versions", tracked)
+        RetrievalStorage().claims(tx, search(core, ctx, "alpha beta amber"), limit=6)
+    assert fetched == ["claim-TEST-related"]
+
+
 def test_nomination_never_calls_substring_on_stored_claims(app):
     core, ctx = app
     item, _ = initial(core, ctx)
@@ -707,3 +741,19 @@ def test_screened_dependencies_are_filtered_before_the_claim_rank_limit(app, mon
         actual = RetrievalStorage().claims(tx, context, limit=1)
         assert actual == _ideal_claims(tx, context, 1, monkeypatch)
     assert [item.ref for item in actual] == [refs[0]]
+
+
+def test_uncertified_head_edits_remain_searchable(app):
+    from scope_recall.core import lexical_index
+
+    core, ctx = app
+    _synthetic_claims(core, ctx, [("claim-TEST-kind-edit", "alpha", "beta", "amber")])
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        conn.execute("UPDATE claims SET kind='alias' WHERE claim_id='claim-TEST-kind-edit'")
+        lexical_index.index_claim(conn, "claim-TEST-kind-edit")
+        conn.execute("UPDATE claims SET kind='fact' WHERE claim_id='claim-TEST-kind-edit'")
+    with core.storage.read(ctx) as tx:
+        assert [row.ref for row in RetrievalStorage().claims(tx, search(core, ctx, "alpha beta amber"), limit=6)] == [
+            "claim-TEST-kind-edit"
+        ]

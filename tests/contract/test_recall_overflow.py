@@ -624,3 +624,35 @@ def test_indexed_fact_nomination_expands_originals_into_overflow(app):
         for source in originals
         if f"{source.ref}@1" in overflow(packet)[0]["evidence_refs"]
     )
+
+
+def test_overflow_hydrates_only_a_bounded_session_prefix(app, monkeypatch):
+    from scope_recall.core import recall_overflow
+
+    core, ctx = app
+    sources(app, count=28)
+    context = SearchContext.from_request(
+        recall_request(query="Orchard deployment port"),
+        ctx,
+        now=core.clock.utc_now(),
+        deadline=core.clock.monotonic() + 20,
+    )
+    result = core.recall_pipeline.search(context)
+    packet = ordinary(core, ctx, recall_request(query=context.query), monkeypatch)
+    hydrated = []
+    native = recall_overflow._hydrate
+
+    def tracked(tx, reader, candidates, context):
+        candidates = tuple(candidates)
+        hydrated.extend(candidates)
+        return native(tx, reader, candidates, context)
+
+    monkeypatch.setattr(recall_overflow, "_hydrate", tracked)
+    with core.storage.read(ctx) as tx:
+        rows = recall_overflow._representatives(
+            tx, core.recall_pipeline.storage_reader, result, context, packet, core.clock
+        )
+    assert len(rows) <= 12
+    assert len(hydrated) <= 36
+    selected = {ref for item in packet["items"] for ref in item["evidence_refs"]}
+    assert not {f"{candidate.ref}@{candidate.revision}" for candidate in hydrated}.intersection(selected)

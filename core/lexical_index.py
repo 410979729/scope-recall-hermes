@@ -17,10 +17,10 @@ match in ``background_context`` starts from its few claims instead and names
 the tables itself.
 
 Current facts use ``(term_id, claim_id)`` postings, ordered by public claim ref
-so bounded intersections need no whole-corpus tie sort. Their writers replace
-only current head text in the caller's transaction; nomination and its scoped
-policy live in ``retrieval_storage``. Dictionary cleanup accounts for both
-posting tables.
+so bounded intersections need no whole-corpus tie sort. Version postings retain
+the union of scorer words and historical subjects; both projections share the
+truth writer's transaction. Nomination and scoped policy live in
+``retrieval_storage``. Dictionary cleanup accounts for every posting table.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from typing import Iterable
 
 from ..contracts import ContractError, utc_timestamp
 from .events import WITHHELD_TOOL_OUTPUT_SQL, indexed_terms, lexical_terms, withheld_tool_output
+from .recall_policy import claim_embedding_text
 
 #: ``t`` is the term, ``p`` the posting, ``e`` the source version.
 JOIN = "lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id JOIN source_events e ON e.source_id=p.source_id"
@@ -82,7 +83,8 @@ def forget(conn, event_id: str) -> None:
             (SELECT term_id FROM lexical_postings WHERE source_id IN ({versions}))
             AND NOT EXISTS (SELECT 1 FROM lexical_postings p WHERE p.term_id=lexical_terms.term_id
                 AND p.source_id NOT IN ({versions}))
-            AND NOT EXISTS (SELECT 1 FROM claim_lexical_postings p WHERE p.term_id=lexical_terms.term_id)""",
+            AND NOT EXISTS (SELECT 1 FROM claim_lexical_postings p WHERE p.term_id=lexical_terms.term_id)
+            AND NOT EXISTS (SELECT 1 FROM claim_version_postings p WHERE p.term_id=lexical_terms.term_id)""",
         (event_id, event_id),
     )
     conn.execute(f"DELETE FROM lexical_postings WHERE source_id IN ({versions})", (event_id,))
@@ -197,7 +199,8 @@ def _replace_claim_terms(conn, refs: tuple[str, ...], postings: list[tuple[str, 
     together. Source postings keep their own identity and are never rewritten.
     """
     encoded = json.dumps(refs)
-    previous = tuple(
+    version_previous = _replace_version_terms(conn, refs, remove=not heads)
+    previous = version_previous + tuple(
         row[0]
         for row in conn.execute(
             "SELECT DISTINCT term_id FROM claim_lexical_postings WHERE claim_id IN (SELECT value FROM json_each(?))",
@@ -230,9 +233,59 @@ def _replace_claim_terms(conn, refs: tuple[str, ...], postings: list[tuple[str, 
         conn.execute(
             "DELETE FROM lexical_terms WHERE term_id IN (SELECT value FROM json_each(?)) "
             "AND NOT EXISTS(SELECT 1 FROM lexical_postings p WHERE p.term_id=lexical_terms.term_id) "
-            "AND NOT EXISTS(SELECT 1 FROM claim_lexical_postings p WHERE p.term_id=lexical_terms.term_id)",
+            "AND NOT EXISTS(SELECT 1 FROM claim_lexical_postings p WHERE p.term_id=lexical_terms.term_id) "
+            "AND NOT EXISTS(SELECT 1 FROM claim_version_postings p WHERE p.term_id=lexical_terms.term_id)",
             (json.dumps(previous),),
         )
+
+
+def _replace_version_terms(conn, refs: tuple[str, ...], *, remove: bool) -> tuple[int, ...]:
+    """Project every version's scorer words, preserving historical subject membership.
+
+    Subject membership is a conservative union: version selection and half-subject
+    coverage still belong to the scorer. Dirty markers fence direct truth edits;
+    clearing them shares this transaction with the replacement postings.
+    """
+    encoded = json.dumps(refs)
+    previous = tuple(
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT term_id FROM claim_version_postings WHERE claim_id IN (SELECT value FROM json_each(?))",
+            (encoded,),
+        )
+    )
+    conn.execute("DELETE FROM claim_version_postings WHERE claim_id IN (SELECT value FROM json_each(?))", (encoded,))
+    postings = {}
+    if not remove:
+        rows = conn.execute(
+            "SELECT v.claim_id,v.payload_json FROM json_each(?) r CROSS JOIN claims c ON c.claim_id=r.value "
+            "CROSS JOIN claim_versions v ON v.claim_id=c.claim_id WHERE c.kind!='alias' AND c.read_blocked=0",
+            (encoded,),
+        )
+        for ref, raw in rows:
+            payload = json.loads(raw)
+            subject = {term for term in lexical_terms(str(payload.get("subject") or "")) if len(term) > 1}
+            try:
+                terms = lexical_terms(claim_embedding_text(payload))
+            except ContractError:
+                continue
+            for term in terms:
+                key = (ref, term)
+                postings[key] = max(postings.get(key, 0), int(term in subject))
+    if postings:
+        terms = tuple(dict.fromkeys(term for _, term in postings))
+        conn.execute(
+            "INSERT OR IGNORE INTO lexical_terms(term) SELECT value FROM json_each(?)",
+            (json.dumps(terms, ensure_ascii=False),),
+        )
+        conn.execute(
+            "INSERT INTO claim_version_postings(term_id,claim_id,subject_term) "
+            "SELECT t.term_id,json_extract(p.value,'$[0]'),json_extract(p.value,'$[2]') FROM json_each(?) p "
+            "CROSS JOIN lexical_terms t ON t.term=json_extract(p.value,'$[1]')",
+            (json.dumps([(ref, term, subject) for (ref, term), subject in postings.items()], ensure_ascii=False),),
+        )
+    conn.execute("DELETE FROM claim_lexical_dirty WHERE claim_id IN (SELECT value FROM json_each(?))", (encoded,))
+    return previous
 
 
 def forget_claim(conn, claim_id: str) -> None:
