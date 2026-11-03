@@ -25,6 +25,7 @@ from .summary_validity import is_conversation_summary
 from .visibility import allowed, allowed_refs
 
 if TYPE_CHECKING:
+    from .source_records import StoredSource
     from .storage import Transaction
 
 
@@ -839,7 +840,8 @@ class Claims:
             self.require_live_source(source.ref, source.revision)
         return sources
 
-    def require_live_source(self, ref: str, revision: int) -> None:
+    def require_live_source(self, ref: str, revision: int) -> StoredSource:
+        """Return this visible source after enforcing the context and newest-version fences."""
         source = self._tx.source(ref, revision)
         ctx = self._tx.context
         if source is None or (source.project_id, source.branch_id) != (ctx.project_id, ctx.branch_id):
@@ -860,6 +862,7 @@ class Claims:
         )
         if not head:
             raise ContractError("VERSION_CONFLICT", "source_revision")
+        return source
 
     def current_human(self, refs: tuple[str, ...], scope_id: str):
         ctx = self._tx.context

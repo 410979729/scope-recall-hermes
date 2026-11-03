@@ -17,35 +17,78 @@ from ..vector.compaction import (
     read_state,
     write_state,
 )
+from ..vector.defaults import INDEX_BATCH_ROWS
+
+
+def _index_pages(method, batch_rows: int) -> dict[str, Any]:
+    """Publish bounded pages until the slice ends, retaining its committed progress.
+
+    A page may reach the deadline while writing an unpublished suffix. Its raw
+    rows and earlier pages remain valid; that local yield is not a capability
+    failure which should defer the next worker pass.
+    """
+    receipt: dict[str, Any] = {"outcome": "indexed", "rows": 0}
+    for _ in range(64):
+        try:
+            receipt = method(max_rows=batch_rows)
+        except TimeoutError:
+            left = remaining_seconds()
+            if left is None or left > 0:
+                raise
+            return {**receipt, "yielded": True, "next_batch_rows": max(1, batch_rows // 2)}
+        if receipt.get("outcome") != "indexed" or receipt.get("rows", 0) < batch_rows:
+            break
+        if (remaining_seconds() or 0) <= 0.5:
+            return {**receipt, "next_batch_rows": batch_rows}
+        batch_rows = min(INDEX_BATCH_ROWS, batch_rows * 2)
+    return receipt
 
 
 def index_if_due(
     store: Any, vector_config: Any, *, available_seconds: float, now: datetime | None = None
 ) -> dict[str, Any] | None:
-    """Maintain one small committed index page within the worker's remaining budget."""
+    """Publish bounded cache batches within the worker's existing remaining budget."""
     method = cast(Callable[..., dict[str, Any]], getattr(store, "maintain_index", None))
     if store is None or vector_config is None or not callable(method) or available_seconds < 1:
         return None
-    retry = float(read_state(Path(vector_config.storage_dir)).get("retry_after", 0))
+    state = read_state(Path(vector_config.storage_dir))
+    retry = float(state.get("retry_after", 0))
+    if (
+        state.get("error") == "TimeoutError"
+        and not state.get("index_fault")
+        and getattr(store, "backend", None) == "sqlite"
+    ):
+        # Older worker receipts classified an exhausted cache-build slice as a
+        # capability failure. A completed import with uncached rows can resume
+        # that bounded local work immediately; actual I/O failures keep backoff.
+        try:
+            details = store.diagnostics()
+            if not any(item["state"] != "complete" for item in details["imports"]):
+                if details["cached_rows"] < store.count_rows():
+                    retry = 0
+        except (sqlite3.Error, OSError, ValueError, KeyError):
+            pass
     if retry > (now or datetime.now(UTC)).timestamp():
         return {"outcome": "held", "retry_after": retry}
     try:
         outer = remaining_seconds()
         budget = available_seconds if outer is None else min(available_seconds, max(0.0, outer))
-        with using_request_deadline(RequestDeadline.from_budget(min(8.0, budget))):
-            receipt = method(max_rows=512)
-            for _ in range(63):
-                if (
-                    receipt.get("outcome") != "indexed"
-                    or receipt.get("rows", 0) < 512
-                    or (remaining_seconds() or 0) <= 0.5
-                ):
-                    break
-                receipt = method(max_rows=512)
-            write_state(Path(vector_config.storage_dir), {"outcome": receipt["outcome"], "retry_after": 0})
+        # Short worker slices start conservatively. A slice which cannot
+        # publish its batch leaves a smaller durable hint, down to one row;
+        # repeating a too-large rolled-back batch would otherwise never move.
+        batch_rows = INDEX_BATCH_ROWS if budget > 8 else 512
+        hint = state.get("next_batch_rows")
+        if type(hint) is int:
+            batch_rows = min(batch_rows, max(1, hint))
+        with using_request_deadline(RequestDeadline.from_budget(min(30.0, budget))):
+            receipt = _index_pages(method, batch_rows)
+            result = {"outcome": receipt["outcome"], "retry_after": 0}
+            if "next_batch_rows" in receipt:
+                result["next_batch_rows"] = receipt["next_batch_rows"]
+            write_state(Path(vector_config.storage_dir), result)
             return receipt
     except Exception as exc:  # noqa: BLE001 - raw vectors stay available when indexing fails.
-        return record_vector_failure(vector_config, type(exc).__name__, now=now)
+        return record_vector_failure(vector_config, type(exc).__name__, now=now, index_fault=True)
 
 
 #: The backfill of an import's embeddings (``core.index_rebuild.queue_import_embeddings``) keeps where it stopped beside
@@ -219,10 +262,16 @@ def release_requested_reembedding(storage, context, store, space_id: str) -> boo
     return bool(method(authorization))
 
 
-def record_vector_failure(vector_config, error: str, *, now: datetime | None = None) -> dict[str, Any]:
+def record_vector_failure(
+    vector_config, error: str, *, now: datetime | None = None, index_fault: bool = False
+) -> dict[str, Any]:
     """Persist a bounded retry outside the raw file so an unreadable file cannot hide its recovery time."""
     moment = now or datetime.now(UTC)
     receipt = {"outcome": "failed", "error": error, "retry_after": moment.timestamp() + CAPABILITY_RECHECK.delay()}
+    if index_fault:
+        # A confirmed fault keeps its retry even if an older timeout receipt
+        # would otherwise permit an unfinished native cache build to resume.
+        receipt["index_fault"] = True
     if vector_config is not None:
         write_state(Path(vector_config.storage_dir), receipt)
     return receipt

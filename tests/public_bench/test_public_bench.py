@@ -1402,7 +1402,7 @@ def test_scale_fixture_uses_mapped_backend_without_legacy_sdk_or_embedding_reque
 
 
 def test_realistic_fixture_preserves_aggregate_histograms(tmp_path):
-    from realistic_distribution import NOW, SCOPES, seed_claims, seed_sources
+    from realistic_distribution import NOW, SCOPES, seed_claims, seed_relations, seed_sources
 
     lab = Lab(
         tmp_path / "realistic",
@@ -1413,7 +1413,13 @@ def test_realistic_fixture_preserves_aggregate_histograms(tmp_path):
     )
     try:
         stats = seed_claims(lab, seed_sources(lab, 3000))
+        relations = seed_relations(lab)
+        assert relations["pressure_members"] == 2999
+        assert relations["pressure_dependencies"] > 0
         with sqlite3.connect(lab.core.storage.path) as conn:
+            assert conn.execute("SELECT count(*) FROM episode_events").fetchone()[0] == 3000
+            assert conn.execute("SELECT count(*) FROM source_events WHERE length(content)>2000").fetchone()[0] == 299
+            assert conn.execute("SELECT count(*) FROM source_events WHERE segment_total=3").fetchone()[0] > 0
             assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == 27951
             assert conn.execute("SELECT count(*) FROM claim_versions").fetchone()[0] == 51612
             assert conn.execute("SELECT count(DISTINCT scope_id) FROM claims").fetchone()[0] == 31
@@ -1568,3 +1574,31 @@ def test_scenario_background_deadline_preserves_the_foreground_window():
     scenes.core.code = "ACCESS_DENIED"
     with pytest.raises(ContractError, match="ACCESS_DENIED"):
         bounded_pass(scenes, None, "TEST-worker", max_items=32)
+
+
+def test_realistic_fixture_declares_its_synthetic_prefix_geometry(tmp_path):
+    from realistic_distribution import synthetic_ports
+    from scope_recall.vector.cache import coarse_dimensions
+
+    ports = synthetic_ports(RequestCache(tmp_path / "prefix-requests.sqlite3"))
+    lab = Lab(tmp_path / "synthetic-prefix", ports, now="2020-01-01T00:00:00Z")
+    try:
+        with sqlite3.connect(lab.companion.db_path) as conn:
+            descriptor, capabilities = conn.execute("SELECT descriptor,capabilities FROM embedding_spaces").fetchone()
+            assert coarse_dimensions(conn, 3072) == 768
+        assert json.loads(descriptor)["model"] == "synthetic-prefix"
+        assert json.loads(capabilities)["prefix_dimensions"] == [768]
+    finally:
+        lab.close()
+
+
+def test_realistic_query_encoder_has_a_nonzero_prefix(tmp_path):
+    from realistic_distribution import synthetic_ports
+
+    ports = synthetic_ports(RequestCache(tmp_path / "query-prefix-requests.sqlite3"))
+    queries = [f"TESTsubject{i:05d} color amber" for i in range(20)] + ["继续", "？"]
+    for query in queries:
+        vector = ports.embedder.embed_query(query)
+        assert len(vector) == 3072
+        assert sum(value * value for value in vector[:768]) > 0, query
+        assert sum(value * value for value in vector) == pytest.approx(1.0)

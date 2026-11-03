@@ -77,33 +77,19 @@ def cpu_percent(before, after):
 
 
 def install_before(root):
-    """Execute archived modules inside their original package to preserve imports."""
-    names = ("secret_patterns", "model_content", "retrieval_storage", "background_context", "recall_overflow", "recall")
-    for name in names:
-        module = importlib.import_module("scope_recall.core." + name)
-        source = root / (name + ".py")
-        exec(compile(source.read_text(encoding="utf-8"), str(source), "exec"), module.__dict__)
-    content = importlib.import_module("scope_recall.core.model_content")
-    overflow = importlib.import_module("scope_recall.core.recall_overflow")
-    packet = importlib.import_module("scope_recall.core.recall_packet")
-    packet.append_overflow = overflow.append_overflow
-    # Imported release helpers retain function references until explicitly
-    # rebound; using an archived scanner only in retrieval would mix builds.
-    for module in tuple(sys.modules.values()):
-        if getattr(module, "__name__", "").startswith("scope_recall.core.") and hasattr(
-            module, "withhold_secret_items"
-        ):
-            module.withhold_secret_items = content.withhold_secret_items
+    """Require an independently imported baseline package, without mixed classes."""
+    package = importlib.import_module("scope_recall")
+    if Path(package.__file__).resolve().parent != (root / "scope_recall").resolve():
+        raise RuntimeError("before worker did not load the isolated baseline package")
 
 
 def open_lab(args):
     """Open only the caller-selected synthetic fixture and local fake ports."""
     from cache import RequestCache
     from lab import Lab
-    from ports import Ports
-    from realistic_distribution import NOW, SCOPES
+    from realistic_distribution import NOW, SCOPES, synthetic_ports
 
-    ports = Ports(RequestCache(args.output / (args.label + "-requests.sqlite3")))
+    ports = synthetic_ports(RequestCache(args.output / (args.label + "-requests.sqlite3")))
     lab = Lab(args.data, ports, now=NOW, scopes=SCOPES, installation_kind="shared", existing=True)
     lab.context = replace(lab.context, entry_id="bench")
     if args.missing_vectors:
@@ -140,7 +126,6 @@ def build(args):
     import realistic_distribution as fixture
     from cache import RequestCache
     from lab import Lab
-    from ports import Ports
 
     required = args.scale * 3072 * 4 * 2.5 + 2_000_000_000 if args.vectors else 2_000_000_000
     if shutil.disk_usage(args.data.parent).free < required:
@@ -148,7 +133,7 @@ def build(args):
     started = time.perf_counter()
     lab = Lab(
         args.data,
-        Ports(RequestCache(args.output / "build-requests.sqlite3")),
+        fixture.synthetic_ports(RequestCache(args.output / "build-requests.sqlite3")),
         now=fixture.NOW,
         scopes=fixture.SCOPES,
         installation_kind="shared",
@@ -157,6 +142,7 @@ def build(args):
         refs = fixture.seed_sources(lab, args.scale)
         sources_at = time.perf_counter()
         stats = fixture.seed_claims(lab, refs)
+        stats.update(fixture.seed_relations(lab))
         claims_at = time.perf_counter()
         if args.vectors:
             fixture.seed_vectors(lab, refs)
@@ -182,11 +168,23 @@ def source_hashes(before):
     """Identify the exact source modules loaded by one benchmark implementation."""
     import hashlib
 
-    names = ("secret_patterns", "model_content", "retrieval_storage", "background_context", "recall_overflow", "recall")
+    names = (
+        "secret_patterns",
+        "model_content",
+        "retrieval_storage",
+        "background_context",
+        "recall_overflow",
+        "recall",
+        "storage",
+        "retrieval_hydration",
+        "events",
+        "claim_storage",
+        "lexical_index",
+    )
     result = {}
     for name in names:
         module = importlib.import_module("scope_recall.core." + name)
-        source = before / (name + ".py") if before else Path(module.__file__)
+        source = Path(module.__file__)
         result[name] = hashlib.sha256(source.read_bytes()).hexdigest()
     return result
 
@@ -204,7 +202,9 @@ def worker(args):
     original_claims = lab.core.recall_pipeline.storage_reader.claims
 
     def search(context):
+        started = time.perf_counter()
         result = original_search(context)
+        current["retrieval_exact_ms"] = (time.perf_counter() - started) * 1000
         current["retrieval"] = dict(result.diagnostics)
         current["candidates"] = [asdict(candidate) for candidate in result.candidates]
         return result
@@ -217,7 +217,17 @@ def worker(args):
     lab.core.recall_pipeline.search = search
     lab.core.recall_pipeline.storage_reader.claims = claims
     affinity = bind(args.cores)
-    print(json.dumps(dict(ready=True, affinity=affinity, source_sha256=source_hashes(args.before))), flush=True)
+    print(
+        json.dumps(
+            dict(
+                ready=True,
+                affinity=affinity,
+                source_sha256=source_hashes(args.before),
+                vector_runtime=lab.companion.diagnostics(),
+            )
+        ),
+        flush=True,
+    )
     try:
         for line in sys.stdin:
             command = json.loads(line)
@@ -251,12 +261,16 @@ def worker(args):
             result = dict(
                 elapsed_ms=elapsed,
                 cpu_busy_percent=cpu_percent(cpu, cpu_snapshot()),
-                retrieval_ms=float(current.get("retrieval", {}).get("retrieval", 0)),
+                retrieval_ms=float(current.get("retrieval_exact_ms", 0)),
+                diagnostic_retrieval_ms=float(current.get("retrieval", {}).get("retrieval", 0)),
                 stages=current.get("retrieval", {}),
                 gaps=packet.get("gaps", []),
                 items=len(packet.get("items", [])),
             )
             if command.get("compare"):
+                result["returned"] = [
+                    {key: item.get(key) for key in ("kind", "ref", "revision")} for item in packet.get("items", [])
+                ]
                 result["claim_signature"] = _signature(current.get("claims", []))
                 result["candidate_signature"] = _signature(current.get("candidates", []))
                 # This random diagnostic handle refers to each request's own
@@ -303,6 +317,8 @@ def launch(args, label):
         OPENBLAS_NUM_THREADS="1",
         MKL_NUM_THREADS="1",
     )
+    if args.before and label == "before":
+        env["PYTHONPATH"] = str(args.before)
     error = (args.output / (label + "-stderr.log")).open("w", encoding="utf-8")
     child = subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error, text=True, encoding="utf-8", env=env
@@ -378,6 +394,7 @@ def comparison_questions(data, count):
                 fixture_state=state,
                 fixture_revision=revision,
                 fixture_conditioned=bool(condition),
+                as_of="2026-01-09T12:00:00Z",
             )
         )
     return result

@@ -100,6 +100,56 @@ def source_scope(index):
     return "public" if not number else f"public-{number}"
 
 
+def declare_prefix_geometry():
+    """Declare this process's synthetic model contract without changing product models.
+
+    The fixture owns both the generated vectors and their local query encoder.
+    Its prefix is a deliberate benchmark capability, never a claim about an
+    unlisted real embedding model or a persistent application configuration.
+    """
+    from scope_recall.vector import cache
+
+    original = cache._capability_table
+    if getattr(original, "synthetic_prefix", False):
+        return
+
+    def declared():
+        return {
+            **original(),
+            "synthetic-prefix": {"native_dimensions": 3072, "prefix_dimensions": [768]},
+        }
+
+    declared.synthetic_prefix = True
+    cache._capability_table = declared
+
+
+def synthetic_ports(cache):
+    """Use local fake ports with an explicit, separately identified prefix space."""
+    from ports import FakeEmbedder, Ports
+
+    class PrefixEmbedder(FakeEmbedder):
+        """Hash into a usable prefix and repeat its normalized geometry in every block."""
+
+        def embed_text(self, text, remaining_seconds=1.0):
+            """Return a unit vector with a nonzero 768-coordinate query prefix."""
+            folded = [0.0] * 768
+            for index, value in enumerate(super().embed_text(text, remaining_seconds)):
+                folded[index % 768] += value
+            length = sum(value * value for value in folded) ** 0.5
+            if not length:
+                folded[0], length = 1.0, 1.0
+            prefix = tuple(value / (2 * length) for value in folded)
+            return prefix * 4
+
+    declare_prefix_geometry()
+    ports = Ports(cache)
+    ports.config["embedding"]["model"] = "synthetic-prefix"
+    encoder = PrefixEmbedder()
+    ports.embedder.embedder = encoder
+    ports.evaluator_embedder.embedder = encoder
+    return ports
+
+
 def _insert(conn, table, rows):
     """Insert homogeneous row dictionaries with bounded parameter batches."""
     if rows:
@@ -130,6 +180,8 @@ def seed_sources(lab, count):
                 event_ref = "event-" + hashlib.sha256(f"TEST-realistic:{index}".encode()).hexdigest()
                 refs.append(event_ref)
                 text = f"TESTsubject{index % 12386:05d} color amber. Synthetic record {index}."
+                if index % 10 == 0:
+                    text += " Synthetic detailed context color amber." * (64 + index % 4 * 48)
                 row = dict(
                     template,
                     event_id=event_ref,
@@ -142,6 +194,16 @@ def seed_sources(lab, count):
                     event_sha256=hashlib.sha256(f"{index}:{text}".encode()).hexdigest(),
                     source_id=template["source_id"] + index,
                 )
+                if index % 640 in (2, 3, 4):
+                    part = index % 640 - 2
+                    extra = json.loads(row["extra_json"])
+                    extra["segment"] = dict(index=part, total=3, truncated=False)
+                    row.update(
+                        source_group_key=f"TEST-segment-{index // 640}",
+                        segment_index=part,
+                        segment_total=3,
+                        extra_json=json.dumps(extra),
+                    )
                 rows.append(row)
                 for term in lexical_terms(text):
                     if term not in term_ids:
@@ -188,18 +250,34 @@ def seed_claims(lab, refs):
     examples = []
     with sqlite3.connect(lab.core.storage.path) as conn:
         conn.row_factory = sqlite3.Row
-        source_rows = {
-            scope: dict(conn.execute("SELECT * FROM source_events WHERE scope_id=? LIMIT 1", (scope,)).fetchone())
-            for scope in sorted(SCOPES)
-            if conn.execute("SELECT 1 FROM source_events WHERE scope_id=? LIMIT 1", (scope,)).fetchone()
-        }
+        source_rows = {}
+        for source in conn.execute("SELECT event_id,scope_id FROM source_events ORDER BY source_id"):
+            source_rows.setdefault(source["scope_id"], []).append(source["event_id"])
         position = 0
         for claim_index, count in enumerate(versions_per_claim):
             ref = f"claim-TEST-realistic-{claim_index:05d}"
             scope_number = 0 if claim_index < 18000 else 1 if claim_index < 27893 else 2 + (claim_index - 27893) // 2
             scope = "public" if scope_number == 0 else f"public-{scope_number}"
-            source = source_rows.get(scope, source_rows["public"])
+            pool = source_rows.get(scope, source_rows["public"])
+            primary = pool[0 if claim_index % 2 == 0 else claim_index % len(pool)]
+            source = dict(
+                conn.execute(
+                    "SELECT event_id,scope_id,content FROM source_events WHERE event_id=?", (primary,)
+                ).fetchone()
+            )
             scope = source["scope_id"]
+            proofs = [source]
+            if claim_index % 20 == 0:
+                proofs.extend(
+                    dict(
+                        conn.execute(
+                            "SELECT event_id,scope_id,content FROM source_events WHERE event_id=?",
+                            (pool[(claim_index + offset) % len(pool)],),
+                        ).fetchone()
+                    )
+                    for offset in (1, 2)
+                )
+            proofs = list({proof["event_id"]: proof for proof in proofs}.values())
             versions = []
             for revision in range(1, int(count) + 1):
                 subject = f"TESTsubject{int(subjects[position]):05d}"
@@ -211,9 +289,14 @@ def seed_claims(lab, refs):
                     value_text=f"amber TESTvalue{claim_index % 97:02d}",
                     conditions=conditions,
                     statement_kind="assertion",
-                    valid_from=None,
+                    valid_from=(
+                        f"2026-01-{1 + (revision - 1) % 7:02d}T12:00:{(revision - 1) // 7:02d}Z" if count > 1 else None
+                    ),
                     valid_to=None,
-                    evidence_spans=[dict(source_ref=source["event_id"], source_revision=1, quote=source["content"])],
+                    evidence_spans=[
+                        dict(source_ref=proof["event_id"], source_revision=1, quote=proof["content"][:1024])
+                        for proof in proofs
+                    ],
                 )
                 if kind:
                     payload["kind"] = kind
@@ -227,7 +310,7 @@ def seed_claims(lab, refs):
                         state=states[position],
                         basis="direct_report",
                         qualification_reason="synthetic",
-                        valid_from=None,
+                        valid_from=payload["valid_from"],
                         valid_to=ended,
                         recorded_from=stamp,
                         recorded_to=None,
@@ -257,7 +340,11 @@ def seed_claims(lab, refs):
             _insert(conn, "claim_versions", versions)
             conn.executemany(
                 "INSERT INTO evidence_links VALUES ('claim',?,?,?,1,'supports',?,NULL)",
-                [(ref, version["revision"], source["event_id"], source["content"]) for version in versions],
+                [
+                    (ref, version["revision"], proof["event_id"], proof["content"][:1024])
+                    for version in versions
+                    for proof in proofs
+                ],
             )
             if claim_index % 500 == 499:
                 conn.commit()
@@ -282,6 +369,68 @@ def seed_claims(lab, refs):
         claim_scopes=31,
         seed=42,
         dimensions=3072,
+    )
+
+
+def seed_relations(lab):
+    """Group synthetic sources into 200-member episodes inside each scope.
+
+    Episode counts, memberships and long-text proportions are pressure
+    assumptions; no aggregate episode distribution was supplied by the caller.
+    Every evidence edge is same-scope and uses an existing synthetic source.
+    """
+    with sqlite3.connect(lab.core.storage.path) as conn:
+        occupied = {row[0] for row in conn.execute("SELECT source_ref FROM episode_events")}
+        grouped = {}
+        for ref, scope in conn.execute("SELECT event_id,scope_id FROM source_events ORDER BY source_id"):
+            if ref not in occupied:
+                grouped.setdefault(scope, []).append(ref)
+        sequence = conn.execute("SELECT COALESCE(max(sequence),0) FROM episode_events").fetchone()[0]
+        episodes = members = dependencies = 0
+        scope_episodes = {}
+        for scope, refs in sorted(grouped.items()):
+            for start in range(0, len(refs), 200):
+                ref = f"episode-TEST-realistic-{scope}-{start // 200:05d}"
+                scope_episodes.setdefault(scope, []).append(ref)
+                page = refs[start : start + 200]
+                conn.execute(
+                    "INSERT INTO episodes(episode_id,scope_id,anchor_key,anchor_kind,series_key) "
+                    "VALUES(?,?,?,'session',?)",
+                    (ref, scope, ref, ref),
+                )
+                conn.execute(
+                    "INSERT INTO episode_versions VALUES(?,1,'completed',NULL,?,?,?,NULL)",
+                    (ref, "TEST-synthetic-watermark", sequence + len(page), NOW),
+                )
+                conn.executemany(
+                    "INSERT INTO episode_events VALUES(?,?,?,1,'anchored',NULL)",
+                    [(sequence + offset + 1, ref, source) for offset, source in enumerate(page)],
+                )
+                conn.executemany(
+                    "INSERT INTO evidence_links VALUES('episode',?,1,?,1,'supports','',NULL)",
+                    [(ref, source) for source in page],
+                )
+                sequence += len(page)
+                episodes += 1
+                members += len(page)
+        for ref, scope, revision in conn.execute("SELECT claim_id,scope_id,current_revision FROM claims"):
+            episode_refs = scope_episodes.get(scope)
+            if episode_refs:
+                targets = {
+                    episode_refs[(int(ref.rsplit("-", 1)[-1]) + offset) % len(episode_refs)] for offset in range(3)
+                }
+                for episode in sorted(targets):
+                    conn.execute(
+                        "INSERT INTO object_dependencies VALUES('claim',?,?,'episode',?,1)",
+                        (ref, revision, episode),
+                    )
+                    dependencies += 1
+        conn.commit()
+    return dict(
+        pressure_episodes=episodes,
+        pressure_members=members,
+        pressure_dependencies=dependencies,
+        episode_member_limit=200,
     )
 
 
@@ -338,7 +487,10 @@ def seed_vectors(lab, refs):
         if start % 40960 == 0:
             print(f"vectors {start}/{len(refs)}", flush=True)
     while True:
-        receipt = lab.maintain_vectors()
+        # Fixture preparation drains production cache pages outside a worker
+        # deadline. A partially prepared cache would measure tail ingestion
+        # alongside recall; worker scheduling is benchmarked separately.
+        receipt = lab.companion.maintain_index(max_rows=512)
         if not receipt or receipt["outcome"] != "indexed":
             raise RuntimeError("synthetic vector cache was not published")
         if receipt["rows"] < 512:

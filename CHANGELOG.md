@@ -4,6 +4,11 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Recall shares immutable hydration and evidence metadata inside each read snapshot, matches shared profile evidence
+once, and reuses bounded source tokenization. Vector imports can catch up their mapped cache in bounded streamed
+batches with atomic durable publication. An exhausted indexing slice resumes with a smaller batch instead of a
+capability-failure delay; small incremental tails keep primary-key reads and existing cache pages remain readable.
+
 Fact recall nominates query subjects from every stored version before applying the existing temporal selector.
 The automatic store upgrade rebuilds this derived index in resumable pages and preserves original truth.
 Repeated releases reuse immutable content safety verdicts; changed content is scanned again. Other-session

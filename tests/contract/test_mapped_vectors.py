@@ -189,8 +189,8 @@ def test_failed_file_publication_keeps_old_prefix_and_retries_without_duplicates
         store.upsert_records([vector_row("TEST-tail", embedding((1, 1.0)))])
         original = cache._append
 
-        def interrupted(path, start, values):
-            original(path, start, values)
+        def interrupted(path, start, values, **kwargs):
+            original(path, start, values, **kwargs)
             if path.name.endswith("norms.f64"):
                 raise OSError("TEST publication interruption")
 
@@ -205,6 +205,97 @@ def test_failed_file_publication_keeps_old_prefix_and_retries_without_duplicates
         finish_index(store)
         assert store.search(query, scope_id="TEST-scope", limit=3) == found
         assert store.diagnostics()["cached_rows"] == 2
+
+
+def test_streamed_index_syncs_each_partition_file_once(tmp_path, monkeypatch):
+    """Many input pages share one durable file publication without growing the matrix."""
+    import scope_recall.vector.cache as cache
+
+    count, partitions = 17000, 4
+    with mapped_store(tmp_path, dimensions=8, model="TEST-unknown-model") as store:
+        store.upsert_records(vector_row(f"TEST-{i}", [1.0] * 8, f"TEST-scope-{i % partitions}") for i in range(count))
+        calls = []
+        original = cache.os.fsync
+
+        def sync(descriptor):
+            calls.append(descriptor)
+            return original(descriptor)
+
+        monkeypatch.setattr(cache.os, "fsync", sync)
+        receipt = store.maintain_index(max_rows=count)
+        assert receipt["rows"] == count and store.diagnostics()["cached_rows"] == count
+        assert len(calls) == partitions * 3
+
+
+def test_interrupted_batch_sync_preserves_watermark_and_resumes(tmp_path, monkeypatch):
+    """A partial file sync publishes no row count and reuses only the old committed prefix."""
+    import scope_recall.vector.cache as cache
+
+    with mapped_store(tmp_path, dimensions=8, model="TEST-unknown-model") as store:
+        store.upsert_records([vector_row("TEST-old", [1.0] * 8)])
+        finish_index(store)
+        watermark = store.diagnostics()["watermark"]
+        store.upsert_records(vector_row(f"TEST-tail-{i}", [0.5] * 8) for i in range(17000))
+        original = cache.os.fsync
+        calls = 0
+
+        def interrupted(descriptor):
+            nonlocal calls
+            calls += 1
+            original(descriptor)
+            if calls == 2:
+                raise TimeoutError("TEST sync slice exhausted")
+
+        monkeypatch.setattr(cache.os, "fsync", interrupted)
+        with pytest.raises(TimeoutError, match="TEST sync"):
+            store.maintain_index(max_rows=20000)
+        assert store.diagnostics()["watermark"] == watermark
+        assert store.diagnostics()["cached_rows"] == 1
+        monkeypatch.setattr(cache.os, "fsync", original)
+        assert store.maintain_index(max_rows=20000)["rows"] == 17000
+        assert store.diagnostics()["cached_rows"] == 17001
+
+
+@pytest.mark.parametrize("tail", [0, 1])
+def test_small_index_tail_does_not_walk_old_scope_index(tmp_path, tail):
+    """An idle pass or one fresh vector uses its sequence range, regardless of old rows."""
+    with mapped_store(tmp_path, dimensions=8, model="TEST-unknown-model") as store:
+        store.upsert_records(vector_row(f"TEST-old-{i}", [1.0] * 8) for i in range(10000))
+        store.maintain_index(max_rows=10000)
+        if tail:
+            store.upsert_records([vector_row("TEST-tail", [0.5] * 8)])
+        steps = 0
+
+        def observed():
+            nonlocal steps
+            steps += 100
+            return 0
+
+        store._require_conn().set_progress_handler(observed, 100)
+        try:
+            receipt = store.maintain_index(max_rows=262144)
+        finally:
+            store._require_conn().set_progress_handler(None, 0)
+        assert receipt["rows"] == tail
+        assert steps < 5000
+
+
+def test_streamed_batch_keeps_legacy_checksum_page_bounds(tmp_path, monkeypatch):
+    """A larger stream buffer preserves the existing on-disk checksum-page contract."""
+    import scope_recall.vector.cache as cache
+
+    with mapped_store(tmp_path, dimensions=8, model="TEST-unknown-model") as store:
+        store.upsert_records(vector_row(f"TEST-{i}", [1.0] * 8) for i in range(17000))
+        store.maintain_index(max_rows=17000)
+        rows = list(store._require_conn().execute("SELECT file_key,first_row,row_count,digest FROM vector_cache_pages"))
+        assert max(row[2] for row in rows) <= 512
+        monkeypatch.setattr(cache, "PAGE_ROWS", 512)
+        state = cache._state(store._require_conn(), 8)
+        for key, first, count, digest in rows:
+            assert store._mapped._page_digest(state, key, first, count) == digest
+        store.upsert_records([vector_row("TEST-next", [0.5] * 8)])
+        assert store.maintain_index(max_rows=512)["rows"] == 1
+        assert store.diagnostics()["cached_rows"] == 17001
 
 
 @pytest.mark.parametrize("model", ["TEST-unknown-model", "gemini-embedding-2"])

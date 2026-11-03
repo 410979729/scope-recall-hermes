@@ -11,6 +11,11 @@ from pathlib import Path
 
 MIN_CANDIDATES = 1024
 
+# One publication amortizes file open/fsync work across small scope partitions,
+# while keeping the largest supported raw matrix below a bounded worker batch.
+INDEX_PAGE_ROWS = 8192
+INDEX_BATCH_ROWS = 262144
+
 
 def _physical_cores() -> int:
     """Read physical topology with platform APIs; an unknown topology stays serial."""

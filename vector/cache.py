@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 
 from ..core.deadline import remaining_seconds
-from .defaults import MIN_CANDIDATES, compute_threads
+from .defaults import INDEX_BATCH_ROWS, INDEX_PAGE_ROWS, MIN_CANDIDATES, compute_threads
 
 FORMAT = "mapped-float32-sha256"
 PAGE_ROWS = 512
@@ -228,7 +228,7 @@ def _metadata(conn: sqlite3.Connection, values: dict[str, str]) -> None:
     )
 
 
-def _append(path: Path, start: int, values: np.ndarray) -> None:
+def _append(path: Path, start: int, values: np.ndarray, *, sync: bool = True) -> None:
     """Overwrite only an unpublished suffix; committed mapped bytes stay immutable."""
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(descriptor, "r+b") as stream:
@@ -240,7 +240,8 @@ def _append(path: Path, start: int, values: np.ndarray) -> None:
         if stream.write(payload) != len(payload):
             raise OSError("mapped vector cache write was incomplete")
         stream.flush()
-        os.fsync(stream.fileno())
+        if sync:
+            os.fsync(stream.fileno())
 
 
 class MappedIndex:
@@ -398,7 +399,7 @@ class MappedIndex:
         )
         return current
 
-    def _write_scope(self, conn: sqlite3.Connection, state: CacheState, scope: str, rows) -> None:
+    def _write_scope(self, conn: sqlite3.Connection, state: CacheState, scope: str, rows, pending: set[Path]) -> None:
         prior = conn.execute("SELECT row_count FROM vector_cache_scopes WHERE scope_id=?", (scope,)).fetchone()
         count = int(prior[0]) if prior else 0
         key = _file_key(state.generation, scope)
@@ -413,18 +414,27 @@ class MappedIndex:
             lengths = np.sqrt(np.einsum("ij,ij->i", prefix, prefix, optimize=False))
             np.divide(prefix, lengths[:, None], out=prefix, where=lengths[:, None] > 0)
             arrays["prefix.f32"] = prefix.astype("<f4")
-        digest = hashlib.sha256()
         for suffix, dtype, width in state.layout():
             check_deadline()
-            digest.update(memoryview(np.ascontiguousarray(arrays[suffix], dtype=dtype)).cast("B"))
+            path = self.root / f"{key}.{suffix}"
             _append(
-                self.root / f"{key}.{suffix}",
+                path,
                 count * width * np.dtype(dtype).itemsize,
                 np.asarray(arrays[suffix], dtype=dtype),
+                sync=False,
             )
-        conn.execute(
+            pending.add(path)
+        pages = []
+        for first in range(0, len(rows), PAGE_ROWS):
+            count_rows = min(PAGE_ROWS, len(rows) - first)
+            digest = hashlib.sha256()
+            for suffix, dtype, _width in state.layout():
+                values = np.ascontiguousarray(arrays[suffix][first : first + count_rows], dtype=dtype)
+                digest.update(memoryview(values).cast("B"))
+            pages.append((key, count + first, count_rows, digest.hexdigest()))
+        conn.executemany(
             "INSERT INTO vector_cache_pages(file_key,first_row,row_count,digest) VALUES(?,?,?,?)",
-            (key, count, len(rows), digest.hexdigest()),
+            pages,
         )
         conn.execute(
             "INSERT INTO vector_cache_scopes VALUES(?,?,?) "
@@ -520,8 +530,50 @@ class MappedIndex:
         )
         return verified, None
 
+    def _stage_rows(self, conn: sqlite3.Connection, state: CacheState, max_rows: int) -> tuple[int, int, set[Path]]:
+        """Append ignored tails in fixed memory, returning the batch bounds and unsynced files.
+
+        Large imports traverse the covering scope/sequence index so each file
+        is written together. Idle passes and short tails instead use the raw
+        sequence range; walking the full scope index for one new row would
+        make ordinary worker upkeep grow with the already indexed corpus.
+        """
+        total, watermark = conn.execute(
+            "SELECT count(*),max(seq) FROM (SELECT seq FROM vector_records WHERE seq>? ORDER BY seq LIMIT ?)",
+            (state.watermark, min(max_rows, INDEX_BATCH_ROWS)),
+        ).fetchone()
+        watermark = int(watermark) if watermark is not None else state.watermark
+        pending: set[Path] = set()
+        cursor = None
+        if total:
+            ordered = (
+                "INDEXED BY idx_vector_records_scope WHERE seq>? AND seq<=? ORDER BY scope_id,seq"
+                if total > INDEX_PAGE_ROWS
+                else "WHERE seq>? AND seq<=? ORDER BY seq"
+            )
+            cursor = conn.execute(
+                "SELECT seq,scope_id,vector FROM vector_records " + ordered, (state.watermark, watermark)
+            )
+        while cursor is not None:
+            check_deadline()
+            rows = cursor.fetchmany(INDEX_PAGE_ROWS)
+            if not rows:
+                break
+            grouped: dict[str, list[Any]] = {}
+            for row in rows:
+                grouped.setdefault(row[1], []).append(row)
+            for scope, members in grouped.items():
+                self._write_scope(conn, state, scope, members, pending)
+        return watermark, total, pending
+
     def maintain(self, conn: sqlite3.Connection, max_rows: int) -> dict[str, Any]:
-        """Durably append one bounded page and atomically publish its SQLite watermark."""
+        """Stream a bounded batch, syncing each file once before publishing its watermark.
+
+        A partition may receive rows in every input page. Reopening and syncing
+        it for every small page makes imported rows expensive to cache; only
+        the batch's durable publication needs those syncs. Uncommitted tails
+        are still ignored, including after a deadline or interrupted sync.
+        """
         if type(max_rows) is not int or max_rows < 1:
             raise ValueError("positive index page required")
         check_deadline()
@@ -530,24 +582,23 @@ class MappedIndex:
         conn.execute("BEGIN IMMEDIATE")
         try:
             state = self._prepare(conn)
-            rows = conn.execute(
-                "SELECT seq,scope_id,vector FROM vector_records WHERE seq>? ORDER BY seq LIMIT ?",
-                (state.watermark, min(max_rows, PAGE_ROWS)),
-            ).fetchall()
-            grouped: dict[str, list[Any]] = {}
-            for row in rows:
-                grouped.setdefault(row[1], []).append(row)
-            for scope, members in grouped.items():
-                self._write_scope(conn, state, scope, members)
+            watermark, total, pending = self._stage_rows(conn, state, max_rows)
+            for path in sorted(pending):
+                check_deadline()
+                descriptor = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    _regular_file(descriptor, path, mutable=True)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
             stale = conn.execute("SELECT seq FROM index_deletes ORDER BY seq LIMIT ?", (PAGE_ROWS,)).fetchall()
             conn.executemany("DELETE FROM index_deletes WHERE seq=?", stale)
-            watermark = int(rows[-1][0]) if rows else state.watermark
             _metadata(
                 conn,
                 {
                     "index_watermark": str(watermark),
                     "index_retry_after": "0",
-                    "cache_rows": str(state.rows + len(rows)),
+                    "cache_rows": str(state.rows + total),
                 },
             )
             verified, error = self._verify(conn, state)
@@ -558,7 +609,7 @@ class MappedIndex:
             raise
         return {
             "outcome": "corrupt" if error else "indexed",
-            "rows": len(rows),
+            "rows": total,
             "watermark": watermark,
             "deletes": len(stale),
             "verified_pages": verified,
