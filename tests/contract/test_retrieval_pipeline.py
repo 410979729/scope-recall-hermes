@@ -423,7 +423,8 @@ def test_P08_the_lexical_statement_starts_from_the_query_s_terms_however_many_th
 
         def execute(self, sql, params=()):
             if "GROUP_CONCAT(DISTINCT hex(" in sql:
-                plans.append(self._conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()[0][3])
+                accesses = self._conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+                plans.append(next(row[3] for row in accesses if row[3].startswith(("SEARCH ", "SCAN "))))
             return self._conn.execute(sql, params)
 
     def planned(self, tx, context, *, limit):
@@ -1114,3 +1115,149 @@ def test_single_lexical_term_needs_no_frequency_or_corpus_read():
         raise AssertionError("one term cannot be pruned")
 
     assert _searched_terms(SimpleNamespace(_check=forbidden), ("common",)) == (("common",), ())
+
+
+def test_lexical_filters_each_source_once_for_shared_postings():
+    """Term matches are grouped before touching the same long source's metadata repeatedly."""
+    import sqlite3
+    from types import SimpleNamespace
+
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        "CREATE TABLE source_events(event_id TEXT,source_revision INTEGER,source_id INTEGER UNIQUE,"
+        "source_group_key TEXT,scope_id TEXT,project_id TEXT,branch_id TEXT,role TEXT,origin TEXT,"
+        "source_original_origin TEXT,occurred_at TEXT,content TEXT,read_blocked INTEGER,suppressed INTEGER,"
+        "PRIMARY KEY(event_id,source_revision),UNIQUE(source_group_key,source_revision));"
+        "CREATE TABLE lexical_terms(term_id INTEGER PRIMARY KEY,term TEXT UNIQUE);"
+        "CREATE TABLE lexical_postings(term_id INTEGER,source_id INTEGER,"
+        "PRIMARY KEY(term_id,source_id)) WITHOUT ROWID;"
+        "CREATE INDEX lexical_postings_source ON lexical_postings(source_id,term_id);"
+        "CREATE TABLE object_blocks(object_kind TEXT,object_ref TEXT,read_blocked INTEGER,suppressed INTEGER,"
+        "PRIMARY KEY(object_kind,object_ref));"
+    )
+    terms = ("testalpha", "testbeta", "testgamma", "testdelta")
+    conn.executemany("INSERT INTO lexical_terms VALUES(?,?)", enumerate(terms, 1))
+    for index in range(300):
+        conn.execute(
+            "INSERT INTO source_events VALUES(?,1,?,?,'TEST-scope',NULL,NULL,'tool',"
+            "'tool_observation',NULL,'2026-01-01',?,0,0)",
+            (f"TEST-source-{index}", index, f"TEST-group-{index}", "TEST long output " * 2000),
+        )
+        conn.executemany("INSERT INTO lexical_postings VALUES(?,?)", ((term, index) for term in range(1, 5)))
+    visits = []
+    conn.create_function("source_filter_visit", 1, lambda source: visits.append(source) or 1)
+
+    class Observed:
+        def execute(self, sql, params=()):
+            if "matched_term_hexes" in sql:
+                sql = sql.replace("e.read_blocked=0", "source_filter_visit(e.source_id)=1 AND e.read_blocked=0")
+            return conn.execute(sql, params)
+
+    snapshot = {}
+
+    def remembered(key, load):
+        if key not in snapshot:
+            snapshot[key] = load()
+        return snapshot[key]
+
+    tx = SimpleNamespace(_check=Observed, remembered=remembered)
+    context = SimpleNamespace(
+        query=" ".join(terms),
+        mode="auto",
+        as_of=None,
+        trusted_context=SimpleNamespace(allowed_scope_ids=frozenset({"TEST-scope"}), project_id=None, branch_id=None),
+    )
+    try:
+        found = RetrievalStorage().lexical(tx, context, limit=48)
+        assert len(found) == 48
+        assert all(item.lexical_score == 4 for item in found)
+        assert len(visits) == 300, len(visits)
+    finally:
+        conn.close()
+
+
+def test_ranking_reads_stored_terms_without_tokenizing_long_source_again(app, monkeypatch):
+    from scope_recall.core import recall
+
+    core, ctx = app
+    text = "TEST long source ranking 项目部署 Ａmber rollback " * 700
+    source = capture(core, ctx, text, key="TEST-long-ranked-body")
+    search = SearchContext.from_request(
+        recall_request(query="项目部署 rollback", mode="current"), ctx, now=Clock.now, deadline=999
+    )
+    candidate = CandidateRef("event", source.ref, source.revision, "lexical", fusion_score=0.016)
+    original = recall.lexical_terms
+    scanned = []
+
+    def observed(body):
+        if body == text:
+            scanned.append(len(body))
+        return original(body)
+
+    monkeypatch.setattr(recall, "lexical_terms", observed)
+    with core.storage.read(ctx) as tx:
+        obj = core.recall_pipeline.storage_reader.hydrate(tx, candidate, search)
+        assert obj is not None
+        core.recall_pipeline._select(tx, search, [(candidate, obj)], [])
+    assert sum(scanned) == 0
+
+
+def test_indexed_ranking_matches_full_text_and_falls_back_for_different_renderings(app):
+    from scope_recall.core.events import lexical_terms
+
+    core, ctx = app
+    pairs = []
+    reader = core.recall_pipeline.storage_reader
+    search = SearchContext.from_request(
+        recall_request(query="rollback", mode="current"), ctx, now=Clock.now, deadline=999
+    )
+    for index in range(12):
+        source = capture(
+            core,
+            ctx,
+            (f"TEST ranking {index} 项目部署 Ａmber rollback ") * 600,
+            key=f"TEST-indexed-rank-{index}",
+        )
+        candidate = CandidateRef("event", source.ref, source.revision, "lexical", fusion_score=0.01 + index / 10000)
+        with core.storage.read(ctx) as tx:
+            obj = reader.hydrate(tx, candidate, search)
+        assert obj is not None
+        pairs.append((candidate, obj))
+    with core.storage.read(ctx) as tx:
+        for index in range(200):
+            query = ("rollback", "项目部署", "Ａmber", "missing", "ranking rollback")[index % 5]
+            current = replace(search, query=query)
+            assert core.recall_pipeline._rank_hydrated(pairs, current, tx=tx) == (
+                core.recall_pipeline._rank_hydrated(pairs, current)
+            )
+        candidate, obj = pairs[0]
+        changed = replace(obj, content="TEST completely different rendering")
+        assert candidate.key not in reader.source_term_matches(tx, [(candidate, changed)], ("rollback",))
+        found = reader.source_term_matches(tx, [pairs[0]], ("not-present",))
+        assert found[candidate.key] == set()
+        assert reader.source_term_matches(tx, [(replace(candidate, revision=99), obj)], ("rollback",)) == {}
+    placeholder = capture(
+        core,
+        ctx,
+        "Tool execution summary; output omitted; error=TEST failure; output_preview=omitted",
+        key="TEST-indexed-placeholder",
+    )
+    item = CandidateRef("event", placeholder.ref, placeholder.revision, "lexical")
+    with core.storage.read(ctx) as tx:
+        obj = reader.hydrate(tx, item, search)
+        assert obj is not None
+        assert reader.source_term_matches(tx, [(item, obj)], tuple(lexical_terms(obj.content))) == {}
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "DELETE FROM lexical_postings WHERE source_id=(SELECT source_id FROM source_events "
+            "WHERE event_id=? AND source_revision=?)",
+            (pairs[0][0].ref, pairs[0][0].revision),
+        )
+    with core.storage.read(ctx) as tx:
+        assert reader.source_term_matches(tx, [pairs[0]], ("rollback",)) == {}
+        assert core.recall_pipeline._rank_hydrated(pairs, search, tx=tx) == (
+            core.recall_pipeline._rank_hydrated(pairs, search)
+        )

@@ -341,9 +341,10 @@ def test_thirteen_real_fact_slots_preserve_selected_thirteenth_original(app, mon
     rank = core.recall_pipeline._rank_hydrated
     preferred = [claim.ref for claim in claims[:5]] + [captured[-1].ref]
 
-    def ranked(hydrated, context=None):
+    def ranked(hydrated, context=None, **kwargs):
         return sorted(
-            rank(hydrated, context), key=lambda pair: preferred.index(pair[0].ref) if pair[0].ref in preferred else 99
+            rank(hydrated, context, **kwargs),
+            key=lambda pair: preferred.index(pair[0].ref) if pair[0].ref in preferred else 99,
         )
 
     monkeypatch.setattr(core.recall_pipeline, "_rank_hydrated", ranked)

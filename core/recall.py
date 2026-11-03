@@ -57,7 +57,7 @@ from .retrieval import (
     effective_limits,
     optional_json,
 )
-from .retrieval_hydration import replacements
+from .retrieval_hydration import note_superseded_evidence, replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import note_embedding_failure, vector_failure_label
 
@@ -837,7 +837,7 @@ class RetrievalPipeline:
     # -- ranking and budget ---------------------------------------------------
 
     def _rank_hydrated(
-        self, hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext | None = None
+        self, hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext | None = None, *, tx=None
     ) -> list[tuple[CandidateRef, RetrievedObject]]:
         context_only: set[tuple[str, str, int]] = set()
         if context is not None and context.mode in {"auto", "current"}:
@@ -878,8 +878,18 @@ class RetrievalPipeline:
         query_terms = set(meaningful_query_terms(self._admission_query(context)))
         if not query_terms:
             return ranked
+        indexed = (
+            self.storage_reader.source_term_matches(tx, ranked, tuple(sorted(query_terms)))
+            if tx is not None and isinstance(self.storage_reader, RetrievalStorage)
+            else {}
+        )
         matched = {
-            candidate.key: query_terms.intersection(lexical_terms(statement_text(obj))) for candidate, obj in ranked
+            candidate.key: (
+                indexed[candidate.key]
+                if candidate.key in indexed
+                else query_terms.intersection(lexical_terms(statement_text(obj)))
+            )
+            for candidate, obj in ranked
         }
         # Diversity rescoring visits a candidate repeatedly; its immutable
         # evidence roots need parsing only once for this admitted pool.
@@ -1039,10 +1049,12 @@ class RetrievalPipeline:
                 with timings.measure("select"):
                     ranked, query_items, overflow = self._select(tx, working, hydrated, gaps)
                 question = self._admission_query(working)
+                withheld = note_superseded_evidence(tx, gaps)
                 return replace(
                     self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question),
                     overflow_candidates=overflow,
                     overflow_policy_revision=private.rule_revision(tx) if overflow else None,
+                    withheld_evidence=tuple(sorted(withheld)),
                 )
         except ContractError as exc:
             if exc.code == "DEADLINE_EXCEEDED":
@@ -1309,7 +1321,7 @@ class RetrievalPipeline:
         # document hold four of six slots.  One filter spans both passes so
         # background cannot repeat the evidence either.
         distinct = DistinctContent()
-        ordered = self._behind_replacements(self._rank_hydrated(hydrated, working), working)
+        ordered = self._behind_replacements(self._rank_hydrated(hydrated, working, tx=tx), working)
         originals = prefer_originals(tx, ordered, working, clock=self.clock.monotonic, gaps=gaps)
         note_removed(ordered, originals, "restatement")
         ordered = originals

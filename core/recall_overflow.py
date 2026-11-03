@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import cast
 
 from ..contracts import RecallPacket
 from . import private
@@ -20,6 +21,7 @@ from .recall_policy import meaningful_query_terms
 from .recall_restatement import host_memory_duplicate, prefer_originals
 from .recall_trace import note_candidate
 from .retrieval import MAX_PACKET_ITEMS, SearchContext
+from .retrieval_hydration import note_superseded_evidence
 from .summary_validity import CONVERSATION_SUMMARY_REASONS
 
 LABEL = "Other-session matches"
@@ -259,6 +261,7 @@ def append_overflow(storage, context: SearchContext, result, packet: RecallPacke
         or clock.monotonic() >= context.deadline
     ):
         return packet
+    seen = set(result.withheld_evidence)
     try:
         with storage.read(
             context.trusted_context, remaining_seconds=max(0.001, context.deadline - clock.monotonic())
@@ -275,6 +278,10 @@ def append_overflow(storage, context: SearchContext, result, packet: RecallPacke
             ):
                 return packet
             rows = _representatives(tx, reader, result, context, packet, clock)
+            gaps = list(packet["gaps"])
+            note_superseded_evidence(tx, gaps, seen)
+            if gaps != packet["gaps"]:
+                packet = {**packet, "gaps": gaps}
         if len(rows) < 3 or clock.monotonic() >= context.deadline:
             return packet
         extended, chosen = _fit(packet, rows, context)
@@ -284,11 +291,16 @@ def append_overflow(storage, context: SearchContext, result, packet: RecallPacke
             context.trusted_context, remaining_seconds=max(0.001, context.deadline - clock.monotonic())
         ) as tx:
             policy = replace(context, now=getattr(clock, "utc_now", lambda: context.now)())
-            if not _unchanged(tx, reader, policy, packet, result, chosen, epoch, revision):
+            unchanged = _unchanged(tx, reader, policy, packet, result, chosen, epoch, revision)
+            gaps = list(packet["gaps"])
+            note_superseded_evidence(tx, gaps, seen)
+            packet = {**packet, "gaps": gaps}
+            extended = {**extended, "gaps": gaps}
+            if not unchanged:
                 return packet
         for candidate, _obj in chosen:
             note_candidate(candidate, obj=_obj)
-        return extended if clock.monotonic() < context.deadline else packet
+        return cast(RecallPacket, extended) if clock.monotonic() < context.deadline else packet
     except Exception:  # noqa: BLE001 - Optional reads cannot revoke a finalized packet.
         # Optional evidence cannot turn a successfully released full packet
         # into a partial or unavailable one when its own read fails.

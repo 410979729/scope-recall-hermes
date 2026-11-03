@@ -543,7 +543,8 @@ class RetrievalStorage(RetrievalHydration):
         credits = tuple(value for pair in synonyms.items() for value in pair)
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
         term_marks, scope_marks = _marks((*terms, *synonyms)), _marks(scopes)
-        identified = f"MAX(t.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
+        identified = f",MAX(t.term IN ({_marks(identifiers)})) AS identified" if identifiers else ""
+        identifier_order = "m.identified DESC," if identifiers else ""
         current = (
             ""
             if context.mode in {"history", "as_of"}
@@ -564,32 +565,35 @@ class RetrievalStorage(RetrievalHydration):
             params.append(context.as_of)
         said = " AND (" + " OR ".join("(e.occurred_at>=? AND e.occurred_at<?)" for _ in within) + ")" if within else ""
         params.extend(bound for window in within for bound in window)
-        # The statement starts from the query's terms.  A store keeps no planner statistics, so SQLite weighs the terms
-        # against the scopes by rule of thumb, and with a long enough query it started from the scope index instead:
-        # every event of the audience read one by one, 21 s for a Telegram message of 72 characters on the shared
-        # store, and the recall empty at its deadline.  ``+`` keeps the scope filter from choosing the index.
+        # Aggregate integer postings before reading source metadata, so a long
+        # source holding several query terms is loaded only once. Every audience,
+        # version and time fence still precedes ordering and LIMIT. CROSS JOIN
+        # keeps the term dictionary first without depending on planner statistics.
         rows = (
             tx._check()
             .execute(
-                f"""SELECT e.event_id,e.source_revision,e.source_id,COUNT(DISTINCT {credit}) AS hits,
-                       GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
-                FROM {lexical_index.JOIN}
-                WHERE t.term IN ({term_marks}) AND +e.scope_id IN ({scope_marks})
+                f"""WITH matched AS MATERIALIZED (
+                    SELECT p.source_id,COUNT(DISTINCT {credit}) AS hits,
+                           GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes{identified}
+                    FROM lexical_terms t CROSS JOIN lexical_postings p ON p.term_id=t.term_id
+                    WHERE t.term IN ({term_marks}) GROUP BY p.source_id
+                ) SELECT e.event_id,e.source_revision,e.source_id,m.hits,m.matched_term_hexes
+                FROM matched m CROSS JOIN source_events e ON e.source_id=m.source_id
+                WHERE +e.scope_id IN ({scope_marks})
                   AND e.read_blocked=0 {automatic} AND (e.project_id IS NULL OR e.project_id=?)
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.event_id AND (b.read_blocked=1 {automatic_block}))
                   {current}{as_of}{said}
-                GROUP BY e.event_id,e.source_revision
                 ORDER BY CASE
                     WHEN e.role='tool' AND (
                         e.origin='memory_reinjection'
                         OR (e.origin='imported' AND e.source_original_origin='memory_reinjection')
                     ) THEN 1 ELSE 0
                 END,
-                {identified}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
+                {identifier_order}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
                 LIMIT ?""",
-                (*credits, *credits, *params, *identifiers, limit),
+                (*credits, *credits, *identifiers, *params, limit),
             )
             .fetchall()
         )
@@ -617,7 +621,7 @@ class RetrievalStorage(RetrievalHydration):
         """Sources said within the time the question names (``context.time``) that hold enough of what else it asks
         (``shares_enough``): the lexical statement for the question, on the words of what else it asks alone, kept to
         that time.  It searches none of the terms the plain statement leaves out, so it groups no posting that one
-        would not, and its windows drop the others before they are grouped.
+        would not. Its windows filter sources before candidate ordering and truncation.
 
         Weighed against the whole question, a note said on the day asked about is short of the words that name the
         day, which it never repeats ("September", "11"), and below the notes on its subject that hold more words; on

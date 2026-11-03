@@ -90,7 +90,7 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
     """Reserve bounded windows for relevant and stable global preferences.
 
     Source terms use the existing lexical projection; no model call, full
-    profile rendering or additional persistent index is needed. Every result
+    profile rendering is needed. Every result
     still passes the ordinary effective-version and visibility checks below.
 
     Each window over-fetches by one row so that "there were more" is a fact
@@ -99,7 +99,9 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
     eight rows a quiet one has in total.
     """
     where, params = _audience(context, "c")
-    common = f"""FROM claims c JOIN claim_versions v
+    # A broad audience must enumerate only profile heads, even when other
+    # fact kinds dominate its scopes. The partial index covers this fence.
+    common = f"""FROM claims c INDEXED BY claim_profile_heads JOIN claim_versions v
         ON v.claim_id=c.claim_id AND v.revision=c.current_revision
         WHERE {where} AND c.kind IN ('preference','constraint')
         AND v.state IN ('active','disputed','retracted')"""

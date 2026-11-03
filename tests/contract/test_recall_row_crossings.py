@@ -342,8 +342,7 @@ def _said_again(tmp_path, slots: int, *, replaced: bool):
 
 
 def test_a_recall_over_replaced_messages_does_not_grow_with_them(tmp_path, monkeypatch):
-    """Each replaced message read what replaced it on its own: the evidence of the version holding instead, then each
-    of its sources, a statement each, in every round and pass that hydrated it."""
+    """Extra current-read SQL stays bounded as more obsolete originals enter the same candidate pool."""
     stores = {
         (slots, replaced): _said_again(tmp_path, slots, replaced=replaced)
         for slots in (2, 8)
@@ -353,7 +352,7 @@ def test_a_recall_over_replaced_messages_does_not_grow_with_them(tmp_path, monke
     for slots in (2, 8):
         core, ctx = stores[slots, True]
         items = core.recall(ctx, request, deadline_seconds=30).items
-        assert sum(item.kind == "event" and item.temporal_status == "historical" for item in items) == slots
+        assert not any(item.kind == "event" and item.temporal_status == "historical" for item in items)
     crossings = Crossings(monkeypatch)
 
     def statements(slots: int, replaced: bool) -> int:
@@ -389,7 +388,7 @@ def test_a_recall_over_replaced_messages_answers_alike_whether_or_not_it_keeps_w
         ]
 
     kept = packets()
-    assert all(any(item["temporal_status"] == "historical" for item in packet["items"]) for packet in kept)
+    assert all("superseded_evidence_withheld:4" in packet["gaps"] for packet in kept)
     monkeypatch.setattr(Transaction, "remember", lambda self, key, value, size=0: None)
     monkeypatch.setattr(Transaction, "prefetch_sources", lambda self, pairs: None)
     assert packets() == kept

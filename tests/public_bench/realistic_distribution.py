@@ -160,28 +160,190 @@ def _insert(conn, table, rows):
         )
 
 
+LENGTH_BINS = (
+    (164292, 60, 100),
+    (126855, 101, 300),
+    (36013, 301, 1000),
+    (20172, 1001, 2000),
+    (10131, 2001, 4000),
+    (8710, 4001, 8000),
+    (8896, 8001, 16000),
+    (4074, 16001, 32000),
+    (641, 32001, 65536),
+)
+ORIGIN_COUNTS = (
+    ("imported", 286121),
+    ("tool_observation", 60588),
+    ("assistant_visible", 23536),
+    ("human_direct", 7548),
+    ("host_generated", 1235),
+    ("memory_reinjection", 756),
+)
+LONG_ORIGIN_COUNTS = (
+    ("tool_observation", 21277),
+    ("imported", 635),
+    ("memory_reinjection", 295),
+    ("human_direct", 62),
+    ("assistant_visible", 45),
+    ("host_generated", 7),
+)
+LENGTH_QUANTILES = ((0.5, 103), (0.75, 256), (0.9, 1846), (0.95, 5237), (0.99, 17150), (0.999, 38772))
+
+
+def _scaled_counts(counts, count):
+    """Round categorical proportions to an exact population with stable remainders."""
+    raw = np.asarray(counts, dtype=np.float64) * count / sum(counts)
+    values = raw.astype(np.int64)
+    for index in np.argsort(-(raw - values), kind="stable")[: count - int(values.sum())]:
+        values[index] += 1
+    return values
+
+
+def source_population(count):
+    """Generate length and origin marginals without assuming their unknown joint distribution.
+
+    Bin endpoints and reported quantiles anchor a monotone curve; its common
+    power adjusts the mean to the supplied character total. Origin assignments
+    are shuffled separately inside the long and short strata. Smaller fixtures
+    need enough rows for all supplied quantiles to occupy distinct ranks.
+    """
+    if count < 1000:
+        raise ValueError("at least 1000 sources required for the length distribution")
+    counts = _scaled_counts([row[0] for row in LENGTH_BINS], count)
+    knots = {}
+    position = 0
+    for size, (_original, low, high) in zip(counts, LENGTH_BINS, strict=True):
+        knots[position] = low
+        position += int(size)
+        knots[position - 1] = high
+    for quantile, value in LENGTH_QUANTILES:
+        knots[int(np.ceil(count * quantile)) - 1] = value
+    x = np.asarray(sorted(knots))
+    y = np.asarray([knots[int(i)] for i in x])
+    ranks = np.arange(count)
+    segment = np.maximum(0, np.searchsorted(x, ranks, side="right") - 1)
+    segment = np.minimum(segment, len(x) - 2)
+    low = y[segment]
+    high = y[segment + 1]
+    fraction = (ranks - x[segment]) / (x[segment + 1] - x[segment])
+    target = round(372000000 * count / 379784)
+    left, right = 0.01, 16.0
+    for _ in range(45):
+        power = (left + right) / 2
+        lengths = np.rint(low + (high - low) * fraction**power).astype(np.int64)
+        if int(lengths.sum()) > target:
+            left = power
+        else:
+            right = power
+    lengths[x] = y
+    remaining = target - int(lengths.sum())
+    while remaining:
+        available = np.flatnonzero((lengths < high) if remaining > 0 else (lengths > low))
+        available = available[~np.isin(available, x)]
+        chosen = available[: min(abs(remaining), len(available))]
+        if not len(chosen):
+            raise ValueError("character target conflicts with quantile anchors")
+        step = 1 if remaining > 0 else -1
+        lengths[chosen] += step
+        remaining -= step * len(chosen)
+    lengths.sort()
+    rng = np.random.default_rng(431)
+    rng.shuffle(lengths)
+    totals = dict(
+        zip(
+            (row[0] for row in ORIGIN_COUNTS),
+            map(int, _scaled_counts([row[1] for row in ORIGIN_COUNTS], count)),
+            strict=True,
+        )
+    )
+    long_counts = dict(
+        zip(
+            (row[0] for row in LONG_ORIGIN_COUNTS),
+            map(int, _scaled_counts([row[1] for row in LONG_ORIGIN_COUNTS], int((lengths > 4000).sum()))),
+            strict=True,
+        )
+    )
+    origins = [""] * count
+    for long in (False, True):
+        positions = np.flatnonzero((lengths > 4000) == long)
+        labels = _labels(
+            [(name, long_counts[name] if long else total - long_counts[name]) for name, total in totals.items()], rng
+        )
+        for index, label in zip(positions, labels, strict=True):
+            origins[int(index)] = label
+    return lengths, origins
+
+
+def source_text(index, length, origin):
+    """Render a complete synthetic body at the chosen character count, without clipping real data."""
+    prefix = f"TESTsubject{index % 12386:05d} color amber. Synthetic record {index}. "
+    filler = (
+        (f"工具输出 行={index % 97} 状态=amber ＣＯＬＯＲ 记录校验完成。 ")
+        if origin == "tool_observation"
+        else " Synthetic observation color amber. "
+    )
+    body = (prefix + filler * ((length - len(prefix)) // len(filler) + 1))[:length]
+    if origin == "tool_observation" and length > 16000:
+        marker = f" TESTlongtools TESTpayloadresults TESTlonggroup{index % 20:02d} "
+        body = body[:1500] + marker + body[1500 + len(marker) :]
+    return body
+
+
+def source_statistics(lab):
+    """Read back the generated marginals and integer nearest-rank length quantiles."""
+    with sqlite3.connect(lab.core.storage.path) as conn:
+        lengths = sorted(row[0] for row in conn.execute("SELECT length(content) FROM source_events"))
+        return dict(
+            source_lengths=dict(
+                count=len(lengths),
+                characters=sum(lengths),
+                quantiles={str(p): lengths[int(np.ceil(len(lengths) * p)) - 1] for p, _ in LENGTH_QUANTILES},
+                histogram={
+                    str(upper): sum(low < int(value) <= upper for value in lengths)
+                    for low, upper in zip(
+                        (0, 100, 300, 1000, 2000, 4000, 8000, 16000, 32000),
+                        (100, 300, 1000, 2000, 4000, 8000, 16000, 32000, 65536),
+                        strict=True,
+                    )
+                },
+            ),
+            source_origins=dict(conn.execute("SELECT origin,count(*) FROM source_events GROUP BY origin")),
+            long_source_origins=dict(
+                conn.execute("SELECT origin,count(*) FROM source_events WHERE length(content)>4000 GROUP BY origin")
+            ),
+            source_joint_assumption=(
+                "Origins shuffled independently inside <=4000 and >4000 character strata; "
+                "synthetic imported records have attested human_direct original lineage."
+            ),
+        )
+
+
 def seed_sources(lab, count):
-    """Create independent synthetic source rows, postings and session identities."""
+    """Create synthetic source versions with exact length/origin strata and ordinary lexical postings."""
+    lengths, origins = source_population(count)
     if lab.binding.installation_kind == "shared":
         lab.context = replace(lab.context, entry_id="bench")
         with lab.core.storage.write(lab.context) as tx:
             tx.registry.register_entry("bench", "Benchmark", "synthetic", now=NOW)
-    turn = Turn("TEST-realistic-template", "TEST-template", "user", "TESTsubject00000 color amber.", NOW)
+    turn = Turn("TEST-realistic-template", "TEST-template", "user", source_text(0, int(lengths[0]), origins[0]), NOW)
     ref = lab.capture(turn).event_refs[0].ref
     refs = [ref]
     with sqlite3.connect(lab.core.storage.path) as conn:
         conn.row_factory = sqlite3.Row
         template = dict(conn.execute("SELECT * FROM source_events WHERE event_id=?", (ref,)).fetchone())
+        conn.execute("DELETE FROM lexical_postings WHERE source_id=?", (template["source_id"],))
         term_ids = dict(conn.execute("SELECT term,term_id FROM lexical_terms"))
         next_term = max(term_ids.values(), default=0) + 1
-        for start in range(1, count, 2000):
+        for start in range(0, count, 2000):
             rows, postings = [], []
             for index in range(start, min(count, start + 2000)):
-                event_ref = "event-" + hashlib.sha256(f"TEST-realistic:{index}".encode()).hexdigest()
-                refs.append(event_ref)
-                text = f"TESTsubject{index % 12386:05d} color amber. Synthetic record {index}."
-                if index % 10 == 0:
-                    text += " Synthetic detailed context color amber." * (64 + index % 4 * 48)
+                event_ref = (
+                    ref if index == 0 else "event-" + hashlib.sha256(f"TEST-realistic:{index}".encode()).hexdigest()
+                )
+                if index:
+                    refs.append(event_ref)
+                origin = origins[index]
+                text = source_text(index, int(lengths[index]), origin)
                 row = dict(
                     template,
                     event_id=event_ref,
@@ -189,10 +351,20 @@ def seed_sources(lab, count):
                     source_group_key=f"TEST-realistic:{index}",
                     session_id=f"TEST-session-{index // 10}",
                     scope_id=source_scope(index),
+                    origin=origin,
+                    role="tool"
+                    if origin == "tool_observation"
+                    else "assistant"
+                    if origin in {"assistant_visible", "host_generated", "memory_reinjection"}
+                    else "user",
                     content=text,
                     content_sha256=hashlib.sha256(text.encode()).hexdigest(),
                     event_sha256=hashlib.sha256(f"{index}:{text}".encode()).hexdigest(),
                     source_id=template["source_id"] + index,
+                    source_original_origin="human_direct" if origin == "imported" else None,
+                    import_provenance_sha256=hashlib.sha256(b"TEST-synthetic-import-manifest").hexdigest()
+                    if origin == "imported"
+                    else None,
                 )
                 if index % 640 in (2, 3, 4):
                     part = index % 640 - 2
@@ -204,7 +376,13 @@ def seed_sources(lab, count):
                         segment_total=3,
                         extra_json=json.dumps(extra),
                     )
-                rows.append(row)
+                if index:
+                    rows.append(row)
+                else:
+                    conn.execute(
+                        "UPDATE source_events SET " + ",".join(column + "=?" for column in row) + " WHERE event_id=?",
+                        (*row.values(), ref),
+                    )
                 for term in lexical_terms(text):
                     if term not in term_ids:
                         term_ids[term] = next_term
@@ -490,10 +668,10 @@ def seed_vectors(lab, refs):
         # Fixture preparation drains production cache pages outside a worker
         # deadline. A partially prepared cache would measure tail ingestion
         # alongside recall; worker scheduling is benchmarked separately.
-        receipt = lab.companion.maintain_index(max_rows=512)
+        receipt = lab.companion.maintain_index(max_rows=262144)
         if not receipt or receipt["outcome"] != "indexed":
             raise RuntimeError("synthetic vector cache was not published")
-        if receipt["rows"] < 512:
+        if receipt["rows"] < 262144:
             break
     if lab.companion.count_rows() != len(refs):
         raise RuntimeError("synthetic vector count mismatch")

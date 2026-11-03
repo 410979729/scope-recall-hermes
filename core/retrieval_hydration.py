@@ -7,6 +7,7 @@ half of ``retrieval_storage.RetrievalStorage``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import replace
@@ -26,6 +27,7 @@ from .candidate_tables import awaits_first_judgement
 from .claim_storage import parse_source_ref
 from .claims import canonical_time, dated_after, holds_instead, select_effective, select_proposal, states_a_value
 from .episodes import source_origin
+from .events import withheld_tool_output
 from .recall_policy import applicability, in_time_window, parse_time
 from .reflection_validity import reflection_live
 from .resume_compaction import resume_evidence_refs
@@ -57,6 +59,16 @@ _JUDGEMENT_PAGE = 400
 
 def source_key(ref: str, revision: int) -> str:
     return f"{ref}@{revision}"
+
+
+def note_superseded_evidence(tx, gaps: list[str], seen: set | None = None) -> set:
+    """Merge snapshot-local withheld identities; only a deduplicated count leaves core."""
+    seen = set() if seen is None else seen
+    seen.update(getattr(tx, "withheld_evidence", ()))
+    if seen:
+        gaps[:] = [gap for gap in gaps if not gap.startswith("superseded_evidence_withheld:")]
+        gaps.insert(0, f"superseded_evidence_withheld:{len(seen)}")
+    return seen
 
 
 def _is_source_ref(value: object) -> bool:
@@ -258,7 +270,7 @@ def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
 
 def replacements(obj: RetrievedObject) -> tuple[tuple[str, str, int], ...]:
     """What states the values that hold in place of every value a hydrated message states
-    (``RetrievalHydration._replaced_by``), as candidate keys (kind, ref, revision); none for anything else."""
+    (``RetrievalHydration.source_replacements``), as candidate keys (kind, ref, revision); none for anything else."""
     keys = json.loads(dict(obj.metadata).get("replaced_by") or "[]")
     return tuple((str(kind), str(ref), int(revision)) for kind, ref, revision in keys)
 
@@ -399,13 +411,17 @@ class RetrievalHydration:
             self._prefetch_replacements(tx, events, context)
 
     def _prefetch_replacements(self, tx, events, context: SearchContext) -> None:
-        """What ``_replaced_by`` reads for these messages, loaded together: the claim versions each is evidence for
+        """What ``source_replacements`` reads for these messages, loaded together: the supported claim versions
         and those claims' versions, what holds in place of the values they state (``_holding_instead``, kept for the
         recall's instant), then the evidence of every version holding instead and those sources.  A page of each,
         however many messages and replacements.  A claim's first judgement stays the page ``prefetch`` already read
         (``_judgements``); this does not widen who may see a source."""
         conn = tx._check()
         supported = lineage.supported_claims(conn, events)
+        other_uses = lineage.source_content_uses(conn, events)
+        for pair in events:
+            tx.remember(("supported_claims", *pair), supported.get(pair, ()))
+            tx.remember(("source_content_uses", *pair), other_uses.get(pair, ()))
         tx.claims.prefetch_versions(ref for found in supported.values() for ref, _revision in found)
         holding = {pair: self._holding_instead(tx, supported.get(pair, ()), context) for pair in events}
         for pair, found in holding.items():
@@ -415,6 +431,39 @@ class RetrievalHydration:
         for key in instead:
             tx.remember(("claim_evidence", *key), evidence.get(key, ()))
         _prefetch(tx, (cited for found in evidence.values() for cited in found))
+
+    def source_term_matches(self, tx, pairs, terms: tuple[str, ...]) -> dict[tuple, set[str]]:
+        """Match already hydrated original bodies through their existing lexical postings.
+
+        The digest binds each result to this exact rendering and source version.
+        Withheld placeholders have a deliberately smaller index; missing sources
+        or empty projections also fall back to full-text matching in the caller.
+        These matches only rank admitted objects and never establish permission.
+        """
+        wanted = [
+            (candidate.ref, candidate.revision, hashlib.sha256(obj.content.encode("utf-8")).hexdigest())
+            for candidate, obj in pairs
+            if obj.kind == "event" and not withheld_tool_output({"role": "tool", "content": obj.content})
+        ]
+        if not wanted or not terms:
+            return {}
+        rows = tx._check().execute(
+            "SELECT e.event_id,e.source_revision,t.term FROM json_each(?) w "
+            "JOIN source_events e ON e.event_id=json_extract(w.value,'$[0]') "
+            "AND e.source_revision=json_extract(w.value,'$[1]') "
+            "AND e.content_sha256=json_extract(w.value,'$[2]') "
+            "LEFT JOIN lexical_postings p ON p.source_id=e.source_id AND p.term_id IN "
+            "(SELECT term_id FROM lexical_terms WHERE term IN (SELECT value FROM json_each(?))) "
+            "LEFT JOIN lexical_terms t ON t.term_id=p.term_id "
+            "WHERE EXISTS(SELECT 1 FROM lexical_postings any_term WHERE any_term.source_id=e.source_id)",
+            (json.dumps(wanted), json.dumps(terms)),
+        )
+        matched: dict[tuple, set[str]] = {}
+        for ref, revision, term in rows:
+            found = matched.setdefault(("event", ref, revision), set())
+            if term is not None:
+                found.add(term)
+        return matched
 
     def hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         """Reuse an immutable hydrated object only in this read snapshot and semantic context.
@@ -455,6 +504,12 @@ class RetrievalHydration:
         source = tx.source(candidate.ref, candidate.revision)
         if source is None or (context.mode == "auto" and source.suppressed):
             return None
+        obsolete, only_obsolete = lineage.source_evidence_status(
+            tx, source.ref, source.revision, context.now, include_history=context.mode in {"history", "as_of"}
+        )
+        if only_obsolete and context.mode in {"auto", "current"}:
+            tx.withheld_evidence.add((source.ref, source.revision))
+            return None
         if context.mode in LIVE_MODES and not _source_live(tx, candidate.ref, candidate.revision):
             return None
         if not in_time_window(source.event.get("occurred_at"), context):
@@ -474,7 +529,7 @@ class RetrievalHydration:
             )
         else:
             superseded = tx._check().execute(newer_sql, newer_params).fetchone() is not None
-        replaced = () if superseded else self._replaced_by(tx, source, context)
+        replaced = () if superseded else self.source_replacements(tx, source, context)
         event = source.event
         context_meta = bounded_source_context(event.get("source_context"))
         return RetrievedObject(
@@ -490,6 +545,12 @@ class RetrievalHydration:
             True,
             ("event",),
             metadata=(
+                *((("superseded_evidence", json.dumps(obsolete[:32])),) if obsolete else ()),
+                *(
+                    (("qualification_reason", "superseded_evidence"),)
+                    if obsolete and context.mode in {"history", "as_of"}
+                    else ()
+                ),
                 *_source_contexts_metadata([context_meta] if context_meta is not None else []),
                 *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
                 *_occurred_metadata(tx.sources.witnessed_at(source)),
@@ -498,7 +559,7 @@ class RetrievalHydration:
             ),
         )
 
-    def _replaced_by(self, tx, source, context: SearchContext) -> tuple[tuple[str, str, int], ...]:
+    def source_replacements(self, tx, source, context: SearchContext) -> tuple[tuple[str, str, int], ...]:
         """What states the values that hold now in place of every value a message states, as candidate keys: for each
         claim version it is evidence for that states a value, the version holding instead (``_holding_instead``) and
         the sources it stands on, deliverable and said after it (``_later_evidence``).  None when it states no value,

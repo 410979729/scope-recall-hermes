@@ -66,6 +66,7 @@ from .schema import (
     upgrade_1129,
     upgrade_1130,
     upgrade_1131,
+    upgrade_1132,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -110,6 +111,7 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1129,
             upgrade_1130,
             upgrade_1131,
+            upgrade_1132,
         ),
         strict=True,
     )
@@ -196,6 +198,9 @@ class Transaction:
         self.__memo_bytes = 0
         self.__parent: Transaction | None = None
         self.__authorized_sources: dict = {}
+        # Release diagnostics are semantic state, independent of the bounded
+        # read memo: disabling or filling that cache must not erase omissions.
+        self.withheld_evidence: set[tuple[str, int]] = set()
 
     def with_context(self, context: TrustedContext, *, writable: bool = False) -> Transaction:
         """Borrow this transaction for an authorized partition, without widening its scopes or lifetime."""

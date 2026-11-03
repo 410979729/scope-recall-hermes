@@ -24,6 +24,267 @@ def _search(core, ctx, query):
     )
 
 
+@pytest.mark.parametrize("case", ["pending_after_retraction", "procedure_changed", "valid_to_changed"])
+def test_superseded_support_follows_truth_head_and_structured_assertion(app, case):
+    from scope_recall.core.lineage import _withdrawn_support
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber.")
+    item = accept(core, ctx, draft(source, "amber", predicate="color")).items[0]
+    old = replace(core.current_claim(ctx, item.ref), current_revision=2)
+    new = replace(old, revision=2, replaces_revision=1, state="retracted", reason="explicit_retraction")
+    versions = (old, new)
+    if case == "pending_after_retraction":
+        versions += (replace(new, revision=3, replaces_revision=None, state="proposed"),)
+    elif case == "procedure_changed":
+        old = replace(old, payload={**old.payload, "kind": "procedure", "procedure": {"steps": ["old"]}})
+        new = replace(new, state="active", payload={**old.payload, "procedure": {"steps": ["new"]}})
+        versions = (old, new)
+    else:
+        new = replace(
+            new,
+            state="active",
+            valid_to="2027-01-01T00:00:00Z",
+            payload={**old.payload, "valid_to": "2027-01-01T00:00:00Z"},
+        )
+        versions = (old, new)
+    assert _withdrawn_support(versions, 1, core.clock.utc_now())
+
+
+def test_withheld_count_survives_the_public_gap_window(app):
+    from scope_recall.core.recall_packet import public_gaps
+    from scope_recall.core.retrieval_hydration import note_superseded_evidence
+
+    core, ctx = app
+    gaps = [f"TEST-gap-{i}" for i in range(16)]
+    seen = set()
+    with core.storage.read(ctx) as tx:
+        tx.withheld_evidence.add(("TEST-original", 1))
+        note_superseded_evidence(tx, gaps, seen)
+        note_superseded_evidence(tx, gaps, seen)
+    assert "superseded_evidence_withheld:1" in public_gaps(gaps)
+
+
+@pytest.mark.parametrize("reason", ["adoption_duplicate", "canonical_frame_reconciled", "fact_entailment_unproved"])
+def test_retracted_extraction_without_owner_withdrawal_keeps_its_original(app, reason):
+    from scope_recall.core.claims import Qualification
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber.")
+    item = accept(core, ctx, draft(source, "amber", predicate="color")).items[0]
+    with core.storage.write(ctx) as tx:
+        head = tx.claims.version(item.ref, 1)
+        tx.claims.append(
+            head.scope_id,
+            head.payload,
+            Qualification("retracted", "direct_report", reason),
+            previous=head,
+            expected_revision=1,
+            recorded_at=core.clock.utc_now(),
+        )
+    with core.storage.read(ctx) as tx:
+        obj = core.recall_pipeline.storage_reader.hydrate(
+            tx, CandidateRef("event", source.ref, 1, "lexical"), _search(core, ctx, "TEST-project color")
+        )
+    assert obj is not None and obj.content == source.event["content"]
+
+
+@pytest.mark.parametrize("value", ["silver", None])
+@pytest.mark.parametrize("mode", ["auto", "current"])
+def test_owner_replaced_evidence_is_withheld_only_from_current_content(app, value, mode):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber.")
+    item = accept(core, ctx, draft(source, "amber", predicate="color")).items[0]
+    management = MemoryManagement(core, InstallationMaintenance(ctx))
+    management.revise(item.ref, expected_revision=1, value=value)
+    candidate = CandidateRef("event", source.ref, 1, "lexical")
+    reader = core.recall_pipeline.storage_reader
+    search = replace(_search(core, ctx, "TEST-project color"), mode=mode)
+    with core.storage.read(ctx) as tx:
+        assert reader.hydrate(tx, candidate, search) is None
+    packet = core.recall_packet(ctx, recall_request(query="TEST-project color", mode=mode), deadline_seconds=10)
+    assert source.ref not in {obj["ref"] for obj in packet["items"]}
+    assert any(gap.startswith("superseded_evidence_withheld:") for gap in packet["gaps"]), packet
+
+
+def test_restoring_a_retired_extraction_does_not_turn_its_original_into_a_withdrawal(app):
+    from scope_recall.core.claims import Qualification
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber.")
+    with core.storage.write(ctx) as tx:
+        old = tx.claims.append(
+            "TEST-scope",
+            draft(source, "amber", predicate="color", statement_kind="assertion"),
+            Qualification("retracted", "direct_report", "adoption_duplicate"),
+            recorded_at=core.clock.utc_now(),
+        )
+    MemoryManagement(core, InstallationMaintenance(ctx)).revise(old.ref, expected_revision=1, value="amber")
+    with core.storage.read(ctx) as tx:
+        obj = core.recall_pipeline.storage_reader.hydrate(
+            tx, CandidateRef("event", source.ref, 1, "lexical"), _search(core, ctx, "TEST-project color")
+        )
+    assert obj is not None and obj.content == source.event["content"]
+
+
+def test_shared_current_evidence_and_unrelated_older_message_still_readable(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber and format Markdown.")
+    unrelated = capture(core, ctx, "TEST-project color amber.")
+    item = accept(core, ctx, draft(source, "amber", predicate="color")).items[0]
+    accept(core, ctx, draft(source, "Markdown", predicate="format"))
+    management = MemoryManagement(core, InstallationMaintenance(ctx))
+    management.revise(item.ref, expected_revision=1, value="silver")
+    with core.storage.read(ctx) as tx:
+        for event in (source, unrelated):
+            assert (
+                core.recall_pipeline.storage_reader.hydrate(
+                    tx, CandidateRef("event", event.ref, 1, "lexical"), _search(core, ctx, "TEST-project color")
+                )
+                is not None
+            )
+
+
+@pytest.mark.parametrize("mode", ["history", "as_of"])
+def test_historical_packet_and_inspect_explain_superseded_source(app, mode):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber.")
+    item = accept(core, ctx, draft(source, "amber", predicate="color")).items[0]
+    MemoryManagement(core, InstallationMaintenance(ctx)).revise(item.ref, expected_revision=1, value="silver")
+    request = recall_request(query="TEST-project color", mode=mode, max_items=30, budget_tokens=8000)
+    if mode == "as_of":
+        request["as_of"] = "2026-09-02T12:00:00Z"
+    packet = core.recall_packet(ctx, request, deadline_seconds=10)
+    event = next(obj for obj in packet["items"] if obj["ref"] == source.ref)
+    assert event["content"] == source.event["content"]
+    assert event["qualification_reason"] == "superseded_evidence"
+    inspected = core.inspect_object(ctx, source.ref, 1)
+    assert inspected.value.event == source.event
+    assert inspected.historical
+    assert f"superseded_evidence:{item.ref}@1" in inspected.gaps
+
+
+def test_compile_rechecks_owner_correction_and_keeps_unique_withholding_count(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.recall_packet import RecallPacketCompiler, bounded_packet, envelope_tokens
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber.")
+    item = accept(core, ctx, draft(source, "amber", predicate="color")).items[0]
+    request = recall_request(query="TEST-project color")
+    result = core.recall(ctx, request)
+    MemoryManagement(core, InstallationMaintenance(ctx)).revise(item.ref, expected_revision=1, value="silver")
+    search = _search(core, ctx, "TEST-project color")
+    packet = RecallPacketCompiler(core.recall_pipeline.storage_reader, clock=core.clock).compile(
+        search, result, core.storage
+    )
+    assert not any(obj["ref"] == source.ref for obj in packet["items"])
+    assert "superseded_evidence_withheld:1" in packet["gaps"]
+    constrained = bounded_packet({**packet, "unmet_needs": ["TEST-long " * 1000]}, 256)
+    assert envelope_tokens(constrained) <= 256
+    assert "superseded_evidence_withheld:1" in constrained["gaps"]
+
+
+def test_current_source_status_stops_at_the_first_unreplaced_support(app, monkeypatch):
+    from scope_recall.core.lineage import source_evidence_status
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project color amber.")
+    item = accept(core, ctx, draft(source, "amber", predicate="color")).items[0]
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for table, key in (("claims", "claim_id"), ("claim_versions", "claim_id"), ("evidence_links", "object_ref")):
+            row = dict(conn.execute(f"SELECT * FROM {table} WHERE {key}=?", (item.ref,)).fetchone())
+            names = list(row)
+            for index in range(400):
+                row[key] = f"TEST-current-support-{index:04}"
+                if table == "claims":
+                    row["slot_key"] = row[key]
+                conn.execute(
+                    f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
+                    [row[name] for name in names],
+                )
+    with core.storage.read(ctx) as tx:
+        repository = type(tx.claims)
+        native = repository.versions
+        calls = []
+
+        def versions(self, ref):
+            calls.append(ref)
+            return native(self, ref)
+
+        monkeypatch.setattr(repository, "versions", versions)
+        assert source_evidence_status(tx, source.ref, 1, core.clock.utc_now()) == ((), False)
+    assert len(calls) <= 2, len(calls)
+
+
+def test_source_content_use_probe_seeks_only_named_sources(app):
+    from scope_recall.core import lineage
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project amber.")
+    with core.storage.write(ctx) as tx:
+        for i in range(5000):
+            lineage.link(tx._check(write=True), "artifact", f"TEST-unrelated-artifact-{i}", 1, source.ref, 1)
+    steps = []
+    with core.storage.read(ctx) as tx:
+        conn = tx._check()
+        conn.set_progress_handler(lambda: steps.append(1) or 0, 100)
+        assert lineage.source_content_uses(conn, (("TEST-missing-source", 1),)) == {}
+        conn.set_progress_handler(None, 0)
+    assert len(steps) * 100 < 2000, len(steps) * 100
+
+
+def test_profile_work_does_not_follow_unrelated_fact_head_count(app):
+    """A shared scope's ordinary facts cannot increase profile head scanning."""
+    from scope_recall.core.background_context import _profile_rows
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project Markdown and blue.")
+    accept(core, ctx, draft(source, "Markdown", kind="preference", predicate="format"))
+    ordinary = accept(core, ctx, draft(source, "blue", kind="fact", predicate="color")).items[0]
+    search = _search(core, ctx, "Markdown")
+
+    def measured():
+        steps = []
+        with core.storage.read(ctx) as tx:
+            conn = tx._check()
+            conn.set_progress_handler(lambda: steps.append(1) or 0, 100)
+            rows = _profile_rows(tx, search)
+            conn.set_progress_handler(None, 0)
+        return rows, len(steps) * 100
+
+    before, baseline_steps = measured()
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        for table in ("claims", "claim_versions"):
+            row = dict(conn.execute(f"SELECT * FROM {table} WHERE claim_id=?", (ordinary.ref,)).fetchone())
+            names = list(row)
+            for index in range(3000):
+                row["claim_id"] = f"TEST-unrelated-profile-{index:04}"
+                if table == "claims":
+                    row["slot_key"] = row["claim_id"]
+                conn.execute(
+                    f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
+                    [row[name] for name in names],
+                )
+    after, expanded_steps = measured()
+    assert after == before
+    assert expanded_steps <= baseline_steps + 10000, (baseline_steps, expanded_steps)
+
+
 def test_old_relevant_preference_survives_busy_recent_window(app):
     core, ctx = app
     source = capture(core, ctx, "TEST-project 输出格式 Markdown。")

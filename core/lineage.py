@@ -18,6 +18,9 @@ larger ranking query rather than read it: the preference match in
 from __future__ import annotations
 
 import json
+from typing import cast
+
+from ..contracts import ClaimProposal
 
 _EVIDENCE_COLUMNS = "object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote"
 #: Versions one statement names at most when many are read together: two parameters each, far inside the 32,766
@@ -149,6 +152,129 @@ def supported_claims(conn, pairs) -> dict[tuple[str, int], tuple[tuple[str, int]
     for source_ref, source_revision, claim_ref, claim_revision in rows:
         supported.setdefault((source_ref, source_revision), set()).add((claim_ref, claim_revision))
     return {pair: tuple(sorted(claims)) for pair, claims in supported.items()}
+
+
+def _withdrawn_support(versions, revision, instant):
+    """Prove replacement by an effective direct report, never by head recency alone."""
+    from .claims import DENIED_REASON, canonical_time, same_assertion, select_effective
+
+    by_revision = {version.revision: version for version in versions}
+    stated = by_revision.get(revision)
+    if stated is None:
+        return False
+    head = by_revision[stated.current_revision]
+    effective = select_effective(versions, instant)
+    # Dedupe and failed extraction can retract a derived row without the
+    # person withdrawing its source. Only recorded owner withdrawals retire it.
+    withdrawal_reasons = {"local_user_management", "explicit_retraction", DENIED_REASON}
+    owner_withdrawal = head.reason in withdrawal_reasons
+    if effective is None and head.state == "retracted" and owner_withdrawal:
+        start = canonical_time(head.valid_from or head.recorded_from)
+        if start is not None and start <= (canonical_time(instant) or ""):
+            effective = head
+    if effective is None or effective.state not in {"active", "retracted"} or effective.basis != "direct_report":
+        return False
+    current_value = cast(
+        ClaimProposal,
+        {
+            **effective.payload,
+            **{key: stated.payload.get(key) for key in ("valid_from", "occurred_at")},
+        },
+    )
+    stated_withdrawal = stated.state == "retracted" and stated.reason in withdrawal_reasons
+    if effective.state != "retracted" and not stated_withdrawal and same_assertion(current_value, stated.payload):
+        return False
+    # Append records replacement edges rather than mutating the old version's
+    # state. Following those edges preserves future/disputed/proposed versions.
+    visited = set()
+    while effective.revision not in visited:
+        if effective.revision == revision:
+            return effective.state == "retracted"
+        visited.add(effective.revision)
+        previous = by_revision.get(effective.replaces_revision)
+        if previous is None:
+            return False
+        if previous.revision == revision:
+            return True
+        effective = previous
+    return False
+
+
+def source_evidence_status(
+    tx, ref: str, revision: int, instant: str, *, include_history: bool = False
+) -> tuple[tuple, bool]:
+    """Return obsolete supported versions and whether this source is only their evidence.
+
+    No text similarity participates. A source without recorded support, with
+    any unproven replacement, or with another current content use is retained.
+    Automatic empty episode membership is a container, not independent content.
+    Results belong only to this authority snapshot and audience.
+    Ordinary reads stop when any current use disproves exclusivity; historical
+    attribution enumerates obsolete supports even for a mixed source.
+    """
+
+    def load():
+        from .resume_compaction import resume_evidence_refs
+
+        supported = tx.remembered(
+            ("supported_claims", ref, revision),
+            lambda: supported_claims(tx._check(), ((ref, revision),)).get((ref, revision), ()),
+        )
+        if include_history:
+            tx.claims.prefetch_versions(ref for ref, _ in supported)
+        found = []
+        for pair in supported:
+            withdrawn = tx.remembered(
+                ("withdrawn_support", *pair, instant),
+                lambda pair=pair: _withdrawn_support(tx.claims.versions(pair[0]), pair[1], instant),
+            )
+            if withdrawn:
+                found.append(pair)
+            elif not include_history:
+                # One current use disproves exclusivity. A common source may
+                # support thousands of unrelated properties; none need loading.
+                return (), False
+        obsolete = tuple(found)
+        only = bool(obsolete) and len(obsolete) == len(supported)
+        if only:
+            rows = tx.remembered(
+                ("source_content_uses", ref, revision),
+                lambda: source_content_uses(tx._check(), ((ref, revision),)).get((ref, revision), ()),
+            )
+            for kind, key, rev in rows:
+                repository = {"artifact": tx.artifacts, "reference": tx.references, "episode": tx.episodes}[kind]
+                obj = repository.get(key)
+                if obj is not None and not obj.suppressed:
+                    current_use = (
+                        f"{ref}@{revision}" in resume_evidence_refs(obj.resume)
+                        if kind == "episode"
+                        else obj.revision == rev
+                    )
+                    if current_use:
+                        only = False
+        return obsolete, only
+
+    return tx.remembered(("source_evidence_status", ref, revision, instant, include_history), load)
+
+
+def source_content_uses(conn, pairs) -> dict[tuple[str, int], tuple]:
+    """Batch non-claim uses; empty automatic episode containers never require hydration."""
+    rows = _paged(
+        conn,
+        "WITH wanted(source_ref,source_revision) AS (VALUES {pairs}) "
+        "SELECT l.source_ref,l.source_revision,l.object_kind,l.object_ref,l.object_revision "
+        "FROM wanted w CROSS JOIN evidence_links l INDEXED BY evidence_dependents "
+        "ON l.source_ref=w.source_ref AND l.source_revision=w.source_revision "
+        "WHERE (object_kind IN ('artifact','reference') "
+        "OR (object_kind='episode' AND EXISTS(SELECT 1 FROM episodes e JOIN episode_versions v "
+        "ON v.episode_id=e.episode_id AND v.revision=e.current_revision "
+        "WHERE e.episode_id=l.object_ref AND v.resume_json IS NOT NULL)))",
+        pairs,
+    )
+    found: dict[tuple[str, int], list] = {}
+    for ref, revision, kind, key, rev in rows:
+        found.setdefault((ref, revision), []).append((kind, key, rev))
+    return {pair: tuple(uses) for pair, uses in found.items()}
 
 
 def claim_evidence(conn, pairs) -> dict[tuple[str, int], tuple[tuple[str, int], ...]]:

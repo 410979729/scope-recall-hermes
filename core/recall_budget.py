@@ -7,6 +7,7 @@ budget units merely because their encoding uses three bytes.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import re
@@ -48,6 +49,21 @@ _CJK = re.compile("[⺀-꓏가-힯豈-﫿\U00020000-\U000323af]+")
 
 
 def estimate_tokens(text: str) -> int:
+    """Reuse the exact estimate of bounded immutable text across ranking and release.
+
+    Entry and character limits bound retained source bodies. Larger serialized
+    packets use the same estimator without retaining their potentially large keys.
+    """
+    return _cached_estimate_tokens(text) if len(text) <= 65536 else _estimate_tokens(text)
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_estimate_tokens(text: str) -> int:
+    """Cache text values, so revisions or different renderings never share a verdict."""
+    return _estimate_tokens(text)
+
+
+def _estimate_tokens(text: str) -> int:
     """Estimate ASCII runs at four chars/token, CJK at one, symbols by bytes.
 
     Counted with string operations rather than one Python step per character: the packet weighs every
