@@ -19,12 +19,23 @@ from test_deletion import sqlite_backup
 
 
 def legacy_secret(core, context, monkeypatch, text="NameOne 密码：Xk9mP2qa"):
-    """Capture synthetic legacy data with only ingress secret admission bypassed."""
+    """Store synthetic legacy data: ingress secret admission bypassed, and no stored body scan verdict.
+
+    A row from a release before stored verdicts reaches the current schema with empty verdict columns, so recall
+    and inspect scan its body themselves. Capture under the bypass would otherwise record a clean verdict.
+    """
     from scope_recall.core import events
 
     with monkeypatch.context() as patch:
         patch.setattr(events, "redact_secret_text", lambda value: (value, 0))
-        return capture(core, context, text)
+        stored = capture(core, context, text)
+    with core.storage.write(context) as tx:
+        tx._check(write=True).execute(
+            "UPDATE source_events SET secret_scan_version=NULL,secret_scan_names=NULL,secret_scan_input_sha256=NULL "
+            "WHERE event_id=?",
+            (stored.ref,),
+        )
+    return stored
 
 
 @pytest.mark.parametrize(
