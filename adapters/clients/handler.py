@@ -500,17 +500,19 @@ class CodexHookHandler:
     def _handle_start_or_prompt(self, event, session_id, audience, payload, deadline):
         """Deliver and account for a normal start or prompt before confirming compaction."""
         context = self.context(audience, session_id, "host_generated")
-        # An entry state that cannot be read means nothing is injected; the reason stays visible to doctor
-        # and the host, e.g. SCHEMA_UNSUPPORTED while another process upgrades the store.
+        # An unreadable state cannot authorize capture or injection. A prompt still has an unsettled capture:
+        # remote clients must retain it, and the session-record ledger can recover it after the store returns.
         try:
             if self.core.entry_state(context)[0] == "paused":
                 self.note("entry_state:paused")
                 return {}
-        except ContractError as exc:
-            self.note(exc.code)
-            return {}
-        except (sqlite3.Error, OSError, ValueError, RuntimeError):
-            self.note("entry_state_unavailable")
+        except (ContractError, sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+            self.note(exc.code if isinstance(exc, ContractError) else "entry_state_unavailable")
+            if event == "UserPromptSubmit":
+                self.diagnostics.capture_stage = "ingress"
+                self.diagnostics.capture_durability = "not_persisted"
+                self.diagnostics.capture_error_type = type(exc).__name__
+                self.diagnostics.note_capture_error(exc.code if isinstance(exc, ContractError) else type(exc).__name__)
             return {}
         if event == "SessionStart":
             if (

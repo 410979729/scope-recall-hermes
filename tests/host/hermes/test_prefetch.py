@@ -7,9 +7,10 @@ import sys
 import types
 from datetime import timedelta, timezone
 
+import pytest
 from scope_recall.adapters.hermes import bind_hermes_identity
 from scope_recall.adapters.hermes.gating import is_trivial_prompt
-from scope_recall.contracts import validate_payload
+from scope_recall.contracts import ContractError, validate_payload
 from scope_recall.core import MemoryCore
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.retrieval import RetrievalResult
@@ -17,6 +18,28 @@ from scope_recall.core.retrieval import RetrievalResult
 from tests.v11_support import source_event
 
 _UNRELATED_QUERY = "紫色海豚量子温泉"
+
+
+def test_unreadable_entry_state_reports_prefetch_refusal_without_hiding_capture(adapter, monkeypatch):
+    provider, _clock = adapter
+    core = provider._require_core()
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-entry", user_message="TEST captured first")
+    entry_state, recall_packet = core.entry_state, core.recall_packet
+
+    def unavailable(*args, **kwargs):
+        raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_in_progress")
+
+    monkeypatch.setattr(core, "entry_state", unavailable)
+    monkeypatch.setattr(core, "recall_packet", lambda *a, **k: pytest.fail("recalled before state"))
+    assert provider.prefetch("TEST memory question") == ""
+    assert provider.diagnostics.last_prefetch_skip_reason == "entry_state_unavailable:SCHEMA_UNSUPPORTED"
+    assert not provider.diagnostics.capture_failures
+    with core.storage.read(provider._require_identity().trusted_context()) as tx:
+        assert tx._check().execute("SELECT content FROM source_events").fetchall()[0][0] == "TEST captured first"
+    monkeypatch.setattr(core, "entry_state", entry_state)
+    monkeypatch.setattr(core, "recall_packet", recall_packet)
+    provider.prefetch("TEST unrelated question after recovery")
+    assert provider.diagnostics.last_prefetch_skip_reason != "entry_state_unavailable:SCHEMA_UNSUPPORTED"
 
 
 def test_prefetch_removes_inline_private_from_query_and_recent_context(adapter):

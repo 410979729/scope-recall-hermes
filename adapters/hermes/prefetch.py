@@ -111,6 +111,7 @@ class Prefetch:
         else:
             reason = "entry_state:paused"
         if paused:
+            self._adapter._diagnostics.last_prefetch_skip_reason = reason
             self._adapter._diagnostics.capability_gaps = (*self._adapter._diagnostics.capability_gaps, reason)
             return ""
         mode = read_mode(context) if callable(read_mode) else None

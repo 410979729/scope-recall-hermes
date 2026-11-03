@@ -1,12 +1,76 @@
 """The hook preserves the reason a capture was refused."""
 
+from contextlib import closing
+
+import pytest
 from scope_recall.adapters.clients import CodexHookHandler
-from scope_recall.contracts import TrustedContext
+from scope_recall.contracts import ContractError, TrustedContext
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
 
 from tests.host.codex.test_merged_host_boundaries import client
 from tests.host.codex.test_shared_client import store
+
+
+@pytest.mark.parametrize("event", ["UserPromptSubmit", "SessionStart"])
+def test_unreadable_entry_state_preserves_prompt_capture_error(client, tmp_path, monkeypatch, event):
+    _root, home, host = client
+    if event == "SessionStart" and host in {"workbuddy", "dsh"}:
+        pytest.skip("host has no SessionStart hook")
+    with closing(CodexHookHandler.from_home(str(home), host)) as hook:
+
+        def unavailable(*args, **kwargs):
+            raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_in_progress")
+
+        monkeypatch.setattr(hook.core, "entry_state", unavailable)
+        monkeypatch.setattr(hook.core, "record_host_event", lambda *a, **k: pytest.fail("captured before state"))
+        monkeypatch.setattr(hook.core, "recall_packet", lambda *a, **k: pytest.fail("recalled before state"))
+        result = hook.handle_payload(
+            dict(
+                hook_event_name=event,
+                session_id="TEST-session",
+                turn_id="TEST-unreadable",
+                cwd=str(tmp_path),
+                prompt="TEST entry unavailable",
+            )
+        )
+        assert result == {} and hook.diagnostics.last_reason == "SCHEMA_UNSUPPORTED"
+        assert hook.diagnostics.capture_error_detail == ("SCHEMA_UNSUPPORTED" if event == "UserPromptSubmit" else None)
+        assert hook.diagnostics.capture_settled is (event != "UserPromptSubmit")
+        assert hook.diagnostics.injection_tokens == 0
+
+
+def test_remote_unreadable_entry_state_keeps_prompt_retryable(client, tmp_path, monkeypatch):
+    from scope_recall.adapters.clients import remote_server
+    from scope_recall.core import MemoryCore
+
+    _root, home, host = client
+
+    def unavailable(*args, **kwargs):
+        raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_in_progress")
+
+    monkeypatch.setattr(MemoryCore, "entry_state", unavailable)
+    monkeypatch.setattr(MemoryCore, "record_host_event", lambda *a, **k: pytest.fail("captured before state"))
+    config = remote_server.RemoteServerConfig(home=home, host=host, listen="127.0.0.1", port=1, token_sha256="0" * 64)
+    reply = remote_server.handle_request(
+        config,
+        {
+            "payload": dict(
+                hook_event_name="UserPromptSubmit",
+                session_id="TEST-remote",
+                turn_id="TEST-unreadable",
+                cwd=str(tmp_path),
+                prompt="TEST entry unavailable",
+            )
+        },
+    )
+    assert (reply["result"], reply["reason"], reply["error"], reply["retry"]) == (
+        {"private_rules": False} if host == "dsh" else {},
+        "SCHEMA_UNSUPPORTED",
+        "SCHEMA_UNSUPPORTED",
+        True,
+    )
+    assert reply["injection"]["injection_tokens"] == 0
 
 
 def test_hook_reports_entry_state(client, tmp_path, monkeypatch):
