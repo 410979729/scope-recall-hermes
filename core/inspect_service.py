@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..contracts import ContractError, TrustedContext
+from . import lineage
 from .injection_guard import notice
 from .review_policy import REVIEW_REASONS
 from .storage import SQLiteStorage
@@ -86,4 +87,12 @@ def inspect_object(
         and revision is not None
         and (item.revision != item.current_revision or item.state == "superseded")
     )
-    return InspectedObject(kind, ref, actual_revision, item, status.memory_epoch, historical=historical)
+    gaps = ()
+    if kind == "event":
+        with storage.read(context) as tx:
+            obsolete, only_obsolete = lineage.source_evidence_status(
+                tx, ref, actual_revision, clock.utc_now(), include_history=True
+            )
+        historical |= only_obsolete
+        gaps = tuple(f"superseded_evidence:{claim}@{rev}" for claim, rev in obsolete[:limit])
+    return InspectedObject(kind, ref, actual_revision, item, status.memory_epoch, gaps=gaps, historical=historical)

@@ -54,6 +54,7 @@ from .retrieval import (
     SearchLimits,
     effective_limits,
 )
+from .retrieval_hydration import note_superseded_evidence
 from .retrieval_storage import RetrievalStorage
 
 _AUTHORITY_GAP_PREFIXES = ("sqlite_unavailable",)
@@ -219,6 +220,7 @@ class _Draft:
     items: list[RecallItem] = field(default_factory=list)
     objects: list[RetrievedObject] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    withheld_evidence: set[tuple[str, int]] = field(default_factory=set)
     unmet_needs: list[str] = field(default_factory=list)
     stale_drops: int = 0
     budget_drops: int = 0
@@ -355,7 +357,7 @@ def bounded_packet(packet: RecallPacket, budget: int) -> RecallPacket:
         status="unavailable",
         memory_epoch=None,
         items=[],
-        gaps=["budget_packet_cap"],
+        gaps=["budget_packet_cap", *[gap for gap in packet["gaps"] if gap.startswith("superseded_evidence_withheld:")]],
         diagnostic_ref=None,
         answerability="unknown",
         coverage="unknown",
@@ -389,7 +391,12 @@ class RecallPacketCompiler:
         started = self._clock.monotonic()
         limits = effective_limits(context)
         draft = _Draft(
-            context, result, result.memory_epoch, gaps=list(result.gaps), unmet_needs=list(result.unmet_needs)
+            context,
+            result,
+            result.memory_epoch,
+            gaps=list(result.gaps),
+            unmet_needs=list(result.unmet_needs),
+            withheld_evidence=set(result.withheld_evidence),
         )
         if self._remaining_ms(context) == 0:
             draft.gaps.append("deadline_exceeded_compile")
@@ -423,10 +430,17 @@ class RecallPacketCompiler:
         if draft.items and self._remaining_ms(context) == 0:
             draft.expire()
         packet = self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
-        self._note_selection(verified, packet)
         extended = append_overflow(
-            storage, replace(context, limits=limits), result, packet, self.storage_reader, self._clock
+            storage,
+            replace(context, limits=limits),
+            replace(result, withheld_evidence=tuple(sorted(draft.withheld_evidence))),
+            packet,
+            self.storage_reader,
+            self._clock,
         )
+        if draft.withheld_evidence or extended["gaps"] != packet["gaps"]:
+            extended = bounded_packet(extended, limits.budget_tokens)
+        self._note_selection(verified, extended)
         if extended is not packet:
             self._record_extension(packet, extended, started, context)
         return extended
@@ -455,13 +469,16 @@ class RecallPacketCompiler:
             metrics.pop("ref")
             measured = canonical_render_json(extended)
             metrics.update(
+                compile_gaps=tuple(gap for gap in extended["gaps"] if gap not in record.retrieval_gaps),
                 items_delivered=len(extended["items"]),
                 rendered_bytes=len(measured.encode("utf-8")),
                 estimated_tokens=estimate_tokens(measured),
                 elapsed_ms=int((self._clock.monotonic() - started) * 1000),
                 deadline_remaining_ms=self._remaining_ms(context),
             )
-            extended["diagnostic_ref"] = self.diagnostics.record(**metrics)
+            reference = self.diagnostics.record(**metrics)
+            if extended.get("diagnostic_ref") is not None:
+                extended["diagnostic_ref"] = reference
 
     # -- release --------------------------------------------------------------
 
@@ -527,6 +544,7 @@ class RecallPacketCompiler:
                         draft.gaps.append("deadline_exceeded_release")
                         break
                     fresh = self._recheck(tx, context, candidate, item, draft.gaps)
+                    note_superseded_evidence(tx, draft.gaps, draft.withheld_evidence)
                     if fresh is None:
                         draft.stale_drops += 1
                         draft.answer_dropped |= not is_background(item)
@@ -557,7 +575,9 @@ class RecallPacketCompiler:
                 self._prefetch(tx, context, verified)
                 verified = fence_entity_query(tx, context, verified, draft.gaps)
                 for candidate, obj in verified:
-                    if self._recheck(tx, context, candidate, obj, draft.gaps) is None:
+                    fresh = self._recheck(tx, context, candidate, obj, draft.gaps)
+                    note_superseded_evidence(tx, draft.gaps, draft.withheld_evidence)
+                    if fresh is None:
                         return draft.discard(verified, "release_delete_fence")
                     if self._remaining_ms(context) == 0:
                         return draft.discard(verified, "deadline_exceeded_release_fence")

@@ -313,11 +313,10 @@ class _Pool:
             if source is None or source.event.get("origin") != "human_direct":
                 continue
 
-            def load(key=key, revision=revision):
-                obj = RetrievalHydration().hydrate(
-                    self.tx, CandidateRef("event", key, revision, "relation"), self.context
-                )
-                return replacements(obj) if obj is not None else ()
+            def load(source=source):
+                # Attribution needs the replacement proof, not publication of
+                # the obsolete original's body as another candidate.
+                return RetrievalHydration().source_replacements(self.tx, source, self.context)
 
             targets = self.tx.remembered(
                 ("restatement_replacements", key, revision, self.context.mode, self.context.now), load

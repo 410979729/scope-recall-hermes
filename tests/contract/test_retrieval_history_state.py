@@ -105,15 +105,15 @@ def _item_keys(packet):
 
 
 @pytest.mark.parametrize("mode", ["current", "auto"])
-def test_a_message_whose_value_was_replaced_follows_what_replaced_it(replaced, mode):
+def test_current_recall_withholds_the_message_whose_value_was_replaced(replaced, mode):
     core, ctx, _old, said, new, changed = replaced
     result = core.recall(ctx, recall_request(query=_QUESTION, mode=mode), deadline_seconds=30)
     keys = _keys(result.items)
     current = [keys.index(key) for key in (("claim", new.ref, new.revision), ("event", changed.ref, 1)) if key in keys]
-    assert current and min(current) < keys.index(("event", said.ref, 1))
+    assert current and ("event", said.ref, 1) not in keys
     status = {key: item.temporal_status for key, item in zip(keys, result.items, strict=True)}
-    assert status[("event", said.ref, 1)] == "historical", "what it says no longer holds"
     assert status[("event", changed.ref, 1)] == "current"
+    assert "superseded_evidence_withheld:1" in result.gaps
 
 
 def test_a_packet_too_small_for_both_leads_with_the_value_that_holds(replaced):
@@ -126,15 +126,17 @@ def test_a_packet_too_small_for_both_leads_with_the_value_that_holds(replaced):
     )
     keys = _item_keys(packet)
     assert keys[0] in {("claim", new.ref, new.revision), ("event", changed.ref, 1)}
-    assert keys[1] == ("event", said.ref, 1) and packet["items"][1]["temporal_status"] == "historical"
+    assert ("event", said.ref, 1) not in keys
+    assert keys[1] in {("claim", new.ref, new.revision), ("event", changed.ref, 1)}
 
 
-def test_a_message_the_caller_names_keeps_its_place_first(replaced):
+def test_current_focus_is_not_a_historical_inspection_bypass(replaced):
     core, ctx, _old, said, _new, _changed = replaced
     request = recall_request(query=_QUESTION, mode="current", focus_refs=[f"{said.ref}@1"])
     result = core.recall(ctx, request, deadline_seconds=30)
-    assert _keys(result.items)[0] == ("event", said.ref, 1)
-    assert result.items[0].temporal_status == "historical"
+    assert ("event", said.ref, 1) not in _keys(result.items)
+    assert "superseded_evidence_withheld:1" in result.gaps
+    assert core.inspect_object(ctx, said.ref, 1).value.event["content"] == said.event["content"]
 
 
 @pytest.mark.parametrize("mode", ["history", "as_of"])
@@ -155,20 +157,20 @@ def test_a_read_of_the_past_still_finds_the_value_said_then(replaced, mode):
         assert core.current_claim(ctx, old.ref, as_of=as_of["as_of"]).payload["value_text"] == "Jenkins"
 
 
-def test_a_question_that_names_the_day_keeps_what_was_said_then_first(replaced):
+def test_a_day_in_current_query_does_not_override_the_evidence_lifecycle(replaced):
     core, ctx, _old, said, _new, _changed = replaced
     question = f"9月1日 {_QUESTION}"
     result = core.recall(ctx, recall_request(query=question, mode="current"), deadline_seconds=30, zone=UTC)
-    assert _keys(result.items)[0] == ("event", said.ref, 1)
-    assert result.items[0].temporal_status == "historical", "the label says what holds now, whatever is asked"
+    assert ("event", said.ref, 1) not in _keys(result.items)
+    assert "superseded_evidence_withheld:1" in result.gaps
 
 
-def test_a_question_about_what_held_before_keeps_the_order_it_was_ranked(replaced):
+def test_before_wording_requires_an_explicit_historical_mode_for_old_evidence(replaced):
     core, ctx, _old, said, _new, _changed = replaced
     question = "TEST-project 以前用的 CI 服务是什么？"
     result = core.recall(ctx, recall_request(query=question, mode="current"), deadline_seconds=30)
-    assert _keys(result.items)[0] == ("event", said.ref, 1)
-    assert result.items[0].temporal_status == "historical", "the label says what holds now, whatever is asked"
+    assert ("event", said.ref, 1) not in _keys(result.items)
+    assert "superseded_evidence_withheld:1" in result.gaps
 
 
 def _message(ref, *replaced_by):
@@ -220,7 +222,7 @@ def test_a_question_about_what_was_said_before_still_leads_with_the_value_that_h
     result = core.recall(ctx, recall_request(query=question, mode="current"), deadline_seconds=30)
     keys = _keys(result.items)
     current = [keys.index(key) for key in (("claim", new.ref, new.revision), ("event", changed.ref, 1)) if key in keys]
-    assert current and min(current) < keys.index(("event", said.ref, 1))
+    assert current and ("event", said.ref, 1) not in keys
 
 
 @pytest.mark.parametrize(
@@ -239,7 +241,7 @@ def test_messages_moved_behind_one_item_keep_the_order_they_were_ranked_in(app, 
     assert _reordered(app, "Which CI service does TEST-project use?", *pairs) == [f"TEST-{name}" for name in order]
 
 
-def test_a_packet_too_small_for_every_replaced_value_keeps_the_one_ranked_first(app, monkeypatch):
+def test_small_current_packet_never_spends_slots_on_replaced_evidence(app, monkeypatch):
     core, ctx = app
     _first, said_first = _fact(core, ctx, "TEST-project 的 CI 服务是 Jenkins。", "Jenkins", _SAID)
     _second, said_second = _fact(core, ctx, "TEST-project 的 CI 服务是 CircleCI。", "CircleCI", "2026-09-02T12:00:00Z")
@@ -257,7 +259,9 @@ def test_a_packet_too_small_for_every_replaced_value_keeps_the_one_ranked_first(
     )
     keys = _item_keys(packet)
     assert keys[0] in {("claim", new.ref, new.revision), ("event", changed.ref, 1)}
-    assert len(old) == 2 and keys[1] == old[0], "the replaced value ranked first stays"
+    assert old == []
+    assert ("event", said_first.ref, 1) not in keys and ("event", said_second.ref, 1) not in keys
+    assert "superseded_evidence_withheld:2" in packet["gaps"]
 
 
 def test_a_message_with_a_value_that_still_holds_is_not_replaced(app):
@@ -272,9 +276,8 @@ def test_a_message_with_a_value_that_still_holds_is_not_replaced(app):
     assert status[("event", said.ref, 1)] == "current", "its deployment region still holds"
 
 
-def test_a_replacement_its_reader_cannot_be_given_replaces_nothing(app):
-    """The version holding instead stands on a message edited since, so neither is delivered: the old message is not
-    labelled replaced by what its reader cannot see."""
+def test_unavailable_replacement_evidence_does_not_revive_an_obsolete_value(app):
+    """A missing newer source supplies no answer and cannot restore the old assertion."""
     core, ctx = app
     _old, said = _fact(core, ctx, "TEST-project 的 CI 服务是 Jenkins。", "Jenkins", _SAID)
     moved = capture(core, ctx, "TEST-project 的 CI 服务换成 GitHub Actions 了。", key="TEST-moved", when=_CHANGED)
@@ -283,7 +286,8 @@ def test_a_replacement_its_reader_cannot_be_given_replaces_nothing(app):
     capture(core, ctx, "TEST-project 的 CI 服务。", key="TEST-moved", revision=2, when=_CHANGED)
     result = core.recall(ctx, recall_request(query=_QUESTION, mode="current"), deadline_seconds=30)
     status = {key: item.temporal_status for key, item in zip(_keys(result.items), result.items, strict=True)}
-    assert status[("event", said.ref, 1)] == "current"
+    assert ("event", said.ref, 1) not in status
+    assert "superseded_evidence_withheld:1" in result.gaps
 
 
 def test_a_later_statement_the_store_did_not_take_is_not_replaced_by_the_older_value(app):

@@ -367,6 +367,9 @@ class RetrievalResult:
     # Defaults preserve callers that construct results without optional excerpts.
     overflow_candidates: tuple[CandidateRef, ...] = field(default=(), compare=False, repr=False)
     overflow_policy_revision: int | None = field(default=None, compare=False, repr=False)
+    # Private identities deduplicate content-free withholding diagnostics across
+    # fresh release snapshots. They are never rendered into the public packet.
+    withheld_evidence: tuple[tuple[str, int], ...] = field(default=(), compare=False, repr=False)
 
     def release_context(self, context: SearchContext) -> SearchContext:
         """Carry the effective total cutoff into every compiler entry point."""

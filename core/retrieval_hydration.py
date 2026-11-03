@@ -61,6 +61,16 @@ def source_key(ref: str, revision: int) -> str:
     return f"{ref}@{revision}"
 
 
+def note_superseded_evidence(tx, gaps: list[str], seen: set | None = None) -> set:
+    """Merge snapshot-local withheld identities; only a deduplicated count leaves core."""
+    seen = set() if seen is None else seen
+    seen.update(getattr(tx, "withheld_evidence", ()))
+    if seen:
+        gaps[:] = [gap for gap in gaps if not gap.startswith("superseded_evidence_withheld:")]
+        gaps.insert(0, f"superseded_evidence_withheld:{len(seen)}")
+    return seen
+
+
 def _is_source_ref(value: object) -> bool:
     try:
         parse_source_ref(cast(str, value))
@@ -260,7 +270,7 @@ def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
 
 def replacements(obj: RetrievedObject) -> tuple[tuple[str, str, int], ...]:
     """What states the values that hold in place of every value a hydrated message states
-    (``RetrievalHydration._replaced_by``), as candidate keys (kind, ref, revision); none for anything else."""
+    (``RetrievalHydration.source_replacements``), as candidate keys (kind, ref, revision); none for anything else."""
     keys = json.loads(dict(obj.metadata).get("replaced_by") or "[]")
     return tuple((str(kind), str(ref), int(revision)) for kind, ref, revision in keys)
 
@@ -401,13 +411,17 @@ class RetrievalHydration:
             self._prefetch_replacements(tx, events, context)
 
     def _prefetch_replacements(self, tx, events, context: SearchContext) -> None:
-        """What ``_replaced_by`` reads for these messages, loaded together: the claim versions each is evidence for
+        """What ``source_replacements`` reads for these messages, loaded together: the supported claim versions
         and those claims' versions, what holds in place of the values they state (``_holding_instead``, kept for the
         recall's instant), then the evidence of every version holding instead and those sources.  A page of each,
         however many messages and replacements.  A claim's first judgement stays the page ``prefetch`` already read
         (``_judgements``); this does not widen who may see a source."""
         conn = tx._check()
         supported = lineage.supported_claims(conn, events)
+        other_uses = lineage.source_content_uses(conn, events)
+        for pair in events:
+            tx.remember(("supported_claims", *pair), supported.get(pair, ()))
+            tx.remember(("source_content_uses", *pair), other_uses.get(pair, ()))
         tx.claims.prefetch_versions(ref for found in supported.values() for ref, _revision in found)
         holding = {pair: self._holding_instead(tx, supported.get(pair, ()), context) for pair in events}
         for pair, found in holding.items():
@@ -490,6 +504,12 @@ class RetrievalHydration:
         source = tx.source(candidate.ref, candidate.revision)
         if source is None or (context.mode == "auto" and source.suppressed):
             return None
+        obsolete, only_obsolete = lineage.source_evidence_status(
+            tx, source.ref, source.revision, context.now, include_history=context.mode in {"history", "as_of"}
+        )
+        if only_obsolete and context.mode in {"auto", "current"}:
+            tx.withheld_evidence.add((source.ref, source.revision))
+            return None
         if context.mode in LIVE_MODES and not _source_live(tx, candidate.ref, candidate.revision):
             return None
         if not in_time_window(source.event.get("occurred_at"), context):
@@ -509,7 +529,7 @@ class RetrievalHydration:
             )
         else:
             superseded = tx._check().execute(newer_sql, newer_params).fetchone() is not None
-        replaced = () if superseded else self._replaced_by(tx, source, context)
+        replaced = () if superseded else self.source_replacements(tx, source, context)
         event = source.event
         context_meta = bounded_source_context(event.get("source_context"))
         return RetrievedObject(
@@ -525,6 +545,12 @@ class RetrievalHydration:
             True,
             ("event",),
             metadata=(
+                *((("superseded_evidence", json.dumps(obsolete[:32])),) if obsolete else ()),
+                *(
+                    (("qualification_reason", "superseded_evidence"),)
+                    if obsolete and context.mode in {"history", "as_of"}
+                    else ()
+                ),
                 *_source_contexts_metadata([context_meta] if context_meta is not None else []),
                 *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
                 *_occurred_metadata(tx.sources.witnessed_at(source)),
@@ -533,7 +559,7 @@ class RetrievalHydration:
             ),
         )
 
-    def _replaced_by(self, tx, source, context: SearchContext) -> tuple[tuple[str, str, int], ...]:
+    def source_replacements(self, tx, source, context: SearchContext) -> tuple[tuple[str, str, int], ...]:
         """What states the values that hold now in place of every value a message states, as candidate keys: for each
         claim version it is evidence for that states a value, the version holding instead (``_holding_instead``) and
         the sources it stands on, deliverable and said after it (``_later_evidence``).  None when it states no value,

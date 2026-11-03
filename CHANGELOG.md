@@ -4,6 +4,11 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Background profile windows use a partial covering index installed by the automatic store upgrade. After an
+effective owner correction or withdrawal, current and automatic recall withhold source bodies that support only
+the replaced versions, reporting a deduplicated count. Shared current evidence and independent messages remain
+readable; history, as-of reads and inspection retain the original with its superseded-evidence attribution.
+
 Recall ranking reads original source terms from their existing lexical index, bound to the exact version and
 body digest. Lexical candidates aggregate matching postings before each source metadata read, while keeping
 all visibility and temporal fences before truncation. Different renderings and tool placeholders retain full-text

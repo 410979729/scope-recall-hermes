@@ -6,7 +6,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1132
+SCHEMA_VERSION = 1133
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -17,6 +17,12 @@ APPLICATION_ID = 0x5352434C
 SOURCE_SESSION_INDEX = (
     "CREATE INDEX IF NOT EXISTS source_session ON source_events(session_id,scope_id,event_id,source_revision)"
 )
+
+# Profile selection must enumerate profile heads before joining their versions.
+# The predicate matches every profile window, including its audience flags.
+CLAIM_PROFILE_INDEX = """CREATE INDEX claim_profile_heads ON claims
+    (scope_id,project_id,branch_id,claim_id,current_revision,pinned,importance,kind)
+    WHERE kind IN ('preference','constraint') AND read_blocked=0 AND suppressed=0"""
 
 OBJECT_TABLES = {
     "event": ("source_events", "event_id"),
@@ -806,6 +812,7 @@ STATEMENTS = (
     + SUMMARY_STATEMENTS
     + CLAIM_RANK_STATEMENTS
     + CLAIM_VERSION_TERM_STATEMENTS
+    + (CLAIM_PROFILE_INDEX,)
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
     + SESSION_BRIEF_STATEMENTS
@@ -1291,3 +1298,10 @@ def upgrade_1131(connection):
     )
     connection.execute("UPDATE instance_meta SET schema_version=1132 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1132")
+
+
+def upgrade_1132(connection):
+    """Install the profile covering index without rewriting facts or evidence."""
+    connection.execute(CLAIM_PROFILE_INDEX)
+    connection.execute("UPDATE instance_meta SET schema_version=1133 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1133")

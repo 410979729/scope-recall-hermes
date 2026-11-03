@@ -57,7 +57,7 @@ from .retrieval import (
     effective_limits,
     optional_json,
 )
-from .retrieval_hydration import replacements
+from .retrieval_hydration import note_superseded_evidence, replacements
 from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import note_embedding_failure, vector_failure_label
 
@@ -1049,10 +1049,12 @@ class RetrievalPipeline:
                 with timings.measure("select"):
                     ranked, query_items, overflow = self._select(tx, working, hydrated, gaps)
                 question = self._admission_query(working)
+                withheld = note_superseded_evidence(tx, gaps)
                 return replace(
                     self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated), question),
                     overflow_candidates=overflow,
                     overflow_policy_revision=private.rule_revision(tx) if overflow else None,
+                    withheld_evidence=tuple(sorted(withheld)),
                 )
         except ContractError as exc:
             if exc.code == "DEADLINE_EXCEEDED":
