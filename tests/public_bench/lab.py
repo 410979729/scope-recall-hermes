@@ -69,7 +69,9 @@ class Lab:
         self.clock.realtime = True
         self.binding = InstanceBinding(
             "public-bench",
-            "public-bench-install",
+            "shared-install:" + digest("TEST-public-bench-install")[:32]
+            if installation_kind == "shared"
+            else "public-bench-install",
             root / "truth",
             scopes or frozenset({"public"}),
             installation_kind=installation_kind,

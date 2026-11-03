@@ -287,6 +287,7 @@ SUITES = {
     "retrieval": [
         "tests/contract/test_claim_lexical_index.py",
         "tests/public_bench/test_public_bench.py",
+        "tests/public_bench/test_real_hosts.py",
         "tests/contract/test_retrieval_pipeline.py",
         "tests/contract/test_recall_restatement.py",
         "tests/contract/test_recall_overflow.py",
