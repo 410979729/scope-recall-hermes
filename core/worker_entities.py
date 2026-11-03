@@ -23,6 +23,7 @@ from .worker_outcomes import (
     hold_for_private_mode,
     mark_obsolete,
     model_failure,
+    record_error_detail,
     stale_result,
     work_result,
 )
@@ -209,10 +210,8 @@ def _publish(storage, clock, context, item, prepared, started, budget):
             "UPDATE claim_versions SET entity_resolved=1 WHERE claim_id=? AND revision=?", (source.ref, source.revision)
         )
         if gap:
-            tx._check(write=True).execute(
-                "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,recorded_at) VALUES "
-                "(?,?,'entity',?,?)",
-                (item.work_id, item.lease_token, gap, now),
+            record_error_detail(
+                tx._check(write=True), item.work_id, item.lease_token, now=now, stage="entity", code=gap
             )
         return work_result(tx.work.complete(*item.lease, now=now))
 

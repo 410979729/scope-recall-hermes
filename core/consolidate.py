@@ -23,7 +23,13 @@ from .failure_retry import validation_feedback as safe_feedback
 from .language_resources import model_consolidation_schema, prompt_text
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
 from .secret_patterns import cut_between_runs
-from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
+from .worker_outcomes import (
+    DerivationFence,
+    claim_versions_mark,
+    claims_changed,
+    derivation_changed,
+    record_error_detail,
+)
 
 if TYPE_CHECKING:
     from .source_records import StoredSource
@@ -376,11 +382,11 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
                 ):
                     raise ContractError("DERIVATION_INVALID", "fragment_evidence")
         # Named where a dropped whole-message summary is (``apply_summary``), so an operator sees what a page lost.
-        tx._check(write=True).executemany(
-            """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
-               VALUES (?,?,'summary','DERIVATION_INVALID',?,?)""",
-            [(fence.work_id, fence.lease_token, field, now) for field in dropped],
-        )
+        conn = tx._check(write=True)
+        for field in dropped:
+            record_error_detail(
+                conn, fence.work_id, fence.lease_token, now=now, stage="summary", code="DERIVATION_INVALID", field=field
+            )
         return dropped
     return []
 
@@ -392,11 +398,10 @@ def _drop_claims(tx, fence: ConsolidationWorkFence, fields: list[str] | tuple[st
     result is partial whenever it leaves out an ungrounded claim.
     """
     conn = tx._check(write=True)
-    conn.executemany(
-        """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
-           VALUES (?,?,'claim','DERIVATION_INVALID',?,?)""",
-        [(fence.work_id, fence.lease_token, field, now) for field in fields],
-    )
+    for field in fields:
+        record_error_detail(
+            conn, fence.work_id, fence.lease_token, now=now, stage="claim", code="DERIVATION_INVALID", field=field
+        )
     if fence.chunk is None:
         mark_partial(conn, fence.work_id, fields[0], now)
     return fields[0]

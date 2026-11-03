@@ -596,17 +596,57 @@ def released(monkeypatch):
     return version
 
 
-def test_a_candidate_declares_no_core_in_the_home_plugin_directory(tmp_path, monkeypatch):
-    """A requirement Hermes cannot resolve fails its whole build, so a candidate writes no ``pyproject.toml``."""
-    from scope_recall.maintenance import install_hermes
+@pytest.mark.parametrize("command", ["plan-install", "apply-install"])
+def test_development_install_replaces_old_home_declaration(tmp_path, capsys, command):
+    from scope_recall.maintenance import cli as maintenance_cli
 
-    project = install_hermes.wrapper_pyproject
-    monkeypatch.setattr(install_hermes, "wrapper_pyproject", lambda version="3.10.4rc1": project(version))
     instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
     inside = instance_root / "plugins" / "scope-recall"
-    planned = install_hermes.planned_files(_hermes_plan(instance_root, inside, project_root))
-    assert inside / "plugin.yaml" in planned and inside / "pyproject.toml" not in planned
-    assert install_hermes.wrapper_pyproject("3.10.4rc1") is None
+    _hand_made_wrapper(inside)
+    (inside / "pyproject.toml").write_text(
+        '[project]\nname = "old"\nversion = "0.0.0"\ndependencies = ["hermes-scope-recall[lancedb]==3.16.0"]\n',
+        encoding="utf-8",
+    )
+    args = [
+        "--host",
+        "hermes",
+        "--target-plugin-dir",
+        str(inside),
+        "--instance-root",
+        str(instance_root),
+        "--project-root",
+        str(project_root),
+        "--agent-id",
+        "TEST-agent",
+        "--python",
+        sys.executable,
+        "--test-mode",
+    ]
+    assert maintenance_cli.main([command, *args]) == 0
+    result = json.loads(capsys.readouterr().out)
+    if command == "plan-install":
+        assert any(c["path"] == str(inside / "pyproject.toml") and c["action"] == "replace" for c in result["changes"])
+        notes = " ".join(c.get("detail", "") for c in result["changes"] if c["action"] == "restart")
+        assert all(part in notes for part in ("UV_FIND_LINKS", "hermes_cli.venv_sync", "hermes update", "disabled"))
+    else:
+        dependencies = tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+        assert dependencies == [f"hermes-scope-recall[vectors]=={__version__}"]
+        assert "pip_dependencies" not in yaml.safe_load((inside / "plugin.yaml").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("version", ["4.0.0rc1", "4.0.0.dev1", "4.0.0+local"])
+def test_non_pypi_home_declarations_pin_exact_version(tmp_path, monkeypatch, version):
+    from scope_recall.maintenance import install_hermes
+
+    monkeypatch.setattr(install_hermes, "__version__", version)
+    instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
+    inside = instance_root / "plugins" / "scope-recall"
+    plan = _hermes_plan(instance_root, inside, project_root)
+    assert any(change.action == "restart" and "UV_FIND_LINKS" in change.detail for change in plan.changes)
+    project = tomllib.loads(install_hermes.wrapper_pyproject(version))
+    assert project["project"]["dependencies"] == [f"hermes-scope-recall[vectors]=={version}"]
+    template = "name: scope-recall\n"
+    assert install_hermes.wrapper_manifest(template, version) == template
 
 
 def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_path, released):
