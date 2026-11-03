@@ -115,6 +115,37 @@ def fenced(store):
     return False
 
 
+def test_restore_revalidates_a_warmed_structural_verdict(store, capsys, monkeypatch):
+    from scope_recall.core import lexical_index
+
+    kept = store.say("TEST kept amber palette")
+    snapshot = backup(capsys, store, "TEST-structural-cache")
+    store.say("TEST later silver palette")
+    with store.core.storage.read(store.ctx):
+        pass
+    calls = []
+    original = lexical_index.claim_backfill_pending
+
+    def checked(conn):
+        calls.append(1)
+        return original(conn)
+
+    monkeypatch.setattr(lexical_index, "claim_backfill_pending", checked)
+    code, result = run(
+        capsys,
+        "restore",
+        *store.target(),
+        "--snapshot",
+        str(snapshot),
+        "--backup-dir",
+        str(store.tmp / "TEST-restore-cache-backup"),
+        "--apply",
+    )
+    assert code == 0 and result["status"] == "restored"
+    assert store.core.source(store.ctx, kept.ref, 1) is not None
+    assert calls
+
+
 @pytest.mark.parametrize("session_index", [False, True])
 def test_going_back_to_a_backup_keeps_what_was_forgotten_since(store, capsys, session_index):
     kept = store.say("TEST-kept the meeting moved to Thursday")

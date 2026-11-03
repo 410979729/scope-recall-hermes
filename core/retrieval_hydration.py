@@ -544,6 +544,7 @@ class RetrievalHydration:
             "direct_report" if event["origin"] == "human_direct" else "observed",
             True,
             ("event",),
+            content_secret_scan=source.content_secret_scan,
             metadata=(
                 *((("superseded_evidence", json.dumps(obsolete[:32])),) if obsolete else ()),
                 *(

@@ -26,6 +26,7 @@ from .events import (
 )
 from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
 from .injection_guard import notice
+from .secret_patterns import SECRET_RULES_VERSION, secret_structure_pattern_names
 from .source_records import PROJECT_IDENTITY_KEY, SourceWrite, StoredSource
 from .visibility import deletion_allows
 
@@ -421,9 +422,9 @@ class Sources:
             source_event_key,origin,role,content,occurred_at,recorded_at,time_precision,capture_state,
             content_sha256,event_sha256,persisted_at,source_original_origin,dataset_id,extra_json,
             source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,entry_id,source_id,
-            project_root)
+             project_root,secret_scan_version,secret_scan_names)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-            (SELECT COALESCE(MAX(source_id),0)+1 FROM source_events),?)""",
+            (SELECT COALESCE(MAX(source_id),0)+1 FROM source_events),?,?,?)""",
             (
                 ref,
                 revision,
@@ -445,6 +446,10 @@ class Sources:
                 provenance_hash,
                 self._tx.context.entry_id or "local",
                 self._tx.context.project_root,
+                # Admission has just revalidated these exact, already masked
+                # bytes. A secret would change or refuse the prepared event.
+                SECRET_RULES_VERSION,
+                "[]",
             ),
         )
         if (
@@ -675,3 +680,76 @@ class Sources:
             VALUES (?,?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""",
             (work_type, ref, revision, source.scope_id, source.project_id, source.branch_id, available_at),
         )
+
+
+def backfill_secret_scans(tx, *, now, limit=8, remaining=lambda: 1.0):
+    """Fill a bounded page of body verdicts in the existing maintenance transaction.
+
+    Each authority partition and scanner version owns its cursor. New captures
+    already have verdicts; old bodies never block upgrading the stored format.
+    Return the visited ID count; out-of-scope bodies are never loaded.
+    """
+    conn = tx._check(write=True)
+    context = tx.context
+    scopes = json.dumps(sorted(context.allowed_scope_ids))
+    partition = canonical([scopes, context.project_id, context.branch_id, SECRET_RULES_VERSION])
+    cursor_name = "secret_body:" + hashlib.sha256(partition.encode("utf-8")).hexdigest()
+    cursor = conn.execute(
+        "SELECT position_ref,completed FROM candidate_scan_cursors WHERE cursor_name=?", (cursor_name,)
+    ).fetchone()
+    if cursor is not None and cursor[1]:
+        return 0
+    position = int(cursor[0] or 0) if cursor is not None else 0
+    # Page before authority filtering: even an empty or sparse partition must
+    # visit only this primary-key page while it holds the writer lease.
+    page = [
+        row[0]
+        for row in conn.execute(
+            "SELECT source_id FROM source_events WHERE source_id>? ORDER BY source_id LIMIT ?", (position, limit)
+        )
+    ]
+    processed, last = _scan_secret_page(tx, page, remaining)
+    position = last if processed else position
+    completed = processed == len(page) and len(page) < limit
+    conn.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,position_ref,processed_count,completed,updated_at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(cursor_name) DO UPDATE SET position_ref=excluded.position_ref,"
+        "processed_count=processed_count+excluded.processed_count,completed=excluded.completed,updated_at=excluded.updated_at",
+        (cursor_name, str(position), processed, int(completed), now),
+    )
+    return processed
+
+
+def _scan_secret_page(tx, source_ids, remaining):
+    """Read only authorized bodies from one global page, scanning at most 256 KiB of UTF-8."""
+    conn = tx._check(write=True)
+    context = tx.context
+    rows = conn.execute(
+        "SELECT e.source_id,e.event_id,e.source_revision,e.secret_scan_version,e.secret_scan_names,"
+        "length(CAST(e.content AS BLOB)) FROM json_each(?) page CROSS JOIN source_events e "
+        "ON e.source_id=page.value WHERE e.scope_id IN (SELECT value FROM json_each(?)) "
+        "AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)",
+        (json.dumps(source_ids), json.dumps(sorted(context.allowed_scope_ids)), context.project_id, context.branch_id),
+    )
+    visible = {row[0]: tuple(row[1:]) for row in rows}
+    processed = position = used = 0
+    for source_id in source_ids:
+        if remaining() <= 0.02:
+            break
+        row = visible.get(source_id)
+        if row is not None and (row[2] != SECRET_RULES_VERSION or row[3] is None) and row[4] <= 262144:
+            # The stored-byte guard bounds loading even a malformed legacy row.
+            # UTF-8 size below is authoritative, including on UTF-16 databases.
+            body = conn.execute("SELECT content FROM source_events WHERE source_id=?", (source_id,)).fetchone()[0]
+            size = len(body.encode("utf-8"))
+            if used + size > 262144:
+                break
+            conn.execute(
+                "UPDATE source_events SET secret_scan_version=?,secret_scan_names=? "
+                "WHERE event_id=? AND source_revision=?",
+                (SECRET_RULES_VERSION, canonical(secret_structure_pattern_names(body)), row[0], row[1]),
+            )
+            used += size
+        position = source_id
+        processed += 1
+    return processed, position

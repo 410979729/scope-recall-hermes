@@ -6,7 +6,9 @@ import json
 import math
 import os
 import sqlite3
+import stat
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -67,6 +69,7 @@ from .schema import (
     upgrade_1130,
     upgrade_1131,
     upgrade_1132,
+    upgrade_1133,
 )
 from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
 from .source_storage import Sources
@@ -78,6 +81,11 @@ from .writer_lease import TruthWriterBusyError
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
+
+# Bounded process-local structural results only. Identity, scopes and live
+# restore/privacy fences never use this cache. A fork gets different keys.
+_STRUCTURAL_STATE: dict[tuple, tuple[bool, bool]] = {}
+_STRUCTURAL_LOCK = threading.Lock()
 
 # A migration consumes its key's format and advances it to the next format.
 SCHEMA_MIGRATIONS = dict(
@@ -112,6 +120,7 @@ SCHEMA_MIGRATIONS = dict(
             upgrade_1130,
             upgrade_1131,
             upgrade_1132,
+            upgrade_1133,
         ),
         strict=True,
     )
@@ -689,7 +698,14 @@ class SQLiteStorage:
     def _path_check(self) -> None:
         # Reject any symlink/junction ancestor, including read-only opens.
         for path in (self.path, *self.path.parents):
-            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            # Both flags come from one native record. Re-read it on every open:
+            # path safety is live, even when the stored schema is unchanged.
+            junction = getattr(info, "st_reparse_tag", None) == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
+            if stat.S_ISLNK(info.st_mode) or junction:
                 raise ContractError("IDENTITY_UNBOUND", "data_directory")
         if _directory(self.binding.data_directory.resolve()) != _directory(self.binding.data_directory):
             raise ContractError("IDENTITY_UNBOUND", "data_directory")
@@ -778,10 +794,13 @@ class SQLiteStorage:
                 raise
             return conn
 
-    def verify(self, conn: sqlite3.Connection, *, expected_schema: int | None = None) -> None:
+    def verify(self, conn: sqlite3.Connection, *, expected_schema: int | None = None) -> sqlite3.Row:
         """Refuse the database ``conn`` reads unless it is this binding's store at ``expected_schema``: its header,
         its recorded schema, its kind, its identity and its scopes.  Its file need not be the store's own: a
-        snapshot of the store is checked the same way before it is copied over it (``maintenance/restore.py``)."""
+        snapshot of the store is checked the same way before it is copied over it (``maintenance/restore.py``).
+
+        Return the freshly verified metadata row, never a reusable authorization verdict.
+        """
         expected_schema = SCHEMA_VERSION if expected_schema is None else expected_schema
         if (
             conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
@@ -815,7 +834,7 @@ class SQLiteStorage:
                 raise ContractError("IDENTITY_UNBOUND")
             if stored != held or held != len(self.binding.scope_ids):
                 raise ContractError("IDENTITY_UNBOUND", "scope_binding")
-            return
+            return row
         # A shared store is its fixed id, not its directory: a copied store opens
         # nowhere until ``adopt`` records the new place.  Entries each bind a
         # subset of its scopes; the store grows as they attach.
@@ -829,6 +848,7 @@ class SQLiteStorage:
             raise ContractError("IDENTITY_UNBOUND", "store_moved:run_adopt")
         if held != len(self.binding.scope_ids):
             raise ContractError("IDENTITY_UNBOUND", "scope_binding")
+        return row
 
     def _close(self, conn: sqlite3.Connection, original: BaseException | None) -> None:
         try:
@@ -1038,55 +1058,111 @@ class SQLiteStorage:
         finally:
             self._close(conn, original)
 
+    def _file_stamp(self):
+        """Observe file identity without opening a descriptor that could disturb POSIX locks."""
+        try:
+            info = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (
+            info.st_dev,
+            info.st_ino,
+            getattr(info, "st_birthtime_ns", 0),
+            info.st_ctime_ns,
+            info.st_mtime_ns,
+            info.st_size,
+        )
+
+    def _structural_state(self, conn, row, opened_stamp):
+        """Reuse index readiness only for an unchanged file, schema and metadata snapshot."""
+        stamp = self._file_stamp()
+        if stamp is None or opened_stamp is None or stamp[:3] != opened_stamp[:3]:
+            raise ContractError("IDENTITY_UNBOUND", "store_replaced_during_open")
+        key = (
+            _directory(self.path),
+            os.getpid(),
+            stamp,
+            conn.execute("PRAGMA schema_version").fetchone()[0],
+            tuple(row),
+        )
+        with _STRUCTURAL_LOCK:
+            cached = _STRUCTURAL_STATE.get(key)
+        if cached is not None:
+            return cached
+        state = (self._claim_index_pending(conn, False, SCHEMA_VERSION), source_session_index_present(conn))
+        # Pending work and missing indexes must be retried under their current
+        # budget. Only complete structural validation is reusable.
+        if state == (False, True):
+            with _STRUCTURAL_LOCK:
+                if len(_STRUCTURAL_STATE) >= 128:
+                    _STRUCTURAL_STATE.clear()
+                _STRUCTURAL_STATE[key] = state
+        return state
+
+    def _begin_transaction(self, context, writable, remaining_seconds, restoring):
+        """Open and verify a fresh authority snapshot, initializing only outside it."""
+        started = self.monotonic() if remaining_seconds is not None else 0.0
+        opened_stamp = self._file_stamp()
+        conn = self._open("rw" if writable else "ro", remaining_seconds, restoring=restoring)
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            upgrade = self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            budget = self._remaining_budget(remaining_seconds, started)
+            fits = upgrade_fits(_store_bytes(conn), budget) if upgrade else True
+            if upgrade and not fits:
+                # Refusing a migration reads no truth rows. Keep that budget
+                # refusal ahead of opening an authority snapshot.
+                self._defer_upgrade()
+            if writable and version == SCHEMA_VERSION:
+                _ensure_wal(conn)
+            conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
+            row = self.verify(
+                conn,
+                expected_schema=version
+                if self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+                else None,
+            )
+            if version == SCHEMA_VERSION and not restoring:
+                pending, indexed = self._structural_state(conn, row, opened_stamp)
+                fits = upgrade_fits(_store_bytes(conn), budget) if pending else fits
+                upgrade = (
+                    upgrade
+                    or pending
+                    or (writable and self.upgrade_on_open and not indexed and upgrade_fits(_store_bytes(conn), budget))
+                )
+            if upgrade:
+                conn.rollback()
+                self._close(conn, None)
+                conn = None
+                if not fits:
+                    self._defer_upgrade()
+                self.initialize(remaining_seconds=self._remaining_budget(remaining_seconds, started))
+                conn = self._open(
+                    "rw" if writable else "ro", self._remaining_budget(remaining_seconds, started), restoring=restoring
+                )
+                conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
+                self.verify(conn)
+            return conn
+        except BaseException as exc:
+            if conn is not None:
+                try:
+                    if conn.in_transaction:
+                        conn.rollback()
+                except BaseException as cleanup:  # noqa: BLE001 - preserve the original failure while reporting cleanup
+                    _cleanup_error(exc, cleanup, "rollback")
+                self._close(conn, exc)
+            raise
+
     @contextmanager
     def _transaction(
         self, context: TrustedContext, *, writable: bool, remaining_seconds: float | None, restoring: bool = False
     ) -> Iterator[Transaction]:
         self._context_check(context)
-        started = self.monotonic() if remaining_seconds is not None else 0.0
-        conn = self._open("rw" if writable else "ro", remaining_seconds, restoring=restoring)
-        try:
-            # Lock waits and upgrade work use the same request deadline, but
-            # the lock timeout does not limit a worker's upgrade budget.
-            upgrade_budget = self._remaining_budget(remaining_seconds, started)
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            upgrade = (
-                self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
-            ) or self._claim_index_pending(conn, restoring, version)
-            if upgrade:
-                fits = upgrade_fits(_store_bytes(conn), upgrade_budget)
-            elif writable and version == SCHEMA_VERSION:
-                _ensure_wal(conn)
-                # An optional index shares the schema upgrade's budget gate, but
-                # a caller unable to build it can still use the current schema.
-                if self.upgrade_on_open and not restoring:
-                    upgrade = not source_session_index_present(conn) and upgrade_fits(
-                        _store_bytes(conn), upgrade_budget
-                    )
-                    fits = True
-        except BaseException as exc:
-            # Nothing below closes this connection yet.  Left open, a writable one kept the writer lease until the
-            # process ended, and every other process's writes failed.  A busy store can answer
-            # the first statement here with "database is locked".
-            self._close(conn, exc)
-            raise
-        if upgrade:
-            self._close(conn, None)
-            if not fits:
-                # A hook's few seconds cannot carry a rebuild that takes a
-                # minute on a large store; the worker's pass or the installer
-                # brings it forward, and the doctor names the pending step.
-                self._defer_upgrade()
-            self.initialize(remaining_seconds=self._remaining_budget(remaining_seconds, started))
-            conn = self._open(
-                "rw" if writable else "ro", self._remaining_budget(remaining_seconds, started), restoring=restoring
-            )
+        conn = self._begin_transaction(context, writable, remaining_seconds, restoring)
         tx = Transaction(conn, context, writable=writable)
         original = None
         mirror = False
         try:
-            conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
-            self.verify(conn)
             # A restore can establish its fence while this connection waits
             # for the writer lease. Recheck after acquiring the transaction.
             if not restoring and restore_pending(self.binding.data_directory):

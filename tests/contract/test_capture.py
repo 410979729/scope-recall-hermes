@@ -48,6 +48,117 @@ def rows(core):
         conn.close()
 
 
+def test_capture_commits_the_body_scan_verdict_with_its_exact_source_version(core):
+    from scope_recall.core.secret_patterns import SECRET_RULES_VERSION
+
+    app, ctx = core
+    receipt = capture(app, ctx, content="TEST palette is amber. api_key: <your-api-key>")
+    source = receipt.event_refs[0]
+    with app.storage.read(ctx) as tx:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT secret_scan_version,secret_scan_names FROM source_events "
+                "WHERE event_id=? AND source_revision=?",
+                (source.ref, source.revision),
+            )
+            .fetchone()
+        )
+    assert tuple(row) == (SECRET_RULES_VERSION, "[]")
+
+
+def test_changed_body_invalidates_its_receipt_and_maintenance_refills_bounded_pages(core):
+    from scope_recall.core.secret_patterns import SECRET_RULES_VERSION
+    from scope_recall.core.source_storage import backfill_secret_scans
+
+    app, ctx = core
+    refs = [capture(app, ctx, key=f"TEST-scan-{i}", content="TEST amber palette").event_refs[0] for i in range(3)]
+    with app.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "UPDATE source_events SET content='api_key: TEST9-secret-value' WHERE event_id=?", (refs[0].ref,)
+        )
+        assert (
+            tx._check()
+            .execute("SELECT secret_scan_version FROM source_events WHERE event_id=?", (refs[0].ref,))
+            .fetchone()[0]
+            is None
+        )
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 1
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 1
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 1
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 0
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 0
+        row = (
+            tx._check()
+            .execute("SELECT secret_scan_version,secret_scan_names FROM source_events WHERE event_id=?", (refs[0].ref,))
+            .fetchone()
+        )
+        assert row[0] == SECRET_RULES_VERSION and json.loads(row[1])
+
+
+def test_scan_maintenance_caps_utf8_bytes_per_page(core, monkeypatch):
+    from scope_recall.core import source_storage
+
+    app, ctx = core
+    refs = [capture(app, ctx, key=f"TEST-byte-page-{i}", content="TEST amber palette").event_refs[0] for i in range(2)]
+    scanned = []
+    original = source_storage.secret_structure_pattern_names
+
+    def counted(body):
+        scanned.append(len(body.encode("utf-8")))
+        return original(body)
+
+    monkeypatch.setattr(source_storage, "secret_structure_pattern_names", counted)
+    body = chr(30028) * 50000
+    with app.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "UPDATE source_events SET content=?,content_sha256=? WHERE event_id IN (?,?)",
+            (body, hashlib.sha256(body.encode("utf-8")).hexdigest(), *(source.ref for source in refs)),
+        )
+        assert source_storage.backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=2) == 1
+        assert scanned == [150000]
+        assert source_storage.backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=2) == 1
+        assert scanned == [150000, 150000]
+
+
+def test_scan_maintenance_bounds_sql_steps_across_sibling_projects(core):
+    from scope_recall.core.source_storage import backfill_secret_scans
+
+    app, ctx = core
+    capture(app, ctx, content="TEST amber palette")
+    with app.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        template = dict(conn.execute("SELECT * FROM source_events LIMIT 1").fetchone())
+        columns = list(template)
+        rows = []
+        for index in range(2000):
+            row = dict(
+                template,
+                event_id=f"event-TEST-sibling-{index}",
+                source_event_key=f"TEST-sibling-{index}",
+                source_group_key=f"TEST-sibling-{index}",
+                source_id=index + 2,
+                project_id="TEST-other-project",
+            )
+            rows.append(tuple(row[column] for column in columns))
+        conn.executemany(
+            f"INSERT INTO source_events ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})", rows
+        )
+        steps = [0]
+
+        def count_steps():
+            steps[0] += 100
+            return 0
+
+        conn.set_progress_handler(count_steps, 100)
+        try:
+            processed = backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=8)
+        finally:
+            conn.set_progress_handler(None, 0)
+        assert steps[0] < 3000
+        assert processed == 8
+
+
 def test_C14_real_occurrences_not_trivial_filter_and_duplicate_is_zero_mutation(core):
     app, ctx = core
     a = capture(app, ctx, "TEST-C14/1", content="好")

@@ -157,6 +157,22 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1134: {
+        "before": tuple(
+            f"DROP TRIGGER {name}"
+            for name in (
+                "storage_cursor_insert",
+                "storage_cursor_update",
+                "storage_cursor_delete",
+                "source_secret_body_changed",
+            )
+        ),
+        "columns": (
+            ("source_events", "secret_scan_version"),
+            ("source_events", "secret_scan_names"),
+            ("instance_meta", "storage_revision"),
+        ),
+    },
     1133: {"indexes": ("claim_profile_heads",)},
     1132: {
         "before": (

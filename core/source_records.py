@@ -28,6 +28,8 @@ class StoredSource:
     #: The normalized project directory the host supplied, when it supplied one.
     project_root: str | None = None
     project_identity: str = "local"
+    #: Internal body-only verdict; projected metadata is scanned independently.
+    content_secret_scan: tuple[str, str, tuple[str, ...]] | None = None
 
 
 #: The columns a loaded source is built from (``stored_source``).
@@ -57,6 +59,8 @@ SOURCE_COLUMNS = (
     "import_provenance_sha256",
     "entry_id",
     "project_root",
+    "secret_scan_version",
+    "secret_scan_names",
 )
 
 
@@ -105,7 +109,21 @@ def stored_source(row, segment_count: int | None) -> StoredSource:
         row["entry_id"],
         row["project_root"] if "project_root" in row.keys() else None,
         project_identity,
+        _body_scan(row),
     )
+
+
+def _body_scan(row):
+    """Treat absent or malformed derived scan metadata as an unscanned body."""
+    if not row["secret_scan_version"] or row["secret_scan_names"] is None:
+        return None
+    try:
+        names = json.loads(row["secret_scan_names"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(names, list) or any(type(name) is not str for name in names):
+        return None
+    return row["secret_scan_version"], row["content_sha256"], tuple(names)
 
 
 @dataclass(frozen=True)

@@ -226,7 +226,7 @@ def upgrade_store(
     path: Path,
     *,
     target: int,
-    verify: Callable[..., None],
+    verify: Callable[..., object],
     migrate: Callable[[sqlite3.Connection], None],
     backup_dir: Path | None = None,
     recorded_schema: int | None = None,

@@ -12,6 +12,38 @@ from tests.contract.test_claims import app, initial
 from tests.v11_support import downgrade_store
 
 
+@pytest.mark.parametrize("version", range(1122, 1134))
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_body_scan_upgrade_is_lazy_and_atomic(app, monkeypatch, version, interrupted):
+    core, ctx = app
+    item, source = initial(core, ctx)
+    payload = core.current_claim(ctx, item.ref).payload
+    downgrade_store(core.storage.path, version)
+    step = storage.SCHEMA_MIGRATIONS[1133]
+    if interrupted:
+
+        def fail(conn):
+            step(conn)
+            raise RuntimeError("TEST interrupted body verdict DDL")
+
+        monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1133, fail)
+        with pytest.raises(RuntimeError, match="TEST interrupted body"):
+            core.storage.initialize()
+        with closing(sqlite3.connect(core.storage.path)) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == version
+            assert "secret_scan_version" not in {row[1] for row in conn.execute("PRAGMA table_info(source_events)")}
+        monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1133, step)
+    core.storage.initialize()
+    with core.storage.read(ctx) as tx:
+        assert tx._check().execute("PRAGMA user_version").fetchone()[0] == 1134
+        assert tx._check().execute("SELECT secret_scan_version,secret_scan_names FROM source_events").fetchone()[:] == (
+            None,
+            None,
+        )
+    assert core.source(ctx, source.ref, 1).event == source.event
+    assert core.current_claim(ctx, item.ref).payload == payload
+
+
 def test_profile_covering_index_is_installed(app):
     core, ctx = app
     with core.storage.read(ctx) as tx:
