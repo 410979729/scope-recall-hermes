@@ -49,6 +49,27 @@ def test_environment_passes_only_declared_credentials_and_redirects_homes(tmp_pa
         assert Path(env[name]).is_relative_to(tmp_path)
 
 
+def test_host_account_environment_lends_only_the_operator_sign_in_and_proxy(tmp_path, monkeypatch):
+    """Host CLIs may use the operator's own login; caches, temp files and unrelated settings stay isolated."""
+    from real_host_io import host_account_environment
+
+    profile = tmp_path / "TEST-operator-profile"
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("UNRELATED_PRIVATE_CONFIG", "TEST-secret-omitted")
+    isolated = environment(tmp_path / "isolated")
+    env = host_account_environment(isolated)
+    assert env["USERPROFILE"] == str(profile)
+    assert env["HTTPS_PROXY"] == "http://127.0.0.1:9"
+    assert "CODEX_HOME" not in env and "CLAUDE_CONFIG_DIR" not in env
+    assert "UNRELATED_PRIVATE_CONFIG" not in env
+    for name in ("TEMP", "TMP", "UV_CACHE_DIR", "PIP_CACHE_DIR", "XDG_CONFIG_HOME"):
+        assert env[name] == isolated[name]
+    assert isolated["USERPROFILE"] != str(profile)
+
+
 def test_codex_overrides_are_valid_toml_and_contain_only_ephemeral_wiring(tmp_path):
     args = SimpleNamespace(dry_run=False, codex="TEST-codex", codex_model=None)
     run = SimpleNamespace(args=args, credential_names=["TEST_SR_GEMINI_KEY"])

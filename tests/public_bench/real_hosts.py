@@ -21,7 +21,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from real_host_checks import host_check, install_check, restart_check  # noqa: E402
-from real_host_io import MARKER, Children, clean_root, environment, new_root, write_json  # noqa: E402
+from real_host_io import (  # noqa: E402
+    MARKER,
+    Children,
+    clean_root,
+    environment,
+    host_account_environment,
+    new_root,
+    write_json,
+)
 from real_host_quality import adoption_check, outage_check, quality_check  # noqa: E402
 from real_host_runtime import load_routes, route_template  # noqa: E402
 from real_host_scale import frozen_check  # noqa: E402
@@ -58,6 +66,8 @@ class Run:
         )
         self.credential_names += ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"]
         self.env = environment(self.root / "environment", credential_names=self.credential_names)
+        # Only host CLI children may see the operator's own sign-in; everything else keeps the isolated homes.
+        self.host_env = host_account_environment(self.env) if args.use_host_homes else self.env
         self.children = Children(self.env, self.root)
         self.stores, self.installed = [], None
         self.cache, self.rows = {}, []
@@ -207,6 +217,7 @@ def main(argv=None):
         created_at=datetime.now(UTC).isoformat(),
         root=str(run.root),
         platform=platform.system(),
+        host_homes="operator" if args.use_host_homes else "isolated",
         fixture_sha256=hashlib.sha256(Path(__file__).with_name("scenarios_fixture.json").read_bytes()).hexdigest(),
         checks=run.rows,
         children_exited=all(p.poll() is not None for p in run.children.processes),
@@ -252,6 +263,12 @@ def arguments(argv):
     parser.add_argument("--claude-model")
     parser.add_argument("--codex-model")
     parser.add_argument("--login-wait", action="store_true")
+    parser.add_argument(
+        "--use-host-homes",
+        action="store_true",
+        help="run claude and codex with the operator's own sign-in and profile homes; their sessions land in the "
+        "operator's history and must be removed afterwards",
+    )
     parser.add_argument("--host-timeout", type=float, default=180)
     parser.add_argument("--promotion-timeout", type=float, default=1500)
     parser.add_argument("--recovery-timeout", type=float, default=1800)
@@ -264,6 +281,8 @@ def arguments(argv):
         parser.error("--only accepts unique existing M6 subcheck IDs")
     if any(scale < 100 for scale in args.scales) or args.scale_samples < 1:
         parser.error("scale >= 100 and scale-samples >= 1 required")
+    if args.use_host_homes and args.login_wait:
+        parser.error("--use-host-homes runs with the operator's existing sign-in; drop --login-wait")
     if args.write_routes and not (args.chat_endpoint and args.chat_model):
         parser.error("--write-routes requires --chat-endpoint and --chat-model")
     if not args.dry_run and not args.write_routes:

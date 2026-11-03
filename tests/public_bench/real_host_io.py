@@ -91,6 +91,29 @@ def environment(root, *, credential_names=()):
     return env
 
 
+#: What a host CLI needs from the operator's own account when it runs with their sign-in: the profile homes it
+#: reads its login from, and the proxy settings it reaches its provider through.
+HOST_ACCOUNT_NAMES = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "CLAUDE_CONFIG_DIR")
+PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+
+
+def host_account_environment(isolated):
+    """The isolated environment with the operator's own profile homes and proxy, for host CLI children only.
+
+    Used when the operator chooses to run the real hosts with their existing sign-in instead of a fresh login in
+    the isolated homes. Setup, installation and workers keep the isolated homes, so nothing is installed into the
+    operator's hosts; the host sessions themselves are written to the operator's history and must be removed after
+    the run.
+    """
+    env = dict(isolated)
+    for name in HOST_ACCOUNT_NAMES:
+        env.pop(name, None)
+    for name, value in os.environ.items():
+        if name.upper() in HOST_ACCOUNT_NAMES or name.upper() in PROXY_NAMES:
+            env[name] = value
+    return env
+
+
 def shell_command(argv):
     """Quote a trusted hook invocation for the platform shell used by its host."""
     return subprocess.list2cmdline(list(map(str, argv))) if os.name == "nt" else shlex.join(list(map(str, argv)))
@@ -108,11 +131,11 @@ class Children:
         self.env, self.cwd = env, cwd
         self.jobs, self.processes = {}, []
 
-    def start(self, argv, *, stdin=None):
+    def start(self, argv, *, stdin=None, env=None):
         """Start an owned child with captured output; no shell or global config mutation."""
         options = dict(
             cwd=self.cwd,
-            env=self.env,
+            env=self.env if env is None else env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -147,10 +170,10 @@ class Children:
                 pass
         process.wait(timeout=10)
 
-    def run(self, argv, evidence, *, timeout=180, input_text=None):
+    def run(self, argv, evidence, *, timeout=180, input_text=None, env=None):
         """Retain command, exit, elapsed time and redacted output; never retry implicitly."""
         started = time.perf_counter()
-        process = self.start(argv)
+        process = self.start(argv, env=env)
         try:
             stdout, stderr = process.communicate(input=input_text, timeout=timeout)
         except subprocess.TimeoutExpired:
