@@ -106,6 +106,24 @@ def alternative_context(case, ports: Ports, method: str) -> tuple[str, dict, flo
     return context, metrics, (time.perf_counter() - started) * 1000
 
 
+PACKET_STYLES = ("raw", "json", "compact", "outline")
+
+
+def packet_context(packet: dict, style: str) -> str:
+    """The recall packet as the answer model reads it.
+
+    ``raw`` is the packet's own JSON, which earlier results were measured with. The other styles render it the way a
+    host receives it (``core.session_injection``): canonical JSON, or the compact or outline projection, so a run can
+    compare injection formats on the same recall.
+    """
+    if style == "raw":
+        return json.dumps(packet, ensure_ascii=False)
+    from scope_recall.core import injection_format
+    from scope_recall.core.recall_budget import canonical_render_json
+
+    return canonical_render_json(packet) if style == "json" else injection_format.question(packet, style)
+
+
 def judge_label(text: str) -> bool:
     """LongMemEval's own rule: a judge reply counts as correct when it contains "yes"."""
     return "yes" in text.lower()
@@ -137,7 +155,7 @@ def isolated(run, case, *, cache_only: bool) -> dict:
         }
 
 
-def run_case(
+def run_case(  # noqa: PLR0913 - keyword-only settings, one per command-line option of the run
     case,
     *,
     root: Path,
@@ -147,6 +165,7 @@ def run_case(
     retrieval_only: bool,
     dataset="longmemeval",
     settle_seconds=900,
+    packet_style="raw",
 ) -> dict:
     """Capture, settle, recall, answer and judge a question without leaking gold."""
     started = time.perf_counter()
@@ -179,7 +198,7 @@ def run_case(
                     "total_seconds": time.perf_counter() - started,
                 }
             packet, latency = lab.recall(case)
-            context = json.dumps(packet, ensure_ascii=False)
+            context = packet_context(packet, packet_style)
             retrieval = score_retrieval(case, lab, packet)
         else:
             context, retrieval, latency = alternative_context(case, ports, method)
@@ -252,6 +271,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--retrieval-only", action="store_true")
     parser.add_argument("--method", choices=["scope-recall", "full-context", "naive-rag"], default="scope-recall")
+    parser.add_argument(
+        "--injection-format",
+        choices=PACKET_STYLES,
+        default="raw",
+        help="how a scope-recall packet reaches the answer model; raw keeps earlier results reproducible",
+    )
     args = parser.parse_args()
     if args.fake == bool(args.config) or (not args.fake and not (args.allow_model_calls or args.cache_only)):
         parser.error("choose --fake, or explicit --config with --allow-model-calls")
@@ -329,6 +354,7 @@ def main() -> None:
                 retrieval_only=args.retrieval_only,
                 dataset=args.dataset,
                 settle_seconds=args.settle_seconds,
+                packet_style=args.injection_format,
             ),
             case,
             cache_only=cache.only,
@@ -350,6 +376,7 @@ def main() -> None:
         if args.dataset == "longmemeval"
         else None,
         "method": args.method,
+        "injection_format": args.injection_format,
         "shard": f"{args.shard[0]}/{args.shard[1]}" if args.shard else None,
         "retrieval_only": args.retrieval_only,
         "models": ports.config,
