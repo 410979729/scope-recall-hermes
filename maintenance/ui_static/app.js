@@ -220,6 +220,13 @@ function renderRecalls() {
     node("p", record.entry_id + " · " + record.session_id + " · " + t(record.scope_bound ? "scopeBound" : "scopeUnbound"), row);
     node("p", record.reasons.map(reason => t("reason_" + reason)).join(" · ") || t("injected"), row);
     node("p", t("pending") + ": " + (record.background.pending ?? "—") + " · " + t("captureState") + ": " + t(record.capture.state), row);
+    if (record.injection) {
+      const usage = record.injection;
+      for (const [label, field] of [["injectionTokens", "injection_tokens"], ["sessionTokens", "session_tokens"], ["injectionTokenCap", "injection_token_cap"], ["sessionTokenCap", "session_token_cap"]]) {
+        const value = usage[field] === null && field === "session_token_cap" ? t("unlimited") : (usage[field] ?? "—");
+        node("p", t(label) + ": " + value, row);
+      }
+    }
     for (const item of record.items) {
       const entry = node("div", undefined, row);
       node("p", (item.rank ? "#" + item.rank + " · " : "") + t("reason_" + item.reason), entry);

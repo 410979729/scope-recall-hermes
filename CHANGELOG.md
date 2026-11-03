@@ -4,6 +4,10 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Automatic injection can use compact text or an outline with inspect references through `injection_format`;
+JSON remains the default. All formats share final-text budgets, privacy and delivery checks. Doctor and recall
+history expose per-injection usage, session usage and both ceilings without retaining injected content.
+
 Owner review unifies imported material, ambiguous adoptions, observations, health findings and held facts. A versioned per-scope review-before-publication switch defaults off; pending and rejected extractions remain outside recall, briefs and current-fact exports. Decisions are reversible with optimistic version checks. Automatic entity aliases also wait for review; replayed proposals stay held, adoption deduplication waits for approval, and owner undo preserves the original state and proof. Correction notices wait for approval, task handoffs remain external reports, and host-memory fact deduplication uses only effective facts. Stores upgrade automatically with a pre-upgrade snapshot; existing facts and source authorship are preserved.
 
 

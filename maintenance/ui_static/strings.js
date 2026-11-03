@@ -1,6 +1,8 @@
 "use strict";
 window.UI_STRINGS = {
   "en": {
+    "injectionTokens": "Injection tokens", "sessionTokens": "Session tokens",
+    "injectionTokenCap": "Injection limit", "sessionTokenCap": "Session limit", "unlimited": "Unlimited",
     "reviews": "Review",
     "reviewSource": "Source",
     "review_import": "Imported material",
@@ -194,6 +196,8 @@ window.UI_STRINGS = {
     "saveImportance": "Save importance"
   },
   "zh": {
+    "injectionTokens": "\u672c\u6b21\u6ce8\u5165\u7528\u91cf", "sessionTokens": "\u672c\u4f1a\u8bdd\u7d2f\u8ba1",
+    "injectionTokenCap": "\u5355\u6b21\u4e0a\u9650", "sessionTokenCap": "\u4f1a\u8bdd\u4e0a\u9650", "unlimited": "\u4e0d\u9650",
     "reviews": "待审",
     "reviewSource": "来源",
     "review_import": "导入材料",

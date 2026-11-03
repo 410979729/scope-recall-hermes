@@ -158,10 +158,25 @@ class RecallLogStore:
 
     def write(self, record: dict) -> None:
         """Atomically expire and append; busy writers never wait or restore old dates."""
-        raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        record = dict(record)
+        annotation = record.pop("_injection_usage", False)
+        observed_at = record["timestamp"]
         with self._transaction(writing=True) as (conn, days, watermark, page_size, limit):
+            if annotation:
+                # Usage completes the same attempt without replacing its retrieval
+                # explanation or publishing a second history row for one prompt.
+                row = conn.execute(
+                    "SELECT payload FROM attempts WHERE installation_id=? AND session_id=? AND request_id=? "
+                    "AND json_extract(payload,'$.entry_id') IS ? ORDER BY sequence DESC LIMIT 1",
+                    (record["installation_id"], record["session_id"], record["request_id"], record.get("entry_id")),
+                ).fetchone()
+                if row:
+                    record = dict(json.loads(row[0]), injection=record["injection"])
+                elif not record["injection"]["injection_tokens"]:
+                    return
+            raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
             latest = conn.execute("SELECT max(timestamp) FROM attempts").fetchone()[0]
-            today = max(record["timestamp"], latest or record["timestamp"], watermark or record["timestamp"])
+            today = max(observed_at, record["timestamp"], latest or observed_at, watermark or observed_at)
             conn.execute("UPDATE retention SET health_since=coalesce(health_since,?)", (today,))
             self._expire(conn, today, days)
             if record["timestamp"] < cutoff(today, days):

@@ -212,10 +212,11 @@ def record_brief(core, context: TrustedContext, brief: dict, reason: str) -> Non
     if not brief.get("_log_allowed") or not brief.get("_log_checked"):
         return
     try:
+        request_id = core.identifiers.next_id()
         trace = RecallTrace(
             enabled=True,
             private_marker=brief["_privacy_marker"],
-            context=RefusalContext("", core.identifiers.next_id(), utc_timestamp(core.clock.utc_now()), context),
+            context=RefusalContext("", request_id, utc_timestamp(core.clock.utc_now()), context),
         )
         trace.capture = {"state": "not_applicable", "refs": []}
         delivered = []
@@ -239,5 +240,69 @@ def record_brief(core, context: TrustedContext, brief: dict, reason: str) -> Non
                 delivered.append(dict(kind=kind, ref=item["ref"], revision=item["revision"]))
         trace.metrics = dict(phase="session_brief", elapsed_ms=brief["elapsed_ms"], estimated_tokens=brief["tokens"])
         core.recall_diagnostics.finish(trace, dict(items=delivered, gaps=[], status="ok", memory_epoch=brief["_epoch"]))
+        brief["_log_request_id"] = request_id
     except Exception:  # noqa: BLE001 - diagnostic failure cannot alter the host response.
+        return
+
+
+def record_injection(core, context: TrustedContext, brief: dict, reason: str) -> None:
+    """Publish final usage after release checks; diagnostic history is never a delivery ledger."""
+    if (
+        not brief.get("_log_allowed")
+        or not brief.get("_log_checked")
+        or reason
+        not in {
+            "brief_delivered",
+            "injection_delivered",
+            "brief_delivery_unconfirmed",
+            "injection_delivery_unconfirmed",
+        }
+    ):
+        return
+    try:
+        usage = brief["_injection"]
+        if not usage["tokens"] and not usage.get("request_id"):
+            return
+        confirmed = reason in {"brief_delivered", "injection_delivered"}
+        trace = RecallTrace(
+            enabled=True,
+            private_marker=brief["_privacy_marker"],
+            context=RefusalContext(
+                "",
+                usage.get("request_id") or brief.get("_log_request_id") or core.identifiers.next_id(),
+                utc_timestamp(core.clock.utc_now()),
+                context,
+            ),
+        )
+        trace.capture = {"state": "not_applicable", "refs": []}
+        delivered = []
+        for item in [*brief["items"], *usage["items"]]:
+            kind = (
+                "episode"
+                if item["kind"] in {"task", "handoff"}
+                else "claim"
+                if item["kind"] in {"procedure", "decision", "preference", "constraint"}
+                else item["kind"]
+            )
+            ref = item["task_ref"] if item["kind"] == "handoff" else item["ref"]
+            revision = item["task_revision"] if item["kind"] == "handoff" else item["revision"]
+            delivered.append(dict(kind=kind, ref=ref, revision=revision))
+        trace.metrics = dict(
+            phase="session_injection",
+            elapsed_ms=usage.get("elapsed_ms", 0) + brief["elapsed_ms"],
+            estimated_tokens=usage["tokens"],
+            injection=dict(
+                injection_tokens=usage["tokens"],
+                session_tokens=usage["session_tokens"] if confirmed else None,
+                injection_token_cap=usage["injection_token_cap"],
+                session_token_cap=usage["session_token_cap"],
+                injection_format=usage["format"],
+                accounting_confirmed=confirmed,
+                delivery_reason=reason,
+            ),
+        )
+        core.recall_diagnostics.finish(
+            trace, dict(items=delivered, gaps=[], status="ok", memory_epoch=brief["_epoch"]), injection=True
+        )
+    except Exception:  # noqa: BLE001 - lossy diagnostic metadata cannot change a confirmed response.
         return

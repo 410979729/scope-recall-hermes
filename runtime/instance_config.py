@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts import ContractError, InstanceBinding, Origin, TrustedContext
+from ..core.injection_format import FORMATS
 from ..core.recall_budget import DEFAULT_INJECTION_TOKEN_CAP
 from ..core.recall_log_storage import DEFAULT_LOG_POLICY, LOG_POLICY_BOUNDS
 from ..core.recall_policy import EMBEDDING_SPACE, RecallPolicy, embedding_space_id
@@ -134,6 +135,7 @@ class RuntimeInstanceConfig:
     hook_processing_seconds: float = 6.0
     session_brief_enabled: bool = True
     session_brief_tokens: int = 1024
+    injection_format: str = "json"
     injection_token_cap: int = DEFAULT_INJECTION_TOKEN_CAP
     session_token_cap: int | None = None
     max_items: int = 32
@@ -191,6 +193,7 @@ class RuntimeInstanceConfig:
         strict_bool("supervisor_enabled", self.supervisor_enabled)
         strict_bool("session_brief_enabled", self.session_brief_enabled)
         strict_int("session_brief_tokens", self.session_brief_tokens, minimum=1, maximum=8192)
+        member("injection_format", self.injection_format, FORMATS)
         strict_int("injection_token_cap", self.injection_token_cap, minimum=0, maximum=2**63 - 1)
         if self.session_token_cap is not None:
             strict_int("session_token_cap", self.session_token_cap, minimum=0, maximum=2**63 - 1)

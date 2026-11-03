@@ -11,6 +11,7 @@ import json
 import sqlite3
 
 from ..contracts import ContractError, utc_timestamp
+from . import injection_format as formats
 from . import lineage, private
 from . import session_brief as briefing
 from .claims import statement_key
@@ -117,6 +118,9 @@ def _make_notice(tx, row, key, replacement):
         "revision": revision,
         "marker": marker,
         "corrected": bool(value),
+        "current": dict(kind=replacement.kind, ref=replacement.ref, revision=replacement.revision)
+        if value and replacement
+        else None,
         "text": text,
         "targets": [(kind, ref, revision, key)],
     }
@@ -225,7 +229,7 @@ def _select_notices(candidates, limit):
             continue
         if len(selected) == NOTICE_ITEM_CAP:
             continue
-        prefix = f"{notice['ref']}@{notice['revision']}: "
+        prefix = notice.get("_text_prefix", f"{notice['ref']}@{notice['revision']}: ")
         while _tokens("\n".join(["Memory updates:", *(n["text"] for n in selected), notice["text"]])) > limit:
             if len(notice["text"]) <= len(prefix) + 48:
                 break
@@ -235,13 +239,16 @@ def _select_notices(candidates, limit):
     return selected
 
 
-def _notices(tx, search, limit, *, batch=None, reveal=None):
+def _notices(tx, search, limit, *, batch=None, reveal=None, style="json"):
     batch = briefing.visibility_batch(tx, search) if batch is None else batch
     if reveal is None:
         reveal = private.recall_state(tx, search.trusted_context, search.now)[0] != "full"
     rows = _delivery_rows(tx, search.trusted_context)
     candidates = (notice for row in rows for notice in _row_notices(tx, search, row, batch, reveal))
-    return _select_notices(candidates, limit)
+    return _select_notices(
+        (dict(n, text=formats.notice(n, style), _text_prefix=formats.notice_prefix(n, style)) for n in candidates),
+        limit,
+    )
 
 
 def _notices_valid(tx, search, brief, batch, reveal):
@@ -287,8 +294,10 @@ def _question(text):
     return None, None
 
 
-def _refresh_brief(brief):
-    brief["text"] = "\n".join(["Session background:", *brief["_lines"]]) if brief.get("_lines") else ""
+def _refresh_brief(brief, style="json"):
+    brief["text"] = (
+        "\n".join(["Session background:", *formats.background(brief["_lines"], style)]) if brief.get("_lines") else ""
+    )
     brief["tokens"] = _tokens(brief["text"])
 
 
@@ -297,7 +306,7 @@ def _item_live(tx, search, item, batch=None):
     return obj is not None and obj.temporal_status == item["temporal_status"]
 
 
-def _fit(text, brief, limit, tx, search, batch):
+def _fit(text, brief, limit, tx, search, batch, style="json"):
     line, payload = _question(text)
     items = payload["items"] if payload else []
     kept = [item for item in items if _item_live(tx, search, item, batch)]
@@ -306,10 +315,12 @@ def _fit(text, brief, limit, tx, search, batch):
     if kept != items:
         reason = "injection_invalidated"
     base = text.replace(brief["text"], "", 1).strip() if brief["text"] else text
+    if style != "json":
+        _refresh_brief(brief, style)
 
     def render():
         question = base
-        if payload and kept != original:
+        if payload and (kept != original or style != "json"):
             changed = dict(
                 payload,
                 items=kept,
@@ -317,7 +328,10 @@ def _fit(text, brief, limit, tx, search, batch):
                 coverage="unknown",
                 answerability="unknown",
             )
-            question = base.replace(line, canonical_render_json(changed)) if kept else ""
+            if kept == original:
+                changed = payload
+            projection = canonical_render_json(changed) if style == "json" else formats.question(changed, style)
+            question = base.replace(line, projection) if kept else ""
         return "\n\n".join(part for part in (brief["text"], question) if part)
 
     rendered = render()
@@ -328,14 +342,14 @@ def _fit(text, brief, limit, tx, search, batch):
         elif brief.get("_lines"):
             brief["_lines"].pop()
             brief["items"].pop()
-            _refresh_brief(brief)
+            _refresh_brief(brief, style)
         else:
             return "", [], reason
         rendered = render()
     return rendered, kept, reason
 
 
-def prepare(core, context, text, *, brief=None, entry_fence=None, remaining_seconds=0.2):
+def prepare(core, context, text, *, brief=None, entry_fence=None, request_id=None, remaining_seconds=0.2):
     """Read and fit complete host text, retaining only references actually included."""
     if brief is None or "_epoch" not in brief:
         generation = brief.get("_generation") if brief else None
@@ -369,7 +383,12 @@ def prepare(core, context, text, *, brief=None, entry_fence=None, remaining_seco
             []
             if paused or brief["_compact"]
             else _notices(
-                tx, search, min(NOTICE_TOKEN_CAP, core.config.injection_token_cap), batch=batch, reveal=mode != "full"
+                tx,
+                search,
+                min(NOTICE_TOKEN_CAP, core.config.injection_token_cap),
+                batch=batch,
+                reveal=mode != "full",
+                style=core.config.injection_format,
             )
         )
         notice_text = "\n".join(["Memory updates:", *(n["text"] for n in notices)]) if notices else ""
@@ -385,10 +404,17 @@ def prepare(core, context, text, *, brief=None, entry_fence=None, remaining_seco
             brief["_discarded"] = bool(brief["text"] or _question(text)[1])
             text = private.notice_for_mode("full") or ""
             brief.update(text="", items=[], tokens=0, _lines=[], _deliver=False)
-        ordinary, items, reason = _fit(text, brief, max(0, limit), tx, search, batch)
+        ordinary, items, reason = _fit(text, brief, max(0, limit), tx, search, batch, core.config.injection_format)
         output = "\n\n".join(part for part in (notice_text, ordinary) if part)
         brief["_injection"] = {
             "text": output,
+            "format": core.config.injection_format,
+            "references": tuple(
+                dict.fromkeys(
+                    (item["kind"], item["ref"], item["revision"]) for item in [*brief["items"], *items, *notices]
+                )
+            ),
+            "request_id": (request_id or (_question(text)[1] or {}).get("request_id") or "")[:100] or None,
             "items": items,
             "notices": notices,
             "tokens": _tokens(output),

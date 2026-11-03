@@ -149,6 +149,7 @@ class CodexHookHandler:
         )
         self.call = HookCall()
         self._pending_runtime_config_path: str | None = None
+        self._injection_request_id: str | None = None
         self._runtime_attach_attempted = host_runtime is not None
         #: The normalized project directory this hook's payload names, if any.  A
         #: shared entry's configured audience has none, so the request's cwd is
@@ -553,6 +554,7 @@ class CodexHookHandler:
         self.call = HookCall(local_record=record is None and local_record, client_error_reply=error_reply)
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         self._pending_brief = None
+        self._injection_request_id = None
         self._compacted_at = None
         self._compaction_seq = None
         self._compaction_epoch = None
@@ -704,7 +706,11 @@ class CodexHookHandler:
         try:
             self._injection_limits()
             prepared = self.core.prepare_session_injection(
-                context, text, brief=brief, remaining_seconds=self.remaining(deadline)
+                context,
+                text,
+                brief=brief,
+                request_id=self._injection_request_id,
+                remaining_seconds=self.remaining(deadline),
             )
             prepared["_injection"]["elapsed_ms"] = max(
                 0, round((self.clock.monotonic() - self._injection_started) * 1000) - prepared["elapsed_ms"]
@@ -717,6 +723,8 @@ class CodexHookHandler:
         for name in ("injection_token_cap", "session_token_cap", "session_tokens"):
             setattr(self.diagnostics, name, usage[name])
         self.diagnostics.injection_tokens = usage["tokens"]
+        self.diagnostics.injection_format = usage.get("format", "json")
+        self.diagnostics.injection_refs = usage.get("references", ())
         self.diagnostics.delivery_reason = reason
         self.diagnostics.brief_tokens = prepared["tokens"]
         if usage["reason"]:
@@ -733,6 +741,7 @@ class CodexHookHandler:
             self.note(reason)
         if reason in {"brief_invalidated", "brief_safety_unconfirmed", "entry_state:paused"}:
             self.diagnostics.injection_tokens = 0
+            self.diagnostics.injection_refs = ()
             return {}
         text = usage["text"]
         if not text:
@@ -750,6 +759,7 @@ class CodexHookHandler:
             return
         self.core.config = replace(
             self.core.config,
+            injection_format=raw.get("injection_format", "json"),
             injection_token_cap=raw.get("injection_token_cap", DEFAULT_INJECTION_TOKEN_CAP),
             session_token_cap=raw.get("session_token_cap"),
         )

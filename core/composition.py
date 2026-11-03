@@ -25,6 +25,7 @@ from .admission import AdmissionPolicy
 from .capture import CaptureReceipt, record_event
 from .capture_filters import without_private
 from .delete_storage import retraction_after
+from .injection_format import FORMATS
 from .model_content import withhold_secret_items
 from .operations import Operations
 from .recall_budget import DEFAULT_INJECTION_TOKEN_CAP
@@ -81,6 +82,7 @@ class CoreConfig:
     admission_policy: AdmissionPolicy = field(default_factory=AdmissionPolicy)
     session_brief_enabled: bool = True
     session_brief_tokens: int = 1024
+    injection_format: str = "json"
     injection_token_cap: int = DEFAULT_INJECTION_TOKEN_CAP
     session_token_cap: int | None = None
     recall_log_policy: LogPolicy = field(default_factory=LogPolicy)
@@ -94,6 +96,8 @@ class CoreConfig:
             raise ValueError("invalid session briefing configuration")
         if not 1 <= self.session_brief_tokens <= 8192:
             raise ValueError("session briefing token limit must be between 1 and 8192")
+        if type(self.injection_format) is not str or self.injection_format not in FORMATS:
+            raise ValueError("injection_format")
         for name in ("injection_token_cap", "session_token_cap"):
             value = getattr(self, name)
             if name == "session_token_cap" and value is None:
@@ -228,16 +232,30 @@ class MemoryCore:
             from .recall_trace import record_brief
 
             record_brief(self, context, brief, reason)
+        if "_injection" in brief:
+            from .recall_trace import record_injection
+
+            record_injection(self, context, brief, reason)
         return reason
 
-    def prepare_session_injection(self, context, text: str, *, brief=None, remaining_seconds=0.2) -> dict:
+    def prepare_session_injection(
+        self, context, text: str, *, brief=None, request_id=None, remaining_seconds=0.2
+    ) -> dict:
         """Fit the host's final text and prepare delivery marks without writing them."""
         from .session_injection import prepare
 
         with self._packet_fences_lock:
             saved = self._brief_fences.get(id(brief))
         fence = saved[2] if saved and saved[0] is brief and saved[1] == context.binding.installation_id else None
-        prepared = prepare(self, context, text, brief=brief, entry_fence=fence, remaining_seconds=remaining_seconds)
+        prepared = prepare(
+            self,
+            context,
+            text,
+            brief=brief,
+            entry_fence=fence,
+            request_id=request_id,
+            remaining_seconds=remaining_seconds,
+        )
         with self._packet_fences_lock:
             self._brief_fences[id(prepared)] = (
                 prepared,
