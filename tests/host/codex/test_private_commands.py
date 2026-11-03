@@ -11,9 +11,79 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.restore import InstallationMaintenance
 
+from tests.host.codex.test_dsh_remote import remote as dsh_remote
 from tests.host.codex.test_remote import _client, _hook, _rows
 from tests.host.codex.test_remote import served as served
 from tests.host.codex.test_remote import store as store
+
+
+@pytest.mark.parametrize("host", ["codex", "claude-code"])
+def test_legacy_remote_pause_and_refused_resume(served, tmp_path, host, caplog):
+    from scope_recall.adapters.clients import remote_server
+
+    root, homes, _ports = served
+    config = load_shared_client(homes[host], host)
+    binding = config.to_binding()
+    core = MemoryCore(CoreConfig(binding))
+    owner = MemoryManagement(
+        core, InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated"))
+    )
+    session = "TEST-legacy-command"
+    stored = stored_session_id(config, session)
+    server = remote_server.RemoteServerConfig(homes[host], host, "127.0.0.1", 1, "0" * 64)
+    payload = dict(
+        hook_event_name="UserPromptSubmit",
+        session_id=session,
+        turn_id="TEST-turn",
+        prompt_id="TEST-turn",
+        cwd=str(tmp_path),
+        prompt="scope-recall pause",
+    )
+    with caplog.at_level("INFO", logger="scope_recall.remote_server"):
+        answer = remote_server.handle_request(server, {"payload": payload})["result"]
+    assert "full" in str(answer)
+    assert "4.0" in str(answer) and "upgrade" in str(answer).lower()
+    assert owner.private_status(session=stored)["mode"] == "full"
+    assert "legacy" in caplog.text.lower()
+    remote_server.handle_request(server, {"payload": payload})
+    assert owner.private_status(session=stored)["active_rules"] == 1
+    assert owner.private_status(session=stored_session_id(config, "TEST-other"))["mode"] == "none"
+    remote_server.handle_request(server, {"payload": {**payload, "prompt": "TEST private sentinel"}})
+    result = remote_server.handle_request(server, {"payload": {**payload, "prompt": "scope-recall resume"}})["result"]
+    assert "4.0" in str(result) and "upgrade" in str(result).lower()
+    assert owner.private_status(session=stored)["mode"] == "full"
+    assert all(
+        "TEST private sentinel" not in row[2] and "scope-recall " not in row[2] for row in _rows(root, config.entry_id)
+    )
+
+
+def test_dsh_legacy_pause_and_resume(dsh_remote, tmp_path):
+    from scope_recall.adapters.clients import remote_server
+
+    root, home, _client_config, _bodies, _records = dsh_remote
+    config = load_shared_client(home, "dsh")
+    binding = config.to_binding()
+    core = MemoryCore(CoreConfig(binding))
+    owner = MemoryManagement(
+        core, InstallationMaintenance(TrustedContext(binding, "TEST-owner", binding.scope_ids, "host_generated"))
+    )
+    stored = stored_session_id(config, "TEST-dsh-legacy")
+    server = remote_server.RemoteServerConfig(home, "dsh", "127.0.0.1", 1, "0" * 64)
+    payload = dict(
+        hook_event_name="UserPromptSubmit",
+        session_id="TEST-dsh-legacy",
+        turn_id="TEST-turn",
+        cwd=str(tmp_path),
+        prompt="scope-recall pause",
+    )
+    assert "4.0" in str(remote_server.handle_request(server, {"payload": payload})["result"])
+    remote_server.handle_request(server, {"payload": {**payload, "prompt": "TEST private sentinel"}})
+    result = remote_server.handle_request(server, {"payload": {**payload, "prompt": "scope-recall resume"}})["result"]
+    assert "4.0" in str(result) and "upgrade" in str(result).lower()
+    assert owner.private_status(session=stored)["mode"] == "full"
+    assert not any(
+        "TEST private sentinel" in row[2] or "scope-recall " in row[2] for row in _rows(root, config.entry_id)
+    )
 
 
 @pytest.mark.parametrize("host", ["codex", "claude-code"])

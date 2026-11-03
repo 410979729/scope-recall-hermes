@@ -5,6 +5,7 @@ The hook's state stays the handler's, reached through ``self._hook``; reading th
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from scope_recall.contracts import Origin
@@ -118,7 +119,14 @@ class HookEvents:
     def recording_command(self, session_id, audience, payload):
         """Apply only a source-attested complete command and return its receipt."""
         command = private.parse_recording_command(payload.get("prompt"))
-        eligible = not self._hook.remote_paths or payload.get("scope_recall_direct_command") is True
+        legacy = self._hook.remote_paths and payload.get("scope_recall_legacy_command") is True
+        if command == "resume" and legacy:
+            return command_block(
+                self._hook.host,
+                "Upgrade this client to Scope Recall 4.0 to resume recording remotely, "
+                "or resume on the local management page.",
+            )
+        eligible = not self._hook.remote_paths or payload.get("scope_recall_direct_command") is True or legacy
         if command and self._hook.remote_paths and not eligible and not _inline_gaps(payload):
             return command_block(self._hook.host, "Scope Recall remote command unavailable.")
         if self._hook.host == "dsh" and payload.get("scope_recall_command_eligible") is False:
@@ -133,7 +141,12 @@ class HookEvents:
                     command=command,
                     command_id=payload.get("scope_recall_command_id"),
                     observed_at=payload.get("scope_recall_command_observed_at"),
+                    legacy=legacy,
                 )
+                if legacy:
+                    logging.getLogger("scope_recall.remote_server").info(
+                        "legacy client pause applied for entry %s", context.entry_id
+                    )
             elif command == "pause":
                 private.open_interval(
                     self._hook.core.storage,
@@ -151,7 +164,12 @@ class HookEvents:
                     session=context.session_id,
                 )
             mode = self._hook.core.private_mode(context) or "none"
-            return command_block(self._hook.host, f"Scope Recall recording mode: {mode}.")
+            message = f"Scope Recall recording mode: {mode}."
+            if legacy:
+                message += (
+                    " Upgrade this client to Scope Recall 4.0 to resume remotely, or use the local management page."
+                )
+            return command_block(self._hook.host, message)
         return None
 
     def prompt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:

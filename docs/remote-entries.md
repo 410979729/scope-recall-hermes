@@ -65,6 +65,15 @@ stopped with the other processes on the store for an upgrade (`package-upgrade`)
 For a WorkBuddy client, name `--host workbuddy` in `attach`, `configure` and `serve`.
 For dsh, use `--host dsh` in all three; the attached home is on the server, not on the client machine.
 
+When the server reaches 4.0 before a 3.16 client, Claude Code, Codex and dsh can still use
+`scope-recall pause` to stop recording that session. To resume remotely, upgrade that client to 4.0;
+the server's local management page can also resume recording. Upgrade dsh clients promptly: when the
+server is unreachable, the 3.16 native plugin can leave the plaintext inside `<private>` tags in its
+local pending-message files. This is client-side behavior that a server upgrade cannot change.
+The pause receipt gives the upgrade instruction. While full private mode is active, a 3.16 forwarder
+stops a later `resume` prompt locally and shows its generic private-mode notice, so that prompt never
+reaches the server to receive the more specific refusal.
+
 ## On the client machine
 
 1. Install the package in a virtual environment. Claude Code must be 2.1.196 or later: a prompt from an

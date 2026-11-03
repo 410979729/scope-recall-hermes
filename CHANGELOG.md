@@ -4,6 +4,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Remote 3.16 clients can pause recording after the server upgrade; resuming remotely requires a 4.0 client.
+
 Recall shares immutable hydration and evidence metadata inside each read snapshot, matches shared profile evidence
 once, and reuses bounded source tokenization. Vector imports can catch up their mapped cache in bounded streamed
 batches with atomic durable publication. An exhausted indexing slice resumes with a smaller batch instead of a
