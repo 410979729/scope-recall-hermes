@@ -391,6 +391,32 @@ def _restore_checkpoint(storage, context, ledger):
     return marker, checkpoint_epoch
 
 
+def pending_restore_scopes(storage, authority: InstallationMaintenance, *, minimum: frozenset[str]) -> frozenset[str]:
+    """Recover the fenced ledger's scopes when a copied snapshot has additional registered scopes.
+
+    The marker binds the ledger to this installation and its digest. The selected scopes must include the manifest
+    binding and remain within the checked current registry; this capability never changes an entry's grants.
+    """
+    context = maintenance_context(storage, authority)
+    try:
+        _, marker = _pending_marker(storage, context)
+    except ContractError as exc:
+        if exc.field != "checkpoint_unreadable":
+            raise
+        return context.allowed_scope_ids
+    kept = _kept_ledger(storage)
+    if kept is None or ledger_digest(kept) != marker["expected_ledger_sha256"]:
+        return context.allowed_scope_ids
+    values = kept.get("scope_ids")
+    if not isinstance(values, list) or any(type(value) is not str for value in values):
+        raise ContractError("RESTORE_UNVERIFIED", "ledger_identity")
+    scopes = frozenset(values)
+    if values != sorted(scopes) or not minimum <= scopes <= context.allowed_scope_ids:
+        raise ContractError("RESTORE_UNVERIFIED", "ledger_identity")
+    _restore_checkpoint(storage, replace(context, allowed_scope_ids=scopes), kept)
+    return scopes
+
+
 def pending_restore_ledger(storage, authority: InstallationMaintenance) -> tuple[dict, bool]:
     """The ledger the pending restore replays, and whether it is the one kept beside its marker.
 

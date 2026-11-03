@@ -4,29 +4,34 @@ Each store is a TEST installation in the test's own folder, with synthetic messa
 """
 
 import hashlib
+import itertools
 import json
 import os
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 from scope_recall.adapters.clients import transcript
 from scope_recall.adapters.clients.config import install_codex_scope_recall
-from scope_recall.adapters.hermes.shared_entries import read_shared_payload
+from scope_recall.adapters.hermes.installation import build_installation_manifest
+from scope_recall.adapters.hermes.shared_entries import attach_shared_record, read_shared_payload, shared_entry_record
 from scope_recall.contracts import ContractError, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core import restore as core_restore
+from scope_recall.core.delete_storage import group_digest
 from scope_recall.core.restore import InstallationMaintenance, export_deletion_ledger, ledger_digest
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterLease
 from scope_recall.maintenance import cli, restore
 from scope_recall.maintenance.doctor import run_doctor
+from scope_recall.maintenance.shared import init_shared, store_binding
 from scope_recall.maintenance.shared import main as shared_main
-from scope_recall.maintenance.shared import store_binding
-from v11_support import downgrade_store, source_event
+from test_claims import Clock, capture, initial
+from test_deletion import authorize, request
+from v11_support import downgrade_store, recall_request, source_event
 
 SECRET = "TEST-forgotten the door code is TEST-4711"
 #: Beside the store while a restore is pending, by the names every release that reads the ledger format uses.
@@ -425,6 +430,287 @@ def test_a_shared_store_is_restored_by_its_root(tmp_path, capsys, monkeypatch):
     code, done = run(capsys, *arguments, "--apply")
     assert code == 0 and (done["status"], done["installation_kind"]) == ("restored", "shared"), done
     assert shared.core.source(ctx, secret.ref, 1) is None and not shared.words(SECRET)
+
+
+@pytest.mark.parametrize("plan_only", [True, False])
+def test_shared_snapshot_keeps_registered_scopes_outside_manifest(tmp_path, capsys, monkeypatch, plan_only):
+    monkeypatch.setattr(transcript, "workbuddy_projects", lambda: tmp_path / "projects")
+    root = (tmp_path / "shared").resolve()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    assert shared_main(["init-shared", "--root", str(root), "--agent-id", "TEST-agent"]) == 0
+    assert (
+        shared_main(
+            [
+                "attach",
+                "--host",
+                "workbuddy",
+                "--instance-root",
+                str(home),
+                "--root",
+                str(root),
+                "--entry",
+                "workbuddy",
+                "--display-name",
+                "WorkBuddy",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    payload = read_shared_payload(root)
+    binding = store_binding(payload, root, frozenset(payload["scope_ids"]))
+    extra = frozenset({"TEST-extra-one", "TEST-extra-two", "TEST-extra-three"})
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        conn.executemany("INSERT INTO instance_scopes(scope_id) VALUES (?)", [(scope,) for scope in extra])
+    expanded = replace(binding, scope_ids=binding.scope_ids | extra)
+    core = MemoryCore(CoreConfig(expanded))
+    refs = []
+    for scope in sorted(extra):
+        ctx = TrustedContext(expanded, "TEST-session", frozenset({scope}), "human_direct", entry_id="workbuddy")
+        saved = core.record_event(
+            ctx,
+            source_event(source_event_key=scope, content=f"Synthetic text {scope}"),
+            scope_id=scope,
+            remaining_seconds=10,
+        )
+        refs.append((ctx, saved.event_refs[0].ref, scope))
+    shared = Store(core, refs[0][0], refs[0][2], home, tmp_path)
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        conn.execute("INSERT INTO instance_scopes(scope_id) VALUES (?)", ("TEST-snapshot-only",))
+    snapshot = backup(capsys, shared, "before-upgrade")
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        conn.execute("DELETE FROM instance_scopes WHERE scope_id=?", ("TEST-snapshot-only",))
+    for index, (ctx, ref, scope) in enumerate(refs[:2]):
+        core.record_event(
+            ctx,
+            source_event(source_event_key=f"delete-{index}", content=f"delete {ref}"),
+            scope_id=scope,
+            remaining_seconds=10,
+        )
+        core.forget(
+            ctx,
+            {"protocol_version": "1.1", "mode": "delete", "target_refs": [ref], "expected_revisions": {ref: 1}},
+            remaining_seconds=10,
+        )
+        assert core.source(ctx, ref, 1) is None
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        operations = conn.execute(
+            "SELECT operation_id,scope_ids_json FROM deletion_operations ORDER BY operation_id"
+        ).fetchall()
+    assert len(operations) == 2 and all(set(json.loads(scopes)) <= extra for _, scopes in operations)
+    newer = SCHEMA_VERSION + 1
+    monkeypatch.setattr(restore, "SCHEMA_VERSION", newer)
+    monkeypatch.setattr(core_restore, "SCHEMA_VERSION", newer)
+    args = ["restore", "--root", str(root), "--snapshot", str(snapshot)]
+    if plan_only:
+        code, plan = run(capsys, *args)
+        assert code == 0 and plan["status"] == "planned", plan
+        return
+    code, prepared = run(capsys, *args, "--backup-dir", str(tmp_path / "kept"), "--apply")
+    assert code == 0 and prepared["status"] == "prepared", prepared
+    monkeypatch.undo()
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        conn.execute("UPDATE instance_meta SET schema_version=? WHERE singleton=1", (newer,))
+        conn.execute(f"PRAGMA user_version={newer}")
+    replay = restore.replay_deletion_ledger
+    monkeypatch.setattr(
+        restore, "replay_deletion_ledger", lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
+    with pytest.raises(KeyboardInterrupt):
+        cli.main([*args, "--apply"])
+    capsys.readouterr()
+    monkeypatch.setattr(restore, "replay_deletion_ledger", replay)
+    code, done = run(capsys, *args, "--apply")
+    assert code == 0 and done["status"] == "restored", done
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        assert (
+            conn.execute("SELECT operation_id,scope_ids_json FROM deletion_operations ORDER BY operation_id").fetchall()
+            == operations
+        )
+    for ctx, ref, scope in refs[:2]:
+        assert core.source(ctx, ref, 1) is None
+        assert not shared.words(f"Synthetic text {scope}")
+    for ctx, ref, scope in refs[2:]:
+        found = core.source(ctx, ref, 1)
+        assert found is not None and found.event["content"] == f"Synthetic text {scope}"
+
+
+def test_shared_restore_resumes_with_withdrawal_and_suppression_in_registered_scope(tmp_path, capsys, monkeypatch):
+    from scope_recall.core.source_storage import source_reference
+
+    root = (tmp_path / "shared-protection").resolve()
+    init_shared(root=root, agent_id="TEST-agent", test_mode=True)
+    stamp = "2026-01-01T00:00:00Z"
+    local = build_installation_manifest(tmp_path / "home", agent_id="TEST-agent", test_mode=True)
+    attach_shared_record(
+        root, shared_entry_record(local, entry_id="agent1", display_name="agent1", attached_at=stamp), now=stamp
+    )
+    payload = read_shared_payload(root)
+    binding = store_binding(payload, root, frozenset(payload["scope_ids"]))
+    scope = "TEST-scope"
+    assert scope not in binding.scope_ids
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        conn.execute("INSERT INTO instance_scopes(scope_id) VALUES (?)", (scope,))
+    expanded = replace(binding, scope_ids=binding.scope_ids | {scope})
+    ctx = TrustedContext(
+        expanded,
+        "TEST-session",
+        frozenset({scope}),
+        "human_direct",
+        entry_id="agent1",
+        project_id="TEST-project",
+        branch_id="TEST-main",
+    )
+    core = MemoryCore(CoreConfig(expanded), clock=Clock())
+    core.test_sequence = itertools.count(1)
+    item, _ = initial(core, ctx)
+    muted = capture(core, ctx, "TEST amberobject private note")
+    assert any(source.ref == muted.ref for source in core.search_sources(ctx, "amberobject", automatic=True))
+    group_key = "TEST-group-protection"
+    first_key = "TEST-group-first"
+    part = capture(
+        core,
+        ctx,
+        "TEST hiddenfirst group words",
+        key=first_key,
+        segment=dict(group_key=group_key, index=0, total=2, truncated=False),
+    )
+    assert part is None
+    with core.storage.read(ctx) as tx:
+        group_part = tx.deletions.target(source_reference(expanded.installation_id, first_key))
+    shared = Store(core, ctx, scope, tmp_path / "home", tmp_path)
+    snapshot = backup(capsys, shared, "before-protection")
+    capture(core, ctx, "撤回 TEST-project 配色蓝色。", when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref) is None
+    for target in (muted, group_part):
+        authorize(core, ctx, target, mode="suppress")
+        core.forget(ctx, request(target, mode="suppress"), remaining_seconds=10)
+    digest = group_digest(expanded, scope, ctx.project_id, ctx.branch_id, group_key)
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        assert conn.execute(
+            "SELECT suppressed FROM source_group_blocks WHERE group_sha256=?", (digest,)
+        ).fetchone() == (1,)
+    assert core.source(ctx, muted.ref, 1).suppressed
+    args = ["restore", "--root", str(root), "--snapshot", str(snapshot), "--apply"]
+    replay = restore.replay_deletion_ledger
+    monkeypatch.setattr(
+        restore, "replay_deletion_ledger", lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
+    with pytest.raises(KeyboardInterrupt):
+        cli.main([*args, "--backup-dir", str(tmp_path / "kept")])
+    capsys.readouterr()
+    assert (root / MARKER).is_file()
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        assert conn.execute("SELECT suppressed FROM source_events WHERE event_id=?", (muted.ref,)).fetchone() == (0,)
+        assert conn.execute("SELECT 1 FROM source_group_blocks WHERE group_sha256=?", (digest,)).fetchone() is None
+    monkeypatch.setattr(restore, "replay_deletion_ledger", replay)
+    code, done = run(capsys, *args)
+    assert code == 0 and done["status"] == "restored", done
+    assert core.current_claim(ctx, item.ref) is None
+    assert core.claim_history(ctx, item.ref)[-1].state == "retracted"
+    assert core.source(ctx, muted.ref, 1).suppressed
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        assert conn.execute(
+            "SELECT suppressed FROM source_group_blocks WHERE group_sha256=?", (digest,)
+        ).fetchone() == (1,)
+    second = capture(
+        core,
+        ctx,
+        "TEST hiddensecond group words",
+        key="TEST-group-second",
+        segment=dict(group_key=group_key, index=1, total=2, truncated=False),
+    )
+    assert second is not None and second.suppressed
+    for phrase, ref in (("amberobject", muted.ref), ("hiddensecond", second.ref)):
+        assert not core.search_sources(ctx, phrase, automatic=True)
+        packet = core.recall(ctx, recall_request(query=phrase), deadline_seconds=10)
+        assert all(entry.ref != ref for entry in packet.items)
+
+
+@pytest.mark.parametrize("scopes", [[], ["TEST-not-registered"]])
+def test_pending_restore_rejects_ledger_scopes_outside_checked_registry(store, scopes):
+    binding = store.ctx.binding
+    authority = InstallationMaintenance(TrustedContext(binding, "restore", binding.scope_ids, "host_generated"))
+    ledger = export_deletion_ledger(store.core.storage, authority)
+    ledger["scope_ids"] = sorted(binding.scope_ids | set(scopes)) if scopes else []
+    marker = dict(
+        installation_id=binding.installation_id,
+        agent_id=binding.agent_id,
+        data_directory=str(binding.data_directory),
+        expected_ledger_sha256=ledger_digest(ledger),
+    )
+    (store.data / KEPT_LEDGER).write_text(json.dumps(ledger), encoding="utf-8")
+    (store.data / MARKER).write_text(json.dumps(marker), encoding="utf-8")
+    with pytest.raises(ContractError) as error:
+        core_restore.pending_restore_scopes(store.core.storage, authority, minimum=binding.scope_ids)
+    assert (error.value.code, error.value.field) == ("RESTORE_UNVERIFIED", "ledger_identity")
+
+
+@pytest.mark.parametrize("missing", ["binding", "registered", "new_entry", "current_binding"])
+def test_snapshot_missing_current_scopes_is_refused(tmp_path, capsys, monkeypatch, missing):
+    monkeypatch.setattr(transcript, "workbuddy_projects", lambda: tmp_path / "projects")
+    root = (tmp_path / "shared").resolve()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    assert shared_main(["init-shared", "--root", str(root), "--agent-id", "TEST-agent"]) == 0
+    assert (
+        shared_main(
+            [
+                "attach",
+                "--host",
+                "workbuddy",
+                "--instance-root",
+                str(home),
+                "--root",
+                str(root),
+                "--entry",
+                "workbuddy",
+                "--display-name",
+                "WorkBuddy",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    payload = read_shared_payload(root)
+    binding = store_binding(payload, root, frozenset(payload["scope_ids"]))
+    ctx = TrustedContext(binding, "TEST-session", binding.scope_ids, "human_direct", entry_id="workbuddy")
+    shared = Store(MemoryCore(CoreConfig(binding)), ctx, payload["scope_ids"][0], home, tmp_path)
+    snapshot = backup(capsys, shared, "before-new-scope")
+    if missing == "binding":
+        with sqlite3.connect(snapshot) as conn:
+            conn.execute("DELETE FROM instance_scopes WHERE scope_id=?", (payload["scope_ids"][0],))
+    elif missing == "registered":
+        with sqlite3.connect(root / "memory.sqlite3") as conn:
+            conn.execute("INSERT INTO instance_scopes(scope_id) VALUES (?)", ("TEST-later-scope",))
+    elif missing == "current_binding":
+        with sqlite3.connect(root / "memory.sqlite3") as conn:
+            conn.execute("DELETE FROM instance_scopes WHERE scope_id=?", (payload["scope_ids"][0],))
+    else:
+        other = (tmp_path / "other").resolve()
+        other.mkdir()
+        stamp = "2026-01-01T00:00:00Z"
+        local = build_installation_manifest(other, agent_id="TEST-agent", test_mode=True)
+        record = shared_entry_record(local, entry_id="hermes", display_name="Hermes", attached_at=stamp)
+        attach_shared_record(root, record, now=stamp)
+        assert set(read_shared_payload(root)["scope_ids"]) - set(payload["scope_ids"])
+    code, out = run(
+        capsys,
+        "restore",
+        "--root",
+        str(root),
+        "--snapshot",
+        str(snapshot),
+        "--backup-dir",
+        str(tmp_path / "kept"),
+        "--apply",
+    )
+    expected = "IDENTITY_UNBOUND" if missing == "current_binding" else "snapshot_scopes"
+    assert (code, out["error"], out["restore_pending"]) == (2, expected, False), out
+    if missing == "current_binding":
+        assert out["field"] == "scope_binding"
+    assert not (tmp_path / "kept").exists()
 
 
 def test_admission_stays_closed_until_the_log_that_held_the_snapshot_is_truncated(store, capsys, monkeypatch):
