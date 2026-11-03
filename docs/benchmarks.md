@@ -278,9 +278,13 @@ commands and frozen workload on those machines separately.
 historical subjects and concentrated scopes. Its seed and category counts are
 fixed; all text and 3072-dimensional vectors are synthetic. The fixture declares
 a process-local synthetic model with a 768-dimensional coarse prefix and full
-3072-dimensional reranking. Long transcripts, source segments, 200-member episodes
-and claim-to-episode edges are explicit pressure assumptions; their joint
-distribution is not inferred from real content. `latency_pair.py`
+3072-dimensional reranking. Source lengths fit nine bins and six quantiles from
+103 to 38,772 characters, with an aggregate mean of 372,000,000 / 379,784 characters.
+Origins are shuffled separately inside the short and over-4,000-character strata;
+most long sources are synthetic tool output with CJK and fullwidth text. Bin interiors,
+imported original lineage, source segments, 200-member episodes and claim-to-episode
+edges are explicit pressure assumptions. Their joint distribution is not inferred
+from real content. `latency_pair.py`
 builds either source scale and alternates baseline and current packages
 on the same synthetic truth and vectors. Each timing question runs three times
 per implementation; the report retains raw samples, each side's shortest result,
@@ -296,6 +300,11 @@ python -X utf8 tests/public_bench/latency_pair.py compare --data <store> --outpu
 The baseline directory contains a complete independent `scope_recall/` package,
 including its package data. The worker imports it before opening the fixture;
 loaded source hashes and vector diagnostics identify both implementations.
+Use `--workload long-tools` to measure or compare a separate pool of long tool
+results. Its shared task terms occur after the first 1,024 characters, preserving
+the fixture's bounded claim evidence excerpts; this correlation is a declared
+pressure assumption. Report both the ordinary and pressure questions, including
+oversized-item gaps, rather than counting expected budget abstentions as timeouts.
 Fixture preparation fills the mapped cache through direct maintenance, so it
 does not establish worker scheduling or import recovery. `--missing-vectors` uses a separate,
 absent vector generation and requires the production read-only open to fail;

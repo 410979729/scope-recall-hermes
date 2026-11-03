@@ -1,6 +1,6 @@
 """Paired synthetic recall measurements and semantic comparisons on one fixture.
 
-The before worker replaces only the measured modules from a caller-supplied
+The before worker imports an independent complete package from a caller-supplied
 source snapshot. SQLite truth and vectors are shared read-only during requests;
 each worker has its own embedding-response cache and application state.
 """
@@ -18,6 +18,7 @@ import os
 import pstats
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -143,6 +144,7 @@ def build(args):
         sources_at = time.perf_counter()
         stats = fixture.seed_claims(lab, refs)
         stats.update(fixture.seed_relations(lab))
+        stats.update(fixture.source_statistics(lab))
         claims_at = time.perf_counter()
         if args.vectors:
             fixture.seed_vectors(lab, refs)
@@ -175,6 +177,7 @@ def source_hashes(before):
         "background_context",
         "recall_overflow",
         "recall",
+        "recall_budget",
         "storage",
         "retrieval_hydration",
         "events",
@@ -187,6 +190,31 @@ def source_hashes(before):
         source = Path(module.__file__)
         result[name] = hashlib.sha256(source.read_bytes()).hexdigest()
     return result
+
+
+def observe_ranking(pipeline, measurement):
+    """Measure loaded pool sizes without rescanning text or changing admission.
+
+    The before and after readers may differ in their optional transaction
+    keyword. The wrapper forwards it unchanged and preserves the bound method.
+    """
+    original_rank = pipeline._rank_hydrated
+
+    def rank(hydrated, *extra, **kwargs):
+        current = measurement()
+        # These sizes inspect already loaded immutable bodies, without reading
+        # or tokenizing them. Comparison records the pre-budget candidate pool;
+        # returned candidates alone cannot prove long-source ranking work.
+        long_events = [obj for _candidate, obj in hydrated if obj.kind == "event" and len(obj.content) > 16000]
+        current["long_pool_events"] = current.get("long_pool_events", 0) + len(long_events)
+        current["long_pool_characters"] = current.get("long_pool_characters", 0) + sum(
+            len(obj.content) for obj in long_events
+        )
+        if current.get("compare"):
+            current.setdefault("rank_input_candidates", []).append([asdict(candidate) for candidate, _obj in hydrated])
+        return original_rank(hydrated, *extra, **kwargs)
+
+    pipeline._rank_hydrated = rank
 
 
 def worker(args):
@@ -215,6 +243,7 @@ def worker(args):
         return result
 
     lab.core.recall_pipeline.search = search
+    observe_ranking(lab.core.recall_pipeline, lambda: current)
     lab.core.recall_pipeline.storage_reader.claims = claims
     affinity = bind(args.cores)
     print(
@@ -224,6 +253,8 @@ def worker(args):
                 affinity=affinity,
                 source_sha256=source_hashes(args.before),
                 vector_runtime=lab.companion.diagnostics(),
+                temporary_directory=tempfile.gettempdir(),
+                temporary_environment={"TEMP": os.environ.get("TEMP"), "TMP": os.environ.get("TMP")},
             )
         ),
         flush=True,
@@ -233,7 +264,7 @@ def worker(args):
             command = json.loads(line)
             if command.get("quit"):
                 break
-            current.clear()
+            current = {"compare": command.get("compare", False)}
             lab.clock.now = NOW
             mode = command.get("mode", "auto")
             scopes = frozenset(command.get("scopes", ["public", "public-1"]))
@@ -266,6 +297,8 @@ def worker(args):
                 stages=current.get("retrieval", {}),
                 gaps=packet.get("gaps", []),
                 items=len(packet.get("items", [])),
+                long_pool_events=current.get("long_pool_events", 0),
+                long_pool_characters=current.get("long_pool_characters", 0),
             )
             if command.get("compare"):
                 result["returned"] = [
@@ -273,6 +306,7 @@ def worker(args):
                 ]
                 result["claim_signature"] = _signature(current.get("claims", []))
                 result["candidate_signature"] = _signature(current.get("candidates", []))
+                result["rank_input_signature"] = _signature(current.get("rank_input_candidates", []))
                 # This random diagnostic handle refers to each request's own
                 # log record; all content and policy fields remain compared.
                 result["packet_signature"] = _signature(
@@ -309,8 +343,14 @@ def launch(args, label):
         command += ["--before", str(args.before)]
     if args.missing_vectors:
         command.append("--missing-vectors")
+    # SQLite sort files and Python helpers must stay beside the requested
+    # evidence, regardless of the caller's machine-wide temporary directory.
+    temporary = (args.output / "temp").resolve()
+    temporary.mkdir(parents=True, exist_ok=True)
     env = dict(
         os.environ,
+        TEMP=str(temporary),
+        TMP=str(temporary),
         PYTHONDONTWRITEBYTECODE="1",
         PYTHONUTF8="1",
         OMP_NUM_THREADS="1",
@@ -361,6 +401,23 @@ def questions(count):
             )
         )
     return result
+
+
+def long_tool_questions(count):
+    """Exercise synthetic shared task identifiers held only by long tool results.
+
+    Their joint occurrence is a declared pressure assumption. Two shared terms
+    nominate the long stratum; the group identifier chooses one repeatable task
+    whose candidate pool contains many independent, complete long sources.
+    """
+    return [
+        dict(
+            query=f"TESTlongtools TESTpayloadresults TESTlonggroup{index % 20:02d}",
+            mode="auto",
+            scopes=["public", "public-1"],
+        )
+        for index in range(count)
+    ]
 
 
 def comparison_questions(data, count):
@@ -414,7 +471,11 @@ def paired(args):
                 child, dict(query="TESTsubject01000 color amber", session="TEST-profile-session", profile=True)
             )
         selected = (
-            comparison_questions(args.data, args.queries) if args.action == "compare" else questions(args.queries)
+            long_tool_questions(args.queries)
+            if args.workload == "long-tools"
+            else comparison_questions(args.data, args.queries)
+            if args.action == "compare"
+            else questions(args.queries)
         )
         for index, question in enumerate(selected):
             if args.action == "paired":
@@ -438,7 +499,7 @@ def paired(args):
             if args.action == "compare":
                 row["equal"] = {
                     key: shortest["before"].pop(key) == shortest["after"].pop(key)
-                    for key in ("claim_signature", "candidate_signature", "packet_signature")
+                    for key in ("claim_signature", "candidate_signature", "packet_signature", "rank_input_signature")
                 }
             rows.append(row)
             (args.output / (args.action + "-progress.json")).write_text(
@@ -481,6 +542,7 @@ def main():
     parser.add_argument("--scale", type=int, default=350000)
     parser.add_argument("--vectors", action="store_true")
     parser.add_argument("--queries", type=int, default=20)
+    parser.add_argument("--workload", choices=("standard", "long-tools"), default="standard")
     parser.add_argument("--cores", nargs="+", type=int, default=[0])
     parser.add_argument("--label", default="after")
     parser.add_argument("--missing-vectors", action="store_true")

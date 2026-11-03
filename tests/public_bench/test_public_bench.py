@@ -1402,7 +1402,7 @@ def test_scale_fixture_uses_mapped_backend_without_legacy_sdk_or_embedding_reque
 
 
 def test_realistic_fixture_preserves_aggregate_histograms(tmp_path):
-    from realistic_distribution import NOW, SCOPES, seed_claims, seed_relations, seed_sources
+    from realistic_distribution import NOW, SCOPES, seed_claims, seed_relations, seed_sources, source_population
 
     lab = Lab(
         tmp_path / "realistic",
@@ -1418,7 +1418,9 @@ def test_realistic_fixture_preserves_aggregate_histograms(tmp_path):
         assert relations["pressure_dependencies"] > 0
         with sqlite3.connect(lab.core.storage.path) as conn:
             assert conn.execute("SELECT count(*) FROM episode_events").fetchone()[0] == 3000
-            assert conn.execute("SELECT count(*) FROM source_events WHERE length(content)>2000").fetchone()[0] == 299
+            assert conn.execute("SELECT count(*) FROM source_events WHERE length(content)>2000").fetchone()[0] == int(
+                (source_population(3000)[0] > 2000).sum()
+            )
             assert conn.execute("SELECT count(*) FROM source_events WHERE segment_total=3").fetchone()[0] > 0
             assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == 27951
             assert conn.execute("SELECT count(*) FROM claim_versions").fetchone()[0] == 51612
@@ -1489,3 +1491,143 @@ def test_realistic_query_encoder_has_a_nonzero_prefix(tmp_path):
         assert len(vector) == 3072
         assert sum(value * value for value in vector[:768]) > 0, query
         assert sum(value * value for value in vector) == pytest.approx(1.0)
+
+
+def test_realistic_source_population_preserves_length_and_origin_marginals():
+    import math
+    from collections import Counter
+
+    from realistic_distribution import source_population
+
+    lengths, origins = source_population(379784)
+    expected = [164292, 126855, 36013, 20172, 10131, 8710, 8896, 4074, 641]
+    lower = 0
+    for count, upper in zip(expected, (100, 300, 1000, 2000, 4000, 8000, 16000, 32000, 65536), strict=True):
+        assert sum(lower < int(value) <= upper for value in lengths) == count
+        lower = upper
+    assert int(sum(lengths)) == 372000000
+    ordered = sorted(lengths)
+    for quantile, value in ((0.5, 103), (0.75, 256), (0.9, 1846), (0.95, 5237), (0.99, 17150), (0.999, 38772)):
+        assert ordered[math.ceil(len(ordered) * quantile) - 1] == value
+    assert Counter(origins) == dict(
+        imported=286121,
+        tool_observation=60588,
+        assistant_visible=23536,
+        human_direct=7548,
+        host_generated=1235,
+        memory_reinjection=756,
+    )
+    assert Counter(origin for length, origin in zip(lengths, origins, strict=True) if length > 4000) == dict(
+        imported=635,
+        tool_observation=21277,
+        memory_reinjection=295,
+        human_direct=62,
+        assistant_visible=45,
+        host_generated=7,
+    )
+
+
+def test_realistic_source_population_scales_reproducibly_and_keeps_long_tool_outputs():
+    from realistic_distribution import source_population, source_text
+
+    left, origins = source_population(3000)
+    right, repeated = source_population(3000)
+    assert list(left) == list(right) and origins == repeated
+    assert int(sum(left)) == round(372000000 * 3000 / 379784)
+    assert (
+        sum(length > 16000 and origin == "tool_observation" for length, origin in zip(left, origins, strict=True)) >= 20
+    )
+    for index in (0, 299, 2999):
+        text = source_text(index, int(left[index]), origins[index])
+        assert len(text) == left[index]
+        assert f"TESTsubject{index % 12386:05d}" in text
+
+
+def test_realistic_sources_recall_real_long_tool_payloads(tmp_path):
+    from realistic_distribution import NOW, SCOPES, seed_sources
+
+    lab = Lab(
+        tmp_path / "long-sources",
+        Ports(RequestCache(tmp_path / "long-requests.sqlite3")),
+        now=NOW,
+        scopes=SCOPES,
+        installation_kind="shared",
+    )
+    try:
+        seed_sources(lab, 3000)
+        with sqlite3.connect(lab.core.storage.path) as conn:
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM source_events WHERE origin='tool_observation' AND length(content)>16000"
+                ).fetchone()[0]
+                >= 20
+            )
+            assert conn.execute("SELECT max(length(content)) FROM source_events").fetchone()[0] == 65536
+    finally:
+        lab.close()
+
+
+def test_realistic_long_tools_share_bounded_task_terms_after_the_evidence_excerpt():
+    from realistic_distribution import source_text
+    from scope_recall.core.events import lexical_terms
+
+    text = source_text(723, 40000, "tool_observation")
+    assert len(text) == 40000
+    assert "TESTlongtools" not in text[:1024]
+    assert {"testlongtools", "testpayloadresults", "testlonggroup03"} <= set(lexical_terms(text))
+
+
+def test_latency_pair_rank_observer_uses_each_requests_live_measurement():
+    from dataclasses import make_dataclass
+    from types import SimpleNamespace
+
+    from latency_pair import observe_ranking
+
+    Candidate = make_dataclass("Candidate", (("ref", str), ("revision", int)))
+    candidate = Candidate("event-TEST-long-observer", 1)
+    pairs = [(candidate, SimpleNamespace(kind="event", content="x" * 20000))]
+    context, transaction = object(), object()
+    calls = []
+
+    def rank(objects, ctx, **kwargs):
+        calls.append((objects, ctx, kwargs))
+        return objects
+
+    pipeline = SimpleNamespace(_rank_hydrated=rank)
+    current = {"compare": True}
+    observe_ranking(pipeline, lambda: current)
+    assert pipeline._rank_hydrated(pairs, context) is pairs
+    first = current
+    current = {"compare": True}
+    assert pipeline._rank_hydrated(pairs, context, tx=transaction) is pairs
+    assert calls == [(pairs, context, {}), (pairs, context, {"tx": transaction})]
+    for result in (first, current):
+        assert result["long_pool_events"] == 1
+        assert result["long_pool_characters"] == 20000
+        assert result["rank_input_candidates"] == [[{"ref": candidate.ref, "revision": 1}]]
+
+
+def test_latency_pair_workers_keep_temporary_files_in_the_output_tree(tmp_path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    import latency_pair
+
+    output = tmp_path / "paired-output"
+    output.mkdir()
+    launched = []
+
+    def process(_command, **kwargs):
+        launched.append(kwargs["env"])
+        return SimpleNamespace(stdout=io.StringIO('{"ready": true}\n'))
+
+    monkeypatch.setattr(latency_pair.subprocess, "Popen", process)
+    args = SimpleNamespace(data=tmp_path / "data", output=output, before=None, cores=[0], missing_vectors=False)
+    _child, error, ready = latency_pair.launch(args, "after")
+    try:
+        assert ready["ready"]
+        assert Path(launched[0]["TEMP"]) == (output / "temp").resolve()
+        assert Path(launched[0]["TMP"]) == (output / "temp").resolve()
+        assert Path(launched[0]["TEMP"]).is_dir()
+    finally:
+        error.close()

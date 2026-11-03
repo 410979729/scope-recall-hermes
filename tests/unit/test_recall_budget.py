@@ -145,3 +145,47 @@ def test_saturated_legacy_host_text_sets_default_injection_cap(record_property, 
     assert CoreConfig(context(tmp_path / "TEST-unused-measurement").binding).injection_token_cap >= max(
         measurements.values()
     )
+
+
+def test_repeated_long_source_estimate_counts_the_body_once(monkeypatch):
+    from scope_recall.core import recall_budget
+
+    pattern = recall_budget._CJK
+    calls = []
+
+    class Observed:
+        def sub(self, replacement, text):
+            calls.append(len(text))
+            return pattern.sub(replacement, text)
+
+    monkeypatch.setattr(recall_budget, "_CJK", Observed())
+    text = "TEST long budget source 项目🧪 " * 1200
+    first = recall_budget.estimate_tokens(text)
+    assert recall_budget.estimate_tokens(text) == first
+    assert calls == [len(text)]
+
+
+def test_token_estimate_cache_is_bounded_and_larger_renderings_are_not_retained(monkeypatch):
+    from scope_recall.core import recall_budget
+
+    recall_budget._cached_estimate_tokens.cache_clear()
+    for index in range(300):
+        assert recall_budget.estimate_tokens(f"TEST cached source {index}") > 0
+    info = recall_budget._cached_estimate_tokens.cache_info()
+    assert info.currsize == info.maxsize == 256
+    text = "TEST oversized rendering 项目🧪 " * 3000
+    assert len(text) > 65536
+    calls = []
+    original = recall_budget._estimate_tokens
+
+    def counted(body):
+        calls.append(body)
+        return original(body)
+
+    monkeypatch.setattr(recall_budget, "_estimate_tokens", counted)
+    assert recall_budget.estimate_tokens(text) == recall_budget.estimate_tokens(text)
+    assert calls == [text, text]
+    assert recall_budget._cached_estimate_tokens.cache_info() == info
+    first = recall_budget.estimate_tokens("TEST changed source α")
+    second = recall_budget.estimate_tokens("TEST changed source 项目🧪")
+    assert first != second

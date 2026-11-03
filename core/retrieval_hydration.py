@@ -7,6 +7,7 @@ half of ``retrieval_storage.RetrievalStorage``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import replace
@@ -26,6 +27,7 @@ from .candidate_tables import awaits_first_judgement
 from .claim_storage import parse_source_ref
 from .claims import canonical_time, dated_after, holds_instead, select_effective, select_proposal, states_a_value
 from .episodes import source_origin
+from .events import withheld_tool_output
 from .recall_policy import applicability, in_time_window, parse_time
 from .reflection_validity import reflection_live
 from .resume_compaction import resume_evidence_refs
@@ -415,6 +417,39 @@ class RetrievalHydration:
         for key in instead:
             tx.remember(("claim_evidence", *key), evidence.get(key, ()))
         _prefetch(tx, (cited for found in evidence.values() for cited in found))
+
+    def source_term_matches(self, tx, pairs, terms: tuple[str, ...]) -> dict[tuple, set[str]]:
+        """Match already hydrated original bodies through their existing lexical postings.
+
+        The digest binds each result to this exact rendering and source version.
+        Withheld placeholders have a deliberately smaller index; missing sources
+        or empty projections also fall back to full-text matching in the caller.
+        These matches only rank admitted objects and never establish permission.
+        """
+        wanted = [
+            (candidate.ref, candidate.revision, hashlib.sha256(obj.content.encode("utf-8")).hexdigest())
+            for candidate, obj in pairs
+            if obj.kind == "event" and not withheld_tool_output({"role": "tool", "content": obj.content})
+        ]
+        if not wanted or not terms:
+            return {}
+        rows = tx._check().execute(
+            "SELECT e.event_id,e.source_revision,t.term FROM json_each(?) w "
+            "JOIN source_events e ON e.event_id=json_extract(w.value,'$[0]') "
+            "AND e.source_revision=json_extract(w.value,'$[1]') "
+            "AND e.content_sha256=json_extract(w.value,'$[2]') "
+            "LEFT JOIN lexical_postings p ON p.source_id=e.source_id AND p.term_id IN "
+            "(SELECT term_id FROM lexical_terms WHERE term IN (SELECT value FROM json_each(?))) "
+            "LEFT JOIN lexical_terms t ON t.term_id=p.term_id "
+            "WHERE EXISTS(SELECT 1 FROM lexical_postings any_term WHERE any_term.source_id=e.source_id)",
+            (json.dumps(wanted), json.dumps(terms)),
+        )
+        matched: dict[tuple, set[str]] = {}
+        for ref, revision, term in rows:
+            found = matched.setdefault(("event", ref, revision), set())
+            if term is not None:
+                found.add(term)
+        return matched
 
     def hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         """Reuse an immutable hydrated object only in this read snapshot and semantic context.

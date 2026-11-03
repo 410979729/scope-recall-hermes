@@ -4,6 +4,13 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Recall ranking reads original source terms from their existing lexical index, bound to the exact version and
+body digest. Lexical candidates aggregate matching postings before each source metadata read, while keeping
+all visibility and temporal fences before truncation. Different renderings and tool placeholders retain full-text
+matching. Repeated packet budget
+estimates share a bounded cache of immutable text values. The synthetic latency fixture includes long tool
+outputs, source origins and length strata alongside its temporal facts and concentrated scopes.
+
 Recall shares immutable hydration and evidence metadata inside each read snapshot, matches shared profile evidence
 once, and reuses bounded source tokenization. Vector imports can catch up their mapped cache in bounded streamed
 batches with atomic durable publication. An exhausted indexing slice resumes with a smaller batch instead of a
