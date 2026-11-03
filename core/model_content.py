@@ -77,7 +77,7 @@ def stored_item_pattern_names(value) -> tuple[str, ...]:
 def _retrieved_pattern_names(value: RetrievedObject, rules_version: str) -> tuple[str, ...]:
     """Reuse only complete immutable views; rules are fixed for the process lifetime.
 
-    A full view key includes metadata and evidence as well as identity, so changed
+    A full view key includes the complete scan receipt, metadata and evidence, so changed
     projections and equal references in independent stores cannot share verdicts.
     Large views bypass the bounded cache to avoid retaining oversized originals.
     """

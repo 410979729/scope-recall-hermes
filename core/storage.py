@@ -71,7 +71,7 @@ from .schema import (
     upgrade_1132,
     upgrade_1133,
 )
-from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
+from .source_records import SOURCE_COLUMNS, StoredSource, clear_body_scan_receipts, source_size, stored_source
 from .source_storage import Sources
 from .store_upgrade import UPGRADE_LOCK, recover_upgrade_snapshot, upgrade_in_progress, upgrade_store
 from .truth_connection import TruthDatabaseMode, connect_truth_database
@@ -1041,6 +1041,7 @@ class SQLiteStorage:
             ):
                 raise ContractError("IDENTITY_UNBOUND", "scope_binding")
             previous = row["data_directory"]
+            clear_body_scan_receipts(conn)
             conn.execute(
                 "UPDATE instance_meta SET data_directory=? WHERE singleton=1",
                 (_directory(self.binding.data_directory),),

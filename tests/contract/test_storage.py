@@ -154,6 +154,33 @@ def test_adopt_rechecks_structure_even_when_metadata_returns_to_its_old_value(tm
     assert calls == [1]
 
 
+def test_adopt_revokes_copied_body_scan_receipts(tmp_path):
+    from scope_recall.core.source_storage import backfill_secret_scans
+
+    from tests.contract.test_shared_store import put, shared_binding, shared_context
+
+    storage = SQLiteStorage(shared_binding(tmp_path / "TEST-adopt-receipt"))
+    storage.initialize()
+    with storage.write(shared_context(storage.binding)) as tx:
+        tx.registry.register_entry("agent3", "TEST entry", "hermes", now="2026-09-22T20:00:00Z")
+    ctx = shared_context(storage.binding, "agent3")
+    source = put(storage, ctx, "TEST-adopt-source")
+    with storage.read(ctx) as tx:
+        assert tx.source(source.ref, 1).content_secret_scan is not None
+    with storage.write(ctx) as tx:
+        assert backfill_secret_scans(tx, now="TEST-now") == 1
+        assert backfill_secret_scans(tx, now="TEST-now") == 0
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("UPDATE instance_meta SET data_directory=?", (str(tmp_path / "TEST-old-directory"),))
+        conn.commit()
+    storage.adopt()
+    with storage.read(ctx) as tx:
+        assert tx.source(source.ref, 1).content_secret_scan is None
+    with storage.write(ctx) as tx:
+        assert backfill_secret_scans(tx, now="TEST-now") == 1
+        assert tx.source(source.ref, 1).content_secret_scan is not None
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows distinguishes junctions and symlinks")
 def test_path_guard_reads_each_reparse_record_once(store, monkeypatch):
     storage, _ctx = store

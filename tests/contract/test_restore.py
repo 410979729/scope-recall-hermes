@@ -146,6 +146,36 @@ def test_restore_revalidates_a_warmed_structural_verdict(store, capsys, monkeypa
     assert calls
 
 
+def test_restore_revokes_body_scan_receipts_from_the_snapshot(store, capsys):
+    kept = store.say("TEST kept amber palette")
+    assert kept.content_secret_scan is not None
+    snapshot = backup(capsys, store, "TEST-receipt-revocation")
+    code, result = run(
+        capsys,
+        "restore",
+        *store.target(),
+        "--snapshot",
+        str(snapshot),
+        "--backup-dir",
+        str(store.tmp / "TEST-receipt-backup"),
+        "--apply",
+    )
+    assert code == 0 and result["status"] == "restored"
+    assert store.core.source(store.ctx, kept.ref, 1).content_secret_scan is None
+
+
+def test_disaster_recovery_revokes_body_scan_receipts_before_reopening(store):
+    kept = store.say("TEST kept amber palette")
+    assert kept.content_secret_scan is not None
+    authority = InstallationMaintenance(replace(store.ctx, allowed_scope_ids=store.ctx.binding.scope_ids))
+    ledger = export_deletion_ledger(store.core.storage, authority)
+    core_restore.begin_restore(
+        store.core.storage, authority, expected_ledger_sha256=ledger_digest(ledger), ledger_format=ledger["format"]
+    )
+    core_restore.finish_disaster_recovery(store.core.storage, authority)
+    assert store.core.source(store.ctx, kept.ref, 1).content_secret_scan is None
+
+
 @pytest.mark.parametrize("session_index", [False, True])
 def test_going_back_to_a_backup_keeps_what_was_forgotten_since(store, capsys, session_index):
     kept = store.say("TEST-kept the meeting moved to Thursday")

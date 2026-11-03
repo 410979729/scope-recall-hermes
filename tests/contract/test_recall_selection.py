@@ -25,6 +25,75 @@ def _search(core, ctx, query):
     )
 
 
+@pytest.mark.parametrize("operation", ["INSERT", "INSERT OR REPLACE"])
+def test_copied_body_verdict_does_not_attest_a_rewritten_original(app, operation):
+    from scope_recall.core import model_content
+
+    core, ctx = app
+    source = capture(core, ctx, "TEST palette amber")
+    body = "api_key: TEST9-secret-value"
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        row = dict(conn.execute("SELECT * FROM source_events WHERE event_id=?", (source.ref,)).fetchone())
+        if operation == "INSERT":
+            row.update(
+                event_id="event-TEST-copied-verdict",
+                source_id=row["source_id"] + 1,
+                source_event_key="TEST-copied-verdict",
+                source_group_key="TEST-copied-verdict",
+            )
+        row.update(content=body, content_sha256=hashlib.sha256(body.encode("utf-8")).hexdigest())
+        conn.execute(
+            f"{operation} INTO source_events ({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
+            tuple(row.values()),
+        )
+    with core.storage.read(ctx) as tx:
+        obj = core.recall_pipeline.storage_reader.hydrate(
+            tx, CandidateRef("event", row["event_id"], 1, "lexical"), _search(core, ctx, "TEST palette")
+        )
+    assert obj is not None
+    model_content._retrieved_pattern_names.cache_clear()
+    assert model_content.stored_item_pattern_names(obj) == ("api_key_assignment",)
+    gaps = []
+    assert model_content.withhold_secret_items([obj], gaps) == []
+    assert gaps == ["secrets_withheld:1"]
+
+
+@pytest.mark.parametrize("receipt", [None, "corrected", "old_rules", "wrong_input"])
+def test_release_cache_recognizes_revoked_or_corrected_body_receipts(receipt):
+    from scope_recall.core import model_content
+    from scope_recall.core.secret_patterns import SECRET_RULES_VERSION
+
+    body = "api_key: TEST9-secret-value"
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    obj = RetrievedObject(
+        "event-TEST-cache-revocation",
+        1,
+        "event",
+        body,
+        "human_direct",
+        "current",
+        "TEST scope",
+        (),
+        "direct_report",
+        True,
+        content_secret_scan=(SECRET_RULES_VERSION, digest, ()),
+    )
+    model_content._retrieved_pattern_names.cache_clear()
+    assert model_content.stored_item_pattern_names(obj) == ()
+    revised = {
+        None: None,
+        "corrected": (SECRET_RULES_VERSION, digest, ("api_key_assignment",)),
+        "old_rules": ("TEST-old-rules", digest, ()),
+        "wrong_input": (SECRET_RULES_VERSION, "0" * 64, ()),
+    }[receipt]
+    changed = replace(obj, content_secret_scan=revised)
+    assert model_content.stored_item_pattern_names(changed) == ("api_key_assignment",)
+    gaps = []
+    assert model_content.withhold_secret_items([changed], gaps) == []
+    assert gaps == ["secrets_withheld:1"]
+
+
 def test_first_release_reuses_the_persisted_body_verdict_but_scans_metadata(app, monkeypatch):
     from scope_recall.core import model_content
 
@@ -86,19 +155,21 @@ def test_body_verdict_fallback_preserves_secret_withholding(app, monkeypatch, ve
 
 
 @pytest.mark.parametrize(
-    "body",
+    "body,body_rules",
     [
-        "TEST amber palette",
-        "api_key: <your-api-key>",
-        "api_key: null",
-        "api_key: TEST9-secret-value",
-        "password: TEST9-secret-value",
-        "api_key: TEST\u200b9-secret-value",
-        "TEST before password: TEST9-secret-value after",
+        ("TEST amber palette", ()),
+        ("api_key: <your-api-key>", ()),
+        ("api_key: null", ()),
+        ("api_key: TEST9-secret-value", ("api_key_assignment",)),
+        ("password: TEST9-secret-value", ("api_key_assignment",)),
+        ("api_key: TEST\u200b9-secret-value", ("api_key_assignment",)),
+        ("TEST before password: TEST9-secret-value after", ("api_key_assignment",)),
     ],
 )
 @pytest.mark.parametrize("sensitive_metadata", [False, True])
-def test_persisted_and_live_body_verdicts_withhold_identical_items(app, body, sensitive_metadata):
+def test_persisted_and_live_body_verdicts_withhold_identical_items(
+    app, body, body_rules, sensitive_metadata, monkeypatch
+):
     from scope_recall.core import model_content
     from scope_recall.core.source_storage import backfill_secret_scans
 
@@ -117,7 +188,8 @@ def test_persisted_and_live_body_verdicts_withhold_identical_items(app, body, se
         row = (
             tx._check()
             .execute(
-                "SELECT secret_scan_version,content_sha256,secret_scan_names FROM source_events WHERE event_id=?",
+                "SELECT secret_scan_version,secret_scan_input_sha256,secret_scan_names "
+                "FROM source_events WHERE event_id=?",
                 (source.ref,),
             )
             .fetchone()
@@ -131,13 +203,29 @@ def test_persisted_and_live_body_verdicts_withhold_identical_items(app, body, se
         obj, content=body, metadata=metadata, content_secret_scan=(row[0], row[1], tuple(json.loads(row[2])))
     )
     live = replace(saved, content_secret_scan=None)
-    assert model_content.stored_item_pattern_names(saved) == model_content.stored_item_pattern_names(live)
+    calls = []
+    original = model_content.secret_structure_pattern_names
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(model_content, "secret_structure_pattern_names", counted)
+    expected = ("api_key_assignment",) if sensitive_metadata else body_rules
+    model_content._retrieved_pattern_names.cache_clear()
+    assert model_content.stored_item_pattern_names(saved) == expected
+    calls.clear()
+    model_content._retrieved_pattern_names.cache_clear()
+    assert model_content.stored_item_pattern_names(live) == expected
+    assert any(isinstance(value, dict) and value.get("content") == body for value in calls)
     saved_gaps, live_gaps = [], []
-    assert model_content.withhold_secret_items([saved], saved_gaps) == model_content.withhold_secret_items(
-        [live], live_gaps
-    )
-    assert saved_gaps == live_gaps
-    assert saved_gaps in ([], ["secrets_withheld:1"])
+    model_content._retrieved_pattern_names.cache_clear()
+    saved_kept = model_content.withhold_secret_items([saved], saved_gaps)
+    model_content._retrieved_pattern_names.cache_clear()
+    live_kept = model_content.withhold_secret_items([live], live_gaps)
+    assert bool(saved_kept) == bool(live_kept) == (not expected)
+    assert [(item.ref, item.revision) for item in saved_kept] == [(item.ref, item.revision) for item in live_kept]
+    assert saved_gaps == live_gaps == (["secrets_withheld:1"] if expected else [])
 
 
 @pytest.mark.parametrize("case", ["pending_after_retraction", "procedure_changed", "valid_to_changed"])

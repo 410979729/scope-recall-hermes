@@ -28,7 +28,7 @@ from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events
 from .injection_guard import notice
 from .secret_patterns import SECRET_RULES_VERSION, secret_structure_pattern_names
 from .source_records import PROJECT_IDENTITY_KEY, SourceWrite, StoredSource
-from .visibility import deletion_allows
+from .visibility import allowed, deletion_allows
 
 
 def source_reference(installation_id: str, key: str) -> str:
@@ -417,14 +417,15 @@ class Sources:
         }
         if self._tx.context.project_identity != "local":
             extras[PROJECT_IDENTITY_KEY] = self._tx.context.project_identity
+        body_digest = hashlib.sha256(event["content"].encode("utf-8")).hexdigest()
         conn.execute(
             """INSERT INTO source_events(event_id,source_revision,scope_id,session_id,project_id,branch_id,
             source_event_key,origin,role,content,occurred_at,recorded_at,time_precision,capture_state,
             content_sha256,event_sha256,persisted_at,source_original_origin,dataset_id,extra_json,
             source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,entry_id,source_id,
-             project_root,secret_scan_version,secret_scan_names)
+             project_root,secret_scan_version,secret_scan_names,secret_scan_input_sha256)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-            (SELECT COALESCE(MAX(source_id),0)+1 FROM source_events),?,?,?)""",
+            (SELECT COALESCE(MAX(source_id),0)+1 FROM source_events),?,?,?,?)""",
             (
                 ref,
                 revision,
@@ -433,7 +434,7 @@ class Sources:
                 self._tx.context.project_id,
                 self._tx.context.branch_id,
                 *(event[k] for k in columns),
-                hashlib.sha256(event["content"].encode("utf-8")).hexdigest(),
+                body_digest,
                 fingerprint,
                 persisted_at,
                 event.get("source_original_origin"),
@@ -450,6 +451,7 @@ class Sources:
                 # bytes. A secret would change or refuse the prepared event.
                 SECRET_RULES_VERSION,
                 "[]",
+                body_digest,
             ),
         )
         if (
@@ -726,8 +728,8 @@ def _scan_secret_page(tx, source_ids, remaining):
     context = tx.context
     rows = conn.execute(
         "SELECT e.source_id,e.event_id,e.source_revision,e.secret_scan_version,e.secret_scan_names,"
-        "length(CAST(e.content AS BLOB)) FROM json_each(?) page CROSS JOIN source_events e "
-        "ON e.source_id=page.value WHERE e.scope_id IN (SELECT value FROM json_each(?)) "
+        "e.secret_scan_input_sha256,e.content_sha256 FROM json_each(?) page CROSS JOIN source_events e "
+        "ON e.source_id=page.value WHERE e.read_blocked=0 AND e.scope_id IN (SELECT value FROM json_each(?)) "
         "AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)",
         (json.dumps(source_ids), json.dumps(sorted(context.allowed_scope_ids)), context.project_id, context.branch_id),
     )
@@ -737,19 +739,36 @@ def _scan_secret_page(tx, source_ids, remaining):
         if remaining() <= 0.02:
             break
         row = visible.get(source_id)
-        if row is not None and (row[2] != SECRET_RULES_VERSION or row[3] is None) and row[4] <= 262144:
-            # The stored-byte guard bounds loading even a malformed legacy row.
-            # UTF-8 size below is authoritative, including on UTF-16 databases.
-            body = conn.execute("SELECT content FROM source_events WHERE source_id=?", (source_id,)).fetchone()[0]
-            size = len(body.encode("utf-8"))
-            if used + size > 262144:
-                break
-            conn.execute(
-                "UPDATE source_events SET secret_scan_version=?,secret_scan_names=? "
-                "WHERE event_id=? AND source_revision=?",
-                (SECRET_RULES_VERSION, canonical(secret_structure_pattern_names(body)), row[0], row[1]),
-            )
-            used += size
+        if (
+            row is not None
+            and (row[2] != SECRET_RULES_VERSION or row[3] is None or row[4] != row[5])
+            and allowed(tx, "event", row[0])
+        ):
+            # Resolve the same live fences as tx.source before even inspecting
+            # body length. A skipped identity still advances the global page.
+            loaded = conn.execute(
+                "SELECT content FROM source_events WHERE source_id=? AND length(CAST(content AS BLOB))<=262144",
+                (source_id,),
+            ).fetchone()
+            encoded = loaded[0].encode("utf-8") if loaded is not None else b""
+            size = len(encoded)
+            # One oversized UTF-16 original must not pin every later page.
+            # It keeps no receipt and remains subject to live release scanning.
+            if loaded is not None and size <= 262144:
+                if used + size > 262144:
+                    break
+                conn.execute(
+                    "UPDATE source_events SET secret_scan_version=?,secret_scan_names=?,secret_scan_input_sha256=? "
+                    "WHERE event_id=? AND source_revision=?",
+                    (
+                        SECRET_RULES_VERSION,
+                        canonical(secret_structure_pattern_names(loaded[0])),
+                        hashlib.sha256(encoded).hexdigest(),
+                        row[0],
+                        row[1],
+                    ),
+                )
+                used += size
         position = source_id
         processed += 1
     return processed, position

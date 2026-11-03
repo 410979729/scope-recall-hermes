@@ -10,6 +10,11 @@ older receipts fall back to the same canonical scanner. The store upgrade adds o
 old bodies, and existing worker maintenance fills bounded pages. Structural readiness is reused only for unchanged
 file, schema and metadata generations; identity, scope and path authorization remain fresh on every transaction.
 
+Body scan receipts retain the independent digest of their scanned input, including in release cache identity.
+Copied or replaced originals with a mismatched digest are scanned again; shared import, restore and relocation
+revoke imported receipts. Maintenance checks normal source visibility before inspecting bodies, skips individual
+oversized legacy rows and advances its cursor while preserving live-scanning fallback.
+
 Remote 3.16 clients can pause recording after the server upgrade; resuming remotely requires a 4.0 client.
 
 Background profile windows use a partial covering index installed by the automatic store upgrade. After an

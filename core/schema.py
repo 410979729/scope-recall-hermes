@@ -136,7 +136,7 @@ STORAGE_VALIDATION_STATEMENTS = tuple(
 ) + (
     """CREATE TRIGGER source_secret_body_changed AFTER UPDATE OF content,content_sha256 ON source_events
     WHEN NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256 BEGIN
-        UPDATE source_events SET secret_scan_version=NULL,secret_scan_names=NULL
+        UPDATE source_events SET secret_scan_version=NULL,secret_scan_names=NULL,secret_scan_input_sha256=NULL
         WHERE event_id=NEW.event_id AND source_revision=NEW.source_revision;
     END""",
 )
@@ -637,7 +637,7 @@ STATEMENTS = (
         PRIVATE_ACTIVE_INDEX,
         """CREATE TABLE source_events (
         event_id TEXT NOT NULL, source_event_key TEXT NOT NULL,
-        secret_scan_version TEXT, secret_scan_names TEXT,
+        secret_scan_version TEXT, secret_scan_names TEXT, secret_scan_input_sha256 TEXT,
         source_revision INTEGER NOT NULL CHECK(source_revision>=1),
         source_group_key TEXT NOT NULL,
         segment_index INTEGER NOT NULL DEFAULT 0 CHECK(segment_index>=0),
@@ -1335,6 +1335,7 @@ def upgrade_1133(connection):
     """Add optional scan receipts without reading or rewriting existing bodies."""
     connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_version TEXT")
     connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_names TEXT")
+    connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_input_sha256 TEXT")
     connection.execute("ALTER TABLE instance_meta ADD COLUMN storage_revision INTEGER NOT NULL DEFAULT 0")
     for statement in STORAGE_VALIDATION_STATEMENTS:
         connection.execute(statement)

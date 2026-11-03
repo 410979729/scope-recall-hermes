@@ -107,6 +107,19 @@ def test_hermes_reaches_the_same_thirty_minute_summary_boundary(store, monkeypat
         provider.shutdown()
 
 
+def test_shared_import_discards_foreign_body_scan_receipts(root, entries):
+    home, _peer = entries
+    core, _ctx, _refs, old = _old_store(home, _scope(home), "TEST-imported color amber.")
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        assert conn.execute("SELECT secret_scan_version FROM source_events").fetchone()[0] is not None
+    result = import_entry(root=root, entry_id="agent3", source=old)
+    assert result["status"] == "imported"
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as conn:
+        assert conn.execute("SELECT secret_scan_version,secret_scan_names FROM source_events").fetchall() == [
+            (None, None)
+        ]
+
+
 @pytest.mark.parametrize("source_schema", [1119, 1120])
 def test_shared_import_preserves_fact_salience_and_identity_but_rebuilds_summaries(
     root, entries, monkeypatch, source_schema

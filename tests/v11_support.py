@@ -170,6 +170,7 @@ _SCHEMA_STEPS = {
         "columns": (
             ("source_events", "secret_scan_version"),
             ("source_events", "secret_scan_names"),
+            ("source_events", "secret_scan_input_sha256"),
             ("instance_meta", "storage_revision"),
         ),
     },
