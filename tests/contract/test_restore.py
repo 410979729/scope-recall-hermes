@@ -4,6 +4,7 @@ Each store is a TEST installation in the test's own folder, with synthetic messa
 """
 
 import hashlib
+import itertools
 import json
 import os
 import sqlite3
@@ -19,15 +20,18 @@ from scope_recall.adapters.hermes.shared_entries import attach_shared_record, re
 from scope_recall.contracts import ContractError, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core import restore as core_restore
+from scope_recall.core.delete_storage import group_digest
 from scope_recall.core.restore import InstallationMaintenance, export_deletion_ledger, ledger_digest
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterLease
 from scope_recall.maintenance import cli, restore
 from scope_recall.maintenance.doctor import run_doctor
+from scope_recall.maintenance.shared import init_shared, store_binding
 from scope_recall.maintenance.shared import main as shared_main
-from scope_recall.maintenance.shared import store_binding
-from v11_support import downgrade_store, source_event
+from test_claims import Clock, capture, initial
+from test_deletion import authorize, request
+from v11_support import downgrade_store, recall_request, source_event
 
 SECRET = "TEST-forgotten the door code is TEST-4711"
 #: Beside the store while a restore is pending, by the names every release that reads the ledger format uses.
@@ -530,6 +534,98 @@ def test_shared_snapshot_keeps_registered_scopes_outside_manifest(tmp_path, caps
     for ctx, ref, scope in refs[2:]:
         found = core.source(ctx, ref, 1)
         assert found is not None and found.event["content"] == f"Synthetic text {scope}"
+
+
+def test_shared_restore_resumes_with_withdrawal_and_suppression_in_registered_scope(tmp_path, capsys, monkeypatch):
+    from scope_recall.core.source_storage import source_reference
+
+    root = (tmp_path / "shared-protection").resolve()
+    init_shared(root=root, agent_id="TEST-agent", test_mode=True)
+    stamp = "2026-01-01T00:00:00Z"
+    local = build_installation_manifest(tmp_path / "home", agent_id="TEST-agent", test_mode=True)
+    attach_shared_record(
+        root, shared_entry_record(local, entry_id="agent1", display_name="agent1", attached_at=stamp), now=stamp
+    )
+    payload = read_shared_payload(root)
+    binding = store_binding(payload, root, frozenset(payload["scope_ids"]))
+    scope = "TEST-scope"
+    assert scope not in binding.scope_ids
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        conn.execute("INSERT INTO instance_scopes(scope_id) VALUES (?)", (scope,))
+    expanded = replace(binding, scope_ids=binding.scope_ids | {scope})
+    ctx = TrustedContext(
+        expanded,
+        "TEST-session",
+        frozenset({scope}),
+        "human_direct",
+        entry_id="agent1",
+        project_id="TEST-project",
+        branch_id="TEST-main",
+    )
+    core = MemoryCore(CoreConfig(expanded), clock=Clock())
+    core.test_sequence = itertools.count(1)
+    item, _ = initial(core, ctx)
+    muted = capture(core, ctx, "TEST amberobject private note")
+    assert any(source.ref == muted.ref for source in core.search_sources(ctx, "amberobject", automatic=True))
+    group_key = "TEST-group-protection"
+    first_key = "TEST-group-first"
+    part = capture(
+        core,
+        ctx,
+        "TEST hiddenfirst group words",
+        key=first_key,
+        segment=dict(group_key=group_key, index=0, total=2, truncated=False),
+    )
+    assert part is None
+    with core.storage.read(ctx) as tx:
+        group_part = tx.deletions.target(source_reference(expanded.installation_id, first_key))
+    shared = Store(core, ctx, scope, tmp_path / "home", tmp_path)
+    snapshot = backup(capsys, shared, "before-protection")
+    capture(core, ctx, "撤回 TEST-project 配色蓝色。", when="2026-09-03T12:00:00Z")
+    assert core.current_claim(ctx, item.ref) is None
+    for target in (muted, group_part):
+        authorize(core, ctx, target, mode="suppress")
+        core.forget(ctx, request(target, mode="suppress"), remaining_seconds=10)
+    digest = group_digest(expanded, scope, ctx.project_id, ctx.branch_id, group_key)
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        assert conn.execute(
+            "SELECT suppressed FROM source_group_blocks WHERE group_sha256=?", (digest,)
+        ).fetchone() == (1,)
+    assert core.source(ctx, muted.ref, 1).suppressed
+    args = ["restore", "--root", str(root), "--snapshot", str(snapshot), "--apply"]
+    replay = restore.replay_deletion_ledger
+    monkeypatch.setattr(
+        restore, "replay_deletion_ledger", lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
+    with pytest.raises(KeyboardInterrupt):
+        cli.main([*args, "--backup-dir", str(tmp_path / "kept")])
+    capsys.readouterr()
+    assert (root / MARKER).is_file()
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        assert conn.execute("SELECT suppressed FROM source_events WHERE event_id=?", (muted.ref,)).fetchone() == (0,)
+        assert conn.execute("SELECT 1 FROM source_group_blocks WHERE group_sha256=?", (digest,)).fetchone() is None
+    monkeypatch.setattr(restore, "replay_deletion_ledger", replay)
+    code, done = run(capsys, *args)
+    assert code == 0 and done["status"] == "restored", done
+    assert core.current_claim(ctx, item.ref) is None
+    assert core.claim_history(ctx, item.ref)[-1].state == "retracted"
+    assert core.source(ctx, muted.ref, 1).suppressed
+    with sqlite3.connect(root / "memory.sqlite3") as conn:
+        assert conn.execute(
+            "SELECT suppressed FROM source_group_blocks WHERE group_sha256=?", (digest,)
+        ).fetchone() == (1,)
+    second = capture(
+        core,
+        ctx,
+        "TEST hiddensecond group words",
+        key="TEST-group-second",
+        segment=dict(group_key=group_key, index=1, total=2, truncated=False),
+    )
+    assert second is not None and second.suppressed
+    for phrase, ref in (("amberobject", muted.ref), ("hiddensecond", second.ref)):
+        assert not core.search_sources(ctx, phrase, automatic=True)
+        packet = core.recall(ctx, recall_request(query=phrase), deadline_seconds=10)
+        assert all(entry.ref != ref for entry in packet.items)
 
 
 @pytest.mark.parametrize("scopes", [[], ["TEST-not-registered"]])
