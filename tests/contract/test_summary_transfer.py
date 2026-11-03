@@ -15,7 +15,7 @@ from scope_recall.core.management_query import MemoryFilter
 from scope_recall.core.memory_import import ImportRecord, import_record
 from scope_recall.core.restore import InstallationMaintenance
 from scope_recall.core.summary_storage import close_session, next_summary_due, queue_summaries
-from scope_recall.maintenance import memory_export
+from scope_recall.maintenance import memory_export, shared_import
 from scope_recall.maintenance.shared_import import import_entry
 
 from tests.contract.test_claims import Clock, initial
@@ -105,6 +105,58 @@ def test_hermes_reaches_the_same_thirty_minute_summary_boundary(store, monkeypat
         assert calls
     finally:
         provider.shutdown()
+
+
+@pytest.mark.parametrize("mode", ["commit", "failure", "dry_run"])
+def test_shared_import_discards_foreign_body_scan_receipts(root, entries, monkeypatch, mode):
+    home, _peer = entries
+    core, _ctx, _refs, old = _old_store(home, _scope(home), "TEST-imported color amber.")
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        assert all(
+            value is not None
+            for value in conn.execute(
+                "SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256 FROM source_events"
+            ).fetchone()
+        )
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as conn:
+        conn.execute(
+            "INSERT INTO candidate_scan_cursors(cursor_name,completed,updated_at) VALUES ('secret_body:TEST',1,'TEST')"
+        )
+        conn.commit()
+
+    def state(path):
+        with closing(sqlite3.connect(path)) as conn:
+            return (
+                conn.execute(
+                    "SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256 FROM source_events"
+                ).fetchall(),
+                conn.execute("SELECT * FROM candidate_scan_cursors ORDER BY cursor_name").fetchall(),
+            )
+
+    before = state(root / "memory.sqlite3")
+    source_before = state(core.storage.path)
+    original = shared_import._brought_in
+
+    def fail_after_copy(*args, **kwargs):
+        original(*args, **kwargs)
+        conn = args[0]
+        assert tuple(
+            conn.execute(
+                "SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256 FROM source_events"
+            ).fetchone()
+        ) == (None, None, None)
+        assert not conn.execute("SELECT 1 FROM candidate_scan_cursors").fetchone()
+        raise RuntimeError("TEST merge interrupted inside transaction")
+
+    if mode == "failure":
+        monkeypatch.setattr(shared_import, "_brought_in", fail_after_copy)
+        with pytest.raises(RuntimeError, match="TEST merge interrupted"):
+            import_entry(root=root, entry_id="agent3", source=old)
+    else:
+        result = import_entry(root=root, entry_id="agent3", source=old, dry_run=mode == "dry_run")
+        assert result["status"] == ("imported" if mode == "commit" else "rehearsed")
+    assert state(root / "memory.sqlite3") == (([(None, None, None)], []) if mode == "commit" else before)
+    assert state(core.storage.path) == source_before
 
 
 @pytest.mark.parametrize("source_schema", [1119, 1120])

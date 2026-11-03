@@ -26,6 +26,7 @@ from .failure_policy import (
 from .importance import backfill_importance
 from .reflection_storage import queue_reflections
 from .session_brief import rebuild_scope
+from .source_storage import backfill_secret_scans
 from .storage import SQLiteStorage
 from .summary_storage import queue_summaries
 from .work_storage import MAX_RECOVERY_PAGE
@@ -356,6 +357,12 @@ def _recover_failed_work(
     with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         recovery_page = min(MAX_RECOVERY_PAGE, config.max_items)
         backfill_importance(tx, limit=128)
+        backfill_secret_scans(
+            tx,
+            now=clock.utc_now(),
+            limit=min(8, config.max_items),
+            remaining=lambda: budget_left(started, clock, budget),
+        )
         recovered = tx.work.recover_invalid_derivations(
             now=clock.utc_now(), allowed_work_types=allowed, limit=recovery_page
         )

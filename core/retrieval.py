@@ -335,6 +335,8 @@ class RetrievedObject:
     source_kinds: tuple[str, ...] = ()
     relation_refs: tuple[str, ...] = ()
     metadata: tuple[tuple[str, str], ...] = ()
+    #: Internal body verdict participates in cache identity, never public rendering.
+    content_secret_scan: tuple[str, str, tuple[str, ...]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.ref) is not str or not self.ref or type(self.revision) is not int or self.revision < 1:

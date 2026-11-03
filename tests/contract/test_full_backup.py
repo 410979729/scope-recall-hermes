@@ -1252,7 +1252,10 @@ def test_disaster_restore_recall_equivalence_and_path_rewriting(tmp_path: Path):
     assert len(results) >= 1
     assert any("NameOne preferences: color blue" in s.event["content"] for s in results)
     restored_recall = restored_core.recall(restored_ctx, request, deadline_seconds=10)
-    assert restored_recall.items == original_recall.items
+    # Recovery revokes internal receipts; every other recalled field must match.
+    assert any(item.content_secret_scan is not None for item in original_recall.items)
+    assert all(item.content_secret_scan is None for item in restored_recall.items)
+    assert restored_recall.items == tuple(replace(item, content_secret_scan=None) for item in original_recall.items)
 
     assert "unrecoverable_later_interval" in restore_receipt
     assert restore_receipt["unrecoverable_later_interval"]["start_utc"] == restore_receipt["recovery_point_utc"]

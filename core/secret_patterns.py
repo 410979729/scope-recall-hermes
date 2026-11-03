@@ -12,6 +12,7 @@ reporting and classification, not for slicing or redacting the original text.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import re
 import string
@@ -19,11 +20,18 @@ import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from .language_resources import language_rules
 
 _CREDENTIAL_RULES = language_rules("credentials")
+# Persisted verdicts belong to both the scanner implementation and its rules.
+# Normalize checkout line endings so a wheel and a Windows checkout agree.
+SECRET_RULES_VERSION = hashlib.sha256(
+    Path(__file__).read_bytes().replace(b"\r\n", b"\n")
+    + json.dumps(_CREDENTIAL_RULES, sort_keys=True, default=lambda rule: (rule.pattern, rule.flags)).encode("utf-8")
+).hexdigest()
 REDACTED_SECRET = _CREDENTIAL_RULES["REDACTED_SECRET"]
 PEM_PRIVATE_KEY_BEGIN_RE = _CREDENTIAL_RULES["PEM_PRIVATE_KEY_BEGIN_RE"]
 COMMON_SECRET_PATTERNS = _CREDENTIAL_RULES["COMMON_SECRET_PATTERNS"]

@@ -6,7 +6,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1133
+SCHEMA_VERSION = 1134
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -120,6 +120,27 @@ WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
         consolidation_offset INTEGER NOT NULL DEFAULT 0 CHECK(consolidation_offset>=0),
         UNIQUE(work_type,subject_ref,subject_revision)
     ) STRICT"""
+
+# Cursor writes can change initialization admission without changing SQLite's
+# schema cookie. This generation invalidates structural verdicts, never authority.
+STORAGE_VALIDATION_STATEMENTS = tuple(
+    f"""CREATE TRIGGER storage_cursor_{operation.lower()} AFTER {operation} ON candidate_scan_cursors
+    WHEN {condition} BEGIN
+        UPDATE instance_meta SET storage_revision=storage_revision+1 WHERE singleton=1;
+    END"""
+    for operation, condition in (
+        ("INSERT", "NEW.cursor_name='claim_lexical'"),
+        ("UPDATE", "NEW.cursor_name='claim_lexical' OR OLD.cursor_name='claim_lexical'"),
+        ("DELETE", "OLD.cursor_name='claim_lexical'"),
+    )
+) + (
+    """CREATE TRIGGER source_secret_body_changed AFTER UPDATE OF content,content_sha256 ON source_events
+    WHEN NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256 BEGIN
+        UPDATE source_events SET secret_scan_version=NULL,secret_scan_names=NULL,secret_scan_input_sha256=NULL
+        WHERE event_id=NEW.event_id AND source_revision=NEW.source_revision;
+    END""",
+)
+
 
 ADOPTION_STATEMENTS = (
     """CREATE TABLE adoption_relations (
@@ -606,7 +627,8 @@ STATEMENTS = (
         config_version INTEGER NOT NULL DEFAULT 1 CHECK(config_version>=1),
         test_mode INTEGER NOT NULL CHECK(test_mode IN (0,1)),
         installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared')),
-        database_id TEXT NOT NULL DEFAULT '', database_created_at TEXT
+        database_id TEXT NOT NULL DEFAULT '', database_created_at TEXT,
+        storage_revision INTEGER NOT NULL DEFAULT 0
     ) STRICT""",
         """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
         MANAGEMENT_STATEMENT,
@@ -615,6 +637,7 @@ STATEMENTS = (
         PRIVATE_ACTIVE_INDEX,
         """CREATE TABLE source_events (
         event_id TEXT NOT NULL, source_event_key TEXT NOT NULL,
+        secret_scan_version TEXT, secret_scan_names TEXT, secret_scan_input_sha256 TEXT,
         source_revision INTEGER NOT NULL CHECK(source_revision>=1),
         source_group_key TEXT NOT NULL,
         segment_index INTEGER NOT NULL DEFAULT 0 CHECK(segment_index>=0),
@@ -841,6 +864,7 @@ STATEMENTS = (
         PRIMARY KEY(scope_id,version)
     ) STRICT, WITHOUT ROWID""",
     )
+    + STORAGE_VALIDATION_STATEMENTS
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
 
@@ -1305,3 +1329,15 @@ def upgrade_1132(connection):
     connection.execute(CLAIM_PROFILE_INDEX)
     connection.execute("UPDATE instance_meta SET schema_version=1133 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1133")
+
+
+def upgrade_1133(connection):
+    """Add optional scan receipts without reading or rewriting existing bodies."""
+    connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_version TEXT")
+    connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_names TEXT")
+    connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_input_sha256 TEXT")
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN storage_revision INTEGER NOT NULL DEFAULT 0")
+    for statement in STORAGE_VALIDATION_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1134 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1134")

@@ -288,13 +288,17 @@ def test_previous_schema_migrates_to_private_intervals_without_losing_sources(ap
         core.record_event(ctx, _event(key=f"TEST-kept/{index}", content=f"TEST memory {index}"), scope_id="TEST-scope")
     downgrade_store(core.storage.path, 1111)
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        before = conn.execute("SELECT * FROM source_events ORDER BY event_id,source_revision").fetchall()
+        columns = ",".join(row[1] for row in conn.execute("PRAGMA table_info(source_events)"))
+        before = conn.execute(f"SELECT {columns} FROM source_events ORDER BY event_id,source_revision").fetchall()
     assert core.initialize().schema_version == SCHEMA_VERSION
     assert core.source(ctx, source.event_refs[0].ref, 1).event["content"] == "TEST private colour is white."
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("SELECT count(*) FROM private_intervals").fetchone()[0] == 0
-        after = conn.execute("SELECT * FROM source_events ORDER BY event_id,source_revision").fetchall()
-        assert [row[:-1] for row in after] == before
+        after = conn.execute(f"SELECT {columns} FROM source_events ORDER BY event_id,source_revision").fetchall()
+        assert after == before
+        assert (
+            conn.execute("SELECT count(*) FROM source_events WHERE secret_scan_version IS NOT NULL").fetchone()[0] == 0
+        )
 
 
 def test_timed_global_can_be_ended_early_and_preserves_its_history(app):

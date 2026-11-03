@@ -58,6 +58,7 @@ from ..core.delete_storage import group_digest
 from ..core.events import indexed_terms, withheld_tool_output
 from ..core.requalify import settle_brought_denials
 from ..core.schema import SCHEMA_VERSION
+from ..core.source_records import restart_body_scan_maintenance
 from ..core.storage import Transaction
 from ..core.summary_validity import CONVERSATION_SUMMARY_REASONS
 from ..core.truth_connection import connect_truth_database
@@ -288,6 +289,10 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
             new_binding, old[1], old[2], old[3], new_group
         )
         row.update(
+            # Imported receipts have no locally established scan provenance.
+            secret_scan_version=None,
+            secret_scan_names=None,
+            secret_scan_input_sha256=None,
             event_id=names.event(row["event_id"]),
             source_event_key=names.key(row["source_event_key"]),
             source_group_key=new_group,
@@ -598,6 +603,7 @@ def _brought_in(conn, src, names: _Names, *, payload: dict[str, Any], root: Path
         store_scopes=frozenset(payload["scope_ids"]),
         now=now,
     )
+    restart_body_scan_maintenance(conn)
     left_out = {item["claim_id"] for item in copied["claims_left_out"]} | _summary_claims(src)
     brought = [row[0] for row in src.execute("SELECT claim_id FROM claims") if row[0] not in left_out]
     copied["counts"]["denials_settled"] = 0

@@ -24,6 +24,7 @@ from . import lexical_index
 from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
 from .retained_artifacts import extended_path
 from .schema import SCHEMA_VERSION
+from .source_records import clear_body_scan_receipts
 
 #: Beside ``memory.sqlite3`` while a restore is pending; every normal open refuses while it exists.
 MARKER_FILENAME = "restore-required.json"
@@ -233,7 +234,8 @@ def finish_disaster_recovery(storage, authority: InstallationMaintenance, *, bef
     """Verify truth and persist the caller's receipt while fenced, then reopen admission."""
     context = maintenance_context(storage, authority)
     marker, _ = _pending_marker(storage, context)
-    with storage._transaction(context, writable=False, remaining_seconds=10, restoring=True) as tx:
+    with storage._transaction(context, writable=True, remaining_seconds=10, restoring=True) as tx:
+        clear_body_scan_receipts(tx._check(write=True))
         if tx._check().execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise ContractError("RESTORE_UNVERIFIED", "integrity")
     before_reopen()
@@ -684,6 +686,7 @@ def replay_deletion_ledger(
     count = 0
     with storage._transaction(context, writable=True, remaining_seconds=remaining_seconds, restoring=True) as tx:
         conn = tx._check(write=True)
+        clear_body_scan_receipts(conn)
         # Transient input captured before this explicit restore cannot be
         # treated as fresh post-restore authorization. Rebuild partial derived
         # summaries from the restored source, with its normal tombstone checks.

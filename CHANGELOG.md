@@ -4,6 +4,18 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Captured source versions retain body-only credential scan receipts under a fingerprint of the scanner and its
+rules. Recall reuses an exact-body receipt while still scanning projected metadata; missing, invalidated and
+older receipts fall back to the same canonical scanner. The store upgrade adds optional columns without scanning
+old bodies, and existing worker maintenance fills bounded pages. Structural readiness is reused only for unchanged
+file, schema and metadata generations; identity, scope and path authorization remain fresh on every transaction.
+
+Body scan receipts retain the independent digest of their scanned input, including in release cache identity.
+Copied or replaced originals with a mismatched digest are scanned again; shared import, restore and relocation
+revoke imported receipts. Maintenance checks normal source visibility before inspecting bodies, skips individual
+oversized legacy rows and advances its cursor while preserving live-scanning fallback.
+Legacy imports restart body-scan maintenance in their write transaction when they add source rows.
+
 Remote 3.16 clients can pause recording after the server upgrade; resuming remotely requires a 4.0 client.
 
 Background profile windows use a partial covering index installed by the automatic store upgrade. After an

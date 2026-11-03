@@ -9,6 +9,24 @@ from dataclasses import dataclass
 from ..contracts import SourceEvent
 
 PROJECT_IDENTITY_KEY = "_scope_recall_project_identity"
+BODY_SCAN_COLUMNS = ("secret_scan_version", "secret_scan_names", "secret_scan_input_sha256")
+
+
+def restart_body_scan_maintenance(connection) -> None:
+    """Revisit revoked or imported receipts through the existing bounded maintenance pass."""
+    connection.execute("DELETE FROM candidate_scan_cursors WHERE cursor_name GLOB 'secret_body:*'")
+
+
+def clear_body_scan_receipts(connection) -> None:
+    """Revoke derived receipts when a current-format store crosses an unverified copy boundary.
+
+    Only metadata is touched. Kept originals are scanned on their next authorized
+    release or by bounded maintenance; restoring cannot attest imported verdicts.
+    """
+    assignments = ",".join(f"{name}=NULL" for name in BODY_SCAN_COLUMNS)
+    present = " OR ".join(f"{name} IS NOT NULL" for name in BODY_SCAN_COLUMNS)
+    connection.execute(f"UPDATE source_events SET {assignments} WHERE {present}")
+    restart_body_scan_maintenance(connection)
 
 
 @dataclass(frozen=True)
@@ -28,6 +46,8 @@ class StoredSource:
     #: The normalized project directory the host supplied, when it supplied one.
     project_root: str | None = None
     project_identity: str = "local"
+    #: Internal body-only verdict; projected metadata is scanned independently.
+    content_secret_scan: tuple[str, str, tuple[str, ...]] | None = None
 
 
 #: The columns a loaded source is built from (``stored_source``).
@@ -57,6 +77,7 @@ SOURCE_COLUMNS = (
     "import_provenance_sha256",
     "entry_id",
     "project_root",
+    *BODY_SCAN_COLUMNS,
 )
 
 
@@ -105,7 +126,21 @@ def stored_source(row, segment_count: int | None) -> StoredSource:
         row["entry_id"],
         row["project_root"] if "project_root" in row.keys() else None,
         project_identity,
+        _body_scan(row),
     )
+
+
+def _body_scan(row):
+    """Treat absent or malformed derived scan metadata as an unscanned body."""
+    if not row["secret_scan_version"] or row["secret_scan_names"] is None or not row["secret_scan_input_sha256"]:
+        return None
+    try:
+        names = json.loads(row["secret_scan_names"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(names, list) or any(type(name) is not str for name in names):
+        return None
+    return row["secret_scan_version"], row["secret_scan_input_sha256"], tuple(names)
 
 
 @dataclass(frozen=True)
