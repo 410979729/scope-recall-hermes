@@ -17,7 +17,15 @@ from real_host_io import write_json  # noqa: E402
 
 def hook(args):
     """Tee a real hook's exact output; observations never add model context."""
-    body = sys.stdin.read()
+    evidence = args.evidence / (uuid4().hex + ".json")
+    row = dict(event=None, session=None, phase="started", output="", stderr="", exit_code=None)
+    write_json(evidence, row)
+    # Isolated Python can use the Windows locale for stdin. Preserve bytes:
+    # locale decoding can introduce surrogates that cannot be encoded as UTF-8.
+    body = sys.stdin.buffer.read()
+    payload = json.loads(body)
+    row.update(event=payload.get("hook_event_name"), session=payload.get("session_id"), phase="received")
+    write_json(evidence, row)
     command = [
         args.python,
         "-I",
@@ -29,20 +37,22 @@ def hook(args):
         "--host",
         args.host,
     ]
-    done = subprocess.run(command, input=body, capture_output=True, text=True, encoding="utf-8", timeout=20)
-    payload = json.loads(body)
-    write_json(
-        args.evidence / (uuid4().hex + ".json"),
-        dict(
-            event=payload.get("hook_event_name"),
-            session=payload.get("session_id"),
-            output=done.stdout,
-            stderr=done.stderr,
-            exit_code=done.returncode,
-        ),
+    try:
+        done = subprocess.run(command, input=body, capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        row.update(phase="failed", exit_code=1, stderr=type(exc).__name__)
+        write_json(evidence, row)
+        sys.stdout.buffer.write(b"{}")
+        return 1
+    row.update(
+        phase="completed",
+        output=done.stdout.decode("utf-8", errors="replace"),
+        stderr=done.stderr.decode("utf-8", errors="replace"),
+        exit_code=done.returncode,
     )
-    sys.stdout.write(done.stdout)
-    sys.stderr.write(done.stderr)
+    write_json(evidence, row)
+    sys.stdout.buffer.write(done.stdout)
+    sys.stderr.buffer.write(done.stderr)
     return done.returncode
 
 

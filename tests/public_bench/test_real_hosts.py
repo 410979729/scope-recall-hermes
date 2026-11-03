@@ -86,6 +86,69 @@ def test_codex_overrides_are_valid_toml_and_contain_only_ephemeral_wiring(tmp_pa
     assert all(str(tmp_path) in row["hooks"][0]["command"] for groups in hooks.values() for row in groups)
 
 
+@pytest.mark.parametrize("encoding", ["ascii", "cp936"])
+def test_hook_tee_forwards_unicode_bytes_without_using_the_host_locale(tmp_path, monkeypatch, encoding):
+    import io
+    import subprocess
+
+    import real_host_probe
+
+    body = json.dumps(
+        dict(hook_event_name="UserPromptSubmit", session_id="TEST-session", prompt="TEST-azalea 配色是琥珀色。"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    stdin = io.TextIOWrapper(io.BytesIO(body), encoding=encoding, errors="surrogateescape")
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding=encoding)
+    stderr = io.TextIOWrapper(io.BytesIO(), encoding=encoding)
+    expected = '{"hookSpecificOutput":{"additionalContext":"TEST-琥珀色"}}'.encode()
+    diagnostic = "TEST-诊断\r\n".encode()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    def product(command, **kwargs):
+        assert "scope_recall.adapters.clients.hook_entry" in command
+        assert kwargs == dict(input=body, capture_output=True, timeout=20)
+        ingress = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+        assert ingress["phase"] == "received" and ingress["exit_code"] is None
+        return subprocess.CompletedProcess(command, 0, expected, diagnostic)
+
+    monkeypatch.setattr(real_host_probe.subprocess, "run", product)
+    assert (
+        real_host_probe.hook(SimpleNamespace(evidence=tmp_path, python=sys.executable, home=tmp_path, host="codex"))
+        == 0
+    )
+    assert stdout.buffer.getvalue() == expected
+    assert stderr.buffer.getvalue() == diagnostic
+    receipt = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert receipt["phase"] == "completed" and receipt["exit_code"] == 0
+    assert receipt["output"] == expected.decode("utf-8")
+    assert receipt["stderr"] == diagnostic.decode("utf-8")
+
+
+def test_hook_tee_retains_timeout_as_a_failure(tmp_path, monkeypatch, capsys):
+    import io
+    import subprocess
+
+    import real_host_probe
+
+    body = b'{"hook_event_name":"UserPromptSubmit","session_id":"TEST-timeout"}'
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(body), encoding="ascii"))
+
+    def timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, 20)
+
+    monkeypatch.setattr(real_host_probe.subprocess, "run", timeout)
+    assert (
+        real_host_probe.hook(SimpleNamespace(evidence=tmp_path, python=sys.executable, home=tmp_path, host="codex"))
+        == 1
+    )
+    assert capsys.readouterr().out == "{}"
+    receipt = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert receipt["phase"] == "failed" and receipt["exit_code"] == 1
+    assert receipt["stderr"] == "TimeoutExpired"
+
+
 def test_answer_parser_excludes_prompts_tool_echoes_and_hook_diagnostics():
     output = "\n".join(
         json.dumps(row)
@@ -185,6 +248,72 @@ def test_route_recipe_validates_and_names_environment_variables_only():
     assert recipe["auxiliary"]["embedding"]["model"] == "gemini-embedding-2"
     assert recipe["auxiliary"]["consolidation"]["credential_env"] == "TEST_SR_CHAT_KEY"
     assert recipe["vector"]["backend"] == "sqlite"
+    assert recipe["vector_threshold"] == 0.70
+
+
+def test_template_budget_prices_paid_embedding_and_unbilled_local_chat():
+    from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
+
+    policy = AuxiliaryRuntimeConfig.from_mapping(
+        route_template(TEST_CHAT_ENDPOINT, "TEST-chat-model")["auxiliary"]
+    ).budget
+    assert policy.cap_micro_usd == 250_000
+    assert policy.batch == "TEST-local-chat-unbilled"
+    assert policy.pricing["TEST-chat-model"].charge_micro_usd(1_000_000, 1_000_000) == 0
+    assert policy.pricing["gemini-embedding-2"].charge_micro_usd(1_000_000, 0) == 200_000
+
+
+def test_template_explicit_embedding_space_has_a_usable_floor(tmp_path):
+    from real_host_runtime import library
+    from scope_recall.maintenance.doctor import _check_vector_threshold
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.runtime.worker_entry import load_config
+
+    run = SimpleNamespace(
+        root=tmp_path,
+        stores=[],
+        args=SimpleNamespace(dry_run=False),
+        routes=route_template(TEST_CHAT_ENDPOINT, "TEST-chat-model"),
+    )
+    scenes = library(run, "TEST-threshold", models=True)
+    try:
+        config = load_config(scenes.store / "runtime-config.json")
+        report = DoctorReport(host="codex", status="degraded")
+        _check_vector_threshold(report, config.binding, scenes.store)
+        assert "vector_threshold_unconfigured" not in report.capability_gaps
+        assert config.recall_policy().vector_threshold == 0.70
+        assert report.checks[-1] == dict(name="vector_threshold", result="configured", detail="0.7")
+    finally:
+        scenes.close()
+
+
+@pytest.mark.parametrize("schema", [1108, 1109, 1110, 1111, 1112])
+def test_historical_library_copies_each_schema_family_without_changing_source(tmp_path, schema):
+    import hashlib
+
+    from real_host_checks import historical_library
+    from sample_store import create
+
+    from tests.v11_support import downgrade_store
+
+    sample = tmp_path / "TEST-original"
+    create(sample)
+    snapshot = sample / "pre-upgrade.sqlite3"
+    downgrade_store(snapshot, schema)
+    before = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    with sqlite3.connect(snapshot) as conn:
+        expected = conn.execute(
+            "SELECT event_id,source_revision,content FROM source_events ORDER BY event_id"
+        ).fetchall()
+    _, store = historical_library(SimpleNamespace(root=tmp_path), sample, "TEST-relocated")
+    with sqlite3.connect(store / "memory.sqlite3") as conn:
+        assert conn.execute("SELECT installation_kind FROM instance_meta").fetchone()[0] == "shared"
+        assert (
+            conn.execute("SELECT event_id,source_revision,content FROM source_events ORDER BY event_id").fetchall()
+            == expected
+        )
+        assert conn.execute("SELECT count(*) FROM entries").fetchone()[0] == 2
+    assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == before
 
 
 def test_release_matrix_excludes_extra_backend_samples(tmp_path):

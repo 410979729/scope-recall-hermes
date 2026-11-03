@@ -14,16 +14,18 @@ from scenario_store import ScenarioStore
 
 
 def route_template(chat_endpoint: str, chat_model: str):
-    """Return environment references and bounded token accounting, without credential values.
+    """Return environment references, explicit recall floor and bounded metered accounting.
 
     The chat endpoint and model come from the operator: a deployment's address never lives in the checkout.
-    A plain-HTTP endpoint is allowed explicitly, as the product requires. Currency accounting is disabled: the zero
-    rates are accounting placeholders, not provider prices. Calls and tokens remain capped by the product ledger.
+    A plain-HTTP endpoint is allowed explicitly. The local chat server is unbilled;
+    zero chat rates record that choice, while Gemini input is metered separately.
+    Explicit route descriptors have their own space identity and require a floor.
     """
-    from scope_recall.core.recall_policy import EMBEDDING_SPACE
+    from scope_recall.core.recall_policy import BUILTIN_VECTOR_THRESHOLD, EMBEDDING_SPACE
 
     models = [chat_model, EMBEDDING_SPACE["model"]]
     return dict(
+        vector_threshold=BUILTIN_VECTOR_THRESHOLD,
         vector=dict(
             backend="sqlite",
             storage_dir=str(Path(sys.prefix).absolute() / "TEST-unbound-vectors"),
@@ -53,13 +55,16 @@ def route_template(chat_endpoint: str, chat_model: str):
                 dialect="gemini",
             ),
             budget=dict(
-                batch="TEST-real-hosts",
-                cap_micro_usd=None,
+                batch="TEST-local-chat-unbilled",
+                cap_micro_usd=250_000,
                 total_call_cap=1500,
                 total_input_cap=8_000_000,
                 total_output_cap=1_000_000,
                 approved_models=models,
-                pricing={model: dict(input_usd_per_million=0, output_usd_per_million=0) for model in models},
+                pricing={
+                    chat_model: dict(input_usd_per_million=0, output_usd_per_million=0),
+                    EMBEDDING_SPACE["model"]: dict(input_usd_per_million="0.20", output_usd_per_million=0),
+                },
             ),
         ),
     )
