@@ -2,18 +2,18 @@
 
 ## 新旧格式
 
-- 迁移支持的旧格式以实际提交、schema 和配置识别：公开 Release `v2.0.1`，以及包含其后合并的 `main` 提交 `578b955802df753f2e2208e26eab6f71971285a0`（转换器的基线）。不能按版本号推测输入格式。
+- 迁移支持的旧格式以实际提交、schema 和配置识别：转换器的旧表与字段目录见 `maintenance/legacy_catalog.py` 和 `maintenance/migration_mapping.json`。不能按版本号推测输入格式。
 - 旧 SQLite 使用 `memories`、`journal_entries`、`fact_claims`、`fact_claim_evidence`、`task_episodes` 等表。新 Core schema 使用 `source_events`、`claims`、`claim_versions`、`evidence_links`、统一删除记录等；相同数据库引擎不代表可以原样打开。
-- 旧 Lance 行有文本和旧 scope 标识；新 Lance 元数据绑定安装身份、对象版本及 embedding space，正文从 SQLite 取回。即便物理表列可承载新元数据，旧行也不自动满足新读取契约。
+- 旧 Lance 行有文本和旧 scope 标识；当前向量伴随库绑定安装身份、对象版本及 embedding space，正文从 SQLite 取回。旧格式转换不导入旧向量，需通过已批准的路由重建。Core 库之间的包升级可导入兼容向量，见 [README](../README.md#data-and-host-boundaries)。
 - 迁移器实现了隔离备份、来源导入、事实与经验版本映射、删除阻断和 Core restore fence。它是一次性离线迁移，不支持原地自动升级。
 
 ## 迁移操作
 
-迁移是一次性离线命令，中文说明见 [upgrade-guide.zh-CN.md](upgrade-guide.zh-CN.md)：停止旧插件写入、备份原库、先按正常宿主 installer 建立空实例及官方 installation manifest、用 manifest-aware migrate 将旧 scope 显式映射到已绑定 audience、阅读报告并核对记忆、按宿主说明启用新插件。迁移从 manifest 推导目标目录、agent identity 和 installation identity，不手填这些身份值；通常提供旧 scope 到 audience 名的映射；已确认旧库只有一个 scope 时，也可使用 `--single-scope-to AUDIENCE`，工具会自行确认唯一 scope。多个 scope 使用该简化选项时必须明确阻断，不得 SQL 改元数据、隐式扩大 scope 或静默丢失。跨实例、未映射或多个旧 scope 合并到同一 audience 时必须阻断。重复导入不得产生重复数据。迁移不提供自动升级和常驻兼容层。
+迁移是一次性离线命令，中文说明见 [upgrade-guide.zh-CN.md](upgrade-guide.zh-CN.md)：停止旧插件写入、备份原库、先按正常宿主 installer 建立空实例及官方 installation manifest、用 manifest-aware migrate 将旧 scope 显式映射到已绑定 audience、阅读报告并核对记忆、按宿主说明启用新插件。迁移从 manifest 推导目标目录、agent identity 和 installation identity，不手填这些身份值；持久 `migrate prepare --scope-map` 工作流接受旧 scope 到 manifest audience 名或已绑定 scope ID 的映射，精确保留的已有 ID 可自动映射。底层入口 `python -m scope_recall.maintenance.migrate` 接受相同的映射目标；已确认旧库只有一个 scope 时，该底层入口也可使用 `--single-scope-to AUDIENCE`，工具会自行确认唯一 scope。多个 scope 使用该简化选项时必须明确阻断，不得 SQL 改元数据、隐式扩大 scope 或静默丢失。跨实例、未映射或多个旧 scope 合并到同一 audience 时必须阻断。重复导入不得产生重复数据。迁移不提供自动升级和常驻兼容层。
 
 不实现旧 `update` 命令到新发行格式的自动衔接，不维护旧 API、不接管正式 gateway 的自动停止/重启，也不承诺旧用户原地更新后无感切换。manifest-aware handoff 是一次性迁移入口，不是长期兼容层。
 
-说明应包含输入输出、备份位置、失败处理及向量索引状态；迁移不触发历史记忆的模型重总结，不默认发起付费 embedding 或记忆外发。索引未就绪时显示可用能力，不把语义检索已就绪写成成功条件之外的隐含承诺。
+迁移不触发历史记忆的模型重总结，不默认发起付费 embedding 或记忆外发。索引未就绪时显示可用能力，不把语义检索已就绪写成成功条件之外的隐含承诺。
 
 ## 数据去向
 
@@ -38,7 +38,7 @@
 
 旧格式读取位于一次性维护工具，可独立交付并限定支持的旧格式。日常 capture、claim 更新、recall 和后台队列只调用新 Core。不得长期双写旧库与新库，不得在 recall 内遇到旧数据再调用旧 Provider，也不增加常驻旧格式兼容层。未来增加宿主优先增加 adapter，数据格式按独立 schema 版本迁移。
 
-不能为减少代码丢弃迁移所需逻辑，也不能为迁移把全部旧引擎打进新运行包。旧动作回执和已退出治理引擎的日志作为历史记录保存，不新增当前权威或维持旧命令重放 API。
+旧动作回执和已退出治理引擎的日志作为历史记录保存，不新增当前权威或维持旧命令重放 API。
 
 ## 失败恢复与验收
 

@@ -23,8 +23,8 @@ The owner may also set an extraction instruction for each scope. The management
 page shows its history, and these commands read or add a version:
 
 ```sh
-scope-recall memory instruction-get --scope SCOPE-ID
-scope-recall memory instruction-set --scope SCOPE-ID --text "Remember decisions and constraints"
+scope-recall memory instruction-get --scope SCOPE-ID --root /path/to/store
+scope-recall memory instruction-set --scope SCOPE-ID --text "Remember decisions and constraints" --root /path/to/store
 ```
 
 Instructions are limited to 2,000 characters and affect later extraction only.
@@ -34,14 +34,14 @@ instruction against its input budget; if the whole instruction does not fit,
 the request omits it and records `scope_instruction_omitted_input_budget`.
 
 ```sh
-scope-recall private on --session SESSION-ID --mode full
-scope-recall private on --project "C:\Work\Project" --mode read-only
-scope-recall private on --all --for 2h
-scope-recall private status --session SESSION-ID
-scope-recall private list
-scope-recall private off --session SESSION-ID
-scope-recall private off --project "C:\Work\Project"
-scope-recall private off --all
+scope-recall private on --session SESSION-ID --mode full --root /path/to/store
+scope-recall private on --project "C:\Work\Project" --mode read-only --root /path/to/store
+scope-recall private on --all --for 2h --root /path/to/store
+scope-recall private status --session SESSION-ID --root /path/to/store
+scope-recall private list --root /path/to/store
+scope-recall private off --session SESSION-ID --root /path/to/store
+scope-recall private off --project "C:\Work\Project" --root /path/to/store
+scope-recall private off --all --root /path/to/store
 ```
 
 The same store selection flags as the management commands apply: `--root` for a
@@ -291,12 +291,9 @@ after the upgrade. Supported older stores are brought forward on the next explic
 Take a database snapshot before upgrading if you need to go back. Earlier
 executables cannot read the upgraded schema. To go back, follow the
 [restore procedure](install.md#going-back-to-a-backup) with a snapshot taken before the upgrade and a
-separate backup directory; do not overwrite the database by hand. A rollback to
-an older schema cannot carry `private_intervals`, because that schema has no
-table for them. Keep the older executable's writers stopped: it cannot reject
-private transcript backfill or retries. Keep the current-schema backup that
+separate backup directory; do not overwrite the database by hand. A rollback restores the snapshot's private-interval history; the deletion ledger does not copy newer intervals.
+Keep writers stopped when the restored history cannot reject private transcript backfill or retries. Keep the current-schema backup that
 `restore` creates as well as the pre-upgrade snapshot. Before enabling capture
 again, open the store with the newer executable and restore that current-schema
 backup to recover the complete interval history. Reopening active rules alone
-does not protect records from closed intervals. Private conversations are absent
-from both snapshots because Scope Recall did not capture them.
+does not protect records from closed intervals. Private-mode refusals do not remove words captured before a rule began or host-owned conversation logs.

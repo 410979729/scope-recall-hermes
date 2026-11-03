@@ -1,9 +1,13 @@
 # Installing Scope Recall
 
-Install Python 3.11 through 3.14 and `python -m pip install "hermes-scope-recall[codex]"`, then run
+Install Python 3.11 through 3.14 and `python -m pip install -U "hermes-scope-recall[codex]"`, then run
 `scope-recall setup`. The plan detects host homes and their local Python environments, creates a store or reuses
 an attachment, preserves existing scope grants, configures model routes and their budget ledger, installs host
 integration and skills, and sets up bounded worker commands. Confirm once to apply it.
+
+The package-index command installs a published release. To use this development checkout, run
+`python -m pip install -U ".[codex]"` from its root; to use an unpublished wheel, install that exact wheel with
+the `codex` extra. Updating a package in use requires stopping its hosts and workers first.
 
 Choose your host: [Claude Code](install/claude-code.md), [Codex](install/codex.md), [Hermes](install/hermes.md),
 [WorkBuddy](install/workbuddy.md), [DeepSeek Harness](install/dsh.md).
@@ -86,6 +90,32 @@ installed hook commands and provider wrappers. It cannot approve a host's trust 
 or prove a running desktop host has reloaded its settings. Start a new host session and perform the two-session
 check in the host after approval. Windows isolated checks are covered by the test suite; clean Linux/macOS
 machines and running host processes require platform acceptance.
+
+## Upgrading from 3.16 to 4.0
+
+Stop every host, remote entry server, resident recall process and worker opening the store. Take a consistent
+SQLite backup and retain the old package, runtime configuration, manifests and host settings. Upgrade the shared
+worker's environment and every entry to the same package version, then rerun setup for each host to refresh copied
+hooks and plugins. A Hermes-managed plugin environment needs its own
+[environment rebuild](install/hermes.md#package-managed-plugin-environments), including its local wheel source
+when the pinned version is unavailable from the package index.
+
+The coordinated store upgrade saves a verified pre-upgrade snapshot and upgrades supported Core layouts to schema
+1134. Run the foreground upgrade through an attached Codex entry before restarting hosts:
+
+```sh
+scope-recall upgrade-store --host codex --instance-root /path/to/attached-codex-home --backup-dir /path/to/new-upgrade-backups
+```
+
+This command accepts only `hermes` or `codex`
+as `--host`; use the selected host's home for a local store too. Other entries upgrade through setup or ordinary
+coordinated opening.
+Foreground upgrade has no total deadline; wait for completion. Ordinary recall can be unavailable until index
+backfill completes. Keep free space for the database, snapshots, WAL and new indexes.
+
+After upgrade, run doctor for each entry, start new host sessions and verify capture and recall through the hosts.
+A package/import check alone does not establish that a running host loaded the update. Remote clients need their
+own update; see [remote compatibility](remote-entries.md).
 
 ## Going back to a backup
 

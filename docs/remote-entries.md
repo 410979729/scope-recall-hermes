@@ -21,25 +21,27 @@ machine and stays there; this machine keeps its SHA-256.
 Plain HTTP is accepted, including non-loopback addresses: use it only over a trusted private/encrypted network
 such as a tailnet, not the public internet. Use an HTTPS endpoint when that network cannot protect the token.
 
+Replace angle-bracketed paths, IDs and addresses with your own installation values.
+
 ## On this machine
 
 1. Attach an entry for each client, as for a local one, with its own home and a name to tell it apart:
 
    ```text
-   scope-recall attach --host claude-code --instance-root D:\ScopeRecall\work-claude-code --root D:\ScopeRecall\shared --entry work-claude-code --display-name "Work Claude Code" --grants-like all --capture-like desk
+   scope-recall attach --host claude-code --instance-root "<entry-home>" --root "<store>" --entry work-claude-code --display-name "Work Claude Code" --grants-like all --capture-like desk
    ```
 
 2. Record where it is served and the digest the client printed (step 3 below):
 
    ```text
-   python -m scope_recall.adapters.codex.remote_server configure --home D:\ScopeRecall\work-claude-code --host claude-code --listen 100.64.0.10 --port 18765 --token-sha256 <hex>
+   python -m scope_recall.adapters.codex.remote_server configure --home "<entry-home>" --host claude-code --listen "<listen-address>" --port 18765 --token-sha256 <hex>
    ```
 
 3. Serve it from an environment that has the `codex` extra, at logon and again when it stops. `--env-file`
    names the file holding the embedding key the runtime config declares; it is read in place:
 
    ```text
-   python -m scope_recall.adapters.codex.remote_server serve --home D:\ScopeRecall\work-claude-code --host claude-code --env-file <file>
+   python -m scope_recall.adapters.codex.remote_server serve --home "<entry-home>" --host claude-code --env-file <file>
    ```
 
    The server keeps one handler for its prompts' recall, with its SQLite vector companion open and its embedding
@@ -53,9 +55,8 @@ such as a tailnet, not the public internet. Use an HTTPS endpoint when that netw
    `without_vectors:<gap>` or `failed:<reason>`), each request refused for want of the token and its own
    errors go to `<home>\scope-recall\remote-server.log`, kept to about 1 MB with two older copies.
 
-   On Windows start it with a `pythonw.exe` that opens no console, such as the one in a virtual environment
-   made by `python -m venv`. uv 0.12.1 writes `Scripts\pythonw.exe` as a copy of its console launcher: the
-   server then runs in a console that Windows Terminal shows as a window, and closing that window stops it.
+   On Windows use a verified windowless interpreter or the service controller appropriate to the host.
+   A launcher named `pythonw.exe` does not by itself prove that no console will open.
 
 4. Let the client machine reach the port: an inbound firewall rule for that port, from the client's private
    address only.
@@ -76,14 +77,13 @@ reaches the server to receive the more specific refusal.
 
 ## On the client machine
 
-1. Install the package in a virtual environment. Claude Code must be 2.1.196 or later: a prompt from an
-   earlier one carries no prompt id and is refused. Claude Code runs a hook through a shell, so its
+1. Install the package in a virtual environment. Claude Code must supply a prompt id: a prompt without one is refused. Claude Code runs a hook through a shell, so its
    interpreter and `client.json` must be on paths of ASCII letters, digits and `._-/:` only; `install`
    refuses others.
 2. Write `client.json` with absolute paths:
 
    ```json
-   {"url": "http://100.64.0.10:18765", "host": "claude-code", "token_file": "C:/Users/me/.scope-recall-remote/claude-code/token", "state_dir": "C:/Users/me/.scope-recall-remote/claude-code/state"}
+   {"url": "http://<listen-address>:18765", "host": "claude-code", "token_file": "C:/Users/me/.scope-recall-remote/claude-code/token", "state_dir": "C:/Users/me/.scope-recall-remote/claude-code/state"}
    ```
 
 3. Make the token and give its digest to this machine's step 2. Only the digest is printed:
@@ -198,7 +198,7 @@ machines' clocks synchronized.
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP
 connection to `/mcp` follows their proxy settings, so the server's address must be in the client machine's
-`NO_PROXY` (an address, not only a range: not every client reads `100.64.0.0/10`). WorkBuddy follows these
+`NO_PROXY` as an exact address rather than relying on CIDR support. WorkBuddy follows these
 variables and the system's proxy, and matches `NO_PROXY` by name or address only.
 
 ## A new client machine

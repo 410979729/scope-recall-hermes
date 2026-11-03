@@ -81,3 +81,14 @@ def test_the_script_runs_as_the_workflow_runs_it(tmp_path):
     )
     assert done.returncode == 0, done.stderr
     assert output.read_text(encoding="utf-8").strip()
+
+
+def test_development_notes_follow_the_changelog_summary_convention():
+    """The development entry remains a short user-facing summary."""
+    version = _version()
+    if ".dev" not in version:
+        pytest.skip("the concise development summary applies before the release is cut")
+    body = CHANGELOG.read_text(encoding="utf-8").split(f"## [{version}]", 1)[1]
+    body = body.split("\n## [", 1)[0].split("\n", 1)[1]
+    lines = [line for line in body.splitlines() if line.strip()]
+    assert 1 <= len(lines) <= 2, "keep full release notes on the GitHub release page"

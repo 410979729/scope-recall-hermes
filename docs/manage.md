@@ -233,13 +233,25 @@ and existing rows keep NULL. Earlier executables refuse this newer schema; see
 [private-mode.md](private-mode.md#migration-and-rollback) for the rollback consequence.
 
 Before installing the new executable, stop the installation's writers and take a `scope-recall backup` SQLite
-snapshot; keep the old executable and configuration alongside it. To roll back, use the existing
-[`restore` procedure](install.md#going-back-to-a-backup) with that snapshot and a separate backup directory. The newer executable
+snapshot; keep the old executable and configuration alongside it. To roll back, use the snapshot restore commands
+below with that snapshot and a separate backup directory. The newer executable
 first records the latest deletion ledger and closes admission; the executable matching the snapshot then completes
   the restore. Do not overwrite the database file by hand: that can resurrect deleted memories. The documented
   [cold rollback exception](backup-restore.md#returning-from-40-to-316-with-extra-registered-scopes) has that risk and requires its stated precautions. Corrections made after
 the snapshot are outside its recovery point. A snapshot taken while content was muted can restore that older mute
 when completed by an older executable; use the management-capable executable to preserve later unmute decisions.
+
+For a shared store, preview and then apply snapshot restore with absolute paths:
+
+```sh
+scope-recall restore --root /path/to/store --snapshot /path/to/pre-upgrade.sqlite3
+scope-recall restore --root /path/to/store --snapshot /path/to/pre-upgrade.sqlite3 --backup-dir /path/to/new-rollback-backups --apply
+```
+
+For a store of its own, replace `--root` with `--host hermes --instance-root /path/to/home`, or the appropriate
+host selector. A cross-schema apply reports `prepared` after saving the ledger and closing ordinary admission.
+Install the release that reads the snapshot and run the same apply command to finish. Keep every host and worker
+stopped between those commands. The shared-scope limitation above still applies when the finishing release is 3.16.
 
 For management-capable snapshots, restore uses a complete suppression checkpoint, including records that inherited
 a mute. For a snapshot predating management, it prepares the original deletion-ledger format that the older
@@ -248,7 +260,7 @@ executable understands. Both paths preserve deletions; only the complete checkpo
 
 ## Review observations
 
-The held-content page also lists unconfirmed cross-session observations under a separate induction category.
+The Review page lists unconfirmed cross-session observations. The held-content page also presents their induction review controls.
 Use **Confirm observation** to record review, or open the fact detail to edit the body or delete it. Confirmation
 keeps the `derived_summary` basis and the original multi-session evidence. A source withdrawal still invalidates
 an observation after confirmation. Existing `memory show`, `memory revise` and deletion commands handle these

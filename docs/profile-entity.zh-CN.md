@@ -27,7 +27,7 @@
 {
   "protocol_version": "1.1",
   "request_id": "profile-1",
-  "subject": "TEST-project",
+  "subject": "示例项目",
   "max_items": 16,
   "budget_tokens": 4096
 }
@@ -43,8 +43,8 @@
   "request_id": "profile-1",
   "status": "ok",
   "memory_epoch": 12,
-  "subject": "TEST-project",
-  "resolved_subject": "TEST-project",
+  "subject": "示例项目",
+  "resolved_subject": "示例项目",
   "alias_resolution": "literal",
   "sections": {
     "facts": [
@@ -52,9 +52,9 @@
         "ref": "claim-…",
         "revision": 2,
         "kind": "fact",
-        "subject": "TEST-project",
+        "subject": "示例项目",
         "predicate": "配色",
-        "value_text": "H200",
+        "value_text": "蓝色",
         "conditions": [],
         "temporal_status": "current",
         "claim_state": "active",
@@ -103,7 +103,7 @@
 {
   "protocol_version": "1.1",
   "request_id": "entity-1",
-  "subject": "TEST-project",
+  "subject": "示例项目",
   "action": "related",
   "direction": "incoming",
   "max_items": 16,
@@ -116,9 +116,9 @@
 ```json
 {
   "direction": "incoming",
-  "subject": "TEST-nameone",
+  "subject": "小林",
   "predicate": "负责",
-  "value_text": "TEST-project",
+  "value_text": "示例项目",
   "ref": "claim-…",
   "revision": 1,
   "kind": "fact",
@@ -136,7 +136,7 @@
 
 ## 已验证的名称关系
 
-读取只使用已生效的 `kind=alias` 记录。明确项目改名需要名称身份事实和完整改名证据；
+读取只使用已生效的 `kind=alias` 记录。开启范围的发布前审查后，自动身份关系也须先批准。明确项目改名需要名称身份事实和完整改名证据；
 模型判断的实体关系需要保存的身份判断证据，并绑定两端记录的具体版本。
 两类关系都重验来源、范围、项目、分支、有效期、撤回和删除状态，不在读取时推测身份。
 
@@ -152,7 +152,7 @@
 
 - `truncated` / `max_items_cap` / `budget_token_cap` / `scan_capped`：有界、如实的部分结果；没有续读游标
 - 选择与发布之间数据变化：失败关闭，返回 `unavailable`，不带过期档案 / 边 / 别名正文
-- 只读：不写 SQLite、不写审计、不入队、不碰向量；不需要 embedding / LLM 配置
+- 视图查询不修改事实、不写审计、不入队、不碰向量；不需要 embedding / LLM 配置。访问旧结构前仍可能触发协调升级
 - Hermes 与 Codex 共用同一套 Core 方法；适配器只做身份绑定与参数边界
 
 机器可读 schema：`contracts/profile_request.schema.json`、`contracts/entity_request.schema.json`、`contracts/profile_view.schema.json`、`contracts/entity_view.schema.json`。
