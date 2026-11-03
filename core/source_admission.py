@@ -55,13 +55,13 @@ def observe_admitted(tx, clock, sources):
     triggers = []
     for source, decision in sources:
         stored = tx.source(source.ref, source.revision)
-        current = tx.sources.source_current(source.ref)
-        if (
-            decision.disposition != "source_only"
-            and stored is not None
-            and not stored.suppressed
-            and current is not None
-            and current.revision == source.revision
-        ):
-            triggers.append(tx.candidates.observe_source(source.ref, source.revision, observed_at=clock.utc_now()))
+        if decision.disposition == "source_only" or stored is None or stored.suppressed:
+            continue
+        # Candidate bookkeeping changes candidates and their evidence links,
+        # never this source's bytes or visibility. Reuse its authorization only
+        # for this operation, after capture mutations have finished.
+        with tx._reuse_source(stored):
+            current = tx.sources.source_current(source.ref)
+            if current is not None and current.revision == source.revision:
+                triggers.append(tx.candidates.observe_source(source.ref, source.revision, observed_at=clock.utc_now()))
     return triggers

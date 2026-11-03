@@ -306,6 +306,38 @@ def test_capture_refuses_when_replacement_cannot_leave_clean_text(core, monkeypa
     assert result.error_code == "plaintext_secret_rejected" and not rows(app)["source_events"]
 
 
+def test_preparation_does_not_redact_identity_text_already_checked_for_secrets(core, monkeypatch):
+    """Identity checks stay active, and copied containers remain independent from input."""
+    from scope_recall.core import events, secret_patterns
+
+    _app, ctx = core
+    incoming_context = {"platform": "TEST-platform", "chat_type": "private"}
+    incoming_refs = ["event-" + "a" * 64 + "@1"]
+    event = source_event(
+        content="TEST ordinary blue paint", source_context=incoming_context, evidence_refs=incoming_refs
+    )
+    masked, scanned = [], []
+    redact, scan = events.redact_secret_text, secret_patterns.scan_secret_like_text
+
+    def redacted(text):
+        masked.append(text)
+        return redact(text)
+
+    def checked(text):
+        scanned.append(text)
+        return scan(text)
+
+    monkeypatch.setattr(events, "redact_secret_text", redacted)
+    monkeypatch.setattr(secret_patterns, "scan_secret_like_text", checked)
+    prepared = events.prepare_capture(event, ctx)
+    assert event["source_event_key"] in scanned
+    assert masked == [event["content"], "TEST-platform", "private"]
+    incoming_context["platform"] = "TEST-changed"
+    assert prepared.events[0].get("source_context") == {"platform": "TEST-platform", "chat_type": "private"}
+    incoming_refs.clear()
+    assert prepared.events[0].get("evidence_refs") == ["event-" + "a" * 64 + "@1"]
+
+
 @pytest.mark.parametrize("field", ["session_id", "project_id", "branch_id", "task_anchor", "environment_revision"])
 def test_capture_refuses_credential_in_context_identity(core, field):
     app, ctx = core

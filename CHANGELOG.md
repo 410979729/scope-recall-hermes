@@ -4,6 +4,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.0.dev0] - unreleased
 
+Capture reuses credential checks for unchanged identity text within one preparation and avoids rereading the same authorized source during candidate observation. Stored messages, credential replacement and refusal remain unchanged.
+
 Fact recall nominates query subjects from every stored version before applying the existing temporal selector.
 The automatic store upgrade rebuilds this derived index in resumable pages and preserves original truth.
 Repeated releases reuse immutable content safety verdicts; changed content is scanned again. Other-session
