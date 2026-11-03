@@ -1399,6 +1399,33 @@ def test_judge_label_follows_the_official_rule():
     assert judge_label("No") is False
 
 
+def test_packet_context_renders_each_injection_format_from_the_same_packet():
+    """raw keeps the earlier measurement; the other styles are what a host would receive for the same recall."""
+    from run import packet_context
+    from scope_recall.core import injection_format
+    from scope_recall.core.recall_budget import canonical_render_json
+
+    claim = json.dumps({"subject": "TEST owner", "predicate": "prefers", "value_text": "TEST green tea"})
+    item = dict(
+        ref="claim:TEST-1",
+        revision=2,
+        evidence_refs=["source:TEST-9@1"],
+        kind="claim",
+        temporal_status="current",
+        origin="owner",
+        occurred_at="2026-01-02T03:04:05Z",
+        content=claim,
+    )
+    packet = {"items": [item], "gaps": ["TEST-gap"]}
+    assert packet_context(packet, "raw") == json.dumps(packet, ensure_ascii=False)
+    assert packet_context(packet, "json") == canonical_render_json(packet)
+    for style in ("compact", "outline"):
+        text = packet_context(packet, style)
+        assert text == injection_format.question(packet, style)
+        assert text.startswith(f"Recalled memory ({style};") and "TEST green tea" in text and "claim:TEST-1@2" in text
+    assert len(packet_context(packet, "compact")) < len(packet_context(packet, "json"))
+
+
 def test_a_failed_question_is_recorded_and_the_split_continues():
     from run import isolated
 

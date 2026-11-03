@@ -27,6 +27,7 @@ SAME = (
     "split",
     "split_manifest_sha256",
     "method",
+    "injection_format",
     "retrieval_only",
     "models",
     "official_judge_prompts_sha256",
@@ -62,10 +63,10 @@ def merge(reports: list[dict], order: list[str]) -> dict:
     for report in reports:
         selected.update(report["selected_categories"])
     return {
-        **{key: first[key] for key in SAME[:7]},
+        **{key: first[key] for key in SAME[:8]},
         "shard": None,
         "shards": count,
-        **{key: first[key] for key in SAME[7:11]},
+        **{key: first[key] for key in SAME[8:12]},
         "selected_categories": dict(selected),
         "questions": sum(report["questions"] for report in reports),
         "completed_questions": len(results),
