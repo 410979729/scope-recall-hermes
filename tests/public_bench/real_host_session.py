@@ -153,7 +153,10 @@ class Session:
         evidence = Path(self.definitions[host]["evidence"])
         before = set(evidence.glob("*.json"))
         result = self.run.children.run(
-            self.command(host, prompt, session), self.root / (label + ".json"), timeout=self.run.args.host_timeout
+            self.command(host, prompt, session),
+            self.root / (label + ".json"),
+            timeout=self.run.args.host_timeout,
+            env=None if self.run.args.dry_run else self.run.host_env,
         )
         taps = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(set(evidence.glob("*.json")) - before)]
         answer, identifier = answer_text(host, result["stdout"], fake=self.run.args.dry_run)
