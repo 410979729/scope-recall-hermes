@@ -332,6 +332,14 @@ def _notice_kind(message: dict[str, Any]) -> bool:
     return not (kind == "hidden" and message.get(_COMPRESSED_SUMMARY) is True)
 
 
+#: Gateway's current model-facing timestamp (gateway.message_timestamps), not provenance.
+#: Only a typed, stamped host row may have this presentation prefix removed for comparison.
+_NOTICE_TIMESTAMP = re.compile(
+    r"^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+    r"(?: [A-Za-z0-9_+\-/:]+)?\]\s+"
+)
+
+
 def host_notice(history: object, user_message: object) -> bool:
     """Whether the turn ``pre_llm_call`` opens is one Hermes opened itself, not the person.
 
@@ -365,7 +373,37 @@ def host_notice(history: object, user_message: object) -> bool:
             continue
         words = _own_text(message)
         if words:
-            return words == text and _notice_kind(message) and (trailing or message.get(_COMPRESSED_SUMMARY) is True)
+            notice = _notice_kind(message)
+            # Gateway stages rendered content but the hook receives clean persist_user_message.
+            # Keep this normalization local to typed host rows, never human text or steers.
+            # No suffix/substring match: only the documented presentation prefix is removed.
+            if words != text and notice and _message_time(message) is not None:
+                prefix = _NOTICE_TIMESTAMP.match(words)
+                if prefix is not None:
+                    words = words[prefix.end() :]
+            return words == text and notice and (trailing or message.get(_COMPRESSED_SUMMARY) is True)
+    return False
+
+
+def sync_host_notice(messages: object, user_message: object) -> bool:
+    """Classify an uncaptured opener from completed history, not an older notice.
+
+    Only the finished assistant/tool suffix is removed. Unknown rows fail closed;
+    the existing classifier still owns text, kind, timestamp and folded-summary
+    checks, including the latest user's own words deciding first.
+    """
+    if not isinstance(messages, list):
+        return False
+    end = len(messages)
+    while end:
+        message = messages[end - 1]
+        if not isinstance(message, dict):
+            return False
+        role = message.get("role")
+        if role in ("assistant", "tool"):
+            end -= 1
+            continue
+        return role == "user" and host_notice(messages[:end], user_message)
     return False
 
 

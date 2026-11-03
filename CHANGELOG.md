@@ -2,6 +2,10 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [3.17.1] - 2026-11-03
+
+Hermes host-generated notices remain `host_generated` when gateway timestamps are enabled or the completed turn has no pre-LLM notice marker. The adapter removes one presentation timestamp prefix only when the typed host row also has a valid recorded timestamp, then requires an exact match of the message's own words. Completion sync can consult its own trailing history after assistant/tool rows only when no captured opener or usable host cache already decides the origin. Ordinary user messages, steers, quoted notice text, older matching notices and existing captured origins retain their qualification. No configuration, stored-format change or rewrite of existing sources is performed; reload the host after upgrading.
+
 ## [3.17.0] - 2026-10-31
 
 Capture masks a detected credential instead of refusing the whole message. The value after a credential label, and a key-shaped token, becomes `[REDACTED_SECRET]`; the label and the text outside the value are kept. An unquoted value is masked to the end of its line or its item in a structure; a quoted one to its closing quote, or to the end of the line when anything after the quote could extend it; a three-quote literal to its closing quotes. Capture still refuses a credential in an identity or reference field, a message that would be left as the marker alone, a private-key block and a value that may continue on the next line. Receipts, hook diagnostics and the remote server's hook log report how many values were masked (`masked_secret_count`). What counts as a credential is unchanged, and recall, model requests and corrections keep their checks.
