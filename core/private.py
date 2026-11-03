@@ -750,10 +750,15 @@ def _close_in_transaction(conn, now, target, session_id, project_path, expected_
     return {"closed": len(rows), "rules": [dict(row, ends_at=_zulu(now), active=False) for row in rows]}
 
 
-def apply_remote_command(storage, clock, context, *, command, command_id, observed_at):
-    """Commit the session action and its entry-scoped replay fence together."""
+def apply_remote_command(storage, clock, context, *, command, command_id, observed_at, legacy=False):
+    """Commit a session action and its replay fence; legacy requests can only pause."""
     if command not in ("pause", "resume"):
         raise ContractError("INPUT_INVALID", "command")
+    if legacy:
+        if command != "pause":
+            raise ContractError("ACCESS_DENIED", "command")
+        open_interval(storage, clock, context, target="session", session=context.session_id)
+        return
     entry = _text(context.entry_id, "entry_id", 240)
     identifier = _text(command_id, "command_id", 128)
     observed = utc_timestamp(observed_at)

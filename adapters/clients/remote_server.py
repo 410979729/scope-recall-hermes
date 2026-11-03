@@ -39,7 +39,7 @@ from typing import Any, Callable
 
 from ..._version import __version__
 from ...contracts import ContractError
-from ...core.private import calibrated_event_time
+from ...core.private import calibrated_event_time, parse_recording_command
 from ...runtime.remote_clock import private_metadata
 from ...runtime.worker_entry import host_process_credential_environment
 from . import transcript
@@ -49,7 +49,7 @@ from .handler import CodexHookHandler, SystemHookClock
 from .identity import resolve_runtime_audience, trusted_context
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
 from .record_reader import RecordLines
-from .remote_client import direct_owner_command, eligible_body
+from .remote_client import direct_owner_command, eligible_body, owner_prompt
 
 CONFIG_NAME = "remote-server.json"
 LOG_NAME = "remote-server.log"
@@ -408,6 +408,20 @@ def _command_payload(config, body):
     return payload, body, direct_command
 
 
+def _legacy_command(config, body, payload):
+    """Recognize an unmarked owner prompt without trusting client-only command fields."""
+    return bool(
+        config.host in {"claude-code", "codex", "dsh"}
+        and "direct_owner_command" not in body
+        and "command_id" not in body
+        and "record" not in body
+        and not any(key in payload for key in ("scope_recall_direct_command", "scope_recall_legacy_command"))
+        and not payload.get("scope_recall_private_spans_removed")
+        and owner_prompt(config.host, payload)
+        and parse_recording_command(payload.get("prompt"))
+    )
+
+
 def _handle_command_errors(handler, payload, record, body, direct_command):
     """Translate an atomically refused replay into the remote request error."""
     try:
@@ -437,13 +451,20 @@ def handle_request(
     asked of ``recaller`` (the server's ``local_endpoint.KeptRecaller``), whose vector store and embedding worker
     stay open between prompts, while this request's handler stores the prompt and recalls itself only if that has
     not answered in time (``handler._resident_answer``)."""
+    # Decide before stripping internal fields: a forwarded field cannot attest its own origin.
+    legacy_command = (
+        _legacy_command(config, body, body.get("payload", {})) if isinstance(body.get("payload"), dict) else False
+    )
     payload, body, direct_command = _command_payload(config, body)
+    payload.pop("scope_recall_legacy_command", None)
+    if legacy_command:
+        payload["scope_recall_legacy_command"] = True
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise RemoteServerError("payload too large")
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
     if not direct_command:
         payload = {key: value for key, value in payload.items() if key != "transcript_path"}
-    if direct_command:
+    if direct_command or legacy_command:
         checked = private_check(
             config, dict(session_id=payload.get("session_id"), project=payload.get("cwd"), times=[])
         )
@@ -469,7 +490,9 @@ def handle_request(
     handler = CodexHookHandler.from_home(
         str(config.home),
         config.host,
-        event_clock=_ObservedClock(observed_at) if observed_at is not None and not direct_command else None,
+        event_clock=_ObservedClock(observed_at)
+        if observed_at is not None and not (direct_command or legacy_command)
+        else None,
         remote_paths=True,
         hook_started_at=started if started is not None else time.monotonic(),
     )
@@ -492,7 +515,7 @@ def handle_request(
             **result,
             "systemMessage": f"{previous}\n{notice}" if isinstance(previous, str) and previous else notice,
         }
-    if direct_command:
+    if direct_command or (legacy_command and parse_recording_command(payload.get("prompt")) == "pause"):
         private_rules = True
     if config.host == "dsh":
         result = {**result, "private_rules": private_rules}
