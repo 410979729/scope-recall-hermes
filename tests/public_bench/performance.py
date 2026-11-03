@@ -24,6 +24,7 @@ from cases import Case, Turn
 from environment import machine
 from lab import Lab
 from ports import Ports
+from scope_recall.core import lexical_index
 from scope_recall.core.events import lexical_terms
 from scope_recall.runtime.vector_port import physical_partition_scope_id
 
@@ -184,6 +185,14 @@ def seed_truth(lab: Lab, count: int) -> list[str]:
                 connection.executemany("INSERT INTO evidence_links VALUES (?,?,?,?,?,?,?,?)", links)
             connection.commit()
         connection.execute("UPDATE work_items SET state='done'")
+        # Bulk fixture inserts bypass the live writer; publish their projections
+        # before timing so dirty fallback work is not mistaken for recall cost.
+        connection.execute(
+            "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
+            "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0"
+        )
+        while lexical_index.backfill_claim_page(connection):
+            connection.commit()
         connection.commit()
     return [source_ref, *refs]
 

@@ -157,6 +157,15 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1132: {
+        "before": (
+            "DROP TRIGGER claim_terms_insert",
+            "DROP TRIGGER claim_terms_delete",
+            "DROP TRIGGER claim_terms_update",
+            "DROP TRIGGER claim_terms_head",
+        ),
+        "tables": ("claim_version_postings", "claim_lexical_dirty"),
+    },
     1131: {"tables": ("scope_review_policy",)},
     1130: {"tables": ("handoff_events", "handoffs")},
     1129: {"columns": (("session_brief_injections", "notice_marker"), ("session_brief_injections", "source"))},

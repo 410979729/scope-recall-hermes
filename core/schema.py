@@ -6,7 +6,7 @@ from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
 from .injection_schema import install as install_injection_schema
 from .retractions import SAFETY_RETRACTIONS
 
-SCHEMA_VERSION = 1131
+SCHEMA_VERSION = 1132
 #: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
 UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
@@ -281,6 +281,37 @@ CLAIM_RANK_STATEMENTS = (
     END""",
     """CREATE TRIGGER claim_lexical_head AFTER UPDATE OF current_revision,subject,predicate,kind ON claims BEGIN
         UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id=NEW.claim_id;
+    END""",
+)
+
+# Version nomination cannot assume the selected subject equals the current head.
+# Dirty markers keep direct truth edits conservative until the ordinary writer
+# or resumable projection page replaces their terms in the same transaction.
+CLAIM_VERSION_TERM_STATEMENTS = (
+    """CREATE TABLE claim_version_postings (
+        term_id INTEGER NOT NULL,
+        claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+        subject_term INTEGER NOT NULL CHECK(subject_term IN (0,1)),
+        PRIMARY KEY(term_id,claim_id)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_version_claim ON claim_version_postings(claim_id,term_id)",
+    "CREATE INDEX claim_version_subject ON claim_version_postings(term_id,claim_id) WHERE subject_term=1",
+    """CREATE TABLE claim_lexical_dirty (
+        claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    *(
+        f"""CREATE TRIGGER claim_terms_{operation.lower()} AFTER {operation} ON claim_versions BEGIN
+            INSERT OR IGNORE INTO claim_lexical_dirty SELECT claim_id FROM claims WHERE claim_id={source}.claim_id;
+        END"""
+        for operation, source in (("INSERT", "NEW"), ("DELETE", "OLD"))
+    ),
+    """CREATE TRIGGER claim_terms_head AFTER UPDATE OF
+        current_revision,subject,predicate,kind,read_blocked ON claims BEGIN
+        INSERT OR IGNORE INTO claim_lexical_dirty VALUES (NEW.claim_id);
+    END""",
+    """CREATE TRIGGER claim_terms_update AFTER UPDATE OF claim_id,revision,payload_json ON claim_versions BEGIN
+        INSERT OR IGNORE INTO claim_lexical_dirty VALUES (OLD.claim_id);
+        INSERT OR IGNORE INTO claim_lexical_dirty VALUES (NEW.claim_id);
     END""",
 )
 
@@ -774,6 +805,7 @@ STATEMENTS = (
     + ENTITY_STATEMENTS
     + SUMMARY_STATEMENTS
     + CLAIM_RANK_STATEMENTS
+    + CLAIM_VERSION_TERM_STATEMENTS
     + ADOPTION_STATEMENTS
     + ADOPTION_PROCESSING_STATEMENTS
     + SESSION_BRIEF_STATEMENTS
@@ -1246,3 +1278,16 @@ def upgrade_1130(connection):
     connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_review_policy")))
     connection.execute("UPDATE instance_meta SET schema_version=1131 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1131")
+
+
+def upgrade_1131(connection):
+    """Install all-version nomination and atomically schedule its resumable projection."""
+    for statement in CLAIM_VERSION_TERM_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("INSERT INTO claim_lexical_dirty SELECT claim_id FROM claims")
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
+        "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1132 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1132")

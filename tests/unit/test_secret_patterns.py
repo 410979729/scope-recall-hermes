@@ -661,3 +661,63 @@ def test_a_cut_falls_where_neither_side_reads_otherwise_than_its_line():
     # A run the reading's own bound cuts into is on a side and in the uncut text alike: it does not excuse a cut.
     twice = "api_key: <your api key> " + "x" * 776 + "api_key: <your api key> tail"
     assert cut_between_runs(twice, twice.index("key>"), toward=0) == twice.index("<your")
+
+
+def test_repeated_stored_versions_reuse_secret_scan_without_losing_counts(monkeypatch):
+    from dataclasses import replace
+
+    from scope_recall.core import model_content
+    from scope_recall.core.retrieval import RetrievedObject
+
+    item = RetrievedObject(
+        "event-TEST-cache",
+        1,
+        "event",
+        "safe synthetic statement",
+        "human_direct",
+        "current",
+        "applicable",
+        (),
+        "direct_report",
+        False,
+    )
+    scans = []
+    native = model_content.secret_structure_pattern_names
+
+    def tracked(value):
+        scans.append(value)
+        return native(value)
+
+    monkeypatch.setattr(model_content, "secret_structure_pattern_names", tracked)
+    assert model_content.withhold_secret_items([item], []) == [item]
+    assert model_content.withhold_secret_items([replace(item)], []) == [item]
+    assert len(scans) == 1
+    blocked = replace(item, content="password: SyntheticSecret937")
+    gaps = []
+    assert model_content.withhold_secret_items([blocked], gaps) == []
+    assert model_content.withhold_secret_items([blocked], gaps) == []
+    assert gaps == ["secrets_withheld:2"]
+    assert len(scans) == 2
+    changed = replace(blocked, metadata=(("TEST-note", "changed"),))
+    assert model_content.withhold_secret_items([changed], []) == []
+    assert len(scans) == 3
+
+
+def test_unhashable_stored_metadata_still_uses_structural_scan():
+    from scope_recall.core.model_content import withhold_secret_items
+    from scope_recall.core.retrieval import RetrievedObject
+
+    item = RetrievedObject(
+        "event-TEST-unhashable",
+        1,
+        "event",
+        "safe synthetic text",
+        "human_direct",
+        "current",
+        "applicable",
+        (),
+        "direct_report",
+        False,
+        metadata=(("TEST-note", ["safe"]),),
+    )
+    assert withhold_secret_items([item], []) == [item]

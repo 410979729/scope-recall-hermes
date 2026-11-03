@@ -73,27 +73,84 @@ def _hydrate(tx, reader, candidates, context):
     return withhold_secret_items(pairs, [], content=lambda pair: pair[1])
 
 
+def _assistant_roots(tx, candidates):
+    """Check lightweight provenance before using a prefix that needs no echo pairing."""
+    keys = json.dumps([(candidate.kind, candidate.ref, candidate.revision) for candidate in candidates])
+    return (
+        tx._check()
+        .execute(
+            """WITH refs AS MATERIALIZED (SELECT json_extract(value,'$[0]') AS kind,
+            json_extract(value,'$[1]') AS ref,json_extract(value,'$[2]') AS revision FROM json_each(?)),
+        roots AS (SELECT ref,revision FROM refs WHERE kind='event' UNION
+            SELECT l.source_ref,l.source_revision FROM refs r CROSS JOIN evidence_links l
+            ON l.object_kind=r.kind AND l.object_ref=r.ref AND l.object_revision=r.revision)
+        SELECT 1 FROM roots r CROSS JOIN source_events e
+        ON e.event_id=r.ref AND e.source_revision=r.revision WHERE e.origin='assistant_visible' LIMIT 1""",
+            (keys,),
+        )
+        .fetchone()
+        is not None
+    )
+
+
+def _original_pairs(tx, reader, candidates, context, policy, selected_refs):
+    """Hydrate a bounded page at a time; event candidates already are their originals."""
+    seen = set()
+    # Selected evidence cannot take an overflow slot. Avoid asking its fan-out
+    # replacement query to load every fact that already-delivered source supports.
+    candidates = tuple(
+        candidate
+        for candidate in candidates
+        if candidate.kind != "event" or f"{candidate.ref}@{candidate.revision}" not in selected_refs
+    )
+    for start in range(0, len(candidates), MAX_ROWS):
+        for candidate, obj in _hydrate(tx, reader, candidates[start : start + MAX_ROWS], context):
+            if not _qualified(obj):
+                continue
+            for source in readable_sources(tx, obj, policy):
+                if source.event["origin"] == "assistant_visible" and is_adopted_assistant(
+                    tx, source.ref, source.revision
+                ):
+                    continue
+                key = (source.ref, source.revision)
+                if key in seen or f"{source.ref}@{source.revision}" in selected_refs:
+                    continue
+                seen.add(key)
+                if candidate.kind == "event" and key == (candidate.ref, candidate.revision):
+                    yield candidate, obj
+                else:
+                    root = replace(candidate, kind="event", ref=source.ref, revision=source.revision)
+                    yield from _hydrate(tx, reader, (root,), context)
+
+
 def _representatives(tx, reader, result, context, packet, clock):
-    """Select one remaining original per session, preserving source identity."""
+    """Read only a representative prefix when no assistant pairing can reorder it.
+
+    Mixed provenance retains global original/echo pairing: an original later in
+    the pool may replace an earlier echo. The ordinary human-source path stops
+    after twelve sessions, independently of the number of remaining matches.
+    """
     policy = replace(context, now=getattr(clock, "utc_now", lambda: context.now)())
     selected_refs = {ref for item in packet["items"] for ref in item["evidence_refs"]}
-    roots = {}
-    for candidate, obj in _hydrate(tx, reader, result.overflow_candidates, context):
-        if not _qualified(obj):
-            continue
-        for source in readable_sources(tx, obj, policy):
-            if source.event["origin"] == "assistant_visible" and is_adopted_assistant(tx, source.ref, source.revision):
-                continue
-            ref = f"{source.ref}@{source.revision}"
-            if ref not in roots:
-                roots[ref] = replace(candidate, kind="event", ref=source.ref, revision=source.revision)
-    originals = _hydrate(tx, reader, tuple(roots.values()), context)
-    originals = [pair for pair in originals if readable_sources(tx, pair[1], policy)]
-    originals = prefer_originals(tx, originals, context, clock=clock.monotonic, gaps=[])
+    paired = _assistant_roots(tx, result.overflow_candidates)
+    # Selected originals still serve as anchors for assistant echo pairing.
+    originals = _original_pairs(
+        tx, reader, result.overflow_candidates, context, policy, () if paired else selected_refs
+    )
+    if paired:
+        originals = prefer_originals(
+            tx,
+            [pair for pair in originals if readable_sources(tx, pair[1], policy)],
+            context,
+            clock=clock.monotonic,
+            gaps=[],
+        )
     rows, sessions = [], set()
     for candidate, obj in originals:
         if clock.monotonic() >= context.deadline:
             break
+        if not readable_sources(tx, obj, policy):
+            continue
         source = tx.source(candidate.ref, candidate.revision)
         session = _session(source)
         try:
@@ -107,6 +164,8 @@ def _representatives(tx, reader, result, context, packet, clock):
             continue
         rows.append((candidate, obj))
         sessions.add(session)
+        if len(rows) == MAX_ROWS:
+            break
     return rows
 
 
@@ -136,7 +195,11 @@ def _item(rows, total, query):
         basis="derived_summary",
         evidence_refs=tuple(f"{obj.ref}@{obj.revision}" for _, obj in rows),
         content="More matching records from other sessions (excerpts, not deduplicated).\n"
-        + f"Listed {len(rows)} records; {total - len(rows)} other session representatives not listed. "
+        + (
+            f"Listed {len(rows)} records; {total - len(rows)} other session representatives not listed. "
+            if total is not None
+            else f"Listed {len(rows)} records from a window of at most {MAX_ROWS} session representatives. "
+        )
         + "Use inspect on each ref for full text.\n"
         + "\n".join(lines),
         metadata=(("qualification_reason", LABEL),),
@@ -145,7 +208,9 @@ def _item(rows, total, query):
 
 
 def _fit(packet: RecallPacket, rows, context: SearchContext):
-    total = len(rows)
+    # Exhausting a short pool proves its total. A full window makes no claim
+    # about unvisited sessions, even when byte admission displays fewer rows.
+    total = len(rows) if len(rows) < MAX_ROWS else None
     chosen = rows[:MAX_ROWS]
     while chosen:
         item = _item(chosen, total, context.query)

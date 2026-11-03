@@ -378,6 +378,7 @@ SUITES = {
         "tests/host/codex/test_tool_schemas.py",
     ],
     "migration": [
+        "tests/migration/test_claim_version_terms.py",
         "tests/migration/test_handoff_upgrade.py",
         "tests/migration/test_health_upgrade.py",
         "tests/migration/test_reflection_upgrade.py",

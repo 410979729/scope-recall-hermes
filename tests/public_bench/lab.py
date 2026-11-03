@@ -59,14 +59,20 @@ def throttled(state: dict) -> bool:
 class Lab:
     """One question's independent store; construction never opens a host config."""
 
-    def __init__(self, root: Path, ports, *, now: str, backend="sqlite", scopes=None, existing=False) -> None:
+    def __init__(
+        self, root: Path, ports, *, now: str, backend="sqlite", scopes=None, existing=False, installation_kind="local"
+    ) -> None:
         if existing and not (root / "truth" / "memory.sqlite3").is_file():
             raise ValueError("existing synthetic store is missing")
         root.mkdir(parents=True, exist_ok=existing)
         self.clock, self.ports = WorldClock(now), ports
         self.clock.realtime = True
         self.binding = InstanceBinding(
-            "public-bench", "public-bench-install", root / "truth", scopes or frozenset({"public"})
+            "public-bench",
+            "public-bench-install",
+            root / "truth",
+            scopes or frozenset({"public"}),
+            installation_kind=installation_kind,
         )
         self.context = TrustedContext(
             self.binding,

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
+from functools import lru_cache
 
+from .retrieval import RetrievedObject
 from .secret_patterns import secret_structure_pattern_names
 
 WITHHELD_PREFIX = "secrets_withheld:"
@@ -53,6 +55,26 @@ def stored_item_pattern_names(value) -> tuple[str, ...]:
     Claims can separate a credential's label and its value into ``predicate``
     and ``value_text``. Those fields describe one assignment as well as two
     separate texts; inspecting only the separate texts would miss it.
+    """
+    if type(value) is RetrievedObject:
+        try:
+            hash(value)
+            if len(value.content) + sum(len(member) for _, member in value.metadata) <= 131072:
+                return _retrieved_pattern_names(value)
+        except TypeError:
+            # Runtime callers may supply mutable metadata despite the type hint.
+            # Such views remain structurally scanned on every release.
+            pass
+    return secret_structure_pattern_names(_stored_value(value))
+
+
+@lru_cache(maxsize=1024)
+def _retrieved_pattern_names(value: RetrievedObject) -> tuple[str, ...]:
+    """Reuse only complete immutable views; rules are fixed for the process lifetime.
+
+    A full view key includes metadata and evidence as well as identity, so changed
+    projections and equal references in independent stores cannot share verdicts.
+    Large views bypass the bounded cache to avoid retaining oversized originals.
     """
     return secret_structure_pattern_names(_stored_value(value))
 
