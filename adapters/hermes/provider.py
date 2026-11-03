@@ -60,6 +60,8 @@ _MemoryProviderBase = _memory_provider_base()
 @dataclass
 class AdapterDiagnostics:
     injection_tokens: int = 0
+    injection_format: str = "json"
+    injection_refs: tuple[tuple[str, str, int], ...] = ()
     session_tokens: int = 0
     injection_token_cap: int = 0
     session_token_cap: int | None = None

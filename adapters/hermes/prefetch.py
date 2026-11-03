@@ -41,6 +41,8 @@ class Prefetch:
         timed out can run 30-50 s).  Nothing of the turn is written meanwhile: its message was stored before, its
         tools run after.
         """
+        self._adapter._diagnostics.injection_tokens = 0
+        self._adapter._diagnostics.injection_refs = ()
         command = parse_recording_command(query)
         if type(query) is str:
             query = without_private(query)[0]
@@ -109,6 +111,7 @@ class Prefetch:
         else:
             reason = "entry_state:paused"
         if paused:
+            self._adapter._diagnostics.last_prefetch_skip_reason = reason
             self._adapter._diagnostics.capability_gaps = (*self._adapter._diagnostics.capability_gaps, reason)
             return ""
         mode = read_mode(context) if callable(read_mode) else None
@@ -116,7 +119,9 @@ class Prefetch:
         if removed:
             notice = "\n".join(part for part in (notice, f"private_spans_removed:{removed}") if part)
         if mode == "full":
-            return self._confirm(core, context, effective_session, turn, {}, notice, started)
+            return self._confirm(
+                core, context, effective_session, turn, {}, notice, started, request_id=request["request_id"]
+            )
         return self._deliver(
             query, (core, context, generation, effective_session, turn, notice, request, current_refs, identity)
         )
@@ -132,7 +137,9 @@ class Prefetch:
         if type(query) is not str or not query.strip():
             record_refusal(core, context, query, "blank_prompt")
             text = "\n\n".join(part for part in (brief, notice) if part)
-            return self._confirm(core, context, effective_session, turn, briefing, text, started)
+            return self._confirm(
+                core, context, effective_session, turn, briefing, text, started, request_id=request["request_id"]
+            )
         try:
             entries = read_host_memory(
                 "hermes",
@@ -158,7 +165,9 @@ class Prefetch:
             if not brief:
                 raise
             text = "\n\n".join(part for part in (brief, notice) if part)
-            return self._confirm(core, context, effective_session, turn, briefing, text, started)
+            return self._confirm(
+                core, context, effective_session, turn, briefing, text, started, request_id=request["request_id"]
+            )
         preparation = core.prepare_recall_render(context, packet)
         current = getattr(core, "recall_packet_current", None)
         if packet.get("items") and callable(current) and not current(context, packet):
@@ -182,7 +191,9 @@ class Prefetch:
             zone=display_zone(),
         )
         if packet.get("items") and callable(current) and not current(context, packet):
-            return self._confirm(core, context, effective_session, turn, {}, notice, started)
+            return self._confirm(
+                core, context, effective_session, turn, {}, notice, started, request_id=request["request_id"]
+            )
 
         if brief:
             core.remove_question_overlaps(briefing, rendered)
@@ -191,7 +202,9 @@ class Prefetch:
             rendered = f"{brief}\n\n{rendered}" if rendered else brief
         if notice:
             rendered = f"{rendered}\n\n{notice}" if rendered else notice
-        return self._confirm(core, context, effective_session, turn, briefing, rendered, started)
+        return self._confirm(
+            core, context, effective_session, turn, briefing, rendered, started, request_id=request["request_id"]
+        )
 
     def _brief(self, core, context, generation):
         """Prepare the brief while preserving a pending compaction until confirmation."""
@@ -215,13 +228,15 @@ class Prefetch:
         finally:
             self._adapter._brief_lock.release()
 
-    def _confirm(self, core, context, session, turn, briefing, text, started):
+    def _confirm(self, core, context, session, turn, briefing, text, started, *, request_id=None):
         """Mark the delivered response after rendering, retaining a pending compaction on failure."""
         with self._adapter._lock:
             if self._adapter._active_turn_id != turn:
                 return ""
             try:
-                briefing = core.prepare_session_injection(context, text, brief=briefing, remaining_seconds=0.2)
+                briefing = core.prepare_session_injection(
+                    context, text, brief=briefing, request_id=request_id, remaining_seconds=0.2
+                )
                 briefing["_injection"]["elapsed_ms"] = max(
                     0, round((core.clock.monotonic() - started) * 1000) - briefing["elapsed_ms"]
                 )
@@ -235,14 +250,19 @@ class Prefetch:
             if key in usage:
                 setattr(diagnostics, name, usage[key])
         diagnostics.delivery_reason = reason
+        diagnostics.injection_format = usage.get("format", "json")
+        diagnostics.injection_refs = usage.get("references", ())
         if usage.get("reason"):
             diagnostics.last_prefetch_skip_reason = usage["reason"]
         text = usage.get("text", "")
         if reason == "entry_state:paused":
+            diagnostics.injection_tokens = 0
+            diagnostics.injection_refs = ()
             self._adapter._diagnostics.capability_gaps = (*self._adapter._diagnostics.capability_gaps, reason)
             return ""
         if reason in {"brief_invalidated", "brief_safety_unconfirmed"}:
             diagnostics.injection_tokens = 0
+            diagnostics.injection_refs = ()
             text = ""
         if reason == "brief_delivered" and briefing.get("_generation"):
             with self._adapter._lock:

@@ -40,6 +40,8 @@ class HookDiagnostics:
     brief_elapsed_ms: int = 0
     brief_items: tuple[tuple[str, int], ...] = ()
     injection_tokens: int = 0
+    injection_format: str = "json"
+    injection_refs: tuple[tuple[str, str, int], ...] = ()
     session_tokens: int = 0
     injection_token_cap: int = 0
     session_token_cap: int | None = None
@@ -84,6 +86,8 @@ class HookDiagnostics:
             name: getattr(self, name)
             for name in (
                 "injection_tokens",
+                "injection_format",
+                "injection_refs",
                 "session_tokens",
                 "injection_token_cap",
                 "session_token_cap",

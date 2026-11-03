@@ -256,7 +256,7 @@ Owner recording commands return before injection or accounting. Paused entries r
 content or correction notices, and retain undelivered notices for resumption. Reviewed fact replacements use the
 current retained value; adding evidence without changing the statement does not send another correction notice.
 
-The store schema is 1129. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
+The store schema is 1131. Supported older store layouts upgrade along the same coordinated chain. The additive schema upgrade takes the existing automatic snapshot before changing the store. The snapshot can
 be restored with the supported store-restore workflow; original conversation text and existing fact payloads are
 not rewritten by the upgrade.
 
@@ -307,3 +307,22 @@ reason; valid siblings continue. Bounded owner-conflict pages keep their previou
 is found. Ordinary fact text requalification leaves observation states unchanged. A new supported revision may
 replace an invalid observation while retaining its old dependency history; direct owner suppression or deletion
 is not released by that replacement.
+
+
+### Injection text and usage
+
+`injection_format` selects `json` (the default), `compact`, or `outline` in the runtime configuration.
+The default preserves the existing host text. Compact memory items use one escaped text line with the type,
+content, time and versioned references. Outline keeps a short deterministic excerpt and complete references;
+use inspect to read the full item. Handoffs retain their external-report warning, unverified session label
+and all evidence references. Outline correction notices name the current readable replacement for inspection;
+withdrawals contain only the old reference and the withdrawal instruction.
+
+All formats use the same authorization, screening, host-memory deduplication, entry controls and delivery
+confirmation. Per-response and session ceilings count the final formatted text, including guidance, briefings
+and notices. A smaller representation may retain more whole items within a configured ceiling. Receipts include
+the chosen format and retained versioned references. Preparation is read-only; only confirmation accounts usage.
+
+The doctor's `injection_usage` and the management recall history show injection tokens, session tokens,
+injection limit and session limit. A null session limit means unlimited. An unconfirmed delivery has no confirmed
+session total. Usage history is lossy diagnostic metadata and never replaces the SQLite delivery ledger.

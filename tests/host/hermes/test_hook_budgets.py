@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, capture_retry, turn_capture
+from scope_recall.adapters.hermes.authorization import build_ingress_authorizer
 from scope_recall.contracts import ContractError
 from scope_recall.core import MemoryCore, capture_inbox
 
@@ -211,17 +212,28 @@ def test_turn_own_capture_reaches_store_before_older_retry(adapter, monkeypatch,
     provider, _clock = adapter
     keep_captures(provider, monkeypatch, 1)
     clock = metered_store(per_operation)
-    real, seen = provider._core.source_by_event_key, []
+    real, seen = provider._core._source_replay_metadata, []
 
     def lookup(context, key, *args, **kwargs):
         seen.append((key, clock()))
         return real(context, key, *args, **kwargs)
 
-    monkeypatch.setattr(provider._core, "source_by_event_key", lookup)
+    monkeypatch.setattr(provider._core, "_source_replay_metadata", lookup)
     started = clock()
     provider.sync_turn("TEST own user words", "TEST own reply words", session_id="TEST-session-1")
     assert seen and "kept-" not in seen[0][0]
     assert seen[0][1] - started <= 0.1
+    clock.per_operation = 0.01
+    provider._retry.write_buffered(seconds=10)
+    core = provider._require_core()
+    capture_inbox.replay_inbox(
+        core.storage,
+        core.clock,
+        provider._require_identity().trusted_context(),
+        authorize=build_ingress_authorizer(core.config.binding),
+        remaining_seconds=10,
+    )
+    assert {"TEST own user words", "TEST own reply words", "TEST kept output 0"} <= stored_words(provider._core)
 
 
 def test_shutdown_disk_failure_retains_memory_capture(adapter, monkeypatch, metered_store, caplog):

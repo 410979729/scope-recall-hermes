@@ -5490,7 +5490,8 @@ def test_hermes_failed_safety_confirmation_does_not_release_brief(store, monkeyp
 
 
 @pytest.mark.parametrize("host", ["claude-code", "codex", "workbuddy", "dsh"])
-def test_question_delivery_and_correction_on_each_client(store, tmp_path, host):
+@pytest.mark.parametrize("style", ["json", "compact", "outline"])
+def test_question_delivery_and_correction_on_each_client(store, tmp_path, host, style):
     from dataclasses import replace
 
     from scope_recall.core.management import MemoryManagement
@@ -5514,12 +5515,14 @@ def test_question_delivery_and_correction_on_each_client(store, tmp_path, host):
         now=NOW,
     )
     hook = CodexHookHandler.from_home(str(home), host)
-    hook.core.config = replace(hook.core.config, session_brief_enabled=False)
+    hook.core.config = replace(hook.core.config, session_brief_enabled=False, injection_format=style)
     payload = _prompt("TEST-project 配色是什么？", session="TEST-each-client")
     payload["turn_id"] = "TEST-turn-1"
     try:
         response = hook.handle_payload(payload)
         assert claim.ref in response["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.injection_format == style
+        assert ("claim", claim.ref, claim.revision) in hook.diagnostics.injection_refs
         assert (claim.ref, "question") in _rows(
             root, "SELECT object_ref,source FROM session_brief_injections WHERE source='question'"
         )
@@ -5538,7 +5541,8 @@ def test_question_delivery_and_correction_on_each_client(store, tmp_path, host):
         hook.close()
 
 
-def test_hermes_question_delivery_and_correction_with_exhausted_budget(store):
+@pytest.mark.parametrize("style", ["json", "compact", "outline"])
+def test_hermes_question_delivery_and_correction_with_exhausted_budget(store, style):
     from dataclasses import replace
 
     from scope_recall.core.management import MemoryManagement
@@ -5550,7 +5554,7 @@ def test_hermes_question_delivery_and_correction_with_exhausted_budget(store):
     provider = _hermes(homes["agent3"])
     try:
         core = provider._require_core()
-        core.config = replace(core.config, session_brief_enabled=False)
+        core.config = replace(core.config, session_brief_enabled=False, injection_format=style)
         assert claim.ref in provider.prefetch("TEST-project 配色是什么？")
         assert (claim.ref, "question") in _rows(
             root, "SELECT object_ref,source FROM session_brief_injections WHERE source='question'"

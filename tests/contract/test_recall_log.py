@@ -412,3 +412,32 @@ def test_delivered_score_matches_the_final_fused_candidate(app, monkeypatch):
     for item in raw["items"]:
         if item["reason"] == "delivered":
             assert item["fusion_score"] == scores[(item["kind"], item["ref"], item["revision"])]
+
+
+def test_usage_annotation_advances_retention_without_redating_old_attempt(tmp_path):
+    import sqlite3
+
+    from scope_recall.core.recall_log_storage import LogPolicy, RecallLogStore
+
+    store = RecallLogStore(tmp_path / "TEST-annotation.sqlite3", LogPolicy(retention_days=2))
+    original = dict(
+        ref="TEST-old",
+        timestamp="2026-09-01T12:00:00Z",
+        installation_id="TEST-install",
+        session_id="TEST-session",
+        request_id="TEST-request",
+        entry_id="TEST-entry",
+    )
+    store.write(original)
+    store.write(
+        dict(
+            original,
+            ref="TEST-usage",
+            timestamp="2026-10-10T12:00:00Z",
+            _injection_usage=True,
+            injection=dict(injection_tokens=10),
+        )
+    )
+    assert not store.list()
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT watermark FROM retention").fetchone()[0] == "2026-10-10T12:00:00Z"

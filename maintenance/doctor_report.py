@@ -43,6 +43,7 @@ class DoctorReport:
     host_memory: dict[str, Any] = field(default_factory=dict)
     recall_log: dict[str, Any] = field(default_factory=dict)
     recall_attempt: dict[str, Any] = field(default_factory=dict)
+    injection_usage: dict[str, Any] = field(default_factory=dict)
     entries: list[dict[str, Any]] = field(default_factory=list)
 
     private_rules: list[dict[str, Any]] = field(default_factory=list)

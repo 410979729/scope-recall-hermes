@@ -456,3 +456,33 @@ def test_entry_handoff_and_existing_pages_coexist():
     }
     assert expected <= page.pages and expected <= page.navigation
     assert len(page.ids) == len(set(page.ids))
+
+
+def test_recall_history_renders_injection_usage_as_labels_and_values():
+    executable = os.environ.get("SCOPE_RECALL_TEST_NODE")
+    if not executable:
+        pytest.skip("host tier requires its declared Node helper")
+    script = (
+        DOM_HARNESS
+        + r"""
+const assert = require('assert/strict');
+(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  recallRows = [{timestamp: 'TEST-now', request_id: 'TEST-usage', entry_id: 'TEST-entry', session_id: 'TEST-session',
+    scope_bound: true, reasons: [], background: {}, capture: {state: 'persisted'}, items: [],
+    injection: {injection_tokens: 123, session_tokens: 456, injection_token_cap: 789,
+      session_token_cap: null, accounting_confirmed: true}}];
+  renderRecalls();
+  const text = document.getElementById('recall-items').textContent;
+  for (const value of ['123', '456', '789']) assert.ok(text.includes(value));
+  for (const key of ['injectionTokens', 'sessionTokens', 'injectionTokenCap', 'sessionTokenCap', 'unlimited']) {
+    assert.ok(window.UI_STRINGS.en[key] && window.UI_STRINGS.zh[key]);
+    assert.ok(text.includes(t(key)));
+  }
+  console.log(JSON.stringify({usage: true}));
+})().catch(error => {console.error(error);process.exitCode = 1;});
+"""
+    )
+    result = subprocess.run([executable, "-e", script, str(ASSETS)], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"usage": True}

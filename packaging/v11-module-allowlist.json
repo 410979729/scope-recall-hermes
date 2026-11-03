@@ -157,6 +157,7 @@
     "core/inbox_rules.py",
     "core/index_rebuild.py",
     "core/injection_commands.py",
+    "core/injection_format.py",
     "core/injection_guard.py",
     "core/injection_import.py",
     "core/injection_policy.py",

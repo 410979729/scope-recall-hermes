@@ -23,7 +23,7 @@ Use `scope-recall setup --configure-models` for guided routes and budget configu
 (full memory features available). Model keys are environment references; setup never asks for a key value.
 [Installation](docs/install.md) covers shared stores, reruns, worker commands and verification boundaries.
 For a shared store on a Linux Docker host, see [Docker deployment](docs/docker.md).
-Agents can [hand off a task](docs/configuration.md#task-handoffs) across entries, with one receiving entry and a bounded session-start report.
+Agents can [hand off a task](docs/host-integration.md#task-handoffs) across entries, with one receiving entry and a bounded session-start report.
 
 Automatic recall injects zero to six items that clear a lexical coverage or
 vector similarity floor. Background preferences and tasks accompany passing

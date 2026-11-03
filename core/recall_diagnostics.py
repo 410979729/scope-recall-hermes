@@ -105,10 +105,12 @@ class RecallDiagnostics:
         self.writer.submit(dict(ref=ref, timestamp=datetime.now(UTC).isoformat(), **metrics))
         return ref
 
-    def finish(self, trace, result) -> None:
+    def finish(self, trace, result, *, injection=False) -> None:
         """Enqueue final references after overflow and privacy fences, never packet text."""
         try:
             record = attempt_record(trace, result)
+            if injection:
+                record["_injection_usage"] = True
             self.writer.submit(record)
         except Exception:  # noqa: BLE001 - logging cannot change a recall result.
             self.writer.write_failures += 1
@@ -178,7 +180,7 @@ def attempt_record(trace, result: dict | RetrievalResult) -> dict:
         rank, reason = selected.get(key, (None, candidate.get("reason", "not_selected")))
         items.append(dict(candidate, rank=rank, reason=reason))
     gaps = tuple(result["gaps"] if isinstance(result, dict) else result.gaps)
-    reasons = attempt_reasons(trace, items, gaps)
+    reasons = [] if trace.metrics.get("phase") == "session_injection" else attempt_reasons(trace, items, gaps)
     metrics = dict(
         installation_id=trusted.binding.installation_id,
         session_id=trusted.session_id,

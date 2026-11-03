@@ -232,6 +232,7 @@ class HookEvents:
         # out.  One holding a credential attached no runtime above, so its recall has no vector channel and
         # nothing of it goes to an embedding provider.
         request_id = f"{self._hook.host}-auto:{session_id}:{turn_id}"
+        self._hook._injection_request_id = request_id[:100]
         since = None
         if self._hook.host == "claude-code":
             payload = self._with_context_since(session_id, payload)
