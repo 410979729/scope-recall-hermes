@@ -6,6 +6,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 Capture reuses credential checks for unchanged identity text within one preparation and avoids rereading the same authorized source during candidate observation. Stored messages, credential replacement and refusal remain unchanged.
 
+Final injection preparation shares one authority snapshot with its empty briefing. Each entry-fence comparison reads its current state once; later delivery still rechecks live entry state, privacy and source visibility.
+
 Fact recall nominates query subjects from every stored version before applying the existing temporal selector.
 The automatic store upgrade rebuilds this derived index in resumable pages and preserves original truth.
 Repeated releases reuse immutable content safety verdicts; changed content is scanned again. Other-session

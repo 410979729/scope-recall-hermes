@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
+from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.recall_budget import estimate_tokens
@@ -12,6 +13,34 @@ from scope_recall.core.restore import InstallationMaintenance
 
 from tests.contract.test_handoff import app as handoff_app
 from tests.contract.test_importance_summaries import _question_text, app, initial
+
+
+def test_injection_preparation_reads_one_authority_snapshot(app, monkeypatch):
+    """Empty briefing and final-text preparation share one freshly opened read."""
+    core, ctx = app
+    reads = []
+    read = core.storage.read
+
+    def counted(*args, **kwargs):
+        reads.append(args[0])
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(core.storage, "read", counted)
+    prepared = core.prepare_session_injection(ctx, "TEST ordinary context")
+    assert prepared["_injection"]["text"] == "TEST ordinary context"
+    assert reads == [ctx]
+
+
+def test_briefing_cannot_borrow_a_different_context(app):
+    """A borrowed snapshot neither widens authority nor starts nested confirmation."""
+    from scope_recall.core.session_brief import read_snapshot
+
+    core, ctx = app
+    with core.storage.read(ctx) as tx:
+        with pytest.raises(ContractError, match="ACCESS_DENIED"):
+            read_snapshot(tx, core.clock, replace(ctx, session_id="TEST-other"))
+    with pytest.raises(ContractError, match="STORAGE_UNAVAILABLE"):
+        read_snapshot(tx, core.clock, ctx)
 
 
 @pytest.mark.parametrize("style", ["json", "compact", "outline"])

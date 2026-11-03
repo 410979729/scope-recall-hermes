@@ -71,8 +71,13 @@ def context_fence(tx, context):
 
 def entry_changed(tx, fence):
     """Reject a paused or changed entry at a read or delivery boundary."""
-    return paused_since(tx, fence) or any(
-        state_for(tx, tx.context, entry_id=key) != tuple(value) for key, value in fence.items()
+    # The current state and version are one SQLite snapshot; reading them
+    # twice cannot detect an intervening change. History still fences a pause.
+    return any(
+        value[0] == "paused"
+        or state_for(tx, tx.context, entry_id=key) != tuple(value)
+        or _pause_recorded(tx, key, value[1])
+        for key, value in fence.items()
     )
 
 
@@ -123,17 +128,21 @@ def paused_since(tx, fence):
     for key, (state, version) in fence.items():
         if state == "paused" or state_for(tx, tx.context, entry_id=key)[0] == "paused":
             return True
-        if (
-            key is not None
-            and tx._check()
-            .execute(
-                "SELECT 1 FROM entry_control_history WHERE entry_id=? AND version>? AND to_state='paused' LIMIT 1",
-                (key, version),
-            )
-            .fetchone()
-        ):
+        if _pause_recorded(tx, key, version):
             return True
     return False
+
+
+def _pause_recorded(tx, key, version):
+    """Whether a bound entry's history contains a pause after the fence."""
+    return key is not None and bool(
+        tx._check()
+        .execute(
+            "SELECT 1 FROM entry_control_history WHERE entry_id=? AND version>? AND to_state='paused' LIMIT 1",
+            (key, version),
+        )
+        .fetchone()
+    )
 
 
 def change(tx, context, entry_id, state, actor, now):
