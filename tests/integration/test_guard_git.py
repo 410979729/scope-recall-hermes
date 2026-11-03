@@ -28,6 +28,8 @@ def test_bare_git_network_or_malformed_commands_are_rejected(tmp_path, command):
 
 def test_bare_git_relative_C_cannot_escape_actual_cwd(tmp_path):
     protected = Path(os.environ["SCOPE_RECALL_TEST_PROTECTED_HOME"])
+    if os.path.splitdrive(protected)[0].lower() != os.path.splitdrive(tmp_path)[0].lower():
+        pytest.skip("Windows has no relative path between drives; --basetemp is on another drive than the home")
     relative = os.path.relpath(protected, tmp_path)
     with pytest.raises(PermissionError, match="TEST_BOUNDARY"):
         subprocess.run(["git", "-C", relative, "status"], cwd=tmp_path, check=False)
