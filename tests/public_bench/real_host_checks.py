@@ -188,19 +188,37 @@ def historical_library(run, sample, name):
         new_shared_payload,
         write_shared_payload,
     )
+    from scope_recall.contracts import InstanceBinding
+    from scope_recall.core import CoreConfig, MemoryCore
     from scope_recall.core.storage import _directory
 
     root = run.root / name
     root.mkdir()
     store = root / "shared"
-    payload = new_shared_payload(store, agent_id="TEST-samples")
-    write_shared_payload(store, payload)
-    with sqlite3.connect(sample / "pre-upgrade.sqlite3") as source, sqlite3.connect(store / "memory.sqlite3") as dest:
-        source.backup(dest)
-        dest.execute(
-            "UPDATE instance_meta SET data_directory=?,installation_kind='shared',installation_id=? WHERE singleton=1",
-            (_directory(store), payload["installation_id"]),
+    snapshot = (sample / "pre-upgrade.sqlite3").resolve()
+    with sqlite3.connect(snapshot.as_uri() + "?mode=ro", uri=True) as source:
+        source.row_factory = sqlite3.Row
+        meta = dict(source.execute("SELECT * FROM instance_meta WHERE singleton=1").fetchone())
+        scopes = [row[0] for row in source.execute("SELECT scope_id FROM instance_scopes")]
+        if len(scopes) != 1:
+            raise ValueError("historical host samples require one capture scope")
+        payload = new_shared_payload(store, agent_id=meta["agent_id"], test_mode=bool(meta["test_mode"]))
+        write_shared_payload(store, payload)
+        with sqlite3.connect(store / "memory.sqlite3") as dest:
+            source.backup(dest)
+            dest.execute(
+                "UPDATE instance_meta SET data_directory=?,installation_id=? WHERE singleton=1",
+                (_directory(store), payload["installation_id"]),
+            )
+    if "installation_kind" not in meta:
+        # Stores predating shared entries are local by contract. Let the normal
+        # local open migrate the copy before converting its installation identity.
+        binding = InstanceBinding(
+            meta["agent_id"], payload["installation_id"], store, frozenset(scopes), bool(meta["test_mode"])
         )
+        MemoryCore(CoreConfig(binding)).initialize()
+    with sqlite3.connect(store / "memory.sqlite3") as dest:
+        dest.execute("UPDATE instance_meta SET installation_kind='shared' WHERE singleton=1")
     for host in HOSTS:
         attach_shared_record(
             store,
@@ -210,9 +228,9 @@ def historical_library(run, sample, name):
                 entry_id=host,
                 display_name=host,
                 attached_at="2026-01-08T12:00:00Z",
-                allowed_scope_ids=["TEST-sample-scope"],
-                writable_scope_ids=["TEST-sample-scope"],
-                capture_scope_id="TEST-sample-scope",
+                allowed_scope_ids=scopes,
+                writable_scope_ids=scopes,
+                capture_scope_id=scopes[0],
             ),
             now="2026-01-08T12:00:00Z",
         )
