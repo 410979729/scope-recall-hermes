@@ -447,6 +447,13 @@ def _load_json_object(raw: bytes) -> dict[str, Any]:
         text = raw.decode("utf-8")
     except UnicodeError as exc:
         raise AuxiliaryModelError("unicode_error", detail=type(exc).__name__) from exc
+    if not text.strip():
+        # A 200 whose body is empty or whitespace only is the route giving up
+        # on a long generation, not a malformed answer: nothing was produced
+        # that a payload change could fix.  It gets its own code so recovery
+        # can treat it as the capacity failure it is; a body that carries
+        # real, malformed JSON stays ``invalid_json`` below.
+        raise AuxiliaryModelError("upstream_empty_response")
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:

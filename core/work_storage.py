@@ -66,7 +66,11 @@ _BUDGET_MARK = re.compile(
 #: attempt is refunded.  Without the refund one four-hour provider outage pushes
 #: hundreds of items into ``failed`` at ``attempt=3`` apiece, each needing an operator.  529 is a provider saying
 #: it is overloaded (MiniMax, Anthropic): without it here one such answer fails a candidate evaluation for good.
-CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504", "http_529"})
+#: An empty 200 body (``upstream_empty_response``) is the same shape -- the provider answered nobody -- so the
+#: attempt is refunded for it too.
+CAPACITY_REFUSALS = frozenset(
+    {"http_429", "rate_limited", "http_502", "http_503", "http_504", "http_529", "upstream_empty_response"}
+)
 
 #: Token recording how many times in a row a provider refused for capacity.
 #: Kept in the error code beside ``auto_retry:`` rather than a new column, so

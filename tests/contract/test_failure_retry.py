@@ -25,6 +25,7 @@ from scope_recall.core.failure_retry import (
     retry_class,
     selects,
 )
+from scope_recall.core.work_storage import CAPACITY_REFUSALS
 from scope_recall.runtime.models import AuxiliaryModelError
 from test_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
 from test_claims import app, capture
@@ -1131,3 +1132,14 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
     assert len(calls) == (2 if legacy else 3)
     with sqlite3.connect(core.storage.path) as db:
         assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1
+
+
+def test_an_empty_upstream_answer_is_recoverable_and_refunded():
+    """The code ``_load_json_object`` raises for an empty 200 body belongs to
+    both recovery lists, so the item is re-opened and its attempt refunded.
+    ``invalid_json`` stays unlisted: a body that carries real, malformed JSON
+    remains a fault no list names."""
+    assert "upstream_empty_response" in AUTO_RECOVERABLE_ERRORS
+    assert "upstream_empty_response" in CAPACITY_REFUSALS
+    assert "invalid_json" not in AUTO_RECOVERABLE_ERRORS
+    assert "invalid_json" not in CAPACITY_REFUSALS

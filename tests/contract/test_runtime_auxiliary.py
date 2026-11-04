@@ -1774,3 +1774,25 @@ def test_uncapped_policy_still_refuses_a_metered_breach(tmp_path):
         db.execute("UPDATE requests SET status='meter_breach'")
     with pytest.raises(ValueError, match="budget_exhausted_or_meter_breach"):
         _reserve(ledger, uncapped, "deepseek-v4-flash")
+
+
+def test_a_whitespace_only_200_body_is_an_upstream_empty_response(tmp_path, monkeypatch):
+    """A gateway that gives up on a long generation answers 200 with a
+    whitespace-only body.  That is the provider abandoning the call, not a
+    malformed answer: it is named separately from ``invalid_json`` so
+    recovery can treat it as the capacity failure it is."""
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(config, transport=FakeTransport(lambda **kwargs: (200, b" \n" * 550)))
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "upstream_empty_response"
+
+
+def test_a_malformed_200_body_stays_invalid_json(tmp_path, monkeypatch):
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(config, transport=FakeTransport(lambda **kwargs: (200, b"{not json")))
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "invalid_json"

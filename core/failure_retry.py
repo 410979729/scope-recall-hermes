@@ -65,13 +65,16 @@ DERIVATION_RETRY_MARKER = "derivation_retry:1"
 # or by interrupting it, and ``response_status_failed`` is a Responses route's generation failing at the provider;
 # neither says anything about the payload either.  An answer the route cannot use (a vector of another width, say) is
 # not here: it comes back until someone changes the model or the configuration, and a recovery gated by time alone
-# cannot tell when they have, so ``retry-failures`` re-opens it.
+# cannot tell when they have, so ``retry-failures`` re-opens it.  ``upstream_empty_response`` is a route answering
+# 200 with an empty body after holding a long generation open -- the provider gave up, which says nothing about
+# the payload either.
 AUTO_RECOVERABLE_ERRORS = frozenset(
     {
         "model_unavailable",
         "model_timeout",
         "model_output_interrupted",
         "response_status_failed",
+        "upstream_empty_response",
         "timeout",
         "network_error",
         "http_protocol",
