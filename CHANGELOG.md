@@ -2,7 +2,7 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [4.0.0.dev0] - unreleased
+## [4.0.0.dev1] - unreleased
 
 Source-backed summaries, reviewed facts, entity links and task handoffs improve shared memory across five hosts, with local review, private mode and recall history.
 Upgrade with all store users stopped and keep the pre-upgrade snapshot: older releases cannot open the upgraded store.
