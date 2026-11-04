@@ -35,13 +35,16 @@ INTEGRATION_WATCHDOG_SECONDS = 2700
 #: runners also run the same healthy suite several times slower at times: the
 #: retrieval tier took 39-170s across runs and once ran past a 215s watchdog,
 #: the host tier 142-237s and once past 290s, with nothing hung either time.
-#: Twenty seconds a file leaves such a runner room and still bounds a hang at
-#: the release budget.
+#: Twenty seconds a file leaves such a runner room.  The sum is capped at the
+#: integration tier's whole budget, the longest any tier is allowed: the
+#: contract tier's 75 files (1,850 tests) need about 1,350 s on a fast GitHub
+#: Windows runner and over 1,500 s on a slow one, so a cap at the release
+#: budget cut their twenty seconds a file to five and timed out a healthy run.
 WATCHDOG_SECONDS_PER_FILE = 20
 #: Test files that build whole stores, and the seconds each adds to its tier's
-#: watchdog.  The allowance comes after the release budget has capped the
-#: twenty seconds a file, so the cap that bounds a tier of many files never
-#: cuts it, and a hang stays bounded by the sum.
+#: watchdog.  The allowance comes after the cap on the twenty seconds a file,
+#: so the cap that bounds a tier of many files never cuts it, and a hang stays
+#: bounded by the sum.
 #: The recall bench's file builds a synthetic shared store of four weeks
 #: through the real capture, worker and recall paths, and a two-day one twice:
 #: about 60 s under this gate on a local SSD, and up to six and a half times
@@ -56,6 +59,9 @@ WATCHDOG_SECONDS_PER_FILE = 20
 #: 300 s.
 HEAVY_FILE_SECONDS = {
     "tests/recall_bench/test_recall_bench.py": 600,
+    # Replays a realistic fixture through capture and recall to compare its histograms: 170 s on a fast GitHub Windows
+    # runner, whose slow days run the same tier 1.6 times longer; 400 s are that and half as much again.
+    "tests/public_bench/test_public_bench.py": 400,
     # A hundred complete worker turns include adoption probes and metered local model substitutes.
     "tests/contract/test_setup_workload.py": 600,
     "tests/contract/test_memory_export.py": 300,
@@ -76,10 +82,9 @@ def pytest_watchdog_seconds(
 
     Release and integration keep fixed budgets of 600s and 2700s respectively.
     Every other tier keeps 180s as a floor and adds twenty seconds per selected
-    file, capped at the release budget so no run --
-    hung or merely large -- waits forever; each of ``selected_paths`` that
-    builds a whole store then adds its own allowance (``HEAVY_FILE_SECONDS``),
-    which the cap does not cut.
+    file, capped at the integration budget so no run -- hung or merely large --
+    waits forever; each of ``selected_paths`` that builds a whole store then
+    adds its own allowance (``HEAVY_FILE_SECONDS``), which the cap does not cut.
     """
 
     if tier == "release":
@@ -95,7 +100,7 @@ def pytest_watchdog_seconds(
     paths = selected_paths if isinstance(selected_paths, (list, tuple)) else ()
     heavy = sum(HEAVY_FILE_SECONDS.get(path, 0) for path in {str(path).replace("\\", "/") for path in paths})
     scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
-    return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS) + heavy
+    return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), INTEGRATION_WATCHDOG_SECONDS) + heavy
 
 
 def distribution_is_installed(python_executable: str | None = None) -> bool:
