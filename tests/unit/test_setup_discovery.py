@@ -11,19 +11,23 @@ def test_discovery_never_probes_outside_the_selected_fake_user(tmp_path, monkeyp
     home.mkdir()
     (home / ".claude").mkdir()
     env = {name: str(home) for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")}
-    original = os.stat
     probed = []
 
-    def confined_stat(path, *args, **kwargs):
-        # Reject a fallback before asking the filesystem whether it exists.  Every pathlib probe ends in os.stat;
-        # from Python 3.14 exists() and is_dir() reach it without Path.stat.
-        candidate = Path(os.fsdecode(path))
-        assert candidate.is_relative_to(home), f"discovery escaped the fake user: {candidate}"
-        probed.append(candidate)
-        return original(path, *args, **kwargs)
+    def confined(probe):
+        # Reject a fallback before asking the filesystem whether it exists.  Discovery asks through these Path
+        # methods; below them Python 3.14 on Windows answers with native calls that never reach os.stat.
+        def check(path, *args, **kwargs):
+            assert path.is_relative_to(home), f"discovery escaped the fake user: {path}"
+            probed.append(path)
+            return probe(path, *args, **kwargs)
 
-    monkeypatch.setattr(os, "stat", confined_stat)
-    hosts = discover_hosts(env)
+        return check
+
+    # Confined only while discovery runs: pytest probes its own files around the test.
+    with monkeypatch.context() as patch:
+        for name in ("exists", "is_dir", "is_file"):
+            patch.setattr(Path, name, confined(getattr(Path, name)))
+        hosts = discover_hosts(env)
     assert [item.host for item in hosts] == ["claude-code"]
     assert probed
     assert all(item.home.is_relative_to(home) for item in hosts)

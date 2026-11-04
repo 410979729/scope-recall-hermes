@@ -187,9 +187,11 @@ def test_path_guard_reads_each_reparse_record_once(store, monkeypatch):
     paths = {os.fspath(path) for path in (storage.path, *storage.path.parents)}
     counts = dict.fromkeys(paths, 0)
     original = os.lstat
+    # From Python 3.14 Path.lstat reads the record through os.lstat: one read reaching both counts once.
+    reading = []
 
     def counted(path, *args, **kwargs):
-        if os.fspath(path) in counts:
+        if os.fspath(path) in counts and not reading:
             counts[os.fspath(path)] += 1
         return original(path, *args, **kwargs)
 
@@ -208,7 +210,11 @@ def test_path_guard_reads_each_reparse_record_once(store, monkeypatch):
     def counted_record(path):
         if os.fspath(path) in counts:
             counts[os.fspath(path)] += 1
-        return record(path)
+        reading.append(path)
+        try:
+            return record(path)
+        finally:
+            reading.pop()
 
     monkeypatch.setattr(Path, "lstat", counted_record)
     if junction is not None:
