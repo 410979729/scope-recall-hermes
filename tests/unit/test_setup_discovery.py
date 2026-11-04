@@ -1,5 +1,6 @@
 """Setup discovery stays inside the selected user's home."""
 
+import os
 from pathlib import Path
 
 
@@ -10,16 +11,18 @@ def test_discovery_never_probes_outside_the_selected_fake_user(tmp_path, monkeyp
     home.mkdir()
     (home / ".claude").mkdir()
     env = {name: str(home) for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")}
-    original = Path.stat
+    original = os.stat
     probed = []
 
     def confined_stat(path, *args, **kwargs):
-        # Reject a fallback before asking the filesystem whether it exists.
-        assert path.is_relative_to(home), f"discovery escaped the fake user: {path}"
-        probed.append(path)
+        # Reject a fallback before asking the filesystem whether it exists.  Every pathlib probe ends in os.stat;
+        # from Python 3.14 exists() and is_dir() reach it without Path.stat.
+        candidate = Path(os.fsdecode(path))
+        assert candidate.is_relative_to(home), f"discovery escaped the fake user: {candidate}"
+        probed.append(candidate)
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "stat", confined_stat)
+    monkeypatch.setattr(os, "stat", confined_stat)
     hosts = discover_hosts(env)
     assert [item.host for item in hosts] == ["claude-code"]
     assert probed

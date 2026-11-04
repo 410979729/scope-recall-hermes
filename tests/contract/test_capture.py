@@ -202,11 +202,16 @@ def test_scan_maintenance_skips_one_oversized_utf8_body_in_a_utf16_store(core, m
         conn.commit()
     finally:
         conn.close()
-    replacement.replace(app.storage.path)
+    # Copied page by page into the open store: POSIX pins a hardened store's file identity, so a swapped-in file
+    # would be refused as a changed database.
+    with closing(sqlite3.connect(replacement)) as source, closing(sqlite3.connect(app.storage.path)) as target:
+        source.backup(target)
+    replacement.unlink()
     scanned = []
     monkeypatch.setattr(source_storage, "secret_structure_pattern_names", lambda body: scanned.append(body) or ())
     with app.storage.write(ctx) as tx:
         conn = tx._check(write=True)
+        assert conn.execute("PRAGMA encoding").fetchone()[0] == "UTF-16le"
         conn.execute(
             "UPDATE source_events SET content=?,content_sha256='TEST-external' WHERE event_id=?",
             (chr(30028) * 90000, refs[0].ref),

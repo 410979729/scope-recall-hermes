@@ -336,7 +336,14 @@ def _audit(event, args):
             _check_path(str(parent) if str(parent) else ".", True)
     if event in {"os.mkdir", "os.chmod", "os.utime"}:
         _check_path(args[0], True)
-    if event in {"os.rename", "os.link", "os.symlink"}:
+    if event == "os.symlink":
+        # A relative target is read from the link's own directory, as venv's ``lib64 -> lib`` is; judged against the
+        # working directory it would name a file the link never reaches.
+        link = os.fsdecode(_anchored(args[1], args[-1] if len(args) > 2 else None))
+        target = os.fsdecode(args[0])
+        _check_path(target if os.path.isabs(target) else os.path.join(os.path.dirname(link), target), True)
+        _check_path(link, True)
+    elif event in {"os.rename", "os.link"}:
         _check_path(_anchored(args[0], args[-2] if event == "os.rename" and len(args) > 2 else None), True)
         _check_path(_anchored(args[1], args[-1] if event == "os.rename" and len(args) > 2 else None), True)
 

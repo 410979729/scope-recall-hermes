@@ -1,8 +1,21 @@
 """Host memory discovery uses only explicitly selected synthetic homes."""
 
 import json
+import os
+import tempfile
 
 import pytest
+
+#: Off Windows, a session in a repository subdirectory tells the checkout from the user's home by ``HOME``.
+USER_ENV = {"HOME": os.path.join(tempfile.gettempdir(), "TEST-user-home")}
+
+
+@pytest.fixture(autouse=True)
+def no_machine_policy(monkeypatch):
+    """Keep the test machine's own Claude Code administrator settings (a fixed system path off Windows) out."""
+    from scope_recall.adapters import host_memory
+
+    monkeypatch.setattr(host_memory, "_claude_policy_directory", lambda env: None)
 
 
 @pytest.mark.parametrize(
@@ -33,7 +46,7 @@ def test_known_host_settings_and_file_sizes_are_reported(tmp_path, host, configu
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text("synthetic memory", encoding="utf-8")
     before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
-    state = inspect_host_memory(host, home, project=tmp_path / "TEST-project", environment={})
+    state = inspect_host_memory(host, home, project=tmp_path / "TEST-project", environment=USER_ENV)
     assert state["switches"] == switches
     assert {row["path"]: row["bytes"] for row in state["files"]} == {
         str(home / name): len(b"synthetic memory") for name in files
@@ -45,7 +58,7 @@ def test_known_host_settings_and_file_sizes_are_reported(tmp_path, host, configu
 def test_undocumented_hosts_report_unknown_without_inventing_files(tmp_path, host):
     from scope_recall.adapters.host_memory import inspect_host_memory
 
-    state = inspect_host_memory(host, tmp_path, project=tmp_path, environment={})
+    state = inspect_host_memory(host, tmp_path, project=tmp_path, environment=USER_ENV)
     assert state["status"] == "unknown"
     assert state["files"] == []
 
@@ -69,10 +82,10 @@ def test_codex_default_selects_the_existing_version(tmp_path):
     (tmp_path / "config.toml").write_text("[memories]\nuse_memories = true\n", encoding="utf-8")
     (tmp_path / "memories_v2").mkdir()
     (tmp_path / "memories_v2" / "memory_summary.md").write_text("synthetic", encoding="utf-8")
-    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment={})
+    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment=USER_ENV)
     assert state["files"][0]["path"] == str(tmp_path / "memories_v2" / "memory_summary.md")
     (tmp_path / "memories").mkdir()
-    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment={})
+    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment=USER_ENV)
     assert state["files"][0]["path"] == str(tmp_path / "memories" / "memory_summary.md")
 
 
@@ -80,7 +93,7 @@ def test_codex_invalid_memory_section_remains_unknown(tmp_path):
     from scope_recall.adapters.host_memory import inspect_host_memory
 
     (tmp_path / "config.toml").write_text('memories = "invalid"\n', encoding="utf-8")
-    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment={})
+    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment=USER_ENV)
     assert state["status"] == "unknown"
     assert state["switches"] == {"generate_memories": None, "use_memories": None}
     assert state["files"] == []
@@ -98,11 +111,11 @@ def test_claude_configured_directory_is_reported_without_reading_topics(tmp_path
     )
     (directory / "MEMORY.md").write_text("synthetic", encoding="utf-8")
     (directory / "topic.md").write_text("on demand", encoding="utf-8")
-    state = inspect_host_memory("claude-code", home, project=tmp_path, environment={})
+    state = inspect_host_memory("claude-code", home, project=tmp_path, environment=USER_ENV)
     assert state["switches"] == {"autoMemoryEnabled": True}
     assert state["files"] == [{"path": str(directory / "MEMORY.md"), "bytes": 9, "state": "present"}]
     disabled = inspect_host_memory(
-        "claude-code", home, project=tmp_path, environment={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        "claude-code", home, project=tmp_path, environment={**USER_ENV, "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
     )
     assert disabled["switches"]["autoMemoryEnabled"] is False
 
@@ -112,7 +125,7 @@ def test_codex_memory_feature_switch_is_reported(tmp_path, feature):
     from scope_recall.adapters.host_memory import inspect_host_memory
 
     (tmp_path / "config.toml").write_text(f"[features]\n{feature} = false\n", encoding="utf-8")
-    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment={})
+    state = inspect_host_memory("codex", tmp_path, project=tmp_path, environment=USER_ENV)
     assert state["feature_switch"] is False
 
 

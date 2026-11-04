@@ -1,6 +1,20 @@
 """Exact host memory comparisons preserve separate statements."""
 
+import os
+import tempfile
+
 import pytest
+
+#: Off Windows, a session in a repository subdirectory tells the checkout from the user's home by ``HOME``.
+USER_ENV = {"HOME": os.path.join(tempfile.gettempdir(), "TEST-user-home")}
+
+
+@pytest.fixture(autouse=True)
+def no_machine_policy(monkeypatch):
+    """Keep the test machine's own Claude Code administrator settings (a fixed system path off Windows) out."""
+    from scope_recall.adapters import host_memory
+
+    monkeypatch.setattr(host_memory, "_claude_policy_directory", lambda env: None)
 
 
 @pytest.mark.parametrize(
@@ -103,7 +117,7 @@ def test_claude_project_settings_follow_session_directory(tmp_path):
     (nested / ".claude").mkdir(parents=True)
     (repo / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryEnabled": True}))
     (nested / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryEnabled": False}))
-    state = inspect_host_memory("claude-code", home, project=nested, environment={})
+    state = inspect_host_memory("claude-code", home, project=nested, environment=USER_ENV)
     assert state["switches"]["autoMemoryEnabled"] is False
 
 
@@ -123,7 +137,7 @@ def test_host_memory_rejects_combined_file_size(tmp_path):
             path.write_bytes(("a" * 40000).encode())
         os.utime(path, (started - 5, started - 5))
     assert not read_host_memory(
-        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment=USER_ENV
     )
 
 
@@ -143,7 +157,7 @@ def test_host_context_expansion_stays_bounded(tmp_path):
     for path in (settings, memory):
         os.utime(path, (started - 5, started - 5))
     assert not read_host_memory(
-        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment=USER_ENV
     )
 
 
@@ -172,7 +186,7 @@ def test_host_reads_validated_configuration_only_once(tmp_path, monkeypatch):
 
     monkeypatch.setattr(host_memory, "_host_text", observe)
     assert "TEST fact" in host_memory.read_host_memory(
-        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment=USER_ENV
     )
     assert reads == [settings]
 
@@ -202,7 +216,7 @@ def test_configuration_changed_after_snapshot_does_not_enable_deduplication(tmp_
 
     monkeypatch.setattr(host_memory, "_host_text", change_settings)
     assert not host_memory.read_host_memory(
-        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment={}
+        "hermes", home, project=home, session_started=started, deadline=time.monotonic() + 2, environment=USER_ENV
     )
 
 
@@ -251,7 +265,7 @@ def test_read_host_memory_uses_enabled_and_old_files_only(tmp_path):
     os.utime(home / "config.yaml", (started - 10, started - 10))
     os.utime(memory, (started - 10, started - 10))
     os.utime(profile, (started - 10, started - 10))
-    args = dict(project=tmp_path, session_started=started, deadline=time.monotonic() + 2, environment={})
+    args = dict(project=tmp_path, session_started=started, deadline=time.monotonic() + 2, environment=USER_ENV)
     assert read_host_memory("hermes", home, **args) == frozenset({"TEST old fact"})
     os.utime(memory, (started + 1, started + 1))
     assert not read_host_memory("hermes", home, **args)
@@ -286,7 +300,7 @@ def test_hermes_session_start_is_read_from_its_session_store(tmp_path):
         session_started=None,
         session_id="TEST-session",
         deadline=time.monotonic() + 2,
-        environment={},
+        environment=USER_ENV,
     ) == frozenset({"TEST stable host fact"})
     assert (
         read_host_memory(
@@ -296,7 +310,7 @@ def test_hermes_session_start_is_read_from_its_session_store(tmp_path):
             session_started=None,
             session_id="TEST-other",
             deadline=time.monotonic() + 2,
-            environment={},
+            environment=USER_ENV,
         )
         == frozenset()
     )
@@ -365,7 +379,12 @@ def test_settings_modified_after_session_do_not_attest_host_switch(tmp_path):
     os.utime(settings, (started + 1, started + 1))
     assert (
         read_host_memory(
-            "hermes", home, project=tmp_path, session_started=started, deadline=time.monotonic() + 2, environment={}
+            "hermes",
+            home,
+            project=tmp_path,
+            session_started=started,
+            deadline=time.monotonic() + 2,
+            environment=USER_ENV,
         )
         == frozenset()
     )
@@ -408,7 +427,7 @@ def test_truncated_host_entry_is_not_a_complete_statement(tmp_path, host):
     for path in (settings, memory):
         os.utime(path, (started - 5, started - 5))
     entries = read_host_memory(
-        host, home, project=project, session_started=started, deadline=time.monotonic() + 2, environment={}
+        host, home, project=project, session_started=started, deadline=time.monotonic() + 2, environment=USER_ENV
     )
     assert "TEST early" in entries
     assert partial not in entries
@@ -429,12 +448,12 @@ def test_claude_default_project_directory_and_project_overrides(tmp_path):
     memory = home / "projects" / slug / "memory" / "MEMORY.md"
     memory.parent.mkdir(parents=True)
     memory.write_text("TEST synthetic", encoding="utf-8")
-    state = inspect_host_memory("claude-code", home, project=project, environment={})
+    state = inspect_host_memory("claude-code", home, project=project, environment=USER_ENV)
     assert state["switches"]["autoMemoryEnabled"] is True
     assert state["files"][0]["path"] == str(memory)
 
 
-def test_claude_project_policy_precedence_and_invalid_settings(tmp_path):
+def test_claude_project_policy_precedence_and_invalid_settings(tmp_path, monkeypatch):
     import json
 
     from scope_recall.adapters.host_memory import inspect_host_memory
@@ -450,7 +469,9 @@ def test_claude_project_policy_precedence_and_invalid_settings(tmp_path):
     (project / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
     (project / ".claude" / "settings.local.json").write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
     policy.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
-    env = {"ProgramFiles": str(policy_root)}
+    policy_dir = policy_root / "ClaudeCode"
+    monkeypatch.setattr("scope_recall.adapters.host_memory._claude_policy_directory", lambda env: policy_dir)
+    env = USER_ENV
     assert (
         inspect_host_memory("claude-code", home, project=project, environment=env)["switches"]["autoMemoryEnabled"]
         is False
@@ -476,11 +497,11 @@ def test_claude_git_subdirectory_uses_repository_project_memory(tmp_path):
     (home / "settings.json").write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
     slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in str(repo.resolve()))
     expected = home / "projects" / slug / "memory" / "MEMORY.md"
-    state = inspect_host_memory("claude-code", home, project=nested, environment={})
+    state = inspect_host_memory("claude-code", home, project=nested, environment=USER_ENV)
     assert state["files"][0]["path"] == str(expected)
 
 
-def test_claude_managed_dropins_override_project_settings(tmp_path):
+def test_claude_managed_dropins_override_project_settings(tmp_path, monkeypatch):
     import json
 
     from scope_recall.adapters.host_memory import inspect_host_memory
@@ -491,10 +512,12 @@ def test_claude_managed_dropins_override_project_settings(tmp_path):
     home.mkdir()
     project.mkdir()
     dropins = policy_root / "ClaudeCode" / "managed-settings.d"
+    policy_dir = policy_root / "ClaudeCode"
+    monkeypatch.setattr("scope_recall.adapters.host_memory._claude_policy_directory", lambda env: policy_dir)
     dropins.mkdir(parents=True)
     (home / "settings.json").write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
     (dropins / "10-memory.json").write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
-    state = inspect_host_memory("claude-code", home, project=project, environment={"ProgramFiles": str(policy_root)})
+    state = inspect_host_memory("claude-code", home, project=project, environment=USER_ENV)
     assert state["switches"]["autoMemoryEnabled"] is False
 
 
@@ -514,7 +537,7 @@ def test_claude_repository_directory_block_is_not_treated_as_loaded(tmp_path):
     (project / ".claude" / "settings.json").write_text(
         json.dumps({"autoMemoryDirectory": str(tmp_path / "TEST-memory")}), encoding="utf-8"
     )
-    state = inspect_host_memory("claude-code", home, project=project, environment={})
+    state = inspect_host_memory("claude-code", home, project=project, environment=USER_ENV)
     assert state["switches"]["autoMemoryEnabled"] is None
 
 
@@ -536,7 +559,7 @@ def test_claude_outside_read_block_is_not_disabled_by_higher_setting(tmp_path):
             }
         )
     )
-    state = inspect_host_memory("claude-code", home, project=project, environment={})
+    state = inspect_host_memory("claude-code", home, project=project, environment=USER_ENV)
     assert state["switches"]["autoMemoryEnabled"] is None
 
 
@@ -557,7 +580,7 @@ def test_claude_worktree_uses_common_repository_memory(tmp_path):
     (home / "settings.json").write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
     slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in str(repo.resolve()))
     expected = home / "projects" / slug / "memory" / "MEMORY.md"
-    state = inspect_host_memory("claude-code", home, project=worktree, environment={})
+    state = inspect_host_memory("claude-code", home, project=worktree, environment=USER_ENV)
     assert state["files"][0]["path"] == str(expected)
 
 
@@ -582,5 +605,5 @@ def test_claude_windows_worktree_settings_use_session_directory(tmp_path):
     (repo / ".claude" / "settings.local.json").write_text(json.dumps({"autoMemoryEnabled": False}))
     (worktree / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryEnabled": False}))
     (worktree / ".claude" / "settings.local.json").write_text(json.dumps({"autoMemoryEnabled": True}))
-    state = inspect_host_memory("claude-code", home, project=worktree, environment={})
+    state = inspect_host_memory("claude-code", home, project=worktree, environment=USER_ENV)
     assert state["switches"]["autoMemoryEnabled"] is True
